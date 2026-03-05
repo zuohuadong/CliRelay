@@ -84,6 +84,14 @@ docker compose up -d
 
 Set your AI tool's API base to `http://localhost:8317` and start coding!
 
+**Example: OpenAI Codex (`~/.codex/config.toml`)**
+```toml
+[model_providers.tabcode]
+name = "openai"
+base_url = "http://localhost:8317/v1"
+requires_openai_auth = true
+```
+
 > 📖 **Full setup guides →** [help.router-for.me](https://help.router-for.me/)
 
 ## 🖥️ Management Panel

@@ -3,6 +3,7 @@ package management
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -42,6 +43,47 @@ func (h *Handler) ExportUsageStatistics(c *gin.Context) {
 		Version:    1,
 		ExportedAt: time.Now().UTC(),
 		Usage:      snapshot,
+	})
+}
+
+// GetPublicUsageByAPIKey returns usage statistics for a specific API key.
+// This endpoint is designed for public access (no management key required).
+func (h *Handler) GetPublicUsageByAPIKey(c *gin.Context) {
+	apiKey := strings.TrimSpace(c.Query("api_key"))
+	if apiKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "api_key parameter is required"})
+		return
+	}
+
+	var snapshot usage.StatisticsSnapshot
+	if h != nil && h.usageStats != nil {
+		snapshot = h.usageStats.Snapshot()
+	}
+
+	// Find the matching API key entry
+	apiData, found := snapshot.APIs[apiKey]
+	if !found {
+		c.JSON(http.StatusOK, gin.H{
+			"usage": usage.StatisticsSnapshot{
+				APIs: map[string]usage.APISnapshot{},
+			},
+			"api_key": apiKey,
+			"found":   false,
+		})
+		return
+	}
+
+	// Return only the matched API key's data
+	filteredSnapshot := usage.StatisticsSnapshot{
+		APIs: map[string]usage.APISnapshot{
+			apiKey: apiData,
+		},
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"usage":   filteredSnapshot,
+		"api_key": apiKey,
+		"found":   true,
 	})
 }
 

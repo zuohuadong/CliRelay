@@ -323,6 +323,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.GET("/manage", s.serveManagementControlPanel)
+	s.engine.GET("/manage/*filepath", s.serveManagementControlPanel)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -652,6 +654,13 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/iflow-auth-url", s.mgmt.RequestIFlowCookieToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
+	}
+
+	// Public endpoints - no management key required
+	pub := s.engine.Group("/v0/management/public")
+	pub.Use(s.managementAvailabilityMiddleware())
+	{
+		pub.GET("/usage", s.mgmt.GetPublicUsageByAPIKey)
 	}
 }
 

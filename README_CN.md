@@ -84,6 +84,14 @@ docker compose up -d
 
 将 AI 工具的 API 地址设为 `http://localhost:8317`，开始编码！
 
+**示例：OpenAI Codex (`~/.codex/config.toml`)**
+```toml
+[model_providers.tabcode]
+name = "openai"
+base_url = "http://localhost:8317/v1"
+requires_openai_auth = true
+```
+
 > 📖 **完整教程 →** [help.router-for.me](https://help.router-for.me/cn/)
 
 ## 🖥️ 管理面板

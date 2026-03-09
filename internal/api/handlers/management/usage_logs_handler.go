@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
@@ -77,7 +76,7 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 }
 
 // buildNameMaps builds two maps from the current config:
-//  1. keyNameMap:     api_key → display name (from api-key-entries with names, or provider configs)
+//  1. keyNameMap:     user-facing api_key → display name (from api-key-entries)
 //  2. channelNameMap: provider_api_key → channel name (from provider config Name fields)
 func (h *Handler) buildNameMaps() (keyNameMap, channelNameMap map[string]string) {
 	keyNameMap = make(map[string]string)
@@ -88,27 +87,29 @@ func (h *Handler) buildNameMaps() (keyNameMap, channelNameMap map[string]string)
 		return
 	}
 
-	// Gemini keys: apiKey → name (as channel name)
+	// User-facing API key names from api-key-entries
+	for _, entry := range cfg.APIKeyEntries {
+		if entry.Key != "" && entry.Name != "" {
+			keyNameMap[entry.Key] = entry.Name
+		}
+	}
+
+	// Channel names from provider configs (provider apiKey → channel name)
 	for _, k := range cfg.GeminiKey {
 		if k.APIKey != "" && k.Name != "" {
 			channelNameMap[k.APIKey] = k.Name
 		}
 	}
-
-	// Claude keys: apiKey → name
 	for _, k := range cfg.ClaudeKey {
 		if k.APIKey != "" && k.Name != "" {
 			channelNameMap[k.APIKey] = k.Name
 		}
 	}
-
-	// Codex keys: apiKey → name
 	for _, k := range cfg.CodexKey {
 		if k.APIKey != "" && k.Name != "" {
 			channelNameMap[k.APIKey] = k.Name
 		}
 	}
-
 	// Vertex keys: no Name field, skip
 
 	// OpenAI compatibility: provider name applies to all its API keys
@@ -123,47 +124,7 @@ func (h *Handler) buildNameMaps() (keyNameMap, channelNameMap map[string]string)
 		}
 	}
 
-	// Build key name map from api-key-entries in OpenAI compatibility configs
-	// (these are the user-facing API keys exposed by the proxy)
-	buildKeyNameMapFromConfig(cfg, keyNameMap)
-
 	return
-}
-
-// buildKeyNameMapFromConfig populates keyNameMap with api_key → name mappings
-// from the config's various provider sources.
-func buildKeyNameMapFromConfig(cfg *config.Config, keyNameMap map[string]string) {
-	if cfg == nil {
-		return
-	}
-
-	// The user-facing API keys are typically in openai-compatibility entries
-	// and the direct provider keys (gemini/claude/codex/vertex).
-	// The "name" for a user-facing key comes from the OpenAICompatibility.Name
-	// or from the provider key's own Name field.
-
-	for _, k := range cfg.GeminiKey {
-		if k.APIKey != "" && k.Name != "" {
-			keyNameMap[k.APIKey] = k.Name
-		}
-	}
-	for _, k := range cfg.ClaudeKey {
-		if k.APIKey != "" && k.Name != "" {
-			keyNameMap[k.APIKey] = k.Name
-		}
-	}
-	for _, k := range cfg.CodexKey {
-		if k.APIKey != "" && k.Name != "" {
-			keyNameMap[k.APIKey] = k.Name
-		}
-	}
-	for _, provider := range cfg.OpenAICompatibility {
-		for _, entry := range provider.APIKeyEntries {
-			if entry.APIKey != "" && provider.Name != "" {
-				keyNameMap[entry.APIKey] = provider.Name
-			}
-		}
-	}
 }
 
 func intQueryDefault(c *gin.Context, key string, def int) int {

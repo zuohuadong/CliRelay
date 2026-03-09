@@ -48,6 +48,7 @@ type Handler struct {
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
+	startTime           time.Time
 }
 
 // NewHandler creates a new management handler instance.
@@ -64,6 +65,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		tokenStore:          sdkAuth.GetTokenStore(),
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
+		startTime:           time.Now(),
 	}
 	h.startAttemptCleanup()
 	return h
@@ -219,6 +221,10 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		}
 		if provided == "" {
 			provided = c.GetHeader("X-Management-Key")
+		}
+		// Fallback: ?token= query param (needed for WebSocket — browsers can't set custom headers)
+		if provided == "" {
+			provided = c.Query("token")
 		}
 
 		if provided == "" {

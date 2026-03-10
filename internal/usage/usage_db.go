@@ -277,7 +277,9 @@ func QueryFilters(days int) (FilterOptions, error) {
 		days = 7
 	}
 
-	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	cutoff := today.AddDate(0, 0, -(days - 1)).Format(time.RFC3339)
 
 	keys, err := queryDistinct(db, "api_key", cutoff)
 	if err != nil {
@@ -401,10 +403,10 @@ func buildWhereClause(params LogQueryParams) (string, []interface{}) {
 	conditions := make([]string, 0, 4)
 	args := make([]interface{}, 0, 4)
 
-	// Time range
-	cutoff := time.Now().UTC().AddDate(0, 0, -params.Days)
-	// Set to start of day
-	cutoff = time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, time.UTC)
+	// Time range: days=1 means "today", days=7 means "last 7 days", etc.
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	cutoff := today.AddDate(0, 0, -(params.Days - 1))
 	conditions = append(conditions, "timestamp >= ?")
 	args = append(args, cutoff.Format(time.RFC3339))
 

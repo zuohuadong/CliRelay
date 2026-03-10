@@ -56,7 +56,9 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 
 	if h.usageStats != nil {
 		snapshot := h.usageStats.Snapshot()
-		cutoff := time.Now().AddDate(0, 0, -days)
+		now := time.Now()
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		cutoff := today.AddDate(0, 0, -(days - 1))
 
 		for _, api := range snapshot.APIs {
 			for _, model := range api.Models {

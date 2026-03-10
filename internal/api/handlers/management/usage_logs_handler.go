@@ -160,3 +160,58 @@ func (h *Handler) GetLogContent(c *gin.Context) {
 
 	c.JSON(http.StatusOK, result)
 }
+
+// GetPublicUsageLogs returns paginated request log entries for a specific API key.
+// This is a public endpoint (no management key required) that strips sensitive
+// fields (source/auth_index/channel_name) before returning.
+func (h *Handler) GetPublicUsageLogs(c *gin.Context) {
+	apiKey := strings.TrimSpace(c.Query("api_key"))
+	if apiKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "api_key parameter is required"})
+		return
+	}
+
+	params := usage.LogQueryParams{
+		Page:   intQueryDefault(c, "page", 1),
+		Size:   intQueryDefault(c, "size", 50),
+		Days:   intQueryDefault(c, "days", 7),
+		APIKey: apiKey,
+		Model:  strings.TrimSpace(c.Query("model")),
+		Status: strings.TrimSpace(c.Query("status")),
+	}
+
+	result, err := usage.QueryLogs(params)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	stats, err := usage.QueryStats(params)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// SECURITY: Strip sensitive fields from public response
+	for i := range result.Items {
+		result.Items[i].Source = ""
+		result.Items[i].AuthIndex = ""
+		result.Items[i].ChannelName = ""
+		result.Items[i].APIKey = ""
+		result.Items[i].APIKeyName = ""
+	}
+
+	// Model filter options (scoped to this api_key via QueryFilters with key filter)
+	models, _ := usage.QueryModelsForKey(apiKey, params.Days)
+
+	c.JSON(http.StatusOK, gin.H{
+		"items": result.Items,
+		"total": result.Total,
+		"page":  result.Page,
+		"size":  result.Size,
+		"stats": stats,
+		"filters": gin.H{
+			"models": models,
+		},
+	})
+}

@@ -451,6 +451,39 @@ func queryDistinct(db *sql.DB, column, cutoff string) ([]string, error) {
 	return result, nil
 }
 
+// QueryModelsForKey returns the distinct models used by a specific API key within the time range.
+func QueryModelsForKey(apiKey string, days int) ([]string, error) {
+	db := getDB()
+	if db == nil {
+		return nil, nil
+	}
+	if days < 1 {
+		days = 7
+	}
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	cutoff := today.AddDate(0, 0, -(days - 1)).Format(time.RFC3339)
+
+	rows, err := db.Query(
+		"SELECT DISTINCT model FROM request_logs WHERE api_key = ? AND timestamp >= ? AND model != '' ORDER BY model",
+		apiKey, cutoff,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("usage: distinct models for key: %w", err)
+	}
+	defer rows.Close()
+
+	var result []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		result = append(result, v)
+	}
+	return result, nil
+}
+
 // LogContentResult holds the content detail for a single log entry.
 type LogContentResult struct {
 	ID            int64  `json:"id"`

@@ -666,6 +666,7 @@ func (s *Server) registerManagementRoutes() {
 	pub.Use(s.managementAvailabilityMiddleware())
 	{
 		pub.GET("/usage", s.mgmt.GetPublicUsageByAPIKey)
+		pub.GET("/usage/logs", s.mgmt.GetPublicUsageLogs)
 	}
 }
 

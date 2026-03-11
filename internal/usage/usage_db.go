@@ -509,6 +509,94 @@ func QueryLogContent(id int64) (LogContentResult, error) {
 	return result, nil
 }
 
+// DailySeriesPoint holds one day of aggregated usage data.
+type DailySeriesPoint struct {
+	Date         string `json:"date"`
+	Requests     int64  `json:"requests"`
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+}
+
+// ModelDistributionPoint holds aggregated usage data for a single model.
+type ModelDistributionPoint struct {
+	Model    string `json:"model"`
+	Requests int64  `json:"requests"`
+	Tokens   int64  `json:"tokens"`
+}
+
+// QueryDailySeries returns per-day aggregated request count and token usage for a given API key.
+func QueryDailySeries(apiKey string, days int) ([]DailySeriesPoint, error) {
+	db := getDB()
+	if db == nil {
+		return nil, nil
+	}
+	if days < 1 {
+		days = 7
+	}
+
+	params := LogQueryParams{APIKey: apiKey, Days: days}
+	where, args := buildWhereClause(params)
+
+	q := `SELECT date(timestamp) as d,
+	             COUNT(*) as reqs,
+	             COALESCE(SUM(input_tokens),0),
+	             COALESCE(SUM(output_tokens),0)
+	      FROM request_logs` + where + `
+	      GROUP BY d ORDER BY d`
+
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("usage: daily series query: %w", err)
+	}
+	defer rows.Close()
+
+	var result []DailySeriesPoint
+	for rows.Next() {
+		var p DailySeriesPoint
+		if err := rows.Scan(&p.Date, &p.Requests, &p.InputTokens, &p.OutputTokens); err != nil {
+			return nil, fmt.Errorf("usage: daily series scan: %w", err)
+		}
+		result = append(result, p)
+	}
+	return result, rows.Err()
+}
+
+// QueryModelDistribution returns request count and token usage grouped by model for a given API key.
+func QueryModelDistribution(apiKey string, days int) ([]ModelDistributionPoint, error) {
+	db := getDB()
+	if db == nil {
+		return nil, nil
+	}
+	if days < 1 {
+		days = 7
+	}
+
+	params := LogQueryParams{APIKey: apiKey, Days: days}
+	where, args := buildWhereClause(params)
+
+	q := `SELECT model,
+	             COUNT(*) as reqs,
+	             COALESCE(SUM(total_tokens),0)
+	      FROM request_logs` + where + `
+	      GROUP BY model ORDER BY reqs DESC`
+
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("usage: model distribution query: %w", err)
+	}
+	defer rows.Close()
+
+	var result []ModelDistributionPoint
+	for rows.Next() {
+		var p ModelDistributionPoint
+		if err := rows.Scan(&p.Model, &p.Requests, &p.Tokens); err != nil {
+			return nil, fmt.Errorf("usage: model distribution scan: %w", err)
+		}
+		result = append(result, p)
+	}
+	return result, rows.Err()
+}
+
 // GetDBPath returns the file path of the SQLite database, or empty if not initialised.
 func GetDBPath() string {
 	usageDBMu.Lock()

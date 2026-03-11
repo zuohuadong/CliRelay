@@ -28,7 +28,80 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		c.JSON(200, gin.H{})
 		return
 	}
-	c.JSON(200, new(*h.cfg))
+	c.JSON(200, sanitizeConfigForAPI(h.cfg))
+}
+
+// maskKey masks an API key / secret, preserving first 6 and last 4 characters.
+func maskKey(key string) string {
+	if key == "" {
+		return ""
+	}
+	if len(key) <= 12 {
+		return "****"
+	}
+	return key[:6] + "****" + key[len(key)-4:]
+}
+
+// sanitizeConfigForAPI creates a sanitized copy of the config suitable for the management API.
+// It masks provider API keys, Redis passwords, and other sensitive fields.
+func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
+	// Deep copy via JSON round-trip to avoid mutating the live config.
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return cfg // fallback to original on error
+	}
+	var copy config.Config
+	if err := json.Unmarshal(data, &copy); err != nil {
+		return cfg
+	}
+
+	// Mask Redis password
+	if copy.Redis.Password != "" {
+		copy.Redis.Password = "***"
+	}
+
+	// Mask Gemini API keys
+	for i := range copy.GeminiKey {
+		copy.GeminiKey[i].APIKey = maskKey(copy.GeminiKey[i].APIKey)
+	}
+
+	// Mask Claude API keys
+	for i := range copy.ClaudeKey {
+		copy.ClaudeKey[i].APIKey = maskKey(copy.ClaudeKey[i].APIKey)
+	}
+
+	// Mask Codex API keys
+	for i := range copy.CodexKey {
+		copy.CodexKey[i].APIKey = maskKey(copy.CodexKey[i].APIKey)
+	}
+
+	// Mask OpenAI compatibility API keys
+	for i := range copy.OpenAICompatibility {
+		for j := range copy.OpenAICompatibility[i].APIKeyEntries {
+			copy.OpenAICompatibility[i].APIKeyEntries[j].APIKey = maskKey(copy.OpenAICompatibility[i].APIKeyEntries[j].APIKey)
+		}
+	}
+
+	// Mask Vertex API keys
+	for i := range copy.VertexCompatAPIKey {
+		copy.VertexCompatAPIKey[i].APIKey = maskKey(copy.VertexCompatAPIKey[i].APIKey)
+	}
+
+	// Mask Amp upstream API key
+	copy.AmpCode.UpstreamAPIKey = maskKey(copy.AmpCode.UpstreamAPIKey)
+	for i := range copy.AmpCode.UpstreamAPIKeys {
+		copy.AmpCode.UpstreamAPIKeys[i].UpstreamAPIKey = maskKey(copy.AmpCode.UpstreamAPIKeys[i].UpstreamAPIKey)
+	}
+
+	// Mask user-facing API keys
+	for i := range copy.APIKeys {
+		copy.APIKeys[i] = maskKey(copy.APIKeys[i])
+	}
+	for i := range copy.APIKeyEntries {
+		copy.APIKeyEntries[i].Key = maskKey(copy.APIKeyEntries[i].Key)
+	}
+
+	return &copy
 }
 
 type releaseInfo struct {

@@ -215,3 +215,47 @@ func (h *Handler) GetPublicUsageLogs(c *gin.Context) {
 		},
 	})
 }
+
+// GetPublicUsageChartData returns pre-aggregated chart data for a specific API key.
+// This is a public endpoint (no management key required) that provides lightweight
+// daily series and model distribution data for rendering charts.
+func (h *Handler) GetPublicUsageChartData(c *gin.Context) {
+	apiKey := strings.TrimSpace(c.Query("api_key"))
+	if apiKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "api_key parameter is required"})
+		return
+	}
+
+	days := intQueryDefault(c, "days", 7)
+
+	daily, err := usage.QueryDailySeries(apiKey, days)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if daily == nil {
+		daily = []usage.DailySeriesPoint{}
+	}
+
+	models, err := usage.QueryModelDistribution(apiKey, days)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if models == nil {
+		models = []usage.ModelDistributionPoint{}
+	}
+
+	// Also fetch stats for KPI cards
+	stats, err := usage.QueryStats(usage.LogQueryParams{APIKey: apiKey, Days: days})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"daily_series":       daily,
+		"model_distribution": models,
+		"stats":              stats,
+	})
+}

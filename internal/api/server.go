@@ -854,19 +854,103 @@ func (s *Server) watchKeepAlive() {
 // that routes to different handlers based on the User-Agent header.
 // If User-Agent starts with "claude-cli", it routes to Claude handler,
 // otherwise it routes to OpenAI handler.
+// It also filters the returned models based on the API key's allowed-models restriction.
 func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, claudeHandler *claude.ClaudeCodeAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userAgent := c.GetHeader("User-Agent")
+		// Check if this API key has allowed-models restriction
+		var allowedModels map[string]struct{}
+		if metadataVal, exists := c.Get("accessMetadata"); exists {
+			if metadata, ok := metadataVal.(map[string]string); ok {
+				if allowedStr, exists := metadata["allowed-models"]; exists && allowedStr != "" {
+					allowedModels = make(map[string]struct{})
+					for _, m := range strings.Split(allowedStr, ",") {
+						trimmed := strings.TrimSpace(m)
+						if trimmed != "" {
+							allowedModels[trimmed] = struct{}{}
+						}
+					}
+					if len(allowedModels) == 0 {
+						allowedModels = nil
+					}
+				}
+			}
+		}
 
-		// Route to Claude handler if User-Agent starts with "claude-cli"
+		// If no restriction, just call the handler directly
+		if allowedModels == nil {
+			userAgent := c.GetHeader("User-Agent")
+			if strings.HasPrefix(userAgent, "claude-cli") {
+				claudeHandler.ClaudeModels(c)
+			} else {
+				openaiHandler.OpenAIModels(c)
+			}
+			return
+		}
+
+		// With restriction: capture the response, filter, then write
+		recorder := &responseRecorder{
+			ResponseWriter: c.Writer,
+			body:           &bytes.Buffer{},
+		}
+		c.Writer = recorder
+
+		userAgent := c.GetHeader("User-Agent")
 		if strings.HasPrefix(userAgent, "claude-cli") {
-			// log.Debugf("Routing /v1/models to Claude handler for User-Agent: %s", userAgent)
 			claudeHandler.ClaudeModels(c)
 		} else {
-			// log.Debugf("Routing /v1/models to OpenAI handler for User-Agent: %s", userAgent)
 			openaiHandler.OpenAIModels(c)
 		}
+
+		// Parse and filter the captured response
+		var resp struct {
+			Object string                   `json:"object"`
+			Data   []map[string]interface{} `json:"data"`
+		}
+		if err := json.Unmarshal(recorder.body.Bytes(), &resp); err != nil {
+			// If parsing fails, just write the original response
+			recorder.ResponseWriter.WriteHeader(recorder.statusCode)
+			recorder.ResponseWriter.Write(recorder.body.Bytes())
+			return
+		}
+
+		// Filter models
+		filtered := make([]map[string]interface{}, 0, len(resp.Data))
+		for _, model := range resp.Data {
+			if id, ok := model["id"].(string); ok {
+				if _, allowed := allowedModels[id]; allowed {
+					filtered = append(filtered, model)
+				}
+			}
+		}
+		resp.Data = filtered
+
+		// Write filtered response
+		filteredJSON, err := json.Marshal(resp)
+		if err != nil {
+			recorder.ResponseWriter.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		recorder.ResponseWriter.Header().Set("Content-Type", "application/json; charset=utf-8")
+		recorder.ResponseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(filteredJSON)))
+		recorder.ResponseWriter.WriteHeader(http.StatusOK)
+		recorder.ResponseWriter.Write(filteredJSON)
 	}
+}
+
+// responseRecorder captures the response body for post-processing
+type responseRecorder struct {
+	gin.ResponseWriter
+	body       *bytes.Buffer
+	statusCode int
+}
+
+func (r *responseRecorder) Write(b []byte) (int, error) {
+	return r.body.Write(b)
+}
+
+func (r *responseRecorder) WriteHeader(code int) {
+	r.statusCode = code
 }
 
 // Start begins listening for and serving HTTP or HTTPS requests.

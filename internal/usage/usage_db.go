@@ -643,3 +643,39 @@ func GetChannelAvgLatency(days int) ([]ChannelLatency, error) {
 	}
 	return result, rows.Err()
 }
+
+// CountTodayByKey returns the number of requests made by the given API key today (UTC).
+func CountTodayByKey(apiKey string) (int64, error) {
+	db := getDB()
+	if db == nil {
+		return 0, nil
+	}
+	now := time.Now().UTC()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	var count int64
+	err := db.QueryRow(
+		"SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND timestamp >= ?",
+		apiKey, todayStart.Format(time.RFC3339),
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("usage: count today: %w", err)
+	}
+	return count, nil
+}
+
+// CountTotalByKey returns the total number of requests made by the given API key.
+func CountTotalByKey(apiKey string) (int64, error) {
+	db := getDB()
+	if db == nil {
+		return 0, nil
+	}
+	var count int64
+	err := db.QueryRow(
+		"SELECT COUNT(*) FROM request_logs WHERE api_key = ?",
+		apiKey,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("usage: count total: %w", err)
+	}
+	return count, nil
+}

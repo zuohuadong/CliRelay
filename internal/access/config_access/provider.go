@@ -2,6 +2,7 @@ package configaccess
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -16,23 +17,23 @@ func Register(cfg *sdkconfig.SDKConfig) {
 		return
 	}
 
-	keyModels := buildKeyModelsMap(cfg)
-	if len(keyModels) == 0 {
+	keyConfigs := buildKeyConfigMap(cfg)
+	if len(keyConfigs) == 0 {
 		sdkaccess.UnregisterProvider(sdkaccess.AccessProviderTypeConfigAPIKey)
 		return
 	}
 
 	sdkaccess.RegisterProvider(
 		sdkaccess.AccessProviderTypeConfigAPIKey,
-		newProvider(sdkaccess.DefaultAccessProviderName, keyModels),
+		newProvider(sdkaccess.DefaultAccessProviderName, keyConfigs),
 	)
 }
 
-// buildKeyModelsMap builds a map from API key to allowed models list.
+// buildKeyConfigMap builds a map from API key to its full configuration.
 // Keys from both APIKeys (legacy, no restrictions) and APIKeyEntries are included.
-func buildKeyModelsMap(cfg *sdkconfig.SDKConfig) map[string][]string {
-	result := make(map[string][]string)
-	// APIKeyEntries first — they have the more specific config with AllowedModels
+func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
+	result := make(map[string]keyConfig)
+	// APIKeyEntries first — they have the more specific config
 	for _, entry := range cfg.APIKeyEntries {
 		trimmed := strings.TrimSpace(entry.Key)
 		if trimmed == "" || entry.Disabled {
@@ -41,9 +42,14 @@ func buildKeyModelsMap(cfg *sdkconfig.SDKConfig) map[string][]string {
 		if _, exists := result[trimmed]; exists {
 			continue
 		}
-		result[trimmed] = entry.AllowedModels
+		result[trimmed] = keyConfig{
+			allowedModels:    entry.AllowedModels,
+			dailyLimit:       entry.DailyLimit,
+			totalQuota:       entry.TotalQuota,
+			concurrencyLimit: entry.ConcurrencyLimit,
+		}
 	}
-	// Legacy APIKeys — no model restrictions (empty slice = all models allowed)
+	// Legacy APIKeys — no restrictions
 	for _, k := range cfg.APIKeys {
 		trimmed := strings.TrimSpace(k)
 		if trimmed == "" {
@@ -52,22 +58,30 @@ func buildKeyModelsMap(cfg *sdkconfig.SDKConfig) map[string][]string {
 		if _, exists := result[trimmed]; exists {
 			continue
 		}
-		result[trimmed] = nil
+		result[trimmed] = keyConfig{}
 	}
 	return result
 }
 
-type provider struct {
-	name string
-	keys map[string][]string // key -> allowed models (nil/empty = all models)
+// keyConfig holds the per-key configuration extracted from APIKeyEntry.
+type keyConfig struct {
+	allowedModels    []string
+	dailyLimit       int
+	totalQuota       int
+	concurrencyLimit int
 }
 
-func newProvider(name string, keyModels map[string][]string) *provider {
+type provider struct {
+	name string
+	keys map[string]keyConfig
+}
+
+func newProvider(name string, keyConfigs map[string]keyConfig) *provider {
 	providerName := strings.TrimSpace(name)
 	if providerName == "" {
 		providerName = sdkaccess.DefaultAccessProviderName
 	}
-	return &provider{name: providerName, keys: keyModels}
+	return &provider{name: providerName, keys: keyConfigs}
 }
 
 func (p *provider) Identifier() string {
@@ -114,12 +128,21 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 		if candidate.value == "" {
 			continue
 		}
-		if allowedModels, ok := p.keys[candidate.value]; ok {
+		if kc, ok := p.keys[candidate.value]; ok {
 			metadata := map[string]string{
 				"source": candidate.source,
 			}
-			if len(allowedModels) > 0 {
-				metadata["allowed-models"] = strings.Join(allowedModels, ",")
+			if len(kc.allowedModels) > 0 {
+				metadata["allowed-models"] = strings.Join(kc.allowedModels, ",")
+			}
+			if kc.dailyLimit > 0 {
+				metadata["daily-limit"] = fmt.Sprintf("%d", kc.dailyLimit)
+			}
+			if kc.totalQuota > 0 {
+				metadata["total-quota"] = fmt.Sprintf("%d", kc.totalQuota)
+			}
+			if kc.concurrencyLimit > 0 {
+				metadata["concurrency-limit"] = fmt.Sprintf("%d", kc.concurrencyLimit)
 			}
 			return &sdkaccess.Result{
 				Provider:  p.Identifier(),

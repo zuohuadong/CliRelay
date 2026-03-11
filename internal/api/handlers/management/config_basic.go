@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,8 +43,32 @@ func maskKey(key string) string {
 	return key[:6] + "****" + key[len(key)-4:]
 }
 
+// maskName masks a person's or channel's name, keeping the first rune + "***".
+func maskName(name string) string {
+	if name == "" {
+		return ""
+	}
+	runes := []rune(name)
+	if len(runes) <= 1 {
+		return "***"
+	}
+	return string(runes[0:1]) + "***"
+}
+
+// maskBaseURL masks a URL, preserving the scheme + host but replacing the path with /***.
+func maskBaseURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return "***"
+	}
+	return u.Scheme + "://" + u.Host + "/***"
+}
+
 // sanitizeConfigForAPI creates a sanitized copy of the config suitable for the management API.
-// It masks provider API keys, Redis passwords, and other sensitive fields.
+// It masks provider API keys, Redis passwords, user names, provider URLs/models, and other sensitive fields.
 func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
 	// Deep copy via JSON round-trip to avoid mutating the live config.
 	data, err := json.Marshal(cfg)
@@ -55,51 +80,99 @@ func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
 		return cfg
 	}
 
-	// Mask Redis password
+	// ── Infrastructure ──────────────────────────────────────────────────────
+
+	// Mask Redis password and address
 	if copy.Redis.Password != "" {
 		copy.Redis.Password = "***"
 	}
+	if copy.Redis.Addr != "" {
+		copy.Redis.Addr = "***"
+	}
 
-	// Mask Gemini API keys
+	// Mask pprof address
+	copy.Pprof.Addr = "***"
+
+	// Mask TLS cert/key paths
+	if copy.TLS.Cert != "" {
+		copy.TLS.Cert = "***"
+	}
+	if copy.TLS.Key != "" {
+		copy.TLS.Key = "***"
+	}
+
+	// ── Provider channels ──────────────────────────────────────────────────
+
+	// Mask Gemini API keys, names, URLs, and models
 	for i := range copy.GeminiKey {
 		copy.GeminiKey[i].APIKey = maskKey(copy.GeminiKey[i].APIKey)
+		copy.GeminiKey[i].Name = maskName(copy.GeminiKey[i].Name)
+		copy.GeminiKey[i].BaseURL = maskBaseURL(copy.GeminiKey[i].BaseURL)
+		copy.GeminiKey[i].ProxyURL = maskBaseURL(copy.GeminiKey[i].ProxyURL)
+		copy.GeminiKey[i].Models = nil
 	}
 
-	// Mask Claude API keys
+	// Mask Claude API keys, names, URLs, and models
 	for i := range copy.ClaudeKey {
 		copy.ClaudeKey[i].APIKey = maskKey(copy.ClaudeKey[i].APIKey)
+		copy.ClaudeKey[i].Name = maskName(copy.ClaudeKey[i].Name)
+		copy.ClaudeKey[i].BaseURL = maskBaseURL(copy.ClaudeKey[i].BaseURL)
+		copy.ClaudeKey[i].ProxyURL = maskBaseURL(copy.ClaudeKey[i].ProxyURL)
+		copy.ClaudeKey[i].Models = nil
 	}
 
-	// Mask Codex API keys
+	// Mask Codex API keys, names, URLs, and models
 	for i := range copy.CodexKey {
 		copy.CodexKey[i].APIKey = maskKey(copy.CodexKey[i].APIKey)
+		copy.CodexKey[i].Name = maskName(copy.CodexKey[i].Name)
+		copy.CodexKey[i].BaseURL = maskBaseURL(copy.CodexKey[i].BaseURL)
+		copy.CodexKey[i].ProxyURL = maskBaseURL(copy.CodexKey[i].ProxyURL)
+		copy.CodexKey[i].Models = nil
 	}
 
-	// Mask OpenAI compatibility API keys
+	// Mask OpenAI compatibility API keys, names, URLs, and models
 	for i := range copy.OpenAICompatibility {
+		copy.OpenAICompatibility[i].Name = maskName(copy.OpenAICompatibility[i].Name)
+		copy.OpenAICompatibility[i].BaseURL = maskBaseURL(copy.OpenAICompatibility[i].BaseURL)
+		copy.OpenAICompatibility[i].Models = nil
 		for j := range copy.OpenAICompatibility[i].APIKeyEntries {
 			copy.OpenAICompatibility[i].APIKeyEntries[j].APIKey = maskKey(copy.OpenAICompatibility[i].APIKeyEntries[j].APIKey)
+			copy.OpenAICompatibility[i].APIKeyEntries[j].ProxyURL = maskBaseURL(copy.OpenAICompatibility[i].APIKeyEntries[j].ProxyURL)
 		}
 	}
 
-	// Mask Vertex API keys
+	// Mask Vertex API keys, URLs, and models
 	for i := range copy.VertexCompatAPIKey {
 		copy.VertexCompatAPIKey[i].APIKey = maskKey(copy.VertexCompatAPIKey[i].APIKey)
+		copy.VertexCompatAPIKey[i].BaseURL = maskBaseURL(copy.VertexCompatAPIKey[i].BaseURL)
+		copy.VertexCompatAPIKey[i].ProxyURL = maskBaseURL(copy.VertexCompatAPIKey[i].ProxyURL)
+		copy.VertexCompatAPIKey[i].Models = nil
 	}
 
-	// Mask Amp upstream API key
+	// ── Amp module ──────────────────────────────────────────────────────────
+
+	copy.AmpCode.UpstreamURL = maskBaseURL(copy.AmpCode.UpstreamURL)
 	copy.AmpCode.UpstreamAPIKey = maskKey(copy.AmpCode.UpstreamAPIKey)
 	for i := range copy.AmpCode.UpstreamAPIKeys {
 		copy.AmpCode.UpstreamAPIKeys[i].UpstreamAPIKey = maskKey(copy.AmpCode.UpstreamAPIKeys[i].UpstreamAPIKey)
 	}
+	copy.AmpCode.ModelMappings = nil
 
-	// Mask user-facing API keys
+	// ── User-facing API keys ────────────────────────────────────────────────
+
 	for i := range copy.APIKeys {
 		copy.APIKeys[i] = maskKey(copy.APIKeys[i])
 	}
 	for i := range copy.APIKeyEntries {
 		copy.APIKeyEntries[i].Key = maskKey(copy.APIKeyEntries[i].Key)
+		copy.APIKeyEntries[i].Name = maskName(copy.APIKeyEntries[i].Name)
 	}
+
+	// ── OAuth model alias (internal mapping, no reason to expose) ────────
+	copy.OAuthModelAlias = nil
+
+	// ── Global proxy URL ────────────────────────────────────────────────────
+	copy.ProxyURL = maskBaseURL(copy.ProxyURL)
 
 	return &copy
 }

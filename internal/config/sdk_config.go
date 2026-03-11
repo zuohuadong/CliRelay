@@ -65,6 +65,9 @@ type APIKeyEntry struct {
 	// TotalQuota is the total number of requests allowed. 0 means unlimited.
 	TotalQuota int `yaml:"total-quota,omitempty" json:"total-quota,omitempty"`
 
+	// ConcurrencyLimit is the maximum number of concurrent requests. 0 means unlimited.
+	ConcurrencyLimit int `yaml:"concurrency-limit,omitempty" json:"concurrency-limit,omitempty"`
+
 	// AllowedModels lists model patterns this key can access. Empty means all models.
 	AllowedModels []string `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
 

@@ -155,12 +155,13 @@ func (h *Handler) PutAPIKeyEntries(c *gin.Context) {
 
 func (h *Handler) PatchAPIKeyEntry(c *gin.Context) {
 	type apiKeyEntryPatch struct {
-		Key           *string   `json:"key"`
-		Name          *string   `json:"name"`
-		DailyLimit    *int      `json:"daily-limit"`
-		TotalQuota    *int      `json:"total-quota"`
-		AllowedModels *[]string `json:"allowed-models"`
-		CreatedAt     *string   `json:"created-at"`
+		Key              *string   `json:"key"`
+		Name             *string   `json:"name"`
+		DailyLimit       *int      `json:"daily-limit"`
+		TotalQuota       *int      `json:"total-quota"`
+		ConcurrencyLimit *int      `json:"concurrency-limit"`
+		AllowedModels    *[]string `json:"allowed-models"`
+		CreatedAt        *string   `json:"created-at"`
 	}
 	var body struct {
 		Index *int              `json:"index"`
@@ -210,6 +211,9 @@ func (h *Handler) PatchAPIKeyEntry(c *gin.Context) {
 	}
 	if body.Value.TotalQuota != nil {
 		entry.TotalQuota = *body.Value.TotalQuota
+	}
+	if body.Value.ConcurrencyLimit != nil {
+		entry.ConcurrencyLimit = *body.Value.ConcurrencyLimit
 	}
 	if body.Value.AllowedModels != nil {
 		entry.AllowedModels = append([]string(nil), (*body.Value.AllowedModels)...)

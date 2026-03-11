@@ -47,6 +47,8 @@ func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 			dailyLimit:       entry.DailyLimit,
 			totalQuota:       entry.TotalQuota,
 			concurrencyLimit: entry.ConcurrencyLimit,
+			rpmLimit:         entry.RPMLimit,
+			tpmLimit:         entry.TPMLimit,
 		}
 	}
 	// Legacy APIKeys — no restrictions
@@ -69,6 +71,8 @@ type keyConfig struct {
 	dailyLimit       int
 	totalQuota       int
 	concurrencyLimit int
+	rpmLimit         int
+	tpmLimit         int
 }
 
 type provider struct {
@@ -143,6 +147,12 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 			}
 			if kc.concurrencyLimit > 0 {
 				metadata["concurrency-limit"] = fmt.Sprintf("%d", kc.concurrencyLimit)
+			}
+			if kc.rpmLimit > 0 {
+				metadata["rpm-limit"] = fmt.Sprintf("%d", kc.rpmLimit)
+			}
+			if kc.tpmLimit > 0 {
+				metadata["tpm-limit"] = fmt.Sprintf("%d", kc.tpmLimit)
 			}
 			return &sdkaccess.Result{
 				Provider:  p.Identifier(),

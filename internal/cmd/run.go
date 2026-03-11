@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
@@ -31,6 +32,8 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 	if err := usage.InitDB(dbPath); err != nil {
 		log.Errorf("usage: failed to initialize SQLite: %v", err)
 	}
+	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey)
+	usage.SetTokenUsageCallback(middleware.RecordTokenUsage)
 	usage.InitRedis(cfg.Redis)
 	defer usage.StopRedis()
 
@@ -71,6 +74,8 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 	if err := usage.InitDB(dbPath); err != nil {
 		log.Errorf("usage: failed to initialize SQLite: %v", err)
 	}
+	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey)
+	usage.SetTokenUsageCallback(middleware.RecordTokenUsage)
 	usage.InitRedis(cfg.Redis)
 
 	builder := cliproxy.NewBuilder().

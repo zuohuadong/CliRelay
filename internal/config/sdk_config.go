@@ -68,6 +68,12 @@ type APIKeyEntry struct {
 	// ConcurrencyLimit is the maximum number of concurrent requests. 0 means unlimited.
 	ConcurrencyLimit int `yaml:"concurrency-limit,omitempty" json:"concurrency-limit,omitempty"`
 
+	// RPMLimit is the maximum number of requests per minute. 0 means unlimited.
+	RPMLimit int `yaml:"rpm-limit,omitempty" json:"rpm-limit,omitempty"`
+
+	// TPMLimit is the maximum number of tokens per minute. 0 means unlimited.
+	TPMLimit int `yaml:"tpm-limit,omitempty" json:"tpm-limit,omitempty"`
+
 	// AllowedModels lists model patterns this key can access. Empty means all models.
 	AllowedModels []string `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
 

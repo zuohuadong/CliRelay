@@ -192,7 +192,23 @@ func InsertLog(apiKey, model, source, channelName, authIndex string,
 	)
 	if err != nil {
 		log.Errorf("usage: insert log: %v", err)
+		return
 	}
+
+	// Notify TPM tracker about token usage
+	if tokenUsageCallback != nil && tokens.TotalTokens > 0 {
+		tokenUsageCallback(apiKey, tokens.TotalTokens)
+	}
+}
+
+// tokenUsageCallback is set by SetTokenUsageCallback to notify external
+// rate limiters (e.g. quota middleware) of token consumption.
+var tokenUsageCallback func(apiKey string, totalTokens int64)
+
+// SetTokenUsageCallback registers a function to be called after each
+// request's tokens are recorded. Used by the quota middleware for TPM tracking.
+func SetTokenUsageCallback(fn func(apiKey string, totalTokens int64)) {
+	tokenUsageCallback = fn
 }
 
 // QueryLogs returns a paginated, filtered list of log entries.

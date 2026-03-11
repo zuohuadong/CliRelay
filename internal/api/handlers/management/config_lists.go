@@ -160,6 +160,8 @@ func (h *Handler) PatchAPIKeyEntry(c *gin.Context) {
 		DailyLimit       *int      `json:"daily-limit"`
 		TotalQuota       *int      `json:"total-quota"`
 		ConcurrencyLimit *int      `json:"concurrency-limit"`
+		RPMLimit         *int      `json:"rpm-limit"`
+		TPMLimit         *int      `json:"tpm-limit"`
 		AllowedModels    *[]string `json:"allowed-models"`
 		CreatedAt        *string   `json:"created-at"`
 	}
@@ -214,6 +216,12 @@ func (h *Handler) PatchAPIKeyEntry(c *gin.Context) {
 	}
 	if body.Value.ConcurrencyLimit != nil {
 		entry.ConcurrencyLimit = *body.Value.ConcurrencyLimit
+	}
+	if body.Value.RPMLimit != nil {
+		entry.RPMLimit = *body.Value.RPMLimit
+	}
+	if body.Value.TPMLimit != nil {
+		entry.TPMLimit = *body.Value.TPMLimit
 	}
 	if body.Value.AllowedModels != nil {
 		entry.AllowedModels = append([]string(nil), (*body.Value.AllowedModels)...)

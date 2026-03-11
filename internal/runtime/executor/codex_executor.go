@@ -114,7 +114,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	if !gjson.GetBytes(body, "instructions").Exists() {
-		body, _ = sjson.SetBytes(body, "instructions", "")
+		// Extract system messages from original OpenAI-format payload to use as instructions.
+		// This preserves system prompts injected by SystemPromptMiddleware.
+		sysContent := extractSystemMessagesAsInstructions(req.Payload)
+		body, _ = sjson.SetBytes(body, "instructions", sysContent)
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
@@ -313,7 +316,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	if !gjson.GetBytes(body, "instructions").Exists() {
-		body, _ = sjson.SetBytes(body, "instructions", "")
+		sysContent := extractSystemMessagesAsInstructions(req.Payload)
+		body, _ = sjson.SetBytes(body, "instructions", sysContent)
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
@@ -419,7 +423,8 @@ func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.SetBytes(body, "stream", false)
 	if !gjson.GetBytes(body, "instructions").Exists() {
-		body, _ = sjson.SetBytes(body, "instructions", "")
+		sysContent := extractSystemMessagesAsInstructions(req.Payload)
+		body, _ = sjson.SetBytes(body, "instructions", sysContent)
 	}
 
 	enc, err := tokenizerForCodexModel(baseModel)

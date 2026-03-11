@@ -317,3 +317,31 @@ func matchModelPattern(pattern, model string) bool {
 	}
 	return pi == len(pattern)
 }
+
+// extractSystemMessagesAsInstructions extracts all system-role messages from an
+// OpenAI chat-completions format JSON payload and concatenates their content with
+// newlines. This is used by the Codex executor to preserve system prompts
+// (including those injected by SystemPromptMiddleware) when translating from
+// OpenAI messages format to Codex Responses API instructions format.
+//
+// Returns an empty string if there are no system messages.
+func extractSystemMessagesAsInstructions(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	messages := gjson.GetBytes(payload, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return ""
+	}
+	var parts []string
+	messages.ForEach(func(_, msg gjson.Result) bool {
+		if strings.EqualFold(msg.Get("role").String(), "system") {
+			content := strings.TrimSpace(msg.Get("content").String())
+			if content != "" {
+				parts = append(parts, content)
+			}
+		}
+		return true
+	})
+	return strings.Join(parts, "\n")
+}

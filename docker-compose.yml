@@ -14,6 +14,10 @@ services:
     #   - .env
     environment:
       DEPLOY: ${DEPLOY:-}
+      CLIRELAY_LOCALE: ${CLIRELAY_LOCALE:-zh}
+      LANG: ${CLIRELAY_LANG:-C.UTF-8}
+      LANGUAGE: ${CLIRELAY_LANGUAGE:-en_US:en}
+      LC_ALL: ${CLIRELAY_LANG:-C.UTF-8}
     ports:
       - "8317:8317"
       - "8085:8085"

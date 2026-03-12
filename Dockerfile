@@ -1,5 +1,5 @@
 # ── Frontend build ───────────────────────────────────────────────────────────
-FROM oven/bun:1 AS frontend-builder
+FROM --platform=$BUILDPLATFORM oven/bun:1 AS frontend-builder
 
 WORKDIR /frontend
 COPY frontend/ .
@@ -7,7 +7,7 @@ RUN bun install --frozen-lockfile
 RUN bunx vite build
 
 # ── Backend build ────────────────────────────────────────────────────────────
-FROM golang:1.26-alpine AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS backend-builder
 
 WORKDIR /app
 
@@ -16,11 +16,13 @@ RUN go mod download
 
 COPY . .
 
+ARG TARGETOS=linux
+ARG TARGETARCH
 ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_DATE=unknown
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
 FROM alpine:3.22.0
@@ -38,8 +40,9 @@ WORKDIR /CLIProxyAPI
 
 EXPOSE 8317
 
-ENV TZ=Asia/Shanghai
-ENV MANAGEMENT_PANEL_DIR=/CLIProxyAPI/panel
+ENV TZ=Asia/Shanghai \
+    MANAGEMENT_PANEL_DIR=/CLIProxyAPI/panel \
+    CLIRELAY_LOCALE=zh
 
 RUN cp /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
 

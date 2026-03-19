@@ -113,6 +113,20 @@ func (r *usageReporter) publishFailure(ctx context.Context) {
 	r.publishWithOutcome(ctx, usage.Detail{}, true)
 }
 
+// publishFailureWithContent records a failed request together with the
+// request payload and the upstream error response body so that the error
+// is visible in the management UI error-detail modal.
+func (r *usageReporter) publishFailureWithContent(ctx context.Context, inputContent, outputContent string) {
+	if r == nil {
+		return
+	}
+	r.contentMu.Lock()
+	r.inputContent = inputContent
+	r.outputContent = outputContent
+	r.contentMu.Unlock()
+	r.publishWithOutcome(ctx, usage.Detail{}, true)
+}
+
 func (r *usageReporter) trackFailure(ctx context.Context, errPtr *error) {
 	if r == nil || errPtr == nil {
 		return

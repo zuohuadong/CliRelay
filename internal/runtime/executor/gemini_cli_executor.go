@@ -239,6 +239,7 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 			continue
 		}
 
+		reporter.publishFailureWithContent(ctx, string(req.Payload), string(data))
 		err = newGeminiStatusErr(httpResp.StatusCode, data)
 		return resp, err
 	}
@@ -249,6 +250,7 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	if lastStatus == 0 {
 		lastStatus = 429
 	}
+	reporter.publishFailureWithContent(ctx, string(req.Payload), string(lastBody))
 	err = newGeminiStatusErr(lastStatus, lastBody)
 	return resp, err
 }
@@ -375,6 +377,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 				}
 				continue
 			}
+			reporter.publishFailureWithContent(ctx, string(req.Payload), string(data))
 			err = newGeminiStatusErr(httpResp.StatusCode, data)
 			return nil, err
 		}
@@ -447,6 +450,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	if lastStatus == 0 {
 		lastStatus = 429
 	}
+	reporter.publishFailureWithContent(ctx, string(req.Payload), string(lastBody))
 	err = newGeminiStatusErr(lastStatus, lastBody)
 	return nil, err
 }

@@ -106,6 +106,10 @@ type Config struct {
 	// These are used as fallbacks when the client does not send its own headers.
 	ClaudeHeaderDefaults ClaudeHeaderDefaults `yaml:"claude-header-defaults" json:"claude-header-defaults"`
 
+	// KimiHeaderDefaults configures default header values for Kimi API requests.
+	// These control how requests appear in the Kimi console (e.g., User-Agent as source).
+	KimiHeaderDefaults KimiHeaderDefaults `yaml:"kimi-header-defaults" json:"kimi-header-defaults"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
@@ -140,6 +144,15 @@ type ClaudeHeaderDefaults struct {
 	PackageVersion string `yaml:"package-version" json:"package-version"`
 	RuntimeVersion string `yaml:"runtime-version" json:"runtime-version"`
 	Timeout        string `yaml:"timeout" json:"timeout"`
+}
+
+// KimiHeaderDefaults configures default header values for Kimi API requests.
+// These headers identify the client to the Kimi API and affect how requests
+// appear in the Kimi console (e.g., User-Agent shows as the source).
+type KimiHeaderDefaults struct {
+	UserAgent string `yaml:"user-agent" json:"user-agent"`
+	Platform  string `yaml:"platform" json:"platform"`
+	Version   string `yaml:"version" json:"version"`
 }
 
 // RedisConfig holds the configuration for connecting to a Redis instance for data persistence.

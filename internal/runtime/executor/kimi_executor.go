@@ -112,7 +112,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	if err != nil {
 		return resp, err
 	}
-	applyKimiHeadersWithAuth(httpReq, token, false, auth)
+	applyKimiHeadersWithAuth(httpReq, token, false, auth, e.cfg)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -218,7 +218,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	if err != nil {
 		return nil, err
 	}
-	applyKimiHeadersWithAuth(httpReq, token, true, auth)
+	applyKimiHeadersWithAuth(httpReq, token, true, auth, e.cfg)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -484,14 +484,31 @@ func (e *KimiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 }
 
 // applyKimiHeaders sets required headers for Kimi API requests.
-// Headers match kimi-cli client for compatibility.
-func applyKimiHeaders(r *http.Request, token string, stream bool) {
+// Headers match kimi-cli client for compatibility. Uses config values when available.
+func applyKimiHeaders(r *http.Request, token string, stream bool, cfg *config.Config) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
-	// Match kimi-cli headers exactly
-	r.Header.Set("User-Agent", "KimiCLI/1.10.6")
-	r.Header.Set("X-Msh-Platform", "kimi_cli")
-	r.Header.Set("X-Msh-Version", "1.10.6")
+
+	// Use config values or defaults
+	userAgent := "KimiCLI/1.10.6"
+	platform := "kimi_cli"
+	version := "1.10.6"
+
+	if cfg != nil {
+		if cfg.KimiHeaderDefaults.UserAgent != "" {
+			userAgent = cfg.KimiHeaderDefaults.UserAgent
+		}
+		if cfg.KimiHeaderDefaults.Platform != "" {
+			platform = cfg.KimiHeaderDefaults.Platform
+		}
+		if cfg.KimiHeaderDefaults.Version != "" {
+			version = cfg.KimiHeaderDefaults.Version
+		}
+	}
+
+	r.Header.Set("User-Agent", userAgent)
+	r.Header.Set("X-Msh-Platform", platform)
+	r.Header.Set("X-Msh-Version", version)
 	r.Header.Set("X-Msh-Device-Name", getKimiHostname())
 	r.Header.Set("X-Msh-Device-Model", getKimiDeviceModel())
 	r.Header.Set("X-Msh-Device-Id", getKimiDeviceID())
@@ -541,8 +558,8 @@ func resolveKimiDeviceID(auth *cliproxyauth.Auth) string {
 	return resolveKimiDeviceIDFromStorage(auth)
 }
 
-func applyKimiHeadersWithAuth(r *http.Request, token string, stream bool, auth *cliproxyauth.Auth) {
-	applyKimiHeaders(r, token, stream)
+func applyKimiHeadersWithAuth(r *http.Request, token string, stream bool, auth *cliproxyauth.Auth, cfg *config.Config) {
+	applyKimiHeaders(r, token, stream, cfg)
 
 	if deviceID := resolveKimiDeviceID(auth); deviceID != "" {
 		r.Header.Set("X-Msh-Device-Id", deviceID)

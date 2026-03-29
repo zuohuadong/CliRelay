@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	baseauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -64,16 +65,9 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		return "", fmt.Errorf("auth filestore: create dir failed: %w", err)
 	}
 
-	// metadataSetter is a private interface for TokenStorage implementations that support metadata injection.
-	type metadataSetter interface {
-		SetMetadata(map[string]any)
-	}
-
 	switch {
 	case auth.Storage != nil:
-		if setter, ok := auth.Storage.(metadataSetter); ok {
-			setter.SetMetadata(auth.Metadata)
-		}
+		baseauth.ApplyMetadata(auth.Storage, auth.Metadata)
 		if err = auth.Storage.SaveTokenToFile(path); err != nil {
 			return "", err
 		}

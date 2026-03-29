@@ -40,8 +40,8 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 		return
 	}
 
-	// Build name maps from config
-	keyNameMap, channelNameMap := h.buildNameMaps()
+	// Build name maps from config and auth store.
+	keyNameMap, channelNameMap, authIndexChannelMap := h.buildNameMaps()
 
 	// Enrich log items with resolved names
 	for i := range result.Items {
@@ -51,7 +51,13 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 				item.APIKeyName = name
 			}
 		}
-		// Fill in channel_name from config if not already set in the log
+		// Prefer the current auth-index derived channel name so renamed OAuth
+		// channels are reflected in logs immediately without rewriting history.
+		if name, ok := authIndexChannelMap[item.AuthIndex]; ok && strings.TrimSpace(name) != "" {
+			item.ChannelName = name
+			continue
+		}
+		// Fall back to source-based mapping when the stored log channel is empty.
 		if item.ChannelName == "" {
 			if name, ok := channelNameMap[item.Source]; ok {
 				item.ChannelName = name
@@ -77,12 +83,14 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 	})
 }
 
-// buildNameMaps builds two maps from the current config:
-//  1. keyNameMap:     user-facing api_key → display name (from SQLite api_keys table)
-//  2. channelNameMap: provider_api_key → channel name (from provider config Name fields)
-func (h *Handler) buildNameMaps() (keyNameMap, channelNameMap map[string]string) {
+// buildNameMaps builds three maps from the current config/auth store:
+//  1. keyNameMap:          user-facing api_key → display name
+//  2. channelNameMap:      source/api_key/email → channel name
+//  3. authIndexChannelMap: auth_index → current channel name
+func (h *Handler) buildNameMaps() (keyNameMap, channelNameMap, authIndexChannelMap map[string]string) {
 	keyNameMap = make(map[string]string)
 	channelNameMap = make(map[string]string)
+	authIndexChannelMap = make(map[string]string)
 
 	// User-facing API key names from SQLite
 	for _, row := range usage.ListAPIKeys() {
@@ -92,34 +100,57 @@ func (h *Handler) buildNameMaps() (keyNameMap, channelNameMap map[string]string)
 	}
 
 	cfg := h.cfg
-	if cfg == nil {
-		return
-	}
-	for _, k := range cfg.GeminiKey {
-		if k.APIKey != "" && k.Name != "" {
-			channelNameMap[k.APIKey] = k.Name
+	if cfg != nil {
+		for _, k := range cfg.GeminiKey {
+			if k.APIKey != "" && k.Name != "" {
+				channelNameMap[k.APIKey] = k.Name
+			}
 		}
-	}
-	for _, k := range cfg.ClaudeKey {
-		if k.APIKey != "" && k.Name != "" {
-			channelNameMap[k.APIKey] = k.Name
+		for _, k := range cfg.ClaudeKey {
+			if k.APIKey != "" && k.Name != "" {
+				channelNameMap[k.APIKey] = k.Name
+			}
 		}
-	}
-	for _, k := range cfg.CodexKey {
-		if k.APIKey != "" && k.Name != "" {
-			channelNameMap[k.APIKey] = k.Name
+		for _, k := range cfg.CodexKey {
+			if k.APIKey != "" && k.Name != "" {
+				channelNameMap[k.APIKey] = k.Name
+			}
 		}
-	}
-	// Vertex keys: no Name field, skip
+		// Vertex keys: no Name field, skip
 
-	// OpenAI compatibility: provider name applies to all its API keys
-	for _, provider := range cfg.OpenAICompatibility {
-		if provider.Name == "" {
-			continue
+		// OpenAI compatibility: provider name applies to all its API keys
+		for _, provider := range cfg.OpenAICompatibility {
+			if provider.Name == "" {
+				continue
+			}
+			for _, entry := range provider.APIKeyEntries {
+				if entry.APIKey != "" {
+					channelNameMap[entry.APIKey] = provider.Name
+				}
+			}
 		}
-		for _, entry := range provider.APIKeyEntries {
-			if entry.APIKey != "" {
-				channelNameMap[entry.APIKey] = provider.Name
+	}
+
+	if h.authManager != nil {
+		for _, auth := range h.authManager.List() {
+			if auth == nil {
+				continue
+			}
+			channel := strings.TrimSpace(auth.ChannelName())
+			if channel == "" {
+				continue
+			}
+			auth.EnsureIndex()
+			if idx := strings.TrimSpace(auth.Index); idx != "" {
+				authIndexChannelMap[idx] = channel
+			}
+			if accountType, account := auth.AccountInfo(); strings.EqualFold(accountType, "oauth") {
+				if source := strings.TrimSpace(account); source != "" {
+					channelNameMap[source] = channel
+				}
+			}
+			if email := strings.TrimSpace(authEmail(auth)); email != "" {
+				channelNameMap[email] = channel
 			}
 		}
 	}
@@ -335,7 +366,7 @@ func (h *Handler) GetUsageChartData(c *gin.Context) {
 		}
 		// Fallback: for older logs where api_key_name was not yet stored,
 		// enrich with display names from the current config.
-		keyNameMap, _ := h.buildNameMaps()
+		keyNameMap, _, _ := h.buildNameMaps()
 		for i := range apikeyDist {
 			if apikeyDist[i].Name == "" {
 				if name, ok := keyNameMap[apikeyDist[i].APIKey]; ok {

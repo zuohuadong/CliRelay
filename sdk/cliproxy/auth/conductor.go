@@ -472,8 +472,14 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	m.mu.Lock()
 	m.auths[auth.ID] = snapshot
 	m.mu.Unlock()
+	if err := m.persist(ctx, snapshot); err != nil {
+		m.mu.Lock()
+		delete(m.auths, auth.ID)
+		m.mu.Unlock()
+		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
+		return nil, err
+	}
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
-	_ = m.persist(ctx, snapshot)
 	m.hook.OnAuthRegistered(ctx, snapshot.Clone())
 	return snapshot.Clone(), nil
 }
@@ -483,17 +489,31 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	if auth == nil || auth.ID == "" {
 		return nil, nil
 	}
+	var previous *Auth
 	m.mu.Lock()
 	if existing, ok := m.auths[auth.ID]; ok && existing != nil && !auth.indexAssigned && auth.Index == "" {
 		auth.Index = existing.Index
 		auth.indexAssigned = existing.indexAssigned
 	}
+	if existing, ok := m.auths[auth.ID]; ok && existing != nil {
+		previous = existing.Clone()
+	}
 	auth.EnsureIndex()
 	snapshot := auth.Clone()
 	m.auths[auth.ID] = snapshot
 	m.mu.Unlock()
+	if err := m.persist(ctx, snapshot); err != nil {
+		m.mu.Lock()
+		if previous != nil {
+			m.auths[auth.ID] = previous
+		} else {
+			delete(m.auths, auth.ID)
+		}
+		m.mu.Unlock()
+		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
+		return nil, err
+	}
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
-	_ = m.persist(ctx, snapshot)
 	m.hook.OnAuthUpdated(ctx, snapshot.Clone())
 	return snapshot.Clone(), nil
 }
@@ -2412,6 +2432,9 @@ func formatOauthIdentity(auth *Auth, provider string, accountInfo string) string
 	}
 	if authFile != "" {
 		parts = append(parts, "auth_file="+authFile)
+	}
+	if channel := strings.TrimSpace(auth.ChannelName()); channel != "" && !strings.EqualFold(channel, accountInfo) {
+		parts = append(parts, "channel="+channel)
 	}
 	if len(parts) == 0 {
 		return accountInfo

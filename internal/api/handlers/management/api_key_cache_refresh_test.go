@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -40,6 +41,7 @@ func TestRefreshAPIKeyCacheUpdatesLiveAccessManager(t *testing.T) {
 
 	// Prime accessManager with the initial provider snapshot (no allowed-channels).
 	// This mirrors server bootstrap where the provider instance is captured once.
+	configaccess.Register(&cfg.SDKConfig)
 	accessManager.SetProviders(sdkaccess.RegisteredProviders())
 
 	req := httptest.NewRequest("POST", "/v1/responses", nil)
@@ -48,10 +50,11 @@ func TestRefreshAPIKeyCacheUpdatesLiveAccessManager(t *testing.T) {
 	if authErr != nil {
 		t.Fatalf("Authenticate (before refresh): %v", authErr)
 	}
-	if res != nil && res.Metadata != nil {
-		if got := res.Metadata["allowed-channels"]; got != "" {
-			t.Fatalf("expected empty allowed-channels before refresh, got %q", got)
-		}
+	if res == nil || res.Metadata == nil {
+		t.Fatalf("expected auth result before refresh")
+	}
+	if got := res.Metadata["allowed-channels"]; got != "" {
+		t.Fatalf("expected empty allowed-channels before refresh, got %q", got)
 	}
 
 	// Update the key config in SQLite (allowed-channels set).

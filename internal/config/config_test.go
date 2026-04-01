@@ -20,15 +20,15 @@ func TestLoadConfigDefaultsDisableControlPanel(t *testing.T) {
 		t.Fatalf("LoadConfig returned error: %v", err)
 	}
 
-	if !cfg.RemoteManagement.DisableControlPanel {
-		t.Fatalf("DisableControlPanel = false, want true by default")
+	if cfg.RemoteManagement.DisableControlPanel {
+		t.Fatalf("DisableControlPanel = true, want false by default")
 	}
 	if cfg.RemoteManagement.PanelGitHubRepository != DefaultPanelGitHubRepository {
 		t.Fatalf("PanelGitHubRepository = %q, want %q", cfg.RemoteManagement.PanelGitHubRepository, DefaultPanelGitHubRepository)
 	}
 }
 
-func TestSaveConfigPreserveCommentsKeepsDisableControlPanelFalse(t *testing.T) {
+func TestSaveConfigPreserveCommentsOmitsDisableControlPanelWhenDefaultFalse(t *testing.T) {
 	t.Parallel()
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
@@ -54,15 +54,15 @@ func TestSaveConfigPreserveCommentsKeepsDisableControlPanelFalse(t *testing.T) {
 	}
 
 	rendered := string(data)
-	if !strings.Contains(rendered, "disable-control-panel: false") {
-		t.Fatalf("saved config missing explicit false override:\n%s", rendered)
+	if strings.Contains(rendered, "disable-control-panel:") {
+		t.Fatalf("saved config unexpectedly persisted default disable-control-panel=false:\n%s", rendered)
 	}
 	if strings.Contains(rendered, "panel-github-repository:") {
 		t.Fatalf("saved config unexpectedly persisted default panel repository:\n%s", rendered)
 	}
 }
 
-func TestSaveConfigPreserveCommentsOmitsDisableControlPanelWhenDefaultTrue(t *testing.T) {
+func TestSaveConfigPreserveCommentsKeepsDisableControlPanelTrue(t *testing.T) {
 	t.Parallel()
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
@@ -88,7 +88,7 @@ func TestSaveConfigPreserveCommentsOmitsDisableControlPanelWhenDefaultTrue(t *te
 	}
 
 	rendered := string(data)
-	if strings.Contains(rendered, "disable-control-panel:") {
-		t.Fatalf("saved config unexpectedly persisted default disable-control-panel=true:\n%s", rendered)
+	if !strings.Contains(rendered, "disable-control-panel: true") {
+		t.Fatalf("saved config missing explicit true override:\n%s", rendered)
 	}
 }

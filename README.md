@@ -283,7 +283,7 @@ When the control panel is enabled, open:
 http://localhost:8317/manage
 ```
 
-- `remote-management.disable-control-panel` now defaults to `true` in the example config and installer-generated config, so the panel stays closed unless you intentionally enable it.
+- `remote-management.disable-control-panel` now defaults to `false` in the example config and installer-generated config, so the control panel is reachable after a standard deployment.
 - When enabled, the current panel route is `/manage/login`. The old `management.html#/login` route is legacy-only.
 - Official Docker installs and the published image expose the panel at `/manage`.
 - The server can serve a bundled SPA directory or auto-fetch panel assets when needed.

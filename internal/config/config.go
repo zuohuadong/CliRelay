@@ -607,7 +607,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
-	cfg.RemoteManagement.DisableControlPanel = true
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
@@ -1302,15 +1301,6 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 	}
 
 	fullPath := strings.Join(path, ".")
-
-	// Check bool defaults before the generic zero-value fallback. Some keys now
-	// intentionally default to true, so writing false must be preserved.
-	if node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
-		switch fullPath {
-		case "remote-management.disable-control-panel":
-			return node.Value == "true"
-		}
-	}
 
 	// Zero values remain defaults for all other paths.
 	if isZeroValueNode(node) {

@@ -463,7 +463,7 @@ redis:
 remote-management:
   allow-remote: ${CFG_REMOTE}
   secret-key: "${CFG_SECRET}"
-  disable-control-panel: true
+  disable-control-panel: false
 
 auth-dir: "/root/.cli-proxy-api"
 

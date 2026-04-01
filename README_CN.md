@@ -283,7 +283,7 @@ requires_openai_auth = true
 http://localhost:8317/manage
 ```
 
-- `remote-management.disable-control-panel` 现在在示例配置和安装脚本生成的配置里默认都是 `true`，只有显式开启后才会暴露面板。
+- `remote-management.disable-control-panel` 现在在示例配置和安装脚本生成的配置里默认都是 `false`，标准部署后即可访问控制面板。
 - 开启后当前正式路由是 `/manage/login`，`management.html#/login` 仅保留给旧版兼容链路。
 - 官方 Docker 安装和已发布镜像都会在 `/manage` 暴露控制面板。
 - 服务端既支持托管打包后的 SPA 目录，也支持在需要时自动拉取面板资源。

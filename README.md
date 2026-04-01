@@ -109,23 +109,116 @@ CliRelay lets you **proxy requests** from AI coding tools and compatible API cli
 
 ## 📸 Management Panel Preview
 
-CliRelay can expose a built-in web control panel at `/manage`. The server can host bundled SPA assets or fall back to an auto-synced `management.html` asset from the configured panel repository.
+CliRelay can expose a built-in web control panel at `/manage`. The server can host bundled SPA assets or fall back to synced management assets from the configured panel repository.
+
+The latest panel walkthrough below covers all 13 core screens now shipped in the management workflow.
+
+| Screen | What operators can do there |
+| :----- | :-------------------------- |
+| Dashboard Overview | Review KPIs, health score, system status, resource usage, throughput, and channel latency |
+| Monitor Center | Analyze model distribution, daily trends, API Key usage share, and time-range summaries |
+| Request Logs | Filter and inspect requests by time range, key, model, channel, and status |
+| Request Details | Read formatted prompt/response bodies with Markdown rendering and collapsible blocks |
+| AI Providers | Manage provider tabs, channel health, model coverage, and CRUD operations |
+| Auth Files | Inspect stored auth files, rename channels, configure prefixes/proxies, and download credentials |
+| OAuth Login | Start provider authorization and submit remote callback URLs |
+| API Keys | Control key quotas, RPM/TPM, allowed models, channel bindings, and shortcuts |
+| Model Pricing | Maintain quota-cost pricing for input, output, and cache dimensions |
+| Quota | Review remaining refresh time and quota progress across provider families |
+| Config | Edit source YAML, search config, and switch runtime/config views |
+| System | Inspect base URLs, versions, lookup links, and discovered model inventory |
+| Logs | Stream runtime logs with search, download, clear, and visibility toggles |
+
+### 1. Dashboard Overview
 
 <p align="center">
-  <img src="docs/images/dashboard.png" width="100%" />
+  <img src="docs/images/dashboard-overview.png" width="100%" />
 </p>
-<p align="center"><em>Dashboard — KPI metrics, health score, real-time system monitoring, channel latency ranking</em></p>
+<p align="center"><em>Dashboard — KPI cards, health score, live system monitor, throughput, storage, and channel latency ranking.</em></p>
+
+### 2. Monitor Center
 
 <p align="center">
-  <img src="docs/images/monitor.png" width="48%" />
-  <img src="docs/images/providers.png" width="48%" />
+  <img src="docs/images/monitor-center-zh.png" width="100%" />
 </p>
-<p align="center"><em>Monitor Center with charts & analysis | AI Provider channel management</em></p>
+<p align="center"><em>Monitor Center (Chinese locale) — request summary, model distribution, daily token/request trends, and API Key usage share.</em></p>
+
+### 3. Request Logs
 
 <p align="center">
-  <img src="docs/images/request-logs.png" width="100%" />
+  <img src="docs/images/request-logs-table.png" width="100%" />
 </p>
-<p align="center"><em>Request Logs — Virtual scrolling, multi-filter, token hover, error detail modal</em></p>
+<p align="center"><em>Request Logs — time-range switcher, multi-filter toolbar, high-density table, and success metrics at a glance.</em></p>
+
+### 4. Request Details Viewer
+
+<p align="center">
+  <img src="docs/images/request-details-modal.png" width="100%" />
+</p>
+<p align="center"><em>Request Details — input/output tabs, Markdown rendering, collapsible sections, and copy/export helpers.</em></p>
+
+### 5. AI Providers
+
+<p align="center">
+  <img src="docs/images/providers-codex.png" width="100%" />
+</p>
+<p align="center"><em>AI Providers — provider tabs, per-channel success/failure stats, model badges, latency bars, and CRUD actions.</em></p>
+
+### 6. Auth Files
+
+<p align="center">
+  <img src="docs/images/auth-files-grid.png" width="100%" />
+</p>
+<p align="center"><em>Auth Files — card-based inventory for saved credentials with model inspection, rename, proxy-prefix, download, and delete actions.</em></p>
+
+### 7. OAuth Login Workbench
+
+<p align="center">
+  <img src="docs/images/oauth-login-workbench.png" width="100%" />
+</p>
+<p align="center"><em>OAuth Login — provider-specific authorization launcher plus remote callback URL submission workflow.</em></p>
+
+### 8. API Keys Management
+
+<p align="center">
+  <img src="docs/images/api-keys-management.png" width="100%" />
+</p>
+<p align="center"><em>API Keys — quotas, RPM/TPM limits, model permissions, channel bindings, and quick analytics/edit actions.</em></p>
+
+### 9. Model Pricing
+
+<p align="center">
+  <img src="docs/images/model-pricing.png" width="100%" />
+</p>
+<p align="center"><em>Models — built-in pricing catalog for input/output/cache cost calculation and quota accounting.</em></p>
+
+### 10. Quota Management
+
+<p align="center">
+  <img src="docs/images/quota-management.png" width="100%" />
+</p>
+<p align="center"><em>Quota — remaining refresh time and progress bars for Codex, Gemini CLI, Kiro, and other provider-specific quotas.</em></p>
+
+### 11. Config Editor
+
+<p align="center">
+  <img src="docs/images/config-source-editor.png" width="100%" />
+</p>
+<p align="center"><em>Config — source editor mode with YAML search, keyboard-friendly navigation, and runtime config switching.</em></p>
+
+### 12. System Info
+
+<p align="center">
+  <img src="docs/images/system-info-models.png" width="100%" />
+</p>
+<p align="center"><em>System — API base, management endpoint, version/build metadata, API Key lookup entry, and vendor-colored model tags.</em></p>
+
+### 13. Live Logs
+
+<p align="center">
+  <img src="docs/images/live-logs.png" width="100%" />
+</p>
+<p align="center"><em>Logs — live stream viewer with keyword search, hide-management toggle, download, clear, and jump-to-latest controls.</em></p>
 
 > 🔗 The runtime panel source is configurable via `remote-management.panel-github-repository`. The default repository is [kittors/codeProxy](https://github.com/kittors/codeProxy).
 

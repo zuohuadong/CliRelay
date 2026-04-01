@@ -27,6 +27,8 @@ auths/*
 
 # Documentation
 docs/*
+!docs/images/
+!docs/images/*.png
 AGENTS.md
 CLAUDE.md
 GEMINI.md

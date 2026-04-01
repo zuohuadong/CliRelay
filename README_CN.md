@@ -109,23 +109,116 @@ CliRelay 让你可以把 AI 编程工具和兼容 API 客户端（Claude Code、
 
 ## 📸 管理面板预览
 
-CliRelay 可以在 `/manage` 暴露内置 Web 控制面板。服务端既可以托管打包后的 SPA 资源，也可以回退到自动同步的 `management.html` 单文件面板。
+CliRelay 可以在 `/manage` 暴露内置 Web 控制面板。服务端既可以托管打包后的 SPA 资源，也可以回退到同步的管理面板资源。
+
+下面这组最新截图覆盖了当前管理面板的 13 个核心页面。
+
+| 页面 | 可完成的操作 |
+| :--- | :----------- |
+| 仪表盘 | 查看 KPI、健康评分、系统状态、资源使用、吞吐和渠道延迟 |
+| 监控中心 | 分析模型分布、每日趋势、API Key 使用占比和时间范围汇总 |
+| 请求日志 | 按时间、Key、模型、渠道、状态筛选并检查请求记录 |
+| 请求详情 | 读取格式化的提示词/响应正文，支持 Markdown 渲染和折叠块 |
+| AI 供应商 | 管理服务商标签页、渠道健康状态、模型覆盖和 CRUD 操作 |
+| 认证文件 | 查看已保存 auth 文件、重命名渠道、设置前缀/代理、下载凭据 |
+| OAuth 登录 | 发起服务商授权并提交远程回调 URL |
+| API Keys | 管控 Key 配额、RPM/TPM、可用模型、渠道绑定和快捷操作 |
+| 模型管理 | 维护输入/输出/缓存价格，作为配额成本计算基础 |
+| 配额管理 | 查看各类服务商配额的剩余刷新时间和当前进度 |
+| 配置面板 | 编辑 YAML 源文件、搜索配置并切换运行时视图 |
+| 系统信息 | 查看基础地址、版本、查询链接和模型清单 |
+| 日志查询 | 实时查看运行日志，支持搜索、下载、清空和过滤开关 |
+
+### 1. 仪表盘
 
 <p align="center">
-  <img src="docs/images/dashboard.png" width="100%" />
+  <img src="docs/images/dashboard-overview.png" width="100%" />
 </p>
-<p align="center"><em>仪表盘 — KPI 指标、健康评分、实时系统监控、渠道延迟排行</em></p>
+<p align="center"><em>仪表盘 — KPI 卡片、健康评分、实时系统监控、吞吐、存储与渠道延迟排行。</em></p>
+
+### 2. 监控中心
 
 <p align="center">
-  <img src="docs/images/monitor.png" width="48%" />
-  <img src="docs/images/providers.png" width="48%" />
+  <img src="docs/images/monitor-center-zh.png" width="100%" />
 </p>
-<p align="center"><em>监控中心（图表分析） | AI 供应商渠道管理</em></p>
+<p align="center"><em>监控中心 — 请求汇总、模型分布、每日 Token/请求趋势，以及 API Key 使用占比。</em></p>
+
+### 3. 请求日志
 
 <p align="center">
-  <img src="docs/images/request-logs.png" width="100%" />
+  <img src="docs/images/request-logs-table.png" width="100%" />
 </p>
-<p align="center"><em>请求日志 — 虚拟滚动、多条件过滤、Token 悬浮、错误详情弹窗</em></p>
+<p align="center"><em>请求日志 — 时间范围切换、多条件过滤工具栏、高密度表格，以及整体成功指标。</em></p>
+
+### 4. 请求详情查看器
+
+<p align="center">
+  <img src="docs/images/request-details-modal.png" width="100%" />
+</p>
+<p align="center"><em>请求详情 — 输入/输出标签页、Markdown 渲染、折叠块，以及复制/导出辅助动作。</em></p>
+
+### 5. AI 供应商
+
+<p align="center">
+  <img src="docs/images/providers-codex.png" width="100%" />
+</p>
+<p align="center"><em>AI 供应商 — 服务商标签页、单渠道成功/失败统计、模型徽标、延迟条与 CRUD 操作。</em></p>
+
+### 6. 认证文件
+
+<p align="center">
+  <img src="docs/images/auth-files-grid.png" width="100%" />
+</p>
+<p align="center"><em>认证文件 — 卡片式凭据清单，支持模型查看、渠道命名、前缀/代理设置、下载和删除。</em></p>
+
+### 7. OAuth 登录工作台
+
+<p align="center">
+  <img src="docs/images/oauth-login-workbench.png" width="100%" />
+</p>
+<p align="center"><em>OAuth 登录 — 面向不同服务商的授权发起入口，以及远程回调 URL 提交流程。</em></p>
+
+### 8. API Keys 管理
+
+<p align="center">
+  <img src="docs/images/api-keys-management.png" width="100%" />
+</p>
+<p align="center"><em>API Keys — 配额、RPM/TPM 限制、模型权限、渠道绑定，以及快捷统计/编辑操作。</em></p>
+
+### 9. 模型价格
+
+<p align="center">
+  <img src="docs/images/model-pricing.png" width="100%" />
+</p>
+<p align="center"><em>模型管理 — 内置输入/输出/缓存价格表，用于配额成本计算与计费管理。</em></p>
+
+### 10. 配额管理
+
+<p align="center">
+  <img src="docs/images/quota-management.png" width="100%" />
+</p>
+<p align="center"><em>配额管理 — Codex、Gemini CLI、Kiro 等服务商配额的剩余刷新时间与进度条。</em></p>
+
+### 11. 配置面板
+
+<p align="center">
+  <img src="docs/images/config-source-editor.png" width="100%" />
+</p>
+<p align="center"><em>配置面板 — 源码编辑模式，支持 YAML 搜索、键盘导航和运行时配置切换。</em></p>
+
+### 12. 系统信息
+
+<p align="center">
+  <img src="docs/images/system-info-models.png" width="100%" />
+</p>
+<p align="center"><em>系统信息 — API Base、管理端点、版本/构建信息、API Key 查询入口，以及服务商着色模型标签。</em></p>
+
+### 13. 日志查询
+
+<p align="center">
+  <img src="docs/images/live-logs.png" width="100%" />
+</p>
+<p align="center"><em>日志查询 — 实时日志流查看器，支持关键词搜索、隐藏管理流量、下载、清空和跳转最新。</em></p>
 
 > 🔗 面板资源仓库可通过 `remote-management.panel-github-repository` 配置，默认仓库为 [kittors/codeProxy](https://github.com/kittors/codeProxy)。
 

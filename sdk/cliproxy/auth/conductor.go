@@ -183,6 +183,7 @@ type Manager struct {
 	// Auto refresh state
 	refreshCancel    context.CancelFunc
 	refreshSemaphore chan struct{}
+	quotaProbeAfter  map[string]time.Time
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -201,6 +202,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		auths:            make(map[string]*Auth),
 		providerOffsets:  make(map[string]int),
 		refreshSemaphore: make(chan struct{}, refreshMaxConcurrency),
+		quotaProbeAfter:  make(map[string]time.Time),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
@@ -2020,6 +2022,7 @@ func (m *Manager) checkRefreshes(ctx context.Context) {
 			go m.refreshAuthWithLimit(ctx, a.ID)
 		}
 	}
+	m.checkQuotaRecoveries(ctx, snapshot, now)
 }
 
 func (m *Manager) refreshAuthWithLimit(ctx context.Context, id string) {
@@ -2295,6 +2298,7 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 			log.Warnf("permanent refresh failure for %s (%s): %v — removing credential", auth.ID, auth.Provider, err)
 			m.mu.Lock()
 			delete(m.auths, id)
+			delete(m.quotaProbeAfter, id)
 			m.mu.Unlock()
 			if m.store != nil {
 				if delErr := m.store.Delete(ctx, id); delErr != nil {

@@ -77,6 +77,48 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 	return httpClient.Do(httpReq)
 }
 
+func (e *CodexExecutor) ProbeQuotaRecovery(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.QuotaProbeResult, error) {
+	if auth == nil {
+		return nil, fmt.Errorf("codex executor: auth is nil")
+	}
+	accountID := ""
+	if auth.Metadata != nil {
+		if v, ok := auth.Metadata["account_id"].(string); ok {
+			accountID = strings.TrimSpace(v)
+		}
+	}
+	if accountID == "" {
+		return nil, fmt.Errorf("codex executor: missing account_id")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://chatgpt.com/backend-api/wham/usage", nil)
+	if err != nil {
+		return nil, err
+	}
+	apiKey, _ := codexCreds(auth)
+	applyCodexHeaders(req, auth, apiKey, false)
+
+	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("codex executor: close quota probe body error: %v", errClose)
+		}
+	}()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, newCodexStatusErr(resp.StatusCode, body)
+	}
+	return parseCodexQuotaProbe(body), nil
+}
+
 func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	if opts.Alt == "responses/compact" {
 		return e.executeCompact(ctx, auth, req, opts)
@@ -713,6 +755,61 @@ func parseCodexRetryAfter(statusCode int, errorBody []byte, now time.Time) *time
 		return &retryAfter
 	}
 	return nil
+}
+
+func parseCodexQuotaProbe(body []byte) *cliproxyauth.QuotaProbeResult {
+	if len(body) == 0 {
+		return nil
+	}
+
+	rateLimit := gjson.GetBytes(body, "rate_limit")
+	if !rateLimit.Exists() {
+		return nil
+	}
+
+	allowed := rateLimit.Get("allowed")
+	limitReached := rateLimit.Get("limit_reached")
+	if allowed.Exists() && allowed.Bool() && (!limitReached.Exists() || !limitReached.Bool()) {
+		return &cliproxyauth.QuotaProbeResult{Recovered: true}
+	}
+
+	nextRecoverAt := time.Time{}
+	for _, path := range []string{"primary_window", "secondary_window"} {
+		window := rateLimit.Get(path)
+		if !window.Exists() {
+			continue
+		}
+		usedPercent := window.Get("used_percent")
+		if usedPercent.Exists() && usedPercent.Float() < 100 {
+			return &cliproxyauth.QuotaProbeResult{Recovered: true}
+		}
+		if resetAt := codexQuotaWindowResetAt(window, time.Now()); !resetAt.IsZero() {
+			if nextRecoverAt.IsZero() || resetAt.Before(nextRecoverAt) {
+				nextRecoverAt = resetAt
+			}
+		}
+	}
+
+	return &cliproxyauth.QuotaProbeResult{
+		Recovered:     false,
+		NextRecoverAt: nextRecoverAt,
+	}
+}
+
+func codexQuotaWindowResetAt(window gjson.Result, now time.Time) time.Time {
+	if !window.Exists() {
+		return time.Time{}
+	}
+	if resetAt := window.Get("reset_at").Int(); resetAt > 0 {
+		resetAtTime := time.Unix(resetAt, 0)
+		if resetAtTime.After(now) {
+			return resetAtTime
+		}
+	}
+	if afterSeconds := window.Get("reset_after_seconds").Int(); afterSeconds > 0 {
+		return now.Add(time.Duration(afterSeconds) * time.Second)
+	}
+	return time.Time{}
 }
 
 func codexCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {

@@ -660,13 +660,7 @@ func (h *Handler) apiCallTransport(auth *coreauth.Auth) http.RoundTripper {
 		}
 	}
 
-	transport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok || transport == nil {
-		return &http.Transport{Proxy: nil}
-	}
-	clone := transport.Clone()
-	clone.Proxy = nil
-	return clone
+	return nil
 }
 
 func buildProxyTransport(proxyStr string) *http.Transport {

@@ -7,7 +7,6 @@
 package openai
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -430,7 +429,7 @@ func (h *OpenAIAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []
 	c.Header("Content-Type", "application/json")
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, h.GetAlt(c))
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
@@ -463,14 +462,13 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 	}
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, h.GetAlt(c))
 
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
-		c.Header("Access-Control-Allow-Origin", "*")
 	}
 
 	// Peek at the first chunk to determine success or failure before setting headers
@@ -532,7 +530,7 @@ func (h *OpenAIAPIHandler) handleCompletionsNonStreamingResponse(c *gin.Context,
 	chatCompletionsJSON := convertCompletionsRequestToChatCompletions(rawJSON)
 
 	modelName := gjson.GetBytes(chatCompletionsJSON, "model").String()
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, chatCompletionsJSON, "")
 	stopKeepAlive()
@@ -571,14 +569,13 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 	chatCompletionsJSON := convertCompletionsRequestToChatCompletions(rawJSON)
 
 	modelName := gjson.GetBytes(chatCompletionsJSON, "model").String()
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, chatCompletionsJSON, "")
 
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
-		c.Header("Access-Control-Allow-Origin", "*")
 	}
 
 	// Peek at the first chunk

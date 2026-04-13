@@ -252,8 +252,8 @@ func intQueryDefault(c *gin.Context, key string, def int) int {
 	return n
 }
 
-func normalizeLogContentFormat(c *gin.Context) string {
-	format := strings.ToLower(strings.TrimSpace(c.Query("format")))
+func normalizeLogContentFormatValue(format string) string {
+	format = strings.ToLower(strings.TrimSpace(format))
 	if format == "" {
 		return "json"
 	}
@@ -265,8 +265,12 @@ func normalizeLogContentFormat(c *gin.Context) string {
 	}
 }
 
-func normalizeLogContentPartQuery(c *gin.Context) string {
-	part := strings.ToLower(strings.TrimSpace(c.Query("part")))
+func normalizeLogContentFormat(c *gin.Context) string {
+	return normalizeLogContentFormatValue(c.Query("format"))
+}
+
+func normalizeLogContentPartValue(part string) string {
+	part = strings.ToLower(strings.TrimSpace(part))
 	if part == "" {
 		return "both"
 	}
@@ -276,6 +280,10 @@ func normalizeLogContentPartQuery(c *gin.Context) string {
 	default:
 		return "both"
 	}
+}
+
+func normalizeLogContentPartQuery(c *gin.Context) string {
+	return normalizeLogContentPartValue(c.Query("part"))
 }
 
 // GetLogContent returns the stored request/response content for a single log entry.
@@ -337,19 +345,25 @@ func (h *Handler) GetLogContent(c *gin.Context) {
 // This is a public endpoint (no management key required) that strips sensitive
 // fields (source/auth_index/channel_name) before returning.
 func (h *Handler) GetPublicUsageLogs(c *gin.Context) {
-	apiKey := strings.TrimSpace(c.Query("api_key"))
+	req, status, message := readPublicLookupRequest(c)
+	if message != "" {
+		c.JSON(status, gin.H{"error": message})
+		return
+	}
+
+	apiKey := req.APIKey
 	if apiKey == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "api_key parameter is required"})
 		return
 	}
 
 	params := usage.LogQueryParams{
-		Page:   intQueryDefault(c, "page", 1),
-		Size:   intQueryDefault(c, "size", 50),
-		Days:   intQueryDefault(c, "days", 7),
+		Page:   req.Page,
+		Size:   req.Size,
+		Days:   req.Days,
 		APIKey: apiKey,
-		Model:  strings.TrimSpace(c.Query("model")),
-		Status: strings.TrimSpace(c.Query("status")),
+		Model:  req.Model,
+		Status: req.Status,
 	}
 
 	result, err := usage.QueryLogs(params)
@@ -395,13 +409,19 @@ func (h *Handler) GetPublicUsageLogs(c *gin.Context) {
 // This is a public endpoint (no management key required) that provides lightweight
 // daily series and model distribution data for rendering charts.
 func (h *Handler) GetPublicUsageChartData(c *gin.Context) {
-	apiKey := strings.TrimSpace(c.Query("api_key"))
+	req, status, message := readPublicLookupRequest(c)
+	if message != "" {
+		c.JSON(status, gin.H{"error": message})
+		return
+	}
+
+	apiKey := req.APIKey
 	if apiKey == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "api_key parameter is required"})
 		return
 	}
 
-	days := intQueryDefault(c, "days", 7)
+	days := req.Days
 
 	daily, err := usage.QueryDailySeries(apiKey, days)
 	if err != nil {
@@ -438,7 +458,13 @@ func (h *Handler) GetPublicUsageChartData(c *gin.Context) {
 // GetPublicLogContent returns the stored request/response content for a single log entry,
 // but only if it belongs to the specified API key. This is a public endpoint.
 func (h *Handler) GetPublicLogContent(c *gin.Context) {
-	apiKey := strings.TrimSpace(c.Query("api_key"))
+	req, status, message := readPublicLookupRequest(c)
+	if message != "" {
+		c.JSON(status, gin.H{"error": message})
+		return
+	}
+
+	apiKey := req.APIKey
 	if apiKey == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "api_key parameter is required"})
 		return
@@ -451,8 +477,8 @@ func (h *Handler) GetPublicLogContent(c *gin.Context) {
 		return
 	}
 
-	part := normalizeLogContentPartQuery(c)
-	format := normalizeLogContentFormat(c)
+	part := req.Part
+	format := req.Format
 
 	if format == "text" && part == "both" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "format=text requires part=input or part=output"})

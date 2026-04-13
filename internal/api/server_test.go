@@ -17,6 +17,11 @@ import (
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
+	return newTestServerWithConfig(t, nil)
+}
+
+func newTestServerWithConfig(t *testing.T, configure func(*proxyconfig.Config)) *Server {
+	t.Helper()
 
 	gin.SetMode(gin.TestMode)
 
@@ -35,6 +40,9 @@ func newTestServer(t *testing.T) *Server {
 		Debug:                  true,
 		LoggingToFile:          false,
 		UsageStatisticsEnabled: false,
+	}
+	if configure != nil {
+		configure(cfg)
 	}
 
 	authManager := auth.NewManager(nil, nil, nil)
@@ -107,5 +115,62 @@ func TestAmpProviderModelRoutes(t *testing.T) {
 				t.Fatalf("response body for %s missing %q: %s", tc.path, tc.wantContains, body)
 			}
 		})
+	}
+}
+
+func TestCORSMiddlewareRejectsUnconfiguredCrossOriginRequest(t *testing.T) {
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodOptions, "/v1/models", nil)
+	req.Header.Set("Origin", "https://evil.example")
+
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want empty", got)
+	}
+}
+
+func TestCORSMiddlewareAllowsConfiguredOrigin(t *testing.T) {
+	server := newTestServerWithConfig(t, func(cfg *proxyconfig.Config) {
+		cfg.CORSAllowOrigins = []string{"https://admin.example"}
+	})
+
+	req := httptest.NewRequest(http.MethodOptions, "/v1/models", nil)
+	req.Header.Set("Origin", "https://admin.example")
+
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "https://admin.example" {
+		t.Fatalf("Access-Control-Allow-Origin = %q", got)
+	}
+}
+
+func TestManagementRemoteRestrictionIgnoresForgedForwardedFor(t *testing.T) {
+	server := newTestServerWithConfig(t, func(cfg *proxyconfig.Config) {
+		cfg.RemoteManagement.SecretKey = "test-secret"
+		cfg.RemoteManagement.AllowRemote = false
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
+	req.RemoteAddr = "203.0.113.10:4321"
+	req.Header.Set("X-Forwarded-For", "127.0.0.1")
+
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "remote management disabled") {
+		t.Fatalf("expected remote management disabled response, got %s", rr.Body.String())
 	}
 }

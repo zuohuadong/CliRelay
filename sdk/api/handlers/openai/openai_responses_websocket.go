@@ -117,7 +117,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			allowIncrementalInputWithPreviousResponseID,
 		)
 		if errMsg != nil {
-			h.LoggingAPIResponseError(context.WithValue(context.Background(), util.ContextKeyGin, c), errMsg)
+			h.LoggingAPIResponseError(context.WithValue(c.Request.Context(), util.ContextKeyGin, c), errMsg)
 			markAPIResponseTimestamp(c)
 			errorPayload, errWrite := writeResponsesWebsocketError(conn, errMsg)
 			appendWebsocketEvent(&wsBodyLog, "response", errorPayload)
@@ -142,7 +142,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		lastRequest = updatedLastRequest
 
 		modelName := gjson.GetBytes(requestJSON, "model").String()
-		cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+		cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 		cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
 		cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
 		if pinnedAuthID != "" {
@@ -401,7 +401,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				continue
 			}
 			if errMsg != nil {
-				h.LoggingAPIResponseError(context.WithValue(context.Background(), util.ContextKeyGin, c), errMsg)
+				h.LoggingAPIResponseError(context.WithValue(c.Request.Context(), util.ContextKeyGin, c), errMsg)
 				markAPIResponseTimestamp(c)
 				errorPayload, errWrite := writeResponsesWebsocketError(conn, errMsg)
 				appendWebsocketEvent(wsBodyLog, "response", errorPayload)
@@ -436,7 +436,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						StatusCode: http.StatusRequestTimeout,
 						Error:      fmt.Errorf("stream closed before response.completed"),
 					}
-					h.LoggingAPIResponseError(context.WithValue(context.Background(), util.ContextKeyGin, c), errMsg)
+					h.LoggingAPIResponseError(context.WithValue(c.Request.Context(), util.ContextKeyGin, c), errMsg)
 					markAPIResponseTimestamp(c)
 					errorPayload, errWrite := writeResponsesWebsocketError(conn, errMsg)
 					appendWebsocketEvent(wsBodyLog, "response", errorPayload)

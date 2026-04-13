@@ -186,6 +186,10 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
+
+	publicLookupRateMu          sync.Mutex
+	publicLookupRate            map[string]publicLookupRateLimitEntry
+	publicLookupRateLastCleanup time.Time
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -212,6 +216,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create gin engine
 	engine := gin.New()
+	if err := engine.SetTrustedProxies(nil); err != nil {
+		log.Warnf("failed to disable trusted proxies: %v", err)
+	}
 	if optionState.engineConfigurator != nil {
 		optionState.engineConfigurator(engine)
 	}
@@ -239,7 +246,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		}
 	}
 
-	engine.Use(corsMiddleware())
+	engine.Use(corsMiddleware(cfg))
 	engine.Use(versionHeaderMiddleware())
 	wd, err := os.Getwd()
 	if err != nil {
@@ -319,8 +326,12 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create HTTP server
 	s.server = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Handler: engine,
+		Addr:              fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Handler:           engine,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	return s
@@ -680,12 +691,16 @@ func (s *Server) registerManagementRoutes() {
 
 	// Public endpoints - no management key required
 	pub := s.engine.Group("/v0/management/public")
-	pub.Use(s.managementAvailabilityMiddleware())
+	pub.Use(s.managementAvailabilityMiddleware(), publicLookupNoStoreMiddleware(), s.publicLookupRateLimitMiddleware())
 	{
 		pub.GET("/usage", s.mgmt.GetPublicUsageByAPIKey)
+		pub.POST("/usage", s.mgmt.GetPublicUsageByAPIKey)
 		pub.GET("/usage/logs", s.mgmt.GetPublicUsageLogs)
+		pub.POST("/usage/logs", s.mgmt.GetPublicUsageLogs)
 		pub.GET("/usage/logs/:id/content", s.mgmt.GetPublicLogContent)
+		pub.POST("/usage/logs/:id/content", s.mgmt.GetPublicLogContent)
 		pub.GET("/usage/chart-data", s.mgmt.GetPublicUsageChartData)
+		pub.POST("/usage/chart-data", s.mgmt.GetPublicUsageChartData)
 	}
 }
 
@@ -1142,7 +1157,7 @@ func (s *Server) Stop(ctx context.Context) error {
 //
 // Returns:
 //   - gin.HandlerFunc: The CORS middleware handler
-func corsMiddleware() gin.HandlerFunc {
+func corsMiddleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Management APIs and the embedded panel should not be callable cross-origin by default.
 		// The panel is served from the same origin, so it does not need wildcard CORS.
@@ -1154,9 +1169,30 @@ func corsMiddleware() gin.HandlerFunc {
 			}
 		}
 
-		c.Header("Access-Control-Allow-Origin", "*")
+		origin := ""
+		if c != nil && c.Request != nil {
+			origin = strings.TrimSpace(c.Request.Header.Get("Origin"))
+		}
+		if origin == "" {
+			if c.Request.Method == http.MethodOptions {
+				c.AbortWithStatus(http.StatusNoContent)
+				return
+			}
+			c.Next()
+			return
+		}
+
+		allowedOrigin := resolveAllowedCORSOrigin(c.Request, cfg)
+		if allowedOrigin == "" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "origin not allowed"})
+			return
+		}
+
+		c.Header("Vary", "Origin")
+		c.Header("Access-Control-Allow-Origin", allowedOrigin)
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "*")
+		c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Origin")
+		c.Header("Access-Control-Expose-Headers", "X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -1165,6 +1201,36 @@ func corsMiddleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+func resolveAllowedCORSOrigin(r *http.Request, cfg *config.Config) string {
+	if r == nil {
+		return ""
+	}
+
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return ""
+	}
+
+	if util.WebsocketOriginAllowed(&http.Request{
+		Header: http.Header{"Origin": []string{origin}, "X-Forwarded-Host": r.Header.Values("X-Forwarded-Host")},
+		Host:   r.Host,
+	}) {
+		return origin
+	}
+
+	if cfg == nil {
+		return ""
+	}
+
+	for _, candidate := range cfg.CORSAllowOrigins {
+		if strings.EqualFold(strings.TrimSpace(candidate), origin) {
+			return origin
+		}
+	}
+
+	return ""
 }
 
 // versionHeaderMiddleware returns a Gin middleware handler that adds version

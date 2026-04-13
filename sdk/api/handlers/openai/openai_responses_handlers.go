@@ -8,7 +8,6 @@ package openai
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"net/http"
 
@@ -122,7 +121,7 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 
 	c.Header("Content-Type", "application/json")
 	modelName := gjson.GetBytes(rawJSON, "model").String()
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "responses/compact")
 	stopKeepAlive()
@@ -147,7 +146,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 	c.Header("Content-Type", "application/json")
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
@@ -184,14 +183,13 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 
 	// New core execution path
 	modelName := gjson.GetBytes(rawJSON, "model").String()
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
-		c.Header("Access-Control-Allow-Origin", "*")
 	}
 
 	// Peek at the first chunk

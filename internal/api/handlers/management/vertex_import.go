@@ -23,9 +23,21 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 		return
 	}
 
+	if c.Request != nil && c.Request.Body != nil && c.Writer != nil {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, bodyutil.VertexCredentialBodyLimit+(64<<10))
+	}
+
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
+		if bodyutil.IsTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file required"})
+		return
+	}
+	if fileHeader.Size > bodyutil.VertexCredentialBodyLimit {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
 		return
 	}
 

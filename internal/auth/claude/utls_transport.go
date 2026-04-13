@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	tls "github.com/refraction-networking/utls"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
@@ -159,7 +160,7 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 // for Anthropic domains by using utls with Firefox fingerprint.
 // It accepts optional SDK configuration for proxy settings.
 func NewAnthropicHttpClient(cfg *config.SDKConfig) *http.Client {
-	return &http.Client{
-		Transport: newUtlsRoundTripper(cfg),
-	}
+	client := util.NewHTTPClient(util.DefaultHTTPClientTimeout)
+	client.Transport = newUtlsRoundTripper(cfg)
+	return client
 }

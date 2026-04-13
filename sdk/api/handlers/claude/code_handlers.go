@@ -9,7 +9,6 @@ package claude
 import (
 	"bytes"
 	"compress/gzip"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -108,7 +107,7 @@ func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 	c.Header("Content-Type", "application/json")
 
 	alt := h.GetAlt(c)
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 
@@ -161,7 +160,7 @@ func (h *ClaudeCodeAPIHandler) ClaudeModels(c *gin.Context) {
 func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []byte) {
 	c.Header("Content-Type", "application/json")
 	alt := h.GetAlt(c)
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
@@ -225,14 +224,13 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 
 	// Create a cancellable context for the backend client request
 	// This allows proper cleanup and cancellation of ongoing requests
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
-		c.Header("Access-Control-Allow-Origin", "*")
 	}
 
 	// Peek at the first chunk to determine success or failure before setting headers

@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
@@ -177,9 +178,7 @@ func (h *Handler) APICall(c *gin.Context) {
 		req.Host = hostOverride
 	}
 
-	httpClient := &http.Client{
-		Timeout: defaultAPICallTimeout,
-	}
+	httpClient := util.NewHTTPClient(defaultAPICallTimeout)
 	httpClient.Transport = h.apiCallTransport(auth)
 
 	resp, errDo := httpClient.Do(req)
@@ -318,10 +317,8 @@ func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *corea
 	}
 
 	ctxToken := ctx
-	httpClient := &http.Client{
-		Timeout:   defaultAPICallTimeout,
-		Transport: h.apiCallTransport(auth),
-	}
+	httpClient := util.NewHTTPClient(defaultAPICallTimeout)
+	httpClient.Transport = h.apiCallTransport(auth)
 	ctxToken = context.WithValue(ctxToken, oauth2.HTTPClient, httpClient)
 
 	src := conf.TokenSource(ctxToken, &token)
@@ -385,10 +382,8 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	httpClient := &http.Client{
-		Timeout:   defaultAPICallTimeout,
-		Transport: h.apiCallTransport(auth),
-	}
+	httpClient := util.NewHTTPClient(defaultAPICallTimeout)
+	httpClient.Transport = h.apiCallTransport(auth)
 	resp, errDo := httpClient.Do(req)
 	if errDo != nil {
 		return "", errDo

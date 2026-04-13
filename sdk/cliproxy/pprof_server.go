@@ -3,6 +3,7 @@ package cliproxy
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"strings"
@@ -49,6 +50,7 @@ func (p *pprofServer) Apply(cfg *config.Config) {
 	if addr == "" {
 		addr = config.DefaultPprofAddr
 	}
+	addr = sanitizePprofAddr(addr, cfg.Pprof.AllowRemote)
 	enabled := cfg.Pprof.Enable
 
 	p.mu.Lock()
@@ -160,4 +162,35 @@ func newPprofMux() *http.ServeMux {
 	mux.Handle("/debug/pprof/mutex", pprof.Handler("mutex"))
 	mux.Handle("/debug/pprof/threadcreate", pprof.Handler("threadcreate"))
 	return mux
+}
+
+func sanitizePprofAddr(addr string, allowRemote bool) string {
+	trimmed := strings.TrimSpace(addr)
+	if trimmed == "" {
+		return config.DefaultPprofAddr
+	}
+	if allowRemote {
+		return trimmed
+	}
+
+	host, port, err := net.SplitHostPort(trimmed)
+	if err != nil {
+		// Handle addresses like ":8316"
+		if strings.HasPrefix(trimmed, ":") {
+			return "127.0.0.1" + trimmed
+		}
+		return config.DefaultPprofAddr
+	}
+
+	host = strings.TrimSpace(host)
+	switch host {
+	case "", "127.0.0.1", "::1", "localhost":
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		return net.JoinHostPort(host, port)
+	default:
+		log.Warnf("pprof remote bind %q requested without allow-remote; forcing loopback", trimmed)
+		return net.JoinHostPort("127.0.0.1", port)
+	}
 }

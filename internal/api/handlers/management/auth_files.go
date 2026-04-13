@@ -519,7 +519,7 @@ func (h *Handler) DownloadAuthFile(c *gin.Context) {
 		return
 	}
 	full := filepath.Join(h.cfg.AuthDir, name)
-	data, err := os.ReadFile(full)
+	_, err := os.Stat(full)
 	if err != nil {
 		if os.IsNotExist(err) {
 			c.JSON(404, gin.H{"error": "file not found"})
@@ -528,8 +528,7 @@ func (h *Handler) DownloadAuthFile(c *gin.Context) {
 		}
 		return
 	}
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", name))
-	c.Data(200, "application/json", data)
+	c.FileAttachment(full, name)
 }
 
 // Upload auth file: multipart or raw JSON with ?name=
@@ -539,7 +538,24 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	if file, err := c.FormFile("file"); err == nil && file != nil {
+	if c.Request != nil && c.Request.Body != nil && c.Writer != nil {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, bodyutil.AuthFileBodyLimit+(64<<10))
+	}
+	contentType := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Type")))
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		file, err := c.FormFile("file")
+		if err != nil {
+			if bodyutil.IsTooLarge(err) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+				return
+			}
+			c.JSON(http.StatusBadRequest, gin.H{"error": "file required"})
+			return
+		}
+		if file.Size > bodyutil.AuthFileBodyLimit {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+			return
+		}
 		name := filepath.Base(file.Filename)
 		if !strings.HasSuffix(strings.ToLower(name), ".json") {
 			c.JSON(400, gin.H{"error": "file must be .json"})
@@ -1128,7 +1144,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 
 func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 	ctx := detachedAuthContext(c)
-	proxyHTTPClient := util.SetProxy(&h.cfg.SDKConfig, &http.Client{})
+	proxyHTTPClient := util.SetProxy(&h.cfg.SDKConfig, util.NewHTTPClient(util.DefaultHTTPClientTimeout))
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, proxyHTTPClient)
 
 	// Optional project ID from query

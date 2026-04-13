@@ -6,7 +6,6 @@ package gemini
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -82,7 +81,7 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 			req.Header[key] = value
 		}
 
-		httpClient := util.SetProxy(h.Cfg, &http.Client{})
+		httpClient := util.SetProxy(h.Cfg, util.NewHTTPClient(util.DefaultHTTPClientTimeout))
 
 		resp, err := httpClient.Do(req)
 		if err != nil {
@@ -140,7 +139,6 @@ func (h *GeminiCLIAPIHandler) handleInternalStreamGenerateContent(c *gin.Context
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
-		c.Header("Access-Control-Allow-Origin", "*")
 	}
 
 	// Get the http.Flusher interface to manually flush the response.
@@ -158,7 +156,7 @@ func (h *GeminiCLIAPIHandler) handleInternalStreamGenerateContent(c *gin.Context
 	modelResult := gjson.GetBytes(rawJSON, "model")
 	modelName := modelResult.String()
 
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	h.forwardCLIStream(c, flusher, "", func(err error) { cliCancel(err) }, dataChan, errChan)
@@ -171,7 +169,7 @@ func (h *GeminiCLIAPIHandler) handleInternalGenerateContent(c *gin.Context, rawJ
 	modelResult := gjson.GetBytes(rawJSON, "model")
 	modelName := modelResult.String()
 
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)

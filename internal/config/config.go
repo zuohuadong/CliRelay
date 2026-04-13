@@ -43,6 +43,10 @@ type Config struct {
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 
+	// CORSAllowOrigins defines the explicit browser origins allowed to call API routes cross-origin.
+	// Leave empty to disable cross-origin browser access by default.
+	CORSAllowOrigins []string `yaml:"cors-allow-origins" json:"cors-allow-origins"`
+
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
 
@@ -179,6 +183,8 @@ type PprofConfig struct {
 	Enable bool `yaml:"enable" json:"enable"`
 	// Addr is the host:port address for the pprof HTTP server.
 	Addr string `yaml:"addr" json:"addr"`
+	// AllowRemote permits binding pprof to non-loopback addresses.
+	AllowRemote bool `yaml:"allow-remote" json:"allow-remote"`
 }
 
 // RemoteManagement holds management API configuration under 'remote-management'.

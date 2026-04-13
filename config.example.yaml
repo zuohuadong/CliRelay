@@ -34,6 +34,14 @@ tls:
   cert: ""
   key: ""
 
+# Explicit browser origins allowed to call API routes cross-origin.
+# Leave empty to disable cross-origin browser access by default.
+# Examples:
+# cors-allow-origins:
+#   - "https://admin.example.com"
+#   - "http://localhost:5173"
+cors-allow-origins: []
+
 # Management API settings
 remote-management:
   # Whether to allow remote (non-localhost) management access.
@@ -71,6 +79,7 @@ debug: false
 pprof:
   enable: false
   addr: "127.0.0.1:8316"
+  allow-remote: false
 
 # When true, disable high-overhead HTTP middleware features to reduce per-request memory usage under high concurrency.
 commercial-mode: false

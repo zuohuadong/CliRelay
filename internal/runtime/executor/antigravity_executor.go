@@ -1228,11 +1228,12 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 	if accessToken != "" && expiry.After(time.Now().Add(refreshSkew)) {
 		return accessToken, nil, nil
 	}
-	refreshCtx := context.Background()
-	if ctx != nil {
-		if rt, ok := ctx.Value(util.ContextKeyRoundTripper).(http.RoundTripper); ok && rt != nil {
-			refreshCtx = context.WithValue(refreshCtx, util.ContextKeyRoundTripper, rt)
-		}
+	// Token refresh is part of the active request path, so request cancellation
+	// should propagate through the refresh call. Callers that intentionally need
+	// detachment can pass context.WithoutCancel(ctx) themselves.
+	refreshCtx := ctx
+	if refreshCtx == nil {
+		refreshCtx = context.Background()
 	}
 	updated, errRefresh := e.refreshToken(refreshCtx, auth.Clone())
 	if errRefresh != nil {

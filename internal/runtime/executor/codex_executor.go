@@ -95,7 +95,7 @@ func (e *CodexExecutor) ProbeQuotaRecovery(ctx context.Context, auth *cliproxyau
 		return nil, err
 	}
 	apiKey, _ := codexCreds(auth)
-	applyCodexHeaders(req, auth, apiKey, false)
+	applyCodexHeaders(req, e.cfg, auth, apiKey, false)
 
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	resp, err := httpClient.Do(req)
@@ -166,7 +166,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if err != nil {
 		return resp, err
 	}
-	applyCodexHeaders(httpReq, auth, apiKey, true)
+	applyCodexHeaders(httpReq, e.cfg, auth, apiKey, true)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -272,7 +272,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	if err != nil {
 		return resp, err
 	}
-	applyCodexHeaders(httpReq, auth, apiKey, false)
+	applyCodexHeaders(httpReq, e.cfg, auth, apiKey, false)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -370,7 +370,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if err != nil {
 		return nil, err
 	}
-	applyCodexHeaders(httpReq, auth, apiKey, true)
+	applyCodexHeaders(httpReq, e.cfg, auth, apiKey, true)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -686,7 +686,7 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	return httpReq, nil
 }
 
-func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool) {
+func applyCodexHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Auth, token string, stream bool) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
 
@@ -695,9 +695,14 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 		ginHeaders = ginCtx.Request.Header
 	}
 
-	misc.EnsureHeader(r.Header, ginHeaders, "Version", codexClientVersion)
-	misc.EnsureHeader(r.Header, ginHeaders, "Session_id", uuid.NewString())
-	misc.EnsureHeader(r.Header, ginHeaders, "User-Agent", codexUserAgent)
+	fp, fingerprintEnabled := codexIdentityFingerprint(cfg)
+	if fingerprintEnabled {
+		applyCodexIdentityFingerprintHeaders(r.Header, fp, false)
+	} else {
+		misc.EnsureHeader(r.Header, ginHeaders, "Version", codexClientVersion)
+		misc.EnsureHeader(r.Header, ginHeaders, "Session_id", uuid.NewString())
+		misc.EnsureHeader(r.Header, ginHeaders, "User-Agent", codexUserAgent)
+	}
 
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
@@ -713,7 +718,11 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 		}
 	}
 	if !isAPIKey {
-		r.Header.Set("Originator", "codex_cli_rs")
+		if fingerprintEnabled {
+			r.Header.Set("Originator", fp.Originator)
+		} else {
+			r.Header.Set("Originator", "codex_cli_rs")
+		}
 		if auth != nil && auth.Metadata != nil {
 			if accountID, ok := auth.Metadata["account_id"].(string); ok {
 				r.Header.Set("Chatgpt-Account-Id", accountID)
@@ -725,6 +734,12 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+	if fingerprintEnabled {
+		applyCodexIdentityFingerprintHeaders(r.Header, fp, false)
+		if !isAPIKey {
+			r.Header.Set("Originator", fp.Originator)
+		}
+	}
 }
 
 func newCodexStatusErr(statusCode int, body []byte) statusErr {

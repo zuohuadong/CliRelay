@@ -114,6 +114,9 @@ type Config struct {
 	// These control how requests appear in the Kimi console (e.g., User-Agent as source).
 	KimiHeaderDefaults KimiHeaderDefaults `yaml:"kimi-header-defaults" json:"kimi-header-defaults"`
 
+	// IdentityFingerprint controls provider-specific upstream identity headers.
+	IdentityFingerprint IdentityFingerprintConfig `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
@@ -157,6 +160,44 @@ type KimiHeaderDefaults struct {
 	UserAgent string `yaml:"user-agent" json:"user-agent"`
 	Platform  string `yaml:"platform" json:"platform"`
 	Version   string `yaml:"version" json:"version"`
+}
+
+const (
+	DefaultCodexFingerprintUserAgent     = "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"
+	DefaultCodexFingerprintVersion       = "0.101.0"
+	DefaultCodexFingerprintOriginator    = "codex_cli_rs"
+	DefaultCodexFingerprintWebsocketBeta = "responses_websockets=2026-02-04"
+	DefaultCodexFingerprintSessionMode   = "server-stable"
+)
+
+// IdentityFingerprintConfig groups provider-specific upstream identity settings.
+type IdentityFingerprintConfig struct {
+	Codex CodexIdentityFingerprintConfig `yaml:"codex,omitempty" json:"codex,omitempty"`
+}
+
+// CodexIdentityFingerprintConfig configures Codex upstream identity headers.
+type CodexIdentityFingerprintConfig struct {
+	Enabled       bool              `yaml:"enabled" json:"enabled"`
+	UserAgent     string            `yaml:"user-agent,omitempty" json:"user-agent,omitempty"`
+	Version       string            `yaml:"version,omitempty" json:"version,omitempty"`
+	Originator    string            `yaml:"originator,omitempty" json:"originator,omitempty"`
+	WebsocketBeta string            `yaml:"websocket-beta,omitempty" json:"websocket-beta,omitempty"`
+	SessionMode   string            `yaml:"session-mode,omitempty" json:"session-mode,omitempty"`
+	SessionID     string            `yaml:"session-id,omitempty" json:"session-id,omitempty"`
+	CustomHeaders map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
+}
+
+// DefaultCodexIdentityFingerprint returns the recommended Codex identity template.
+func DefaultCodexIdentityFingerprint() CodexIdentityFingerprintConfig {
+	return CodexIdentityFingerprintConfig{
+		Enabled:       false,
+		UserAgent:     DefaultCodexFingerprintUserAgent,
+		Version:       DefaultCodexFingerprintVersion,
+		Originator:    DefaultCodexFingerprintOriginator,
+		WebsocketBeta: DefaultCodexFingerprintWebsocketBeta,
+		SessionMode:   DefaultCodexFingerprintSessionMode,
+		CustomHeaders: map[string]string{},
+	}
 }
 
 // RedisConfig holds the configuration for connecting to a Redis instance for data persistence.
@@ -702,6 +743,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Sanitize Claude key headers
 	cfg.SanitizeClaudeKeys()
+
+	// Normalize provider identity fingerprints.
+	cfg.SanitizeIdentityFingerprint()
 
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()

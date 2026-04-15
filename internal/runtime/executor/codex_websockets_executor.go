@@ -194,7 +194,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 
 	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
-	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey)
+	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, e.cfg, auth, apiKey)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -399,7 +399,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
-	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey)
+	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, e.cfg, auth, apiKey)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -843,7 +843,7 @@ func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecuto
 	return rawJSON, headers
 }
 
-func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *cliproxyauth.Auth, token string) http.Header {
+func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, cfg *config.Config, auth *cliproxyauth.Auth, token string) http.Header {
 	if headers == nil {
 		headers = http.Header{}
 	}
@@ -856,22 +856,27 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		ginHeaders = ginCtx.Request.Header
 	}
 
-	misc.EnsureHeader(headers, ginHeaders, "x-codex-beta-features", "")
-	misc.EnsureHeader(headers, ginHeaders, "x-codex-turn-state", "")
-	misc.EnsureHeader(headers, ginHeaders, "x-codex-turn-metadata", "")
-	misc.EnsureHeader(headers, ginHeaders, "x-responsesapi-include-timing-metrics", "")
+	fp, fingerprintEnabled := codexIdentityFingerprint(cfg)
+	if fingerprintEnabled {
+		applyCodexIdentityFingerprintHeaders(headers, fp, true)
+	} else {
+		misc.EnsureHeader(headers, ginHeaders, "x-codex-beta-features", "")
+		misc.EnsureHeader(headers, ginHeaders, "x-codex-turn-state", "")
+		misc.EnsureHeader(headers, ginHeaders, "x-codex-turn-metadata", "")
+		misc.EnsureHeader(headers, ginHeaders, "x-responsesapi-include-timing-metrics", "")
 
-	misc.EnsureHeader(headers, ginHeaders, "Version", codexClientVersion)
-	betaHeader := strings.TrimSpace(headers.Get("OpenAI-Beta"))
-	if betaHeader == "" && ginHeaders != nil {
-		betaHeader = strings.TrimSpace(ginHeaders.Get("OpenAI-Beta"))
+		misc.EnsureHeader(headers, ginHeaders, "Version", codexClientVersion)
+		betaHeader := strings.TrimSpace(headers.Get("OpenAI-Beta"))
+		if betaHeader == "" && ginHeaders != nil {
+			betaHeader = strings.TrimSpace(ginHeaders.Get("OpenAI-Beta"))
+		}
+		if betaHeader == "" || !strings.Contains(betaHeader, "responses_websockets=") {
+			betaHeader = codexResponsesWebsocketBetaHeaderValue
+		}
+		headers.Set("OpenAI-Beta", betaHeader)
+		misc.EnsureHeader(headers, ginHeaders, "Session_id", uuid.NewString())
+		misc.EnsureHeader(headers, ginHeaders, "User-Agent", codexUserAgent)
 	}
-	if betaHeader == "" || !strings.Contains(betaHeader, "responses_websockets=") {
-		betaHeader = codexResponsesWebsocketBetaHeaderValue
-	}
-	headers.Set("OpenAI-Beta", betaHeader)
-	misc.EnsureHeader(headers, ginHeaders, "Session_id", uuid.NewString())
-	misc.EnsureHeader(headers, ginHeaders, "User-Agent", codexUserAgent)
 
 	isAPIKey := false
 	if auth != nil && auth.Attributes != nil {
@@ -880,7 +885,11 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		}
 	}
 	if !isAPIKey {
-		headers.Set("Originator", "codex_cli_rs")
+		if fingerprintEnabled {
+			headers.Set("Originator", fp.Originator)
+		} else {
+			headers.Set("Originator", "codex_cli_rs")
+		}
 		if auth != nil && auth.Metadata != nil {
 			if accountID, ok := auth.Metadata["account_id"].(string); ok {
 				if trimmed := strings.TrimSpace(accountID); trimmed != "" {
@@ -895,6 +904,12 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: headers}, attrs)
+	if fingerprintEnabled {
+		applyCodexIdentityFingerprintHeaders(headers, fp, true)
+		if !isAPIKey {
+			headers.Set("Originator", fp.Originator)
+		}
+	}
 
 	return headers
 }

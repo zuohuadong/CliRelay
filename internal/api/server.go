@@ -596,6 +596,8 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/channel-groups", s.mgmt.GetChannelGroups)
 		mgmt.GET("/routing-config", s.mgmt.GetRoutingConfig)
 		mgmt.PUT("/routing-config", s.mgmt.PutRoutingConfig)
+		mgmt.GET("/identity-fingerprint", s.mgmt.GetIdentityFingerprint)
+		mgmt.PUT("/identity-fingerprint", s.mgmt.PutIdentityFingerprint)
 		mgmt.GET("/model-pricing", s.mgmt.GetModelPricing)
 		mgmt.PUT("/model-pricing", s.mgmt.PutModelPricing)
 		mgmt.GET("/usage", s.mgmt.GetUsageStatistics)

@@ -699,16 +699,33 @@ func (h *Handler) authIDForPath(path string) string {
 		return ""
 	}
 	if h == nil || h.cfg == nil {
-		return path
+		return filepath.Clean(path)
 	}
-	authDir := strings.TrimSpace(h.cfg.AuthDir)
-	if authDir == "" {
-		return path
+	authDir, errResolve := util.ResolveAuthDir(h.cfg.AuthDir)
+	if errResolve != nil || strings.TrimSpace(authDir) == "" {
+		return filepath.Clean(path)
 	}
-	if rel, err := filepath.Rel(authDir, path); err == nil && rel != "" {
+	if !filepath.IsAbs(authDir) {
+		if abs, errAbs := filepath.Abs(authDir); errAbs == nil {
+			authDir = abs
+		}
+	}
+	if evaluated, errEval := filepath.EvalSymlinks(authDir); errEval == nil {
+		authDir = evaluated
+	}
+	normalizedPath := filepath.Clean(path)
+	if !filepath.IsAbs(normalizedPath) {
+		if abs, errAbs := filepath.Abs(normalizedPath); errAbs == nil {
+			normalizedPath = abs
+		}
+	}
+	if evaluated, errEval := filepath.EvalSymlinks(normalizedPath); errEval == nil {
+		normalizedPath = evaluated
+	}
+	if rel, err := filepath.Rel(authDir, normalizedPath); err == nil && rel != "" && rel != "." && !strings.HasPrefix(rel, "..") {
 		return rel
 	}
-	return path
+	return normalizedPath
 }
 
 func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []byte) error {
@@ -2510,6 +2527,10 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 
 	_, status, ok := GetOAuthSession(state)
 	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return
+	}
+	if status == oauthSessionStatusCompleted {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		return
 	}

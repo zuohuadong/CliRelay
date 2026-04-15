@@ -1,11 +1,16 @@
 package handlers
 
 import (
+	"context"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
@@ -100,7 +105,7 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			providers, model, errMsg := handler.getRequestDetails(tt.inputModel)
+			providers, model, errMsg := handler.getRequestDetails(context.Background(), tt.inputModel)
 			if (errMsg != nil) != tt.wantErr {
 				t.Fatalf("getRequestDetails() error = %v, wantErr %v", errMsg, tt.wantErr)
 			}
@@ -114,5 +119,55 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 				t.Fatalf("getRequestDetails() model = %v, want %v", model, tt.wantModel)
 			}
 		})
+	}
+}
+
+func TestGetRequestDetails_AllowedGroupResolvesPrefixedModelProvider(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	modelRegistry := registry.GetGlobalRegistry()
+	now := time.Now().Unix()
+	modelRegistry.RegisterClient("test-request-details-pro", "openai", []*registry.ModelInfo{
+		{ID: "pro/gpt-5", Created: now},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient("test-request-details-pro")
+	})
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Set("accessMetadata", map[string]string{"allowed-channel-groups": "pro"})
+	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
+
+	providers, model, errMsg := handler.getRequestDetails(ctx, "gpt-5")
+	if errMsg != nil {
+		t.Fatalf("getRequestDetails() unexpected error = %v", errMsg)
+	}
+	if !reflect.DeepEqual(providers, []string{"openai"}) {
+		t.Fatalf("providers = %v, want [openai]", providers)
+	}
+	if model != "gpt-5" {
+		t.Fatalf("model = %q, want gpt-5", model)
+	}
+}
+
+func TestGetRequestDetails_RouteGroupRejectsConflictingModelPrefix(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Set(internalrouting.GinPathRouteContextKey, &internalrouting.PathRouteContext{
+		RoutePath: "/pro",
+		Group:     "pro",
+		Fallback:  "none",
+	})
+	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
+
+	_, _, errMsg := handler.getRequestDetails(ctx, "free/gpt-5")
+	if errMsg == nil {
+		t.Fatal("expected model_prefix_conflict error")
+	}
+	if errMsg.StatusCode != 400 {
+		t.Fatalf("status = %d, want 400", errMsg.StatusCode)
 	}
 }

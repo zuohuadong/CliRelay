@@ -12,6 +12,7 @@ import (
 	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 // refreshAPIKeyCache rebuilds the in-memory access provider cache from SQLite.
@@ -230,14 +231,38 @@ func (h *Handler) PutAPIKeyEntries(c *gin.Context) {
 		arr = obj.Items
 	}
 	var rows []usage.APIKeyRow
+	var auths []*coreauth.Auth
+	if h != nil && h.authManager != nil {
+		auths = h.authManager.List()
+	}
+	routingCfg := config.RoutingConfig{}
+	if h != nil && h.cfg != nil {
+		routingCfg = h.cfg.Routing
+	}
 	for _, entry := range arr {
 		entry.AllowedChannels = uniqueChannels(entry.AllowedChannels)
+		entry.AllowedChannelGroups = uniqueChannelGroups(entry.AllowedChannelGroups)
 		validated, errValidate := h.validateAllowedChannels(entry.AllowedChannels)
 		if errValidate != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": errValidate.Error()})
 			return
 		}
 		entry.AllowedChannels = validated
+		validatedGroups, errValidate := h.validateAllowedChannelGroups(entry.AllowedChannelGroups)
+		if errValidate != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errValidate.Error()})
+			return
+		}
+		entry.AllowedChannelGroups = validatedGroups
+		if errValidate := validateRoutingAndAPIKeyRestrictions(&config.Config{
+			SDKConfig: config.SDKConfig{
+				APIKeyEntries: []config.APIKeyEntry{entry},
+			},
+			Routing: routingCfg,
+		}, auths); errValidate != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errValidate.Error()})
+			return
+		}
 		rows = append(rows, usage.APIKeyRowFromConfig(entry))
 	}
 	if err := usage.ReplaceAllAPIKeys(rows); err != nil {
@@ -250,18 +275,19 @@ func (h *Handler) PutAPIKeyEntries(c *gin.Context) {
 
 func (h *Handler) PatchAPIKeyEntry(c *gin.Context) {
 	type apiKeyEntryPatch struct {
-		Key              *string   `json:"key"`
-		Name             *string   `json:"name"`
-		DailyLimit       *int      `json:"daily-limit"`
-		TotalQuota       *int      `json:"total-quota"`
-		SpendingLimit    *float64  `json:"spending-limit"`
-		ConcurrencyLimit *int      `json:"concurrency-limit"`
-		RPMLimit         *int      `json:"rpm-limit"`
-		TPMLimit         *int      `json:"tpm-limit"`
-		AllowedModels    *[]string `json:"allowed-models"`
-		AllowedChannels  *[]string `json:"allowed-channels"`
-		SystemPrompt     *string   `json:"system-prompt"`
-		CreatedAt        *string   `json:"created-at"`
+		Key                  *string   `json:"key"`
+		Name                 *string   `json:"name"`
+		DailyLimit           *int      `json:"daily-limit"`
+		TotalQuota           *int      `json:"total-quota"`
+		SpendingLimit        *float64  `json:"spending-limit"`
+		ConcurrencyLimit     *int      `json:"concurrency-limit"`
+		RPMLimit             *int      `json:"rpm-limit"`
+		TPMLimit             *int      `json:"tpm-limit"`
+		AllowedModels        *[]string `json:"allowed-models"`
+		AllowedChannels      *[]string `json:"allowed-channels"`
+		AllowedChannelGroups *[]string `json:"allowed-channel-groups"`
+		SystemPrompt         *string   `json:"system-prompt"`
+		CreatedAt            *string   `json:"created-at"`
 	}
 	var body struct {
 		Index *int              `json:"index"`
@@ -349,6 +375,31 @@ func (h *Handler) PatchAPIKeyEntry(c *gin.Context) {
 			return
 		}
 		entry.AllowedChannels = validated
+	}
+	if body.Value.AllowedChannelGroups != nil {
+		validated, errValidate := h.validateAllowedChannelGroups(*body.Value.AllowedChannelGroups)
+		if errValidate != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errValidate.Error()})
+			return
+		}
+		entry.AllowedChannelGroups = validated
+	}
+	var auths []*coreauth.Auth
+	if h != nil && h.authManager != nil {
+		auths = h.authManager.List()
+	}
+	routingCfg := config.RoutingConfig{}
+	if h != nil && h.cfg != nil {
+		routingCfg = h.cfg.Routing
+	}
+	if errValidate := validateRoutingAndAPIKeyRestrictions(&config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeyEntries: []config.APIKeyEntry{entry.ToConfigEntry()},
+		},
+		Routing: routingCfg,
+	}, auths); errValidate != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errValidate.Error()})
+		return
 	}
 	if body.Value.SystemPrompt != nil {
 		entry.SystemPrompt = strings.TrimSpace(*body.Value.SystemPrompt)

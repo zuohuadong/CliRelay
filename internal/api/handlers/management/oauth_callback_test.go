@@ -1,0 +1,48 @@
+package management
+
+import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+)
+
+func TestPostOAuthCallbackAcceptsAlreadyProcessedState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousStore := oauthSessions
+	oauthSessions = newOAuthSessionStore(time.Minute)
+	t.Cleanup(func() {
+		oauthSessions = previousStore
+	})
+
+	RegisterOAuthSession("session-1", "codex")
+	CompleteOAuthSession("session-1")
+	CompleteOAuthSessionsByProvider("codex")
+
+	h := &Handler{
+		cfg: &config.Config{
+			AuthDir: t.TempDir(),
+		},
+	}
+
+	body := []byte(`{"provider":"codex","redirect_url":"http://localhost:1455/auth/callback?code=test-code&state=session-1"}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/oauth-callback", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.PostOAuthCallback(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"already_processed":true`)) {
+		t.Fatalf("expected already_processed response, got %s", rec.Body.String())
+	}
+}

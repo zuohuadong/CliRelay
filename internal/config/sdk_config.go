@@ -116,6 +116,9 @@ type APIKeyEntry struct {
 	// AllowedChannels lists channel names this key can access. Empty means all channels.
 	AllowedChannels []string `yaml:"allowed-channels,omitempty" json:"allowed-channels,omitempty"`
 
+	// AllowedChannelGroups lists channel groups this key can access. Empty means all groups.
+	AllowedChannelGroups []string `yaml:"allowed-channel-groups,omitempty" json:"allowed-channel-groups,omitempty"`
+
 	// SystemPrompt is a system-level prompt that will be prepended to all requests
 	// made with this API key. When set, a system message with this content is
 	// automatically injected as the first message in the conversation.

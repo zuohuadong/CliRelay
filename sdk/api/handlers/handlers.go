@@ -19,6 +19,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -223,12 +225,22 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	// It is forwarded as execution metadata; when absent we generate a UUID.
 	key := ""
 	allowedChannels := ""
+	allowedChannelGroups := ""
+	routeGroup := ""
+	routeFallback := ""
 	if ctx != nil {
 		if ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
 			if metadataVal, exists := ginCtx.Get("accessMetadata"); exists {
 				if metadata, okMeta := metadataVal.(map[string]string); okMeta {
 					allowedChannels = strings.TrimSpace(metadata["allowed-channels"])
+					allowedChannelGroups = strings.TrimSpace(metadata["allowed-channel-groups"])
+				}
+			}
+			if routeVal, exists := ginCtx.Get(internalrouting.GinPathRouteContextKey); exists {
+				if route, okRoute := routeVal.(*internalrouting.PathRouteContext); okRoute && route != nil {
+					routeGroup = strings.TrimSpace(route.Group)
+					routeFallback = strings.TrimSpace(route.Fallback)
 				}
 			}
 		}
@@ -240,6 +252,15 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	meta := map[string]any{idempotencyKeyMetadataKey: key}
 	if allowedChannels != "" {
 		meta["allowed-channels"] = allowedChannels
+	}
+	if allowedChannelGroups != "" {
+		meta["allowed-channel-groups"] = allowedChannelGroups
+	}
+	if routeGroup != "" {
+		meta[coreexecutor.RouteGroupMetadataKey] = routeGroup
+	}
+	if routeFallback != "" {
+		meta[coreexecutor.RouteFallbackMetadataKey] = routeFallback
 	}
 	if pinnedAuthID := pinnedAuthIDFromContext(ctx); pinnedAuthID != "" {
 		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
@@ -563,7 +584,7 @@ func appendAPIResponse(c *gin.Context, data []byte) {
 // ExecuteWithAuthManager executes a non-streaming request via the core auth manager.
 // This path is the only supported execution route.
 func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
+	providers, normalizedModel, errMsg := h.getRequestDetails(ctx, modelName)
 	if errMsg != nil {
 		return nil, nil, errMsg
 	}
@@ -611,7 +632,7 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 // ExecuteCountWithAuthManager executes a non-streaming request via the core auth manager.
 // This path is the only supported execution route.
 func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
+	providers, normalizedModel, errMsg := h.getRequestDetails(ctx, modelName)
 	if errMsg != nil {
 		return nil, nil, errMsg
 	}
@@ -660,7 +681,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 // This path is the only supported execution route.
 // The returned http.Header carries upstream response headers captured before streaming begins.
 func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
+	providers, normalizedModel, errMsg := h.getRequestDetails(ctx, modelName)
 	if errMsg != nil {
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
@@ -875,7 +896,92 @@ func statusFromError(err error) int {
 	return 0
 }
 
-func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
+func scopedProvidersForModel(modelName string, groups []string) []string {
+	registryRef := registry.GetGlobalRegistry()
+	providers := make([]string, 0, 4)
+	seen := make(map[string]struct{})
+	appendProviders := func(candidates []string) {
+		for _, provider := range candidates {
+			provider = strings.TrimSpace(provider)
+			if provider == "" {
+				continue
+			}
+			if _, exists := seen[provider]; exists {
+				continue
+			}
+			seen[provider] = struct{}{}
+			providers = append(providers, provider)
+		}
+	}
+	appendProviders(util.GetProviderName(modelName))
+	if registryRef != nil {
+		for _, group := range groups {
+			group = internalrouting.NormalizeGroupName(group)
+			if group == "" || group == "default" {
+				continue
+			}
+			appendProviders(registryRef.GetModelProviders(group + "/" + modelName))
+		}
+	}
+	return providers
+}
+
+func routeContextFromExecutionContext(ctx context.Context) *internalrouting.PathRouteContext {
+	if ctx == nil {
+		return nil
+	}
+	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
+	if !ok || ginCtx == nil {
+		return nil
+	}
+	raw, exists := ginCtx.Get(internalrouting.GinPathRouteContextKey)
+	if !exists {
+		return nil
+	}
+	route, _ := raw.(*internalrouting.PathRouteContext)
+	return route
+}
+
+func allowedChannelGroupsFromExecutionContext(ctx context.Context) []string {
+	if ctx == nil {
+		return nil
+	}
+	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
+	if !ok || ginCtx == nil {
+		return nil
+	}
+	metadataVal, exists := ginCtx.Get("accessMetadata")
+	if !exists {
+		return nil
+	}
+	metadata, ok := metadataVal.(map[string]string)
+	if !ok {
+		return nil
+	}
+	set := internalrouting.ParseNormalizedSet(metadata["allowed-channel-groups"], internalrouting.NormalizeGroupName)
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for group := range set {
+		out = append(out, group)
+	}
+	return out
+}
+
+func splitRequestedModelPrefix(modelName string) (string, string) {
+	trimmed := strings.TrimSpace(modelName)
+	if trimmed == "" {
+		return "", ""
+	}
+	parts := strings.SplitN(trimmed, "/", 2)
+	if len(parts) != 2 {
+		return "", trimmed
+	}
+	return internalrouting.NormalizeGroupName(parts[0]), strings.TrimSpace(parts[1])
+}
+
+func (h *BaseAPIHandler) getRequestDetails(ctx context.Context, modelName string) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
 	var resolvedModelName string
 	initialSuffix := thinking.ParseSuffix(modelName)
 	if initialSuffix.ModelName == "auto" {
@@ -891,15 +997,32 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 
 	parsed := thinking.ParseSuffix(resolvedModelName)
 	baseModel := strings.TrimSpace(parsed.ModelName)
+	routeCtx := routeContextFromExecutionContext(ctx)
+	requestedPrefix, unprefixedModel := splitRequestedModelPrefix(baseModel)
+	if routeCtx != nil && routeCtx.Group != "" && requestedPrefix != "" && requestedPrefix != routeCtx.Group {
+		return nil, "", &interfaces.ErrorMessage{
+			StatusCode: http.StatusBadRequest,
+			Error:      fmt.Errorf(`{"error":{"message":"model prefix conflicts with route group","type":"invalid_request_error","code":"model_prefix_conflict"}}`),
+		}
+	}
 
-	providers = util.GetProviderName(baseModel)
+	scopedGroups := allowedChannelGroupsFromExecutionContext(ctx)
+	if routeCtx != nil && routeCtx.Group != "" {
+		scopedGroups = append(scopedGroups, routeCtx.Group)
+	}
+	lookupModel := baseModel
+	if routeCtx != nil && routeCtx.Group != "" && requestedPrefix == "" && routeCtx.Group != "default" && unprefixedModel != "" {
+		lookupModel = unprefixedModel
+	}
+
+	providers = scopedProvidersForModel(lookupModel, scopedGroups)
 	// Fallback: if baseModel has no provider but differs from resolvedModelName,
 	// try using the full model name. This handles edge cases where custom models
 	// may be registered with their full suffixed name (e.g., "my-model(8192)").
 	// Evaluated in Story 11.8: This fallback is intentionally preserved to support
 	// custom model registrations that include thinking suffixes.
 	if len(providers) == 0 && baseModel != resolvedModelName {
-		providers = util.GetProviderName(resolvedModelName)
+		providers = scopedProvidersForModel(resolvedModelName, scopedGroups)
 	}
 
 	if len(providers) == 0 {

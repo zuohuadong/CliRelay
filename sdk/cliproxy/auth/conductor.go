@@ -1708,28 +1708,7 @@ func (m *Manager) CanServeModelWithChannels(modelID string, allowed map[string]s
 	if modelID == "" {
 		return false
 	}
-	if len(allowed) == 0 {
-		return true
-	}
-	registryRef := registry.GetGlobalRegistry()
-	if registryRef == nil {
-		return false
-	}
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, candidate := range m.auths {
-		if candidate == nil || candidate.Disabled {
-			continue
-		}
-		if !authAllowedByChannels(candidate, allowed) {
-			continue
-		}
-		if registryRef.ClientSupportsModel(candidate.ID, modelID) {
-			return true
-		}
-	}
-	return false
+	return m.CanServeModelWithScopes(modelID, allowed, nil, "")
 }
 
 // GetByID retrieves an auth entry by its ID.
@@ -1797,6 +1776,10 @@ func (m *Manager) CloseExecutionSession(sessionID string) {
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	allowedChannels := allowedChannelsFromMetadata(opts.Metadata)
+	allowedGroups := allowedChannelGroupsFromMetadata(opts.Metadata)
+	routeGroup := routeGroupFromMetadata(opts.Metadata)
+	routeFallback := routeFallbackFromMetadata(opts.Metadata)
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 
 	m.mu.RLock()
 	executor, okExecutor := m.executors[provider]
@@ -1804,7 +1787,6 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
-	candidates := make([]*Auth, 0, len(m.auths))
 	modelKey := strings.TrimSpace(model)
 	// Always use base model name (without thinking suffix) for auth matching.
 	if modelKey != "" {
@@ -1814,23 +1796,37 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		}
 	}
 	registryRef := registry.GetGlobalRegistry()
-	for _, candidate := range m.auths {
-		if candidate.Provider != provider || candidate.Disabled {
-			continue
+	buildCandidates := func(enforceRouteGroup bool) []*Auth {
+		candidates := make([]*Auth, 0, len(m.auths))
+		for _, candidate := range m.auths {
+			if candidate.Provider != provider || candidate.Disabled {
+				continue
+			}
+			if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
+				continue
+			}
+			if !authAllowedByChannels(candidate, allowedChannels) {
+				continue
+			}
+			if !authAllowedByGroups(cfg, candidate, allowedGroups) {
+				continue
+			}
+			if enforceRouteGroup && !authInRouteGroup(cfg, candidate, routeGroup) {
+				continue
+			}
+			if _, used := tried[candidate.ID]; used {
+				continue
+			}
+			if modelKey != "" && !candidateSupportsModel(cfg, registryRef, candidate, modelKey, routeGroup, allowedGroups) {
+				continue
+			}
+			candidates = append(candidates, prepareCandidateForSelection(cfg, candidate))
 		}
-		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
-			continue
-		}
-		if !authAllowedByChannels(candidate, allowedChannels) {
-			continue
-		}
-		if _, used := tried[candidate.ID]; used {
-			continue
-		}
-		if modelKey != "" && registryRef != nil && !registryRef.ClientSupportsModel(candidate.ID, modelKey) {
-			continue
-		}
-		candidates = append(candidates, candidate)
+		return candidates
+	}
+	candidates := buildCandidates(routeGroup != "")
+	if len(candidates) == 0 && routeGroup != "" && routeFallback == "default" {
+		candidates = buildCandidates(false)
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
@@ -1861,6 +1857,10 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	allowedChannels := allowedChannelsFromMetadata(opts.Metadata)
+	allowedGroups := allowedChannelGroupsFromMetadata(opts.Metadata)
+	routeGroup := routeGroupFromMetadata(opts.Metadata)
+	routeFallback := routeFallbackFromMetadata(opts.Metadata)
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
@@ -1875,7 +1875,6 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	}
 
 	m.mu.RLock()
-	candidates := make([]*Auth, 0, len(m.auths))
 	modelKey := strings.TrimSpace(model)
 	// Always use base model name (without thinking suffix) for auth matching.
 	if modelKey != "" {
@@ -1885,33 +1884,47 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		}
 	}
 	registryRef := registry.GetGlobalRegistry()
-	for _, candidate := range m.auths {
-		if candidate == nil || candidate.Disabled {
-			continue
+	buildCandidates := func(enforceRouteGroup bool) []*Auth {
+		candidates := make([]*Auth, 0, len(m.auths))
+		for _, candidate := range m.auths {
+			if candidate == nil || candidate.Disabled {
+				continue
+			}
+			if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
+				continue
+			}
+			if !authAllowedByChannels(candidate, allowedChannels) {
+				continue
+			}
+			if !authAllowedByGroups(cfg, candidate, allowedGroups) {
+				continue
+			}
+			if enforceRouteGroup && !authInRouteGroup(cfg, candidate, routeGroup) {
+				continue
+			}
+			providerKey := strings.TrimSpace(strings.ToLower(candidate.Provider))
+			if providerKey == "" {
+				continue
+			}
+			if _, ok := providerSet[providerKey]; !ok {
+				continue
+			}
+			if _, used := tried[candidate.ID]; used {
+				continue
+			}
+			if _, ok := m.executors[providerKey]; !ok {
+				continue
+			}
+			if modelKey != "" && !candidateSupportsModel(cfg, registryRef, candidate, modelKey, routeGroup, allowedGroups) {
+				continue
+			}
+			candidates = append(candidates, prepareCandidateForSelection(cfg, candidate))
 		}
-		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
-			continue
-		}
-		if !authAllowedByChannels(candidate, allowedChannels) {
-			continue
-		}
-		providerKey := strings.TrimSpace(strings.ToLower(candidate.Provider))
-		if providerKey == "" {
-			continue
-		}
-		if _, ok := providerSet[providerKey]; !ok {
-			continue
-		}
-		if _, used := tried[candidate.ID]; used {
-			continue
-		}
-		if _, ok := m.executors[providerKey]; !ok {
-			continue
-		}
-		if modelKey != "" && registryRef != nil && !registryRef.ClientSupportsModel(candidate.ID, modelKey) {
-			continue
-		}
-		candidates = append(candidates, candidate)
+		return candidates
+	}
+	candidates := buildCandidates(routeGroup != "")
+	if len(candidates) == 0 && routeGroup != "" && routeFallback == "default" {
+		candidates = buildCandidates(false)
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()

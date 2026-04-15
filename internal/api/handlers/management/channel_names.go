@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -45,6 +46,29 @@ func uniqueChannels(values []string) []string {
 		}
 		seen[key] = struct{}{}
 		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func uniqueChannelGroups(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := internalrouting.NormalizeGroupName(value)
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
 	}
 	if len(out) == 0 {
 		return nil
@@ -136,6 +160,23 @@ func (h *Handler) validateAllowedChannels(values []string) ([]string, error) {
 		key := strings.ToLower(strings.TrimSpace(value))
 		if _, exists := known[key]; !exists {
 			return nil, fmt.Errorf("unknown channel %q", value)
+		}
+	}
+	return normalized, nil
+}
+
+func (h *Handler) validateAllowedChannelGroups(values []string) ([]string, error) {
+	normalized := uniqueChannelGroups(values)
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	if h == nil || h.authManager == nil {
+		return normalized, nil
+	}
+	known := h.authManager.KnownChannelGroups()
+	for _, value := range normalized {
+		if _, exists := known[value]; !exists {
+			return nil, fmt.Errorf("unknown channel group %q", value)
 		}
 	}
 	return normalized, nil

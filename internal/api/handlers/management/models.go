@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
@@ -25,6 +26,11 @@ func (h *Handler) GetModels(c *gin.Context) {
 	if allowedRaw == "" {
 		allowedRaw = strings.TrimSpace(c.Query("allowed-channels"))
 	}
+	allowedGroupsRaw := strings.TrimSpace(c.Query("allowed_channel_groups"))
+	if allowedGroupsRaw == "" {
+		allowedGroupsRaw = strings.TrimSpace(c.Query("allowed-channel-groups"))
+	}
+	allowedGroups := internalrouting.ParseNormalizedSet(allowedGroupsRaw, internalrouting.NormalizeGroupName)
 	if allowedRaw != "" && allowedRaw != "*" && !strings.EqualFold(allowedRaw, "all") {
 		allowed := make(map[string]struct{})
 		for _, part := range strings.Split(allowedRaw, ",") {
@@ -41,12 +47,24 @@ func (h *Handler) GetModels(c *gin.Context) {
 				if id == "" {
 					continue
 				}
-				if h.authManager.CanServeModelWithChannels(id, allowed) {
+				if h.authManager.CanServeModelWithScopes(id, allowed, allowedGroups, "") {
 					filtered = append(filtered, model)
 				}
 			}
 			allModels = filtered
 		}
+	} else if len(allowedGroups) > 0 && h != nil && h.authManager != nil {
+		filtered := make([]map[string]any, 0, len(allModels))
+		for _, model := range allModels {
+			id, _ := model["id"].(string)
+			if id == "" {
+				continue
+			}
+			if h.authManager.CanServeModelWithScopes(id, nil, allowedGroups, "") {
+				filtered = append(filtered, model)
+			}
+		}
+		allModels = filtered
 	}
 
 	// Get all pricing data

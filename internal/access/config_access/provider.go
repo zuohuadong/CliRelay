@@ -47,15 +47,16 @@ func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 			continue
 		}
 		result[trimmed] = keyConfig{
-			allowedModels:    row.AllowedModels,
-			allowedChannels:  row.AllowedChannels,
-			dailyLimit:       row.DailyLimit,
-			totalQuota:       row.TotalQuota,
-			spendingLimit:    row.SpendingLimit,
-			concurrencyLimit: row.ConcurrencyLimit,
-			rpmLimit:         row.RPMLimit,
-			tpmLimit:         row.TPMLimit,
-			systemPrompt:     row.SystemPrompt,
+			allowedModels:        row.AllowedModels,
+			allowedChannels:      row.AllowedChannels,
+			allowedChannelGroups: row.AllowedChannelGroups,
+			dailyLimit:           row.DailyLimit,
+			totalQuota:           row.TotalQuota,
+			spendingLimit:        row.SpendingLimit,
+			concurrencyLimit:     row.ConcurrencyLimit,
+			rpmLimit:             row.RPMLimit,
+			tpmLimit:             row.TPMLimit,
+			systemPrompt:         row.SystemPrompt,
 		}
 	}
 
@@ -69,15 +70,16 @@ func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 			continue
 		}
 		result[trimmed] = keyConfig{
-			allowedModels:    entry.AllowedModels,
-			allowedChannels:  entry.AllowedChannels,
-			dailyLimit:       entry.DailyLimit,
-			totalQuota:       entry.TotalQuota,
-			spendingLimit:    entry.SpendingLimit,
-			concurrencyLimit: entry.ConcurrencyLimit,
-			rpmLimit:         entry.RPMLimit,
-			tpmLimit:         entry.TPMLimit,
-			systemPrompt:     entry.SystemPrompt,
+			allowedModels:        entry.AllowedModels,
+			allowedChannels:      entry.AllowedChannels,
+			allowedChannelGroups: entry.AllowedChannelGroups,
+			dailyLimit:           entry.DailyLimit,
+			totalQuota:           entry.TotalQuota,
+			spendingLimit:        entry.SpendingLimit,
+			concurrencyLimit:     entry.ConcurrencyLimit,
+			rpmLimit:             entry.RPMLimit,
+			tpmLimit:             entry.TPMLimit,
+			systemPrompt:         entry.SystemPrompt,
 		}
 	}
 	for _, k := range cfg.APIKeys {
@@ -95,15 +97,16 @@ func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 
 // keyConfig holds the per-key configuration extracted from APIKeyEntry.
 type keyConfig struct {
-	allowedModels    []string
-	allowedChannels  []string
-	dailyLimit       int
-	totalQuota       int
-	spendingLimit    float64
-	concurrencyLimit int
-	rpmLimit         int
-	tpmLimit         int
-	systemPrompt     string
+	allowedModels        []string
+	allowedChannels      []string
+	allowedChannelGroups []string
+	dailyLimit           int
+	totalQuota           int
+	spendingLimit        float64
+	concurrencyLimit     int
+	rpmLimit             int
+	tpmLimit             int
+	systemPrompt         string
 }
 
 type provider struct {
@@ -172,6 +175,9 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 			}
 			if len(kc.allowedChannels) > 0 {
 				metadata["allowed-channels"] = strings.Join(kc.allowedChannels, ",")
+			}
+			if len(kc.allowedChannelGroups) > 0 {
+				metadata["allowed-channel-groups"] = strings.Join(kc.allowedChannelGroups, ",")
 			}
 			if kc.dailyLimit > 0 {
 				metadata["daily-limit"] = fmt.Sprintf("%d", kc.dailyLimit)

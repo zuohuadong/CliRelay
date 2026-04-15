@@ -97,6 +97,57 @@ func TestAPIKeyUpsertAndGet(t *testing.T) {
 	}
 }
 
+func TestAPIKeyBlankNameGetsDerived(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	entry := APIKeyRow{
+		Key: "sk-user-d9c1c123dsx89107612398sdedb20b5",
+	}
+
+	if err := UpsertAPIKey(entry); err != nil {
+		t.Fatalf("UpsertAPIKey: %v", err)
+	}
+
+	got := GetAPIKey(entry.Key)
+	if got == nil {
+		t.Fatal("expected to find key")
+	}
+	if got.Name != "" {
+		t.Errorf("derived name = %q, want empty", got.Name)
+	}
+}
+
+func TestAPIKeyNameBackfill(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	usageDBMu.Lock()
+	db := usageDB
+	usageDBMu.Unlock()
+	if db == nil {
+		t.Fatal("expected test db")
+	}
+
+	if _, err := db.Exec(`INSERT INTO api_keys (key, name, created_at, updated_at) VALUES (?, '', ?, ?)`,
+		"sk-user-d9c1c123dsx89107612398sdedb20b5",
+		time.Now().UTC().Format(time.RFC3339),
+		time.Now().UTC().Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert unnamed key: %v", err)
+	}
+
+	backfillAPIKeyNames(db)
+
+	got := GetAPIKey("sk-user-d9c1c123dsx89107612398sdedb20b5")
+	if got == nil {
+		t.Fatal("expected to find key")
+	}
+	if got.Name != "api-key-1" {
+		t.Errorf("backfilled name = %q, want %q", got.Name, "api-key-1")
+	}
+}
+
 func TestAPIKeyListAndDelete(t *testing.T) {
 	cleanup := setupTestDB(t)
 	defer cleanup()
@@ -253,8 +304,8 @@ func TestAPIKeyToConfigEntry(t *testing.T) {
 		AllowedChannels: []string{
 			"Claude Team",
 		},
-		SystemPrompt:  "hello",
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		SystemPrompt: "hello",
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
 
 	entry := row.ToConfigEntry()

@@ -144,6 +144,37 @@ quota-exceeded:
 # Routing strategy for selecting credentials when multiple match.
 routing:
   strategy: "round-robin" # round-robin (default), fill-first
+  include-default-group: true
+  # channel-groups:
+  #   - name: "pro"
+  #     description: "Paid channels"
+  #     priority: 100
+  #     match:
+  #       prefixes: ["pro"]
+  #   - name: "team-a"
+  #     description: "Team A channels"
+  #     match:
+  #       prefixes: ["team-a"]
+  #       channels: ["Team A Codex"]
+  # path-routes:
+  #   - path: "/pro"
+  #     group: "pro"
+  #     strip-prefix: true
+  #     fallback: "none"
+  #   - path: "/team-a"
+  #     group: "team-a"
+  #     strip-prefix: true
+  #     fallback: "default"
+
+# Optional client API keys with per-key permissions. Empty allowed-* arrays mean "no restriction".
+# api-key-entries:
+#   - key: "sk-user-pro"
+#     name: "Pro User"
+#     allowed-channel-groups: ["pro"]
+#   - key: "sk-team-a"
+#     name: "Team A"
+#     allowed-channel-groups: ["team-a", "pro"]
+#     allowed-channels: ["Team A Codex"]
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: false

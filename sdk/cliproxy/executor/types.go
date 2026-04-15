@@ -13,6 +13,10 @@ const RequestedModelMetadataKey = "requested_model"
 const (
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
+	// RouteGroupMetadataKey scopes execution to a channel group resolved from the URL path.
+	RouteGroupMetadataKey = "route_group"
+	// RouteFallbackMetadataKey controls whether groupURL requests may fall back to the default scope.
+	RouteFallbackMetadataKey = "route_fallback"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.
 	SelectedAuthMetadataKey = "selected_auth_id"
 	// SelectedAuthCallbackMetadataKey carries an optional callback invoked with the selected auth ID.

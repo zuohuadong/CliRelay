@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	oauthSessionTTL     = 10 * time.Minute
-	maxOAuthStateLength = 128
+	oauthSessionTTL             = 10 * time.Minute
+	maxOAuthStateLength         = 128
+	oauthSessionStatusCompleted = "__completed__"
 )
 
 var (
@@ -108,7 +109,13 @@ func (s *oauthSessionStore) Complete(state string) {
 	defer s.mu.Unlock()
 
 	s.purgeExpiredLocked(now)
-	delete(s.sessions, state)
+	session, ok := s.sessions[state]
+	if !ok {
+		return
+	}
+	session.Status = oauthSessionStatusCompleted
+	session.ExpiresAt = now.Add(s.ttl)
+	s.sessions[state] = session
 }
 
 func (s *oauthSessionStore) CompleteProvider(provider string) int {
@@ -125,6 +132,9 @@ func (s *oauthSessionStore) CompleteProvider(provider string) int {
 	removed := 0
 	for state, session := range s.sessions {
 		if strings.EqualFold(session.Provider, provider) {
+			if session.Status == oauthSessionStatusCompleted {
+				continue
+			}
 			delete(s.sessions, state)
 			removed++
 		}

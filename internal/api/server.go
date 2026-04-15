@@ -33,6 +33,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -355,36 +356,61 @@ func (s *Server) setupRoutes() {
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
 
-	// OpenAI compatible API routes
-	v1 := s.engine.Group("/v1")
-	v1.Use(AuthMiddleware(s.accessManager))
-	v1.Use(middleware.QuotaMiddleware())
-	v1.Use(ModelRestrictionMiddleware())
-	v1.Use(SystemPromptMiddleware())
-	{
-		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
-		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
-		v1.POST("/completions", openaiHandlers.Completions)
-		v1.POST("/messages", claudeCodeHandlers.ClaudeMessages)
-		v1.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
-		v1.GET("/responses", func(c *gin.Context) {
+	registerV1Routes := func(group *gin.RouterGroup) {
+		group.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
+		group.POST("/chat/completions", openaiHandlers.ChatCompletions)
+		group.POST("/completions", openaiHandlers.Completions)
+		group.POST("/messages", claudeCodeHandlers.ClaudeMessages)
+		group.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
+		group.GET("/responses", func(c *gin.Context) {
 			clearServerWriteDeadline(c)
 			openaiResponsesHandlers.ResponsesWebsocket(c)
 		})
-		v1.POST("/responses", openaiResponsesHandlers.Responses)
-		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
+		group.POST("/responses", openaiResponsesHandlers.Responses)
+		group.POST("/responses/compact", openaiResponsesHandlers.Compact)
 	}
+	registerV1BetaRoutes := func(group *gin.RouterGroup) {
+		group.GET("/models", geminiHandlers.GeminiModels)
+		group.POST("/models/*action", geminiHandlers.GeminiHandler)
+		group.GET("/models/*action", geminiHandlers.GeminiGetHandler)
+	}
+	resolveRoute := func(rawGroup string) (*internalrouting.PathRouteContext, bool) {
+		return resolvePathRouteContext(s.cfg, s.handlers.AuthManager, rawGroup)
+	}
+
+	// OpenAI compatible API routes
+	v1 := s.engine.Group("/v1")
+	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(channelGroupAuthorizationMiddleware())
+	v1.Use(middleware.QuotaMiddleware())
+	v1.Use(ModelRestrictionMiddleware())
+	v1.Use(SystemPromptMiddleware())
+	registerV1Routes(v1)
+
+	groupedV1 := s.engine.Group("/:group/v1")
+	groupedV1.Use(groupRoutingMiddleware(resolveRoute))
+	groupedV1.Use(AuthMiddleware(s.accessManager))
+	groupedV1.Use(channelGroupAuthorizationMiddleware())
+	groupedV1.Use(middleware.QuotaMiddleware())
+	groupedV1.Use(ModelRestrictionMiddleware())
+	groupedV1.Use(SystemPromptMiddleware())
+	registerV1Routes(groupedV1)
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
 	v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(channelGroupAuthorizationMiddleware())
 	v1beta.Use(middleware.QuotaMiddleware())
 	v1beta.Use(ModelRestrictionMiddleware())
-	{
-		v1beta.GET("/models", geminiHandlers.GeminiModels)
-		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
-		v1beta.GET("/models/*action", geminiHandlers.GeminiGetHandler)
-	}
+	registerV1BetaRoutes(v1beta)
+
+	groupedV1Beta := s.engine.Group("/:group/v1beta")
+	groupedV1Beta.Use(groupRoutingMiddleware(resolveRoute))
+	groupedV1Beta.Use(AuthMiddleware(s.accessManager))
+	groupedV1Beta.Use(channelGroupAuthorizationMiddleware())
+	groupedV1Beta.Use(middleware.QuotaMiddleware())
+	groupedV1Beta.Use(ModelRestrictionMiddleware())
+	registerV1BetaRoutes(groupedV1Beta)
 
 	// Root endpoint
 	s.engine.GET("/", func(c *gin.Context) {
@@ -533,6 +559,9 @@ func (s *Server) registerManagementRoutes() {
 			s.mgmt.SystemStatsWebSocket(c)
 		})
 		mgmt.GET("/models", s.mgmt.GetModels)
+		mgmt.GET("/channel-groups", s.mgmt.GetChannelGroups)
+		mgmt.GET("/routing-config", s.mgmt.GetRoutingConfig)
+		mgmt.PUT("/routing-config", s.mgmt.PutRoutingConfig)
 		mgmt.GET("/model-pricing", s.mgmt.GetModelPricing)
 		mgmt.PUT("/model-pricing", s.mgmt.PutModelPricing)
 		mgmt.GET("/usage", s.mgmt.GetUsageStatistics)
@@ -1001,6 +1030,12 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 		// Check if this API key has allowed-models restriction
 		var allowedModels map[string]struct{}
 		var allowedChannels map[string]struct{}
+		allowedChannelGroups := allowedChannelGroupsFromAccessMetadata(c)
+		routeCtx := pathRouteContextFromGin(c)
+		routeGroup := ""
+		if routeCtx != nil {
+			routeGroup = routeCtx.Group
+		}
 		if metadataVal, exists := c.Get("accessMetadata"); exists {
 			if metadata, ok := metadataVal.(map[string]string); ok {
 				if allowedStr, exists := metadata["allowed-models"]; exists && allowedStr != "" {
@@ -1031,7 +1066,7 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 		}
 
 		// If no restriction, just call the handler directly
-		if allowedModels == nil && allowedChannels == nil {
+		if allowedModels == nil && allowedChannels == nil && allowedChannelGroups == nil && routeGroup == "" {
 			userAgent := c.GetHeader("User-Agent")
 			if strings.HasPrefix(userAgent, "claude-cli") {
 				claudeHandler.ClaudeModels(c)
@@ -1076,8 +1111,8 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 						continue
 					}
 				}
-				if allowedChannels != nil {
-					if s.handlers == nil || s.handlers.AuthManager == nil || !s.handlers.AuthManager.CanServeModelWithChannels(id, allowedChannels) {
+				if allowedChannels != nil || allowedChannelGroups != nil || routeGroup != "" {
+					if s.handlers == nil || s.handlers.AuthManager == nil || !s.handlers.AuthManager.CanServeModelWithScopes(id, allowedChannels, allowedChannelGroups, routeGroup) {
 						continue
 					}
 				}

@@ -3,6 +3,7 @@ FROM --platform=$BUILDPLATFORM alpine:3.22.0 AS frontend-source
 
 ARG FRONTEND_REPOSITORY=https://github.com/kittors/codeProxy.git
 ARG FRONTEND_REF=main
+ARG FRONTEND_COMMIT=
 
 RUN apk add --no-cache git ca-certificates
 
@@ -10,8 +11,15 @@ WORKDIR /src
 
 # Local `docker compose up -d` from the CliRelay repo should always build the
 # current management panel instead of depending on a separately checked out
-# `frontend/` directory or an outdated published image.
-RUN git clone --depth=1 --branch "${FRONTEND_REF}" "${FRONTEND_REPOSITORY}" frontend
+# `frontend/` directory or an outdated published image. FRONTEND_COMMIT is part
+# of this layer on purpose: a moving branch name alone is invisible to Docker's
+# cache, so the exact frontend SHA must bust the clone layer.
+RUN git clone --depth=1 --branch "${FRONTEND_REF}" "${FRONTEND_REPOSITORY}" frontend \
+  && if [ -n "${FRONTEND_COMMIT}" ]; then \
+    cd frontend \
+    && git fetch --depth=1 origin "${FRONTEND_COMMIT}" \
+    && git checkout --detach "${FRONTEND_COMMIT}"; \
+  fi
 
 # ── Frontend build ───────────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM oven/bun:1 AS frontend-builder

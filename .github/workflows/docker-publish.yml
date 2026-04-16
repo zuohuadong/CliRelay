@@ -29,12 +29,19 @@ jobs:
           REF_NAME="${GITHUB_REF_NAME:-main}"
           BACKEND_SHORT="$(git rev-parse --short HEAD)"
           FRONTEND_REF="${REF_NAME}"
-          FRONTEND_SHORT="$(git ls-remote https://github.com/kittors/codeProxy.git "refs/heads/${FRONTEND_REF}" | awk '{print substr($1,1,7)}')"
+          FRONTEND_COMMIT="$(git ls-remote https://github.com/kittors/codeProxy.git "refs/heads/${FRONTEND_REF}" | awk '{print $1}')"
+          if [ -z "${FRONTEND_COMMIT}" ]; then
+            echo "Unable to resolve frontend ref: ${FRONTEND_REF}" >&2
+            exit 1
+          fi
+          FRONTEND_SHORT="${FRONTEND_COMMIT:0:7}"
           echo "VERSION=${REF_NAME}-${BACKEND_SHORT}" >> "$GITHUB_ENV"
           echo "UI_VERSION=panel-${FRONTEND_REF}-${FRONTEND_SHORT}" >> "$GITHUB_ENV"
           echo "FRONTEND_REF=${FRONTEND_REF}" >> "$GITHUB_ENV"
+          echo "FRONTEND_COMMIT=${FRONTEND_COMMIT}" >> "$GITHUB_ENV"
           echo "backend_short=${BACKEND_SHORT}" >> "$GITHUB_OUTPUT"
           echo "frontend_short=${FRONTEND_SHORT}" >> "$GITHUB_OUTPUT"
+          echo "frontend_commit=${FRONTEND_COMMIT}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -80,5 +87,6 @@ jobs:
             BUILD_DATE=${{ steps.build_date.outputs.date }}
             UI_VERSION=${{ env.UI_VERSION }}
             FRONTEND_REF=${{ env.FRONTEND_REF }}
+            FRONTEND_COMMIT=${{ env.FRONTEND_COMMIT }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

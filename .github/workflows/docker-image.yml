@@ -27,12 +27,18 @@ jobs:
           VERSION="$(git describe --tags --always --dirty)"
           COMMIT="$(git rev-parse --short HEAD)"
           BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          FRONTEND_COMMIT="$(git ls-remote https://github.com/kittors/codeProxy.git refs/heads/main | awk '{print substr($1,1,7)}')"
-          UI_VERSION="panel-${VERSION}-${FRONTEND_COMMIT}"
+          FRONTEND_COMMIT="$(git ls-remote https://github.com/kittors/codeProxy.git refs/heads/main | awk '{print $1}')"
+          if [ -z "${FRONTEND_COMMIT}" ]; then
+            echo "Unable to resolve frontend ref: main" >&2
+            exit 1
+          fi
+          FRONTEND_SHORT="${FRONTEND_COMMIT:0:7}"
+          UI_VERSION="panel-${VERSION}-${FRONTEND_SHORT}"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "COMMIT=${COMMIT}" >> "$GITHUB_ENV"
           echo "BUILD_DATE=${BUILD_DATE}" >> "$GITHUB_ENV"
           echo "UI_VERSION=${UI_VERSION}" >> "$GITHUB_ENV"
+          echo "FRONTEND_COMMIT=${FRONTEND_COMMIT}" >> "$GITHUB_ENV"
       - name: Build and push (amd64)
         uses: docker/build-push-action@v6
         with:
@@ -44,6 +50,7 @@ jobs:
             COMMIT=${{ env.COMMIT }}
             BUILD_DATE=${{ env.BUILD_DATE }}
             UI_VERSION=${{ env.UI_VERSION }}
+            FRONTEND_COMMIT=${{ env.FRONTEND_COMMIT }}
           tags: |
             ${{ env.DOCKERHUB_REPO }}:latest-amd64
             ${{ env.DOCKERHUB_REPO }}:${{ env.VERSION }}-amd64
@@ -65,12 +72,18 @@ jobs:
           VERSION="$(git describe --tags --always --dirty)"
           COMMIT="$(git rev-parse --short HEAD)"
           BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          FRONTEND_COMMIT="$(git ls-remote https://github.com/kittors/codeProxy.git refs/heads/main | awk '{print substr($1,1,7)}')"
-          UI_VERSION="panel-${VERSION}-${FRONTEND_COMMIT}"
+          FRONTEND_COMMIT="$(git ls-remote https://github.com/kittors/codeProxy.git refs/heads/main | awk '{print $1}')"
+          if [ -z "${FRONTEND_COMMIT}" ]; then
+            echo "Unable to resolve frontend ref: main" >&2
+            exit 1
+          fi
+          FRONTEND_SHORT="${FRONTEND_COMMIT:0:7}"
+          UI_VERSION="panel-${VERSION}-${FRONTEND_SHORT}"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "COMMIT=${COMMIT}" >> "$GITHUB_ENV"
           echo "BUILD_DATE=${BUILD_DATE}" >> "$GITHUB_ENV"
           echo "UI_VERSION=${UI_VERSION}" >> "$GITHUB_ENV"
+          echo "FRONTEND_COMMIT=${FRONTEND_COMMIT}" >> "$GITHUB_ENV"
       - name: Build and push (arm64)
         uses: docker/build-push-action@v6
         with:
@@ -82,6 +95,7 @@ jobs:
             COMMIT=${{ env.COMMIT }}
             BUILD_DATE=${{ env.BUILD_DATE }}
             UI_VERSION=${{ env.UI_VERSION }}
+            FRONTEND_COMMIT=${{ env.FRONTEND_COMMIT }}
           tags: |
             ${{ env.DOCKERHUB_REPO }}:latest-arm64
             ${{ env.DOCKERHUB_REPO }}:${{ env.VERSION }}-arm64

@@ -330,6 +330,40 @@ func TestBuildCurrentUpdateStateDoesNotQueryGitHub(t *testing.T) {
 	}
 }
 
+func TestFetchUpdateProgressProxiesUpdaterStatus(t *testing.T) {
+	updater := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/status" {
+			t.Fatalf("path = %q, want /v1/status", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization = %q, want Bearer test-token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"running","stage":"pulling","target_version":"dev-abcdef1","logs":[{"timestamp":"2026-04-20T07:30:01Z","stream":"stdout","message":"docker compose pull clirelay"}]}`))
+	}))
+	t.Cleanup(updater.Close)
+	t.Setenv("CLIRELAY_UPDATER_URL", updater.URL)
+	t.Setenv("CLIRELAY_UPDATER_TOKEN", "test-token")
+
+	handler := &Handler{cfg: &config.Config{}}
+	progress, err := handler.fetchUpdateProgress(context.Background())
+	if err != nil {
+		t.Fatalf("fetchUpdateProgress() error = %v, want nil", err)
+	}
+	if progress.Status != "running" {
+		t.Fatalf("Status = %q, want running", progress.Status)
+	}
+	if progress.Stage != "pulling" {
+		t.Fatalf("Stage = %q, want pulling", progress.Stage)
+	}
+	if progress.TargetVersion != "dev-abcdef1" {
+		t.Fatalf("TargetVersion = %q, want dev-abcdef1", progress.TargetVersion)
+	}
+	if len(progress.Logs) != 1 || progress.Logs[0].Message != "docker compose pull clirelay" {
+		t.Fatalf("Logs = %+v, want updater log entry", progress.Logs)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

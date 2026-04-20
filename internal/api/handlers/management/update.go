@@ -51,6 +51,30 @@ type updateCheckResponse struct {
 	Message           string `json:"message,omitempty"`
 }
 
+type updateProgressLogEntry struct {
+	Timestamp string `json:"timestamp"`
+	Stream    string `json:"stream"`
+	Message   string `json:"message"`
+}
+
+type updateProgressResponse struct {
+	Status          string                   `json:"status"`
+	Stage           string                   `json:"stage"`
+	Message         string                   `json:"message,omitempty"`
+	Service         string                   `json:"service,omitempty"`
+	TargetImage     string                   `json:"target_image,omitempty"`
+	TargetTag       string                   `json:"target_tag,omitempty"`
+	TargetVersion   string                   `json:"target_version,omitempty"`
+	TargetCommit    string                   `json:"target_commit,omitempty"`
+	TargetUIVersion string                   `json:"target_ui_version,omitempty"`
+	TargetUICommit  string                   `json:"target_ui_commit,omitempty"`
+	TargetChannel   string                   `json:"target_channel,omitempty"`
+	StartedAt       string                   `json:"started_at,omitempty"`
+	UpdatedAt       string                   `json:"updated_at,omitempty"`
+	FinishedAt      string                   `json:"finished_at,omitempty"`
+	Logs            []updateProgressLogEntry `json:"logs,omitempty"`
+}
+
 type branchCommitInfo struct {
 	SHA     string `json:"sha"`
 	HTMLURL string `json:"html_url"`
@@ -115,6 +139,15 @@ func (h *Handler) GetCurrentUpdateState(c *gin.Context) {
 	c.JSON(http.StatusOK, h.buildCurrentUpdateState(c.Request.Context()))
 }
 
+func (h *Handler) GetUpdateProgress(c *gin.Context) {
+	progress, err := h.fetchUpdateProgress(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "update_progress_failed", "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, progress)
+}
+
 func (h *Handler) ApplyUpdate(c *gin.Context) {
 	if h == nil || h.cfg == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "config_unavailable"})
@@ -136,12 +169,14 @@ func (h *Handler) ApplyUpdate(c *gin.Context) {
 	}
 
 	payload := map[string]string{
-		"image":   check.DockerImage,
-		"tag":     check.DockerTag,
-		"channel": check.TargetChannel,
-		"version": check.LatestVersion,
-		"commit":  check.LatestCommit,
-		"service": updaterTargetService(),
+		"image":      check.DockerImage,
+		"tag":        check.DockerTag,
+		"channel":    check.TargetChannel,
+		"version":    check.LatestVersion,
+		"commit":     check.LatestCommit,
+		"ui_version": check.LatestUIVersion,
+		"ui_commit":  check.LatestUICommit,
+		"service":    updaterTargetService(),
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -522,6 +557,35 @@ func checkUpdaterAvailable(ctx context.Context, cfg *config.Config) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+func (h *Handler) fetchUpdateProgress(ctx context.Context) (*updateProgressResponse, error) {
+	var cfg *config.Config
+	if h != nil {
+		cfg = h.cfg
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, joinURLPath(resolveUpdaterURL(cfg), "/v1/status"), nil)
+	if err != nil {
+		return nil, err
+	}
+	if token := updaterToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := &http.Client{Timeout: updateHTTPTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("updater status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var payload updateProgressResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return &payload, nil
 }
 
 func joinURLPath(base string, path string) string {

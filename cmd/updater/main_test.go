@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,7 +16,7 @@ import (
 func TestUpdaterRejectsInvalidBearerToken(t *testing.T) {
 	server := newUpdaterServer(updaterConfig{
 		Token: "secret",
-		Runner: func(context.Context, string, string, string, string) error {
+		Runner: func(context.Context, string, string, string, string, updateReporter) error {
 			t.Fatal("runner should not be called")
 			return nil
 		},
@@ -40,7 +41,7 @@ func TestUpdaterPersistsRequestedImageBeforeComposeUpdate(t *testing.T) {
 	called := make(chan struct{}, 1)
 	server := newUpdaterServer(updaterConfig{
 		EnvFile: envFile,
-		Runner: func(_ context.Context, _ string, _ string, _ string, _ string) error {
+		Runner: func(_ context.Context, _ string, _ string, _ string, _ string, reporter updateReporter) error {
 			data, err := os.ReadFile(envFile)
 			if err != nil {
 				t.Errorf("read env file: %v", err)
@@ -52,6 +53,8 @@ func TestUpdaterPersistsRequestedImageBeforeComposeUpdate(t *testing.T) {
 			if !strings.Contains(content, "OTHER=value\n") {
 				t.Errorf("env file content = %q, want unrelated values preserved", content)
 			}
+			reporter.Stage("pulling", "pulling image")
+			reporter.Log("stdout", "docker compose pull cli-proxy-api")
 			called <- struct{}{}
 			return nil
 		},
@@ -88,7 +91,7 @@ func TestUpdaterRejectsRequestWhenEnvFileCannotBeUpdated(t *testing.T) {
 
 	server := newUpdaterServer(updaterConfig{
 		EnvFile: filepath.Join(envDir, ".env"),
-		Runner: func(_ context.Context, _ string, _ string, _ string, _ string) error {
+		Runner: func(_ context.Context, _ string, _ string, _ string, _ string, _ updateReporter) error {
 			t.Fatal("runner should not be called when env file cannot be updated")
 			return nil
 		},
@@ -119,7 +122,7 @@ func TestUpdaterAcceptsRequestAndRunsComposeUpdate(t *testing.T) {
 		EnvFile:        "/workspace/.env",
 		ProjectName:    "cliproxy",
 		DefaultService: "clirelay",
-		Runner: func(_ context.Context, composeFile string, envFile string, projectName string, service string) error {
+		Runner: func(_ context.Context, composeFile string, envFile string, projectName string, service string, _ updateReporter) error {
 			if composeFile != "/workspace/docker-compose.yml" {
 				t.Errorf("composeFile = %q", composeFile)
 			}
@@ -152,6 +155,68 @@ func TestUpdaterAcceptsRequestAndRunsComposeUpdate(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for runner")
 	}
+}
+
+func TestUpdaterStatusExposesTargetStageAndLogs(t *testing.T) {
+	called := make(chan struct{}, 1)
+	releaseRunner := make(chan struct{})
+	server := newUpdaterServer(updaterConfig{
+		EnvFile: filepath.Join(t.TempDir(), ".env"),
+		Runner: func(_ context.Context, _ string, _ string, _ string, service string, reporter updateReporter) error {
+			reporter.Stage("pulling", "pulling image")
+			reporter.Log("stdout", "docker compose pull "+service)
+			called <- struct{}{}
+			<-releaseRunner
+			reporter.Stage("restarting", "restarting container")
+			reporter.Log("stderr", "Container clirelay Recreated")
+			return nil
+		},
+	})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/update",
+		strings.NewReader(`{"service":"clirelay","image":"ghcr.io/kittors/clirelay","tag":"dev","version":"dev-abcdef1","commit":"abcdef123456","channel":"dev"}`),
+	)
+	rec := httptest.NewRecorder()
+	server.handleUpdate(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("update status = %d, want %d; body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runner")
+	}
+
+	statusRec := httptest.NewRecorder()
+	server.handleStatus(statusRec, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status endpoint code = %d, body=%s", statusRec.Code, statusRec.Body.String())
+	}
+
+	var payload updateStatusResponse
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if payload.Status != "running" {
+		t.Fatalf("Status = %q, want running", payload.Status)
+	}
+	if payload.Stage != "pulling" {
+		t.Fatalf("Stage = %q, want pulling", payload.Stage)
+	}
+	if payload.TargetVersion != "dev-abcdef1" {
+		t.Fatalf("TargetVersion = %q, want dev-abcdef1", payload.TargetVersion)
+	}
+	if payload.TargetCommit != "abcdef123456" {
+		t.Fatalf("TargetCommit = %q, want abcdef123456", payload.TargetCommit)
+	}
+	if len(payload.Logs) != 1 || payload.Logs[0].Message != "docker compose pull clirelay" {
+		t.Fatalf("Logs = %+v, want compose pull log", payload.Logs)
+	}
+
+	close(releaseRunner)
 }
 
 func TestBuildComposeArgsIncludesProjectName(t *testing.T) {

@@ -211,6 +211,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	appendAPIResponseChunk(ctx, e.cfg, data)
+	data = collectCodexOutputItems(data)
 
 	lines := bytes.Split(data, []byte("\n"))
 	for _, line := range lines {
@@ -219,6 +220,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 
 		line = bytes.TrimSpace(line[5:])
+		line = normalizeCodexCompletionPayload(line)
 		if gjson.GetBytes(line, "type").String() != "response.completed" {
 			continue
 		}
@@ -879,4 +881,94 @@ func (e *CodexExecutor) resolveCodexConfig(auth *cliproxyauth.Auth) *config.Code
 		}
 	}
 	return nil
+}
+
+func collectCodexOutputItems(data []byte) []byte {
+	lines := bytes.Split(data, []byte("\n"))
+	outputItems := make([][]byte, 0, 2)
+	completedIdx := -1
+	var completedPayload []byte
+
+	for i := range lines {
+		line := lines[i]
+		if !bytes.HasPrefix(line, dataTag) {
+			continue
+		}
+		payload := bytes.TrimSpace(line[len(dataTag):])
+		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+		switch eventType {
+		case "response.output_item.done":
+			item := gjson.GetBytes(payload, "item")
+			if item.Exists() {
+				raw := strings.TrimSpace(item.Raw)
+				if raw != "" {
+					outputItems = append(outputItems, []byte(raw))
+				}
+			}
+		case "response.completed", "response.done":
+			completedIdx = i
+			completedPayload = normalizeCodexCompletionPayload(payload)
+		}
+	}
+
+	if completedIdx < 0 {
+		return data
+	}
+
+	changed := !bytes.Equal(completedPayload, bytes.TrimSpace(lines[completedIdx][len(dataTag):]))
+	if len(outputItems) > 0 {
+		existingOutput := gjson.GetBytes(completedPayload, "response.output")
+		if !existingOutput.Exists() || len(existingOutput.Array()) == 0 {
+			merged, err := sjson.SetRawBytes(completedPayload, "response.output", marshalJSONArrayRaw(outputItems))
+			if err == nil && len(merged) > 0 {
+				completedPayload = merged
+				changed = true
+			}
+		}
+	}
+
+	if !changed {
+		return data
+	}
+	updatedLine := make([]byte, 0, len(dataTag)+1+len(completedPayload))
+	updatedLine = append(updatedLine, dataTag...)
+	updatedLine = append(updatedLine, ' ')
+	updatedLine = append(updatedLine, completedPayload...)
+	lines[completedIdx] = updatedLine
+	return bytes.Join(lines, []byte("\n"))
+}
+
+func normalizeCodexCompletionPayload(payload []byte) []byte {
+	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.done" {
+		return payload
+	}
+	updated, err := sjson.SetBytes(payload, "type", "response.completed")
+	if err == nil && len(updated) > 0 {
+		return updated
+	}
+	return payload
+}
+
+func marshalJSONArrayRaw(items [][]byte) []byte {
+	if len(items) == 0 {
+		return []byte("[]")
+	}
+	total := 2
+	for i := range items {
+		total += len(items[i])
+	}
+	total += len(items) - 1
+	buf := make([]byte, 0, total)
+	buf = append(buf, '[')
+	for i := range items {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, items[i]...)
+	}
+	buf = append(buf, ']')
+	return buf
 }

@@ -273,6 +273,78 @@ func TestBuildChannelGroupItemsCanonicalizesRenamedOAuthChannel(t *testing.T) {
 	}
 }
 
+func TestBuildChannelGroupItemsSkipsDisabledAuthChannels(t *testing.T) {
+	auths := []*coreauth.Auth{
+		{
+			ID:       "active-auth",
+			Label:    "Active Channel",
+			Prefix:   "team-a",
+			Provider: "codex",
+		},
+		{
+			ID:            "deleted-auth",
+			Label:         "Deleted Channel",
+			Prefix:        "team-b",
+			Provider:      "claude",
+			Disabled:      true,
+			Status:        coreauth.StatusDisabled,
+			StatusMessage: "removed via management api",
+		},
+	}
+
+	items := buildChannelGroupItems(&config.Config{}, auths)
+	byName := make(map[string]channelGroupItem, len(items))
+	for _, item := range items {
+		byName[item.Name] = item
+	}
+
+	teamA, ok := byName["team-a"]
+	if !ok {
+		t.Fatal("expected active team-a group")
+	}
+	if !containsString(teamA.Channels, "Active Channel") {
+		t.Fatalf("team-a channels = %v, want Active Channel", teamA.Channels)
+	}
+	if containsString(teamA.Channels, "Deleted Channel") {
+		t.Fatalf("team-a channels = %v, should not contain deleted channel", teamA.Channels)
+	}
+	if _, exists := byName["team-b"]; exists {
+		t.Fatalf("unexpected lingering team-b group from deleted auth: %v", byName["team-b"])
+	}
+}
+
+func TestBuildChannelGroupItemsDoesNotSurfaceDeletedConfiguredChannels(t *testing.T) {
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			ChannelGroups: []config.RoutingChannelGroup{
+				{
+					Name: "chatgpt-pro",
+					Match: config.ChannelGroupMatch{
+						Channels: []string{"chatgpt-pro1"},
+					},
+				},
+			},
+			PathRoutes: []config.RoutingPathRoute{
+				{Path: "/openai/pro", Group: "chatgpt-pro", StripPrefix: true},
+			},
+		},
+	}
+
+	items := buildChannelGroupItems(cfg, nil)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(items))
+	}
+	if items[0].Name != "chatgpt-pro" {
+		t.Fatalf("group name = %q, want chatgpt-pro", items[0].Name)
+	}
+	if len(items[0].Channels) != 0 {
+		t.Fatalf("group channels = %v, want no active channels for deleted references", items[0].Channels)
+	}
+	if !containsString(items[0].PathRoutes, "/openai/pro") {
+		t.Fatalf("path-routes = %v, want /openai/pro", items[0].PathRoutes)
+	}
+}
+
 func TestCanonicalizeRoutingConfigChannelsRenamedOAuthChannel(t *testing.T) {
 	cfg := &config.Config{
 		Routing: config.RoutingConfig{

@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
@@ -23,6 +24,7 @@ const (
 	updateHTTPTimeout     = 10 * time.Second
 	updaterHealthTimeout  = 2 * time.Second
 	updaterTokenEnv       = "CLIRELAY_UPDATER_TOKEN"
+	githubTokenEnv        = "CLIRELAY_GITHUB_TOKEN"
 	autoUpdateChannelEnv  = "CLIRELAY_UPDATE_CHANNEL"
 	defaultUpdaterService = "clirelay"
 )
@@ -50,6 +52,30 @@ type updateCheckResponse struct {
 	Message           string `json:"message,omitempty"`
 }
 
+type updateProgressLogEntry struct {
+	Timestamp string `json:"timestamp"`
+	Stream    string `json:"stream"`
+	Message   string `json:"message"`
+}
+
+type updateProgressResponse struct {
+	Status          string                   `json:"status"`
+	Stage           string                   `json:"stage"`
+	Message         string                   `json:"message,omitempty"`
+	Service         string                   `json:"service,omitempty"`
+	TargetImage     string                   `json:"target_image,omitempty"`
+	TargetTag       string                   `json:"target_tag,omitempty"`
+	TargetVersion   string                   `json:"target_version,omitempty"`
+	TargetCommit    string                   `json:"target_commit,omitempty"`
+	TargetUIVersion string                   `json:"target_ui_version,omitempty"`
+	TargetUICommit  string                   `json:"target_ui_commit,omitempty"`
+	TargetChannel   string                   `json:"target_channel,omitempty"`
+	StartedAt       string                   `json:"started_at,omitempty"`
+	UpdatedAt       string                   `json:"updated_at,omitempty"`
+	FinishedAt      string                   `json:"finished_at,omitempty"`
+	Logs            []updateProgressLogEntry `json:"logs,omitempty"`
+}
+
 type branchCommitInfo struct {
 	SHA     string `json:"sha"`
 	HTMLURL string `json:"html_url"`
@@ -57,6 +83,11 @@ type branchCommitInfo struct {
 		Message string `json:"message"`
 	} `json:"commit"`
 }
+
+var (
+	fetchBranchCommitForUpdateCheck      = fetchBranchCommit
+	fetchLatestReleaseInfoForUpdateCheck = fetchLatestReleaseInfo
+)
 
 func (h *Handler) GetAutoUpdateEnabled(c *gin.Context) {
 	enabled := true
@@ -105,6 +136,19 @@ func (h *Handler) CheckUpdate(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+func (h *Handler) GetCurrentUpdateState(c *gin.Context) {
+	c.JSON(http.StatusOK, h.buildCurrentUpdateState(c.Request.Context()))
+}
+
+func (h *Handler) GetUpdateProgress(c *gin.Context) {
+	progress, err := h.fetchUpdateProgress(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "update_progress_failed", "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, progress)
+}
+
 func (h *Handler) ApplyUpdate(c *gin.Context) {
 	if h == nil || h.cfg == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "config_unavailable"})
@@ -126,12 +170,14 @@ func (h *Handler) ApplyUpdate(c *gin.Context) {
 	}
 
 	payload := map[string]string{
-		"image":   check.DockerImage,
-		"tag":     check.DockerTag,
-		"channel": check.TargetChannel,
-		"version": check.LatestVersion,
-		"commit":  check.LatestCommit,
-		"service": updaterTargetService(),
+		"image":      check.DockerImage,
+		"tag":        check.DockerTag,
+		"channel":    check.TargetChannel,
+		"version":    check.LatestVersion,
+		"commit":     check.LatestCommit,
+		"ui_version": check.LatestUIVersion,
+		"ui_commit":  check.LatestUICommit,
+		"service":    updaterTargetService(),
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -177,56 +223,136 @@ func (h *Handler) buildUpdateCheck(ctx context.Context) (*updateCheckResponse, e
 		channel = inferAutoUpdateChannel(buildinfo.Version, os.Getenv(autoUpdateChannelEnv))
 	}
 	repo := normalizeGitHubRepository(cfg.AutoUpdate.Repository)
-	frontendRepo := normalizeGitHubRepository(config.DefaultPanelGitHubRepository)
+	frontendRepo := normalizeGitHubRepository(cfg.RemoteManagement.PanelGitHubRepository)
 	client := h.githubClient()
 
-	branch, err := fetchBranchCommit(ctx, client, repo, channel)
-	if err != nil {
-		return nil, err
-	}
-	frontendBranch, err := fetchBranchCommit(ctx, client, frontendRepo, channel)
-	if err != nil {
-		return nil, err
-	}
+	branch, branchErr := fetchBranchCommitForUpdateCheck(ctx, client, repo, channel)
+	frontendBranch, frontendErr := fetchBranchCommitForUpdateCheck(ctx, client, frontendRepo, channel)
 
-	release, releaseErr := fetchLatestReleaseInfo(ctx, client, repo)
+	release, releaseErr := fetchLatestReleaseInfoForUpdateCheck(ctx, client, repo)
 	releaseNotes := strings.TrimSpace(release.Body)
 	if releaseErr != nil {
 		releaseNotes = ""
 	}
 
+	currentVersion := currentUpdateDisplayVersion(buildinfo.Version)
+	currentCommit := strings.TrimSpace(buildinfo.Commit)
+	currentUIVersion, currentUICommit := h.currentFrontendState()
+
+	latestVersion := currentVersion
+	latestCommit := currentCommit
+	latestCommitURL := ""
+	if branchErr == nil {
+		latestVersion = latestUpdateDisplayVersion(channel, branch.SHA)
+		latestCommit = strings.TrimSpace(branch.SHA)
+		latestCommitURL = strings.TrimSpace(branch.HTMLURL)
+	}
+
+	latestUIVersion := currentUIVersion
+	latestUICommit := currentUICommit
+	latestUICommitURL := ""
+	if frontendErr == nil {
+		latestUIVersion = latestFrontendDisplayVersion(channel, frontendBranch.SHA)
+		latestUICommit = strings.TrimSpace(frontendBranch.SHA)
+		latestUICommitURL = strings.TrimSpace(frontendBranch.HTMLURL)
+	}
+
+	backendUpdateAvailable := branchErr == nil && autoUpdateAvailableFromCommit(currentCommit, branch.SHA)
+	frontendUpdateAvailable := frontendErr == nil && autoUpdateAvailableFromCommit(currentUICommit, frontendBranch.SHA)
+
 	resp := &updateCheckResponse{
 		Enabled:           cfg.AutoUpdate.Enabled,
-		CurrentVersion:    currentUpdateDisplayVersion(buildinfo.Version),
-		CurrentCommit:     buildinfo.Commit,
-		CurrentUIVersion:  currentFrontendDisplayVersion(buildinfo.FrontendVersion, buildinfo.FrontendRef, buildinfo.FrontendCommit),
-		CurrentUICommit:   buildinfo.FrontendCommit,
+		CurrentVersion:    currentVersion,
+		CurrentCommit:     currentCommit,
+		CurrentUIVersion:  currentUIVersion,
+		CurrentUICommit:   currentUICommit,
 		BuildDate:         buildinfo.BuildDate,
 		TargetChannel:     channel,
-		LatestVersion:     latestUpdateDisplayVersion(channel, branch.SHA),
-		LatestCommit:      strings.TrimSpace(branch.SHA),
-		LatestCommitURL:   strings.TrimSpace(branch.HTMLURL),
-		LatestUIVersion:   latestFrontendDisplayVersion(channel, frontendBranch.SHA),
-		LatestUICommit:    strings.TrimSpace(frontendBranch.SHA),
-		LatestUICommitURL: strings.TrimSpace(frontendBranch.HTMLURL),
+		LatestVersion:     latestVersion,
+		LatestCommit:      latestCommit,
+		LatestCommitURL:   latestCommitURL,
+		LatestUIVersion:   latestUIVersion,
+		LatestUICommit:    latestUICommit,
+		LatestUICommitURL: latestUICommitURL,
 		DockerImage:       cfg.AutoUpdate.DockerImage,
 		DockerTag:         dockerTagForChannel(channel, branch.SHA),
 		ReleaseNotes:      releaseNotes,
 		ReleaseURL:        strings.TrimSpace(release.HTMLURL),
-		UpdateAvailable: cfg.AutoUpdate.Enabled && autoUpdateAvailable(
-			buildinfo.Commit,
-			branch.SHA,
-			buildinfo.FrontendCommit,
-			frontendBranch.SHA,
-		),
-		UpdaterAvailable: checkUpdaterAvailable(ctx, cfg),
+		UpdateAvailable:   cfg.AutoUpdate.Enabled && (backendUpdateAvailable || frontendUpdateAvailable),
+		UpdaterAvailable:  checkUpdaterAvailable(ctx, cfg),
 	}
 	if !resp.Enabled {
 		resp.Message = "auto update disabled"
+	} else if branchErr != nil || frontendErr != nil {
+		resp.Message = buildUpdateCheckWarning(branchErr, frontendErr)
 	} else if !resp.UpdateAvailable {
 		resp.Message = "already up to date"
 	}
 	return resp, nil
+}
+
+func (h *Handler) buildCurrentUpdateState(ctx context.Context) *updateCheckResponse {
+	cfg := &config.Config{}
+	if h != nil && h.cfg != nil {
+		cfg = h.cfg
+	}
+	cfg.SanitizeAutoUpdate()
+
+	channel := cfg.AutoUpdate.Channel
+	if channel == "auto" {
+		channel = inferAutoUpdateChannel(buildinfo.Version, os.Getenv(autoUpdateChannelEnv))
+	}
+
+	currentUIVersion, currentUICommit := h.currentFrontendState()
+
+	return &updateCheckResponse{
+		Enabled:          cfg.AutoUpdate.Enabled,
+		CurrentVersion:   currentUpdateDisplayVersion(buildinfo.Version),
+		CurrentCommit:    strings.TrimSpace(buildinfo.Commit),
+		CurrentUIVersion: currentUIVersion,
+		CurrentUICommit:  currentUICommit,
+		BuildDate:        buildinfo.BuildDate,
+		TargetChannel:    channel,
+		DockerImage:      cfg.AutoUpdate.DockerImage,
+		DockerTag:        dockerTagForChannel(channel, ""),
+		UpdaterAvailable: checkUpdaterAvailable(ctx, cfg),
+	}
+}
+
+func (h *Handler) currentFrontendState() (string, string) {
+	version := buildinfo.FrontendVersion
+	ref := buildinfo.FrontendRef
+	commit := strings.TrimSpace(buildinfo.FrontendCommit)
+
+	if h != nil {
+		if meta, ok := managementasset.CurrentPanelMetadata(h.configFilePath); ok {
+			if meta.Version != "" {
+				version = meta.Version
+			}
+			if meta.Ref != "" {
+				ref = meta.Ref
+			}
+			if meta.Commit != "" {
+				commit = meta.Commit
+			}
+		}
+	}
+
+	return currentFrontendDisplayVersion(version, ref, commit), strings.TrimSpace(commit)
+}
+
+func buildUpdateCheckWarning(branchErr error, frontendErr error) string {
+	parts := make([]string, 0, 2)
+	if branchErr != nil {
+		parts = append(parts, "service update check degraded: "+strings.TrimSpace(branchErr.Error()))
+	}
+	if frontendErr != nil {
+		parts = append(parts, "management UI update check degraded: "+strings.TrimSpace(frontendErr.Error()))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (h *Handler) githubClient() *http.Client {
@@ -255,8 +381,7 @@ func fetchBranchCommit(ctx context.Context, client *http.Client, repo string, ch
 	if err != nil {
 		return info, err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", latestReleaseUserAgent)
+	applyGitHubAPIHeaders(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return info, err
@@ -281,8 +406,7 @@ func fetchLatestReleaseInfo(ctx context.Context, client *http.Client, repo strin
 	if err != nil {
 		return info, err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", latestReleaseUserAgent)
+	applyGitHubAPIHeaders(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return info, err
@@ -402,6 +526,24 @@ func githubAPIURL(repo string, path string) string {
 	return "https://api.github.com/repos/" + strings.Trim(repo, "/") + "/" + strings.TrimLeft(path, "/")
 }
 
+func applyGitHubAPIHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", latestReleaseUserAgent)
+	if token := githubAPIToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+}
+
+func githubAPIToken() string {
+	if token := strings.TrimSpace(os.Getenv(githubTokenEnv)); token != "" {
+		return token
+	}
+	return strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
+}
+
 func resolveUpdaterURL(cfg *config.Config) string {
 	if fromEnv := strings.TrimSpace(os.Getenv("CLIRELAY_UPDATER_URL")); fromEnv != "" {
 		return fromEnv
@@ -439,6 +581,35 @@ func checkUpdaterAvailable(ctx context.Context, cfg *config.Config) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+func (h *Handler) fetchUpdateProgress(ctx context.Context) (*updateProgressResponse, error) {
+	var cfg *config.Config
+	if h != nil {
+		cfg = h.cfg
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, joinURLPath(resolveUpdaterURL(cfg), "/v1/status"), nil)
+	if err != nil {
+		return nil, err
+	}
+	if token := updaterToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := &http.Client{Timeout: updateHTTPTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("updater status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var payload updateProgressResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return &payload, nil
 }
 
 func joinURLPath(base string, path string) string {

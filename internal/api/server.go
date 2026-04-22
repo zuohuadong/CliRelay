@@ -260,7 +260,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		}
 		return cfg
 	}))
-	engine.Use(versionHeaderMiddleware())
+	engine.Use(versionHeaderMiddleware(configFilePath))
 	wd, err := os.Getwd()
 	if err != nil {
 		wd = configFilePath
@@ -621,6 +621,8 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
 		mgmt.GET("/update/check", s.mgmt.CheckUpdate)
+		mgmt.GET("/update/current", s.mgmt.GetCurrentUpdateState)
+		mgmt.GET("/update/progress", s.mgmt.GetUpdateProgress)
 		mgmt.POST("/update/apply", s.mgmt.ApplyUpdate)
 		mgmt.GET("/auto-update/enabled", s.mgmt.GetAutoUpdateEnabled)
 		mgmt.PUT("/auto-update/enabled", s.mgmt.PutAutoUpdateEnabled)
@@ -883,32 +885,8 @@ func clearServerWriteDeadline(c *gin.Context) {
 	_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
 }
 
-// resolvePanelDir returns the directory containing the SPA panel (manage.html + assets/).
-// It checks MANAGEMENT_PANEL_DIR env var first, then common well-known paths.
 func (s *Server) resolvePanelDir() string {
-	if override := strings.TrimSpace(os.Getenv("MANAGEMENT_PANEL_DIR")); override != "" {
-		if info, err := os.Stat(override); err == nil && info.IsDir() {
-			return override
-		}
-	}
-
-	// Check common deployment locations.
-	candidates := []string{
-		"/home/web/html/cliproxy-panel",
-	}
-
-	// Also try the static dir used by managementasset.
-	if staticDir := managementasset.StaticDir(s.configFilePath); staticDir != "" {
-		candidates = append(candidates, staticDir)
-	}
-
-	for _, dir := range candidates {
-		manageHTML := filepath.Join(dir, "manage.html")
-		if _, err := os.Stat(manageHTML); err == nil {
-			return dir
-		}
-	}
-	return ""
+	return managementasset.ResolvePanelDir(s.configFilePath)
 }
 
 // serveStaticFileWithCompression serves a static file with gzip compression
@@ -1378,12 +1356,22 @@ func isChromeExtensionOrigin(origin string) bool {
 //
 // Returns:
 //   - gin.HandlerFunc: The version header middleware handler
-func versionHeaderMiddleware() gin.HandlerFunc {
+func versionHeaderMiddleware(configFilePath string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("x-cpa-version", buildinfo.Version)
 		c.Header("x-cpa-build-date", buildinfo.BuildDate)
-		c.Header("x-cpa-ui-version", buildinfo.FrontendVersion)
-		c.Header("x-cpa-ui-commit", buildinfo.FrontendCommit)
+		currentUIVersion := buildinfo.FrontendVersion
+		currentUICommit := buildinfo.FrontendCommit
+		if meta, ok := managementasset.CurrentPanelMetadata(configFilePath); ok {
+			if meta.Version != "" {
+				currentUIVersion = meta.Version
+			}
+			if meta.Commit != "" {
+				currentUICommit = meta.Commit
+			}
+		}
+		c.Header("x-cpa-ui-version", currentUIVersion)
+		c.Header("x-cpa-ui-commit", currentUICommit)
 		c.Next()
 	}
 }

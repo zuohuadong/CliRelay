@@ -27,7 +27,15 @@ FROM --platform=$BUILDPLATFORM oven/bun:1 AS frontend-builder
 WORKDIR /frontend
 COPY --from=frontend-source /src/frontend/ .
 ARG UI_VERSION=dev
+ARG FRONTEND_REPOSITORY=https://github.com/kittors/codeProxy.git
+ARG FRONTEND_REF=main
+ARG FRONTEND_COMMIT=none
+ARG BUILD_DATE=unknown
 ENV VITE_APP_VERSION=${UI_VERSION}
+ENV VITE_PANEL_REPOSITORY=${FRONTEND_REPOSITORY}
+ENV VITE_PANEL_REF=${FRONTEND_REF}
+ENV VITE_PANEL_COMMIT=${FRONTEND_COMMIT}
+ENV VITE_PANEL_BUILD_DATE=${BUILD_DATE}
 RUN bun install --frozen-lockfile
 RUN bunx vite build
 

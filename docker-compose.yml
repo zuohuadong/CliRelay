@@ -12,6 +12,7 @@ services:
         UI_VERSION: ${UI_VERSION:-dev}
         FRONTEND_REPOSITORY: ${FRONTEND_REPOSITORY:-https://github.com/kittors/codeProxy.git}
         FRONTEND_REF: ${FRONTEND_REF:-main}
+        FRONTEND_COMMIT: ${FRONTEND_COMMIT:-}
     container_name: cli-proxy-api
     # env_file:
     #   - .env

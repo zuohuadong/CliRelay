@@ -57,12 +57,15 @@ type codexImagePointer struct {
 	Prompt  string
 }
 
-func (e *CodexExecutor) executeImageGeneration(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *CodexExecutor) executeImageGeneration(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	_ = opts
 	parsed, err := parseCodexImageRequest(req.Payload)
 	if err != nil {
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadRequest, msg: err.Error()}
 	}
+	reporter := newUsageReporter(ctx, e.Identifier(), parsed.Model, auth)
+	reporter.setInputContent(string(req.Payload))
+	defer reporter.trackFailure(ctx, &err)
 	apiKey, _ := codexCreds(auth)
 	if strings.TrimSpace(apiKey) == "" {
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusUnauthorized, msg: "codex image generation requires a Codex OAuth access token"}
@@ -144,6 +147,8 @@ func (e *CodexExecutor) executeImageGeneration(ctx context.Context, auth *clipro
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
+	reporter.publishWithContent(ctxRequest, parseOpenAIUsage(payload), string(req.Payload), string(payload))
+	reporter.ensurePublished(ctxRequest)
 	return cliproxyexecutor.Response{Payload: payload, Headers: httpResp.Header.Clone()}, nil
 }
 

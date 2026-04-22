@@ -7,12 +7,25 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	cliproxyusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
+
+type usageCapturePlugin struct {
+	records chan cliproxyusage.Record
+}
+
+func (p *usageCapturePlugin) HandleUsage(ctx context.Context, record cliproxyusage.Record) {
+	select {
+	case p.records <- record:
+	default:
+	}
+}
 
 func TestCodexExecutorExecuteImageGeneration(t *testing.T) {
 	const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+XgnUAAAAASUVORK5CYII="
@@ -65,6 +78,9 @@ func TestCodexExecutorExecuteImageGeneration(t *testing.T) {
 		codexImageChatGPTBaseURL = originalBaseURL
 	}()
 
+	usagePlugin := &usageCapturePlugin{records: make(chan cliproxyusage.Record, 8)}
+	cliproxyusage.RegisterPlugin(usagePlugin)
+
 	executor := NewCodexExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{
 		ID:       "codex-auth",
@@ -109,5 +125,27 @@ func TestCodexExecutorExecuteImageGeneration(t *testing.T) {
 	}
 	if !strings.Contains(resp.Headers.Get("Content-Type"), "text/event-stream") && len(resp.Headers) == 0 {
 		t.Fatalf("expected upstream headers to be preserved")
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case record := <-usagePlugin.records:
+			if record.Model != "gpt-image-2" {
+				continue
+			}
+			if record.Failed {
+				t.Fatalf("expected successful usage record, got failed=true")
+			}
+			if !strings.Contains(record.InputContent, "draw a fox") {
+				t.Fatalf("input content = %q, want prompt", record.InputContent)
+			}
+			if !strings.Contains(record.OutputContent, pngBase64) {
+				t.Fatalf("output content = %q, want response payload", record.OutputContent)
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for image generation usage record")
+		}
 	}
 }

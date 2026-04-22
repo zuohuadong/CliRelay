@@ -1,12 +1,14 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
@@ -40,7 +42,8 @@ func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 	}
 
 	payload, _ := json.Marshal(map[string]any{"model": model, "prompt": prompt})
-	resp, err := h.authManager.Execute(c.Request.Context(), []string{"codex"}, coreexecutor.Request{
+	cliCtx := context.WithValue(c.Request.Context(), util.ContextKeyGin, c)
+	resp, err := h.authManager.Execute(cliCtx, []string{"codex"}, coreexecutor.Request{
 		Model:   "",
 		Payload: payload,
 		Format:  sdktranslator.FromString("openai"),

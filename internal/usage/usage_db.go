@@ -548,6 +548,25 @@ type DashboardKPI struct {
 	TotalTokens     int64   `json:"total_tokens"`
 }
 
+type DashboardTrendPoint struct {
+	Label string  `json:"label"`
+	Value float64 `json:"value"`
+}
+
+type DashboardThroughputPoint struct {
+	Label string  `json:"label"`
+	RPM   float64 `json:"rpm"`
+	TPM   float64 `json:"tpm"`
+}
+
+type DashboardTrends struct {
+	RequestVolume    []DashboardTrendPoint      `json:"request_volume"`
+	SuccessRate      []DashboardTrendPoint      `json:"success_rate"`
+	TotalTokens      []DashboardTrendPoint      `json:"total_tokens"`
+	FailedRequests   []DashboardTrendPoint      `json:"failed_requests"`
+	ThroughputSeries []DashboardThroughputPoint `json:"throughput_series"`
+}
+
 // QueryDashboardKPI returns aggregated KPI data from SQLite for the dashboard.
 // This replaces the old in-memory snapshot-based counting which lost data on restart.
 func QueryDashboardKPI(days int) (DashboardKPI, error) {
@@ -593,6 +612,153 @@ func QueryDashboardKPI(days int) (DashboardKPI, error) {
 	}
 
 	return kpi, nil
+}
+
+type dashboardBucket struct {
+	label      string
+	key        string
+	minutes    float64
+	requests   int64
+	success    int64
+	failed     int64
+	totalToken int64
+}
+
+// QueryDashboardTrends returns fixed-width trend buckets used by the dashboard.
+// days=1 is hourly, while multi-day ranges are daily.
+func QueryDashboardTrends(days int) (DashboardTrends, error) {
+	db := getDB()
+	if db == nil {
+		return emptyDashboardTrends(days), nil
+	}
+	if days < 1 {
+		days = 7
+	}
+
+	loc := getUsageLocation()
+	buckets := buildDashboardBuckets(days, loc)
+	byKey := make(map[string]*dashboardBucket, len(buckets))
+	for i := range buckets {
+		byKey[buckets[i].key] = &buckets[i]
+	}
+
+	rows, err := db.Query(`
+		SELECT timestamp, failed, total_tokens
+		FROM request_logs
+		WHERE timestamp >= ?
+	`, CutoffStartUTC(days).Format(time.RFC3339))
+	if err != nil {
+		return DashboardTrends{}, fmt.Errorf("usage: query dashboard trends: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ts string
+		var failedInt int
+		var totalTokens int64
+		if err := rows.Scan(&ts, &failedInt, &totalTokens); err != nil {
+			return DashboardTrends{}, fmt.Errorf("usage: scan dashboard trend row: %w", err)
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, ts)
+		if err != nil {
+			parsed, err = time.Parse(time.RFC3339, ts)
+			if err != nil {
+				continue
+			}
+		}
+		key := dashboardBucketKey(parsed.In(loc), days)
+		bucket := byKey[key]
+		if bucket == nil {
+			continue
+		}
+		bucket.requests++
+		bucket.totalToken += totalTokens
+		if failedInt != 0 {
+			bucket.failed++
+		} else {
+			bucket.success++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return DashboardTrends{}, fmt.Errorf("usage: iterate dashboard trends: %w", err)
+	}
+
+	return dashboardTrendsFromBuckets(buckets), nil
+}
+
+func emptyDashboardTrends(days int) DashboardTrends {
+	if days < 1 {
+		days = 7
+	}
+	return dashboardTrendsFromBuckets(buildDashboardBuckets(days, getUsageLocation()))
+}
+
+func buildDashboardBuckets(days int, loc *time.Location) []dashboardBucket {
+	if loc == nil {
+		loc = time.Local
+	}
+	start := CutoffStartUTC(days).In(loc)
+	if days == 1 {
+		buckets := make([]dashboardBucket, 0, 24)
+		for i := 0; i < 24; i++ {
+			at := start.Add(time.Duration(i) * time.Hour)
+			buckets = append(buckets, dashboardBucket{
+				label:   at.Format("15:04"),
+				key:     dashboardBucketKey(at, days),
+				minutes: 60,
+			})
+		}
+		return buckets
+	}
+
+	buckets := make([]dashboardBucket, 0, days)
+	for i := 0; i < days; i++ {
+		at := start.AddDate(0, 0, i)
+		buckets = append(buckets, dashboardBucket{
+			label:   at.Format("2006-01-02"),
+			key:     dashboardBucketKey(at, days),
+			minutes: 24 * 60,
+		})
+	}
+	return buckets
+}
+
+func dashboardBucketKey(t time.Time, days int) string {
+	if days == 1 {
+		return t.Format("2006-01-02 15")
+	}
+	return t.Format("2006-01-02")
+}
+
+func dashboardTrendsFromBuckets(buckets []dashboardBucket) DashboardTrends {
+	trends := DashboardTrends{
+		RequestVolume:    make([]DashboardTrendPoint, 0, len(buckets)),
+		SuccessRate:      make([]DashboardTrendPoint, 0, len(buckets)),
+		TotalTokens:      make([]DashboardTrendPoint, 0, len(buckets)),
+		FailedRequests:   make([]DashboardTrendPoint, 0, len(buckets)),
+		ThroughputSeries: make([]DashboardThroughputPoint, 0, len(buckets)),
+	}
+
+	for _, bucket := range buckets {
+		successRate := 0.0
+		if bucket.requests > 0 {
+			successRate = float64(bucket.success) / float64(bucket.requests) * 100
+		}
+		rpm := 0.0
+		tpm := 0.0
+		if bucket.minutes > 0 {
+			rpm = float64(bucket.requests) / bucket.minutes
+			tpm = float64(bucket.totalToken) / bucket.minutes
+		}
+
+		trends.RequestVolume = append(trends.RequestVolume, DashboardTrendPoint{Label: bucket.label, Value: float64(bucket.requests)})
+		trends.SuccessRate = append(trends.SuccessRate, DashboardTrendPoint{Label: bucket.label, Value: successRate})
+		trends.TotalTokens = append(trends.TotalTokens, DashboardTrendPoint{Label: bucket.label, Value: float64(bucket.totalToken)})
+		trends.FailedRequests = append(trends.FailedRequests, DashboardTrendPoint{Label: bucket.label, Value: float64(bucket.failed)})
+		trends.ThroughputSeries = append(trends.ThroughputSeries, DashboardThroughputPoint{Label: bucket.label, RPM: rpm, TPM: tpm})
+	}
+
+	return trends
 }
 
 // MigrateFromSnapshot imports all request details from an existing

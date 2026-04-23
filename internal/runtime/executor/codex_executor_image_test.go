@@ -227,3 +227,205 @@ func TestParseCodexImageRequestRejectsMoreThanFiveImageEdits(t *testing.T) {
 		t.Fatalf("error = %v, want max image count validation error", err)
 	}
 }
+
+func TestExcludeCodexUploadedPointersRemovesInputUploads(t *testing.T) {
+	items := []codexImagePointer{
+		{Pointer: "file-service://input-a"},
+		{Pointer: "sediment://generated-1"},
+		{Pointer: "file-service://generated-2"},
+	}
+	uploads := []codexUploadedImage{
+		{FileID: "input-a"},
+	}
+
+	filtered := excludeCodexUploadedPointers(items, uploads)
+
+	if len(filtered) != 2 {
+		t.Fatalf("filtered length = %d, want 2", len(filtered))
+	}
+	for _, item := range filtered {
+		if item.Pointer == "file-service://input-a" {
+			t.Fatalf("filtered pointers = %#v, should not contain uploaded input pointer", filtered)
+		}
+	}
+	if filtered[0].Pointer != "sediment://generated-1" || filtered[1].Pointer != "file-service://generated-2" {
+		t.Fatalf("filtered pointers = %#v, want generated pointers in original order", filtered)
+	}
+}
+
+func TestCollectCodexImagePointersRecognizesDirectAssets(t *testing.T) {
+	items := collectCodexImagePointers([]byte(`{
+		"revised_prompt": "cat astronaut",
+		"parts": [
+			{"b64_json":"QUJD"},
+			{"download_url":"https://files.example.com/image.png?sig=1"},
+			{"asset_pointer":"file-service://file_123"}
+		]
+	}`))
+
+	if len(items) != 3 {
+		t.Fatalf("items length = %d, want 3: %#v", len(items), items)
+	}
+	var sawBase64, sawURL, sawPointer bool
+	for _, item := range items {
+		if item.B64JSON == "QUJD" {
+			sawBase64 = true
+			if item.Prompt != "cat astronaut" {
+				t.Fatalf("base64 prompt = %q, want cat astronaut", item.Prompt)
+			}
+		}
+		if item.DownloadURL == "https://files.example.com/image.png?sig=1" {
+			sawURL = true
+		}
+		if item.Pointer == "file-service://file_123" {
+			sawPointer = true
+		}
+	}
+	if !sawBase64 || !sawURL || !sawPointer {
+		t.Fatalf("items = %#v, want base64, download URL, and pointer assets", items)
+	}
+}
+
+func TestResolveCodexImageBytesPrefersInlineBase64(t *testing.T) {
+	data, err := resolveCodexImageBytes(context.Background(), nil, nil, "", codexImagePointer{
+		B64JSON: "data:image/png;base64,QUJD",
+	})
+	if err != nil {
+		t.Fatalf("resolveCodexImageBytes() error = %v", err)
+	}
+	if string(data) != "ABC" {
+		t.Fatalf("data = %q, want ABC", string(data))
+	}
+}
+
+func TestExtractCodexImageToolMessagesPrefersToolAssets(t *testing.T) {
+	mapping := map[string]any{
+		"user-message": map[string]any{
+			"message": map[string]any{
+				"author": map[string]any{"role": "user"},
+				"content": map[string]any{
+					"content_type": "multimodal_text",
+					"parts": []any{
+						map[string]any{"asset_pointer": "file-service://input-file"},
+					},
+				},
+				"metadata": map[string]any{},
+			},
+		},
+		"tool-message": map[string]any{
+			"message": map[string]any{
+				"author":      map[string]any{"role": "tool"},
+				"create_time": 2.0,
+				"metadata": map[string]any{
+					"async_task_type": "image_gen",
+					"image_gen_title": "red circle icon",
+				},
+				"content": map[string]any{
+					"content_type": "multimodal_text",
+					"parts": []any{
+						map[string]any{"b64_json": "QUJD"},
+					},
+				},
+			},
+		},
+	}
+
+	messages := extractCodexImageToolMessages(mapping)
+
+	if len(messages) != 1 {
+		t.Fatalf("tool messages length = %d, want 1", len(messages))
+	}
+	if len(messages[0].Pointers) != 1 {
+		t.Fatalf("tool pointers length = %d, want 1", len(messages[0].Pointers))
+	}
+	if messages[0].Pointers[0].B64JSON != "QUJD" {
+		t.Fatalf("tool pointer = %#v, want inline base64 asset", messages[0].Pointers[0])
+	}
+	if messages[0].Pointers[0].Prompt != "red circle icon" {
+		t.Fatalf("tool prompt = %q, want red circle icon", messages[0].Pointers[0].Prompt)
+	}
+}
+
+func TestBuildCodexImageOpenAIResponseSkipsSourceImageEcho(t *testing.T) {
+	_, err := buildCodexImageOpenAIResponse(
+		context.Background(),
+		nil,
+		nil,
+		"",
+		[]codexImagePointer{{B64JSON: "QUJD"}},
+		[]codexImageUpload{{Data: []byte("ABC")}},
+	)
+	if err == nil {
+		t.Fatal("buildCodexImageOpenAIResponse() error = nil, want source echo to be rejected")
+	}
+	if !strings.Contains(err.Error(), "no generated images") {
+		t.Fatalf("error = %v, want no generated images", err)
+	}
+}
+
+func TestCollectCodexImagePollPointersSkipsUploadedSourcePointers(t *testing.T) {
+	body := []byte(`{
+		"mapping": {
+			"user-message": {
+				"message": {
+					"author": {"role": "user"},
+					"content": {
+						"content_type": "multimodal_text",
+						"parts": [{"asset_pointer":"file-service://input-file"}]
+					},
+					"metadata": {}
+				}
+			},
+			"tool-message": {
+				"message": {
+					"author": {"role": "tool"},
+					"create_time": 2,
+					"metadata": {
+						"async_task_type": "image_gen",
+						"image_gen_title": "green icon"
+					},
+					"content": {
+						"content_type": "multimodal_text",
+						"parts": [{"asset_pointer":"file-service://input-file"}]
+					}
+				}
+			}
+		}
+	}`)
+
+	items := collectCodexImagePollPointers(body, []codexUploadedImage{{FileID: "input-file"}})
+
+	if len(items) != 0 {
+		t.Fatalf("items = %#v, want uploaded source pointers to be filtered out", items)
+	}
+}
+
+func TestCollectCodexImagePollPointersKeepsGeneratedToolAssets(t *testing.T) {
+	body := []byte(`{
+		"mapping": {
+			"tool-message": {
+				"message": {
+					"author": {"role": "tool"},
+					"create_time": 2,
+					"metadata": {
+						"async_task_type": "image_gen",
+						"image_gen_title": "green icon"
+					},
+					"content": {
+						"content_type": "multimodal_text",
+						"parts": [{"asset_pointer":"file-service://generated-file"}]
+					}
+				}
+			}
+		}
+	}`)
+
+	items := collectCodexImagePollPointers(body, []codexUploadedImage{{FileID: "input-file"}})
+
+	if len(items) != 1 {
+		t.Fatalf("items length = %d, want 1", len(items))
+	}
+	if items[0].Pointer != "file-service://generated-file" {
+		t.Fatalf("pointer = %#v, want generated file-service pointer", items[0])
+	}
+}

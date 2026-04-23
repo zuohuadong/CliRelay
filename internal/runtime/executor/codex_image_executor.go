@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"golang.org/x/crypto/sha3"
@@ -78,8 +80,16 @@ type codexChatRequirements struct {
 }
 
 type codexImagePointer struct {
-	Pointer string
-	Prompt  string
+	Pointer     string
+	Prompt      string
+	DownloadURL string
+	B64JSON     string
+	MimeType    string
+}
+
+type codexImageToolMessage struct {
+	CreateTime float64
+	Pointers   []codexImagePointer
 }
 
 func (e *CodexExecutor) executeImageGeneration(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
@@ -194,19 +204,24 @@ func (e *CodexExecutor) executeCodexImageOnce(
 	if err != nil {
 		return nil, nil, err
 	}
-	if conversationID != "" && !hasCodexFileServicePointer(pointers) {
-		polled, pollErr := pollCodexImageConversation(ctx, httpClient, headers, conversationID)
+	pointers = excludeCodexUploadedPointers(pointers, uploads)
+	if len(uploads) > 0 {
+		pointers = nil
+	}
+	if conversationID != "" && len(pointers) == 0 {
+		polled, pollErr := pollCodexImageConversation(ctx, httpClient, headers, conversationID, uploads)
 		if pollErr != nil {
 			return nil, nil, pollErr
 		}
 		pointers = mergeCodexImagePointers(pointers, polled)
 	}
+	pointers = excludeCodexUploadedPointers(pointers, uploads)
 	pointers = preferCodexFileServicePointers(pointers)
 	if len(pointers) == 0 {
 		return nil, nil, statusErr{code: http.StatusBadGateway, msg: "openai image conversation returned no downloadable images"}
 	}
 
-	payload, err := buildCodexImageOpenAIResponse(ctx, httpClient, headers, conversationID, pointers)
+	payload, err := buildCodexImageOpenAIResponse(ctx, httpClient, headers, conversationID, pointers, parsed.Uploads)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -826,10 +841,10 @@ func codexExtractSSEDataLine(line string) (string, bool) {
 }
 
 func collectCodexImagePointers(body []byte) []codexImagePointer {
-	matches := codexImagePointerMatches(body)
-	if len(matches) == 0 {
+	if len(body) == 0 {
 		return nil
 	}
+	matches := codexImagePointerMatches(body)
 	prompt := ""
 	for _, path := range []string{"message.metadata.dalle.prompt", "metadata.dalle.prompt", "revised_prompt"} {
 		if value := strings.TrimSpace(gjson.GetBytes(body, path).String()); value != "" {
@@ -841,7 +856,7 @@ func collectCodexImagePointers(body []byte) []codexImagePointer {
 	for _, pointer := range matches {
 		out = append(out, codexImagePointer{Pointer: pointer, Prompt: prompt})
 	}
-	return out
+	return mergeCodexImagePointers(out, collectCodexImageInlineAssets(body, prompt))
 }
 
 func codexImagePointerMatches(body []byte) []string {
@@ -870,26 +885,133 @@ func codexImagePointerMatches(body []byte) []string {
 	return dedupeCodexImageStrings(matches)
 }
 
+func collectCodexImageInlineAssets(body []byte, fallbackPrompt string) []codexImagePointer {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return nil
+	}
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil
+	}
+	var out []codexImagePointer
+	walkCodexImageInlineAssets(decoded, strings.TrimSpace(fallbackPrompt), &out)
+	return out
+}
+
+func walkCodexImageInlineAssets(node any, prompt string, out *[]codexImagePointer) {
+	switch value := node.(type) {
+	case map[string]any:
+		localPrompt := prompt
+		for _, key := range []string{"revised_prompt", "image_gen_title", "prompt"} {
+			if v, ok := value[key].(string); ok && strings.TrimSpace(v) != "" {
+				localPrompt = strings.TrimSpace(v)
+				break
+			}
+		}
+		item := codexImagePointer{
+			Prompt:      localPrompt,
+			Pointer:     firstCodexImageNonEmptyString(value["asset_pointer"], value["pointer"]),
+			DownloadURL: firstCodexImageNonEmptyString(value["download_url"], value["url"], value["image_url"]),
+			B64JSON:     firstCodexImageNonEmptyString(value["b64_json"], value["base64"], value["image_base64"]),
+			MimeType:    firstCodexImageNonEmptyString(value["mime_type"], value["mimeType"], value["content_type"]),
+		}
+		switch {
+		case strings.HasPrefix(strings.TrimSpace(item.Pointer), "file-service://"),
+			strings.HasPrefix(strings.TrimSpace(item.Pointer), "sediment://"),
+			isLikelyCodexImageDownloadURL(item.DownloadURL),
+			normalizeCodexImageBase64(item.B64JSON) != "":
+			*out = append(*out, item)
+		}
+		for _, child := range value {
+			walkCodexImageInlineAssets(child, localPrompt, out)
+		}
+	case []any:
+		for _, child := range value {
+			walkCodexImageInlineAssets(child, prompt, out)
+		}
+	}
+}
+
+func firstCodexImageNonEmptyString(values ...any) string {
+	for _, value := range values {
+		if s, ok := value.(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
 func mergeCodexImagePointers(existing []codexImagePointer, next []codexImagePointer) []codexImagePointer {
 	if len(next) == 0 {
 		return existing
 	}
-	seen := make(map[string]int, len(existing)+len(next))
-	out := append([]codexImagePointer(nil), existing...)
-	for i, item := range out {
-		seen[item.Pointer] = i
+	seen := make(map[string]codexImagePointer, len(existing)+len(next))
+	out := make([]codexImagePointer, 0, len(existing)+len(next))
+	for _, item := range existing {
+		if key := item.identityKey(); key != "" {
+			seen[key] = item
+		}
+		out = append(out, item)
 	}
 	for _, item := range next {
-		if idx, ok := seen[item.Pointer]; ok {
-			if out[idx].Prompt == "" && item.Prompt != "" {
-				out[idx].Prompt = item.Prompt
+		key := item.identityKey()
+		if key == "" {
+			continue
+		}
+		if existingItem, ok := seen[key]; ok {
+			merged := mergeCodexImagePointer(existingItem, item)
+			if merged != existingItem {
+				for i := range out {
+					if out[i].identityKey() == key {
+						out[i] = merged
+						break
+					}
+				}
+				seen[key] = merged
 			}
 			continue
 		}
-		seen[item.Pointer] = len(out)
+		seen[key] = item
 		out = append(out, item)
 	}
 	return out
+}
+
+func (p codexImagePointer) identityKey() string {
+	switch {
+	case strings.TrimSpace(p.Pointer) != "":
+		return "pointer:" + strings.TrimSpace(p.Pointer)
+	case strings.TrimSpace(p.DownloadURL) != "":
+		return "download:" + strings.TrimSpace(p.DownloadURL)
+	case strings.TrimSpace(p.B64JSON) != "":
+		b64 := strings.TrimSpace(p.B64JSON)
+		if len(b64) > 64 {
+			b64 = b64[:64]
+		}
+		return "b64:" + b64
+	default:
+		return ""
+	}
+}
+
+func mergeCodexImagePointer(existing, next codexImagePointer) codexImagePointer {
+	merged := existing
+	if strings.TrimSpace(merged.Pointer) == "" {
+		merged.Pointer = next.Pointer
+	}
+	if strings.TrimSpace(merged.DownloadURL) == "" {
+		merged.DownloadURL = next.DownloadURL
+	}
+	if strings.TrimSpace(merged.B64JSON) == "" {
+		merged.B64JSON = next.B64JSON
+	}
+	if strings.TrimSpace(merged.MimeType) == "" {
+		merged.MimeType = next.MimeType
+	}
+	if strings.TrimSpace(merged.Prompt) == "" {
+		merged.Prompt = next.Prompt
+	}
+	return merged
 }
 
 func hasCodexFileServicePointer(items []codexImagePointer) bool {
@@ -914,7 +1036,121 @@ func preferCodexFileServicePointers(items []codexImagePointer) []codexImagePoint
 	return out
 }
 
-func pollCodexImageConversation(ctx context.Context, client *http.Client, headers http.Header, conversationID string) ([]codexImagePointer, error) {
+func excludeCodexUploadedPointers(items []codexImagePointer, uploads []codexUploadedImage) []codexImagePointer {
+	if len(items) == 0 || len(uploads) == 0 {
+		return items
+	}
+	uploadedPointers := make(map[string]struct{}, len(uploads))
+	for _, upload := range uploads {
+		fileID := strings.TrimSpace(upload.FileID)
+		if fileID == "" {
+			continue
+		}
+		uploadedPointers["file-service://"+fileID] = struct{}{}
+	}
+	if len(uploadedPointers) == 0 {
+		return items
+	}
+	filtered := make([]codexImagePointer, 0, len(items))
+	for _, item := range items {
+		if _, ok := uploadedPointers[item.Pointer]; ok {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
+func extractCodexImageToolMessages(mapping map[string]any) []codexImageToolMessage {
+	if len(mapping) == 0 {
+		return nil
+	}
+	out := make([]codexImageToolMessage, 0, 4)
+	for _, raw := range mapping {
+		node, _ := raw.(map[string]any)
+		if node == nil {
+			continue
+		}
+		message, _ := node["message"].(map[string]any)
+		if message == nil {
+			continue
+		}
+		author, _ := message["author"].(map[string]any)
+		metadata, _ := message["metadata"].(map[string]any)
+		content, _ := message["content"].(map[string]any)
+		if author == nil || metadata == nil || content == nil {
+			continue
+		}
+		if role, _ := author["role"].(string); role != "tool" {
+			continue
+		}
+		if asyncTaskType, _ := metadata["async_task_type"].(string); asyncTaskType != "image_gen" {
+			continue
+		}
+		if contentType, _ := content["content_type"].(string); contentType != "multimodal_text" {
+			continue
+		}
+		prompt := ""
+		if title, _ := metadata["image_gen_title"].(string); strings.TrimSpace(title) != "" {
+			prompt = strings.TrimSpace(title)
+		}
+		item := codexImageToolMessage{}
+		if createTime, ok := message["create_time"].(float64); ok {
+			item.CreateTime = createTime
+		}
+		parts, _ := content["parts"].([]any)
+		for _, part := range parts {
+			switch value := part.(type) {
+			case map[string]any:
+				pointer := codexImagePointer{
+					Prompt:      prompt,
+					Pointer:     firstCodexImageNonEmptyString(value["asset_pointer"], value["pointer"]),
+					DownloadURL: firstCodexImageNonEmptyString(value["download_url"], value["url"], value["image_url"]),
+					B64JSON:     firstCodexImageNonEmptyString(value["b64_json"], value["base64"], value["image_base64"]),
+					MimeType:    firstCodexImageNonEmptyString(value["mime_type"], value["mimeType"], value["content_type"]),
+				}
+				if pointer.identityKey() != "" {
+					item.Pointers = append(item.Pointers, pointer)
+				}
+			case string:
+				for _, match := range codexImagePointerMatches([]byte(value)) {
+					item.Pointers = append(item.Pointers, codexImagePointer{Pointer: match, Prompt: prompt})
+				}
+			}
+		}
+		item.Pointers = mergeCodexImagePointers(nil, item.Pointers)
+		if len(item.Pointers) == 0 {
+			continue
+		}
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreateTime < out[j].CreateTime
+	})
+	return out
+}
+
+func collectCodexImagePollPointers(body []byte, uploads []codexUploadedImage) []codexImagePointer {
+	pointers := mergeCodexImagePointers(nil, collectCodexImagePointers(body))
+	if len(body) == 0 {
+		return pointers
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err == nil {
+		if mapping, _ := decoded["mapping"].(map[string]any); len(mapping) > 0 {
+			toolMessages := extractCodexImageToolMessages(mapping)
+			toolPointers := make([]codexImagePointer, 0, len(toolMessages))
+			for _, msg := range toolMessages {
+				toolPointers = mergeCodexImagePointers(toolPointers, msg.Pointers)
+			}
+			pointers = mergeCodexImagePointers(pointers, toolPointers)
+		}
+	}
+	pointers = excludeCodexUploadedPointers(pointers, uploads)
+	return preferCodexFileServicePointers(pointers)
+}
+
+func pollCodexImageConversation(ctx context.Context, client *http.Client, headers http.Header, conversationID string, uploads []codexUploadedImage) ([]codexImagePointer, error) {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
 		return nil, nil
@@ -931,7 +1167,28 @@ func pollCodexImageConversation(ctx context.Context, client *http.Client, header
 			if readErr != nil {
 				lastErr = readErr
 			} else if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
-				pointers := collectCodexImagePointers(body)
+				var decoded map[string]any
+				toolMessages := 0
+				toolPointers := 0
+				genericPointers := len(collectCodexImagePointers(body))
+				if err := json.Unmarshal(body, &decoded); err == nil {
+					if mapping, _ := decoded["mapping"].(map[string]any); len(mapping) > 0 {
+						messages := extractCodexImageToolMessages(mapping)
+						toolMessages = len(messages)
+						for _, msg := range messages {
+							toolPointers += len(msg.Pointers)
+						}
+					}
+				}
+				pointers := collectCodexImagePollPointers(body, uploads)
+				log.Debugf(
+					"codex image poll conversation=%s tool_messages=%d tool_assets=%d generic_assets=%d filtered_assets=%d",
+					conversationID,
+					toolMessages,
+					toolPointers,
+					genericPointers,
+					len(pointers),
+				)
 				if len(pointers) > 0 {
 					return pointers, nil
 				}
@@ -952,30 +1209,124 @@ func pollCodexImageConversation(ctx context.Context, client *http.Client, header
 	return nil, lastErr
 }
 
-func buildCodexImageOpenAIResponse(ctx context.Context, client *http.Client, headers http.Header, conversationID string, pointers []codexImagePointer) ([]byte, error) {
+func buildCodexImageOpenAIResponse(
+	ctx context.Context,
+	client *http.Client,
+	headers http.Header,
+	conversationID string,
+	pointers []codexImagePointer,
+	inputUploads []codexImageUpload,
+) ([]byte, error) {
 	type responseItem struct {
 		B64JSON       string `json:"b64_json"`
 		RevisedPrompt string `json:"revised_prompt,omitempty"`
 	}
+	inputHashes := codexImageUploadHashes(inputUploads)
 	items := make([]responseItem, 0, len(pointers))
 	for _, pointer := range pointers {
-		downloadURL, err := fetchCodexImageDownloadURL(ctx, client, headers, conversationID, pointer.Pointer)
+		data, err := resolveCodexImageBytes(ctx, client, headers, conversationID, pointer)
 		if err != nil {
 			return nil, err
 		}
-		data, err := downloadCodexImageBytes(ctx, client, headers, downloadURL)
-		if err != nil {
-			return nil, err
+		if len(inputHashes) > 0 {
+			sum := sha3.Sum256(data)
+			if _, ok := inputHashes[hex.EncodeToString(sum[:])]; ok {
+				continue
+			}
 		}
 		items = append(items, responseItem{
 			B64JSON:       base64.StdEncoding.EncodeToString(data),
 			RevisedPrompt: pointer.Prompt,
 		})
 	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("openai image conversation returned no generated images")
+	}
 	return json.Marshal(map[string]any{
 		"created": time.Now().Unix(),
 		"data":    items,
 	})
+}
+
+func codexImageUploadHashes(uploads []codexImageUpload) map[string]struct{} {
+	if len(uploads) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(uploads))
+	for _, upload := range uploads {
+		if len(upload.Data) == 0 {
+			continue
+		}
+		sum := sha3.Sum256(upload.Data)
+		out[hex.EncodeToString(sum[:])] = struct{}{}
+	}
+	return out
+}
+
+func resolveCodexImageBytes(
+	ctx context.Context,
+	client *http.Client,
+	headers http.Header,
+	conversationID string,
+	pointer codexImagePointer,
+) ([]byte, error) {
+	if normalized := normalizeCodexImageBase64(pointer.B64JSON); normalized != "" {
+		return base64.StdEncoding.DecodeString(normalized)
+	}
+	if normalized := normalizeCodexImageBase64(pointer.DownloadURL); normalized != "" {
+		return base64.StdEncoding.DecodeString(normalized)
+	}
+	if downloadURL := strings.TrimSpace(pointer.DownloadURL); downloadURL != "" {
+		return downloadCodexImageBytes(ctx, client, headers, downloadURL)
+	}
+	if strings.TrimSpace(pointer.Pointer) == "" {
+		return nil, fmt.Errorf("image asset is missing pointer, url, and base64 data")
+	}
+	downloadURL, err := fetchCodexImageDownloadURL(ctx, client, headers, conversationID, pointer.Pointer)
+	if err != nil {
+		return nil, err
+	}
+	return downloadCodexImageBytes(ctx, client, headers, downloadURL)
+}
+
+func normalizeCodexImageBase64(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(raw), "data:") {
+		if idx := strings.Index(raw, ","); idx >= 0 && idx+1 < len(raw) {
+			raw = raw[idx+1:]
+		}
+	}
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimRight(raw, "=") + strings.Repeat("=", (4-len(raw)%4)%4)
+	if raw == "" {
+		return ""
+	}
+	if _, err := base64.StdEncoding.DecodeString(raw); err != nil {
+		return ""
+	}
+	return raw
+}
+
+func isLikelyCodexImageDownloadURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	if strings.HasPrefix(strings.ToLower(raw), "data:image/") {
+		return true
+	}
+	if !strings.HasPrefix(strings.ToLower(raw), "http://") && !strings.HasPrefix(strings.ToLower(raw), "https://") {
+		return false
+	}
+	lower := strings.ToLower(raw)
+	return strings.Contains(lower, "/download") ||
+		strings.Contains(lower, ".png") ||
+		strings.Contains(lower, ".jpg") ||
+		strings.Contains(lower, ".jpeg") ||
+		strings.Contains(lower, ".webp")
 }
 
 func fetchCodexImageDownloadURL(ctx context.Context, client *http.Client, headers http.Header, conversationID string, pointer string) (string, error) {

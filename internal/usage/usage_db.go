@@ -3,7 +3,6 @@ package usage
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -1071,19 +1070,16 @@ func QueryLogContent(id int64) (LogContentResult, error) {
 		id,
 	)
 	if err == nil {
-		applyMissingFailedOutputContent(db, id, "", &result)
 		return result, nil
 	}
 
 	var fallback LogContentResult
-	var failedInt int
 	err = db.QueryRow(
-		"SELECT id, model, failed, input_content, output_content FROM request_logs WHERE id = ?", id,
-	).Scan(&fallback.ID, &fallback.Model, &failedInt, &fallback.InputContent, &fallback.OutputContent)
+		"SELECT id, model, input_content, output_content FROM request_logs WHERE id = ?", id,
+	).Scan(&fallback.ID, &fallback.Model, &fallback.InputContent, &fallback.OutputContent)
 	if err != nil {
 		return LogContentResult{}, fmt.Errorf("usage: query log content: %w", err)
 	}
-	applyMissingFailedOutputContentForFailed(failedInt != 0, &fallback)
 	return fallback, nil
 }
 
@@ -1118,21 +1114,18 @@ func QueryLogContentPart(id int64, part string) (LogContentPartResult, error) {
 		id,
 	)
 	if err == nil {
-		applyMissingFailedOutputContentPart(db, id, "", &result)
 		return result, nil
 	}
 
 	var fallback LogContentPartResult
 	fallback.Part = part
-	var failedInt int
 	err = db.QueryRow(
-		fmt.Sprintf("SELECT id, model, failed, %s FROM request_logs WHERE id = ?", column),
+		fmt.Sprintf("SELECT id, model, %s FROM request_logs WHERE id = ?", column),
 		id,
-	).Scan(&fallback.ID, &fallback.Model, &failedInt, &fallback.Content)
+	).Scan(&fallback.ID, &fallback.Model, &fallback.Content)
 	if err != nil {
 		return LogContentPartResult{}, fmt.Errorf("usage: query log content part: %w", err)
 	}
-	applyMissingFailedOutputContentPartForFailed(failedInt != 0, &fallback)
 	return fallback, nil
 }
 
@@ -1153,19 +1146,16 @@ func QueryLogContentForKey(id int64, apiKey string) (LogContentResult, error) {
 		id, apiKey,
 	)
 	if err == nil {
-		applyMissingFailedOutputContent(db, id, apiKey, &result)
 		return result, nil
 	}
 
 	var fallback LogContentResult
-	var failedInt int
 	err = db.QueryRow(
-		"SELECT id, model, failed, input_content, output_content FROM request_logs WHERE id = ? AND api_key = ?", id, apiKey,
-	).Scan(&fallback.ID, &fallback.Model, &failedInt, &fallback.InputContent, &fallback.OutputContent)
+		"SELECT id, model, input_content, output_content FROM request_logs WHERE id = ? AND api_key = ?", id, apiKey,
+	).Scan(&fallback.ID, &fallback.Model, &fallback.InputContent, &fallback.OutputContent)
 	if err != nil {
 		return LogContentResult{}, fmt.Errorf("usage: query log content: %w", err)
 	}
-	applyMissingFailedOutputContentForFailed(failedInt != 0, &fallback)
 	return fallback, nil
 }
 
@@ -1200,80 +1190,19 @@ func QueryLogContentPartForKey(id int64, apiKey string, part string) (LogContent
 		id, apiKey,
 	)
 	if err == nil {
-		applyMissingFailedOutputContentPart(db, id, apiKey, &result)
 		return result, nil
 	}
 
 	var fallback LogContentPartResult
 	fallback.Part = part
-	var failedInt int
 	err = db.QueryRow(
-		fmt.Sprintf("SELECT id, model, failed, %s FROM request_logs WHERE id = ? AND api_key = ?", column),
+		fmt.Sprintf("SELECT id, model, %s FROM request_logs WHERE id = ? AND api_key = ?", column),
 		id, apiKey,
-	).Scan(&fallback.ID, &fallback.Model, &failedInt, &fallback.Content)
+	).Scan(&fallback.ID, &fallback.Model, &fallback.Content)
 	if err != nil {
 		return LogContentPartResult{}, fmt.Errorf("usage: query log content part: %w", err)
 	}
-	applyMissingFailedOutputContentPartForFailed(failedInt != 0, &fallback)
 	return fallback, nil
-}
-
-func applyMissingFailedOutputContent(db *sql.DB, id int64, apiKey string, result *LogContentResult) {
-	if result == nil || strings.TrimSpace(result.OutputContent) != "" {
-		return
-	}
-	failed := queryLogFailedFlag(db, id, apiKey)
-	applyMissingFailedOutputContentForFailed(failed, result)
-}
-
-func applyMissingFailedOutputContentForFailed(failed bool, result *LogContentResult) {
-	if result == nil || !failed || strings.TrimSpace(result.OutputContent) != "" {
-		return
-	}
-	result.OutputContent = missingFailedOutputContent()
-}
-
-func applyMissingFailedOutputContentPart(db *sql.DB, id int64, apiKey string, result *LogContentPartResult) {
-	if result == nil || result.Part != "output" || strings.TrimSpace(result.Content) != "" {
-		return
-	}
-	failed := queryLogFailedFlag(db, id, apiKey)
-	applyMissingFailedOutputContentPartForFailed(failed, result)
-}
-
-func applyMissingFailedOutputContentPartForFailed(failed bool, result *LogContentPartResult) {
-	if result == nil || result.Part != "output" || !failed || strings.TrimSpace(result.Content) != "" {
-		return
-	}
-	result.Content = missingFailedOutputContent()
-}
-
-func queryLogFailedFlag(db *sql.DB, id int64, apiKey string) bool {
-	if db == nil || id < 1 {
-		return false
-	}
-	var failedInt int
-	var err error
-	if strings.TrimSpace(apiKey) == "" {
-		err = db.QueryRow("SELECT failed FROM request_logs WHERE id = ?", id).Scan(&failedInt)
-	} else {
-		err = db.QueryRow("SELECT failed FROM request_logs WHERE id = ? AND api_key = ?", id, apiKey).Scan(&failedInt)
-	}
-	return err == nil && failedInt != 0
-}
-
-func missingFailedOutputContent() string {
-	body := map[string]any{
-		"error": map[string]any{
-			"message": "请求失败，但该历史日志没有记录上游错误响应内容。新版本会在失败日志中记录错误详情。",
-			"type":    "request_log_missing_error_content",
-		},
-	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		return `{"error":{"message":"请求失败，但该历史日志没有记录上游错误响应内容。新版本会在失败日志中记录错误详情。","type":"request_log_missing_error_content"}}`
-	}
-	return string(data)
 }
 
 // DailySeriesPoint holds one day of aggregated usage data.

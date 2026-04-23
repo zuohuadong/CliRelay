@@ -3,7 +3,6 @@ package usage
 import (
 	"database/sql"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -89,7 +88,7 @@ func TestQueryLogsSupportsSystemRequestLogFilterValue(t *testing.T) {
 	}
 }
 
-func TestQueryLogContentSynthesizesMissingFailedOutput(t *testing.T) {
+func TestQueryLogContentKeepsMissingFailedOutputEmpty(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{
 		StoreContent:           true,
 		ContentRetentionDays:   30,
@@ -115,16 +114,16 @@ func TestQueryLogContentSynthesizesMissingFailedOutput(t *testing.T) {
 	if content.InputContent != input {
 		t.Fatalf("InputContent = %q, want %q", content.InputContent, input)
 	}
-	if !strings.Contains(content.OutputContent, "request_log_missing_error_content") {
-		t.Fatalf("OutputContent = %q, want synthesized missing error content", content.OutputContent)
+	if content.OutputContent != "" {
+		t.Fatalf("OutputContent = %q, want empty historical missing output", content.OutputContent)
 	}
 
 	part, err := QueryLogContentPart(result.Items[0].ID, "output")
 	if err != nil {
 		t.Fatalf("QueryLogContentPart() error = %v", err)
 	}
-	if !strings.Contains(part.Content, "request_log_missing_error_content") {
-		t.Fatalf("part.Content = %q, want synthesized missing error content", part.Content)
+	if part.Content != "" {
+		t.Fatalf("part.Content = %q, want empty historical missing output", part.Content)
 	}
 }
 

@@ -23,6 +23,7 @@ const (
 	imageGenerationModel = "gpt-image-2"
 	imageGenerationAlt   = "images/generations"
 	imageEditsAlt        = "images/edits"
+	imageMaxUploads      = 5
 )
 
 func (h *Handler) PostImageGenerationTest(c *gin.Context) {
@@ -138,6 +139,9 @@ func parseImageGenerationMultipartPayload(c *gin.Context) ([]byte, string, error
 	}
 	if len(files) == 0 {
 		return nil, "", fmt.Errorf("image file is required")
+	}
+	if len(files) > imageMaxUploads {
+		return nil, "", fmt.Errorf("image edit supports at most %d images", imageMaxUploads)
 	}
 	uploads := make([]map[string]any, 0, len(files))
 	for _, fileHeader := range files {

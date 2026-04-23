@@ -31,6 +31,7 @@ const (
 	codexImageDefaultPrompt      = "Generate an image."
 	codexImageConversationTimout = 180 * time.Second
 	codexImageMaxN               = 4
+	codexImageMaxUploads         = 5
 )
 
 var codexImageChatGPTBaseURL = "https://chatgpt.com"
@@ -265,7 +266,11 @@ func parseCodexImageRequest(body []byte) (*codexImageRequest, error) {
 		if !uploadResult.IsArray() {
 			return nil, fmt.Errorf("image_files must be an array")
 		}
-		for _, item := range uploadResult.Array() {
+		uploadItems := uploadResult.Array()
+		if len(uploadItems) > codexImageMaxUploads {
+			return nil, fmt.Errorf("image edit supports at most %d images", codexImageMaxUploads)
+		}
+		for _, item := range uploadItems {
 			upload := codexImageUpload{
 				FileName:    strings.TrimSpace(item.Get("file_name").String()),
 				ContentType: strings.TrimSpace(item.Get("content_type").String()),

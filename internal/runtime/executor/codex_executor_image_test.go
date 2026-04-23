@@ -206,3 +206,24 @@ func TestParseCodexImageRequestAcceptsImageEditsPayload(t *testing.T) {
 		t.Fatalf("upload data = %q, want hello", string(parsed.Uploads[0].Data))
 	}
 }
+
+func TestParseCodexImageRequestRejectsMoreThanFiveImageEdits(t *testing.T) {
+	_, err := parseCodexImageRequest([]byte(`{
+		"model":"gpt-image-2",
+		"prompt":"turn this into a blue icon",
+		"image_files":[
+			{"file_name":"1.png","content_type":"image/png","data_base64":"aGVsbG8="},
+			{"file_name":"2.png","content_type":"image/png","data_base64":"aGVsbG8="},
+			{"file_name":"3.png","content_type":"image/png","data_base64":"aGVsbG8="},
+			{"file_name":"4.png","content_type":"image/png","data_base64":"aGVsbG8="},
+			{"file_name":"5.png","content_type":"image/png","data_base64":"aGVsbG8="},
+			{"file_name":"6.png","content_type":"image/png","data_base64":"aGVsbG8="}
+		]
+	}`))
+	if err == nil {
+		t.Fatal("parseCodexImageRequest() error = nil, want max image count validation error")
+	}
+	if !strings.Contains(err.Error(), "at most 5 images") {
+		t.Fatalf("error = %v, want max image count validation error", err)
+	}
+}

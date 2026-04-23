@@ -79,12 +79,20 @@ type QwenTokenResponse struct {
 // QwenAuth manages authentication and token handling for the Qwen API.
 type QwenAuth struct {
 	httpClient *http.Client
+	userAgent  string
 }
+
+const defaultOAuthUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 // NewQwenAuth creates a new QwenAuth instance with a proxy-configured HTTP client.
 func NewQwenAuth(cfg *config.Config) *QwenAuth {
+	userAgent := defaultOAuthUserAgent
+	if cfg != nil && strings.TrimSpace(cfg.OAuthUserAgent) != "" {
+		userAgent = strings.TrimSpace(cfg.OAuthUserAgent)
+	}
 	return &QwenAuth{
 		httpClient: util.SetProxy(&cfg.SDKConfig, util.NewHTTPClient(util.DefaultHTTPClientTimeout)),
+		userAgent:  userAgent,
 	}
 }
 
@@ -127,7 +135,7 @@ func (qa *QwenAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Qw
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	req.Header.Set("User-Agent", qa.userAgent)
 
 	resp, err := qa.httpClient.Do(req)
 
@@ -187,7 +195,7 @@ func (qa *QwenAuth) InitiateDeviceFlow(ctx context.Context) (*DeviceFlow, error)
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	req.Header.Set("User-Agent", qa.userAgent)
 
 	resp, err := qa.httpClient.Do(req)
 

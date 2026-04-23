@@ -61,6 +61,11 @@ type Config struct {
 	// When empty, the runtime may fall back to environment variables (see oauth_clients.go).
 	OAuthClients OAuthClients `yaml:"oauth-clients" json:"-"`
 
+	// OAuthUserAgent sets the User-Agent header for OAuth HTTP requests.
+	// Some providers (e.g., Qwen) may block requests with default Go HTTP client User-Agent.
+	// When empty, a browser-like default is used.
+	OAuthUserAgent string `yaml:"oauth-user-agent" json:"oauth-user-agent"`
+
 	// AuthDir is the directory where authentication token files are stored.
 	AuthDir string `yaml:"auth-dir" json:"-"`
 

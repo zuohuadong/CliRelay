@@ -314,6 +314,9 @@ func apiKeyFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
+	if value := strings.TrimSpace(contextStringValue(ctx, util.ContextKeyAPIKey)); value != "" {
+		return value
+	}
 	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
 	if !ok || ginCtx == nil {
 		return ""
@@ -329,6 +332,22 @@ func apiKeyFromContext(ctx context.Context) string {
 		}
 	}
 	return ""
+}
+
+func contextStringValue(ctx context.Context, key any) string {
+	if ctx == nil {
+		return ""
+	}
+	switch value := ctx.Value(key).(type) {
+	case string:
+		return value
+	case fmt.Stringer:
+		return value.String()
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", value)
+	}
 }
 
 func firstTokenLatencyMsFromContext(ctx context.Context, requestedAt time.Time) int64 {

@@ -772,6 +772,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
 		mgmt.GET("/image-generation/channels", s.mgmt.ListImageGenerationChannels)
 		mgmt.POST("/image-generation/test", s.mgmt.PostImageGenerationTest)
+		mgmt.GET("/image-generation/test/:task_id", s.mgmt.GetImageGenerationTestTask)
 		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)

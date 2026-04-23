@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -21,12 +22,24 @@ import (
 )
 
 const (
-	imageGenerationModel       = "gpt-image-2"
-	imageGenerationAlt         = "images/generations"
-	imageEditsAlt              = "images/edits"
-	imageMaxUploads            = 5
-	imageGenerationTestTimeout = 5 * time.Minute
+	imageGenerationModel        = "gpt-image-2"
+	imageGenerationAlt          = "images/generations"
+	imageEditsAlt               = "images/edits"
+	imageMaxUploads             = 5
+	imageGenerationTestTimeout  = 5 * time.Minute
+	imageGenerationTaskTTL      = 30 * time.Minute
+	imageGenerationSystemAPIKey = "POST /image-generation/test"
 )
+
+type imageGenerationTask struct {
+	ID        string
+	Status    string
+	Phase     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Result    json.RawMessage
+	Error     gin.H
+}
 
 func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 	payload, alt, err := parseImageGenerationTestPayload(c)
@@ -39,14 +52,71 @@ func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 		return
 	}
 
-	testCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), imageGenerationTestTimeout)
+	task := h.createImageGenerationTask()
+	c.JSON(http.StatusAccepted, h.imageGenerationTaskSnapshot(task))
+
+	go h.runImageGenerationTask(task.ID, payload, alt)
+}
+
+func (h *Handler) GetImageGenerationTestTask(c *gin.Context) {
+	taskID := strings.TrimSpace(c.Param("task_id"))
+	if taskID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task_id is required"})
+		return
+	}
+	task := h.getImageGenerationTask(taskID)
+	if task == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "image generation task not found"})
+		return
+	}
+	c.JSON(http.StatusOK, h.imageGenerationTaskSnapshot(task))
+}
+
+func (h *Handler) runImageGenerationTask(taskID string, payload []byte, alt string) {
+	h.updateImageGenerationTask(taskID, func(task *imageGenerationTask) {
+		task.Status = "running"
+		task.Phase = "queued"
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), imageGenerationTestTimeout)
 	defer cancel()
-	cliCtx := context.WithValue(testCtx, util.ContextKeyGin, c)
-	c.Set("apiKey", "POST /image-generation/test")
+	ctx = context.WithValue(ctx, util.ContextKeyAPIKey, imageGenerationSystemAPIKey)
+	ctx = context.WithValue(ctx, util.ContextKeyImageGenerationPhaseHook, func(phase string) {
+		h.updateImageGenerationTask(taskID, func(task *imageGenerationTask) {
+			if phase != "" {
+				task.Phase = phase
+			}
+		})
+	})
+
+	result, err := h.executeImageGenerationTest(ctx, payload, alt)
+	if err != nil {
+		status := http.StatusBadGateway
+		if statusErr, ok := err.(coreexecutor.StatusError); ok && statusErr.StatusCode() > 0 {
+			status = statusErr.StatusCode()
+		}
+		errorResponse := imageGenerationErrorResponse(err, "upstream_error")
+		h.updateImageGenerationTask(taskID, func(task *imageGenerationTask) {
+			task.Status = "failed"
+			task.Error = gin.H{
+				"status": status,
+				"body":   errorResponse,
+			}
+		})
+		return
+	}
+
+	h.updateImageGenerationTask(taskID, func(task *imageGenerationTask) {
+		task.Status = "succeeded"
+		task.Phase = "completed"
+		task.Result = append(json.RawMessage(nil), result...)
+	})
+}
+
+func (h *Handler) executeImageGenerationTest(ctx context.Context, payload []byte, alt string) ([]byte, error) {
 	imageCount, err := imageGenerationRequestCount(payload)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+		return nil, err
 	}
 	payloads := make([][]byte, 0, imageCount)
 	for i := 0; i < imageCount; i++ {
@@ -55,11 +125,10 @@ func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 			var setErr error
 			execPayload, setErr = setImageGenerationRequestCount(payload, 1)
 			if setErr != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid image generation request"})
-				return
+				return nil, fmt.Errorf("invalid image generation request")
 			}
 		}
-		resp, execErr := h.authManager.Execute(cliCtx, []string{"codex"}, coreexecutor.Request{
+		resp, execErr := h.authManager.Execute(ctx, []string{"codex"}, coreexecutor.Request{
 			Model:   "",
 			Payload: execPayload,
 			Format:  sdktranslator.FromString("openai"),
@@ -71,22 +140,118 @@ func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 			},
 		})
 		if execErr != nil {
-			status := http.StatusBadGateway
-			if statusErr, ok := execErr.(coreexecutor.StatusError); ok && statusErr.StatusCode() > 0 {
-				status = statusErr.StatusCode()
-			}
-			c.JSON(status, imageGenerationErrorResponse(execErr, "upstream_error"))
-			return
+			return nil, execErr
 		}
 		payloads = append(payloads, resp.Payload)
 	}
 	mergedPayload, err := mergeImageGenerationResponses(payloads)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-		return
+		return nil, err
 	}
 
-	c.Data(http.StatusOK, "application/json; charset=utf-8", mergedPayload)
+	return mergedPayload, nil
+}
+
+func (h *Handler) createImageGenerationTask() *imageGenerationTask {
+	h.purgeImageGenerationTasks()
+	now := time.Now()
+	task := &imageGenerationTask{
+		ID:        uuid.NewString(),
+		Status:    "queued",
+		Phase:     "queued",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	h.imageTasksMu.Lock()
+	if h.imageTasks == nil {
+		h.imageTasks = make(map[string]*imageGenerationTask)
+	}
+	h.imageTasks[task.ID] = task
+	h.imageTasksMu.Unlock()
+	return task
+}
+
+func (h *Handler) getImageGenerationTask(taskID string) *imageGenerationTask {
+	if h == nil {
+		return nil
+	}
+	h.imageTasksMu.Lock()
+	defer h.imageTasksMu.Unlock()
+	task := h.imageTasks[taskID]
+	if task == nil {
+		return nil
+	}
+	copyTask := *task
+	if task.Result != nil {
+		copyTask.Result = append(json.RawMessage(nil), task.Result...)
+	}
+	if task.Error != nil {
+		copyTask.Error = cloneGinMap(task.Error)
+	}
+	return &copyTask
+}
+
+func (h *Handler) updateImageGenerationTask(taskID string, update func(*imageGenerationTask)) {
+	if h == nil || update == nil {
+		return
+	}
+	h.imageTasksMu.Lock()
+	defer h.imageTasksMu.Unlock()
+	task := h.imageTasks[taskID]
+	if task == nil {
+		return
+	}
+	update(task)
+	task.UpdatedAt = time.Now()
+}
+
+func (h *Handler) purgeImageGenerationTasks() {
+	if h == nil {
+		return
+	}
+	cutoff := time.Now().Add(-imageGenerationTaskTTL)
+	h.imageTasksMu.Lock()
+	defer h.imageTasksMu.Unlock()
+	for id, task := range h.imageTasks {
+		if task == nil || task.UpdatedAt.Before(cutoff) {
+			delete(h.imageTasks, id)
+		}
+	}
+}
+
+func (h *Handler) imageGenerationTaskSnapshot(task *imageGenerationTask) gin.H {
+	if task == nil {
+		return gin.H{}
+	}
+	body := gin.H{
+		"task_id":    task.ID,
+		"status":     task.Status,
+		"phase":      task.Phase,
+		"created_at": task.CreatedAt,
+		"updated_at": task.UpdatedAt,
+		"elapsed_ms": time.Since(task.CreatedAt).Milliseconds(),
+	}
+	if task.Result != nil {
+		var result any
+		if err := json.Unmarshal(task.Result, &result); err == nil {
+			body["result"] = result
+		}
+	}
+	if task.Error != nil {
+		body["error"] = task.Error
+	}
+	return body
+}
+
+func cloneGinMap(src gin.H) gin.H {
+	if src == nil {
+		return nil
+	}
+	dst := make(gin.H, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 type upstreamErrorBodyProvider interface {

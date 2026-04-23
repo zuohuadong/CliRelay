@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
@@ -125,7 +126,9 @@ func (e *CodexExecutor) executeImageGeneration(ctx context.Context, auth *clipro
 	httpClient := newProxyAwareHTTPClient(ctxRequest, e.cfg, auth, codexImageConversationTimout)
 	headers := buildCodexImageBackendHeaders(auth, apiKey)
 
+	notifyCodexImagePhase(ctxRequest, "bootstrap")
 	_ = codexImageBootstrap(ctxRequest, httpClient, headers)
+	notifyCodexImagePhase(ctxRequest, "chat_requirements")
 	chatReqs, err := fetchCodexImageChatRequirements(ctxRequest, httpClient, headers)
 	if err != nil {
 		return cliproxyexecutor.Response{}, wrapCodexImagePhaseError("chat-requirements", err)
@@ -168,7 +171,9 @@ func (e *CodexExecutor) executeCodexImageOnce(
 ) ([]byte, http.Header, error) {
 	parentMessageID := uuid.NewString()
 	prompt := buildCodexImagePrompt(parsed, index)
+	notifyCodexImagePhase(ctx, "conversation_init")
 	_ = initializeCodexImageConversation(ctx, httpClient, headers)
+	notifyCodexImagePhase(ctx, "conversation_prepare")
 	conduitToken, err := prepareCodexImageConversation(ctx, httpClient, headers, prompt, parentMessageID, chatReqs.Token, proofToken)
 	if err != nil {
 		return nil, nil, wrapCodexImagePhaseError("conversation prepare", err)
@@ -179,6 +184,7 @@ func (e *CodexExecutor) executeCodexImageOnce(
 		return nil, nil, wrapCodexImagePhaseError("file upload", err)
 	}
 
+	notifyCodexImagePhase(ctx, "conversation_request")
 	convReq := buildCodexImageConversationRequest(prompt, parentMessageID, uploads)
 	convHeaders := cloneHeader(headers)
 	convHeaders.Set("Accept", "text/event-stream")
@@ -205,11 +211,13 @@ func (e *CodexExecutor) executeCodexImageOnce(
 		return nil, nil, codexImageStatusErr(httpResp, "openai image conversation request failed")
 	}
 
+	notifyCodexImagePhase(ctx, "conversation_stream")
 	conversationID, pointers, err := readCodexImageConversationStream(httpResp.Body)
 	if err != nil {
 		return nil, nil, wrapCodexImagePhaseError("conversation stream", err)
 	}
 	if conversationID != "" && len(pointers) == 0 {
+		notifyCodexImagePhase(ctx, "conversation_poll")
 		polled, pollErr := pollCodexImageConversation(ctx, httpClient, headers, conversationID)
 		if pollErr != nil {
 			return nil, nil, wrapCodexImagePhaseError("conversation poll", pollErr)
@@ -221,11 +229,22 @@ func (e *CodexExecutor) executeCodexImageOnce(
 		return nil, nil, statusErr{code: http.StatusBadGateway, msg: "openai image conversation returned no downloadable images"}
 	}
 
+	notifyCodexImagePhase(ctx, "image_download")
 	payload, err := buildCodexImageOpenAIResponse(ctx, httpClient, headers, conversationID, pointers)
 	if err != nil {
 		return nil, nil, wrapCodexImagePhaseError("image download", err)
 	}
 	return payload, httpResp.Header.Clone(), nil
+}
+
+func notifyCodexImagePhase(ctx context.Context, phase string) {
+	if ctx == nil {
+		return
+	}
+	hook, _ := ctx.Value(util.ContextKeyImageGenerationPhaseHook).(func(string))
+	if hook != nil {
+		hook(strings.TrimSpace(phase))
+	}
 }
 
 func wrapCodexImagePhaseError(phase string, err error) error {

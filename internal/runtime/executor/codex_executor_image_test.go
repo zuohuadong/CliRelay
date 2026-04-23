@@ -482,6 +482,19 @@ func TestUsageReporterTrackFailureStoresOfficialUpstreamBody(t *testing.T) {
 	}
 }
 
+func TestWrapCodexImagePhaseErrorPrefixesPhase(t *testing.T) {
+	err := wrapCodexImagePhaseError("conversation poll", context.Canceled)
+	if err == nil {
+		t.Fatal("wrapCodexImagePhaseError() error = nil")
+	}
+	if !strings.Contains(err.Error(), "conversation poll") {
+		t.Fatalf("error = %q, want phase prefix", err.Error())
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("error = %q, want original error text", err.Error())
+	}
+}
+
 func TestPollCodexImageConversationWaitsUntilPointersAppear(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

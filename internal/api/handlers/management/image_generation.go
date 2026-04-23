@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
@@ -20,10 +21,11 @@ import (
 )
 
 const (
-	imageGenerationModel = "gpt-image-2"
-	imageGenerationAlt   = "images/generations"
-	imageEditsAlt        = "images/edits"
-	imageMaxUploads      = 5
+	imageGenerationModel       = "gpt-image-2"
+	imageGenerationAlt         = "images/generations"
+	imageEditsAlt              = "images/edits"
+	imageMaxUploads            = 5
+	imageGenerationTestTimeout = 5 * time.Minute
 )
 
 func (h *Handler) PostImageGenerationTest(c *gin.Context) {
@@ -37,7 +39,9 @@ func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 		return
 	}
 
-	cliCtx := context.WithValue(c.Request.Context(), util.ContextKeyGin, c)
+	testCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), imageGenerationTestTimeout)
+	defer cancel()
+	cliCtx := context.WithValue(testCtx, util.ContextKeyGin, c)
 	c.Set("apiKey", "POST /image-generation/test")
 	imageCount, err := imageGenerationRequestCount(payload)
 	if err != nil {

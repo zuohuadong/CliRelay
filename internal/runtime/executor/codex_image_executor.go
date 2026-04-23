@@ -128,7 +128,7 @@ func (e *CodexExecutor) executeImageGeneration(ctx context.Context, auth *clipro
 	_ = codexImageBootstrap(ctxRequest, httpClient, headers)
 	chatReqs, err := fetchCodexImageChatRequirements(ctxRequest, httpClient, headers)
 	if err != nil {
-		return cliproxyexecutor.Response{}, err
+		return cliproxyexecutor.Response{}, wrapCodexImagePhaseError("chat-requirements", err)
 	}
 	if chatReqs.Arkose.Required {
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusForbidden, msg: "chat-requirements requires unsupported challenge (arkose)"}
@@ -171,12 +171,12 @@ func (e *CodexExecutor) executeCodexImageOnce(
 	_ = initializeCodexImageConversation(ctx, httpClient, headers)
 	conduitToken, err := prepareCodexImageConversation(ctx, httpClient, headers, prompt, parentMessageID, chatReqs.Token, proofToken)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, wrapCodexImagePhaseError("conversation prepare", err)
 	}
 
 	uploads, err := uploadCodexImageFiles(ctx, httpClient, headers, parsed.Uploads)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, wrapCodexImagePhaseError("file upload", err)
 	}
 
 	convReq := buildCodexImageConversationRequest(prompt, parentMessageID, uploads)
@@ -194,7 +194,7 @@ func (e *CodexExecutor) executeCodexImageOnce(
 	body, _ := json.Marshal(convReq)
 	httpResp, err := doCodexImageJSON(ctx, httpClient, http.MethodPost, codexImageURL("/backend-api/f/conversation"), convHeaders, body)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, wrapCodexImagePhaseError("conversation request", err)
 	}
 	defer func() {
 		if httpResp != nil && httpResp.Body != nil {
@@ -207,12 +207,12 @@ func (e *CodexExecutor) executeCodexImageOnce(
 
 	conversationID, pointers, err := readCodexImageConversationStream(httpResp.Body)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, wrapCodexImagePhaseError("conversation stream", err)
 	}
 	if conversationID != "" && len(pointers) == 0 {
 		polled, pollErr := pollCodexImageConversation(ctx, httpClient, headers, conversationID)
 		if pollErr != nil {
-			return nil, nil, pollErr
+			return nil, nil, wrapCodexImagePhaseError("conversation poll", pollErr)
 		}
 		pointers = mergeCodexImagePointers(pointers, polled)
 	}
@@ -223,9 +223,33 @@ func (e *CodexExecutor) executeCodexImageOnce(
 
 	payload, err := buildCodexImageOpenAIResponse(ctx, httpClient, headers, conversationID, pointers)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, wrapCodexImagePhaseError("image download", err)
 	}
 	return payload, httpResp.Header.Clone(), nil
+}
+
+func wrapCodexImagePhaseError(phase string, err error) error {
+	if err == nil {
+		return nil
+	}
+	phase = strings.TrimSpace(phase)
+	if phase == "" {
+		return err
+	}
+	if status, ok := err.(statusErr); ok {
+		if !strings.Contains(status.msg, phase) {
+			status.msg = phase + ": " + status.msg
+		}
+		return status
+	}
+	message := strings.TrimSpace(err.Error())
+	if message == "" {
+		message = "request failed"
+	}
+	if strings.Contains(message, phase) {
+		return err
+	}
+	return fmt.Errorf("%s: %w", phase, err)
 }
 
 func parseCodexImageRequest(body []byte) (*codexImageRequest, error) {

@@ -152,7 +152,7 @@ func TestCodexExecutorExecuteImageGeneration(t *testing.T) {
 	}
 }
 
-func TestCodexExecutorExecuteImageGenerationRunsMultipleImagesConcurrently(t *testing.T) {
+func TestCodexExecutorExecuteImageGenerationRunsMultipleImagesSequentially(t *testing.T) {
 	const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+XgnUAAAAASUVORK5CYII="
 	pngBytes := []byte{
 		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
@@ -167,7 +167,7 @@ func TestCodexExecutorExecuteImageGenerationRunsMultipleImagesConcurrently(t *te
 	}
 
 	var conversationCount atomic.Int32
-	barrier := make(chan struct{})
+	var inFlight atomic.Int32
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -184,14 +184,11 @@ func TestCodexExecutorExecuteImageGenerationRunsMultipleImagesConcurrently(t *te
 			_, _ = w.Write([]byte(`{"conduit_token":"conduit-token"}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/f/conversation":
 			count := conversationCount.Add(1)
-			if count == 4 {
-				close(barrier)
+			if current := inFlight.Add(1); current != 1 {
+				t.Fatalf("image generations should run sequentially, got %d in-flight requests", current)
 			}
-			select {
-			case <-barrier:
-			case <-time.After(800 * time.Millisecond):
-				t.Fatalf("image generations were not started concurrently")
-			}
+			defer inFlight.Add(-1)
+			time.Sleep(20 * time.Millisecond)
 			w.Header().Set("Content-Type", "text/event-stream")
 			fileID := "file-" + strconv.Itoa(int(count))
 			_, _ = w.Write([]byte("data: {\"conversation_id\":\"conv-" + fileID + "\"}\n\n"))

@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -135,49 +134,17 @@ func (e *CodexExecutor) executeImageGeneration(ctx context.Context, auth *clipro
 	}
 
 	proofToken := generateCodexImageProofToken(chatReqs.ProofOfWork.Required, chatReqs.ProofOfWork.Seed, chatReqs.ProofOfWork.Difficulty, headers.Get("User-Agent"))
-	type codexImageRunResult struct {
-		payload []byte
-		headers http.Header
-		err     error
-	}
-	runCtx, cancelRuns := context.WithCancel(ctxRequest)
-	defer cancelRuns()
-	results := make([]codexImageRunResult, parsed.N)
-	var wg sync.WaitGroup
-	for i := 0; i < parsed.N; i++ {
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
-			payload, responseHeader, runErr := e.executeCodexImageOnce(runCtx, httpClient, cloneHeader(headers), parsed, chatReqs, proofToken, index)
-			if runErr != nil {
-				cancelRuns()
-			}
-			results[index] = codexImageRunResult{
-				payload: payload,
-				headers: responseHeader,
-				err:     runErr,
-			}
-		}(i)
-	}
-	wg.Wait()
-
 	payloads := make([][]byte, 0, parsed.N)
 	var responseHeaders http.Header
-	var firstErr error
-	for _, result := range results {
-		if result.err != nil {
-			if firstErr == nil || firstErr == context.Canceled {
-				firstErr = result.err
-			}
-			continue
+	for i := 0; i < parsed.N; i++ {
+		payload, responseHeader, runErr := e.executeCodexImageOnce(ctxRequest, httpClient, cloneHeader(headers), parsed, chatReqs, proofToken, i)
+		if runErr != nil {
+			return cliproxyexecutor.Response{}, runErr
 		}
-		payloads = append(payloads, result.payload)
+		payloads = append(payloads, payload)
 		if responseHeaders == nil {
-			responseHeaders = result.headers
+			responseHeaders = responseHeader
 		}
-	}
-	if firstErr != nil {
-		return cliproxyexecutor.Response{}, firstErr
 	}
 
 	payload, err := mergeCodexImageOpenAIResponses(payloads)

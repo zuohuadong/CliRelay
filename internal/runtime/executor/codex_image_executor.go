@@ -204,24 +204,19 @@ func (e *CodexExecutor) executeCodexImageOnce(
 	if err != nil {
 		return nil, nil, err
 	}
-	pointers = excludeCodexUploadedPointers(pointers, uploads)
-	if len(uploads) > 0 {
-		pointers = nil
-	}
-	if conversationID != "" && len(pointers) == 0 {
-		polled, pollErr := pollCodexImageConversation(ctx, httpClient, headers, conversationID, uploads)
+	if conversationID != "" && !hasCodexFileServicePointer(pointers) {
+		polled, pollErr := pollCodexImageConversation(ctx, httpClient, headers, conversationID)
 		if pollErr != nil {
 			return nil, nil, pollErr
 		}
 		pointers = mergeCodexImagePointers(pointers, polled)
 	}
-	pointers = excludeCodexUploadedPointers(pointers, uploads)
 	pointers = preferCodexFileServicePointers(pointers)
 	if len(pointers) == 0 {
 		return nil, nil, statusErr{code: http.StatusBadGateway, msg: "openai image conversation returned no downloadable images"}
 	}
 
-	payload, err := buildCodexImageOpenAIResponse(ctx, httpClient, headers, conversationID, pointers, parsed.Uploads)
+	payload, err := buildCodexImageOpenAIResponse(ctx, httpClient, headers, conversationID, pointers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1041,31 +1036,6 @@ func preferCodexFileServicePointers(items []codexImagePointer) []codexImagePoint
 	return out
 }
 
-func excludeCodexUploadedPointers(items []codexImagePointer, uploads []codexUploadedImage) []codexImagePointer {
-	if len(items) == 0 || len(uploads) == 0 {
-		return items
-	}
-	uploadedPointers := make(map[string]struct{}, len(uploads))
-	for _, upload := range uploads {
-		fileID := strings.TrimSpace(upload.FileID)
-		if fileID == "" {
-			continue
-		}
-		uploadedPointers["file-service://"+fileID] = struct{}{}
-	}
-	if len(uploadedPointers) == 0 {
-		return items
-	}
-	filtered := make([]codexImagePointer, 0, len(items))
-	for _, item := range items {
-		if _, ok := uploadedPointers[item.Pointer]; ok {
-			continue
-		}
-		filtered = append(filtered, item)
-	}
-	return filtered
-}
-
 func extractCodexImageToolMessages(mapping map[string]any) []codexImageToolMessage {
 	if len(mapping) == 0 {
 		return nil
@@ -1135,7 +1105,7 @@ func extractCodexImageToolMessages(mapping map[string]any) []codexImageToolMessa
 	return out
 }
 
-func collectCodexImagePollPointers(body []byte, uploads []codexUploadedImage) []codexImagePointer {
+func collectCodexImagePollPointers(body []byte) []codexImagePointer {
 	pointers := mergeCodexImagePointers(nil, collectCodexImagePointers(body))
 	if len(body) == 0 {
 		return pointers
@@ -1151,11 +1121,10 @@ func collectCodexImagePollPointers(body []byte, uploads []codexUploadedImage) []
 			pointers = mergeCodexImagePointers(pointers, toolPointers)
 		}
 	}
-	pointers = excludeCodexUploadedPointers(pointers, uploads)
 	return preferCodexFileServicePointers(pointers)
 }
 
-func pollCodexImageConversation(ctx context.Context, client *http.Client, headers http.Header, conversationID string, uploads []codexUploadedImage) ([]codexImagePointer, error) {
+func pollCodexImageConversation(ctx context.Context, client *http.Client, headers http.Header, conversationID string) ([]codexImagePointer, error) {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
 		return nil, nil
@@ -1185,7 +1154,7 @@ func pollCodexImageConversation(ctx context.Context, client *http.Client, header
 						}
 					}
 				}
-				pointers := collectCodexImagePollPointers(body, uploads)
+				pointers := collectCodexImagePollPointers(body)
 				log.Debugf(
 					"codex image poll conversation=%s tool_messages=%d tool_assets=%d generic_assets=%d filtered_assets=%d",
 					conversationID,
@@ -1220,52 +1189,26 @@ func buildCodexImageOpenAIResponse(
 	headers http.Header,
 	conversationID string,
 	pointers []codexImagePointer,
-	inputUploads []codexImageUpload,
 ) ([]byte, error) {
 	type responseItem struct {
 		B64JSON       string `json:"b64_json"`
 		RevisedPrompt string `json:"revised_prompt,omitempty"`
 	}
-	inputHashes := codexImageUploadHashes(inputUploads)
 	items := make([]responseItem, 0, len(pointers))
 	for _, pointer := range pointers {
 		data, err := resolveCodexImageBytes(ctx, client, headers, conversationID, pointer)
 		if err != nil {
 			return nil, err
 		}
-		if len(inputHashes) > 0 {
-			sum := sha3.Sum256(data)
-			if _, ok := inputHashes[hex.EncodeToString(sum[:])]; ok {
-				continue
-			}
-		}
 		items = append(items, responseItem{
 			B64JSON:       base64.StdEncoding.EncodeToString(data),
 			RevisedPrompt: pointer.Prompt,
 		})
 	}
-	if len(items) == 0 {
-		return nil, fmt.Errorf("openai image conversation returned no generated images")
-	}
 	return json.Marshal(map[string]any{
 		"created": time.Now().Unix(),
 		"data":    items,
 	})
-}
-
-func codexImageUploadHashes(uploads []codexImageUpload) map[string]struct{} {
-	if len(uploads) == 0 {
-		return nil
-	}
-	out := make(map[string]struct{}, len(uploads))
-	for _, upload := range uploads {
-		if len(upload.Data) == 0 {
-			continue
-		}
-		sum := sha3.Sum256(upload.Data)
-		out[hex.EncodeToString(sum[:])] = struct{}{}
-	}
-	return out
 }
 
 func resolveCodexImageBytes(

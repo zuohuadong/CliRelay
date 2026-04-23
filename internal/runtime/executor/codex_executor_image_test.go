@@ -228,31 +228,6 @@ func TestParseCodexImageRequestRejectsMoreThanFiveImageEdits(t *testing.T) {
 	}
 }
 
-func TestExcludeCodexUploadedPointersRemovesInputUploads(t *testing.T) {
-	items := []codexImagePointer{
-		{Pointer: "file-service://input-a"},
-		{Pointer: "sediment://generated-1"},
-		{Pointer: "file-service://generated-2"},
-	}
-	uploads := []codexUploadedImage{
-		{FileID: "input-a"},
-	}
-
-	filtered := excludeCodexUploadedPointers(items, uploads)
-
-	if len(filtered) != 2 {
-		t.Fatalf("filtered length = %d, want 2", len(filtered))
-	}
-	for _, item := range filtered {
-		if item.Pointer == "file-service://input-a" {
-			t.Fatalf("filtered pointers = %#v, should not contain uploaded input pointer", filtered)
-		}
-	}
-	if filtered[0].Pointer != "sediment://generated-1" || filtered[1].Pointer != "file-service://generated-2" {
-		t.Fatalf("filtered pointers = %#v, want generated pointers in original order", filtered)
-	}
-}
-
 func TestCollectCodexImagePointersRecognizesDirectAssets(t *testing.T) {
 	items := collectCodexImagePointers([]byte(`{
 		"revised_prompt": "cat astronaut",
@@ -346,24 +321,31 @@ func TestExtractCodexImageToolMessagesPrefersToolAssets(t *testing.T) {
 	}
 }
 
-func TestBuildCodexImageOpenAIResponseSkipsSourceImageEcho(t *testing.T) {
-	_, err := buildCodexImageOpenAIResponse(
+func TestBuildCodexImageOpenAIResponseKeepsSourceImageWhenReturned(t *testing.T) {
+	payload, err := buildCodexImageOpenAIResponse(
 		context.Background(),
 		nil,
 		nil,
 		"",
 		[]codexImagePointer{{B64JSON: "QUJD"}},
-		[]codexImageUpload{{Data: []byte("ABC")}},
 	)
-	if err == nil {
-		t.Fatal("buildCodexImageOpenAIResponse() error = nil, want source echo to be rejected")
+	if err != nil {
+		t.Fatalf("buildCodexImageOpenAIResponse() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "no generated images") {
-		t.Fatalf("error = %v, want no generated images", err)
+	var parsed struct {
+		Data []struct {
+			B64JSON string `json:"b64_json"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		t.Fatalf("Unmarshal payload: %v", err)
+	}
+	if len(parsed.Data) != 1 || parsed.Data[0].B64JSON != "QUJD" {
+		t.Fatalf("payload = %s, want returned base64 image to be preserved", string(payload))
 	}
 }
 
-func TestCollectCodexImagePollPointersSkipsUploadedSourcePointers(t *testing.T) {
+func TestCollectCodexImagePollPointersKeepsUploadedSourcePointers(t *testing.T) {
 	body := []byte(`{
 		"mapping": {
 			"user-message": {
@@ -393,10 +375,13 @@ func TestCollectCodexImagePollPointersSkipsUploadedSourcePointers(t *testing.T) 
 		}
 	}`)
 
-	items := collectCodexImagePollPointers(body, []codexUploadedImage{{FileID: "input-file"}})
+	items := collectCodexImagePollPointers(body)
 
-	if len(items) != 0 {
-		t.Fatalf("items = %#v, want uploaded source pointers to be filtered out", items)
+	if len(items) != 1 {
+		t.Fatalf("items = %#v, want uploaded source pointer to be preserved", items)
+	}
+	if items[0].Pointer != "file-service://input-file" {
+		t.Fatalf("pointer = %#v, want uploaded source pointer", items[0])
 	}
 }
 
@@ -420,7 +405,7 @@ func TestCollectCodexImagePollPointersKeepsGeneratedToolAssets(t *testing.T) {
 		}
 	}`)
 
-	items := collectCodexImagePollPointers(body, []codexUploadedImage{{FileID: "input-file"}})
+	items := collectCodexImagePollPointers(body)
 
 	if len(items) != 1 {
 		t.Fatalf("items length = %d, want 1", len(items))

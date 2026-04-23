@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,7 +32,7 @@ const (
 	codexImageGenerationAlt      = "images/generations"
 	codexImageEditsAlt           = "images/edits"
 	codexImageDefaultPrompt      = "Generate an image."
-	codexImageConversationTimout = 180 * time.Second
+	codexImageConversationTimout = 5 * time.Minute
 	codexImageMaxN               = 4
 	codexImageMaxUploads         = 5
 )
@@ -1133,14 +1134,24 @@ func pollCodexImageConversation(ctx context.Context, client *http.Client, header
 	if conversationID == "" {
 		return nil, nil
 	}
-	deadline := time.Now().Add(codexImagePollTimeout)
+	startedAt := time.Now()
+	deadline := startedAt.Add(codexImagePollTimeout)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
 	}
 	var lastErr error
 	for {
+		if timeoutErr := codexImagePollTimeoutError(ctx, startedAt, deadline, conversationID); timeoutErr != nil {
+			if lastErr != nil && !errors.Is(lastErr, context.Canceled) && !errors.Is(lastErr, context.DeadlineExceeded) {
+				return nil, lastErr
+			}
+			return nil, timeoutErr
+		}
 		resp, err := doCodexImageJSON(ctx, client, http.MethodGet, codexImageURL("/backend-api/conversation/"+conversationID), headers, nil)
 		if err != nil {
+			if timeoutErr := codexImagePollTimeoutError(ctx, startedAt, deadline, conversationID); timeoutErr != nil {
+				return nil, timeoutErr
+			}
 			lastErr = err
 		} else {
 			body, readErr := readAndCloseCodexImageBody(resp)
@@ -1176,8 +1187,11 @@ func pollCodexImageConversation(ctx context.Context, client *http.Client, header
 				}
 			}
 		}
-		if !time.Now().Before(deadline) {
-			return nil, lastErr
+		if timeoutErr := codexImagePollTimeoutError(ctx, startedAt, deadline, conversationID); timeoutErr != nil {
+			if lastErr != nil && !errors.Is(lastErr, context.Canceled) && !errors.Is(lastErr, context.DeadlineExceeded) {
+				return nil, lastErr
+			}
+			return nil, timeoutErr
 		}
 		timer := time.NewTimer(codexImagePollInterval)
 		select {
@@ -1188,9 +1202,38 @@ func pollCodexImageConversation(ctx context.Context, client *http.Client, header
 				default:
 				}
 			}
+			if timeoutErr := codexImagePollTimeoutError(ctx, startedAt, deadline, conversationID); timeoutErr != nil {
+				return nil, timeoutErr
+			}
 			return nil, ctx.Err()
 		case <-timer.C:
 		}
+	}
+}
+
+func codexImagePollTimeoutError(ctx context.Context, startedAt, deadline time.Time, conversationID string) error {
+	now := time.Now()
+	timedOut := !deadline.IsZero() && !now.Before(deadline)
+	if !timedOut {
+		if ctx == nil || ctx.Err() == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil
+		}
+		timedOut = true
+	}
+	if !timedOut {
+		return nil
+	}
+	waited := now.Sub(startedAt)
+	if waited <= 0 {
+		waited = codexImagePollTimeout
+	}
+	return statusErr{
+		code: http.StatusGatewayTimeout,
+		msg: fmt.Sprintf(
+			"openai image conversation timed out after %s without any generated image assets (conversation_id=%s)",
+			waited.Round(time.Second),
+			conversationID,
+		),
 	}
 }
 

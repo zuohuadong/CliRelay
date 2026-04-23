@@ -139,7 +139,7 @@ func TestPostImageGenerationTestForwardsGenerationOptions(t *testing.T) {
 	}
 }
 
-func TestPostImageGenerationTestAcceptsMultipartImageEdits(t *testing.T) {
+func TestPostImageGenerationTestRejectsMultipartImageEditsWhileDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	executor := &managementImageExecutor{}
@@ -177,64 +177,14 @@ func TestPostImageGenerationTestAcceptsMultipartImageEdits(t *testing.T) {
 
 	h.PostImageGenerationTest(c)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if executor.alt != "images/edits" {
-		t.Fatalf("alt = %q, want images/edits", executor.alt)
-	}
-	for _, want := range []string{`"prompt":"make it blue"`, `"file_name":"icon.png"`, `"data_base64":"aGVsbG8="`, `"n":2`} {
-		if !strings.Contains(executor.payload, want) {
-			t.Fatalf("payload = %s, want %s", executor.payload, want)
-		}
-	}
-}
-
-func TestPostImageGenerationTestRejectsMoreThanFiveImages(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	executor := &managementImageExecutor{}
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(executor)
-	if _, err := manager.Register(context.Background(), &coreauth.Auth{
-		ID:       "codex-auth",
-		Provider: "codex",
-		Status:   coreauth.StatusActive,
-		Metadata: map[string]any{"access_token": "token"},
-	}); err != nil {
-		t.Fatalf("Register auth: %v", err)
-	}
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	_ = writer.WriteField("model", "gpt-image-2")
-	_ = writer.WriteField("prompt", "make it blue")
-	for i := 0; i < 6; i++ {
-		part, err := writer.CreateFormFile("image", "icon.png")
-		if err != nil {
-			t.Fatalf("CreateFormFile: %v", err)
-		}
-		_, _ = part.Write([]byte("hello"))
-	}
-	_ = writer.Close()
-
-	h := &Handler{authManager: manager}
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	req := httptest.NewRequest(http.MethodPost, "/image-generation/test", &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	c.Request = req
-
-	h.PostImageGenerationTest(c)
-
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 	if executor.calls != 0 {
 		t.Fatalf("executor calls = %d, want 0", executor.calls)
 	}
-	if !strings.Contains(rec.Body.String(), "at most 5 images") {
-		t.Fatalf("body = %s, want max image count error", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "image edits are temporarily disabled") {
+		t.Fatalf("body = %s, want disabled message", rec.Body.String())
 	}
 }
 

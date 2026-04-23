@@ -144,7 +144,7 @@ func TestOpenAIImagesGenerationsDefaultsModel(t *testing.T) {
 	}
 }
 
-func TestOpenAIImagesEditsConvertsMultipartToCodexImageAlt(t *testing.T) {
+func TestOpenAIImagesEditsReturnsTemporarilyDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	executor := &imageCaptureExecutor{}
@@ -184,22 +184,13 @@ func TestOpenAIImagesEditsConvertsMultipartToCodexImageAlt(t *testing.T) {
 	resp := httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
 
-	if resp.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", resp.Code, http.StatusOK, resp.Body.String())
+	if resp.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d, body=%s", resp.Code, http.StatusNotImplemented, resp.Body.String())
 	}
-	if executor.alt != "images/edits" {
-		t.Fatalf("alt = %q, want images/edits", executor.alt)
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", executor.calls)
 	}
-	for _, want := range []string{
-		`"prompt":"make it blue"`,
-		`"size":"1024x1792"`,
-		`"quality":"medium"`,
-		`"n":2`,
-		`"file_name":"icon.png"`,
-		`"data_base64":"aGVsbG8="`,
-	} {
-		if !strings.Contains(executor.payload, want) {
-			t.Fatalf("payload = %s, want to contain %s", executor.payload, want)
-		}
+	if !strings.Contains(resp.Body.String(), "image edits are temporarily disabled") {
+		t.Fatalf("body = %s, want disabled message", resp.Body.String())
 	}
 }

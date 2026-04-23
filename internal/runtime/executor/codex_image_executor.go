@@ -38,6 +38,8 @@ const (
 )
 
 var codexImageChatGPTBaseURL = "https://chatgpt.com"
+var codexImagePollTimeout = codexImageConversationTimout
+var codexImagePollInterval = 3 * time.Second
 
 type codexImageRequest struct {
 	Model          string
@@ -98,8 +100,8 @@ func (e *CodexExecutor) executeImageGeneration(ctx context.Context, auth *clipro
 	if err != nil {
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadRequest, msg: err.Error()}
 	}
-	if opts.Alt == codexImageEditsAlt && len(parsed.Uploads) == 0 {
-		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadRequest, msg: "image file is required for image edits"}
+	if opts.Alt == codexImageEditsAlt || len(parsed.Uploads) > 0 {
+		return cliproxyexecutor.Response{}, statusErr{code: http.StatusNotImplemented, msg: "image edits are temporarily disabled"}
 	}
 	reporter := newUsageReporter(ctx, e.Identifier(), parsed.Model, auth)
 	inputForLog := sanitizeCodexImageRequestForLog(req.Payload)
@@ -239,7 +241,7 @@ func (e *CodexExecutor) executeCodexImageOnce(
 	if err != nil {
 		return nil, nil, err
 	}
-	if conversationID != "" && !hasCodexFileServicePointer(pointers) {
+	if conversationID != "" && len(pointers) == 0 {
 		polled, pollErr := pollCodexImageConversation(ctx, httpClient, headers, conversationID)
 		if pollErr != nil {
 			return nil, nil, pollErr
@@ -1164,40 +1166,65 @@ func pollCodexImageConversation(ctx context.Context, client *http.Client, header
 	if conversationID == "" {
 		return nil, nil
 	}
-	resp, err := doCodexImageJSON(ctx, client, http.MethodGet, codexImageURL("/backend-api/conversation/"+conversationID), headers, nil)
-	if err != nil {
-		return nil, err
+	deadline := time.Now().Add(codexImagePollTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
 	}
-	body, readErr := readAndCloseCodexImageBody(resp)
-	if readErr != nil {
-		return nil, readErr
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, codexImageStatusErrWithBody(resp.StatusCode, body, "conversation poll failed")
-	}
-	var decoded map[string]any
-	toolMessages := 0
-	toolPointers := 0
-	genericPointers := len(collectCodexImagePointers(body))
-	if err := json.Unmarshal(body, &decoded); err == nil {
-		if mapping, _ := decoded["mapping"].(map[string]any); len(mapping) > 0 {
-			messages := extractCodexImageToolMessages(mapping)
-			toolMessages = len(messages)
-			for _, msg := range messages {
-				toolPointers += len(msg.Pointers)
+	var lastErr error
+	for {
+		resp, err := doCodexImageJSON(ctx, client, http.MethodGet, codexImageURL("/backend-api/conversation/"+conversationID), headers, nil)
+		if err != nil {
+			lastErr = err
+		} else {
+			body, readErr := readAndCloseCodexImageBody(resp)
+			if readErr != nil {
+				lastErr = readErr
+			} else if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+				return nil, codexImageStatusErrWithBody(resp.StatusCode, body, "conversation poll failed")
+			} else {
+				var decoded map[string]any
+				toolMessages := 0
+				toolPointers := 0
+				genericPointers := len(collectCodexImagePointers(body))
+				if err := json.Unmarshal(body, &decoded); err == nil {
+					if mapping, _ := decoded["mapping"].(map[string]any); len(mapping) > 0 {
+						messages := extractCodexImageToolMessages(mapping)
+						toolMessages = len(messages)
+						for _, msg := range messages {
+							toolPointers += len(msg.Pointers)
+						}
+					}
+				}
+				pointers := collectCodexImagePollPointers(body)
+				log.Debugf(
+					"codex image poll conversation=%s tool_messages=%d tool_assets=%d generic_assets=%d filtered_assets=%d",
+					conversationID,
+					toolMessages,
+					toolPointers,
+					genericPointers,
+					len(pointers),
+				)
+				if len(pointers) > 0 {
+					return pointers, nil
+				}
 			}
 		}
+		if !time.Now().Before(deadline) {
+			return nil, lastErr
+		}
+		timer := time.NewTimer(codexImagePollInterval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
-	pointers := collectCodexImagePollPointers(body)
-	log.Debugf(
-		"codex image poll conversation=%s tool_messages=%d tool_assets=%d generic_assets=%d filtered_assets=%d",
-		conversationID,
-		toolMessages,
-		toolPointers,
-		genericPointers,
-		len(pointers),
-	)
-	return pointers, nil
 }
 
 func buildCodexImageOpenAIResponse(
@@ -1265,7 +1292,8 @@ func normalizeCodexImageBase64(raw string) string {
 		}
 	}
 	raw = strings.TrimSpace(raw)
-	raw = strings.TrimRight(raw, "=") + strings.Repeat("=", (4-len(raw)%4)%4)
+	raw = strings.TrimRight(raw, "=")
+	raw += strings.Repeat("=", (4-len(raw)%4)%4)
 	if raw == "" {
 		return ""
 	}

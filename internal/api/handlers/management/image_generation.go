@@ -66,7 +66,7 @@ func parseImageGenerationTestPayload(c *gin.Context) ([]byte, string, error) {
 	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
-		return parseImageGenerationMultipartPayload(c)
+		return nil, "", fmt.Errorf("image edits are temporarily disabled")
 	}
 
 	var body struct {

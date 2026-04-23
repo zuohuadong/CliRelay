@@ -44,11 +44,7 @@ func (h *OpenAIImagesAPIHandler) Generations(c *gin.Context) {
 }
 
 func (h *OpenAIImagesAPIHandler) Edits(c *gin.Context) {
-	rawJSON, ok := readOpenAIImageEditRequest(c)
-	if !ok {
-		return
-	}
-	h.executeImages(c, rawJSON, openAIImageEditsAlt)
+	writeOpenAIImagesError(c, http.StatusNotImplemented, "not_supported", "image edits are temporarily disabled")
 }
 
 func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, alt string) {

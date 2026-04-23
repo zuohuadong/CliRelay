@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -373,6 +374,44 @@ func TestCodexExecutorRejectsImageEditsWhileDisabled(t *testing.T) {
 	}
 }
 
+func TestUsageReporterTrackFailureStoresErrorContent(t *testing.T) {
+	usagePlugin := &usageCapturePlugin{records: make(chan cliproxyusage.Record, 8)}
+	cliproxyusage.RegisterPlugin(usagePlugin)
+
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-auth-failure",
+		Provider: "codex",
+		Status:   cliproxyauth.StatusActive,
+	}
+	reporter := newUsageReporter(context.Background(), "codex", "gpt-image-2", auth)
+	reporter.setInputContent(`{"model":"gpt-image-2","prompt":"draw a fox"}`)
+	errValue := fmt.Errorf("openai image conversation returned no downloadable images")
+
+	reporter.trackFailure(context.Background(), &errValue)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case record := <-usagePlugin.records:
+			if record.Model != "gpt-image-2" {
+				continue
+			}
+			if !record.Failed {
+				t.Fatalf("record.Failed = false, want true")
+			}
+			if !strings.Contains(record.InputContent, "draw a fox") {
+				t.Fatalf("InputContent = %q, want request payload", record.InputContent)
+			}
+			if !strings.Contains(record.OutputContent, "no downloadable images") {
+				t.Fatalf("OutputContent = %q, want failure message", record.OutputContent)
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for failure usage record")
+		}
+	}
+}
+
 func TestPollCodexImageConversationWaitsUntilPointersAppear(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -455,6 +494,20 @@ func TestParseCodexImageRequestAcceptsExtendedGenerationOptions(t *testing.T) {
 	}
 	if parsed.N != 3 {
 		t.Fatalf("n = %d, want 3", parsed.N)
+	}
+
+	for _, size := range []string{"2560x1440", "2160x3840"} {
+		parsed, err := parseCodexImageRequest([]byte(`{
+			"model":"gpt-image-2",
+			"prompt":"draw a fox",
+			"size":"` + size + `"
+		}`))
+		if err != nil {
+			t.Fatalf("parseCodexImageRequest(size=%s) error = %v", size, err)
+		}
+		if parsed.Size != size {
+			t.Fatalf("size = %q, want %q", parsed.Size, size)
+		}
 	}
 }
 

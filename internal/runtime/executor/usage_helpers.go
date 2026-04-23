@@ -132,6 +132,11 @@ func (r *usageReporter) trackFailure(ctx context.Context, errPtr *error) {
 		return
 	}
 	if *errPtr != nil {
+		r.contentMu.Lock()
+		if r.outputContent == "" && r.outputBuilder.Len() == 0 && r.outputFile == nil {
+			r.outputContent = (*errPtr).Error()
+		}
+		r.contentMu.Unlock()
 		r.publishFailure(ctx)
 	}
 }

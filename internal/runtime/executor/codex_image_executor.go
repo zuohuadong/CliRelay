@@ -270,7 +270,7 @@ func parseCodexImageRequest(body []byte) (*codexImageRequest, error) {
 	}
 	parsed.Size = strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "size").String()))
 	if parsed.Size != "" && !isSupportedCodexImageSize(parsed.Size) {
-		return nil, fmt.Errorf("size must be one of 1024x1024, 1792x1024, 1024x1792")
+		return nil, fmt.Errorf("size must be one of 1024x1024, 1792x1024, 1024x1792, 2560x1440, 2160x3840")
 	}
 	parsed.Quality = strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "quality").String()))
 	if parsed.Quality != "" && !isSupportedCodexImageQuality(parsed.Quality) {
@@ -317,7 +317,7 @@ func parseCodexImageRequest(body []byte) (*codexImageRequest, error) {
 
 func isSupportedCodexImageSize(size string) bool {
 	switch strings.ToLower(strings.TrimSpace(size)) {
-	case "1024x1024", "1792x1024", "1024x1792":
+	case "1024x1024", "1792x1024", "1024x1792", "2560x1440", "2160x3840":
 		return true
 	default:
 		return false

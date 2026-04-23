@@ -3,6 +3,7 @@ package usage
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,6 +86,45 @@ func TestQueryLogsSupportsSystemRequestLogFilterValue(t *testing.T) {
 		if item.APIKey == "sk-live-123" {
 			t.Fatalf("unexpected non-system api key in system filter result: %q", item.APIKey)
 		}
+	}
+}
+
+func TestQueryLogContentSynthesizesMissingFailedOutput(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	})
+
+	now := time.Now().UTC()
+	input := `{"model":"gpt-image-2","prompt":"draw a fox"}`
+	InsertLog("POST /image-generation/test", "", "gpt-image-2", "codex", "Codex", "auth-1", true, now, 100, 10, TokenStats{}, input, "")
+
+	result, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() error = %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("expected 1 log row, got %d", len(result.Items))
+	}
+
+	content, err := QueryLogContent(result.Items[0].ID)
+	if err != nil {
+		t.Fatalf("QueryLogContent() error = %v", err)
+	}
+	if content.InputContent != input {
+		t.Fatalf("InputContent = %q, want %q", content.InputContent, input)
+	}
+	if !strings.Contains(content.OutputContent, "request_log_missing_error_content") {
+		t.Fatalf("OutputContent = %q, want synthesized missing error content", content.OutputContent)
+	}
+
+	part, err := QueryLogContentPart(result.Items[0].ID, "output")
+	if err != nil {
+		t.Fatalf("QueryLogContentPart() error = %v", err)
+	}
+	if !strings.Contains(part.Content, "request_log_missing_error_content") {
+		t.Fatalf("part.Content = %q, want synthesized missing error content", part.Content)
 	}
 }
 

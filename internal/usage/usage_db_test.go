@@ -55,6 +55,39 @@ func TestCutoffStartUTCAtUsesProjectTimezoneForDayBoundaries(t *testing.T) {
 	}
 }
 
+func TestQueryLogsSupportsSystemRequestLogFilterValue(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	now := time.Now().UTC()
+	InsertLog("POST /image-generation/test", "", "gpt-image-2", "codex", "Codex", "auth-1", false, now, 100, 10, TokenStats{
+		InputTokens: 1, OutputTokens: 1, TotalTokens: 2,
+	}, "", "")
+	InsertLog("/v0/management/image-generation/test", "", "gpt-image-2", "codex", "Codex", "auth-2", true, now, 120, 12, TokenStats{
+		InputTokens: 1, OutputTokens: 1, TotalTokens: 2,
+	}, "", "")
+	InsertLog("sk-live-123", "Primary", "gpt-5.4", "codex", "Codex", "auth-3", false, now, 140, 14, TokenStats{
+		InputTokens: 1, OutputTokens: 1, TotalTokens: 2,
+	}, "", "")
+
+	result, err := QueryLogs(LogQueryParams{
+		Page:   1,
+		Size:   10,
+		Days:   1,
+		APIKey: systemRequestLogFilterValue,
+	})
+	if err != nil {
+		t.Fatalf("QueryLogs() error = %v", err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("system filter items = %d, want 2", len(result.Items))
+	}
+	for _, item := range result.Items {
+		if item.APIKey == "sk-live-123" {
+			t.Fatalf("unexpected non-system api key in system filter result: %q", item.APIKey)
+		}
+	}
+}
+
 func TestInitDBMigratesFirstTokenColumn(t *testing.T) {
 	CloseDB()
 	dbPath := filepath.Join(t.TempDir(), "usage.db")

@@ -16,10 +16,11 @@ import (
 )
 
 type managementImageExecutor struct {
-	alt     string
-	model   string
-	payload string
-	calls   int
+	alt      string
+	model    string
+	payload  string
+	metadata map[string]any
+	calls    int
 }
 
 func (e *managementImageExecutor) Identifier() string { return "codex" }
@@ -29,6 +30,7 @@ func (e *managementImageExecutor) Execute(ctx context.Context, auth *coreauth.Au
 	e.alt = opts.Alt
 	e.model = req.Model
 	e.payload = string(req.Payload)
+	e.metadata = opts.Metadata
 	return coreexecutor.Response{Payload: []byte(`{"created":1,"data":[{"b64_json":"dGVzdA=="}]}`)}, nil
 }
 
@@ -89,6 +91,9 @@ func TestPostImageGenerationTestExecutesCodexImageAlt(t *testing.T) {
 	}
 	if !strings.Contains(executor.payload, `"size":"1024x1024"`) && strings.Contains(executor.payload, "size") {
 		t.Fatalf("payload = %s, should only include explicit size", executor.payload)
+	}
+	if executor.metadata[coreexecutor.SinglePickMetadataKey] != true {
+		t.Fatalf("single-pick metadata = %#v, want true", executor.metadata[coreexecutor.SinglePickMetadataKey])
 	}
 }
 

@@ -191,7 +191,9 @@ func firstOpenAIImagesFormValue(values map[string][]string, key, fallback string
 }
 
 func requestImageExecutionMetadata(c *gin.Context) map[string]any {
-	meta := make(map[string]any)
+	meta := map[string]any{
+		coreexecutor.SinglePickMetadataKey: true,
+	}
 	if metadataVal, exists := c.Get("accessMetadata"); exists {
 		if metadata, ok := metadataVal.(map[string]string); ok {
 			if allowedChannels := strings.TrimSpace(metadata["allowed-channels"]); allowedChannels != "" {
@@ -211,9 +213,6 @@ func requestImageExecutionMetadata(c *gin.Context) map[string]any {
 				meta[coreexecutor.RouteFallbackMetadataKey] = fallback
 			}
 		}
-	}
-	if len(meta) == 0 {
-		return nil
 	}
 	return meta
 }

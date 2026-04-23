@@ -99,6 +99,9 @@ func TestOpenAIImagesGenerationsExecutesCodexImageAlt(t *testing.T) {
 	if executor.metadata["allowed-channels"] != "Team Codex" {
 		t.Fatalf("allowed channel metadata = %#v", executor.metadata["allowed-channels"])
 	}
+	if executor.metadata[coreexecutor.SinglePickMetadataKey] != true {
+		t.Fatalf("single-pick metadata = %#v, want true", executor.metadata[coreexecutor.SinglePickMetadataKey])
+	}
 	if strings.TrimSpace(resp.Body.String()) != `{"created":1,"data":[{"b64_json":"aGVsbG8="}]}` {
 		t.Fatalf("body = %s", resp.Body.String())
 	}

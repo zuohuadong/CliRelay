@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -147,6 +149,143 @@ func TestCodexExecutorExecuteImageGeneration(t *testing.T) {
 		case <-deadline:
 			t.Fatal("timed out waiting for image generation usage record")
 		}
+	}
+}
+
+func TestCodexExecutorExecuteImageGenerationRunsMultipleImagesConcurrently(t *testing.T) {
+	const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+XgnUAAAAASUVORK5CYII="
+	pngBytes := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x04, 0x00, 0x00, 0x00, 0xB5, 0x1C, 0x0C,
+		0x02, 0x00, 0x00, 0x00, 0x0B, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0xDA, 0x63, 0xFC, 0xFF, 0x1F, 0x00,
+		0x03, 0x03, 0x02, 0x00, 0xEF, 0x97, 0x82, 0x75,
+		0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+		0xAE, 0x42, 0x60, 0x82,
+	}
+
+	var conversationCount atomic.Int32
+	barrier := make(chan struct{})
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"chat-token","arkose":{"required":false},"proofofwork":{"required":false}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/conversation/init":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/f/conversation/prepare":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"conduit_token":"conduit-token"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/f/conversation":
+			count := conversationCount.Add(1)
+			if count == 4 {
+				close(barrier)
+			}
+			select {
+			case <-barrier:
+			case <-time.After(800 * time.Millisecond):
+				t.Fatalf("image generations were not started concurrently")
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			fileID := "file-" + strconv.Itoa(int(count))
+			_, _ = w.Write([]byte("data: {\"conversation_id\":\"conv-" + fileID + "\"}\n\n"))
+			_, _ = w.Write([]byte("data: {\"asset_pointer\":\"file-service://" + fileID + "\"}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/backend-api/files/file-") && strings.HasSuffix(r.URL.Path, "/download"):
+			fileID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/backend-api/files/"), "/download")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"download_url":"` + server.URL + `/download/` + fileID + `.png"}`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/download/file-"):
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(pngBytes)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	originalBaseURL := codexImageChatGPTBaseURL
+	codexImageChatGPTBaseURL = server.URL
+	defer func() {
+		codexImageChatGPTBaseURL = originalBaseURL
+	}()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Status:   cliproxyauth.StatusActive,
+		Metadata: map[string]any{
+			"access_token": "token",
+			"account_id":   "account-1",
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resp, err := executor.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "gpt-image-2",
+		Payload: []byte(`{"model":"gpt-image-2","prompt":"draw a fox","n":4}`),
+		Format:  sdktranslator.FromString("openai"),
+	}, cliproxyexecutor.Options{
+		Alt:          "images/generations",
+		SourceFormat: sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var payload struct {
+		Data []struct {
+			B64JSON string `json:"b64_json"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		t.Fatalf("Unmarshal payload: %v", err)
+	}
+	if len(payload.Data) != 4 {
+		t.Fatalf("data length = %d, want 4", len(payload.Data))
+	}
+	for i, item := range payload.Data {
+		if item.B64JSON != pngBase64 {
+			t.Fatalf("data[%d].b64_json = %q", i, item.B64JSON)
+		}
+	}
+}
+
+func TestPollCodexImageConversationChecksOnce(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/backend-api/conversation/conv-1" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"mapping":{}}`))
+	}))
+	defer server.Close()
+
+	originalBaseURL := codexImageChatGPTBaseURL
+	codexImageChatGPTBaseURL = server.URL
+	defer func() {
+		codexImageChatGPTBaseURL = originalBaseURL
+	}()
+
+	pointers, err := pollCodexImageConversation(context.Background(), server.Client(), nil, "conv-1")
+	if err != nil {
+		t.Fatalf("pollCodexImageConversation() error = %v", err)
+	}
+	if len(pointers) != 0 {
+		t.Fatalf("pointers length = %d, want 0", len(pointers))
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("requests = %d, want 1", requests.Load())
 	}
 }
 

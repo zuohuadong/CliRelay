@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -132,15 +133,49 @@ func (e *CodexExecutor) executeImageGeneration(ctx context.Context, auth *clipro
 	}
 
 	proofToken := generateCodexImageProofToken(chatReqs.ProofOfWork.Required, chatReqs.ProofOfWork.Seed, chatReqs.ProofOfWork.Difficulty, headers.Get("User-Agent"))
+	type codexImageRunResult struct {
+		payload []byte
+		headers http.Header
+		err     error
+	}
+	runCtx, cancelRuns := context.WithCancel(ctxRequest)
+	defer cancelRuns()
+	results := make([]codexImageRunResult, parsed.N)
+	var wg sync.WaitGroup
+	for i := 0; i < parsed.N; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			payload, responseHeader, runErr := e.executeCodexImageOnce(runCtx, httpClient, cloneHeader(headers), parsed, chatReqs, proofToken, index)
+			if runErr != nil {
+				cancelRuns()
+			}
+			results[index] = codexImageRunResult{
+				payload: payload,
+				headers: responseHeader,
+				err:     runErr,
+			}
+		}(i)
+	}
+	wg.Wait()
+
 	payloads := make([][]byte, 0, parsed.N)
 	var responseHeaders http.Header
-	for i := 0; i < parsed.N; i++ {
-		payload, headers, runErr := e.executeCodexImageOnce(ctxRequest, httpClient, headers, parsed, chatReqs, proofToken, i)
-		if runErr != nil {
-			return cliproxyexecutor.Response{}, runErr
+	var firstErr error
+	for _, result := range results {
+		if result.err != nil {
+			if firstErr == nil || firstErr == context.Canceled {
+				firstErr = result.err
+			}
+			continue
 		}
-		payloads = append(payloads, payload)
-		responseHeaders = headers
+		payloads = append(payloads, result.payload)
+		if responseHeaders == nil {
+			responseHeaders = result.headers
+		}
+	}
+	if firstErr != nil {
+		return cliproxyexecutor.Response{}, firstErr
 	}
 
 	payload, err := mergeCodexImageOpenAIResponses(payloads)
@@ -1129,58 +1164,40 @@ func pollCodexImageConversation(ctx context.Context, client *http.Client, header
 	if conversationID == "" {
 		return nil, nil
 	}
-	deadline := time.Now().Add(90 * time.Second)
-	interval := 3 * time.Second
-	var lastErr error
-	for time.Now().Before(deadline) {
-		resp, err := doCodexImageJSON(ctx, client, http.MethodGet, codexImageURL("/backend-api/conversation/"+conversationID), headers, nil)
-		if err != nil {
-			lastErr = err
-		} else {
-			body, readErr := readAndCloseCodexImageBody(resp)
-			if readErr != nil {
-				lastErr = readErr
-			} else if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
-				var decoded map[string]any
-				toolMessages := 0
-				toolPointers := 0
-				genericPointers := len(collectCodexImagePointers(body))
-				if err := json.Unmarshal(body, &decoded); err == nil {
-					if mapping, _ := decoded["mapping"].(map[string]any); len(mapping) > 0 {
-						messages := extractCodexImageToolMessages(mapping)
-						toolMessages = len(messages)
-						for _, msg := range messages {
-							toolPointers += len(msg.Pointers)
-						}
-					}
-				}
-				pointers := collectCodexImagePollPointers(body)
-				log.Debugf(
-					"codex image poll conversation=%s tool_messages=%d tool_assets=%d generic_assets=%d filtered_assets=%d",
-					conversationID,
-					toolMessages,
-					toolPointers,
-					genericPointers,
-					len(pointers),
-				)
-				if len(pointers) > 0 {
-					return pointers, nil
-				}
-			} else {
-				return nil, codexImageStatusErrWithBody(resp.StatusCode, body, "conversation poll failed")
+	resp, err := doCodexImageJSON(ctx, client, http.MethodGet, codexImageURL("/backend-api/conversation/"+conversationID), headers, nil)
+	if err != nil {
+		return nil, err
+	}
+	body, readErr := readAndCloseCodexImageBody(resp)
+	if readErr != nil {
+		return nil, readErr
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, codexImageStatusErrWithBody(resp.StatusCode, body, "conversation poll failed")
+	}
+	var decoded map[string]any
+	toolMessages := 0
+	toolPointers := 0
+	genericPointers := len(collectCodexImagePointers(body))
+	if err := json.Unmarshal(body, &decoded); err == nil {
+		if mapping, _ := decoded["mapping"].(map[string]any); len(mapping) > 0 {
+			messages := extractCodexImageToolMessages(mapping)
+			toolMessages = len(messages)
+			for _, msg := range messages {
+				toolPointers += len(msg.Pointers)
 			}
-		}
-		timer := time.NewTimer(interval)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return nil, ctx.Err()
-		case <-timer.C:
 		}
 	}
-	return nil, lastErr
+	pointers := collectCodexImagePollPointers(body)
+	log.Debugf(
+		"codex image poll conversation=%s tool_messages=%d tool_assets=%d generic_assets=%d filtered_assets=%d",
+		conversationID,
+		toolMessages,
+		toolPointers,
+		genericPointers,
+		len(pointers),
+	)
+	return pointers, nil
 }
 
 func buildCodexImageOpenAIResponse(

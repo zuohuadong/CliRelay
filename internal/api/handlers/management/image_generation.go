@@ -46,6 +46,9 @@ func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 	}, coreexecutor.Options{
 		Alt:          alt,
 		SourceFormat: sdktranslator.FromString("openai"),
+		Metadata: map[string]any{
+			coreexecutor.SinglePickMetadataKey: true,
+		},
 	})
 	if err != nil {
 		status := http.StatusBadGateway

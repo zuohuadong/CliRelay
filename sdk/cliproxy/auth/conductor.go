@@ -891,7 +891,18 @@ func hasRequestedModelMetadata(meta map[string]any) bool {
 }
 
 func isSinglePickRouteRequest(meta map[string]any) bool {
-	return routeGroupFromMetadata(meta) != ""
+	if routeGroupFromMetadata(meta) != "" {
+		return true
+	}
+	if len(meta) == 0 {
+		return false
+	}
+	raw, ok := meta[cliproxyexecutor.SinglePickMetadataKey]
+	if !ok || raw == nil {
+		return false
+	}
+	enabled, ok := parseBoolAny(raw)
+	return ok && enabled
 }
 
 func allowedChannelsFromMetadata(meta map[string]any) map[string]struct{} {

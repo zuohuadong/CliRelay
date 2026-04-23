@@ -88,6 +88,38 @@ func TestManager_ShouldRetryAfterError_DisablesInternalRetryForGroupedRoute(t *t
 	}
 }
 
+func TestManager_ShouldRetryAfterError_DisablesInternalRetryForSinglePick(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	m.SetRetryConfig(3, 30*time.Second)
+
+	model := "test-model"
+	next := time.Now().Add(5 * time.Second)
+	auth := &Auth{
+		ID:       "auth-1",
+		Provider: "codex",
+		ModelStates: map[string]*ModelState{
+			model: {
+				Unavailable:    true,
+				Status:         StatusError,
+				NextRetryAfter: next,
+			},
+		},
+	}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	_, maxWait := m.retrySettings()
+	meta := map[string]any{"single_pick": true}
+	wait, shouldRetry := m.shouldRetryAfterError(&Error{HTTPStatus: 500, Message: "boom"}, 0, []string{"codex"}, model, maxWait, meta)
+	if shouldRetry {
+		t.Fatalf("expected shouldRetry=false for single-pick request, got true (wait=%v)", wait)
+	}
+	if wait != 0 {
+		t.Fatalf("expected wait=0 for single-pick request, got %v", wait)
+	}
+}
+
 func TestManager_MarkResult_RespectsAuthDisableCoolingOverride(t *testing.T) {
 	prev := quotaCooldownDisabled.Load()
 	quotaCooldownDisabled.Store(false)

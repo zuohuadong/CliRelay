@@ -81,6 +81,8 @@ type DailyQuotaPoint struct {
 	Samples int64    `json:"samples"`
 }
 
+const systemRequestLogFilterValue = "__system__"
+
 var (
 	usageDB     *sql.DB
 	usageDBMu   sync.Mutex
@@ -919,8 +921,25 @@ func buildWhereClause(params LogQueryParams) (string, []interface{}) {
 	args = append(args, CutoffStartUTC(params.Days).Format(time.RFC3339))
 
 	if params.APIKey != "" {
-		conditions = append(conditions, "api_key = ?")
-		args = append(args, params.APIKey)
+		if params.APIKey == systemRequestLogFilterValue {
+			conditions = append(conditions, `(
+				trim(coalesce(api_key_name, '')) = ''
+				AND (
+					trim(coalesce(api_key, '')) = ''
+					OR trim(coalesce(api_key, '')) LIKE '/%'
+					OR upper(trim(coalesce(api_key, ''))) LIKE 'GET /%'
+					OR upper(trim(coalesce(api_key, ''))) LIKE 'POST /%'
+					OR upper(trim(coalesce(api_key, ''))) LIKE 'PUT /%'
+					OR upper(trim(coalesce(api_key, ''))) LIKE 'PATCH /%'
+					OR upper(trim(coalesce(api_key, ''))) LIKE 'DELETE /%'
+					OR upper(trim(coalesce(api_key, ''))) LIKE 'OPTIONS /%'
+					OR upper(trim(coalesce(api_key, ''))) LIKE 'HEAD /%'
+				)
+			)`)
+		} else {
+			conditions = append(conditions, "api_key = ?")
+			args = append(args, params.APIKey)
+		}
 	}
 	if params.Model != "" {
 		conditions = append(conditions, "model = ?")

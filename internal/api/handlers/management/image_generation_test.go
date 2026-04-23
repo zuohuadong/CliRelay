@@ -3,10 +3,12 @@ package management
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,6 +21,7 @@ type managementImageExecutor struct {
 	alt      string
 	model    string
 	payload  string
+	payloads []string
 	metadata map[string]any
 	calls    int
 }
@@ -30,8 +33,13 @@ func (e *managementImageExecutor) Execute(ctx context.Context, auth *coreauth.Au
 	e.alt = opts.Alt
 	e.model = req.Model
 	e.payload = string(req.Payload)
+	e.payloads = append(e.payloads, e.payload)
 	e.metadata = opts.Metadata
-	return coreexecutor.Response{Payload: []byte(`{"created":1,"data":[{"b64_json":"dGVzdA=="}]}`)}, nil
+	b64 := "dGVzdA=="
+	if e.calls > 1 {
+		b64 = "dGVzdA" + strconv.Itoa(e.calls) + "="
+	}
+	return coreexecutor.Response{Payload: []byte(`{"created":1,"data":[{"b64_json":"` + b64 + `"}]}`)}, nil
 }
 
 func (e *managementImageExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
@@ -129,13 +137,29 @@ func TestPostImageGenerationTestForwardsGenerationOptions(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
+	if executor.calls != 2 {
+		t.Fatalf("executor calls = %d, want 2", executor.calls)
+	}
 	if executor.alt != "images/generations" {
 		t.Fatalf("alt = %q, want images/generations", executor.alt)
 	}
-	for _, want := range []string{`"size":"1024x1792"`, `"quality":"high"`, `"n":2`} {
-		if !strings.Contains(executor.payload, want) {
-			t.Fatalf("payload = %s, want %s", executor.payload, want)
+	for i, payload := range executor.payloads {
+		for _, want := range []string{`"size":"1024x1792"`, `"quality":"high"`, `"n":1`} {
+			if !strings.Contains(payload, want) {
+				t.Fatalf("payload[%d] = %s, want %s", i, payload, want)
+			}
 		}
+	}
+	var body struct {
+		Data []struct {
+			B64JSON string `json:"b64_json"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if len(body.Data) != 2 {
+		t.Fatalf("data length = %d, want 2", len(body.Data))
 	}
 }
 

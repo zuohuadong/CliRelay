@@ -39,27 +39,104 @@ func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 
 	cliCtx := context.WithValue(c.Request.Context(), util.ContextKeyGin, c)
 	c.Set("apiKey", "POST /image-generation/test")
-	resp, err := h.authManager.Execute(cliCtx, []string{"codex"}, coreexecutor.Request{
-		Model:   "",
-		Payload: payload,
-		Format:  sdktranslator.FromString("openai"),
-	}, coreexecutor.Options{
-		Alt:          alt,
-		SourceFormat: sdktranslator.FromString("openai"),
-		Metadata: map[string]any{
-			coreexecutor.SinglePickMetadataKey: true,
-		},
-	})
+	imageCount, err := imageGenerationRequestCount(payload)
 	if err != nil {
-		status := http.StatusBadGateway
-		if statusErr, ok := err.(coreexecutor.StatusError); ok && statusErr.StatusCode() > 0 {
-			status = statusErr.StatusCode()
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	payloads := make([][]byte, 0, imageCount)
+	for i := 0; i < imageCount; i++ {
+		execPayload := payload
+		if imageCount > 1 {
+			var setErr error
+			execPayload, setErr = setImageGenerationRequestCount(payload, 1)
+			if setErr != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid image generation request"})
+				return
+			}
 		}
-		c.JSON(status, gin.H{"error": err.Error()})
+		resp, execErr := h.authManager.Execute(cliCtx, []string{"codex"}, coreexecutor.Request{
+			Model:   "",
+			Payload: execPayload,
+			Format:  sdktranslator.FromString("openai"),
+		}, coreexecutor.Options{
+			Alt:          alt,
+			SourceFormat: sdktranslator.FromString("openai"),
+			Metadata: map[string]any{
+				coreexecutor.SinglePickMetadataKey: true,
+			},
+		})
+		if execErr != nil {
+			status := http.StatusBadGateway
+			if statusErr, ok := execErr.(coreexecutor.StatusError); ok && statusErr.StatusCode() > 0 {
+				status = statusErr.StatusCode()
+			}
+			c.JSON(status, gin.H{"error": execErr.Error()})
+			return
+		}
+		payloads = append(payloads, resp.Payload)
+	}
+	mergedPayload, err := mergeImageGenerationResponses(payloads)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.Data(http.StatusOK, "application/json; charset=utf-8", resp.Payload)
+	c.Data(http.StatusOK, "application/json; charset=utf-8", mergedPayload)
+}
+
+func imageGenerationRequestCount(payload []byte) (int, error) {
+	var body struct {
+		N int `json:"n"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return 0, fmt.Errorf("invalid image generation request")
+	}
+	if body.N == 0 {
+		return 1, nil
+	}
+	if body.N < 1 || body.N > 4 {
+		return 0, fmt.Errorf("n must be between 1 and 4")
+	}
+	return body.N, nil
+}
+
+func setImageGenerationRequestCount(payload []byte, n int) ([]byte, error) {
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return nil, err
+	}
+	body["n"] = n
+	return json.Marshal(body)
+}
+
+func mergeImageGenerationResponses(payloads [][]byte) ([]byte, error) {
+	if len(payloads) == 0 {
+		return nil, fmt.Errorf("image generation returned no responses")
+	}
+	if len(payloads) == 1 {
+		return payloads[0], nil
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(payloads[0], &merged); err != nil {
+		return nil, fmt.Errorf("parse image generation response: %w", err)
+	}
+	data := make([]json.RawMessage, 0, len(payloads))
+	for _, payload := range payloads {
+		var item struct {
+			Data []json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(payload, &item); err != nil {
+			return nil, fmt.Errorf("parse image generation response: %w", err)
+		}
+		data = append(data, item.Data...)
+	}
+	encodedData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("encode image generation response: %w", err)
+	}
+	merged["data"] = encodedData
+	return json.Marshal(merged)
 }
 
 func parseImageGenerationTestPayload(c *gin.Context) ([]byte, string, error) {

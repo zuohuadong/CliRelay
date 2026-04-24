@@ -34,6 +34,9 @@ func GetProviderName(modelName string) []string {
 	if modelName == "" {
 		return nil
 	}
+	if strings.EqualFold(strings.TrimSpace(modelName), "gptimage-2") {
+		return []string{"codex"}
+	}
 
 	providers := make([]string, 0, 4)
 	seen := make(map[string]struct{})

@@ -63,9 +63,27 @@ func (h *OpenAIResponsesAPIHandler) Models() []map[string]any {
 // It returns a list of available AI models with their capabilities
 // and specifications in OpenAIResponses-compatible format.
 func (h *OpenAIResponsesAPIHandler) OpenAIResponsesModels(c *gin.Context) {
+	models := h.Models()
+	if isCherryStudioRequest(c) {
+		rewritten := make([]map[string]any, 0, len(models))
+		for _, model := range models {
+			if model == nil {
+				continue
+			}
+			cloned := make(map[string]any, len(model))
+			for key, value := range model {
+				cloned[key] = value
+			}
+			if modelID, _ := cloned["id"].(string); modelID != "" {
+				cloned["id"] = presentedImageModelID(c, modelID)
+			}
+			rewritten = append(rewritten, cloned)
+		}
+		models = rewritten
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
-		"data":   h.Models(),
+		"data":   models,
 	})
 }
 
@@ -80,7 +98,8 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String()) == "gpt-image-2" {
+	rawJSON = normalizeImageAliasPayload(rawJSON)
+	if strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String()) == openAIImageModelID {
 		h.handleImageResponse(c, rawJSON)
 		return
 	}
@@ -93,6 +112,18 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 		h.handleNonStreamingResponse(c, rawJSON)
 	}
 
+}
+
+func normalizeImageAliasPayload(rawJSON []byte) []byte {
+	modelName := normalizeImageModelAlias(gjson.GetBytes(rawJSON, "model").String())
+	if modelName == strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String()) {
+		return rawJSON
+	}
+	updated, err := sjson.SetBytes(rawJSON, "model", modelName)
+	if err != nil {
+		return rawJSON
+	}
+	return updated
 }
 
 func (h *OpenAIResponsesAPIHandler) handleImageResponse(c *gin.Context, rawJSON []byte) {
@@ -161,7 +192,7 @@ func openAIResponsesImagePrompt(rawJSON []byte) string {
 
 func openAIResponsesImagePayload(rawJSON []byte, prompt string) ([]byte, error) {
 	payload := map[string]any{
-		"model":  "gpt-image-2",
+		"model":  openAIImageModelID,
 		"prompt": prompt,
 	}
 	for _, key := range []string{"size", "quality", "background", "moderation", "output_compression", "output_format", "response_format", "n"} {
@@ -291,7 +322,7 @@ func openAIResponsesImageJSON(text string) []byte {
 		"id":         responseID,
 		"object":     "response",
 		"created_at": createdAt,
-		"model":      "gpt-image-2",
+		"model":      openAIImageModelID,
 		"status":     "completed",
 		"output": []any{map[string]any{
 			"id":     "msg_" + responseID,
@@ -331,7 +362,7 @@ func openAIResponsesImageEvent(eventType string, sequence int, responseID string
 			"id":         responseID,
 			"object":     "response",
 			"created_at": createdAt,
-			"model":      "gpt-image-2",
+			"model":      openAIImageModelID,
 			"status":     status,
 			"background": false,
 			"error":      nil,

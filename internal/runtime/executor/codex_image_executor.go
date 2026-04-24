@@ -569,7 +569,11 @@ func buildCodexImagePrompt(parsed *codexImageRequest, index int) string {
 	if base == "" {
 		base = codexImageDefaultPrompt
 	}
-	extras := make([]string, 0, 4)
+	extras := make([]string, 0, 8)
+	extras = append(extras,
+		"Generate an image that satisfies the user's request.",
+		"Return only the final generated image and do not reply with chat text, questions, or explanations.",
+	)
 	if parsed.Size != "" {
 		extras = append(extras, "Preferred image size: "+parsed.Size+".")
 	}
@@ -587,10 +591,7 @@ func buildCodexImagePrompt(parsed *codexImageRequest, index int) string {
 			"Output only the edited result image.",
 		)
 	}
-	if len(extras) == 0 {
-		return base
-	}
-	return base + "\n\n" + strings.Join(extras, "\n")
+	return strings.Join(append(extras, "User request: "+base), "\n")
 }
 
 func buildCodexImageConversationRequest(prompt, parentMessageID string, uploads []codexUploadedImage) map[string]any {
@@ -1228,6 +1229,16 @@ func pollCodexImageConversation(ctx context.Context, client *http.Client, header
 				if len(pointers) > 0 {
 					return pointers, nil
 				}
+				if textReply := extractCompletedCodexImageAssistantText(body); strings.TrimSpace(textReply) != "" {
+					return nil, statusErr{
+						code: http.StatusBadGateway,
+						msg: fmt.Sprintf(
+							"openai image conversation completed without image assets (conversation_id=%s, assistant_text=%q)",
+							conversationID,
+							textReply,
+						),
+					}
+				}
 			}
 		}
 		if timeoutErr := codexImagePollTimeoutError(ctx, startedAt, deadline, conversationID); timeoutErr != nil {
@@ -1252,6 +1263,67 @@ func pollCodexImageConversation(ctx context.Context, client *http.Client, header
 		case <-timer.C:
 		}
 	}
+}
+
+func extractCompletedCodexImageAssistantText(body []byte) string {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return ""
+	}
+	currentNodeID := strings.TrimSpace(gjson.GetBytes(body, "current_node").String())
+	if currentNodeID != "" {
+		if text := completedCodexImageAssistantTextAtPath(body, "mapping."+currentNodeID+".message"); text != "" {
+			return text
+		}
+	}
+	mapping := gjson.GetBytes(body, "mapping")
+	if !mapping.IsObject() {
+		return ""
+	}
+	result := ""
+	mapping.ForEach(func(_, node gjson.Result) bool {
+		if text := completedCodexImageAssistantTextAtPathBytes([]byte(node.Raw), "message"); text != "" {
+			result = text
+			return false
+		}
+		return true
+	})
+	return result
+}
+
+func completedCodexImageAssistantTextAtPath(body []byte, path string) string {
+	return completedCodexImageAssistantTextAtPathBytes(body, path)
+}
+
+func completedCodexImageAssistantTextAtPathBytes(body []byte, path string) string {
+	message := gjson.GetBytes(body, path)
+	if !message.Exists() {
+		return ""
+	}
+	if strings.TrimSpace(message.Get("author.role").String()) != "assistant" {
+		return ""
+	}
+	status := strings.TrimSpace(message.Get("status").String())
+	if status != "finished_successfully" && status != "finished" {
+		return ""
+	}
+	if strings.TrimSpace(message.Get("content.content_type").String()) != "text" {
+		return ""
+	}
+	parts := message.Get("content.parts")
+	if !parts.IsArray() || parts.Array() == nil {
+		return ""
+	}
+	texts := make([]string, 0, 2)
+	parts.ForEach(func(_, part gjson.Result) bool {
+		if value := strings.TrimSpace(part.String()); value != "" {
+			texts = append(texts, value)
+		}
+		return true
+	})
+	if len(texts) == 0 {
+		return ""
+	}
+	return strings.Join(texts, "\n")
 }
 
 func codexImagePollTimeoutError(ctx context.Context, startedAt, deadline time.Time, conversationID string) error {

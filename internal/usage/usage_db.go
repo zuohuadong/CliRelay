@@ -256,6 +256,8 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	migrateFirstTokenColumn(db)
 	log.Debugf("usage: initializing pricing table")
 	initPricingTable(db)
+	log.Debugf("usage: initializing model config tables")
+	initModelConfigTables(db)
 	log.Debugf("usage: initializing api_keys table")
 	initAPIKeysTable(db)
 	log.Debugf("usage: initializing routing_config table")

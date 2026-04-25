@@ -42,6 +42,77 @@ func ensureTranslatedCodexModel(body []byte, fallback string) []byte {
 	return body
 }
 
+func extractCodexResponsesOutputItemDone(payload []byte) ([]byte, string, bool) {
+	if gjson.GetBytes(payload, "type").String() != "response.output_item.done" {
+		return nil, "", false
+	}
+	item := gjson.GetBytes(payload, "item")
+	if !item.Exists() || item.Raw == "" {
+		return nil, "", false
+	}
+	key := strings.TrimSpace(item.Get("id").String())
+	if key == "" {
+		key = item.Raw
+	}
+	return []byte(item.Raw), key, true
+}
+
+func mergeCodexResponsesCompletedOutput(payload []byte, pendingItems [][]byte, pendingKeys []string) []byte {
+	if len(pendingItems) == 0 || gjson.GetBytes(payload, "type").String() != "response.completed" {
+		return payload
+	}
+
+	output := gjson.GetBytes(payload, "response.output")
+	merged := make([][]byte, 0, len(pendingItems)+len(output.Array()))
+	seen := make(map[string]struct{}, len(pendingItems)+len(output.Array()))
+
+	if output.IsArray() {
+		for _, item := range output.Array() {
+			raw := []byte(item.Raw)
+			key := strings.TrimSpace(item.Get("id").String())
+			if key == "" {
+				key = item.Raw
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, raw)
+		}
+	}
+
+	appended := false
+	for idx, item := range pendingItems {
+		key := pendingKeys[idx]
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, item)
+		appended = true
+	}
+
+	if !appended {
+		return payload
+	}
+
+	buf := bytes.NewBuffer(make([]byte, 0, len(payload)+len(pendingItems)*64))
+	buf.WriteByte('[')
+	for idx, item := range merged {
+		if idx > 0 {
+			buf.WriteByte(',')
+		}
+		buf.Write(item)
+	}
+	buf.WriteByte(']')
+
+	updated, err := sjson.SetRawBytes(payload, "response.output", buf.Bytes())
+	if err != nil {
+		return payload
+	}
+	return updated
+}
+
 // CodexExecutor is a stateless executor for Codex (OpenAI Responses API entrypoint).
 // If api_key is unavailable on auth, it falls back to legacy via ClientAdapter.
 type CodexExecutor struct {
@@ -225,15 +296,27 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	appendAPIResponseChunk(ctx, e.cfg, data)
 
 	lines := bytes.Split(data, []byte("\n"))
+	pendingOutputItems := make([][]byte, 0, 1)
+	pendingOutputKeys := make([]string, 0, 1)
+	pendingSeen := make(map[string]struct{})
 	for _, line := range lines {
 		if !bytes.HasPrefix(line, dataTag) {
 			continue
 		}
 
 		line = bytes.TrimSpace(line[5:])
+		if item, key, ok := extractCodexResponsesOutputItemDone(line); ok {
+			if _, exists := pendingSeen[key]; !exists {
+				pendingSeen[key] = struct{}{}
+				pendingOutputItems = append(pendingOutputItems, item)
+				pendingOutputKeys = append(pendingOutputKeys, key)
+			}
+			continue
+		}
 		if gjson.GetBytes(line, "type").String() != "response.completed" {
 			continue
 		}
+		line = mergeCodexResponsesCompletedOutput(line, pendingOutputItems, pendingOutputKeys)
 
 		if detail, ok := parseCodexUsage(line); ok {
 			reporter.publishWithContent(ctx, detail, string(req.Payload), string(data))

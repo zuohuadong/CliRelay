@@ -42,6 +42,55 @@ func modelConfigResponse(row usage.ModelConfigRow) map[string]any {
 	}
 }
 
+func modelConfigScope(c *gin.Context) string {
+	scope := strings.ToLower(strings.TrimSpace(c.Query("scope")))
+	switch scope {
+	case "all", "library":
+		return scope
+	default:
+		return "active"
+	}
+}
+
+func availableModelIDSet() map[string]bool {
+	modelRegistry := registry.GetGlobalRegistry()
+	availableModels := modelRegistry.GetAvailableModels("openai")
+	result := make(map[string]bool, len(availableModels))
+	for _, model := range availableModels {
+		id, _ := model["id"].(string)
+		id = strings.TrimSpace(id)
+		if id != "" {
+			result[id] = true
+		}
+	}
+	return result
+}
+
+func filterModelConfigRowsByScope(rows []usage.ModelConfigRow, scope string) []usage.ModelConfigRow {
+	availableIDs := map[string]bool(nil)
+	if scope == "active" {
+		availableIDs = availableModelIDSet()
+	}
+
+	filtered := make([]usage.ModelConfigRow, 0, len(rows))
+	for _, row := range rows {
+		source := strings.ToLower(strings.TrimSpace(row.Source))
+		switch scope {
+		case "all":
+			filtered = append(filtered, row)
+		case "library":
+			if source == "seed" {
+				filtered = append(filtered, row)
+			}
+		default:
+			if source != "seed" || availableIDs[row.ModelID] {
+				filtered = append(filtered, row)
+			}
+		}
+	}
+	return filtered
+}
+
 func modelConfigPayloadToRow(payload modelConfigPayload) usage.ModelConfigRow {
 	return usage.ModelConfigRow{
 		ModelID:               strings.TrimSpace(payload.ID),
@@ -160,7 +209,7 @@ func (h *Handler) GetModels(c *gin.Context) {
 //
 //	GET /v0/management/model-configs
 func (h *Handler) GetModelConfigs(c *gin.Context) {
-	rows := usage.ListModelConfigs()
+	rows := filterModelConfigRowsByScope(usage.ListModelConfigs(), modelConfigScope(c))
 	items := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, modelConfigResponse(row))

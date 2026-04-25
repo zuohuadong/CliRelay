@@ -99,6 +99,72 @@ func TestModelConfigHandlersCreateListAndDelete(t *testing.T) {
 	}
 }
 
+func TestModelConfigHandlersScopeFiltering(t *testing.T) {
+	initManagementModelsTestDB(t)
+	h := NewHandler(&config.Config{}, "", nil)
+
+	createBody := []byte(`{
+		"id": "custom-active",
+		"owned_by": "acme-ai",
+		"description": "Custom active model",
+		"enabled": true,
+		"pricing": {
+			"mode": "token",
+			"input_price_per_million": 1,
+			"output_price_per_million": 2
+		}
+	}`)
+	createRec := performModelsRequest(http.MethodPost, "/model-configs", createBody, h.PostModelConfig)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("PostModelConfig status = %d body = %s", createRec.Code, createRec.Body.String())
+	}
+
+	decodeIDs := func(rec *httptest.ResponseRecorder) map[string]bool {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list status = %d body = %s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Data []struct {
+				ID     string `json:"id"`
+				Source string `json:"source"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("unmarshal list response: %v", err)
+		}
+		ids := make(map[string]bool)
+		for _, item := range payload.Data {
+			ids[item.ID] = true
+			if item.ID == "custom-active" && item.Source != "user" {
+				t.Fatalf("custom-active source = %q, want user", item.Source)
+			}
+		}
+		return ids
+	}
+
+	activeIDs := decodeIDs(performModelsRequest(http.MethodGet, "/model-configs", nil, h.GetModelConfigs))
+	if !activeIDs["custom-active"] {
+		t.Fatal("expected custom-active in default active scope")
+	}
+	if activeIDs["gpt-image-2"] {
+		t.Fatal("did not expect seed-only gpt-image-2 in default active scope")
+	}
+
+	libraryIDs := decodeIDs(performModelsRequest(http.MethodGet, "/model-configs?scope=library", nil, h.GetModelConfigs))
+	if !libraryIDs["gpt-image-2"] {
+		t.Fatal("expected gpt-image-2 in library scope")
+	}
+	if libraryIDs["custom-active"] {
+		t.Fatal("did not expect user custom-active in library scope")
+	}
+
+	allIDs := decodeIDs(performModelsRequest(http.MethodGet, "/model-configs?scope=all", nil, h.GetModelConfigs))
+	if !allIDs["gpt-image-2"] || !allIDs["custom-active"] {
+		t.Fatalf("expected all scope to include seed and user models, got gpt-image-2=%v custom-active=%v", allIDs["gpt-image-2"], allIDs["custom-active"])
+	}
+}
+
 func TestModelOwnerPresetHandlersReplacePresets(t *testing.T) {
 	initManagementModelsTestDB(t)
 	h := NewHandler(&config.Config{}, "", nil)

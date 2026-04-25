@@ -903,6 +903,8 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	changed := false
+	var oldChannelIdentifiers []string
+	var newChannelLabel string
 	if req.Label != nil {
 		accountType, _ := targetAuth.AccountInfo()
 		if !strings.EqualFold(accountType, "oauth") {
@@ -918,6 +920,8 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": errValidate.Error()})
 			return
 		}
+		oldChannelIdentifiers = targetAuth.ChannelIdentifiers()
+		newChannelLabel = label
 		targetAuth.Label = label
 		if targetAuth.Metadata == nil {
 			targetAuth.Metadata = make(map[string]any)
@@ -955,6 +959,12 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
 		return
+	}
+	if len(oldChannelIdentifiers) > 0 {
+		if err := h.renameChannelReferences(oldChannelIdentifiers, newChannelLabel); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})

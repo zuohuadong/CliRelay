@@ -93,6 +93,94 @@ func TestPatchAuthFileFieldsUpdatesOAuthChannelLabel(t *testing.T) {
 	}
 }
 
+func TestPatchAuthFileFieldsRenamesRoutingChannelReferences(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	_, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "oauth-auth-routing",
+		FileName: "oauth-auth-routing.json",
+		Provider: "claude",
+		Label:    "Team Old",
+		Metadata: map[string]any{
+			"email": "team-old@example.com",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{
+		cfg: &config.Config{
+			Routing: config.RoutingConfig{
+				ChannelGroups: []config.RoutingChannelGroup{
+					{
+						Name: "team-alpha",
+						Match: config.ChannelGroupMatch{
+							Channels: []string{"Team Old", "Other Channel"},
+						},
+						ChannelPriorities: map[string]int{
+							"Team Old":      80,
+							"Other Channel": 10,
+						},
+					},
+				},
+			},
+			OAuthModelAlias: map[string][]config.OAuthModelAlias{
+				"team old": {{Name: "claude-sonnet", Alias: "sonnet"}},
+			},
+			SDKConfig: config.SDKConfig{
+				APIKeyEntries: []config.APIKeyEntry{
+					{Key: "sk-test", Name: "test", AllowedChannels: []string{"Team Old"}},
+				},
+			},
+		},
+		authManager: manager,
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"name":  "oauth-auth-routing.json",
+		"label": "Team New",
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/auth-files/fields", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchAuthFileFields(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	group := h.cfg.Routing.ChannelGroups[0]
+	if !containsString(group.Match.Channels, "Team New") {
+		t.Fatalf("match.channels = %v, want renamed channel", group.Match.Channels)
+	}
+	if containsString(group.Match.Channels, "Team Old") {
+		t.Fatalf("match.channels = %v, should not keep old channel", group.Match.Channels)
+	}
+	if got := group.ChannelPriorities["Team New"]; got != 80 {
+		t.Fatalf("channel-priorities[Team New] = %d, want 80; map=%v", got, group.ChannelPriorities)
+	}
+	if _, exists := group.ChannelPriorities["Team Old"]; exists {
+		t.Fatalf("channel-priorities = %v, should not keep old key", group.ChannelPriorities)
+	}
+	if _, exists := h.cfg.OAuthModelAlias["team old"]; exists {
+		t.Fatalf("oauth-model-alias still has old channel: %v", h.cfg.OAuthModelAlias)
+	}
+	if _, exists := h.cfg.OAuthModelAlias["team new"]; !exists {
+		t.Fatalf("oauth-model-alias missing new channel: %v", h.cfg.OAuthModelAlias)
+	}
+	if !containsString(h.cfg.APIKeyEntries[0].AllowedChannels, "Team New") {
+		t.Fatalf("allowed-channels = %v, want renamed channel", h.cfg.APIKeyEntries[0].AllowedChannels)
+	}
+}
+
 func TestPatchAuthFileFieldsRejectsDuplicateOAuthChannelLabel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

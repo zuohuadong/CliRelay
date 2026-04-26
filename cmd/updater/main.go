@@ -18,8 +18,8 @@ import (
 
 const (
 	defaultListenAddr    = ":8320"
-	defaultComposeFile   = "/workspace/docker-compose.yml"
-	defaultEnvFile       = "/workspace/.env"
+	defaultComposeFile   = ""
+	defaultEnvFile       = ""
 	defaultTargetService = "clirelay"
 	updateCommandTimeout = 10 * time.Minute
 	maxUpdateLogEntries  = 200

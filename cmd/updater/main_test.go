@@ -32,6 +32,17 @@ func TestUpdaterRejectsInvalidBearerToken(t *testing.T) {
 	}
 }
 
+func TestUpdaterDefaultPathsDoNotPointAtWorkspace(t *testing.T) {
+	server := newUpdaterServer(updaterConfig{})
+
+	if strings.Contains(server.composeFile, "/workspace") {
+		t.Fatalf("composeFile = %q, want no /workspace default", server.composeFile)
+	}
+	if strings.Contains(server.envFile, "/workspace") {
+		t.Fatalf("envFile = %q, want no /workspace default", server.envFile)
+	}
+}
+
 func TestUpdaterPersistsRequestedImageBeforeComposeUpdate(t *testing.T) {
 	envFile := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(envFile, []byte("CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:dev\nOTHER=value\n"), 0o600); err != nil {

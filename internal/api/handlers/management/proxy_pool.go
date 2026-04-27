@@ -31,9 +31,9 @@ func (h *Handler) GetProxyPool(c *gin.Context) {
 	var entries []config.ProxyPoolEntry
 	if usage.ProxyPoolStoreAvailable() {
 		entries = usage.ListProxyPool()
-	} else {
+	} else if h != nil {
 		h.mu.Lock()
-		if h != nil && h.cfg != nil {
+		if h.cfg != nil {
 			entries = append(entries, h.cfg.ProxyPool...)
 		}
 		h.mu.Unlock()

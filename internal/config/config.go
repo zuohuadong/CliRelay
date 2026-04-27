@@ -129,6 +129,9 @@ type Config struct {
 	// IdentityFingerprint controls provider-specific upstream identity headers.
 	IdentityFingerprint IdentityFingerprintConfig `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
 
+	// ProxyPool stores reusable outbound proxies that can be referenced by providers and auth files.
+	ProxyPool []ProxyPoolEntry `yaml:"proxy-pool,omitempty" json:"proxy-pool,omitempty"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
@@ -780,6 +783,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Normalize provider identity fingerprints.
 	cfg.SanitizeIdentityFingerprint()
+
+	// Normalize reusable outbound proxy entries.
+	cfg.SanitizeProxyPool()
 
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()

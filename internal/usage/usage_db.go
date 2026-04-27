@@ -848,7 +848,7 @@ func dashboardTrendsFromBuckets(buckets []dashboardBucket) DashboardTrends {
 		SuccessRate:      make([]DashboardTrendPoint, 0, len(buckets)),
 		TotalTokens:      make([]DashboardTrendPoint, 0, len(buckets)),
 		FailedRequests:   make([]DashboardTrendPoint, 0, len(buckets)),
-		ThroughputSeries: make([]DashboardThroughputPoint, 0, 0),
+		ThroughputSeries: make([]DashboardThroughputPoint, 0),
 	}
 
 	for _, bucket := range buckets {

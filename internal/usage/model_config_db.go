@@ -591,7 +591,7 @@ func ReplaceModelOwnerPresets(rows []ModelOwnerPresetRow) error {
 	if err != nil {
 		return fmt.Errorf("usage: begin owner preset replace: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec("DELETE FROM model_owner_presets"); err != nil {
 		return fmt.Errorf("usage: clear owner presets: %w", err)

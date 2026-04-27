@@ -236,13 +236,12 @@ func validateRoutingAndAPIKeyRestrictions(cfg *config.Config, auths []*coreauth.
 	}
 
 	routingCfg := currentRoutingConfig(cfg)
-	apiKeyEntries := append([]config.APIKeyEntry(nil), cfg.APIKeyEntries...)
 	known, err := collectKnownChannels(cfg, auths, "")
 	if err != nil {
 		return err
 	}
 	routingCfg = canonicalizeRoutingConfigChannels(routingCfg, known)
-	apiKeyEntries = canonicalizeAPIKeyEntriesChannels(cfg.APIKeyEntries, known)
+	apiKeyEntries := canonicalizeAPIKeyEntriesChannels(cfg.APIKeyEntries, known)
 
 	groups := buildChannelGroupItems(cfg, auths)
 	descriptors := collectChannelDescriptors(cfg, auths)

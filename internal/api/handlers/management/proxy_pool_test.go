@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
 func TestGetProxyPoolIncludesMaskedURL(t *testing.T) {
@@ -128,4 +129,62 @@ func TestPostProxyPoolCheckUsesConfiguredProxy(t *testing.T) {
 	if !body.OK || body.StatusCode != http.StatusNoContent {
 		t.Fatalf("check response = %#v", body)
 	}
+}
+
+func TestProxyPoolHandlersUseSQLiteWhenAvailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cleanup := usageTestProxyPoolDB(t)
+	defer cleanup()
+
+	if err := usage.ReplaceProxyPool([]config.ProxyPoolEntry{
+		{ID: "db", Name: "DB Proxy", URL: "http://127.0.0.1:7890", Enabled: true},
+	}); err != nil {
+		t.Fatalf("ReplaceProxyPool: %v", err)
+	}
+
+	h := NewHandler(&config.Config{
+		ProxyPool: []config.ProxyPoolEntry{
+			{ID: "yaml", Name: "YAML Proxy", URL: "http://127.0.0.1:8888", Enabled: true},
+		},
+	}, "", nil)
+	defer h.Close()
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	h.GetProxyPool(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"id":"db"`) || strings.Contains(w.Body.String(), `"id":"yaml"`) {
+		t.Fatalf("GetProxyPool should prefer SQLite rows, body = %s", w.Body.String())
+	}
+
+	payload := []byte(`{"items":[{"id":"new","name":"New Proxy","url":"http://127.0.0.1:9000","enabled":true}]}`)
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPut, "/proxy-pool", bytes.NewReader(payload))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PutProxyPool(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	rows := usage.ListProxyPool()
+	if len(rows) != 1 || rows[0].ID != "new" {
+		t.Fatalf("SQLite proxy pool = %#v", rows)
+	}
+	if len(h.cfg.ProxyPool) != 1 || h.cfg.ProxyPool[0].ID != "new" {
+		t.Fatalf("runtime proxy pool = %#v", h.cfg.ProxyPool)
+	}
+}
+
+func usageTestProxyPoolDB(t *testing.T) func() {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{}, nil); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	return usage.CloseDB
 }

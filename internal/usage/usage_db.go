@@ -274,6 +274,8 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	initAPIKeysTable(db)
 	log.Debugf("usage: initializing routing_config table")
 	initRoutingConfigTable(db)
+	log.Debugf("usage: initializing proxy_pool table")
+	initProxyPoolTable(db)
 	startRequestLogMaintenance(db)
 	log.Infof("usage: SQLite database initialised at %s", dbPath)
 	return nil

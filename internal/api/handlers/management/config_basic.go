@@ -179,6 +179,9 @@ func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
 
 	// ── Global proxy URL ────────────────────────────────────────────────────
 	copy.ProxyURL = maskBaseURL(copy.ProxyURL)
+	for i := range copy.ProxyPool {
+		copy.ProxyPool[i].URL = maskProxyPoolURL(copy.ProxyPool[i].URL)
+	}
 
 	return &copy
 }

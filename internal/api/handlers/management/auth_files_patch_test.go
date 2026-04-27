@@ -93,6 +93,139 @@ func TestPatchAuthFileFieldsUpdatesOAuthChannelLabel(t *testing.T) {
 	}
 }
 
+func TestBuildAuthFileEntryIncludesSubscriptionExpiration(t *testing.T) {
+	expiresAt := time.Now().UTC().Add(90 * time.Minute).Truncate(time.Minute)
+	auth := &coreauth.Auth{
+		ID:       "codex-subscription",
+		FileName: "codex-subscription.json",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"path": "codex-subscription.json",
+		},
+		Metadata: map[string]any{
+			"subscription_expires_at": expiresAt.Format(time.RFC3339),
+		},
+	}
+
+	entry := (&Handler{}).buildAuthFileEntry(auth)
+	if entry == nil {
+		t.Fatal("expected auth file entry")
+	}
+	if got, _ := entry["subscription_expires_at"].(string); got != expiresAt.Format(time.RFC3339) {
+		t.Fatalf("subscription_expires_at = %q, want %q", got, expiresAt.Format(time.RFC3339))
+	}
+	if got, ok := entry["subscription_expires_at_ms"].(int64); !ok || got != expiresAt.UnixMilli() {
+		t.Fatalf("subscription_expires_at_ms = %#v, want %d", entry["subscription_expires_at_ms"], expiresAt.UnixMilli())
+	}
+	if got, ok := entry["subscription_remaining_minutes"].(int64); !ok || got < 89 || got > 90 {
+		t.Fatalf("subscription_remaining_minutes = %#v, want around 90", entry["subscription_remaining_minutes"])
+	}
+	if expired, _ := entry["subscription_expired"].(bool); expired {
+		t.Fatal("subscription_expired = true, want false")
+	}
+}
+
+func TestPatchAuthFileFieldsUpdatesSubscriptionExpiration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	_, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "oauth-subscription",
+		FileName: "oauth-subscription.json",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"email": "subscriber@example.com",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{
+		cfg:         &config.Config{},
+		authManager: manager,
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"name":                    "oauth-subscription.json",
+		"subscription_expires_at": "2027-01-02T03:04:00Z",
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/auth-files/fields", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchAuthFileFields(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	updated, ok := manager.GetByID("oauth-subscription")
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	if got, _ := updated.Metadata["subscription_expires_at"].(string); got != "2027-01-02T03:04:00Z" {
+		t.Fatalf("subscription_expires_at = %q, want %q", got, "2027-01-02T03:04:00Z")
+	}
+}
+
+func TestPatchAuthFileFieldsClearsSubscriptionExpiration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	_, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "oauth-subscription-clear",
+		FileName: "oauth-subscription-clear.json",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"email":                   "subscriber@example.com",
+			"subscription_expires_at": "2027-01-02T03:04:00Z",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{
+		cfg:         &config.Config{},
+		authManager: manager,
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"name":                    "oauth-subscription-clear.json",
+		"subscription_expires_at": "",
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/auth-files/fields", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchAuthFileFields(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	updated, ok := manager.GetByID("oauth-subscription-clear")
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	if _, exists := updated.Metadata["subscription_expires_at"]; exists {
+		t.Fatalf("subscription_expires_at should be cleared, got %v", updated.Metadata["subscription_expires_at"])
+	}
+}
+
 func TestPatchAuthFileFieldsRenamesRoutingChannelReferences(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

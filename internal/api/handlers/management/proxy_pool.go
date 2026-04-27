@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 )
@@ -27,12 +28,16 @@ type proxyPoolAPIEntry struct {
 
 // GetProxyPool returns reusable proxy entries for the management UI.
 func (h *Handler) GetProxyPool(c *gin.Context) {
-	h.mu.Lock()
 	var entries []config.ProxyPoolEntry
-	if h != nil && h.cfg != nil {
-		entries = append(entries, h.cfg.ProxyPool...)
+	if usage.ProxyPoolStoreAvailable() {
+		entries = usage.ListProxyPool()
+	} else {
+		h.mu.Lock()
+		if h != nil && h.cfg != nil {
+			entries = append(entries, h.cfg.ProxyPool...)
+		}
+		h.mu.Unlock()
 	}
-	h.mu.Unlock()
 
 	items := make([]proxyPoolAPIEntry, 0, len(entries))
 	for _, entry := range entries {
@@ -63,6 +68,20 @@ func (h *Handler) PutProxyPool(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no valid proxy entries"})
 		return
 	}
+	if usage.ProxyPoolStoreAvailable() {
+		if err := usage.ReplaceProxyPool(normalized); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save proxy pool: %v", err)})
+			return
+		}
+		h.mu.Lock()
+		if h.cfg == nil {
+			h.cfg = &config.Config{}
+		}
+		h.cfg.ProxyPool = usage.ListProxyPool()
+		h.mu.Unlock()
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return
+	}
 
 	h.mu.Lock()
 	if h.cfg == nil {
@@ -87,6 +106,11 @@ func (h *Handler) PostProxyPoolCheck(c *gin.Context) {
 	}
 
 	proxyURL := strings.TrimSpace(body.URL)
+	if proxyURL == "" && usage.ProxyPoolStoreAvailable() {
+		if entry := usage.GetProxyPoolEntry(body.ID); entry != nil && entry.Enabled {
+			proxyURL = strings.TrimSpace(entry.URL)
+		}
+	}
 	if proxyURL == "" && h != nil && h.cfg != nil {
 		proxyURL = h.cfg.ResolveProxyURL(body.ID, "")
 	}

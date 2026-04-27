@@ -539,6 +539,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			if shouldSuppressUsageFailure(errScan, "") {
+				out <- cliproxyexecutor.StreamChunk{Err: errScan}
+				return
+			}
 			recordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.publishFailure(ctx)
 			out <- cliproxyexecutor.StreamChunk{Err: errScan}

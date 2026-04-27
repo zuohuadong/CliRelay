@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -80,6 +81,34 @@ func TestUsageReporterSpillsLargeStreamingOutputToTempFile(t *testing.T) {
 	if _, err := os.Stat(tempPath); !os.IsNotExist(err) {
 		t.Fatalf("expected temp file to be removed, stat err=%v", err)
 	}
+}
+
+func TestShouldSuppressUsageFailureForContextCanceled(t *testing.T) {
+	if !shouldSuppressUsageFailure(context.Canceled, "") {
+		t.Fatal("context.Canceled should not be published as a failed usage record")
+	}
+	wrapped := &urlErrorForTest{err: context.Canceled}
+	if !shouldSuppressUsageFailure(wrapped, "") {
+		t.Fatal("wrapped context.Canceled should not be published as a failed usage record")
+	}
+	if !shouldSuppressUsageFailure(nil, `Post "https://chatgpt.com/backend-api/codex/responses": context canceled`) {
+		t.Fatal("context canceled output text should not be published as a failed usage record")
+	}
+	if shouldSuppressUsageFailure(errors.New("upstream 500"), "") {
+		t.Fatal("ordinary upstream errors should still be published as failed usage records")
+	}
+}
+
+type urlErrorForTest struct {
+	err error
+}
+
+func (e *urlErrorForTest) Error() string {
+	return `Post "https://chatgpt.com/backend-api/codex/responses": ` + e.err.Error()
+}
+
+func (e *urlErrorForTest) Unwrap() error {
+	return e.err
 }
 
 func TestRequestDetailsCaptureUpstreamLogsWhenOnlyContentStorageEnabled(t *testing.T) {

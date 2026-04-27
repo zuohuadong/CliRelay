@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -122,6 +123,9 @@ func (r *usageReporter) publishFailureWithContent(ctx context.Context, inputCont
 	if r == nil {
 		return
 	}
+	if shouldSuppressUsageFailure(nil, outputContent) {
+		return
+	}
 	r.contentMu.Lock()
 	r.inputContent = inputContent
 	r.outputContent = outputContent
@@ -134,6 +138,9 @@ func (r *usageReporter) trackFailure(ctx context.Context, errPtr *error) {
 		return
 	}
 	if *errPtr != nil {
+		if shouldSuppressUsageFailure(*errPtr, "") {
+			return
+		}
 		r.contentMu.Lock()
 		if r.outputContent == "" && r.outputBuilder.Len() == 0 && r.outputFile == nil {
 			r.outputContent = structuredUpstreamErrorJSON(*errPtr)
@@ -141,6 +148,13 @@ func (r *usageReporter) trackFailure(ctx context.Context, errPtr *error) {
 		r.contentMu.Unlock()
 		r.publishFailure(ctx)
 	}
+}
+
+func shouldSuppressUsageFailure(err error, outputContent string) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(outputContent), "context canceled")
 }
 
 type upstreamBodyError interface {

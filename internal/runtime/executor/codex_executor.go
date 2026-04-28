@@ -113,6 +113,17 @@ func mergeCodexResponsesCompletedOutput(payload []byte, pendingItems [][]byte, p
 	return updated
 }
 
+func normalizeCodexCompletionPayload(payload []byte) []byte {
+	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.done" {
+		return payload
+	}
+	updated, err := sjson.SetBytes(payload, "type", "response.completed")
+	if err == nil && len(updated) > 0 {
+		return updated
+	}
+	return payload
+}
+
 // CodexExecutor is a stateless executor for Codex (OpenAI Responses API entrypoint).
 // If api_key is unavailable on auth, it falls back to legacy via ClientAdapter.
 type CodexExecutor struct {

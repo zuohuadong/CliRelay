@@ -35,6 +35,7 @@ const (
 	responsesWebsocketHeartbeatInterval          = 30 * time.Second
 	responsesWebsocketHeartbeatWriteLimit        = 10 * time.Second
 	responsesWebsocketApplicationKeepAlivePeriod = 30 * time.Second
+	responsesWebsocketFirstEventTimeout          = 60 * time.Second
 )
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
@@ -204,10 +205,13 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		} else {
 			cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 				pinnedAuthID = strings.TrimSpace(authID)
+				log.Infof("responses websocket: selected auth id=%s auth=%s model=%s", passthroughSessionID, pinnedAuthID, modelName)
 			})
 		}
 		cliCtx = handlers.WithCooldownWaitDisabled(cliCtx)
+		log.Infof("responses websocket: upstream execution start id=%s model=%s pinned_auth=%s", passthroughSessionID, modelName, pinnedAuthID)
 		dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
+		log.Infof("responses websocket: upstream execution stream opened id=%s model=%s pinned_auth=%s", passthroughSessionID, modelName, pinnedAuthID)
 
 		completedOutput, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID)
 		if errForward != nil {
@@ -470,8 +474,11 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 ) ([]byte, error) {
 	completed := false
 	completedOutput := []byte("[]")
+	receivedUpstreamEvent := false
 	keepAlive := time.NewTicker(responsesWebsocketApplicationKeepAlivePeriod)
 	defer keepAlive.Stop()
+	firstEventTimer := time.NewTimer(responsesWebsocketFirstEventTimeout)
+	defer firstEventTimer.Stop()
 
 	for {
 		select {
@@ -482,11 +489,30 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			payload := responsesWebsocketKeepAlivePayload(sessionID)
 			markAPIResponseTimestamp(c)
 			appendWebsocketEvent(wsBodyLog, "response", payload)
+			log.Infof("responses websocket: keepalive sent id=%s event=%s", sessionID, websocketPayloadEventType(payload))
 			if errWrite := conn.WriteMessage(websocket.TextMessage, payload); errWrite != nil {
 				log.Warnf("responses websocket: keepalive write failed id=%s event=%s error=%v", sessionID, websocketPayloadEventType(payload), errWrite)
 				cancel(errWrite)
 				return completedOutput, errWrite
 			}
+		case <-firstEventTimer.C:
+			if receivedUpstreamEvent == true {
+				continue
+			}
+			errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusGatewayTimeout, Error: fmt.Errorf("upstream websocket did not send an event within %s", responsesWebsocketFirstEventTimeout)}
+			h.LoggingAPIResponseError(context.WithValue(c.Request.Context(), util.ContextKeyGin, c), errMsg)
+			markAPIResponseTimestamp(c)
+			errorPayload, errWrite := writeResponsesWebsocketError(conn, errMsg)
+			appendWebsocketEvent(wsBodyLog, "response", errorPayload)
+			log.Warnf("responses websocket: first upstream event timeout id=%s timeout=%s", sessionID, responsesWebsocketFirstEventTimeout)
+			log.Infof("responses websocket: downstream_out id=%s type=%d event=%s payload=%s", sessionID, websocket.TextMessage, websocketPayloadEventType(errorPayload), websocketPayloadPreview(errorPayload))
+			if errWrite != nil {
+				log.Warnf("responses websocket: downstream_out write failed id=%s event=%s error=%v", sessionID, websocketPayloadEventType(errorPayload), errWrite)
+				cancel(errMsg.Error)
+				return completedOutput, errWrite
+			}
+			cancel(errMsg.Error)
+			return completedOutput, nil
 		case errMsg, ok := <-errs:
 			if !ok {
 				errs = nil
@@ -557,6 +583,16 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			}
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
+			if len(payloads) > 0 && receivedUpstreamEvent == false {
+				receivedUpstreamEvent = true
+				if firstEventTimer.Stop() == false {
+					select {
+					case <-firstEventTimer.C:
+					default:
+					}
+				}
+				log.Infof("responses websocket: first upstream event received id=%s event=%s", sessionID, websocketPayloadEventType(payloads[0]))
+			}
 			for i := range payloads {
 				eventType := gjson.GetBytes(payloads[i], "type").String()
 				if eventType == wsEventTypeCompleted {

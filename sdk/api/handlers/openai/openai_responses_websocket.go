@@ -23,17 +23,18 @@ import (
 )
 
 const (
-	wsRequestTypeCreate                   = "response.create"
-	wsRequestTypeAppend                   = "response.append"
-	wsEventTypeError                      = "error"
-	wsEventTypeCompleted                  = "response.completed"
-	wsEventTypeDone                       = "response.done"
-	wsDoneMarker                          = "[DONE]"
-	wsTurnStateHeader                     = "x-codex-turn-state"
-	wsRequestBodyKey                      = "REQUEST_BODY_OVERRIDE"
-	wsPayloadLogMaxSize                   = 2048
-	responsesWebsocketHeartbeatInterval   = 30 * time.Second
-	responsesWebsocketHeartbeatWriteLimit = 10 * time.Second
+	wsRequestTypeCreate                          = "response.create"
+	wsRequestTypeAppend                          = "response.append"
+	wsEventTypeError                             = "error"
+	wsEventTypeCompleted                         = "response.completed"
+	wsEventTypeDone                              = "response.done"
+	wsDoneMarker                                 = "[DONE]"
+	wsTurnStateHeader                            = "x-codex-turn-state"
+	wsRequestBodyKey                             = "REQUEST_BODY_OVERRIDE"
+	wsPayloadLogMaxSize                          = 2048
+	responsesWebsocketHeartbeatInterval          = 30 * time.Second
+	responsesWebsocketHeartbeatWriteLimit        = 10 * time.Second
+	responsesWebsocketApplicationKeepAlivePeriod = 30 * time.Second
 )
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
@@ -432,6 +433,21 @@ func normalizeJSONArrayRaw(raw []byte) string {
 	return "[]"
 }
 
+func responsesWebsocketKeepAlivePayload(sessionID string) []byte {
+	responseID := "resp_keepalive_" + strings.ReplaceAll(sessionID, "-", "")
+	payload, err := json.Marshal(map[string]any{
+		"type": "response.in_progress",
+		"response": map[string]any{
+			"id":     responseID,
+			"status": "in_progress",
+		},
+	})
+	if err != nil {
+		return []byte(`{"type":"response.in_progress","response":{"status":"in_progress"}}`)
+	}
+	return payload
+}
+
 func responsesWebsocketPrewarmPayloads(requestJSON []byte) ([][]byte, bool) {
 	if !gjson.GetBytes(requestJSON, "generate").Exists() || gjson.GetBytes(requestJSON, "generate").Bool() {
 		return nil, false
@@ -454,12 +470,23 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 ) ([]byte, error) {
 	completed := false
 	completedOutput := []byte("[]")
+	keepAlive := time.NewTicker(responsesWebsocketApplicationKeepAlivePeriod)
+	defer keepAlive.Stop()
 
 	for {
 		select {
 		case <-c.Request.Context().Done():
 			cancel(c.Request.Context().Err())
 			return completedOutput, c.Request.Context().Err()
+		case <-keepAlive.C:
+			payload := responsesWebsocketKeepAlivePayload(sessionID)
+			markAPIResponseTimestamp(c)
+			appendWebsocketEvent(wsBodyLog, "response", payload)
+			if errWrite := conn.WriteMessage(websocket.TextMessage, payload); errWrite != nil {
+				log.Warnf("responses websocket: keepalive write failed id=%s event=%s error=%v", sessionID, websocketPayloadEventType(payload), errWrite)
+				cancel(errWrite)
+				return completedOutput, errWrite
+			}
 		case errMsg, ok := <-errs:
 			if !ok {
 				errs = nil

@@ -627,6 +627,11 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					cancel(errWrite)
 					return completedOutput, errWrite
 				}
+				if completed {
+					log.Infof("responses websocket: completed forwarded id=%s", sessionID)
+					cancel(nil)
+					return completedOutput, nil
+				}
 			}
 		}
 	}

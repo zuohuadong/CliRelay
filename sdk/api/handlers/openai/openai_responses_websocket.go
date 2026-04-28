@@ -23,21 +23,54 @@ import (
 )
 
 const (
-	wsRequestTypeCreate  = "response.create"
-	wsRequestTypeAppend  = "response.append"
-	wsEventTypeError     = "error"
-	wsEventTypeCompleted = "response.completed"
-	wsEventTypeDone      = "response.done"
-	wsDoneMarker         = "[DONE]"
-	wsTurnStateHeader    = "x-codex-turn-state"
-	wsRequestBodyKey     = "REQUEST_BODY_OVERRIDE"
-	wsPayloadLogMaxSize  = 2048
+	wsRequestTypeCreate                          = "response.create"
+	wsRequestTypeAppend                          = "response.append"
+	wsEventTypeError                             = "error"
+	wsEventTypeCompleted                         = "response.completed"
+	wsEventTypeDone                              = "response.done"
+	wsDoneMarker                                 = "[DONE]"
+	wsTurnStateHeader                            = "x-codex-turn-state"
+	wsRequestBodyKey                             = "REQUEST_BODY_OVERRIDE"
+	wsPayloadLogMaxSize                          = 2048
+	responsesWebsocketHeartbeatInterval          = 30 * time.Second
+	responsesWebsocketHeartbeatWriteLimit        = 10 * time.Second
+	responsesWebsocketApplicationKeepAlivePeriod = 30 * time.Second
 )
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
 	CheckOrigin:     util.WebsocketOriginAllowed,
+}
+
+func startResponsesWebsocketHeartbeat(conn *websocket.Conn, sessionID string) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(responsesWebsocketHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(responsesWebsocketHeartbeatWriteLimit)); err != nil {
+					log.Debugf("responses websocket: heartbeat failed id=%s error=%v", sessionID, err)
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		close(stop)
+		<-done
+	}
 }
 
 // ResponsesWebsocket handles websocket requests for /v1/responses.
@@ -54,6 +87,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		clientRemoteAddr = strings.TrimSpace(c.Request.RemoteAddr)
 	}
 	log.Infof("responses websocket: client connected id=%s remote=%s", passthroughSessionID, clientRemoteAddr)
+	stopHeartbeat := startResponsesWebsocketHeartbeat(conn, passthroughSessionID)
+	defer stopHeartbeat()
 	var wsTerminateErr error
 	var wsBodyLog strings.Builder
 	defer func() {
@@ -171,6 +206,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				pinnedAuthID = strings.TrimSpace(authID)
 			})
 		}
+		cliCtx = handlers.WithCooldownWaitDisabled(cliCtx)
 		dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
 
 		completedOutput, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID)
@@ -397,6 +433,21 @@ func normalizeJSONArrayRaw(raw []byte) string {
 	return "[]"
 }
 
+func responsesWebsocketKeepAlivePayload(sessionID string) []byte {
+	responseID := "resp_keepalive_" + strings.ReplaceAll(sessionID, "-", "")
+	payload, err := json.Marshal(map[string]any{
+		"type": "response.in_progress",
+		"response": map[string]any{
+			"id":     responseID,
+			"status": "in_progress",
+		},
+	})
+	if err != nil {
+		return []byte(`{"type":"response.in_progress","response":{"status":"in_progress"}}`)
+	}
+	return payload
+}
+
 func responsesWebsocketPrewarmPayloads(requestJSON []byte) ([][]byte, bool) {
 	if !gjson.GetBytes(requestJSON, "generate").Exists() || gjson.GetBytes(requestJSON, "generate").Bool() {
 		return nil, false
@@ -419,12 +470,23 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 ) ([]byte, error) {
 	completed := false
 	completedOutput := []byte("[]")
+	keepAlive := time.NewTicker(responsesWebsocketApplicationKeepAlivePeriod)
+	defer keepAlive.Stop()
 
 	for {
 		select {
 		case <-c.Request.Context().Done():
 			cancel(c.Request.Context().Err())
 			return completedOutput, c.Request.Context().Err()
+		case <-keepAlive.C:
+			payload := responsesWebsocketKeepAlivePayload(sessionID)
+			markAPIResponseTimestamp(c)
+			appendWebsocketEvent(wsBodyLog, "response", payload)
+			if errWrite := conn.WriteMessage(websocket.TextMessage, payload); errWrite != nil {
+				log.Warnf("responses websocket: keepalive write failed id=%s event=%s error=%v", sessionID, websocketPayloadEventType(payload), errWrite)
+				cancel(errWrite)
+				return completedOutput, errWrite
+			}
 		case errMsg, ok := <-errs:
 			if !ok {
 				errs = nil

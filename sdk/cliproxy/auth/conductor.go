@@ -556,6 +556,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	}
 
 	_, maxWait := m.retrySettings()
+	if cooldownWaitDisabled(opts.Metadata) {
+		maxWait = 0
+	}
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
@@ -618,6 +621,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	}
 
 	_, maxWait := m.retrySettings()
+	if cooldownWaitDisabled(opts.Metadata) {
+		maxWait = 0
+	}
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
@@ -898,6 +904,18 @@ func isSinglePickRouteRequest(meta map[string]any) bool {
 		return false
 	}
 	raw, ok := meta[cliproxyexecutor.SinglePickMetadataKey]
+	if !ok || raw == nil {
+		return false
+	}
+	enabled, ok := parseBoolAny(raw)
+	return ok && enabled
+}
+
+func cooldownWaitDisabled(meta map[string]any) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	raw, ok := meta[cliproxyexecutor.DisableCooldownWaitMetadataKey]
 	if !ok || raw == nil {
 		return false
 	}
@@ -1292,6 +1310,9 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 		return 0, false
 	}
 	if isSinglePickRouteRequest(meta) {
+		return 0, false
+	}
+	if cooldownWaitDisabled(meta) {
 		return 0, false
 	}
 	if status := statusCodeFromError(err); status == http.StatusOK {

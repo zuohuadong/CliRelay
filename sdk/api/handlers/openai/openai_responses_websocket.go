@@ -214,7 +214,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
 		log.Infof("responses websocket: upstream execution stream opened id=%s model=%s pinned_auth=%s", passthroughSessionID, modelName, pinnedAuthID)
 
-		completedOutput, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID)
+		completedOutput, completedResponse, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID)
 		if errForward != nil {
 			wsTerminateErr = errForward
 			appendWebsocketEvent(&wsBodyLog, "disconnect", []byte(errForward.Error()))
@@ -222,6 +222,13 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			return
 		}
 		lastResponseOutput = completedOutput
+		if completedResponse {
+			if errClose := closeResponsesWebsocketNormally(conn); errClose != nil {
+				log.Debugf("responses websocket: normal close failed id=%s error=%v", passthroughSessionID, errClose)
+			}
+			log.Infof("responses websocket: completed session closed id=%s", passthroughSessionID)
+			return
+		}
 	}
 }
 
@@ -472,7 +479,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	errs <-chan *interfaces.ErrorMessage,
 	wsBodyLog *strings.Builder,
 	sessionID string,
-) ([]byte, error) {
+) ([]byte, bool, error) {
 	completed := false
 	completedOutput := []byte("[]")
 	lastUpstreamEventAt := time.Now()
@@ -486,7 +493,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 		select {
 		case <-c.Request.Context().Done():
 			cancel(c.Request.Context().Err())
-			return completedOutput, c.Request.Context().Err()
+			return completedOutput, completed, c.Request.Context().Err()
 		case <-keepAlive.C:
 			payload := responsesWebsocketKeepAlivePayload(sessionID)
 			markAPIResponseTimestamp(c)
@@ -495,7 +502,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			if errWrite := writeResponsesWebsocketMessage(conn, websocket.TextMessage, payload); errWrite != nil {
 				log.Warnf("responses websocket: keepalive write failed id=%s event=%s error=%v", sessionID, websocketPayloadEventType(payload), errWrite)
 				cancel(errWrite)
-				return completedOutput, errWrite
+				return completedOutput, completed, errWrite
 			}
 		case <-upstreamIdleTimer.C:
 			errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusGatewayTimeout, Error: fmt.Errorf("upstream websocket did not send another event within %s", responsesWebsocketUpstreamIdleTimeout)}
@@ -508,10 +515,10 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			if errWrite != nil {
 				log.Warnf("responses websocket: downstream_out write failed id=%s event=%s error=%v", sessionID, websocketPayloadEventType(errorPayload), errWrite)
 				cancel(errMsg.Error)
-				return completedOutput, errWrite
+				return completedOutput, completed, errWrite
 			}
 			cancel(errMsg.Error)
-			return completedOutput, nil
+			return completedOutput, completed, nil
 		case errMsg, ok := <-errs:
 			if !ok {
 				errs = nil
@@ -537,7 +544,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					// 	errWrite,
 					// )
 					cancel(errMsg.Error)
-					return completedOutput, errWrite
+					return completedOutput, completed, errWrite
 				}
 			}
 			if errMsg != nil {
@@ -545,7 +552,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			} else {
 				cancel(nil)
 			}
-			return completedOutput, nil
+			return completedOutput, completed, nil
 		case chunk, ok := <-data:
 			if !ok {
 				if !completed {
@@ -572,13 +579,13 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 							errWrite,
 						)
 						cancel(errMsg.Error)
-						return completedOutput, errWrite
+						return completedOutput, completed, errWrite
 					}
 					cancel(errMsg.Error)
-					return completedOutput, nil
+					return completedOutput, completed, nil
 				}
 				cancel(nil)
-				return completedOutput, nil
+				return completedOutput, completed, nil
 			}
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
@@ -625,12 +632,12 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						errWrite,
 					)
 					cancel(errWrite)
-					return completedOutput, errWrite
+					return completedOutput, completed, errWrite
 				}
 				if completed {
 					log.Infof("responses websocket: completed forwarded id=%s", sessionID)
 					cancel(nil)
-					return completedOutput, nil
+					return completedOutput, completed, nil
 				}
 			}
 		}
@@ -683,6 +690,14 @@ func writeResponsesWebsocketMessage(conn *websocket.Conn, messageType int, data 
 		return err
 	}
 	return conn.WriteMessage(messageType, data)
+}
+
+func closeResponsesWebsocketNormally(conn *websocket.Conn) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
+		return err
+	}
+	message := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "completed")
+	return conn.WriteControl(websocket.CloseMessage, message, time.Now().Add(responsesWebsocketWriteTimeout))
 }
 
 func writeResponsesWebsocketError(conn *websocket.Conn, errMsg *interfaces.ErrorMessage) ([]byte, error) {

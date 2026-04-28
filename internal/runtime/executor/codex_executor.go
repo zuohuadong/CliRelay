@@ -184,7 +184,7 @@ func marshalJSONArrayRaw(items [][]byte) []byte {
 	buf = append(buf, '[')
 	for i := range items {
 		if i > 0 {
-			buf = append(buf, chr(44))
+			buf = append(buf, byte(44))
 		}
 		buf = append(buf, items[i]...)
 	}

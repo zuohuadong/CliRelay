@@ -171,6 +171,27 @@ func collectCodexOutputItems(data []byte) []byte {
 	return bytes.Join(lines, []byte("\n"))
 }
 
+func marshalJSONArrayRaw(items [][]byte) []byte {
+	if len(items) == 0 {
+		return []byte("[]")
+	}
+	total := 2
+	for i := range items {
+		total += len(items[i])
+	}
+	total += len(items) - 1
+	buf := make([]byte, 0, total)
+	buf = append(buf, '[')
+	for i := range items {
+		if i > 0 {
+			buf = append(buf, chr(44))
+		}
+		buf = append(buf, items[i]...)
+	}
+	buf = append(buf, ']')
+	return buf
+}
+
 func normalizeCodexCompletionPayload(payload []byte) []byte {
 	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.done" {
 		return payload

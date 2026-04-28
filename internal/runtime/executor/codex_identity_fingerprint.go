@@ -46,13 +46,20 @@ func applyCodexIdentityFingerprintHeaders(headers http.Header, fp config.CodexId
 	if headers == nil {
 		return
 	}
-	headers.Set("Version", fp.Version)
-	headers.Set("User-Agent", fp.UserAgent)
+	// Follow upstream codex-tui behavior: only send headers when values are non-empty.
+	if strings.TrimSpace(fp.Version) != "" {
+		headers.Set("Version", fp.Version)
+	}
+	if strings.TrimSpace(fp.UserAgent) != "" {
+		headers.Set("User-Agent", fp.UserAgent)
+	}
 	if strings.TrimSpace(headers.Get("Session_id")) == "" {
 		headers.Set("Session_id", codexFingerprintSessionID(fp))
 	}
 	if websocket {
-		headers.Set("OpenAI-Beta", fp.WebsocketBeta)
+		if strings.TrimSpace(fp.WebsocketBeta) != "" {
+			headers.Set("OpenAI-Beta", fp.WebsocketBeta)
+		}
 	}
 	for key, value := range fp.CustomHeaders {
 		key = strings.TrimSpace(key)

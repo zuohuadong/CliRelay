@@ -318,3 +318,78 @@ func TestTruncationRemovedForCodexCompatibility(t *testing.T) {
 		t.Fatalf("truncation should be removed for Codex compatibility")
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToCodex_NormalizesImageOnlyModel(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gpt-image-2",
+		"input": "draw a fox",
+		"size": "1024x1024",
+		"quality": "high"
+	}`)
+
+	output := ConvertOpenAIResponsesRequestToCodex("gpt-image-2", inputJSON, false)
+	outputStr := string(output)
+
+	if got := gjson.Get(outputStr, "model").String(); got != "gpt-5.4-mini" {
+		t.Fatalf("model = %q, want %q", got, "gpt-5.4-mini")
+	}
+	if got := gjson.Get(outputStr, "tool_choice.type").String(); got != "image_generation" {
+		t.Fatalf("tool_choice.type = %q, want %q", got, "image_generation")
+	}
+	if got := gjson.Get(outputStr, "tools.0.type").String(); got != "image_generation" {
+		t.Fatalf("tools.0.type = %q, want %q", got, "image_generation")
+	}
+	if got := gjson.Get(outputStr, "tools.0.model").String(); got != "gpt-image-2" {
+		t.Fatalf("tools.0.model = %q, want %q", got, "gpt-image-2")
+	}
+	if got := gjson.Get(outputStr, "tools.0.size").String(); got != "1024x1024" {
+		t.Fatalf("tools.0.size = %q, want %q", got, "1024x1024")
+	}
+	if got := gjson.Get(outputStr, "tools.0.quality").String(); got != "high" {
+		t.Fatalf("tools.0.quality = %q, want %q", got, "high")
+	}
+	if gjson.Get(outputStr, "size").Exists() {
+		t.Fatalf("top-level size should be moved onto image_generation tool")
+	}
+	if gjson.Get(outputStr, "quality").Exists() {
+		t.Fatalf("top-level quality should be moved onto image_generation tool")
+	}
+	if got := gjson.Get(outputStr, "input.0.content.0.text").String(); got != "draw a fox" {
+		t.Fatalf("input text = %q, want %q", got, "draw a fox")
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToCodex_NormalizesExistingImageToolForImageOnlyModel(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gpt-image-2",
+		"prompt": "draw a fox icon",
+		"tools": [{"type":"image_generation"}],
+		"background": "transparent",
+		"output_format": "webp"
+	}`)
+
+	output := ConvertOpenAIResponsesRequestToCodex("gpt-image-2", inputJSON, false)
+	outputStr := string(output)
+
+	if got := gjson.Get(outputStr, "model").String(); got != "gpt-5.4-mini" {
+		t.Fatalf("model = %q, want %q", got, "gpt-5.4-mini")
+	}
+	if got := gjson.Get(outputStr, "tools.0.model").String(); got != "gpt-image-2" {
+		t.Fatalf("tools.0.model = %q, want %q", got, "gpt-image-2")
+	}
+	if got := gjson.Get(outputStr, "tools.0.background").String(); got != "transparent" {
+		t.Fatalf("tools.0.background = %q, want %q", got, "transparent")
+	}
+	if got := gjson.Get(outputStr, "tools.0.output_format").String(); got != "webp" {
+		t.Fatalf("tools.0.output_format = %q, want %q", got, "webp")
+	}
+	if got := gjson.Get(outputStr, "tool_choice.type").String(); got != "image_generation" {
+		t.Fatalf("tool_choice.type = %q, want %q", got, "image_generation")
+	}
+	if got := gjson.Get(outputStr, "input.0.content.0.text").String(); got != "draw a fox icon" {
+		t.Fatalf("input text = %q, want %q", got, "draw a fox icon")
+	}
+	if gjson.Get(outputStr, "prompt").Exists() {
+		t.Fatalf("prompt should be normalized into input")
+	}
+}

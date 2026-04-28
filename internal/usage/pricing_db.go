@@ -110,6 +110,7 @@ func UpsertModelPricing(modelID string, input, output, cached float64) error {
 		UpdatedAt:             now,
 	}
 	pricingCacheMu.Unlock()
+	upsertLegacyPricingIntoModelConfig(db, modelID, input, output, cached, now)
 	return nil
 }
 
@@ -151,6 +152,21 @@ func DeleteModelPricing(modelID string) error {
 // CalculateCost computes the cost for a request based on the model's pricing.
 // Returns 0 if no pricing is configured for the model.
 func CalculateCost(modelID string, inputTokens, outputTokens, cachedTokens int64) float64 {
+	modelConfigCacheMu.RLock()
+	if row, ok := modelConfigCache[modelID]; ok {
+		modelConfigCacheMu.RUnlock()
+		if !row.Enabled {
+			return 0
+		}
+		if normalizePricingMode(row.PricingMode) == "call" {
+			return row.PricePerCall
+		}
+		return float64(inputTokens)/1_000_000*row.InputPricePerMillion +
+			float64(outputTokens)/1_000_000*row.OutputPricePerMillion +
+			float64(cachedTokens)/1_000_000*row.CachedPricePerMillion
+	}
+	modelConfigCacheMu.RUnlock()
+
 	pricingCacheMu.RLock()
 	row, ok := pricingCache[modelID]
 	pricingCacheMu.RUnlock()

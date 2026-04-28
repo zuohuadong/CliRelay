@@ -3,6 +3,7 @@ package management
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -31,8 +32,8 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 		codexCount = len(cfg.CodexKey)
 		vertexCount = len(cfg.VertexCompatAPIKey)
 		openaiCount = len(cfg.OpenAICompatibility)
-		apiKeyCount = len(cfg.APIKeyEntries)
 	}
+	apiKeyCount = len(usage.ListAPIKeys())
 
 	if h.authManager != nil {
 		for _, auth := range h.authManager.List() {
@@ -52,6 +53,7 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 	}
 
 	kpi, _ := usage.QueryDashboardKPI(days)
+	trends, _ := usage.QueryDashboardTrends(days)
 
 	c.JSON(http.StatusOK, gin.H{
 		"kpi": gin.H{
@@ -74,6 +76,10 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 			"vertex_keys":      vertexCount,
 			"openai_providers": openaiCount,
 			"auth_files":       authFileCount,
+		},
+		"trends": trends,
+		"meta": gin.H{
+			"generated_at": time.Now().UTC().Format(time.RFC3339),
 		},
 		"days": days,
 	})

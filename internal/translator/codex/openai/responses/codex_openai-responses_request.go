@@ -2,13 +2,17 @@ package responses
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
+const codexResponsesImageBridgeModel = "gpt-5.4-mini"
+
 func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte, _ bool) []byte {
 	rawJSON := inputRawJSON
+	rawJSON = normalizeOpenAIResponsesImageRequest(rawJSON)
 
 	inputResult := gjson.GetBytes(rawJSON, "input")
 	if inputResult.Type == gjson.String {
@@ -36,6 +40,89 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 	rawJSON = convertSystemRoleToDeveloper(rawJSON)
 
 	return rawJSON
+}
+
+func normalizeOpenAIResponsesImageRequest(rawJSON []byte) []byte {
+	rawJSON = normalizeOpenAIResponsesPromptInput(rawJSON)
+
+	requestModel := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
+	isImageOnlyModel := isOpenAIResponsesImageOnlyModel(requestModel)
+	toolIndex := firstImageGenerationToolIndex(rawJSON)
+	if toolIndex < 0 && !isImageOnlyModel {
+		return rawJSON
+	}
+
+	if toolIndex < 0 {
+		rawJSON, _ = sjson.SetRawBytes(rawJSON, "tools", []byte(`[]`))
+		rawJSON, _ = sjson.SetRawBytes(rawJSON, "tools.-1", []byte(`{"type":"image_generation"}`))
+		toolIndex = 0
+	}
+
+	toolModelPath := fmt.Sprintf("tools.%d.model", toolIndex)
+	if isImageOnlyModel && strings.TrimSpace(gjson.GetBytes(rawJSON, toolModelPath).String()) == "" {
+		rawJSON, _ = sjson.SetBytes(rawJSON, toolModelPath, requestModel)
+	}
+
+	for _, field := range []string{
+		"size",
+		"quality",
+		"background",
+		"output_format",
+		"output_compression",
+		"moderation",
+		"style",
+		"partial_images",
+	} {
+		if !gjson.GetBytes(rawJSON, field).Exists() {
+			continue
+		}
+		toolFieldPath := fmt.Sprintf("tools.%d.%s", toolIndex, field)
+		if gjson.GetBytes(rawJSON, toolFieldPath).Exists() {
+			rawJSON, _ = sjson.DeleteBytes(rawJSON, field)
+			continue
+		}
+		rawJSON, _ = sjson.SetRawBytes(rawJSON, toolFieldPath, []byte(gjson.GetBytes(rawJSON, field).Raw))
+		rawJSON, _ = sjson.DeleteBytes(rawJSON, field)
+	}
+
+	if isImageOnlyModel {
+		if !gjson.GetBytes(rawJSON, "tool_choice").Exists() {
+			rawJSON, _ = sjson.SetRawBytes(rawJSON, "tool_choice", []byte(`{"type":"image_generation"}`))
+		}
+		rawJSON, _ = sjson.SetBytes(rawJSON, "model", codexResponsesImageBridgeModel)
+	}
+
+	return rawJSON
+}
+
+func normalizeOpenAIResponsesPromptInput(rawJSON []byte) []byte {
+	if gjson.GetBytes(rawJSON, "input").Exists() {
+		return rawJSON
+	}
+	prompt := strings.TrimSpace(gjson.GetBytes(rawJSON, "prompt").String())
+	if prompt == "" {
+		return rawJSON
+	}
+	rawJSON, _ = sjson.SetBytes(rawJSON, "input", prompt)
+	rawJSON, _ = sjson.DeleteBytes(rawJSON, "prompt")
+	return rawJSON
+}
+
+func firstImageGenerationToolIndex(rawJSON []byte) int {
+	tools := gjson.GetBytes(rawJSON, "tools")
+	if !tools.IsArray() {
+		return -1
+	}
+	for index, tool := range tools.Array() {
+		if strings.TrimSpace(tool.Get("type").String()) == "image_generation" {
+			return index
+		}
+	}
+	return -1
+}
+
+func isOpenAIResponsesImageOnlyModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-image-")
 }
 
 // applyResponsesCompactionCompatibility handles OpenAI Responses context_management.compaction

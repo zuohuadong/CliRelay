@@ -13,6 +13,9 @@ const RequestedModelMetadataKey = "requested_model"
 const (
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
+	// SinglePickMetadataKey forces the auth manager to use exactly one picked auth
+	// for the request and return its error directly without internal retry/fallback.
+	SinglePickMetadataKey = "single_pick"
 	// RouteGroupMetadataKey scopes execution to a channel group resolved from the URL path.
 	RouteGroupMetadataKey = "route_group"
 	// RouteFallbackMetadataKey controls whether groupURL requests may fall back to the default scope.

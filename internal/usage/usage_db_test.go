@@ -55,6 +55,111 @@ func TestCutoffStartUTCAtUsesProjectTimezoneForDayBoundaries(t *testing.T) {
 	}
 }
 
+func TestQueryLogsSupportsSystemRequestLogFilterValue(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	now := time.Now().UTC()
+	InsertLog("POST /image-generation/test", "", "gpt-image-2", "codex", "Codex", "auth-1", false, now, 100, 10, TokenStats{
+		InputTokens: 1, OutputTokens: 1, TotalTokens: 2,
+	}, "", "")
+	InsertLog("/v0/management/image-generation/test", "", "gpt-image-2", "codex", "Codex", "auth-2", true, now, 120, 12, TokenStats{
+		InputTokens: 1, OutputTokens: 1, TotalTokens: 2,
+	}, "", "")
+	InsertLog("sk-live-123", "Primary", "gpt-5.4", "codex", "Codex", "auth-3", false, now, 140, 14, TokenStats{
+		InputTokens: 1, OutputTokens: 1, TotalTokens: 2,
+	}, "", "")
+
+	result, err := QueryLogs(LogQueryParams{
+		Page:   1,
+		Size:   10,
+		Days:   1,
+		APIKey: systemRequestLogFilterValue,
+	})
+	if err != nil {
+		t.Fatalf("QueryLogs() error = %v", err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("system filter items = %d, want 2", len(result.Items))
+	}
+	for _, item := range result.Items {
+		if item.APIKey == "sk-live-123" {
+			t.Fatalf("unexpected non-system api key in system filter result: %q", item.APIKey)
+		}
+	}
+}
+
+func TestQueryLogContentKeepsMissingFailedOutputEmpty(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	})
+
+	now := time.Now().UTC()
+	input := `{"model":"gpt-image-2","prompt":"draw a fox"}`
+	InsertLog("POST /image-generation/test", "", "gpt-image-2", "codex", "Codex", "auth-1", true, now, 100, 10, TokenStats{}, input, "")
+
+	result, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() error = %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("expected 1 log row, got %d", len(result.Items))
+	}
+
+	content, err := QueryLogContent(result.Items[0].ID)
+	if err != nil {
+		t.Fatalf("QueryLogContent() error = %v", err)
+	}
+	if content.InputContent != input {
+		t.Fatalf("InputContent = %q, want %q", content.InputContent, input)
+	}
+	if content.OutputContent != "" {
+		t.Fatalf("OutputContent = %q, want empty historical missing output", content.OutputContent)
+	}
+
+	part, err := QueryLogContentPart(result.Items[0].ID, "output")
+	if err != nil {
+		t.Fatalf("QueryLogContentPart() error = %v", err)
+	}
+	if part.Content != "" {
+		t.Fatalf("part.Content = %q, want empty historical missing output", part.Content)
+	}
+}
+
+func TestQueryLogContentPartReturnsStoredRequestDetails(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	})
+
+	now := time.Now().UTC()
+	details := `{"client":{"ip":"203.0.113.8","headers":{"Authorization":"Bearer sk-client-plaintext"}},"upstream":{"headers":{"Authorization":"Bearer sk-upstream-plaintext"}},"response":{"headers":{"X-Request-Id":"req-plaintext"}}}`
+	InsertLogWithDetails("sk-test", "Primary", "gpt-test", "codex", "Codex", "auth-1", false, now, 100, 10, TokenStats{
+		InputTokens: 1, OutputTokens: 1, TotalTokens: 2,
+	}, `{"messages":[]}`, `{"choices":[]}`, details)
+
+	result, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() error = %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("expected 1 log row, got %d", len(result.Items))
+	}
+
+	part, err := QueryLogContentPart(result.Items[0].ID, "details")
+	if err != nil {
+		t.Fatalf("QueryLogContentPart(details) error = %v", err)
+	}
+	if part.Part != "details" {
+		t.Fatalf("part.Part = %q, want details", part.Part)
+	}
+	if part.Content != details {
+		t.Fatalf("details content = %q, want %q", part.Content, details)
+	}
+}
+
 func TestInitDBMigratesFirstTokenColumn(t *testing.T) {
 	CloseDB()
 	dbPath := filepath.Join(t.TempDir(), "usage.db")
@@ -278,7 +383,7 @@ func TestCleanupExpiredLogContentKeepsMetadataRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin() error = %v", err)
 	}
-	if err := insertLogContentTx(tx, logID, timestamp, "expired-input", "expired-output"); err != nil {
+	if err := insertLogContentTx(tx, logID, timestamp, "expired-input", "expired-output", ""); err != nil {
 		t.Fatalf("insertLogContentTx() error = %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -697,7 +802,7 @@ func TestInsertLogContentTxSkipsSingleRowLargerThanSizeCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin() error = %v", err)
 	}
-	if err := insertLogContentTx(tx, logID, time.Now().UTC(), payload, ""); err != nil {
+	if err := insertLogContentTx(tx, logID, time.Now().UTC(), payload, "", ""); err != nil {
 		t.Fatalf("insertLogContentTx() error = %v", err)
 	}
 	if err := tx.Commit(); err != nil {

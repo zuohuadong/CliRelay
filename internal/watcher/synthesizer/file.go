@@ -90,6 +90,10 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		if p, ok := metadata["proxy_url"].(string); ok {
 			proxyURL = p
 		}
+		proxyID := ""
+		if p, ok := metadata["proxy_id"].(string); ok {
+			proxyID = p
+		}
 
 		prefix := ""
 		if rawPrefix, ok := metadata["prefix"].(string); ok {
@@ -121,6 +125,7 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 				"path":   full,
 			},
 			ProxyURL:  proxyURL,
+			ProxyID:   proxyID,
 			Metadata:  metadata,
 			CreatedAt: now,
 			UpdatedAt: now,
@@ -221,6 +226,10 @@ func SynthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 		if proxy != "" {
 			metadataCopy["proxy_url"] = proxy
 		}
+		proxyID := strings.TrimSpace(primary.ProxyID)
+		if proxyID != "" {
+			metadataCopy["proxy_id"] = proxyID
+		}
 		virtual := &coreauth.Auth{
 			ID:         buildGeminiVirtualID(primary.ID, projectID),
 			Provider:   originalProvider,
@@ -229,6 +238,7 @@ func SynthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 			Attributes: attrs,
 			Metadata:   metadataCopy,
 			ProxyURL:   primary.ProxyURL,
+			ProxyID:    primary.ProxyID,
 			Prefix:     primary.Prefix,
 			CreatedAt:  primary.CreatedAt,
 			UpdatedAt:  primary.UpdatedAt,

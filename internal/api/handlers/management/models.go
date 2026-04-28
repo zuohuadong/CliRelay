@@ -10,6 +10,106 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
+type modelConfigPayload struct {
+	ID          string `json:"id"`
+	OwnedBy     string `json:"owned_by"`
+	Description string `json:"description"`
+	Enabled     bool   `json:"enabled"`
+	Pricing     struct {
+		Mode                  string  `json:"mode"`
+		InputPricePerMillion  float64 `json:"input_price_per_million"`
+		OutputPricePerMillion float64 `json:"output_price_per_million"`
+		CachedPricePerMillion float64 `json:"cached_price_per_million"`
+		PricePerCall          float64 `json:"price_per_call"`
+	} `json:"pricing"`
+}
+
+func modelConfigResponse(row usage.ModelConfigRow) map[string]any {
+	return map[string]any{
+		"id":          row.ModelID,
+		"owned_by":    row.OwnedBy,
+		"description": row.Description,
+		"enabled":     row.Enabled,
+		"pricing": map[string]any{
+			"mode":                     row.PricingMode,
+			"input_price_per_million":  row.InputPricePerMillion,
+			"output_price_per_million": row.OutputPricePerMillion,
+			"cached_price_per_million": row.CachedPricePerMillion,
+			"price_per_call":           row.PricePerCall,
+		},
+		"source":     row.Source,
+		"updated_at": row.UpdatedAt,
+	}
+}
+
+func modelConfigScope(c *gin.Context) string {
+	scope := strings.ToLower(strings.TrimSpace(c.Query("scope")))
+	switch scope {
+	case "all", "library":
+		return scope
+	default:
+		return "active"
+	}
+}
+
+func availableModelIDSet() map[string]bool {
+	modelRegistry := registry.GetGlobalRegistry()
+	availableModels := modelRegistry.GetAvailableModels("openai")
+	result := make(map[string]bool, len(availableModels))
+	for _, model := range availableModels {
+		id, _ := model["id"].(string)
+		id = strings.TrimSpace(id)
+		if id != "" {
+			result[id] = true
+		}
+	}
+	return result
+}
+
+func filterModelConfigRowsByScope(rows []usage.ModelConfigRow, scope string) []usage.ModelConfigRow {
+	availableIDs := map[string]bool(nil)
+	if scope == "active" {
+		availableIDs = availableModelIDSet()
+	}
+
+	filtered := make([]usage.ModelConfigRow, 0, len(rows))
+	for _, row := range rows {
+		source := strings.ToLower(strings.TrimSpace(row.Source))
+		switch scope {
+		case "all":
+			filtered = append(filtered, row)
+		case "library":
+			if source == "seed" {
+				filtered = append(filtered, row)
+			}
+		default:
+			if source != "seed" || availableIDs[row.ModelID] {
+				filtered = append(filtered, row)
+			}
+		}
+	}
+	return filtered
+}
+
+func modelConfigPayloadToRow(payload modelConfigPayload) usage.ModelConfigRow {
+	return usage.ModelConfigRow{
+		ModelID:               strings.TrimSpace(payload.ID),
+		OwnedBy:               strings.TrimSpace(payload.OwnedBy),
+		Description:           strings.TrimSpace(payload.Description),
+		Enabled:               payload.Enabled,
+		PricingMode:           strings.TrimSpace(payload.Pricing.Mode),
+		InputPricePerMillion:  payload.Pricing.InputPricePerMillion,
+		OutputPricePerMillion: payload.Pricing.OutputPricePerMillion,
+		CachedPricePerMillion: payload.Pricing.CachedPricePerMillion,
+		PricePerCall:          payload.Pricing.PricePerCall,
+		Source:                "user",
+	}
+}
+
+func modelConfigParamID(c *gin.Context) string {
+	return strings.TrimPrefix(strings.TrimSpace(c.Param("id")), "/")
+}
+
 // GetModels returns the list of all available models from the global registry
 // along with their pricing information.
 //
@@ -101,6 +201,143 @@ func (h *Handler) GetModels(c *gin.Context) {
 		"object": "list",
 		"data":   filteredModels,
 	})
+}
+
+// GetModelConfigs returns database-backed model configuration rows.
+//
+// Endpoint:
+//
+//	GET /v0/management/model-configs
+func (h *Handler) GetModelConfigs(c *gin.Context) {
+	rows := filterModelConfigRowsByScope(usage.ListModelConfigs(), modelConfigScope(c))
+	items := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, modelConfigResponse(row))
+	}
+	c.JSON(http.StatusOK, gin.H{"object": "list", "data": items})
+}
+
+// PostModelConfig creates or updates a database-backed model configuration row.
+//
+// Endpoint:
+//
+//	POST /v0/management/model-configs
+func (h *Handler) PostModelConfig(c *gin.Context) {
+	var payload modelConfigPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	row := modelConfigPayloadToRow(payload)
+	if row.ModelID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "model id is required"})
+		return
+	}
+	if err := usage.UpsertModelConfig(row); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	saved, _ := usage.GetModelConfig(row.ModelID)
+	c.JSON(http.StatusOK, modelConfigResponse(saved))
+}
+
+// PutModelConfig updates a database-backed model configuration row.
+//
+// Endpoint:
+//
+//	PUT /v0/management/model-configs/:id
+func (h *Handler) PutModelConfig(c *gin.Context) {
+	var payload modelConfigPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	originalID := modelConfigParamID(c)
+	row := modelConfigPayloadToRow(payload)
+	if row.ModelID == "" {
+		row.ModelID = originalID
+	}
+	if row.ModelID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "model id is required"})
+		return
+	}
+	if originalID != "" && originalID != row.ModelID {
+		if err := usage.DeleteModelConfig(originalID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if err := usage.UpsertModelConfig(row); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	saved, _ := usage.GetModelConfig(row.ModelID)
+	c.JSON(http.StatusOK, modelConfigResponse(saved))
+}
+
+// DeleteModelConfig deletes a database-backed model configuration row.
+//
+// Endpoint:
+//
+//	DELETE /v0/management/model-configs/:id
+func (h *Handler) DeleteModelConfig(c *gin.Context) {
+	modelID := modelConfigParamID(c)
+	if modelID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "model id is required"})
+		return
+	}
+	if err := usage.DeleteModelConfig(modelID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// GetModelOwnerPresets returns editable model owner presets.
+//
+// Endpoint:
+//
+//	GET /v0/management/model-owner-presets
+func (h *Handler) GetModelOwnerPresets(c *gin.Context) {
+	modelCounts := make(map[string]int)
+	for _, model := range usage.ListModelConfigs() {
+		if model.OwnedBy != "" {
+			modelCounts[model.OwnedBy]++
+		}
+	}
+	rows := usage.ListModelOwnerPresets()
+	items := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, map[string]any{
+			"value":       row.Value,
+			"label":       row.Label,
+			"description": row.Description,
+			"enabled":     row.Enabled,
+			"updated_at":  row.UpdatedAt,
+			"model_count": modelCounts[row.Value],
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+// PutModelOwnerPresets replaces editable model owner presets.
+//
+// Endpoint:
+//
+//	PUT /v0/management/model-owner-presets
+func (h *Handler) PutModelOwnerPresets(c *gin.Context) {
+	var body struct {
+		Items []usage.ModelOwnerPresetRow `json:"items"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if err := usage.ReplaceModelOwnerPresets(body.Items); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "updated": len(body.Items)})
 }
 
 // GetModelPricing returns all model pricing entries.

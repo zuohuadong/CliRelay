@@ -30,7 +30,8 @@ import (
 )
 
 const (
-	codexResponsesWebsocketBetaHeaderValue = "responses_websockets=2026-02-04"
+	// Keep aligned with upstream CLIProxyAPI (codex-tui).
+	codexResponsesWebsocketBetaHeaderValue = "responses_websockets=2026-02-06"
 	codexResponsesWebsocketIdleTimeout     = 5 * time.Minute
 	codexResponsesWebsocketHandshakeTO     = 30 * time.Second
 )
@@ -751,11 +752,16 @@ func newProxyAwareWebsocketDialer(cfg *config.Config, auth *cliproxyauth.Auth) *
 	}
 
 	proxyURL := ""
-	if auth != nil {
+	if cfg != nil {
+		proxyID := ""
+		fallbackURL := ""
+		if auth != nil {
+			proxyID = auth.ProxyID
+			fallbackURL = auth.ProxyURL
+		}
+		proxyURL = cfg.ResolveProxyURL(proxyID, fallbackURL)
+	} else if auth != nil {
 		proxyURL = strings.TrimSpace(auth.ProxyURL)
-	}
-	if proxyURL == "" && cfg != nil {
-		proxyURL = strings.TrimSpace(cfg.ProxyURL)
 	}
 	if proxyURL == "" {
 		return dialer
@@ -863,9 +869,11 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, cfg *c
 		misc.EnsureHeader(headers, ginHeaders, "x-codex-beta-features", "")
 		misc.EnsureHeader(headers, ginHeaders, "x-codex-turn-state", "")
 		misc.EnsureHeader(headers, ginHeaders, "x-codex-turn-metadata", "")
+		misc.EnsureHeader(headers, ginHeaders, "x-client-request-id", "")
 		misc.EnsureHeader(headers, ginHeaders, "x-responsesapi-include-timing-metrics", "")
 
-		misc.EnsureHeader(headers, ginHeaders, "Version", codexClientVersion)
+		// Align with upstream: Version is only propagated from client when present.
+		misc.EnsureHeader(headers, ginHeaders, "Version", "")
 		betaHeader := strings.TrimSpace(headers.Get("OpenAI-Beta"))
 		if betaHeader == "" && ginHeaders != nil {
 			betaHeader = strings.TrimSpace(ginHeaders.Get("OpenAI-Beta"))
@@ -874,9 +882,14 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, cfg *c
 			betaHeader = codexResponsesWebsocketBetaHeaderValue
 		}
 		headers.Set("OpenAI-Beta", betaHeader)
-		misc.EnsureHeader(headers, ginHeaders, "Session_id", uuid.NewString())
 		misc.EnsureHeader(headers, ginHeaders, "User-Agent", codexUserAgent)
 	}
+
+	// Match upstream: only attach Session_id when UA indicates a desktop client, and do not forward UA over websocket.
+	if strings.Contains(headers.Get("User-Agent"), "Mac OS") && strings.TrimSpace(headers.Get("Session_id")) == "" {
+		headers.Set("Session_id", uuid.NewString())
+	}
+	headers.Del("User-Agent")
 
 	isAPIKey := false
 	if auth != nil && auth.Attributes != nil {
@@ -884,12 +897,21 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, cfg *c
 			isAPIKey = true
 		}
 	}
-	if !isAPIKey {
+
+	originatorFromClient := ""
+	if ginHeaders != nil {
+		originatorFromClient = strings.TrimSpace(ginHeaders.Get("Originator"))
+	}
+	if originatorFromClient != "" {
+		headers.Set("Originator", originatorFromClient)
+	} else if !isAPIKey {
 		if fingerprintEnabled {
 			headers.Set("Originator", fp.Originator)
 		} else {
-			headers.Set("Originator", "codex_cli_rs")
+			headers.Set("Originator", codexOriginator)
 		}
+	}
+	if !isAPIKey {
 		if auth != nil && auth.Metadata != nil {
 			if accountID, ok := auth.Metadata["account_id"].(string); ok {
 				if trimmed := strings.TrimSpace(accountID); trimmed != "" {
@@ -906,10 +928,12 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, cfg *c
 	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: headers}, attrs)
 	if fingerprintEnabled {
 		applyCodexIdentityFingerprintHeaders(headers, fp, true)
-		if !isAPIKey {
+		if originatorFromClient == "" && !isAPIKey {
 			headers.Set("Originator", fp.Originator)
 		}
 	}
+	// Ensure UA remains absent even if custom headers attempted to set it.
+	headers.Del("User-Agent")
 
 	return headers
 }

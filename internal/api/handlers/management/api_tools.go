@@ -650,13 +650,18 @@ func (h *Handler) authByIndex(authIndex string) *coreauth.Auth {
 
 func (h *Handler) apiCallTransport(auth *coreauth.Auth) http.RoundTripper {
 	var proxyCandidates []string
-	if auth != nil {
-		if proxyStr := strings.TrimSpace(auth.ProxyURL); proxyStr != "" {
+	if h != nil && h.cfg != nil {
+		proxyID := ""
+		fallbackURL := ""
+		if auth != nil {
+			proxyID = auth.ProxyID
+			fallbackURL = auth.ProxyURL
+		}
+		if proxyStr := strings.TrimSpace(h.cfg.ResolveProxyURL(proxyID, fallbackURL)); proxyStr != "" {
 			proxyCandidates = append(proxyCandidates, proxyStr)
 		}
-	}
-	if h != nil && h.cfg != nil {
-		if proxyStr := strings.TrimSpace(h.cfg.ProxyURL); proxyStr != "" {
+	} else if auth != nil {
+		if proxyStr := strings.TrimSpace(auth.ProxyURL); proxyStr != "" {
 			proxyCandidates = append(proxyCandidates, proxyStr)
 		}
 	}

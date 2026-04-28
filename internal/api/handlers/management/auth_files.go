@@ -41,7 +41,18 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-var lastRefreshKeys = []string{"last_refresh", "lastRefresh", "last_refreshed_at", "lastRefreshedAt"}
+var (
+	lastRefreshKeys               = []string{"last_refresh", "lastRefresh", "last_refreshed_at", "lastRefreshedAt"}
+	subscriptionExpirationKeys    = []string{"subscription_expires_at", "subscriptionExpiresAt"}
+	subscriptionExpirationLayouts = []string{
+		time.RFC3339,
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02T15:04",
+	}
+)
 
 const (
 	anthropicCallbackPort                     = 54545
@@ -52,6 +63,7 @@ const (
 	geminiCLIUserAgent                        = "google-api-nodejs-client/9.15.1"
 	geminiCLIApiClient                        = "gl-node/22.17.0"
 	geminiCLIClientMetadata                   = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
+	oauthCallbackWaitTimeout                  = oauthSessionTTL
 	managementOAuthProfileResponseLimit int64 = 64 << 10
 	managementGCPProjectListLimit       int64 = 1 << 20
 	managementServiceUsageResponseLimit int64 = 128 << 10
@@ -120,6 +132,84 @@ func parseLastRefreshValue(v any) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+func extractSubscriptionExpirationTimestamp(meta map[string]any) (time.Time, bool) {
+	if len(meta) == 0 {
+		return time.Time{}, false
+	}
+	for _, key := range subscriptionExpirationKeys {
+		if val, ok := meta[key]; ok {
+			if ts, okParse := parseSubscriptionExpirationValue(val); okParse && !ts.IsZero() {
+				return ts.UTC(), true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+func parseSubscriptionExpirationValue(v any) (time.Time, bool) {
+	switch val := v.(type) {
+	case string:
+		s := strings.TrimSpace(val)
+		if s == "" {
+			return time.Time{}, false
+		}
+		for _, layout := range subscriptionExpirationLayouts {
+			if ts, err := time.Parse(layout, s); err == nil {
+				return ts.UTC(), true
+			}
+		}
+		if unix, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return normalizeSubscriptionUnix(unix), true
+		}
+	case float64:
+		return normalizeSubscriptionUnix(int64(val)), true
+	case int64:
+		return normalizeSubscriptionUnix(val), true
+	case int:
+		return normalizeSubscriptionUnix(int64(val)), true
+	case json.Number:
+		if i, err := val.Int64(); err == nil {
+			return normalizeSubscriptionUnix(i), true
+		}
+		if f, err := val.Float64(); err == nil {
+			return normalizeSubscriptionUnix(int64(f)), true
+		}
+	}
+	return time.Time{}, false
+}
+
+func normalizeSubscriptionUnix(raw int64) time.Time {
+	if raw <= 0 {
+		return time.Time{}
+	}
+	if raw > 1_000_000_000_000 {
+		return time.UnixMilli(raw).UTC()
+	}
+	return time.Unix(raw, 0).UTC()
+}
+
+func subscriptionRemainingMinutes(now, expiresAt time.Time) int64 {
+	diff := expiresAt.Sub(now)
+	if diff == 0 {
+		return 0
+	}
+	if diff > 0 {
+		return int64((diff + time.Minute - time.Nanosecond) / time.Minute)
+	}
+	return -int64((-diff + time.Minute - time.Nanosecond) / time.Minute)
+}
+
+func addSubscriptionExpirationFields(entry gin.H, meta map[string]any, now time.Time) {
+	expiresAt, ok := extractSubscriptionExpirationTimestamp(meta)
+	if !ok {
+		return
+	}
+	entry["subscription_expires_at"] = expiresAt.Format(time.RFC3339)
+	entry["subscription_expires_at_ms"] = expiresAt.UnixMilli()
+	entry["subscription_remaining_minutes"] = subscriptionRemainingMinutes(now, expiresAt)
+	entry["subscription_expired"] = !now.Before(expiresAt)
 }
 
 func isWebUIRequest(c *gin.Context) bool {
@@ -355,6 +445,10 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 				emailValue := gjson.GetBytes(data, "email").String()
 				fileData["type"] = typeValue
 				fileData["email"] = emailValue
+				metadata := make(map[string]any)
+				if errJSON := json.Unmarshal(data, &metadata); errJSON == nil {
+					addSubscriptionExpirationFields(fileData, metadata, time.Now())
+				}
 			}
 
 			files = append(files, fileData)
@@ -406,6 +500,7 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			entry["account"] = account
 		}
 	}
+	addSubscriptionExpirationFields(entry, auth.Metadata, time.Now())
 	if !auth.CreatedAt.IsZero() {
 		entry["created_at"] = auth.CreatedAt
 	}
@@ -863,11 +958,13 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	var req struct {
-		Name     string  `json:"name"`
-		Label    *string `json:"label"`
-		Prefix   *string `json:"prefix"`
-		ProxyURL *string `json:"proxy_url"`
-		Priority *int    `json:"priority"`
+		Name                  string  `json:"name"`
+		Label                 *string `json:"label"`
+		Prefix                *string `json:"prefix"`
+		ProxyURL              *string `json:"proxy_url"`
+		ProxyID               *string `json:"proxy_id"`
+		Priority              *int    `json:"priority"`
+		SubscriptionExpiresAt *string `json:"subscription_expires_at"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -902,6 +999,8 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	changed := false
+	var oldChannelIdentifiers []string
+	var newChannelLabel string
 	if req.Label != nil {
 		accountType, _ := targetAuth.AccountInfo()
 		if !strings.EqualFold(accountType, "oauth") {
@@ -917,6 +1016,8 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": errValidate.Error()})
 			return
 		}
+		oldChannelIdentifiers = targetAuth.ChannelIdentifiers()
+		newChannelLabel = label
 		targetAuth.Label = label
 		if targetAuth.Metadata == nil {
 			targetAuth.Metadata = make(map[string]any)
@@ -932,6 +1033,18 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		targetAuth.ProxyURL = *req.ProxyURL
 		changed = true
 	}
+	if req.ProxyID != nil {
+		targetAuth.ProxyID = strings.TrimSpace(*req.ProxyID)
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if targetAuth.ProxyID == "" {
+			delete(targetAuth.Metadata, "proxy_id")
+		} else {
+			targetAuth.Metadata["proxy_id"] = targetAuth.ProxyID
+		}
+		changed = true
+	}
 	if req.Priority != nil {
 		if targetAuth.Metadata == nil {
 			targetAuth.Metadata = make(map[string]any)
@@ -940,6 +1053,25 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			delete(targetAuth.Metadata, "priority")
 		} else {
 			targetAuth.Metadata["priority"] = *req.Priority
+		}
+		changed = true
+	}
+	if req.SubscriptionExpiresAt != nil {
+		value := strings.TrimSpace(*req.SubscriptionExpiresAt)
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if value == "" {
+			delete(targetAuth.Metadata, "subscription_expires_at")
+			delete(targetAuth.Metadata, "subscriptionExpiresAt")
+		} else {
+			ts, ok := parseSubscriptionExpirationValue(value)
+			if !ok || ts.IsZero() {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "subscription_expires_at must be a valid time"})
+				return
+			}
+			targetAuth.Metadata["subscription_expires_at"] = ts.UTC().Format(time.RFC3339)
+			delete(targetAuth.Metadata, "subscriptionExpiresAt")
 		}
 		changed = true
 	}
@@ -954,6 +1086,12 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
 		return
+	}
+	if len(oldChannelIdentifiers) > 0 {
+		if err := h.renameChannelReferences(oldChannelIdentifiers, newChannelLabel); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -1103,8 +1241,8 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		}
 
 		fmt.Println("Waiting for authentication callback...")
-		// Wait up to 5 minutes
-		resultMap, errWait := waitForFile(waitFile, 5*time.Minute)
+		// Keep the callback waiter alive for the full session lifetime.
+		resultMap, errWait := waitForFile(waitFile, oauthCallbackWaitTimeout)
 		if errWait != nil {
 			if errors.Is(errWait, errOAuthSessionNotPending) {
 				return
@@ -1227,7 +1365,7 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 		// Wait for callback file written by server route
 		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-gemini-%s.oauth", state))
 		fmt.Println("Waiting for authentication callback...")
-		deadline := time.Now().Add(5 * time.Minute)
+		deadline := time.Now().Add(oauthCallbackWaitTimeout)
 		var authCode string
 		for {
 			if !IsOAuthSessionPending(state, "gemini") {
@@ -1502,7 +1640,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 
 		// Wait for callback file
 		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-codex-%s.oauth", state))
-		deadline := time.Now().Add(5 * time.Minute)
+		deadline := time.Now().Add(oauthCallbackWaitTimeout)
 		var code string
 		for {
 			if !IsOAuthSessionPending(state, "codex") {
@@ -1635,7 +1773,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		}
 
 		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-antigravity-%s.oauth", state))
-		deadline := time.Now().Add(5 * time.Minute)
+		deadline := time.Now().Add(oauthCallbackWaitTimeout)
 		var authCode string
 		for {
 			if !IsOAuthSessionPending(state, "antigravity") {
@@ -1923,7 +2061,7 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 		fmt.Println("Waiting for authentication...")
 
 		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-iflow-%s.oauth", state))
-		deadline := time.Now().Add(5 * time.Minute)
+		deadline := time.Now().Add(oauthCallbackWaitTimeout)
 		var resultMap map[string]string
 		for {
 			if !IsOAuthSessionPending(state, "iflow") {

@@ -81,7 +81,6 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 	} else {
 		h.handleNonStreamingResponse(c, rawJSON)
 	}
-
 }
 
 func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {

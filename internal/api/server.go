@@ -362,11 +362,14 @@ func (s *Server) setupRoutes() {
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
+	openaiImagesHandlers := openai.NewOpenAIImagesAPIHandler(s.handlers)
 
 	registerV1Routes := func(group *gin.RouterGroup) {
 		group.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		group.POST("/chat/completions", openaiHandlers.ChatCompletions)
 		group.POST("/completions", openaiHandlers.Completions)
+		group.POST("/images/generations", openaiImagesHandlers.Generations)
+		group.POST("/images/edits", openaiImagesHandlers.Edits)
 		group.POST("/messages", claudeCodeHandlers.ClaudeMessages)
 		group.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
 		group.GET("/responses", func(c *gin.Context) {
@@ -460,6 +463,7 @@ func (s *Server) setupRoutes() {
 			"endpoints": []string{
 				"POST /v1/chat/completions",
 				"POST /v1/completions",
+				"POST /v1/images/generations",
 				"GET /v1/models",
 			},
 		})
@@ -600,6 +604,12 @@ func (s *Server) registerManagementRoutes() {
 			s.mgmt.SystemStatsWebSocket(c)
 		})
 		mgmt.GET("/models", s.mgmt.GetModels)
+		mgmt.GET("/model-configs", s.mgmt.GetModelConfigs)
+		mgmt.POST("/model-configs", s.mgmt.PostModelConfig)
+		mgmt.PUT("/model-configs/*id", s.mgmt.PutModelConfig)
+		mgmt.DELETE("/model-configs/*id", s.mgmt.DeleteModelConfig)
+		mgmt.GET("/model-owner-presets", s.mgmt.GetModelOwnerPresets)
+		mgmt.PUT("/model-owner-presets", s.mgmt.PutModelOwnerPresets)
 		mgmt.GET("/channel-groups", s.mgmt.GetChannelGroups)
 		mgmt.GET("/routing-config", s.mgmt.GetRoutingConfig)
 		mgmt.PUT("/routing-config", s.mgmt.PutRoutingConfig)
@@ -655,6 +665,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.PATCH("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
+		mgmt.GET("/proxy-pool", s.mgmt.GetProxyPool)
+		mgmt.PUT("/proxy-pool", s.mgmt.PutProxyPool)
+		mgmt.POST("/proxy-pool/check", s.mgmt.PostProxyPoolCheck)
 
 		mgmt.POST("/api-call", s.mgmt.APICall)
 
@@ -766,6 +779,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
+		mgmt.GET("/image-generation/channels", s.mgmt.ListImageGenerationChannels)
+		mgmt.POST("/image-generation/test", s.mgmt.PostImageGenerationTest)
+		mgmt.GET("/image-generation/test/:task_id", s.mgmt.GetImageGenerationTestTask)
 		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)

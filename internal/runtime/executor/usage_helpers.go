@@ -3,7 +3,10 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -120,6 +123,9 @@ func (r *usageReporter) publishFailureWithContent(ctx context.Context, inputCont
 	if r == nil {
 		return
 	}
+	if shouldSuppressUsageFailure(nil, outputContent) {
+		return
+	}
 	r.contentMu.Lock()
 	r.inputContent = inputContent
 	r.outputContent = outputContent
@@ -132,8 +138,63 @@ func (r *usageReporter) trackFailure(ctx context.Context, errPtr *error) {
 		return
 	}
 	if *errPtr != nil {
+		if shouldSuppressUsageFailure(*errPtr, "") {
+			return
+		}
+		r.contentMu.Lock()
+		if r.outputContent == "" && r.outputBuilder.Len() == 0 && r.outputFile == nil {
+			r.outputContent = structuredUpstreamErrorJSON(*errPtr)
+		}
+		r.contentMu.Unlock()
 		r.publishFailure(ctx)
 	}
+}
+
+func shouldSuppressUsageFailure(err error, outputContent string) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(outputContent), "context canceled")
+}
+
+type upstreamBodyError interface {
+	UpstreamErrorBody() []byte
+}
+
+func structuredUpstreamErrorJSON(err error) string {
+	msg := ""
+	if err != nil {
+		msg = strings.TrimSpace(err.Error())
+	}
+	if msg == "" {
+		msg = "Upstream request failed."
+	}
+	errorBody := map[string]any{
+		"message": msg,
+		"type":    "upstream_error",
+	}
+	if upstreamErr, ok := err.(upstreamBodyError); ok {
+		upstreamBody := strings.TrimSpace(string(upstreamErr.UpstreamErrorBody()))
+		if upstreamBody != "" {
+			errorBody["upstream"] = parseStructuredUpstreamBody(upstreamBody)
+		}
+	}
+	body := map[string]any{
+		"error": errorBody,
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return `{"error":{"message":"Upstream request failed.","type":"upstream_error"}}`
+	}
+	return string(data)
+}
+
+func parseStructuredUpstreamBody(body string) any {
+	var decoded any
+	if err := json.Unmarshal([]byte(body), &decoded); err == nil {
+		return decoded
+	}
+	return body
 }
 
 func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Detail, failed bool) {
@@ -171,6 +232,7 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 			Detail:        detail,
 			InputContent:  inputContent,
 			OutputContent: outputContent,
+			DetailContent: buildRequestDetailContent(ctx),
 		})
 	})
 }
@@ -205,6 +267,7 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 			Detail:        usage.Detail{},
 			InputContent:  inputContent,
 			OutputContent: outputContent,
+			DetailContent: buildRequestDetailContent(ctx),
 		})
 	})
 }
@@ -268,6 +331,9 @@ func apiKeyFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
+	if value := strings.TrimSpace(contextStringValue(ctx, util.ContextKeyAPIKey)); value != "" {
+		return value
+	}
 	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
 	if !ok || ginCtx == nil {
 		return ""
@@ -283,6 +349,107 @@ func apiKeyFromContext(ctx context.Context) string {
 		}
 	}
 	return ""
+}
+
+func buildRequestDetailContent(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
+	if !ok || ginCtx == nil || ginCtx.Request == nil {
+		return ""
+	}
+
+	req := ginCtx.Request
+	apiRequest, _ := ginCtx.Get(apiRequestKey)
+	apiResponse, _ := ginCtx.Get(apiResponseKey)
+
+	detail := map[string]any{
+		"client": map[string]any{
+			"ip":                  ginCtx.ClientIP(),
+			"remote_addr":         req.RemoteAddr,
+			"method":              req.Method,
+			"url":                 req.URL.String(),
+			"path":                req.URL.Path,
+			"query":               req.URL.Query(),
+			"host":                req.Host,
+			"content_length":      req.ContentLength,
+			"headers":             cloneHeaderValues(req.Header),
+			"fingerprint_headers": extractFingerprintHeaders(req.Header),
+		},
+		"upstream": map[string]any{
+			"request_log": bytesToString(apiRequest),
+		},
+		"response": map[string]any{
+			"upstream_log": bytesToString(apiResponse),
+		},
+	}
+
+	data, err := json.Marshal(detail)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func bytesToString(value any) string {
+	data, ok := value.([]byte)
+	if !ok || len(data) == 0 {
+		return ""
+	}
+	return string(data)
+}
+
+func cloneHeaderValues(headers http.Header) map[string][]string {
+	if len(headers) == 0 {
+		return map[string][]string{}
+	}
+	out := make(map[string][]string, len(headers))
+	for key, values := range headers {
+		copied := make([]string, len(values))
+		copy(copied, values)
+		out[key] = copied
+	}
+	return out
+}
+
+func extractFingerprintHeaders(headers http.Header) map[string][]string {
+	out := make(map[string][]string)
+	for key, values := range headers {
+		normalized := strings.ToLower(strings.TrimSpace(key))
+		if normalized == "" {
+			continue
+		}
+		if normalized == "user-agent" ||
+			strings.Contains(normalized, "session") ||
+			strings.Contains(normalized, "version") ||
+			strings.Contains(normalized, "originator") ||
+			strings.Contains(normalized, "codex") ||
+			strings.Contains(normalized, "claude") ||
+			strings.Contains(normalized, "gemini") ||
+			strings.HasPrefix(normalized, "x-") {
+			copied := make([]string, len(values))
+			copy(copied, values)
+			out[key] = copied
+		}
+	}
+	return out
+}
+
+func contextStringValue(ctx context.Context, key any) string {
+	if ctx == nil {
+		return ""
+	}
+	switch value := ctx.Value(key).(type) {
+	case string:
+		return value
+	case fmt.Stringer:
+		return value.String()
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", value)
+	}
 }
 
 func firstTokenLatencyMsFromContext(ctx context.Context, requestedAt time.Time) int64 {

@@ -55,6 +55,8 @@ type Handler struct {
 	accessManager       *sdkaccess.Manager
 	trendCacheMu        sync.Mutex
 	trendCache          map[string]trendCacheEntry
+	imageTasksMu        sync.Mutex
+	imageTasks          map[string]*imageGenerationTask
 }
 
 type trendCacheEntry struct {
@@ -79,6 +81,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		startTime:           time.Now(),
 		attemptCleanupStop:  make(chan struct{}),
 		trendCache:          make(map[string]trendCacheEntry),
+		imageTasks:          make(map[string]*imageGenerationTask),
 	}
 	h.startAttemptCleanup()
 	return h

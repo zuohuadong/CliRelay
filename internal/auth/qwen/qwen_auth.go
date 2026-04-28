@@ -86,12 +86,16 @@ const defaultOAuthUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWe
 
 // NewQwenAuth creates a new QwenAuth instance with a proxy-configured HTTP client.
 func NewQwenAuth(cfg *config.Config) *QwenAuth {
+	var sdkCfg *config.SDKConfig
 	userAgent := defaultOAuthUserAgent
-	if cfg != nil && strings.TrimSpace(cfg.OAuthUserAgent) != "" {
-		userAgent = strings.TrimSpace(cfg.OAuthUserAgent)
+	if cfg != nil {
+		sdkCfg = &cfg.SDKConfig
+		if strings.TrimSpace(cfg.OAuthUserAgent) != "" {
+			userAgent = strings.TrimSpace(cfg.OAuthUserAgent)
+		}
 	}
 	return &QwenAuth{
-		httpClient: util.SetProxy(&cfg.SDKConfig, util.NewHTTPClient(util.DefaultHTTPClientTimeout)),
+		httpClient: util.SetProxy(sdkCfg, util.NewHTTPClient(util.DefaultHTTPClientTimeout)),
 		userAgent:  userAgent,
 	}
 }
@@ -128,18 +132,7 @@ func (qa *QwenAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Qw
 	data.Set("refresh_token", refreshToken)
 	data.Set("client_id", QwenOAuthClientID)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", QwenOAuthTokenEndpoint, strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create token request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", qa.userAgent)
-
-	resp, err := qa.httpClient.Do(req)
-
-	// resp, err := qa.httpClient.PostForm(QwenOAuthTokenEndpoint, data)
+	resp, err := qa.doFormRequest(ctx, QwenOAuthTokenEndpoint, data)
 	if err != nil {
 		return nil, fmt.Errorf("token refresh request failed: %w", err)
 	}
@@ -188,18 +181,7 @@ func (qa *QwenAuth) InitiateDeviceFlow(ctx context.Context) (*DeviceFlow, error)
 	data.Set("code_challenge", codeChallenge)
 	data.Set("code_challenge_method", "S256")
 
-	req, err := http.NewRequestWithContext(ctx, "POST", QwenOAuthDeviceCodeEndpoint, strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create token request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", qa.userAgent)
-
-	resp, err := qa.httpClient.Do(req)
-
-	// resp, err := qa.httpClient.PostForm(QwenOAuthDeviceCodeEndpoint, data)
+	resp, err := qa.doFormRequest(ctx, QwenOAuthDeviceCodeEndpoint, data)
 	if err != nil {
 		return nil, fmt.Errorf("device authorization request failed: %w", err)
 	}
@@ -244,7 +226,7 @@ func (qa *QwenAuth) PollForToken(deviceCode, codeVerifier string) (*QwenTokenDat
 		data.Set("device_code", deviceCode)
 		data.Set("code_verifier", codeVerifier)
 
-		resp, err := http.PostForm(QwenOAuthTokenEndpoint, data)
+		resp, err := qa.doFormRequest(context.Background(), QwenOAuthTokenEndpoint, data)
 		if err != nil {
 			fmt.Printf("Polling attempt %d/%d failed: %v\n", attempt+1, maxAttempts, err)
 			time.Sleep(pollInterval)
@@ -317,6 +299,20 @@ func (qa *QwenAuth) PollForToken(deviceCode, codeVerifier string) (*QwenTokenDat
 	}
 
 	return nil, fmt.Errorf("authentication timeout. Please restart the authentication process")
+}
+
+func (qa *QwenAuth) doFormRequest(ctx context.Context, endpoint string, data url.Values) (*http.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", qa.userAgent)
+	return qa.httpClient.Do(req)
 }
 
 // RefreshTokensWithRetry attempts to refresh tokens with a specified number of retries upon failure.

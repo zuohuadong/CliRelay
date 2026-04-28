@@ -32,6 +32,17 @@ func TestUpdaterRejectsInvalidBearerToken(t *testing.T) {
 	}
 }
 
+func TestUpdaterDefaultPathsDoNotPointAtWorkspace(t *testing.T) {
+	server := newUpdaterServer(updaterConfig{})
+
+	if strings.Contains(server.composeFile, "/workspace") {
+		t.Fatalf("composeFile = %q, want no /workspace default", server.composeFile)
+	}
+	if strings.Contains(server.envFile, "/workspace") {
+		t.Fatalf("envFile = %q, want no /workspace default", server.envFile)
+	}
+}
+
 func TestUpdaterPersistsRequestedImageBeforeComposeUpdate(t *testing.T) {
 	envFile := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(envFile, []byte("CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:dev\nOTHER=value\n"), 0o600); err != nil {
@@ -219,6 +230,51 @@ func TestUpdaterStatusExposesTargetStageAndLogs(t *testing.T) {
 	close(releaseRunner)
 }
 
+func TestUpdaterFailsWhenComposePullSkipsTargetService(t *testing.T) {
+	called := make(chan struct{}, 1)
+	server := newUpdaterServer(updaterConfig{
+		EnvFile: filepath.Join(t.TempDir(), ".env"),
+		Runner: func(_ context.Context, _ string, _ string, _ string, service string, reporter updateReporter) error {
+			reporter.Stage("pulling", "pulling image")
+			reporter.Log("stdout", "docker compose pull "+service)
+			reporter.Log("stderr", service+" Skipped")
+			reporter.Stage("restarting", "restarting container")
+			reporter.Log("stderr", "Container "+service+" Running")
+			called <- struct{}{}
+			return nil
+		},
+	})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/update",
+		strings.NewReader(`{"service":"cli-proxy-api","image":"ghcr.io/kittors/clirelay","tag":"dev","version":"dev-6704f60","commit":"6704f60ee834bce20e22fc65e67868801f483e32","channel":"dev"}`),
+	)
+	rec := httptest.NewRecorder()
+	server.handleUpdate(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("update status = %d, want %d; body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runner")
+	}
+
+	eventually(t, time.Second, func() bool {
+		return server.snapshot().Status == "failed"
+	})
+
+	payload := server.snapshot()
+	if payload.Stage != "failed" {
+		t.Fatalf("Stage = %q, want failed", payload.Stage)
+	}
+	if !strings.Contains(payload.Message, "pull skipped") {
+		t.Fatalf("Message = %q, want pull skipped hint", payload.Message)
+	}
+}
+
 func TestBuildComposeArgsIncludesProjectName(t *testing.T) {
 	args := buildComposeArgs(
 		"/workspace/docker-compose.yml",
@@ -239,4 +295,19 @@ func TestBuildComposeArgsIncludesProjectName(t *testing.T) {
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args = %v, want %v", args, want)
 	}
+}
+
+func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if condition() {
+		return
+	}
+	t.Fatal("condition was not met before timeout")
 }

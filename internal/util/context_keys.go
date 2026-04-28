@@ -15,6 +15,14 @@ const (
 	// ContextKeyRoundTripper carries an optional http.RoundTripper override used
 	// by proxy-aware HTTP clients.
 	ContextKeyRoundTripper ContextKey = "cliproxy.roundtripper"
+
+	// ContextKeyAPIKey carries a synthetic API key label for non-HTTP execution
+	// paths that still need request-log attribution.
+	ContextKeyAPIKey ContextKey = "cliproxy.api_key"
+
+	// ContextKeyImageGenerationPhaseHook carries an optional callback that
+	// receives backend image-generation phase updates.
+	ContextKeyImageGenerationPhaseHook ContextKey = "cliproxy.image_generation.phase_hook"
 )
 
 const (

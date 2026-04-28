@@ -27,11 +27,91 @@ import (
 )
 
 const (
-	codexClientVersion = "0.120.0"
-	codexUserAgent     = "codex_cli_rs/0.120.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"
+	// Keep defaults aligned with upstream CLIProxyAPI (codex-tui).
+	codexUserAgent  = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
+	codexOriginator = "codex-tui"
 )
 
 var dataTag = []byte("data:")
+
+func ensureTranslatedCodexModel(body []byte, fallback string) []byte {
+	if strings.TrimSpace(gjson.GetBytes(body, "model").String()) != "" {
+		return body
+	}
+	body, _ = sjson.SetBytes(body, "model", fallback)
+	return body
+}
+
+func extractCodexResponsesOutputItemDone(payload []byte) ([]byte, string, bool) {
+	if gjson.GetBytes(payload, "type").String() != "response.output_item.done" {
+		return nil, "", false
+	}
+	item := gjson.GetBytes(payload, "item")
+	if !item.Exists() || item.Raw == "" {
+		return nil, "", false
+	}
+	key := strings.TrimSpace(item.Get("id").String())
+	if key == "" {
+		key = item.Raw
+	}
+	return []byte(item.Raw), key, true
+}
+
+func mergeCodexResponsesCompletedOutput(payload []byte, pendingItems [][]byte, pendingKeys []string) []byte {
+	if len(pendingItems) == 0 || gjson.GetBytes(payload, "type").String() != "response.completed" {
+		return payload
+	}
+
+	output := gjson.GetBytes(payload, "response.output")
+	merged := make([][]byte, 0, len(pendingItems)+len(output.Array()))
+	seen := make(map[string]struct{}, len(pendingItems)+len(output.Array()))
+
+	if output.IsArray() {
+		for _, item := range output.Array() {
+			raw := []byte(item.Raw)
+			key := strings.TrimSpace(item.Get("id").String())
+			if key == "" {
+				key = item.Raw
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, raw)
+		}
+	}
+
+	appended := false
+	for idx, item := range pendingItems {
+		key := pendingKeys[idx]
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, item)
+		appended = true
+	}
+
+	if !appended {
+		return payload
+	}
+
+	buf := bytes.NewBuffer(make([]byte, 0, len(payload)+len(pendingItems)*64))
+	buf.WriteByte('[')
+	for idx, item := range merged {
+		if idx > 0 {
+			buf.WriteByte(',')
+		}
+		buf.Write(item)
+	}
+	buf.WriteByte(']')
+
+	updated, err := sjson.SetRawBytes(payload, "response.output", buf.Bytes())
+	if err != nil {
+		return payload
+	}
+	return updated
+}
 
 // CodexExecutor is a stateless executor for Codex (OpenAI Responses API entrypoint).
 // If api_key is unavailable on auth, it falls back to legacy via ClientAdapter.
@@ -119,6 +199,9 @@ func (e *CodexExecutor) ProbeQuotaRecovery(ctx context.Context, auth *cliproxyau
 }
 
 func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if opts.Alt == codexImageGenerationAlt || opts.Alt == codexImageEditsAlt {
+		return e.executeImageGeneration(ctx, auth, req, opts)
+	}
 	if opts.Alt == "responses/compact" {
 		return e.executeCompact(ctx, auth, req, opts)
 	}
@@ -149,7 +232,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
-	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body = ensureTranslatedCodexModel(body, baseModel)
 	body, _ = sjson.SetBytes(body, "stream", true)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
@@ -211,9 +294,11 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	appendAPIResponseChunk(ctx, e.cfg, data)
-	data = collectCodexOutputItems(data)
 
 	lines := bytes.Split(data, []byte("\n"))
+	pendingOutputItems := make([][]byte, 0, 1)
+	pendingOutputKeys := make([]string, 0, 1)
+	pendingSeen := make(map[string]struct{})
 	for _, line := range lines {
 		if !bytes.HasPrefix(line, dataTag) {
 			continue
@@ -221,9 +306,18 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 		line = bytes.TrimSpace(line[5:])
 		line = normalizeCodexCompletionPayload(line)
+		if item, key, ok := extractCodexResponsesOutputItemDone(line); ok {
+			if _, exists := pendingSeen[key]; !exists {
+				pendingSeen[key] = struct{}{}
+				pendingOutputItems = append(pendingOutputItems, item)
+				pendingOutputKeys = append(pendingOutputKeys, key)
+			}
+			continue
+		}
 		if gjson.GetBytes(line, "type").String() != "response.completed" {
 			continue
 		}
+		line = mergeCodexResponsesCompletedOutput(line, pendingOutputItems, pendingOutputKeys)
 
 		if detail, ok := parseCodexUsage(line); ok {
 			reporter.publishWithContent(ctx, detail, string(req.Payload), string(data))
@@ -266,7 +360,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
-	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body = ensureTranslatedCodexModel(body, baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
@@ -361,7 +455,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
-	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body = ensureTranslatedCodexModel(body, baseModel)
 	if !gjson.GetBytes(body, "instructions").Exists() {
 		sysContent := extractSystemMessagesAsInstructions(req.Payload)
 		body, _ = sjson.SetBytes(body, "instructions", sysContent)
@@ -446,6 +540,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			if shouldSuppressUsageFailure(errScan, "") {
+				out <- cliproxyexecutor.StreamChunk{Err: errScan}
+				return
+			}
 			recordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.publishFailure(ctx)
 			out <- cliproxyexecutor.StreamChunk{Err: errScan}
@@ -466,7 +564,7 @@ func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 		return cliproxyexecutor.Response{}, err
 	}
 
-	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body = ensureTranslatedCodexModel(body, baseModel)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
@@ -698,12 +796,26 @@ func applyCodexHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.A
 	}
 
 	fp, fingerprintEnabled := codexIdentityFingerprint(cfg)
+	if ginHeaders != nil {
+		// Align with upstream: if the client sent Codex beta features, preserve them.
+		if v := strings.TrimSpace(ginHeaders.Get("X-Codex-Beta-Features")); v != "" {
+			r.Header.Set("X-Codex-Beta-Features", v)
+		}
+	}
+	// Align with upstream: only propagate these from the client when present.
+	misc.EnsureHeader(r.Header, ginHeaders, "Version", "")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-Metadata", "")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Client-Request-Id", "")
+
 	if fingerprintEnabled {
 		applyCodexIdentityFingerprintHeaders(r.Header, fp, false)
 	} else {
-		misc.EnsureHeader(r.Header, ginHeaders, "Version", codexClientVersion)
-		misc.EnsureHeader(r.Header, ginHeaders, "Session_id", uuid.NewString())
 		misc.EnsureHeader(r.Header, ginHeaders, "User-Agent", codexUserAgent)
+	}
+
+	// Upstream codex-tui behavior: only attach Session_id when the UA indicates a desktop client.
+	if strings.Contains(r.Header.Get("User-Agent"), "Mac OS") && strings.TrimSpace(r.Header.Get("Session_id")) == "" {
+		r.Header.Set("Session_id", uuid.NewString())
 	}
 
 	if stream {
@@ -719,12 +831,21 @@ func applyCodexHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.A
 			isAPIKey = true
 		}
 	}
-	if !isAPIKey {
+
+	originatorFromClient := ""
+	if ginHeaders != nil {
+		originatorFromClient = strings.TrimSpace(ginHeaders.Get("Originator"))
+	}
+	if originatorFromClient != "" {
+		r.Header.Set("Originator", originatorFromClient)
+	} else if !isAPIKey {
 		if fingerprintEnabled {
 			r.Header.Set("Originator", fp.Originator)
 		} else {
-			r.Header.Set("Originator", "codex_cli_rs")
+			r.Header.Set("Originator", codexOriginator)
 		}
+	}
+	if !isAPIKey {
 		if auth != nil && auth.Metadata != nil {
 			if accountID, ok := auth.Metadata["account_id"].(string); ok {
 				r.Header.Set("Chatgpt-Account-Id", accountID)
@@ -738,7 +859,7 @@ func applyCodexHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.A
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
 	if fingerprintEnabled {
 		applyCodexIdentityFingerprintHeaders(r.Header, fp, false)
-		if !isAPIKey {
+		if originatorFromClient == "" && !isAPIKey {
 			r.Header.Set("Originator", fp.Originator)
 		}
 	}
@@ -881,94 +1002,4 @@ func (e *CodexExecutor) resolveCodexConfig(auth *cliproxyauth.Auth) *config.Code
 		}
 	}
 	return nil
-}
-
-func collectCodexOutputItems(data []byte) []byte {
-	lines := bytes.Split(data, []byte("\n"))
-	outputItems := make([][]byte, 0, 2)
-	completedIdx := -1
-	var completedPayload []byte
-
-	for i := range lines {
-		line := lines[i]
-		if !bytes.HasPrefix(line, dataTag) {
-			continue
-		}
-		payload := bytes.TrimSpace(line[len(dataTag):])
-		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
-			continue
-		}
-		eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
-		switch eventType {
-		case "response.output_item.done":
-			item := gjson.GetBytes(payload, "item")
-			if item.Exists() {
-				raw := strings.TrimSpace(item.Raw)
-				if raw != "" {
-					outputItems = append(outputItems, []byte(raw))
-				}
-			}
-		case "response.completed", "response.done":
-			completedIdx = i
-			completedPayload = normalizeCodexCompletionPayload(payload)
-		}
-	}
-
-	if completedIdx < 0 {
-		return data
-	}
-
-	changed := !bytes.Equal(completedPayload, bytes.TrimSpace(lines[completedIdx][len(dataTag):]))
-	if len(outputItems) > 0 {
-		existingOutput := gjson.GetBytes(completedPayload, "response.output")
-		if !existingOutput.Exists() || len(existingOutput.Array()) == 0 {
-			merged, err := sjson.SetRawBytes(completedPayload, "response.output", marshalJSONArrayRaw(outputItems))
-			if err == nil && len(merged) > 0 {
-				completedPayload = merged
-				changed = true
-			}
-		}
-	}
-
-	if !changed {
-		return data
-	}
-	updatedLine := make([]byte, 0, len(dataTag)+1+len(completedPayload))
-	updatedLine = append(updatedLine, dataTag...)
-	updatedLine = append(updatedLine, ' ')
-	updatedLine = append(updatedLine, completedPayload...)
-	lines[completedIdx] = updatedLine
-	return bytes.Join(lines, []byte("\n"))
-}
-
-func normalizeCodexCompletionPayload(payload []byte) []byte {
-	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.done" {
-		return payload
-	}
-	updated, err := sjson.SetBytes(payload, "type", "response.completed")
-	if err == nil && len(updated) > 0 {
-		return updated
-	}
-	return payload
-}
-
-func marshalJSONArrayRaw(items [][]byte) []byte {
-	if len(items) == 0 {
-		return []byte("[]")
-	}
-	total := 2
-	for i := range items {
-		total += len(items[i])
-	}
-	total += len(items) - 1
-	buf := make([]byte, 0, total)
-	buf = append(buf, '[')
-	for i := range items {
-		if i > 0 {
-			buf = append(buf, ',')
-		}
-		buf = append(buf, items[i]...)
-	}
-	buf = append(buf, ']')
-	return buf
 }

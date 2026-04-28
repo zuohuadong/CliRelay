@@ -58,13 +58,20 @@ func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []cha
 	}
 
 	for _, auth := range auths {
-		if auth == nil {
+		if !includeAuthInChannelGroups(auth) {
 			continue
 		}
 		push(auth.ChannelName(), auth.Prefix, auth.Provider)
 	}
 
 	return items
+}
+
+func includeAuthInChannelGroups(auth *coreauth.Auth) bool {
+	if auth == nil {
+		return false
+	}
+	return !auth.Disabled && auth.Status != coreauth.StatusDisabled
 }
 
 func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channelGroupItem {
@@ -83,6 +90,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 	}
 
 	groupMap := make(map[string]*channelGroupItem)
+	configuredChannelsByGroup := make(map[string][]string)
 	ensureGroup := func(name string, implicit bool) *channelGroupItem {
 		name = internalrouting.NormalizeGroupName(name)
 		if name == "" {
@@ -107,7 +115,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 		item.Description = group.Description
 		item.Priority = group.Priority
 		item.Prefixes = append(item.Prefixes, group.Match.Prefixes...)
-		item.Channels = append(item.Channels, group.Match.Channels...)
+		configuredChannelsByGroup[item.Name] = append(configuredChannelsByGroup[item.Name], group.Match.Channels...)
 	}
 
 	includeDefault := cfg == nil || routingCfg.IncludeDefaultGroup
@@ -126,7 +134,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 	for _, channel := range items {
 		prefix := internalrouting.NormalizeGroupName(channel.Prefix)
 		channelName := strings.TrimSpace(channel.Name)
-		for _, group := range groupMap {
+		for groupName, group := range groupMap {
 			matched := false
 			for _, candidatePrefix := range group.Prefixes {
 				if prefix != "" && prefix == internalrouting.NormalizeGroupName(candidatePrefix) {
@@ -135,7 +143,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 				}
 			}
 			if !matched {
-				for _, candidateChannel := range group.Channels {
+				for _, candidateChannel := range configuredChannelsByGroup[groupName] {
 					if channelName != "" && strings.EqualFold(strings.TrimSpace(candidateChannel), channelName) {
 						matched = true
 						break
@@ -228,13 +236,12 @@ func validateRoutingAndAPIKeyRestrictions(cfg *config.Config, auths []*coreauth.
 	}
 
 	routingCfg := currentRoutingConfig(cfg)
-	apiKeyEntries := append([]config.APIKeyEntry(nil), cfg.APIKeyEntries...)
 	known, err := collectKnownChannels(cfg, auths, "")
 	if err != nil {
 		return err
 	}
 	routingCfg = canonicalizeRoutingConfigChannels(routingCfg, known)
-	apiKeyEntries = canonicalizeAPIKeyEntriesChannels(cfg.APIKeyEntries, known)
+	apiKeyEntries := canonicalizeAPIKeyEntriesChannels(cfg.APIKeyEntries, known)
 
 	groups := buildChannelGroupItems(cfg, auths)
 	descriptors := collectChannelDescriptors(cfg, auths)

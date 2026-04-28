@@ -97,8 +97,8 @@ func TestApplyCodexWebsocketHeadersIdentityFingerprintOverridesClientHeaders(t *
 
 	got := applyCodexWebsocketHeaders(ctx, headers, cfg, nil, "token")
 
-	if ua := got.Get("User-Agent"); ua != "codex_cli_rs/test" {
-		t.Fatalf("User-Agent = %q, want fingerprint value", ua)
+	if ua := got.Get("User-Agent"); ua != "" {
+		t.Fatalf("User-Agent = %q, want empty (upstream does not forward UA over websocket)", ua)
 	}
 	if beta := got.Get("OpenAI-Beta"); beta != "responses_websockets=test" {
 		t.Fatalf("OpenAI-Beta = %q, want fingerprint value", beta)

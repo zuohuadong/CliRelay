@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +152,96 @@ func TestGetUsageLogs_EmptyDB_DoesNotReturnNullSlices(t *testing.T) {
 	}
 	if payload.Filters.APIKeyNames == nil {
 		t.Fatalf("filters.api_key_names is null; expected {}")
+	}
+}
+
+func TestGetLogContent_ReturnsRequestDetailsPart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() {
+		usage.CloseDB()
+		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	})
+
+	details := `{"client":{"headers":{"Authorization":"Bearer sk-client-plaintext"}},"upstream":{"headers":{"Authorization":"Bearer sk-upstream-plaintext"}},"response":{"headers":{"X-Request-Id":"req-plaintext"}}}`
+	usage.InsertLogWithDetails(
+		"sk-test", "Primary", "gpt-test", "codex", "Codex", "auth-1",
+		false, time.Now().UTC(), 100, 10,
+		usage.TokenStats{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+		`{"messages":[]}`, `{"choices":[]}`, details,
+	)
+	result, err := usage.QueryLogs(usage.LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs: %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("expected one log row, got %d", len(result.Items))
+	}
+
+	h := &Handler{cfg: &config.Config{}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(result.Items[0].ID, 10)}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/usage/logs/1/content?part=details&format=json", nil)
+
+	h.GetLogContent(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Part    string `json:"part"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if payload.Part != "details" || payload.Content != details {
+		t.Fatalf("unexpected details payload: %+v", payload)
+	}
+}
+
+func TestGetPublicLogContent_RejectsRequestDetailsPart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() {
+		usage.CloseDB()
+		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	})
+
+	h := &Handler{cfg: &config.Config{}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v0/management/public/usage/logs/1/content",
+		bytes.NewReader([]byte(`{"api_key":"sk-test","part":"details","format":"json"}`)),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.GetPublicLogContent(c)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusForbidden, rec.Code, rec.Body.String())
 	}
 }
 

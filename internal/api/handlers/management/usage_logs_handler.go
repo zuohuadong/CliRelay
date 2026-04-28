@@ -276,7 +276,7 @@ func normalizeLogContentPartValue(part string) string {
 		return "both"
 	}
 	switch part {
-	case "both", "input", "output":
+	case "both", "input", "output", "details":
 		return part
 	default:
 		return "both"
@@ -300,7 +300,7 @@ func (h *Handler) GetLogContent(c *gin.Context) {
 	format := normalizeLogContentFormat(c)
 
 	if format == "text" && part == "both" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "format=text requires part=input or part=output"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "format=text requires part=input, part=output, or part=details"})
 		return
 	}
 
@@ -480,6 +480,10 @@ func (h *Handler) GetPublicLogContent(c *gin.Context) {
 
 	part := req.Part
 	format := req.Format
+	if part == "details" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "request details are only available in the management API"})
+		return
+	}
 
 	if format == "text" && part == "both" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "format=text requires part=input or part=output"})

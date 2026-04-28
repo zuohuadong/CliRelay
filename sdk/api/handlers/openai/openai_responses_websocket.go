@@ -23,21 +23,53 @@ import (
 )
 
 const (
-	wsRequestTypeCreate  = "response.create"
-	wsRequestTypeAppend  = "response.append"
-	wsEventTypeError     = "error"
-	wsEventTypeCompleted = "response.completed"
-	wsEventTypeDone      = "response.done"
-	wsDoneMarker         = "[DONE]"
-	wsTurnStateHeader    = "x-codex-turn-state"
-	wsRequestBodyKey     = "REQUEST_BODY_OVERRIDE"
-	wsPayloadLogMaxSize  = 2048
+	wsRequestTypeCreate                   = "response.create"
+	wsRequestTypeAppend                   = "response.append"
+	wsEventTypeError                      = "error"
+	wsEventTypeCompleted                  = "response.completed"
+	wsEventTypeDone                       = "response.done"
+	wsDoneMarker                          = "[DONE]"
+	wsTurnStateHeader                     = "x-codex-turn-state"
+	wsRequestBodyKey                      = "REQUEST_BODY_OVERRIDE"
+	wsPayloadLogMaxSize                   = 2048
+	responsesWebsocketHeartbeatInterval   = 30 * time.Second
+	responsesWebsocketHeartbeatWriteLimit = 10 * time.Second
 )
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
 	CheckOrigin:     util.WebsocketOriginAllowed,
+}
+
+func startResponsesWebsocketHeartbeat(conn *websocket.Conn, sessionID string) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(responsesWebsocketHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(responsesWebsocketHeartbeatWriteLimit)); err != nil {
+					log.Debugf("responses websocket: heartbeat failed id=%s error=%v", sessionID, err)
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		close(stop)
+		<-done
+	}
 }
 
 // ResponsesWebsocket handles websocket requests for /v1/responses.
@@ -54,6 +86,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		clientRemoteAddr = strings.TrimSpace(c.Request.RemoteAddr)
 	}
 	log.Infof("responses websocket: client connected id=%s remote=%s", passthroughSessionID, clientRemoteAddr)
+	stopHeartbeat := startResponsesWebsocketHeartbeat(conn, passthroughSessionID)
+	defer stopHeartbeat()
 	var wsTerminateErr error
 	var wsBodyLog strings.Builder
 	defer func() {

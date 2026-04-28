@@ -32,7 +32,7 @@ import (
 const (
 	// Keep aligned with upstream CLIProxyAPI (codex-tui).
 	codexResponsesWebsocketBetaHeaderValue = "responses_websockets=2026-02-06"
-	codexResponsesWebsocketIdleTimeout     = 5 * time.Minute
+	codexResponsesWebsocketIdleTimeout     = 20 * time.Minute
 	codexResponsesWebsocketHandshakeTO     = 30 * time.Second
 )
 

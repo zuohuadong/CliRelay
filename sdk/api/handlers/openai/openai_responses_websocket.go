@@ -34,8 +34,9 @@ const (
 	wsPayloadLogMaxSize                          = 2048
 	responsesWebsocketHeartbeatInterval          = 30 * time.Second
 	responsesWebsocketHeartbeatWriteLimit        = 10 * time.Second
+	responsesWebsocketWriteTimeout               = 10 * time.Second
 	responsesWebsocketApplicationKeepAlivePeriod = 30 * time.Second
-	responsesWebsocketFirstEventTimeout          = 60 * time.Second
+	responsesWebsocketUpstreamIdleTimeout        = 60 * time.Second
 )
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
@@ -181,7 +182,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			for _, prewarmPayload := range prewarmPayloads {
 				markAPIResponseTimestamp(c)
 				appendWebsocketEvent(&wsBodyLog, "response", prewarmPayload)
-				if errWrite := conn.WriteMessage(websocket.TextMessage, prewarmPayload); errWrite != nil {
+				if errWrite := writeResponsesWebsocketMessage(conn, websocket.TextMessage, prewarmPayload); errWrite != nil {
 					log.Warnf(
 						"responses websocket: prewarm write failed id=%s event=%s error=%v",
 						passthroughSessionID,
@@ -474,11 +475,12 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 ) ([]byte, error) {
 	completed := false
 	completedOutput := []byte("[]")
+	lastUpstreamEventAt := time.Now()
 	receivedUpstreamEvent := false
 	keepAlive := time.NewTicker(responsesWebsocketApplicationKeepAlivePeriod)
 	defer keepAlive.Stop()
-	firstEventTimer := time.NewTimer(responsesWebsocketFirstEventTimeout)
-	defer firstEventTimer.Stop()
+	upstreamIdleTimer := time.NewTimer(responsesWebsocketUpstreamIdleTimeout)
+	defer upstreamIdleTimer.Stop()
 
 	for {
 		select {
@@ -490,21 +492,18 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			markAPIResponseTimestamp(c)
 			appendWebsocketEvent(wsBodyLog, "response", payload)
 			log.Infof("responses websocket: keepalive sent id=%s event=%s", sessionID, websocketPayloadEventType(payload))
-			if errWrite := conn.WriteMessage(websocket.TextMessage, payload); errWrite != nil {
+			if errWrite := writeResponsesWebsocketMessage(conn, websocket.TextMessage, payload); errWrite != nil {
 				log.Warnf("responses websocket: keepalive write failed id=%s event=%s error=%v", sessionID, websocketPayloadEventType(payload), errWrite)
 				cancel(errWrite)
 				return completedOutput, errWrite
 			}
-		case <-firstEventTimer.C:
-			if receivedUpstreamEvent == true {
-				continue
-			}
-			errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusGatewayTimeout, Error: fmt.Errorf("upstream websocket did not send an event within %s", responsesWebsocketFirstEventTimeout)}
+		case <-upstreamIdleTimer.C:
+			errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusGatewayTimeout, Error: fmt.Errorf("upstream websocket did not send another event within %s", responsesWebsocketUpstreamIdleTimeout)}
 			h.LoggingAPIResponseError(context.WithValue(c.Request.Context(), util.ContextKeyGin, c), errMsg)
 			markAPIResponseTimestamp(c)
 			errorPayload, errWrite := writeResponsesWebsocketError(conn, errMsg)
 			appendWebsocketEvent(wsBodyLog, "response", errorPayload)
-			log.Warnf("responses websocket: first upstream event timeout id=%s timeout=%s", sessionID, responsesWebsocketFirstEventTimeout)
+			log.Warnf("responses websocket: upstream event idle timeout id=%s timeout=%s idle=%s", sessionID, responsesWebsocketUpstreamIdleTimeout, time.Since(lastUpstreamEventAt).Truncate(time.Second))
 			log.Infof("responses websocket: downstream_out id=%s type=%d event=%s payload=%s", sessionID, websocket.TextMessage, websocketPayloadEventType(errorPayload), websocketPayloadPreview(errorPayload))
 			if errWrite != nil {
 				log.Warnf("responses websocket: downstream_out write failed id=%s event=%s error=%v", sessionID, websocketPayloadEventType(errorPayload), errWrite)
@@ -583,15 +582,22 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			}
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
-			if len(payloads) > 0 && receivedUpstreamEvent == false {
+			if len(payloads) > 0 {
+				firstUpstreamEvent := !receivedUpstreamEvent
 				receivedUpstreamEvent = true
-				if firstEventTimer.Stop() == false {
+				lastUpstreamEventAt = time.Now()
+				if upstreamIdleTimer.Stop() == false {
 					select {
-					case <-firstEventTimer.C:
+					case <-upstreamIdleTimer.C:
 					default:
 					}
 				}
-				log.Infof("responses websocket: first upstream event received id=%s event=%s", sessionID, websocketPayloadEventType(payloads[0]))
+				upstreamIdleTimer.Reset(responsesWebsocketUpstreamIdleTimeout)
+				if firstUpstreamEvent {
+					log.Infof("responses websocket: first upstream event received id=%s event=%s", sessionID, websocketPayloadEventType(payloads[0]))
+				} else {
+					log.Debugf("responses websocket: upstream event received id=%s event=%s", sessionID, websocketPayloadEventType(payloads[0]))
+				}
 			}
 			for i := range payloads {
 				eventType := gjson.GetBytes(payloads[i], "type").String()
@@ -611,7 +617,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				// 	websocketPayloadEventType(payloads[i]),
 				// 	websocketPayloadPreview(payloads[i]),
 				// )
-				if errWrite := conn.WriteMessage(websocket.TextMessage, payloads[i]); errWrite != nil {
+				if errWrite := writeResponsesWebsocketMessage(conn, websocket.TextMessage, payloads[i]); errWrite != nil {
 					log.Warnf(
 						"responses websocket: downstream_out write failed id=%s event=%s error=%v",
 						sessionID,
@@ -665,6 +671,13 @@ func websocketJSONPayloadsFromChunk(chunk []byte) [][]byte {
 		payloads = append(payloads, bytes.Clone(trimmed))
 	}
 	return payloads
+}
+
+func writeResponsesWebsocketMessage(conn *websocket.Conn, messageType int, data []byte) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
+		return err
+	}
+	return conn.WriteMessage(messageType, data)
 }
 
 func writeResponsesWebsocketError(conn *websocket.Conn, errMsg *interfaces.ErrorMessage) ([]byte, error) {
@@ -721,7 +734,7 @@ func writeResponsesWebsocketError(conn *websocket.Conn, errMsg *interfaces.Error
 	if err != nil {
 		return nil, err
 	}
-	return data, conn.WriteMessage(websocket.TextMessage, data)
+	return data, writeResponsesWebsocketMessage(conn, websocket.TextMessage, data)
 }
 
 func appendWebsocketEvent(builder *strings.Builder, eventType string, payload []byte) {

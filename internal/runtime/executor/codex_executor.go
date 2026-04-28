@@ -113,6 +113,64 @@ func mergeCodexResponsesCompletedOutput(payload []byte, pendingItems [][]byte, p
 	return updated
 }
 
+func collectCodexOutputItems(data []byte) []byte {
+	lines := bytes.Split(data, []byte("\n"))
+	outputItems := make([][]byte, 0, 2)
+	completedIdx := -1
+	var completedPayload []byte
+
+	for i := range lines {
+		line := lines[i]
+		if !bytes.HasPrefix(line, dataTag) {
+			continue
+		}
+		payload := bytes.TrimSpace(line[len(dataTag):])
+		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+		switch eventType {
+		case "response.output_item.done":
+			item := gjson.GetBytes(payload, "item")
+			if item.Exists() {
+				raw := strings.TrimSpace(item.Raw)
+				if raw != "" {
+					outputItems = append(outputItems, []byte(raw))
+				}
+			}
+		case "response.completed", "response.done":
+			completedIdx = i
+			completedPayload = normalizeCodexCompletionPayload(payload)
+		}
+	}
+
+	if completedIdx < 0 {
+		return data
+	}
+
+	changed := !bytes.Equal(completedPayload, bytes.TrimSpace(lines[completedIdx][len(dataTag):]))
+	if len(outputItems) > 0 {
+		existingOutput := gjson.GetBytes(completedPayload, "response.output")
+		if !existingOutput.Exists() || len(existingOutput.Array()) == 0 {
+			merged, err := sjson.SetRawBytes(completedPayload, "response.output", marshalJSONArrayRaw(outputItems))
+			if err == nil && len(merged) > 0 {
+				completedPayload = merged
+				changed = true
+			}
+		}
+	}
+
+	if !changed {
+		return data
+	}
+	updatedLine := make([]byte, 0, len(dataTag)+1+len(completedPayload))
+	updatedLine = append(updatedLine, dataTag...)
+	updatedLine = append(updatedLine, ' ')
+	updatedLine = append(updatedLine, completedPayload...)
+	lines[completedIdx] = updatedLine
+	return bytes.Join(lines, []byte("\n"))
+}
+
 func normalizeCodexCompletionPayload(payload []byte) []byte {
 	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.done" {
 		return payload

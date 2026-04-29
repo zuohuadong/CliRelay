@@ -1,6 +1,17 @@
 # Binaries
 cli-proxy-api
+CLIProxyAPI*
+clirelay-updater
 *.exe
+*.bin
+*.gz
+*.zip
+*.tar
+*.tgz
+
+# Build outputs and dependencies
+dist/
+node_modules/
 
 # Configuration
 config.yaml

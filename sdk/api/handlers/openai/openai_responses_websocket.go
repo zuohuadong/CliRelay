@@ -35,6 +35,7 @@ const (
 	responsesWebsocketHeartbeatInterval          = 30 * time.Second
 	responsesWebsocketHeartbeatWriteLimit        = 10 * time.Second
 	responsesWebsocketWriteTimeout               = 10 * time.Second
+	responsesWebsocketClientMessageIdleTimeout   = 60 * time.Second
 	responsesWebsocketApplicationKeepAlivePeriod = 30 * time.Second
 	responsesWebsocketUpstreamIdleTimeout        = 60 * time.Second
 )
@@ -114,11 +115,21 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	pinnedAuthID := ""
 
 	for {
+		if errDeadline := conn.SetReadDeadline(time.Now().Add(responsesWebsocketClientMessageIdleTimeout)); errDeadline != nil {
+			wsTerminateErr = errDeadline
+			log.Warnf("responses websocket: set read deadline failed id=%s error=%v", passthroughSessionID, errDeadline)
+			return
+		}
 		msgType, payload, errReadMessage := conn.ReadMessage()
 		if errReadMessage != nil {
 			wsTerminateErr = errReadMessage
 			appendWebsocketEvent(&wsBodyLog, "disconnect", []byte(errReadMessage.Error()))
-			if websocket.IsCloseError(errReadMessage, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
+			if isResponsesWebsocketReadTimeout(errReadMessage) {
+				log.Infof("responses websocket: client message idle timeout id=%s timeout=%s", passthroughSessionID, responsesWebsocketClientMessageIdleTimeout)
+				if errClose := closeResponsesWebsocketWithReason(conn, websocket.CloseNormalClosure, "idle timeout"); errClose != nil {
+					log.Debugf("responses websocket: idle close failed id=%s error=%v", passthroughSessionID, errClose)
+				}
+			} else if websocket.IsCloseError(errReadMessage, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
 				log.Infof("responses websocket: client disconnected id=%s error=%v", passthroughSessionID, errReadMessage)
 			} else {
 				log.Debugf("responses websocket: read message failed id=%s error=%v", passthroughSessionID, errReadMessage)
@@ -693,11 +704,20 @@ func writeResponsesWebsocketMessage(conn *websocket.Conn, messageType int, data 
 }
 
 func closeResponsesWebsocketNormally(conn *websocket.Conn) error {
+	return closeResponsesWebsocketWithReason(conn, websocket.CloseNormalClosure, "completed")
+}
+
+func closeResponsesWebsocketWithReason(conn *websocket.Conn, code int, reason string) error {
 	if err := conn.SetWriteDeadline(time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
 		return err
 	}
-	message := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "completed")
+	message := websocket.FormatCloseMessage(code, reason)
 	return conn.WriteControl(websocket.CloseMessage, message, time.Now().Add(responsesWebsocketWriteTimeout))
+}
+
+func isResponsesWebsocketReadTimeout(err error) bool {
+	timeout, ok := err.(interface{ Timeout() bool })
+	return ok && timeout.Timeout()
 }
 
 func writeResponsesWebsocketError(conn *websocket.Conn, errMsg *interfaces.ErrorMessage) ([]byte, error) {

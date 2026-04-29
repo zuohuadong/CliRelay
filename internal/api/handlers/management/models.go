@@ -91,7 +91,11 @@ func filterModelConfigRowsByScope(rows []usage.ModelConfigRow, scope string) []u
 	return filtered
 }
 
-func modelConfigPayloadToRow(payload modelConfigPayload) usage.ModelConfigRow {
+func modelConfigPayloadToRow(payload modelConfigPayload, scope string) usage.ModelConfigRow {
+	source := "user"
+	if scope == "library" {
+		source = "seed"
+	}
 	return usage.ModelConfigRow{
 		ModelID:               strings.TrimSpace(payload.ID),
 		OwnedBy:               strings.TrimSpace(payload.OwnedBy),
@@ -102,7 +106,7 @@ func modelConfigPayloadToRow(payload modelConfigPayload) usage.ModelConfigRow {
 		OutputPricePerMillion: payload.Pricing.OutputPricePerMillion,
 		CachedPricePerMillion: payload.Pricing.CachedPricePerMillion,
 		PricePerCall:          payload.Pricing.PricePerCall,
-		Source:                "user",
+		Source:                source,
 	}
 }
 
@@ -228,7 +232,7 @@ func (h *Handler) PostModelConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	row := modelConfigPayloadToRow(payload)
+	row := modelConfigPayloadToRow(payload, modelConfigScope(c))
 	if row.ModelID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "model id is required"})
 		return
@@ -253,7 +257,7 @@ func (h *Handler) PutModelConfig(c *gin.Context) {
 		return
 	}
 	originalID := modelConfigParamID(c)
-	row := modelConfigPayloadToRow(payload)
+	row := modelConfigPayloadToRow(payload, modelConfigScope(c))
 	if row.ModelID == "" {
 		row.ModelID = originalID
 	}

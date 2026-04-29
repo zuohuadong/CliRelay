@@ -119,7 +119,23 @@ func TestModelConfigHandlersScopeFiltering(t *testing.T) {
 		t.Fatalf("PostModelConfig status = %d body = %s", createRec.Code, createRec.Body.String())
 	}
 
-	decodeIDs := func(rec *httptest.ResponseRecorder) map[string]bool {
+	createLibraryBody := []byte(`{
+		"id": "custom-library",
+		"owned_by": "acme-ai",
+		"description": "Custom library model",
+		"enabled": true,
+		"pricing": {
+			"mode": "token",
+			"input_price_per_million": 3,
+			"output_price_per_million": 4
+		}
+	}`)
+	createLibraryRec := performModelsRequest(http.MethodPost, "/model-configs?scope=library", createLibraryBody, h.PostModelConfig)
+	if createLibraryRec.Code != http.StatusOK {
+		t.Fatalf("PostModelConfig library status = %d body = %s", createLibraryRec.Code, createLibraryRec.Body.String())
+	}
+
+	decodeSources := func(rec *httptest.ResponseRecorder) map[string]string {
 		t.Helper()
 		if rec.Code != http.StatusOK {
 			t.Fatalf("list status = %d body = %s", rec.Code, rec.Body.String())
@@ -133,35 +149,41 @@ func TestModelConfigHandlersScopeFiltering(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 			t.Fatalf("unmarshal list response: %v", err)
 		}
-		ids := make(map[string]bool)
+		sources := make(map[string]string)
 		for _, item := range payload.Data {
-			ids[item.ID] = true
-			if item.ID == "custom-active" && item.Source != "user" {
-				t.Fatalf("custom-active source = %q, want user", item.Source)
-			}
+			sources[item.ID] = item.Source
 		}
-		return ids
+		return sources
 	}
 
-	activeIDs := decodeIDs(performModelsRequest(http.MethodGet, "/model-configs", nil, h.GetModelConfigs))
-	if !activeIDs["custom-active"] {
+	activeSources := decodeSources(performModelsRequest(http.MethodGet, "/model-configs", nil, h.GetModelConfigs))
+	if activeSources["custom-active"] != "user" {
 		t.Fatal("expected custom-active in default active scope")
 	}
-	if activeIDs["gpt-image-2"] {
+	if _, ok := activeSources["gpt-image-2"]; ok {
 		t.Fatal("did not expect seed-only gpt-image-2 in default active scope")
 	}
+	if _, ok := activeSources["custom-library"]; ok {
+		t.Fatal("did not expect custom-library in default active scope")
+	}
 
-	libraryIDs := decodeIDs(performModelsRequest(http.MethodGet, "/model-configs?scope=library", nil, h.GetModelConfigs))
-	if !libraryIDs["gpt-image-2"] {
+	librarySources := decodeSources(performModelsRequest(http.MethodGet, "/model-configs?scope=library", nil, h.GetModelConfigs))
+	if _, ok := librarySources["gpt-image-2"]; !ok {
 		t.Fatal("expected gpt-image-2 in library scope")
 	}
-	if libraryIDs["custom-active"] {
+	if _, ok := librarySources["custom-active"]; ok {
 		t.Fatal("did not expect user custom-active in library scope")
 	}
+	if librarySources["custom-library"] != "seed" {
+		t.Fatalf("custom-library source = %q, want seed", librarySources["custom-library"])
+	}
 
-	allIDs := decodeIDs(performModelsRequest(http.MethodGet, "/model-configs?scope=all", nil, h.GetModelConfigs))
-	if !allIDs["gpt-image-2"] || !allIDs["custom-active"] {
-		t.Fatalf("expected all scope to include seed and user models, got gpt-image-2=%v custom-active=%v", allIDs["gpt-image-2"], allIDs["custom-active"])
+	allSources := decodeSources(performModelsRequest(http.MethodGet, "/model-configs?scope=all", nil, h.GetModelConfigs))
+	if _, ok := allSources["gpt-image-2"]; !ok {
+		t.Fatal("expected all scope to include gpt-image-2")
+	}
+	if allSources["custom-active"] != "user" || allSources["custom-library"] != "seed" {
+		t.Fatalf("expected all scope to include user and seed models, got custom-active=%q custom-library=%q", allSources["custom-active"], allSources["custom-library"])
 	}
 }
 

@@ -286,6 +286,93 @@ func TestSyncOpenRouterModelsUsesAnthropicDateSuffixBaseModelID(t *testing.T) {
 	}
 }
 
+func TestSyncOpenRouterModelsUpdatesAnthropicDatedAliasFromBaseRemoteID(t *testing.T) {
+	initModelConfigTestDB(t)
+
+	result, err := SyncOpenRouterModelList(context.Background(), []OpenRouterRemoteModel{
+		{
+			ID:          "anthropic/claude-3.5-haiku",
+			Description: "Fast Claude Haiku model from OpenRouter",
+			Pricing: OpenRouterRemotePricing{
+				Prompt:         "0.0000008",
+				Completion:     "0.000004",
+				InputCacheRead: "0.00000008",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SyncOpenRouterModelList() error = %v", err)
+	}
+	if result.Seen != 1 || result.Added != 1 || result.Updated != 0 || result.Skipped != 0 {
+		t.Fatalf("unexpected sync result: %+v", result)
+	}
+
+	baseModel, ok := GetModelConfig("claude-3-5-haiku")
+	if !ok {
+		t.Fatal("expected base Claude model to be imported")
+	}
+	if baseModel.InputPricePerMillion != 0.8 || baseModel.OutputPricePerMillion != 4 || baseModel.CachedPricePerMillion != 0.08 {
+		t.Fatalf("unexpected base Claude pricing: %+v", baseModel)
+	}
+
+	datedModel, ok := GetModelConfig("claude-3-5-haiku-20241022")
+	if !ok {
+		t.Fatal("expected seeded dated Claude alias to remain available")
+	}
+	if datedModel.InputPricePerMillion != 0.8 || datedModel.OutputPricePerMillion != 4 || datedModel.CachedPricePerMillion != 0.08 {
+		t.Fatalf("dated Claude alias should reuse base remote pricing: %+v", datedModel)
+	}
+	if datedModel.Description != "Fast Claude Haiku model from OpenRouter" {
+		t.Fatalf("dated Claude alias should reuse base remote description, got %q", datedModel.Description)
+	}
+}
+
+func TestSyncOpenRouterModelsPreservesExistingOpenRouterDatedAliasFromBaseRemoteID(t *testing.T) {
+	initModelConfigTestDB(t)
+
+	if err := UpsertModelConfig(ModelConfigRow{
+		ModelID:               "claude-3-5-haiku-20241022",
+		OwnedBy:               "anthropic",
+		Description:           "Old OpenRouter dated alias",
+		Enabled:               true,
+		PricingMode:           "token",
+		InputPricePerMillion:  0,
+		OutputPricePerMillion: 0,
+		Source:                "openrouter",
+	}); err != nil {
+		t.Fatalf("UpsertModelConfig() error = %v", err)
+	}
+
+	result, err := SyncOpenRouterModelList(context.Background(), []OpenRouterRemoteModel{
+		{
+			ID:          "anthropic/claude-3.5-haiku",
+			Description: "Fast Claude Haiku model from OpenRouter",
+			Pricing: OpenRouterRemotePricing{
+				Prompt:         "0.0000008",
+				Completion:     "0.000004",
+				InputCacheRead: "0.00000008",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SyncOpenRouterModelList() error = %v", err)
+	}
+	if result.Seen != 1 || result.Added != 1 || result.Updated != 0 || result.Skipped != 0 {
+		t.Fatalf("unexpected sync result: %+v", result)
+	}
+
+	datedModel, ok := GetModelConfig("claude-3-5-haiku-20241022")
+	if !ok {
+		t.Fatal("expected existing OpenRouter dated alias to remain available")
+	}
+	if datedModel.Source != "openrouter" || datedModel.Description != "Fast Claude Haiku model from OpenRouter" {
+		t.Fatalf("dated OpenRouter alias metadata should be refreshed: %+v", datedModel)
+	}
+	if datedModel.InputPricePerMillion != 0.8 || datedModel.OutputPricePerMillion != 4 || datedModel.CachedPricePerMillion != 0.08 {
+		t.Fatalf("dated OpenRouter alias should reuse base remote pricing: %+v", datedModel)
+	}
+}
+
 func TestSyncOpenRouterModelsMigratesExistingOpenRouterPrefixedRows(t *testing.T) {
 	initModelConfigTestDB(t)
 

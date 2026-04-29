@@ -105,10 +105,10 @@ func SyncOpenRouterModelList(ctx context.Context, models []OpenRouterRemoteModel
 			if err := UpsertModelConfig(existing); err != nil {
 				return result, fmt.Errorf("sync openrouter model pricing %s: %w", modelID, err)
 			}
-			if err := openRouterDeleteLegacyOpenRouterRows(legacyModelIDs); err != nil {
+			if err := openRouterDeleteLegacyOpenRouterRows(modelID, legacyModelIDs); err != nil {
 				return result, err
 			}
-			if err := openRouterSyncExistingAliasRows(model, owner, legacyModelIDs); err != nil {
+			if err := openRouterSyncExistingAliasRows(modelID, model, owner, legacyModelIDs); err != nil {
 				return result, err
 			}
 			result.Updated++
@@ -119,7 +119,7 @@ func SyncOpenRouterModelList(ctx context.Context, models []OpenRouterRemoteModel
 			return result, err
 		}
 		if migrated {
-			if err := openRouterSyncExistingAliasRows(model, owner, legacyModelIDs); err != nil {
+			if err := openRouterSyncExistingAliasRows(modelID, model, owner, legacyModelIDs); err != nil {
 				return result, err
 			}
 			result.Updated++
@@ -140,7 +140,7 @@ func SyncOpenRouterModelList(ctx context.Context, models []OpenRouterRemoteModel
 		if err := UpsertModelConfig(row); err != nil {
 			return result, fmt.Errorf("sync openrouter model %s: %w", modelID, err)
 		}
-		if err := openRouterSyncExistingAliasRows(model, owner, legacyModelIDs); err != nil {
+		if err := openRouterSyncExistingAliasRows(modelID, model, owner, legacyModelIDs); err != nil {
 			return result, err
 		}
 		result.Added++
@@ -459,8 +459,30 @@ func openRouterLegacyLocalModelIDs(remoteModelID, owner, modelID string) []strin
 	add(providerless)
 	if normalizeModelOwnerValue(owner) == "anthropic" {
 		add(strings.ReplaceAll(providerless, ".", "-"))
+		for _, aliasID := range openRouterExistingAnthropicReleaseDateAliasIDs(modelID) {
+			add(aliasID)
+		}
 	}
 	return ids
+}
+
+func openRouterExistingAnthropicReleaseDateAliasIDs(modelID string) []string {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil
+	}
+	prefix := modelID + "-"
+	var aliases []string
+	for _, row := range ListModelConfigs() {
+		aliasID := strings.TrimSpace(row.ModelID)
+		if aliasID == modelID || !strings.HasPrefix(aliasID, prefix) {
+			continue
+		}
+		if openRouterStripAnthropicReleaseDate(aliasID) == modelID {
+			aliases = append(aliases, aliasID)
+		}
+	}
+	return aliases
 }
 
 func openRouterApplyModelSync(row *ModelConfigRow, model OpenRouterRemoteModel, owner string) {
@@ -494,6 +516,9 @@ func openRouterShouldSyncDescription(row ModelConfigRow) bool {
 
 func openRouterMigrateLegacyOpenRouterRow(modelID, owner string, model OpenRouterRemoteModel, legacyModelIDs []string) (bool, error) {
 	for _, legacyModelID := range legacyModelIDs {
+		if openRouterIsAnthropicReleaseDateAlias(legacyModelID, modelID) {
+			continue
+		}
 		existing, exists := GetModelConfig(legacyModelID)
 		if !exists || existing.Source != openRouterModelSource {
 			continue
@@ -503,7 +528,7 @@ func openRouterMigrateLegacyOpenRouterRow(modelID, owner string, model OpenRoute
 		if err := UpsertModelConfig(existing); err != nil {
 			return false, fmt.Errorf("migrate openrouter model %s to %s: %w", legacyModelID, modelID, err)
 		}
-		if err := openRouterDeleteLegacyOpenRouterRows(legacyModelIDs); err != nil {
+		if err := openRouterDeleteLegacyOpenRouterRows(modelID, legacyModelIDs); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -511,8 +536,11 @@ func openRouterMigrateLegacyOpenRouterRow(modelID, owner string, model OpenRoute
 	return false, nil
 }
 
-func openRouterDeleteLegacyOpenRouterRows(modelIDs []string) error {
+func openRouterDeleteLegacyOpenRouterRows(baseModelID string, modelIDs []string) error {
 	for _, modelID := range modelIDs {
+		if openRouterIsAnthropicReleaseDateAlias(modelID, baseModelID) {
+			continue
+		}
 		existing, exists := GetModelConfig(modelID)
 		if !exists || existing.Source != openRouterModelSource {
 			continue
@@ -524,10 +552,13 @@ func openRouterDeleteLegacyOpenRouterRows(modelIDs []string) error {
 	return nil
 }
 
-func openRouterSyncExistingAliasRows(model OpenRouterRemoteModel, owner string, modelIDs []string) error {
+func openRouterSyncExistingAliasRows(baseModelID string, model OpenRouterRemoteModel, owner string, modelIDs []string) error {
 	for _, modelID := range modelIDs {
 		existing, exists := GetModelConfig(modelID)
-		if !exists || existing.Source == openRouterModelSource {
+		if !exists {
+			continue
+		}
+		if existing.Source == openRouterModelSource && !openRouterIsAnthropicReleaseDateAlias(modelID, baseModelID) {
 			continue
 		}
 		openRouterApplyModelSync(&existing, model, owner)
@@ -536,6 +567,12 @@ func openRouterSyncExistingAliasRows(model OpenRouterRemoteModel, owner string, 
 		}
 	}
 	return nil
+}
+
+func openRouterIsAnthropicReleaseDateAlias(modelID, baseModelID string) bool {
+	modelID = strings.TrimSpace(modelID)
+	baseModelID = strings.TrimSpace(baseModelID)
+	return modelID != "" && baseModelID != "" && modelID != baseModelID && openRouterStripAnthropicReleaseDate(modelID) == baseModelID
 }
 
 func ownerMatchesOpenRouterAliasPrefix(owner, cleanOwner string) bool {

@@ -239,8 +239,8 @@ func TestOpenRouterModelSyncHandlersConfigureAndRun(t *testing.T) {
 	restoreFetcher := usage.SetOpenRouterModelFetcherForTest(func(_ context.Context) ([]usage.OpenRouterRemoteModel, error) {
 		return []usage.OpenRouterRemoteModel{
 			{
-				ID:          "openai/gpt-5.3-codex",
-				Name:        "OpenAI: GPT-5.3-Codex",
+				ID:          "openai/gpt-openrouter-handler-test",
+				Name:        "OpenAI: GPT OpenRouter Handler Test",
 				Description: "Agentic coding model",
 				Pricing: usage.OpenRouterRemotePricing{
 					Prompt:         "0.00000175",
@@ -293,8 +293,11 @@ func TestOpenRouterModelSyncHandlersConfigureAndRun(t *testing.T) {
 	if runPayload.State.LastAdded != 1 || runPayload.State.LastSkipped != 0 || runPayload.State.LastError != "" {
 		t.Fatalf("unexpected sync run state: %+v", runPayload.State)
 	}
-	if _, ok := usage.GetModelConfig("openai/gpt-5.3-codex"); !ok {
-		t.Fatal("expected openai/gpt-5.3-codex to be imported")
+	if _, ok := usage.GetModelConfig("gpt-openrouter-handler-test"); !ok {
+		t.Fatal("expected gpt-openrouter-handler-test to be imported")
+	}
+	if _, ok := usage.GetModelConfig("openai/gpt-openrouter-handler-test"); ok {
+		t.Fatal("did not expect OpenRouter provider prefix to be stored in model id")
 	}
 
 	getRec := performModelsRequest(http.MethodGet, "/model-openrouter-sync", nil, h.GetOpenRouterModelSync)

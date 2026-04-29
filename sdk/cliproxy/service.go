@@ -796,6 +796,11 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 			excluded = strings.Split(val, ",")
 		}
 	}
+	if compatDetected {
+		if s.registerOpenAICompatibilityModels(a, compatProviderKey, compatDisplayName) {
+			return
+		}
+	}
 	var models []*ModelInfo
 	switch provider {
 	case "gemini":
@@ -868,85 +873,6 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	case "kimi":
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
-	default:
-		// Handle OpenAI-compatibility providers by name using config
-		if s.cfg != nil {
-			providerKey := provider
-			compatName := strings.TrimSpace(a.Provider)
-			isCompatAuth := false
-			if compatDetected {
-				if compatProviderKey != "" {
-					providerKey = compatProviderKey
-				}
-				if compatDisplayName != "" {
-					compatName = compatDisplayName
-				}
-				isCompatAuth = true
-			}
-			if strings.EqualFold(providerKey, "openai-compatibility") {
-				isCompatAuth = true
-				if a.Attributes != nil {
-					if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
-						compatName = v
-					}
-					if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
-						providerKey = strings.ToLower(v)
-					}
-				}
-				if providerKey == "openai-compatibility" && compatName != "" {
-					providerKey = strings.ToLower(compatName)
-				}
-			} else if a.Attributes != nil {
-				if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
-					compatName = v
-					isCompatAuth = true
-				}
-				if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
-					providerKey = strings.ToLower(v)
-					isCompatAuth = true
-				}
-			}
-			for i := range s.cfg.OpenAICompatibility {
-				compat := &s.cfg.OpenAICompatibility[i]
-				if strings.EqualFold(compat.Name, compatName) {
-					// Convert compatibility models to registry models
-					ms := make([]*ModelInfo, 0, len(compat.Models))
-					for j := range compat.Models {
-						m := compat.Models[j]
-						// Use alias as model ID, fallback to name if alias is empty
-						modelID := m.Alias
-						if modelID == "" {
-							modelID = m.Name
-						}
-						ms = append(ms, &ModelInfo{
-							ID:          modelID,
-							Object:      "model",
-							Created:     time.Now().Unix(),
-							OwnedBy:     compat.Name,
-							Type:        "openai-compatibility",
-							DisplayName: modelID,
-							UserDefined: true,
-						})
-					}
-					// Register and return
-					if len(ms) > 0 {
-						if providerKey == "" {
-							providerKey = "openai-compatibility"
-						}
-						GlobalModelRegistry().RegisterClient(a.ID, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
-					} else {
-						// Ensure stale registrations are cleared when model list becomes empty.
-						GlobalModelRegistry().UnregisterClient(a.ID)
-					}
-					return
-				}
-			}
-			if isCompatAuth {
-				// No matching provider found or models removed entirely; drop any prior registration.
-				GlobalModelRegistry().UnregisterClient(a.ID)
-				return
-			}
-		}
 	}
 	models = applyOAuthModelAlias(s.cfg, provider, authKind, models)
 	if len(models) > 0 {
@@ -962,6 +888,71 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	}
 
 	GlobalModelRegistry().UnregisterClient(a.ID)
+}
+
+func (s *Service) registerOpenAICompatibilityModels(a *coreauth.Auth, providerKey, compatName string) bool {
+	if s == nil || s.cfg == nil || a == nil {
+		return false
+	}
+	if providerKey == "" {
+		providerKey = strings.ToLower(strings.TrimSpace(a.Provider))
+	}
+	if compatName == "" {
+		compatName = strings.TrimSpace(a.Provider)
+	}
+	if strings.EqualFold(providerKey, "openai-compatibility") {
+		if a.Attributes != nil {
+			if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
+				compatName = v
+			}
+			if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
+				providerKey = strings.ToLower(v)
+			}
+		}
+		if providerKey == "openai-compatibility" && compatName != "" {
+			providerKey = strings.ToLower(compatName)
+		}
+	} else if a.Attributes != nil {
+		if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
+			compatName = v
+		}
+		if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
+			providerKey = strings.ToLower(v)
+		}
+	}
+	for i := range s.cfg.OpenAICompatibility {
+		compat := &s.cfg.OpenAICompatibility[i]
+		if strings.EqualFold(compat.Name, compatName) {
+			ms := make([]*ModelInfo, 0, len(compat.Models))
+			for j := range compat.Models {
+				m := compat.Models[j]
+				modelID := m.Alias
+				if modelID == "" {
+					modelID = m.Name
+				}
+				ms = append(ms, &ModelInfo{
+					ID:          modelID,
+					Object:      "model",
+					Created:     time.Now().Unix(),
+					OwnedBy:     compat.Name,
+					Type:        "openai-compatibility",
+					DisplayName: modelID,
+					UserDefined: true,
+				})
+			}
+			if len(ms) > 0 {
+				if providerKey == "" {
+					providerKey = "openai-compatibility"
+				}
+				GlobalModelRegistry().RegisterClient(a.ID, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
+			} else {
+				GlobalModelRegistry().UnregisterClient(a.ID)
+			}
+			return true
+		}
+	}
+	GlobalModelRegistry().UnregisterClient(a.ID)
+	return true
 }
 
 func (s *Service) resolveConfigClaudeKey(auth *coreauth.Auth) *config.ClaudeKey {

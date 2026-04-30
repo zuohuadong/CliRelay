@@ -2,6 +2,7 @@ package management
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -119,7 +120,35 @@ func TestModelConfigHandlersScopeFiltering(t *testing.T) {
 		t.Fatalf("PostModelConfig status = %d body = %s", createRec.Code, createRec.Body.String())
 	}
 
-	decodeIDs := func(rec *httptest.ResponseRecorder) map[string]bool {
+	createLibraryBody := []byte(`{
+		"id": "custom-library",
+		"owned_by": "acme-ai",
+		"description": "Custom library model",
+		"enabled": true,
+		"pricing": {
+			"mode": "token",
+			"input_price_per_million": 3,
+			"output_price_per_million": 4
+		}
+	}`)
+	createLibraryRec := performModelsRequest(http.MethodPost, "/model-configs?scope=library", createLibraryBody, h.PostModelConfig)
+	if createLibraryRec.Code != http.StatusOK {
+		t.Fatalf("PostModelConfig library status = %d body = %s", createLibraryRec.Code, createLibraryRec.Body.String())
+	}
+	if err := usage.UpsertModelConfig(usage.ModelConfigRow{
+		ModelID:               "openai/gpt-5.3-codex",
+		OwnedBy:               "openai",
+		Description:           "OpenRouter synced model",
+		Enabled:               true,
+		PricingMode:           "token",
+		InputPricePerMillion:  1.75,
+		OutputPricePerMillion: 14,
+		Source:                "openrouter",
+	}); err != nil {
+		t.Fatalf("UpsertModelConfig openrouter model: %v", err)
+	}
+
+	decodeSources := func(rec *httptest.ResponseRecorder) map[string]string {
 		t.Helper()
 		if rec.Code != http.StatusOK {
 			t.Fatalf("list status = %d body = %s", rec.Code, rec.Body.String())
@@ -133,35 +162,50 @@ func TestModelConfigHandlersScopeFiltering(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 			t.Fatalf("unmarshal list response: %v", err)
 		}
-		ids := make(map[string]bool)
+		sources := make(map[string]string)
 		for _, item := range payload.Data {
-			ids[item.ID] = true
-			if item.ID == "custom-active" && item.Source != "user" {
-				t.Fatalf("custom-active source = %q, want user", item.Source)
-			}
+			sources[item.ID] = item.Source
 		}
-		return ids
+		return sources
 	}
 
-	activeIDs := decodeIDs(performModelsRequest(http.MethodGet, "/model-configs", nil, h.GetModelConfigs))
-	if !activeIDs["custom-active"] {
+	activeSources := decodeSources(performModelsRequest(http.MethodGet, "/model-configs", nil, h.GetModelConfigs))
+	if activeSources["custom-active"] != "user" {
 		t.Fatal("expected custom-active in default active scope")
 	}
-	if activeIDs["gpt-image-2"] {
+	if _, ok := activeSources["gpt-image-2"]; ok {
 		t.Fatal("did not expect seed-only gpt-image-2 in default active scope")
 	}
+	if _, ok := activeSources["custom-library"]; ok {
+		t.Fatal("did not expect custom-library in default active scope")
+	}
+	if _, ok := activeSources["openai/gpt-5.3-codex"]; ok {
+		t.Fatal("did not expect openrouter-synced model in default active scope")
+	}
 
-	libraryIDs := decodeIDs(performModelsRequest(http.MethodGet, "/model-configs?scope=library", nil, h.GetModelConfigs))
-	if !libraryIDs["gpt-image-2"] {
+	librarySources := decodeSources(performModelsRequest(http.MethodGet, "/model-configs?scope=library", nil, h.GetModelConfigs))
+	if _, ok := librarySources["gpt-image-2"]; !ok {
 		t.Fatal("expected gpt-image-2 in library scope")
 	}
-	if libraryIDs["custom-active"] {
+	if _, ok := librarySources["custom-active"]; ok {
 		t.Fatal("did not expect user custom-active in library scope")
 	}
+	if librarySources["custom-library"] != "seed" {
+		t.Fatalf("custom-library source = %q, want seed", librarySources["custom-library"])
+	}
+	if librarySources["openai/gpt-5.3-codex"] != "openrouter" {
+		t.Fatalf("openrouter model source = %q, want openrouter", librarySources["openai/gpt-5.3-codex"])
+	}
 
-	allIDs := decodeIDs(performModelsRequest(http.MethodGet, "/model-configs?scope=all", nil, h.GetModelConfigs))
-	if !allIDs["gpt-image-2"] || !allIDs["custom-active"] {
-		t.Fatalf("expected all scope to include seed and user models, got gpt-image-2=%v custom-active=%v", allIDs["gpt-image-2"], allIDs["custom-active"])
+	allSources := decodeSources(performModelsRequest(http.MethodGet, "/model-configs?scope=all", nil, h.GetModelConfigs))
+	if _, ok := allSources["gpt-image-2"]; !ok {
+		t.Fatal("expected all scope to include gpt-image-2")
+	}
+	if allSources["custom-active"] != "user" || allSources["custom-library"] != "seed" {
+		t.Fatalf("expected all scope to include user and seed models, got custom-active=%q custom-library=%q", allSources["custom-active"], allSources["custom-library"])
+	}
+	if allSources["openai/gpt-5.3-codex"] != "openrouter" {
+		t.Fatalf("expected all scope to include openrouter model, got %q", allSources["openai/gpt-5.3-codex"])
 	}
 }
 
@@ -186,5 +230,78 @@ func TestModelOwnerPresetHandlersReplacePresets(t *testing.T) {
 	}
 	if _, ok := usage.GetModelOwnerPreset("acme-ai"); !ok {
 		t.Fatal("expected acme-ai owner preset")
+	}
+}
+
+func TestOpenRouterModelSyncHandlersConfigureAndRun(t *testing.T) {
+	initManagementModelsTestDB(t)
+	h := NewHandler(&config.Config{}, "", nil)
+	restoreFetcher := usage.SetOpenRouterModelFetcherForTest(func(_ context.Context) ([]usage.OpenRouterRemoteModel, error) {
+		return []usage.OpenRouterRemoteModel{
+			{
+				ID:          "openai/gpt-openrouter-handler-test",
+				Name:        "OpenAI: GPT OpenRouter Handler Test",
+				Description: "Agentic coding model",
+				Pricing: usage.OpenRouterRemotePricing{
+					Prompt:         "0.00000175",
+					Completion:     "0.000014",
+					InputCacheRead: "0.000000175",
+				},
+			},
+		}, nil
+	})
+	defer restoreFetcher()
+
+	putBody := []byte(`{"enabled": true, "interval_minutes": 120}`)
+	putRec := performModelsRequest(http.MethodPut, "/model-openrouter-sync", putBody, h.PutOpenRouterModelSync)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PutOpenRouterModelSync status = %d body = %s", putRec.Code, putRec.Body.String())
+	}
+	var putPayload struct {
+		Enabled         bool `json:"enabled"`
+		IntervalMinutes int  `json:"interval_minutes"`
+	}
+	if err := json.Unmarshal(putRec.Body.Bytes(), &putPayload); err != nil {
+		t.Fatalf("unmarshal put response: %v", err)
+	}
+	if !putPayload.Enabled || putPayload.IntervalMinutes != 120 {
+		t.Fatalf("unexpected sync settings response: %+v", putPayload)
+	}
+
+	runRec := performModelsRequest(http.MethodPost, "/model-openrouter-sync/run", nil, h.PostOpenRouterModelSyncRun)
+	if runRec.Code != http.StatusOK {
+		t.Fatalf("PostOpenRouterModelSyncRun status = %d body = %s", runRec.Code, runRec.Body.String())
+	}
+	var runPayload struct {
+		Result struct {
+			Seen    int `json:"seen"`
+			Added   int `json:"added"`
+			Skipped int `json:"skipped"`
+		} `json:"result"`
+		State struct {
+			LastAdded   int    `json:"last_added"`
+			LastSkipped int    `json:"last_skipped"`
+			LastError   string `json:"last_error"`
+		} `json:"state"`
+	}
+	if err := json.Unmarshal(runRec.Body.Bytes(), &runPayload); err != nil {
+		t.Fatalf("unmarshal run response: %v", err)
+	}
+	if runPayload.Result.Seen != 1 || runPayload.Result.Added != 1 || runPayload.Result.Skipped != 0 {
+		t.Fatalf("unexpected sync run result: %+v", runPayload.Result)
+	}
+	if runPayload.State.LastAdded != 1 || runPayload.State.LastSkipped != 0 || runPayload.State.LastError != "" {
+		t.Fatalf("unexpected sync run state: %+v", runPayload.State)
+	}
+	if _, ok := usage.GetModelConfig("gpt-openrouter-handler-test"); !ok {
+		t.Fatal("expected gpt-openrouter-handler-test to be imported")
+	}
+	if _, ok := usage.GetModelConfig("openai/gpt-openrouter-handler-test"); ok {
+		t.Fatal("did not expect OpenRouter provider prefix to be stored in model id")
+	}
+
+	getRec := performModelsRequest(http.MethodGet, "/model-openrouter-sync", nil, h.GetOpenRouterModelSync)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GetOpenRouterModelSync status = %d body = %s", getRec.Code, getRec.Body.String())
 	}
 }

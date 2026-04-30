@@ -744,6 +744,211 @@ func (h *Handler) DeleteClaudeKey(c *gin.Context) {
 	c.JSON(400, gin.H{"error": "missing api-key or index"})
 }
 
+// bedrock-api-key: []BedrockKey
+func (h *Handler) GetBedrockKeys(c *gin.Context) {
+	c.JSON(200, gin.H{"bedrock-api-key": h.cfg.BedrockKey})
+}
+
+func (h *Handler) PutBedrockKeys(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var arr []config.BedrockKey
+	if err = json.Unmarshal(data, &arr); err != nil {
+		var obj struct {
+			Items []config.BedrockKey `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		arr = obj.Items
+	}
+	for i := range arr {
+		normalizeBedrockKey(&arr[i])
+	}
+	prev := append([]config.BedrockKey(nil), h.cfg.BedrockKey...)
+	h.cfg.BedrockKey = arr
+	h.cfg.SanitizeBedrockKeys()
+	if err := h.validateChannelNames(); err != nil {
+		h.cfg.BedrockKey = prev
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	h.persist(c)
+}
+
+func (h *Handler) PatchBedrockKey(c *gin.Context) {
+	type bedrockKeyPatch struct {
+		Name            *string                `json:"name"`
+		Priority        *int                   `json:"priority"`
+		Prefix          *string                `json:"prefix"`
+		AuthMode        *string                `json:"auth-mode"`
+		APIKey          *string                `json:"api-key"`
+		AccessKeyID     *string                `json:"access-key-id"`
+		SecretAccessKey *string                `json:"secret-access-key"`
+		SessionToken    *string                `json:"session-token"`
+		Region          *string                `json:"region"`
+		ForceGlobal     *bool                  `json:"force-global"`
+		BaseURL         *string                `json:"base-url"`
+		ProxyURL        *string                `json:"proxy-url"`
+		ProxyID         *string                `json:"proxy-id"`
+		Models          *[]config.BedrockModel `json:"models"`
+		Headers         *map[string]string     `json:"headers"`
+		ExcludedModels  *[]string              `json:"excluded-models"`
+	}
+	var body struct {
+		Index *int             `json:"index"`
+		Match *string          `json:"match"`
+		Value *bedrockKeyPatch `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	targetIndex := -1
+	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.BedrockKey) {
+		targetIndex = *body.Index
+	}
+	if targetIndex == -1 && body.Match != nil {
+		match := strings.TrimSpace(*body.Match)
+		for i := range h.cfg.BedrockKey {
+			entry := h.cfg.BedrockKey[i]
+			if entry.APIKey == match || entry.AccessKeyID == match || entry.Name == match {
+				targetIndex = i
+				break
+			}
+		}
+	}
+	if targetIndex == -1 {
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+
+	entry := h.cfg.BedrockKey[targetIndex]
+	if body.Value.Name != nil {
+		entry.Name = strings.TrimSpace(*body.Value.Name)
+	}
+	if body.Value.Priority != nil {
+		entry.Priority = *body.Value.Priority
+	}
+	if body.Value.Prefix != nil {
+		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
+	}
+	if body.Value.AuthMode != nil {
+		entry.AuthMode = strings.TrimSpace(*body.Value.AuthMode)
+	}
+	if body.Value.APIKey != nil {
+		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
+	}
+	if body.Value.AccessKeyID != nil {
+		entry.AccessKeyID = strings.TrimSpace(*body.Value.AccessKeyID)
+	}
+	if body.Value.SecretAccessKey != nil {
+		entry.SecretAccessKey = strings.TrimSpace(*body.Value.SecretAccessKey)
+	}
+	if body.Value.SessionToken != nil {
+		entry.SessionToken = strings.TrimSpace(*body.Value.SessionToken)
+	}
+	if body.Value.Region != nil {
+		entry.Region = strings.TrimSpace(*body.Value.Region)
+	}
+	if body.Value.ForceGlobal != nil {
+		entry.ForceGlobal = *body.Value.ForceGlobal
+	}
+	if body.Value.BaseURL != nil {
+		entry.BaseURL = strings.TrimSpace(*body.Value.BaseURL)
+	}
+	if body.Value.ProxyURL != nil {
+		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
+	}
+	if body.Value.ProxyID != nil {
+		entry.ProxyID = strings.TrimSpace(*body.Value.ProxyID)
+	}
+	if body.Value.Models != nil {
+		entry.Models = append([]config.BedrockModel(nil), (*body.Value.Models)...)
+	}
+	if body.Value.Headers != nil {
+		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+	}
+	if body.Value.ExcludedModels != nil {
+		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	normalizeBedrockKey(&entry)
+	prev := append([]config.BedrockKey(nil), h.cfg.BedrockKey...)
+	h.cfg.BedrockKey[targetIndex] = entry
+	h.cfg.SanitizeBedrockKeys()
+	if err := h.validateChannelNames(); err != nil {
+		h.cfg.BedrockKey = prev
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	h.persist(c)
+}
+
+func (h *Handler) DeleteBedrockKey(c *gin.Context) {
+	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
+		out := make([]config.BedrockKey, 0, len(h.cfg.BedrockKey))
+		for _, v := range h.cfg.BedrockKey {
+			if v.APIKey != val {
+				out = append(out, v)
+			}
+		}
+		if len(out) != len(h.cfg.BedrockKey) {
+			h.cfg.BedrockKey = out
+			h.cfg.SanitizeBedrockKeys()
+			h.persist(c)
+			return
+		}
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+	if val := strings.TrimSpace(c.Query("access-key-id")); val != "" {
+		out := make([]config.BedrockKey, 0, len(h.cfg.BedrockKey))
+		for _, v := range h.cfg.BedrockKey {
+			if v.AccessKeyID != val {
+				out = append(out, v)
+			}
+		}
+		if len(out) != len(h.cfg.BedrockKey) {
+			h.cfg.BedrockKey = out
+			h.cfg.SanitizeBedrockKeys()
+			h.persist(c)
+			return
+		}
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+	if val := strings.TrimSpace(c.Query("name")); val != "" {
+		out := make([]config.BedrockKey, 0, len(h.cfg.BedrockKey))
+		for _, v := range h.cfg.BedrockKey {
+			if v.Name != val {
+				out = append(out, v)
+			}
+		}
+		if len(out) != len(h.cfg.BedrockKey) {
+			h.cfg.BedrockKey = out
+			h.cfg.SanitizeBedrockKeys()
+			h.persist(c)
+			return
+		}
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+	if idxStr := c.Query("index"); idxStr != "" {
+		var idx int
+		if _, err := fmt.Sscanf(idxStr, "%d", &idx); err == nil && idx >= 0 && idx < len(h.cfg.BedrockKey) {
+			h.cfg.BedrockKey = append(h.cfg.BedrockKey[:idx], h.cfg.BedrockKey[idx+1:]...)
+			h.cfg.SanitizeBedrockKeys()
+			h.persist(c)
+			return
+		}
+	}
+	c.JSON(400, gin.H{"error": "missing api-key, access-key-id, name, or index"})
+}
+
 // openai-compatibility: []OpenAICompatibility
 func (h *Handler) GetOpenAICompat(c *gin.Context) {
 	c.JSON(200, gin.H{"openai-compatibility": normalizedOpenAICompatibilityEntries(h.cfg.OpenAICompatibility)})
@@ -1398,6 +1603,39 @@ func normalizeClaudeKey(entry *config.ClaudeKey) {
 		return
 	}
 	normalized := make([]config.ClaudeModel, 0, len(entry.Models))
+	for i := range entry.Models {
+		model := entry.Models[i]
+		model.Name = strings.TrimSpace(model.Name)
+		model.Alias = strings.TrimSpace(model.Alias)
+		if model.Name == "" && model.Alias == "" {
+			continue
+		}
+		normalized = append(normalized, model)
+	}
+	entry.Models = normalized
+}
+
+func normalizeBedrockKey(entry *config.BedrockKey) {
+	if entry == nil {
+		return
+	}
+	entry.Name = strings.TrimSpace(entry.Name)
+	entry.Prefix = strings.TrimSpace(entry.Prefix)
+	entry.AuthMode = strings.TrimSpace(entry.AuthMode)
+	entry.APIKey = strings.TrimSpace(entry.APIKey)
+	entry.AccessKeyID = strings.TrimSpace(entry.AccessKeyID)
+	entry.SecretAccessKey = strings.TrimSpace(entry.SecretAccessKey)
+	entry.SessionToken = strings.TrimSpace(entry.SessionToken)
+	entry.Region = strings.TrimSpace(entry.Region)
+	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+	entry.ProxyID = strings.TrimSpace(entry.ProxyID)
+	entry.Headers = config.NormalizeHeaders(entry.Headers)
+	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
+	if len(entry.Models) == 0 {
+		return
+	}
+	normalized := make([]config.BedrockModel, 0, len(entry.Models))
 	for i := range entry.Models {
 		model := entry.Models[i]
 		model.Name = strings.TrimSpace(model.Name)

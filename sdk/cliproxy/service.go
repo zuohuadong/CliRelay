@@ -426,6 +426,8 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
 	case "claude":
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
+	case "bedrock":
+		s.coreManager.RegisterExecutor(executor.NewBedrockExecutor(s.cfg))
 	case "qwen":
 		s.coreManager.RegisterExecutor(executor.NewQwenExecutor(s.cfg))
 	case "iflow":
@@ -652,6 +654,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.coreManager.StartAutoRefresh(context.WithoutCancel(ctx), interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 	}
+	internalusage.StartOpenRouterModelSyncScheduler(ctx)
 
 	select {
 	case <-ctx.Done():
@@ -853,6 +856,17 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 			}
 		}
 		models = applyExcludedModels(models, excluded)
+	case "bedrock":
+		models = registry.GetBedrockModels()
+		if entry := s.resolveConfigBedrockKey(a); entry != nil {
+			if len(entry.Models) > 0 {
+				models = buildBedrockConfigModels(entry)
+			}
+			if authKind == "apikey" {
+				excluded = entry.ExcludedModels
+			}
+		}
+		models = applyExcludedModels(models, excluded)
 	case "codex":
 		models = registry.GetOpenAIModels()
 		if entry := s.resolveConfigCodexKey(a); entry != nil {
@@ -1014,6 +1028,61 @@ func (s *Service) resolveConfigGeminiKey(auth *coreauth.Auth) *config.GeminiKey 
 			continue
 		}
 		if attrKey == "" && attrBase != "" && strings.EqualFold(cfgBase, attrBase) {
+			return entry
+		}
+	}
+	return nil
+}
+
+func (s *Service) resolveConfigBedrockKey(auth *coreauth.Auth) *config.BedrockKey {
+	if auth == nil || s.cfg == nil {
+		return nil
+	}
+	var attrKey, attrAccessKeyID, attrBase, attrRegion, attrMode string
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+		attrAccessKeyID = strings.TrimSpace(auth.Attributes["access_key_id"])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+		attrRegion = strings.TrimSpace(auth.Attributes["region"])
+		attrMode = strings.ToLower(strings.TrimSpace(auth.Attributes["auth_mode"]))
+	}
+	if attrMode == "apikey" || attrMode == "api_key" {
+		attrMode = "api-key"
+	}
+	for i := range s.cfg.BedrockKey {
+		entry := &s.cfg.BedrockKey[i]
+		cfgMode := strings.ToLower(strings.TrimSpace(entry.AuthMode))
+		if cfgMode == "" {
+			cfgMode = "sigv4"
+		}
+		if cfgMode == "apikey" || cfgMode == "api_key" {
+			cfgMode = "api-key"
+		}
+		if attrMode != "" && cfgMode != attrMode {
+			continue
+		}
+		cfgBase := strings.TrimSpace(entry.BaseURL)
+		if attrBase != "" && !strings.EqualFold(cfgBase, attrBase) {
+			continue
+		}
+		cfgRegion := strings.TrimSpace(entry.Region)
+		if cfgRegion == "" {
+			cfgRegion = config.DefaultBedrockRegion
+		}
+		if attrRegion != "" && !strings.EqualFold(cfgRegion, attrRegion) {
+			continue
+		}
+		if cfgMode == "api-key" {
+			if attrKey != "" && strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
+				return entry
+			}
+			continue
+		}
+		cfgAccessKeyID := strings.TrimSpace(entry.AccessKeyID)
+		if attrAccessKeyID != "" && strings.EqualFold(cfgAccessKeyID, attrAccessKeyID) {
+			return entry
+		}
+		if attrKey != "" && strings.EqualFold(cfgAccessKeyID, attrKey) {
 			return entry
 		}
 	}
@@ -1333,6 +1402,13 @@ func buildClaudeConfigModels(entry *config.ClaudeKey) []*ModelInfo {
 		return nil
 	}
 	return buildConfigModels(entry.Models, "anthropic", "claude")
+}
+
+func buildBedrockConfigModels(entry *config.BedrockKey) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "aws", "bedrock")
 }
 
 func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {

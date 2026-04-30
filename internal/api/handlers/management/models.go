@@ -1,8 +1,10 @@
 package management
 
 import (
+	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -79,11 +81,11 @@ func filterModelConfigRowsByScope(rows []usage.ModelConfigRow, scope string) []u
 		case "all":
 			filtered = append(filtered, row)
 		case "library":
-			if source == "seed" {
+			if source == "seed" || source == "openrouter" {
 				filtered = append(filtered, row)
 			}
 		default:
-			if source != "seed" || availableIDs[row.ModelID] {
+			if source == "user" || (source == "seed" && availableIDs[row.ModelID]) {
 				filtered = append(filtered, row)
 			}
 		}
@@ -91,7 +93,11 @@ func filterModelConfigRowsByScope(rows []usage.ModelConfigRow, scope string) []u
 	return filtered
 }
 
-func modelConfigPayloadToRow(payload modelConfigPayload) usage.ModelConfigRow {
+func modelConfigPayloadToRow(payload modelConfigPayload, scope string) usage.ModelConfigRow {
+	source := "user"
+	if scope == "library" {
+		source = "seed"
+	}
 	return usage.ModelConfigRow{
 		ModelID:               strings.TrimSpace(payload.ID),
 		OwnedBy:               strings.TrimSpace(payload.OwnedBy),
@@ -102,7 +108,7 @@ func modelConfigPayloadToRow(payload modelConfigPayload) usage.ModelConfigRow {
 		OutputPricePerMillion: payload.Pricing.OutputPricePerMillion,
 		CachedPricePerMillion: payload.Pricing.CachedPricePerMillion,
 		PricePerCall:          payload.Pricing.PricePerCall,
-		Source:                "user",
+		Source:                source,
 	}
 }
 
@@ -228,7 +234,7 @@ func (h *Handler) PostModelConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	row := modelConfigPayloadToRow(payload)
+	row := modelConfigPayloadToRow(payload, modelConfigScope(c))
 	if row.ModelID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "model id is required"})
 		return
@@ -253,7 +259,7 @@ func (h *Handler) PutModelConfig(c *gin.Context) {
 		return
 	}
 	originalID := modelConfigParamID(c)
-	row := modelConfigPayloadToRow(payload)
+	row := modelConfigPayloadToRow(payload, modelConfigScope(c))
 	if row.ModelID == "" {
 		row.ModelID = originalID
 	}
@@ -399,4 +405,56 @@ func (h *Handler) PutModelPricing(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "updated": len(body.Items)})
+}
+
+// GetOpenRouterModelSync returns OpenRouter model sync settings and last run status.
+//
+// Endpoint:
+//
+//	GET /v0/management/model-openrouter-sync
+func (h *Handler) GetOpenRouterModelSync(c *gin.Context) {
+	c.JSON(http.StatusOK, usage.GetOpenRouterModelSyncState())
+}
+
+// PutOpenRouterModelSync updates OpenRouter model sync settings.
+//
+// Endpoint:
+//
+//	PUT /v0/management/model-openrouter-sync
+func (h *Handler) PutOpenRouterModelSync(c *gin.Context) {
+	var body struct {
+		Enabled         bool `json:"enabled"`
+		IntervalMinutes int  `json:"interval_minutes"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	state, err := usage.UpdateOpenRouterModelSyncSettings(body.Enabled, body.IntervalMinutes)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, state)
+}
+
+// PostOpenRouterModelSyncRun manually runs OpenRouter model sync now.
+//
+// Endpoint:
+//
+//	POST /v0/management/model-openrouter-sync/run
+func (h *Handler) PostOpenRouterModelSyncRun(c *gin.Context) {
+	ctx := c.Request.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	result, state, err := usage.RunOpenRouterModelSync(ctx)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "state": state})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "result": result, "state": state})
 }

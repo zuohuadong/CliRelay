@@ -118,6 +118,9 @@ type Config struct {
 	// ClaudeKey defines a list of Claude API key configurations as specified in the YAML configuration file.
 	ClaudeKey []ClaudeKey `yaml:"claude-api-key" json:"claude-api-key"`
 
+	// BedrockKey defines AWS Bedrock Runtime credential configurations.
+	BedrockKey []BedrockKey `yaml:"bedrock-api-key" json:"bedrock-api-key"`
+
 	// ClaudeHeaderDefaults configures default header values for Claude API requests.
 	// These are used as fallbacks when the client does not send its own headers.
 	ClaudeHeaderDefaults ClaudeHeaderDefaults `yaml:"claude-header-defaults" json:"claude-header-defaults"`
@@ -792,6 +795,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Sanitize Claude key headers
 	cfg.SanitizeClaudeKeys()
+
+	// Sanitize AWS Bedrock Runtime credentials.
+	cfg.SanitizeBedrockKeys()
 
 	// Normalize provider identity fingerprints.
 	cfg.SanitizeIdentityFingerprint()

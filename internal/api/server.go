@@ -607,6 +607,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/model-configs/*id", s.mgmt.DeleteModelConfig)
 		mgmt.GET("/model-owner-presets", s.mgmt.GetModelOwnerPresets)
 		mgmt.PUT("/model-owner-presets", s.mgmt.PutModelOwnerPresets)
+		mgmt.GET("/model-openrouter-sync", s.mgmt.GetOpenRouterModelSync)
+		mgmt.PUT("/model-openrouter-sync", s.mgmt.PutOpenRouterModelSync)
+		mgmt.POST("/model-openrouter-sync/run", s.mgmt.PostOpenRouterModelSyncRun)
 		mgmt.GET("/channel-groups", s.mgmt.GetChannelGroups)
 		mgmt.GET("/routing-config", s.mgmt.GetRoutingConfig)
 		mgmt.PUT("/routing-config", s.mgmt.PutRoutingConfig)
@@ -747,6 +750,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)
 		mgmt.PATCH("/claude-api-key", s.mgmt.PatchClaudeKey)
 		mgmt.DELETE("/claude-api-key", s.mgmt.DeleteClaudeKey)
+
+		mgmt.GET("/bedrock-api-key", s.mgmt.GetBedrockKeys)
+		mgmt.PUT("/bedrock-api-key", s.mgmt.PutBedrockKeys)
+		mgmt.PATCH("/bedrock-api-key", s.mgmt.PatchBedrockKey)
+		mgmt.DELETE("/bedrock-api-key", s.mgmt.DeleteBedrockKey)
 
 		mgmt.GET("/codex-api-key", s.mgmt.GetCodexKeys)
 		mgmt.PUT("/codex-api-key", s.mgmt.PutCodexKeys)

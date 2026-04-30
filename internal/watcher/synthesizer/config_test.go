@@ -546,6 +546,87 @@ func TestConfigSynthesizer_VertexCompat_WithModels(t *testing.T) {
 	}
 }
 
+func TestConfigSynthesizer_BedrockKeys(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			BedrockKey: []config.BedrockKey{
+				{
+					Name:        "aws api",
+					AuthMode:    "api-key",
+					APIKey:      "br-key",
+					Region:      "eu-west-1",
+					ForceGlobal: true,
+					BaseURL:     "https://bedrock.local",
+					Prefix:      "aws",
+					ProxyURL:    "http://proxy.local",
+					ProxyID:     "hk",
+					Headers:     map[string]string{"X-Bedrock": "test"},
+					Models: []config.BedrockModel{
+						{Name: "claude-sonnet-4-5", Alias: "aws-sonnet"},
+					},
+					ExcludedModels: []string{"claude-opus-*"},
+				},
+				{
+					Name:            "aws sigv4",
+					AuthMode:        "sigv4",
+					AccessKeyID:     "AKIATEST",
+					SecretAccessKey: "SECRET",
+					SessionToken:    "SESSION",
+					Region:          "us-east-1",
+				},
+			},
+		},
+		Now:         time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 2 {
+		t.Fatalf("expected 2 bedrock auths, got %d", len(auths))
+	}
+
+	apiAuth := auths[0]
+	if apiAuth.Provider != "bedrock" || apiAuth.Label != "aws api" || apiAuth.Prefix != "aws" {
+		t.Fatalf("unexpected api auth identity: %+v", apiAuth)
+	}
+	if apiAuth.Attributes["auth_mode"] != "api-key" || apiAuth.Attributes["api_key"] != "br-key" {
+		t.Fatalf("unexpected api auth attributes: %+v", apiAuth.Attributes)
+	}
+	if apiAuth.Attributes["region"] != "eu-west-1" || apiAuth.Attributes["force_global"] != "true" {
+		t.Fatalf("unexpected region attrs: %+v", apiAuth.Attributes)
+	}
+	if apiAuth.Attributes["base_url"] != "https://bedrock.local" || apiAuth.Attributes["header:X-Bedrock"] != "test" {
+		t.Fatalf("unexpected base/header attrs: %+v", apiAuth.Attributes)
+	}
+	if _, ok := apiAuth.Attributes["models_hash"]; !ok {
+		t.Fatal("expected models_hash for bedrock models")
+	}
+	if apiAuth.ProxyURL != "http://proxy.local" || apiAuth.ProxyID != "hk" {
+		t.Fatalf("unexpected proxy settings: proxy=%q proxyID=%q", apiAuth.ProxyURL, apiAuth.ProxyID)
+	}
+	if apiAuth.Attributes["excluded_models_hash"] == "" || apiAuth.Attributes["auth_kind"] != "apikey" {
+		t.Fatalf("expected API key exclusion metadata, got %+v", apiAuth.Attributes)
+	}
+
+	sigAuth := auths[1]
+	if sigAuth.Provider != "bedrock" || sigAuth.Label != "aws sigv4" {
+		t.Fatalf("unexpected sigv4 auth identity: %+v", sigAuth)
+	}
+	if sigAuth.Attributes["auth_mode"] != "sigv4" {
+		t.Fatalf("auth_mode = %q, want sigv4", sigAuth.Attributes["auth_mode"])
+	}
+	if sigAuth.Attributes["access_key_id"] != "AKIATEST" || sigAuth.Attributes["secret_access_key"] != "SECRET" || sigAuth.Attributes["session_token"] != "SESSION" {
+		t.Fatalf("unexpected sigv4 attrs: %+v", sigAuth.Attributes)
+	}
+	if sigAuth.Attributes["api_key"] != "AKIATEST" {
+		t.Fatalf("expected api_key identifier to use access key id for alias/account handling, got %+v", sigAuth.Attributes)
+	}
+}
+
 func TestConfigSynthesizer_IDStability(t *testing.T) {
 	cfg := &config.Config{
 		GeminiKey: []config.GeminiKey{
@@ -594,6 +675,9 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 			VertexCompatAPIKey: []config.VertexCompatKey{
 				{APIKey: "vertex-key", BaseURL: "https://vertex.api"},
 			},
+			BedrockKey: []config.BedrockKey{
+				{AuthMode: "api-key", APIKey: "bedrock-key"},
+			},
 		},
 		Now:         time.Now(),
 		IDGenerator: NewStableIDGenerator(),
@@ -603,8 +687,8 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(auths) != 5 {
-		t.Fatalf("expected 5 auths, got %d", len(auths))
+	if len(auths) != 6 {
+		t.Fatalf("expected 6 auths, got %d", len(auths))
 	}
 
 	providers := make(map[string]bool)
@@ -612,7 +696,7 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 		providers[a.Provider] = true
 	}
 
-	expected := []string{"gemini", "claude", "codex", "compat", "vertex"}
+	expected := []string{"gemini", "claude", "codex", "compat", "vertex", "bedrock"}
 	for _, p := range expected {
 		if !providers[p] {
 			t.Errorf("expected provider %s not found", p)

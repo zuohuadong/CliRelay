@@ -338,6 +338,10 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 			if entry := resolveCodexAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 			}
+		case "bedrock":
+			if entry := resolveBedrockAPIKeyConfig(cfg, auth); entry != nil {
+				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
+			}
 		case "vertex":
 			if entry := resolveVertexAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
@@ -1042,6 +1046,8 @@ func (m *Manager) applyAPIKeyModelAlias(auth *Auth, requestedModel string) strin
 		upstreamModel = resolveUpstreamModelForClaudeAPIKey(cfg, auth, requestedModel)
 	case "codex":
 		upstreamModel = resolveUpstreamModelForCodexAPIKey(cfg, auth, requestedModel)
+	case "bedrock":
+		upstreamModel = resolveUpstreamModelForBedrockAPIKey(cfg, auth, requestedModel)
 	case "vertex":
 		upstreamModel = resolveUpstreamModelForVertexAPIKey(cfg, auth, requestedModel)
 	default:
@@ -1121,6 +1127,65 @@ func resolveCodexAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalc
 	return resolveAPIKeyConfig(cfg.CodexKey, auth)
 }
 
+func resolveBedrockAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.BedrockKey {
+	if cfg == nil || auth == nil {
+		return nil
+	}
+	attrKey := ""
+	attrAccessKeyID := ""
+	attrBase := ""
+	attrRegion := ""
+	attrMode := ""
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+		attrAccessKeyID = strings.TrimSpace(auth.Attributes["access_key_id"])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+		attrRegion = strings.TrimSpace(auth.Attributes["region"])
+		attrMode = strings.ToLower(strings.TrimSpace(auth.Attributes["auth_mode"]))
+	}
+	if attrMode == "apikey" || attrMode == "api_key" {
+		attrMode = "api-key"
+	}
+	for i := range cfg.BedrockKey {
+		entry := &cfg.BedrockKey[i]
+		cfgMode := strings.ToLower(strings.TrimSpace(entry.AuthMode))
+		if cfgMode == "" {
+			cfgMode = "sigv4"
+		}
+		if cfgMode == "apikey" || cfgMode == "api_key" {
+			cfgMode = "api-key"
+		}
+		if attrMode != "" && cfgMode != attrMode {
+			continue
+		}
+		cfgBase := strings.TrimSpace(entry.BaseURL)
+		if attrBase != "" && !strings.EqualFold(cfgBase, attrBase) {
+			continue
+		}
+		cfgRegion := strings.TrimSpace(entry.Region)
+		if cfgRegion == "" {
+			cfgRegion = internalconfig.DefaultBedrockRegion
+		}
+		if attrRegion != "" && !strings.EqualFold(cfgRegion, attrRegion) {
+			continue
+		}
+		if cfgMode == "api-key" {
+			if attrKey != "" && strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
+				return entry
+			}
+			continue
+		}
+		cfgAccessKeyID := strings.TrimSpace(entry.AccessKeyID)
+		if attrAccessKeyID != "" && strings.EqualFold(cfgAccessKeyID, attrAccessKeyID) {
+			return entry
+		}
+		if attrKey != "" && strings.EqualFold(cfgAccessKeyID, attrKey) {
+			return entry
+		}
+	}
+	return nil
+}
+
 func resolveVertexAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.VertexCompatKey {
 	if cfg == nil {
 		return nil
@@ -1146,6 +1211,14 @@ func resolveUpstreamModelForClaudeAPIKey(cfg *internalconfig.Config, auth *Auth,
 
 func resolveUpstreamModelForCodexAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
 	entry := resolveCodexAPIKeyConfig(cfg, auth)
+	if entry == nil {
+		return ""
+	}
+	return resolveModelAliasFromConfigModels(requestedModel, asModelAliasEntries(entry.Models))
+}
+
+func resolveUpstreamModelForBedrockAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
+	entry := resolveBedrockAPIKeyConfig(cfg, auth)
 	if entry == nil {
 		return ""
 	}

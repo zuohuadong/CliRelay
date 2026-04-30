@@ -108,7 +108,7 @@ CliRelay turns AI CLI subscriptions, OAuth credentials, API keys, and compatible
 | Feature | Description |
 |:--------|:------------|
 | 🖥️ **Visual Management Panel** | Configure providers, auth, API keys, models, routing, logs, updates, and system status from `/manage` |
-| 🌐 **Chinese / English UI** | Built-in i18n for the management panel and installer/TUI language selection |
+| 🌐 **Chinese / English UI** | Built-in i18n for the management panel and Compose/TUI language selection |
 | 🌙 **Dark Mode** | Full dark theme for long-running operational sessions |
 | 🧬 **Visual Config Editor** | Edit runtime config visually or inspect source YAML when you need exact control |
 | 🔄 **Online Update Flow** | Check versions, review update notes, trigger the updater sidecar, and wait for backend recovery from the panel |
@@ -127,7 +127,7 @@ CliRelay turns AI CLI subscriptions, OAuth credentials, API keys, and compatible
 
 CliRelay can expose a built-in web control panel at `/manage`. The server can host bundled SPA assets or fall back to synced management assets from the configured panel repository.
 
-The gallery below uses the latest supplied screenshots and video asset, covering the current end-to-end management workflow.
+The gallery below uses the latest supplied screenshots, covering the current end-to-end management workflow.
 
 ### Dashboard, Locale & Theme
 
@@ -191,10 +191,6 @@ The gallery below uses the latest supplied screenshots and video asset, covering
 | :----------------- |
 | <img src="docs/images/readme-showcase/system-info.png" width="100%" alt="System information page" /> |
 
-| Multi-image generation preview |
-| :----------------------------- |
-| <video src="docs/images/readme-showcase/multi-image-generation-preview.mp4" width="100%" controls></video><br><a href="docs/images/readme-showcase/multi-image-generation-preview.mp4">Open MP4 preview</a> |
-
 > 🔗 The runtime panel source is configurable via `remote-management.panel-github-repository`. The default repository is [kittors/codeProxy](https://github.com/kittors/codeProxy).
 
 ## 🏗️ Supported Providers
@@ -214,114 +210,36 @@ The gallery below uses the latest supplied screenshots and video asset, covering
 
 ## 🚀 Quick Start
 
-### 1️⃣ Download & Configure
+### 🐳 Install With Docker Compose
+
+Docker Compose is the recommended installation path for CliRelay. The included `docker-compose.yml` uses the published `ghcr.io/kittors/clirelay:latest` image by default and starts both the API service and updater sidecar.
 
 ```bash
-# Download the latest release for your platform from GitHub Releases
-# Then copy the example config
+git clone https://github.com/kittors/CliRelay.git
+cd CliRelay
 cp config.example.yaml config.yaml
-
-# Optional: build locally from source
-go build -o cli-proxy-api ./cmd/server
-```
-
-Edit `config.yaml` to add your API keys or OAuth credentials. By default, client API routes
-(`/v1`, `/v1beta`) require an API key. To run without client keys, set `allow-unauthenticated: true`
-(not recommended for production).
-
-### 2️⃣ Run
-
-```bash
-./cli-proxy-api -config ./config.yaml
-# Server: http://localhost:8317
-# Web panel (if enabled): http://localhost:8317/manage
-```
-
-The release artifact is currently named `cli-proxy-api`. The `clirelay` command shown later is a helper wrapper installed by `install.sh`, not the raw server binary name.
-
-### Useful CLI Modes
-
-```bash
-# OAuth / credential flows
-./cli-proxy-api -login
-./cli-proxy-api -codex-login
-./cli-proxy-api -codex-device-login
-./cli-proxy-api -claude-login
-./cli-proxy-api -qwen-login
-./cli-proxy-api -iflow-login
-./cli-proxy-api -iflow-cookie
-./cli-proxy-api -antigravity-login
-./cli-proxy-api -kimi-login
-
-# Admin interfaces
-./cli-proxy-api -tui
-./cli-proxy-api -tui -standalone
-
-# Other utilities
-./cli-proxy-api -vertex-import ./service-account.json
-./cli-proxy-api -oauth-callback-port 18080 -no-browser
-```
-
-### 🐳 Docker (Recommended)
-
-Docker is the recommended deployment path if you want automatic update prompts from the management panel. Published images include an updater sidecar that can pull the next `main`/`dev` image, restart the API container, and let the Web UI wait for the backend heartbeat before reporting success.
-
-**One-Click Deploy**:
-
-- Linux `amd64` / `arm64`: supported for automatic Docker installation
-- macOS `arm64` / `amd64`: supported when Docker Desktop / OrbStack / Colima is already installed and running
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/kittors/CliRelay/main/install.sh | bash
-```
-
-The script will:
-
-- automatically install Docker when needed
-- detect the host architecture and pin the correct Docker platform for `amd64` / `arm64`
-- let you choose **English** or **Chinese** during installation
-- persist that language into the container so the built-in TUI starts in the selected language by default
-- install a local `clirelay` helper command for day-2 operations
-- install an internal updater sidecar used by the Web UI's one-click Docker update flow
-
-On macOS, the installer will **not** try to install Docker for you. It will reuse your existing Docker runtime and stop with a clear message if Docker Desktop / OrbStack / Colima is not running.
-
-After installation, use:
-
-```bash
-clirelay status
-clirelay update
-clirelay restart
-clirelay logs
-clirelay tui
-```
-
-`clirelay update` keeps the existing configuration and only refreshes the image + containers, so ongoing upgrades stay simple. The management panel can now do the same flow interactively: it checks GitHub releases/branch images, shows release notes, asks for confirmation, triggers the updater sidecar, and waits until the backend heartbeat is back.
-
-> 💡 If `curl` is not installed, install it first:
-> ```bash
-> # Debian / Ubuntu
-> apt-get update && apt-get install -y curl
->
-> # CentOS / RHEL / Fedora
-> yum install -y curl
-> ```
-
-Or deploy manually with Docker Compose:
-
-```bash
 docker compose up -d
 ```
 
-The included `docker-compose.yml` uses the published `ghcr.io/kittors/clirelay:latest` image by default, so a fresh clone follows the normal production deployment path and does not compile Go on the target machine.
-
-The bundled `build:` section is kept as a local fallback for source-level verification or emergency rebuilds. If you explicitly want to force a local build from the checked out source instead of pulling GHCR:
+Edit `config.yaml` to add your API keys or OAuth credentials, then restart the service:
 
 ```bash
-CLI_PROXY_IMAGE=clirelay-local:dev CLI_PROXY_PULL_POLICY=never docker compose up -d
+docker compose restart cli-proxy-api
 ```
 
-For manual Docker deployments, you can also set `CLIRELAY_LOCALE=en` or `CLIRELAY_LOCALE=zh` in your Compose environment to control the default TUI language.
+By default, client API routes (`/v1`, `/v1beta`) require an API key. To run without client keys, set `allow-unauthenticated: true` in `config.yaml` (not recommended for production).
+
+After startup:
+
+- API endpoint: `http://localhost:8317`
+- Web panel: `http://localhost:8317/manage`
+- Logs: `docker compose logs -f cli-proxy-api`
+- Restart: `docker compose restart cli-proxy-api`
+- Stop: `docker compose down`
+- TUI: `docker compose exec cli-proxy-api ./cli-proxy-api -tui`
+- OAuth login modes: `docker compose exec cli-proxy-api ./cli-proxy-api -login`
+
+Set `CLIRELAY_LOCALE=en` or `CLIRELAY_LOCALE=zh` in your Compose environment to control the default TUI language.
 
 To disable automatic update prompts, set the following in `config.yaml` or turn off **Automatic Update Checks** in the Config page:
 
@@ -370,12 +288,12 @@ When the control panel is enabled, open:
 http://localhost:8317/manage
 ```
 
-- `remote-management.disable-control-panel` now defaults to `false` in the example config and installer-generated config, so the control panel is reachable after a standard deployment.
+- `remote-management.disable-control-panel` defaults to `false` in the example config, so the control panel is reachable after a standard Docker Compose deployment.
 - When enabled, the current panel route is `/manage/login`. The old `management.html#/login` route is legacy-only.
-- Official Docker installs and the published image expose the panel at `/manage`.
+- Docker Compose deployments expose the panel at `/manage`.
 - The server can serve a bundled SPA directory or auto-fetch panel assets when needed.
 - This repository contains the hosting/update path for `/manage`; the standalone web panel source is maintained separately from the Go server code.
-- Terminal-first management is also available through `clirelay tui` or `./cli-proxy-api -tui`.
+- Terminal-first management is also available through `docker compose exec cli-proxy-api ./cli-proxy-api -tui`.
 - If you want to customize the panel asset source, set `remote-management.panel-github-repository`.
 
 ## 📐 Architecture

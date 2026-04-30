@@ -28,7 +28,7 @@
 
 > **✨ 基于 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的深度增强版** — 补强了生产级管理层、Web 控制面板托管能力，以及面向日常运维的终端 TUI。
 
-CliRelay 让你可以把 AI 编程工具和兼容 API 客户端（Claude Code、Gemini CLI、OpenAI Codex、Amp CLI、任意 OpenAI 兼容客户端等）的请求**统一代理**到一个端点。你可以混合使用 OAuth、API Key、Cookie 等凭据，CliRelay 会自动处理路由、故障转移、用量日志、`/manage` Web 面板托管和终端管理流程。
+CliRelay 会把 AI CLI 订阅、OAuth 凭据、API Key 以及兼容上游服务整合成一个可管理的 API 层。它可以让 Claude Code、Gemini CLI、OpenAI Codex、Amp CLI、OpenAI 兼容客户端等工具通过统一端点访问多类上游，同时围绕流量提供分组路由、故障转移、请求日志、配额管控、模型价格、生图配置、API Key 自助查询、在线更新、`/manage` Web 面板托管和终端管理流程。
 
 ```
 ┌───────────────────────┐         ┌──────────────┐         ┌────────────────────┐
@@ -52,8 +52,9 @@ CliRelay 让你可以把 AI 编程工具和兼容 API 客户端（Claude Code、
 |:-----|:-----|
 | 🌐 **统一端点** | 一个 `http://localhost:8317` 统一承接 Gemini、Claude、Codex、Qwen、iFlow、Antigravity、Vertex 兼容端点、OpenAI 兼容上游以及 Amp 集成 |
 | ⚖️ **智能负载均衡** | 跨多个 API Key 的轮询或填充优先调度策略 |
+| 🧭 **分组与路径路由** | 将渠道绑定到分组，按 API Key 限制可用分组，并为团队或业务暴露自定义路径命名空间 |
 | 🔄 **自动故障转移** | 配额耗尽或发生错误时自动切换到备用渠道 |
-| 🧠 **多模态支持** | 完整支持文本 + 图片输入、Function Calling（工具调用）和 SSE 流式响应 |
+| 🧠 **多模态支持** | 完整支持文本 + 图片输入、生图路由、Function Calling（工具调用）和 SSE 流式响应 |
 | 🔗 **OpenAI 兼容** | 支持任何兼容 OpenAI Chat Completions 协议的上游服务 |
 
 ### 📊 请求日志与监控（SQLite）
@@ -75,6 +76,7 @@ CliRelay 让你可以把 AI 编程工具和兼容 API 客户端（Claude Code、
 | 🔑 **API Key CRUD** | 通过管理 API 创建、编辑、删除 API Key — 支持自定义名称、备注和独立启用/禁用开关 |
 | 📊 **单 Key 配额** | 为每个 Key 设置最大 Token / 请求配额，系统自动执行限制 |
 | ⏱️ **速率限制** | 单 Key 速率限制（每分钟/每小时请求数） |
+| 👥 **多人权限划分** | 可将 API Key 分配给不同用户或团队，并限制可用渠道分组和模型权限 |
 | 🔒 **Key 脱敏** | API Key 在 UI 和日志中始终脱敏显示（`sk-***xxx`） |
 | 🌍 **公开查询页面** | 终端用户可通过公开自助页面查询自己的用量统计和请求日志（无需登录） |
 
@@ -84,9 +86,11 @@ CliRelay 让你可以把 AI 编程工具和兼容 API 客户端（Claude Code、
 |:-----|:-----|
 | 📋 **多标签页配置** | 按服务商类型组织渠道管理：Gemini、Claude、Codex、Vertex、OpenAI 兼容、Ampcode |
 | 🏷️ **渠道命名** | 每个渠道支持自定义名称、备注、代理 URL、自定义 Headers 和模型别名映射 |
+| 🧩 **可复用代理池** | 统一维护出站代理配置，并按需分配给 OAuth / auth 渠道 |
 | ⏱️ **延迟追踪** | 每渠道平均延迟（`latency_ms`）追踪，带可视化指标 |
 | 🔄 **启用/禁用** | 单独切换渠道开关，无需删除 |
 | 🚫 **模型排除** | 从渠道中排除特定模型（例如：在备用 Key 上屏蔽高价模型） |
+| 🧾 **模型库同步** | 支持自定义模型维护，并从 OpenRouter 同步模型 ID 与价格用于配额核算 |
 | 📊 **渠道统计** | 每渠道成功/失败次数和模型可用性展示在渠道卡片上 |
 
 ### 🛡️ 安全与认证
@@ -94,9 +98,21 @@ CliRelay 让你可以把 AI 编程工具和兼容 API 客户端（Claude Code、
 | 特性 | 说明 |
 |:-----|:-----|
 | 🔐 **OAuth 支持** | 原生 OAuth 流程覆盖 Gemini、Claude、Codex、Qwen、iFlow、Antigravity、Kimi，并在支持的渠道中提供设备码 / 浏览器 / Cookie 变体 |
+| 🪪 **身份指纹维护** | 集中维护上游身份信息，让请求在不同 provider 侧保持一致的客户端指纹 |
 | 🔒 **TLS 处理** | 可配置的上游通信 TLS 设置 |
 | 🏠 **面板隔离** | 管理面板访问由管理员密码独立控制 |
 | 🛡️ **请求伪装** | 上游请求自动剥离客户端标识 Headers，保护隐私 |
+
+### 🛠️ 运维体验
+
+| 特性 | 说明 |
+|:-----|:-----|
+| 🖥️ **可视化管理面板** | 在 `/manage` 中配置服务商、认证、API Key、模型、路由、日志、更新与系统状态 |
+| 🌐 **中英文界面** | 管理面板内置 i18n，安装器和 TUI 也支持语言选择 |
+| 🌙 **Dark Mode** | 为长时间运维提供完整暗色主题 |
+| 🧬 **可视化配置编辑** | 可通过表单编辑运行时配置，也能切换到 YAML 源码视图精细控制 |
+| 🔄 **在线更新机制** | 在面板中检查版本、查看更新内容、触发 updater sidecar，并等待后端恢复 |
+| 📥 **CC Switch 导入** | 将 cc-switch 风格配置导入到可管理的模型/渠道工作区 |
 
 ### 🗄️ 数据持久化
 
@@ -111,114 +127,73 @@ CliRelay 让你可以把 AI 编程工具和兼容 API 客户端（Claude Code、
 
 CliRelay 可以在 `/manage` 暴露内置 Web 控制面板。服务端既可以托管打包后的 SPA 资源，也可以回退到同步的管理面板资源。
 
-下面这组最新截图覆盖了当前管理面板的 13 个核心页面。
+下面这组 gallery 使用了最新提供的所有截图和视频素材，覆盖当前管理面板的完整工作流。
 
-| 页面 | 可完成的操作 |
-| :--- | :----------- |
-| 仪表盘 | 查看 KPI、健康评分、系统状态、资源使用、吞吐和渠道延迟 |
-| 监控中心 | 分析模型分布、每日趋势、API Key 使用占比和时间范围汇总 |
-| 请求日志 | 按时间、Key、模型、渠道、状态筛选并检查请求记录 |
-| 请求详情 | 读取格式化的提示词/响应正文，支持 Markdown 渲染和折叠块 |
-| AI 供应商 | 管理服务商标签页、渠道健康状态、模型覆盖和 CRUD 操作 |
-| 认证文件 | 查看已保存 auth 文件、重命名渠道、设置前缀/代理、下载凭据 |
-| OAuth 登录 | 发起服务商授权并提交远程回调 URL |
-| API Keys | 管控 Key 配额、RPM/TPM、可用模型、渠道绑定和快捷操作 |
-| 模型管理 | 维护输入/输出/缓存价格，作为配额成本计算基础 |
-| 配额管理 | 查看各类服务商配额的剩余刷新时间和当前进度 |
-| 配置面板 | 编辑 YAML 源文件、搜索配置并切换运行时视图 |
-| 系统信息 | 查看基础地址、版本、查询链接和模型清单 |
-| 日志查询 | 实时查看运行日志，支持搜索、下载、清空和过滤开关 |
+### 首页、语言与主题
 
-### 1. 仪表盘
+| 首页概览 | 运维概览 |
+| :------- | :------- |
+| <img src="docs/images/readme-showcase/home-overview-1.png" width="100%" alt="CliRelay 首页概览" /> | <img src="docs/images/readme-showcase/home-overview-2.png" width="100%" alt="CliRelay 运维概览" /> |
 
-<p align="center">
-  <img src="docs/images/dashboard-overview.png" width="100%" />
-</p>
-<p align="center"><em>仪表盘 — KPI 卡片、健康评分、实时系统监控、吞吐、存储与渠道延迟排行。</em></p>
+| 中英文界面 | 暗色模式 |
+| :--------- | :------- |
+| <img src="docs/images/readme-showcase/home-i18n.png" width="100%" alt="管理面板中英文界面" /> | <img src="docs/images/readme-showcase/dark-mode.png" width="100%" alt="管理面板暗色模式" /> |
 
-### 2. 监控中心
+### 监控、日志与自助查询
 
-<p align="center">
-  <img src="docs/images/monitor-center-zh.png" width="100%" />
-</p>
-<p align="center"><em>监控中心 — 请求汇总、模型分布、每日 Token/请求趋势，以及 API Key 使用占比。</em></p>
+| 监控中心 | 请求日志 |
+| :------- | :------- |
+| <img src="docs/images/readme-showcase/monitor-center.png" width="100%" alt="监控中心图表与请求指标" /> | <img src="docs/images/readme-showcase/request-logs.png" width="100%" alt="请求日志表格与过滤器" /> |
 
-### 3. 请求日志
+| 请求详情 | 日志查询系统 |
+| :------- | :----------- |
+| <img src="docs/images/readme-showcase/request-details.png" width="100%" alt="请求详情查看器" /> | <img src="docs/images/readme-showcase/log-query-system.png" width="100%" alt="日志查询系统" /> |
 
-<p align="center">
-  <img src="docs/images/request-logs-table.png" width="100%" />
-</p>
-<p align="center"><em>请求日志 — 时间范围切换、多条件过滤工具栏、高密度表格，以及整体成功指标。</em></p>
+| API Key 独立查询页 |
+| :----------------- |
+| <img src="docs/images/readme-showcase/api-key-lookup.png" width="100%" alt="API Key 独立查询页面" /> |
 
-### 4. 请求详情查看器
+### 认证、身份与权限
 
-<p align="center">
-  <img src="docs/images/request-details-modal.png" width="100%" />
-</p>
-<p align="center"><em>请求详情 — 输入/输出标签页、Markdown 渲染、折叠块，以及复制/导出辅助动作。</em></p>
+| 统一 OAuth 管理 | 身份指纹维护 |
+| :-------------- | :----------- |
+| <img src="docs/images/readme-showcase/oauth-management.png" width="100%" alt="统一 OAuth 管理" /> | <img src="docs/images/readme-showcase/identity-fingerprint-management.png" width="100%" alt="身份指纹统一维护" /> |
 
-### 5. AI 供应商
+| 多人权限划分 | OAuth 代理分配 |
+| :----------- | :------------- |
+| <img src="docs/images/readme-showcase/team-permissions.png" width="100%" alt="API Key 多人分配与权限划分" /> | <img src="docs/images/readme-showcase/proxy-config-for-oauth.png" width="100%" alt="可分配给 OAuth 认证的代理配置" /> |
 
-<p align="center">
-  <img src="docs/images/providers-codex.png" width="100%" />
-</p>
-<p align="center"><em>AI 供应商 — 服务商标签页、单渠道成功/失败统计、模型徽标、延迟条与 CRUD 操作。</em></p>
+### 渠道、路由与配置
 
-### 6. 认证文件
+| 多渠道 API 添加 | 分组路由与自定义路径 |
+| :-------------- | :------------------- |
+| <img src="docs/images/readme-showcase/multi-channel-api-add.png" width="100%" alt="多渠道 API 添加功能" /> | <img src="docs/images/readme-showcase/group-routing-custom-path.png" width="100%" alt="配置分组调用策略与自定义调用路径" /> |
 
-<p align="center">
-  <img src="docs/images/auth-files-grid.png" width="100%" />
-</p>
-<p align="center"><em>认证文件 — 卡片式凭据清单，支持模型查看、渠道命名、前缀/代理设置、下载和删除。</em></p>
+| 可视化配置 | 上游 Debug 透传 |
+| :--------- | :-------------- |
+| <img src="docs/images/readme-showcase/visual-config.png" width="100%" alt="可视化配置编辑器" /> | <img src="docs/images/readme-showcase/upstream-debug-passthrough.png" width="100%" alt="方便 debug 透传给上游内容" /> |
 
-### 7. OAuth 登录工作台
+| CC Switch 导入 |
+| :------------- |
+| <img src="docs/images/readme-showcase/cc-switch-import.png" width="100%" alt="cc switch 导入可配置" /> |
 
-<p align="center">
-  <img src="docs/images/oauth-login-workbench.png" width="100%" />
-</p>
-<p align="center"><em>OAuth 登录 — 面向不同服务商的授权发起入口，以及远程回调 URL 提交流程。</em></p>
+### 模型、生图与更新
 
-### 8. API Keys 管理
+| OpenRouter 模型同步 | 自定义模型维护 |
+| :------------------ | :------------- |
+| <img src="docs/images/readme-showcase/model-openrouter-sync.png" width="100%" alt="从 OpenRouter 同步模型 ID 和价格" /> | <img src="docs/images/readme-showcase/custom-model-maintenance.png" width="100%" alt="支持高度自定义的模型维护" /> |
 
-<p align="center">
-  <img src="docs/images/api-keys-management.png" width="100%" />
-</p>
-<p align="center"><em>API Keys — 配额、RPM/TPM 限制、模型权限、渠道绑定，以及快捷统计/编辑操作。</em></p>
+| 生图配置 | 在线更新机制 |
+| :------- | :----------- |
+| <img src="docs/images/readme-showcase/image-generation-config.png" width="100%" alt="生图配置" /> | <img src="docs/images/readme-showcase/online-update.png" width="100%" alt="在线更新机制" /> |
 
-### 9. 模型价格
+| 系统信息 |
+| :------- |
+| <img src="docs/images/readme-showcase/system-info.png" width="100%" alt="系统信息页面" /> |
 
-<p align="center">
-  <img src="docs/images/model-pricing.png" width="100%" />
-</p>
-<p align="center"><em>模型管理 — 内置输入/输出/缓存价格表，用于配额成本计算与计费管理。</em></p>
-
-### 10. 配额管理
-
-<p align="center">
-  <img src="docs/images/quota-management.png" width="100%" />
-</p>
-<p align="center"><em>配额管理 — Codex、Gemini CLI、Kiro 等服务商配额的剩余刷新时间与进度条。</em></p>
-
-### 11. 配置面板
-
-<p align="center">
-  <img src="docs/images/config-source-editor.png" width="100%" />
-</p>
-<p align="center"><em>配置面板 — 源码编辑模式，支持 YAML 搜索、键盘导航和运行时配置切换。</em></p>
-
-### 12. 系统信息
-
-<p align="center">
-  <img src="docs/images/system-info-models.png" width="100%" />
-</p>
-<p align="center"><em>系统信息 — API Base、管理端点、版本/构建信息、API Key 查询入口，以及服务商着色模型标签。</em></p>
-
-### 13. 日志查询
-
-<p align="center">
-  <img src="docs/images/live-logs.png" width="100%" />
-</p>
-<p align="center"><em>日志查询 — 实时日志流查看器，支持关键词搜索、隐藏管理流量、下载、清空和跳转最新。</em></p>
+| 多张生图预览视频 |
+| :--------------- |
+| <video src="docs/images/readme-showcase/multi-image-generation-preview.mp4" width="100%" controls></video><br><a href="docs/images/readme-showcase/multi-image-generation-preview.mp4">打开 MP4 预览</a> |
 
 > 🔗 面板资源仓库可通过 `remote-management.panel-github-repository` 配置，默认仓库为 [kittors/codeProxy](https://github.com/kittors/codeProxy)。
 

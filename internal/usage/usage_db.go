@@ -81,6 +81,35 @@ type DailyQuotaPoint struct {
 	Samples int64    `json:"samples"`
 }
 
+type HourlyCountPoint struct {
+	Hour     string `json:"hour"`
+	Requests int64  `json:"requests"`
+}
+
+type QuotaSnapshotPoint struct {
+	RecordedAt    time.Time  `json:"recorded_at"`
+	AuthIndex     string     `json:"auth_index"`
+	Provider      string     `json:"provider"`
+	QuotaKey      string     `json:"quota_key"`
+	QuotaLabel    string     `json:"quota_label"`
+	Percent       *float64   `json:"percent"`
+	ResetAt       *time.Time `json:"reset_at,omitempty"`
+	WindowSeconds int64      `json:"window_seconds"`
+}
+
+type QuotaSnapshotSeriesPoint struct {
+	Timestamp time.Time  `json:"timestamp"`
+	Percent   *float64   `json:"percent"`
+	ResetAt   *time.Time `json:"reset_at,omitempty"`
+}
+
+type QuotaSnapshotSeries struct {
+	QuotaKey      string                     `json:"quota_key"`
+	QuotaLabel    string                     `json:"quota_label"`
+	WindowSeconds int64                      `json:"window_seconds"`
+	Points        []QuotaSnapshotSeriesPoint `json:"points"`
+}
+
 const systemRequestLogFilterValue = "__system__"
 
 var (
@@ -140,6 +169,21 @@ CREATE TABLE IF NOT EXISTS auth_file_quota_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_quota_snapshots_date ON auth_file_quota_snapshots(date_key);
 CREATE INDEX IF NOT EXISTS idx_quota_snapshots_auth ON auth_file_quota_snapshots(auth_index);
+
+CREATE TABLE IF NOT EXISTS auth_file_quota_snapshot_points (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  recorded_at    DATETIME NOT NULL,
+  auth_index     TEXT NOT NULL,
+  provider       TEXT NOT NULL DEFAULT '',
+  quota_key      TEXT NOT NULL,
+  quota_label    TEXT NOT NULL DEFAULT '',
+  percent        REAL,
+  reset_at       DATETIME,
+  window_seconds INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_quota_snapshot_points_auth_time ON auth_file_quota_snapshot_points(auth_index, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_quota_snapshot_points_auth_key_time ON auth_file_quota_snapshot_points(auth_index, quota_key, recorded_at);
 `
 
 // migrateContentColumns adds input_content/output_content columns to an
@@ -898,6 +942,19 @@ func MigrateFromSnapshot(snapshot StatisticsSnapshot) (int64, error) {
 
 // --- internal helpers ---
 
+func parseStoredTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
 func getDB() *sql.DB {
 	usageDBMu.Lock()
 	defer usageDBMu.Unlock()
@@ -1593,6 +1650,81 @@ func QueryDailyCallsByAuthIndexes(authIndexes []string, days int) ([]DailyCountP
 	return result, rows.Err()
 }
 
+func QueryHourlyCallsByAuthIndex(authIndex string, hours int) ([]HourlyCountPoint, error) {
+	db := getDB()
+	if db == nil {
+		return []HourlyCountPoint{}, nil
+	}
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return []HourlyCountPoint{}, nil
+	}
+	if hours < 1 {
+		hours = 5
+	}
+	if hours > 24 {
+		hours = 24
+	}
+
+	loc := getUsageLocation()
+	now := time.Now().In(loc).Truncate(time.Hour)
+	start := now.Add(-time.Duration(hours-1) * time.Hour)
+	buckets := make([]HourlyCountPoint, 0, hours)
+	byKey := make(map[string]*HourlyCountPoint, hours)
+	for i := 0; i < hours; i++ {
+		key := start.Add(time.Duration(i) * time.Hour).Format("2006-01-02 15:00")
+		buckets = append(buckets, HourlyCountPoint{Hour: key, Requests: 0})
+		byKey[key] = &buckets[len(buckets)-1]
+	}
+
+	rows, err := db.Query(`
+		SELECT timestamp
+		FROM request_logs
+		WHERE timestamp >= ? AND auth_index = ?
+	`, start.UTC().Format(time.RFC3339), authIndex)
+	if err != nil {
+		return nil, fmt.Errorf("usage: hourly calls by auth index query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ts string
+		if err := rows.Scan(&ts); err != nil {
+			return nil, fmt.Errorf("usage: hourly calls by auth index scan: %w", err)
+		}
+		parsed, ok := parseStoredTime(ts)
+		if !ok {
+			continue
+		}
+		key := parsed.In(loc).Truncate(time.Hour).Format("2006-01-02 15:00")
+		if bucket := byKey[key]; bucket != nil {
+			bucket.Requests++
+		}
+	}
+	return buckets, rows.Err()
+}
+
+func QueryRequestCountByAuthIndexSince(authIndex string, since time.Time) (int64, error) {
+	db := getDB()
+	if db == nil {
+		return 0, nil
+	}
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return 0, nil
+	}
+	var count int64
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM request_logs
+		WHERE timestamp >= ? AND auth_index = ?
+	`, since.UTC().Format(time.RFC3339), authIndex).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("usage: request count by auth index query: %w", err)
+	}
+	return count, nil
+}
+
 func RecordDailyQuotaSnapshot(authIndex, provider string, quotas map[string]*float64) error {
 	db := getDB()
 	if db == nil {
@@ -1665,6 +1797,98 @@ func RecordDailyQuotaSnapshot(authIndex, provider string, quotas map[string]*flo
 	return nil
 }
 
+func RecordQuotaSnapshotPoints(authIndex, provider string, points []QuotaSnapshotPoint) error {
+	db := getDB()
+	if db == nil {
+		return nil
+	}
+
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" || len(points) == 0 {
+		return nil
+	}
+	provider = strings.TrimSpace(provider)
+	now := time.Now()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("usage: quota snapshot points begin: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO auth_file_quota_snapshot_points
+			(recorded_at, auth_index, provider, quota_key, quota_label, percent, reset_at, window_seconds)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return fmt.Errorf("usage: quota snapshot points prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, point := range points {
+		quotaKey := strings.TrimSpace(point.QuotaKey)
+		if quotaKey == "" {
+			continue
+		}
+		quotaLabel := strings.TrimSpace(point.QuotaLabel)
+		if quotaLabel == "" {
+			quotaLabel = quotaKey
+		}
+		recordedAt := point.RecordedAt
+		if recordedAt.IsZero() {
+			recordedAt = now
+		}
+		pointProvider := strings.TrimSpace(point.Provider)
+		if pointProvider == "" {
+			pointProvider = provider
+		}
+		var value any
+		if point.Percent == nil {
+			value = nil
+		} else {
+			percent := *point.Percent
+			if percent < 0 {
+				percent = 0
+			}
+			if percent > 100 {
+				percent = 100
+			}
+			value = percent
+		}
+		var resetValue any
+		if point.ResetAt != nil && !point.ResetAt.IsZero() {
+			resetValue = point.ResetAt.UTC().Format(time.RFC3339Nano)
+		}
+		if _, err = stmt.Exec(
+			recordedAt.UTC().Format(time.RFC3339Nano),
+			authIndex,
+			pointProvider,
+			quotaKey,
+			quotaLabel,
+			value,
+			resetValue,
+			point.WindowSeconds,
+		); err != nil {
+			return fmt.Errorf("usage: quota snapshot points insert: %w", err)
+		}
+	}
+
+	retentionCutoff := now.AddDate(0, 0, -8).UTC().Format(time.RFC3339Nano)
+	if _, err = tx.Exec(`DELETE FROM auth_file_quota_snapshot_points WHERE recorded_at < ?`, retentionCutoff); err != nil {
+		return fmt.Errorf("usage: quota snapshot points prune: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("usage: quota snapshot points commit: %w", err)
+	}
+	return nil
+}
+
 func QueryDailyQuotaByAuthIndexes(authIndexes []string, quotaKey string, days int) ([]DailyQuotaPoint, error) {
 	db := getDB()
 	if db == nil {
@@ -1733,6 +1957,97 @@ func QueryDailyQuotaByAuthIndexes(authIndexes []string, quotaKey string, days in
 		result = append(result, point)
 	}
 	return result, rows.Err()
+}
+
+func QueryQuotaSnapshotPoints(authIndex string, start, end time.Time) ([]QuotaSnapshotPoint, error) {
+	db := getDB()
+	if db == nil {
+		return []QuotaSnapshotPoint{}, nil
+	}
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return []QuotaSnapshotPoint{}, nil
+	}
+	if start.IsZero() {
+		start = time.Now().AddDate(0, 0, -7)
+	}
+	if end.IsZero() {
+		end = time.Now()
+	}
+
+	rows, err := db.Query(`
+		SELECT recorded_at, auth_index, provider, quota_key, quota_label, percent, reset_at, window_seconds
+		FROM auth_file_quota_snapshot_points
+		WHERE auth_index = ? AND recorded_at >= ? AND recorded_at <= ?
+		ORDER BY recorded_at ASC, quota_key ASC
+	`, authIndex, start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, fmt.Errorf("usage: quota snapshot points query: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]QuotaSnapshotPoint, 0)
+	for rows.Next() {
+		var point QuotaSnapshotPoint
+		var recordedAt string
+		var resetAt sql.NullString
+		var percent sql.NullFloat64
+		if err := rows.Scan(
+			&recordedAt,
+			&point.AuthIndex,
+			&point.Provider,
+			&point.QuotaKey,
+			&point.QuotaLabel,
+			&percent,
+			&resetAt,
+			&point.WindowSeconds,
+		); err != nil {
+			return nil, fmt.Errorf("usage: quota snapshot points scan: %w", err)
+		}
+		if parsed, ok := parseStoredTime(recordedAt); ok {
+			point.RecordedAt = parsed
+		}
+		if percent.Valid {
+			v := percent.Float64
+			point.Percent = &v
+		}
+		if resetAt.Valid {
+			if parsed, ok := parseStoredTime(resetAt.String); ok {
+				point.ResetAt = &parsed
+			}
+		}
+		result = append(result, point)
+	}
+	return result, rows.Err()
+}
+
+func QueryQuotaSnapshotSeries(authIndex string, start, end time.Time) ([]QuotaSnapshotSeries, error) {
+	points, err := QueryQuotaSnapshotPoints(authIndex, start, end)
+	if err != nil {
+		return nil, err
+	}
+	series := make([]QuotaSnapshotSeries, 0)
+	indexByKey := make(map[string]int)
+	for _, point := range points {
+		seriesKey := fmt.Sprintf("%s\x00%d", point.QuotaKey, point.WindowSeconds)
+		idx, ok := indexByKey[seriesKey]
+		if !ok {
+			idx = len(series)
+			indexByKey[seriesKey] = idx
+			series = append(series, QuotaSnapshotSeries{
+				QuotaKey:      point.QuotaKey,
+				QuotaLabel:    point.QuotaLabel,
+				WindowSeconds: point.WindowSeconds,
+				Points:        []QuotaSnapshotSeriesPoint{},
+			})
+		}
+		series[idx].Points = append(series[idx].Points, QuotaSnapshotSeriesPoint{
+			Timestamp: point.RecordedAt,
+			Percent:   point.Percent,
+			ResetAt:   point.ResetAt,
+		})
+	}
+	return series, nil
 }
 
 // GetRequestLogStorageBytes returns the approximate bytes currently occupied by

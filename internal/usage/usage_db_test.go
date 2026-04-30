@@ -55,6 +55,55 @@ func TestCutoffStartUTCAtUsesProjectTimezoneForDayBoundaries(t *testing.T) {
 	}
 }
 
+func TestQuotaSnapshotPointsKeepFineGrainedSeries(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	recordedAt := time.Date(2026, 4, 30, 16, 0, 0, 0, time.UTC)
+	resetAt := recordedAt.Add(5 * time.Hour)
+	remaining := 100.0
+
+	err := RecordQuotaSnapshotPoints("auth-1", "codex", []QuotaSnapshotPoint{
+		{
+			RecordedAt:    recordedAt,
+			QuotaKey:      "additional:codex_bengalfox:5h",
+			QuotaLabel:    "GPT-5.3-Codex-Spark: 5h",
+			Percent:       &remaining,
+			ResetAt:       &resetAt,
+			WindowSeconds: 18000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RecordQuotaSnapshotPoints() error = %v", err)
+	}
+
+	points, err := QueryQuotaSnapshotPoints("auth-1", recordedAt.Add(-time.Minute), recordedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("QueryQuotaSnapshotPoints() error = %v", err)
+	}
+	if len(points) != 1 {
+		t.Fatalf("points = %d, want 1", len(points))
+	}
+	point := points[0]
+	if point.Provider != "codex" {
+		t.Fatalf("Provider = %q, want codex", point.Provider)
+	}
+	if point.QuotaKey != "additional:codex_bengalfox:5h" {
+		t.Fatalf("QuotaKey = %q", point.QuotaKey)
+	}
+	if point.QuotaLabel != "GPT-5.3-Codex-Spark: 5h" {
+		t.Fatalf("QuotaLabel = %q", point.QuotaLabel)
+	}
+	if point.Percent == nil || *point.Percent != 100 {
+		t.Fatalf("Percent = %v, want 100", point.Percent)
+	}
+	if point.ResetAt == nil || !point.ResetAt.Equal(resetAt) {
+		t.Fatalf("ResetAt = %v, want %v", point.ResetAt, resetAt)
+	}
+	if point.WindowSeconds != 18000 {
+		t.Fatalf("WindowSeconds = %d, want 18000", point.WindowSeconds)
+	}
+}
+
 func TestQueryLogsSupportsSystemRequestLogFilterValue(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{})
 

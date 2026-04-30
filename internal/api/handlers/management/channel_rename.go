@@ -42,6 +42,9 @@ func (h *Handler) renameChannelReferences(oldNames []string, newName string) err
 		if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
 			return fmt.Errorf("failed to save config: %w", err)
 		}
+		if usage.ConfigStoreAvailable() {
+			usage.CleanDBBackedConfigFromYAML(h.configFilePath)
+		}
 	}
 	if configChanged && h.authManager != nil {
 		h.authManager.SetConfig(h.cfg)

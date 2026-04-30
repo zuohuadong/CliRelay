@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -78,6 +79,9 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		provider := strings.ToLower(t)
 		if provider == "gemini" {
 			provider = "gemini-cli"
+		}
+		if provider == "codex" {
+			backfillCodexMetadata(metadata)
 		}
 		label := fileAuthLabel(metadata, provider)
 		// Use relative path under authDir as ID to stay consistent with the file-based token store
@@ -156,6 +160,29 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		out = append(out, a)
 	}
 	return out, nil
+}
+
+func backfillCodexMetadata(metadata map[string]any) {
+	if len(metadata) == 0 {
+		return
+	}
+	if planType, _ := metadata["plan_type"].(string); strings.TrimSpace(planType) != "" {
+		metadata["plan_type"] = strings.ToLower(strings.TrimSpace(planType))
+		return
+	}
+	idToken, _ := metadata["id_token"].(string)
+	idToken = strings.TrimSpace(idToken)
+	if idToken == "" {
+		return
+	}
+	claims, err := codex.ParseJWTToken(idToken)
+	if err != nil || claims == nil {
+		return
+	}
+	planType := strings.ToLower(strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType))
+	if planType != "" {
+		metadata["plan_type"] = planType
+	}
 }
 
 // SynthesizeGeminiVirtualAuths creates virtual Auth entries for multi-project Gemini credentials.

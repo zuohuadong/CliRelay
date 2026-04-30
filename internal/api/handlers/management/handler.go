@@ -325,6 +325,9 @@ func (h *Handler) persist(c *gin.Context) bool {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		return false
 	}
+	if usage.ConfigStoreAvailable() {
+		usage.CleanDBBackedConfigFromYAML(h.configFilePath)
+	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	return true
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	geminiAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
@@ -314,7 +315,7 @@ func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *corea
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	clientID, clientSecret := cfg.OAuthClientCredentials(config.OAuthClientGemini)
+	clientID, clientSecret := geminiAuth.ResolveOAuthClientCredentials(cfg, base, metadata)
 	if strings.TrimSpace(clientID) == "" {
 		return "", fmt.Errorf("gemini oauth client-id missing (set config oauth-clients.gemini.client-id or env %s)", config.EnvGeminiOAuthClientID)
 	}

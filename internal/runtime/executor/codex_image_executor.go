@@ -45,6 +45,7 @@ const (
 var codexImageChatGPTBaseURL = "https://chatgpt.com"
 var codexImagePollTimeout = codexImageConversationTimout
 var codexImagePollInterval = 3 * time.Second
+var codexImageSizePattern = regexp.MustCompile(`^[1-9][0-9]*x[1-9][0-9]*$`)
 
 type codexImageRequest struct {
 	Model             string
@@ -354,8 +355,8 @@ func parseCodexImageRequest(body []byte) (*codexImageRequest, error) {
 		return nil, fmt.Errorf("only response_format=b64_json is supported for Codex OAuth image generation")
 	}
 	parsed.Size = strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "size").String()))
-	if parsed.Size != "" && !isSupportedCodexImageSize(parsed.Size) {
-		return nil, fmt.Errorf("size must be one of 1024x1024, 1792x1024, 1024x1792, 2560x1440, 2160x3840")
+	if parsed.Size != "" && !isValidCodexImageSize(parsed.Size) {
+		return nil, fmt.Errorf("size must be WIDTHxHEIGHT using positive integers")
 	}
 	parsed.Quality = strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "quality").String()))
 	if parsed.Quality != "" && !isSupportedCodexImageQuality(parsed.Quality) {
@@ -480,13 +481,8 @@ func parseCodexImageUpload(item gjson.Result, defaultFileName string) (*codexIma
 	return upload, nil
 }
 
-func isSupportedCodexImageSize(size string) bool {
-	switch strings.ToLower(strings.TrimSpace(size)) {
-	case "1024x1024", "1792x1024", "1024x1792", "2560x1440", "2160x3840":
-		return true
-	default:
-		return false
-	}
+func isValidCodexImageSize(size string) bool {
+	return codexImageSizePattern.MatchString(strings.ToLower(strings.TrimSpace(size)))
 }
 
 func isSupportedCodexImageQuality(quality string) bool {

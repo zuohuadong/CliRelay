@@ -3,7 +3,9 @@
 host: ""
 
 # OAuth client credentials for provider login flows.
-# You can set these either in config.yaml or via environment variables:
+# Gemini CLI / Code Assist OAuth uses the official Gemini CLI OAuth client by default.
+# Set Gemini credentials only when you intentionally want to override that client.
+# You can set overrides either in config.yaml or via environment variables:
 #   - Gemini:      CLIRELAY_GEMINI_OAUTH_CLIENT_ID / CLIRELAY_GEMINI_OAUTH_CLIENT_SECRET
 #   - Antigravity: CLIRELAY_ANTIGRAVITY_OAUTH_CLIENT_ID / CLIRELAY_ANTIGRAVITY_OAUTH_CLIENT_SECRET
 oauth-clients:

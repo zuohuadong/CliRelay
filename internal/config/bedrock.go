@@ -96,7 +96,6 @@ func (cfg *Config) SanitizeBedrockKeys() {
 	for i := range cfg.BedrockKey {
 		entry := cfg.BedrockKey[i]
 		entry.Name = strings.TrimSpace(entry.Name)
-		entry.Priority = entry.Priority
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
 		entry.AuthMode = normalizeBedrockAuthMode(entry.AuthMode)
 		entry.APIKey = strings.TrimSpace(entry.APIKey)

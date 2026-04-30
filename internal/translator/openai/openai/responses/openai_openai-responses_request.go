@@ -57,10 +57,24 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 	// Convert input array to messages
 	if input := root.Get("input"); input.Exists() && input.IsArray() {
+		pendingToolCalls := make([]interface{}, 0)
+		flushPendingToolCalls := func() {
+			if len(pendingToolCalls) == 0 {
+				return
+			}
+			assistantMessage := `{"role":"assistant","tool_calls":[]}`
+			assistantMessage, _ = sjson.Set(assistantMessage, "tool_calls", pendingToolCalls)
+			out, _ = sjson.SetRaw(out, "messages.-1", assistantMessage)
+			pendingToolCalls = pendingToolCalls[:0]
+		}
+
 		input.ForEach(func(_, item gjson.Result) bool {
 			itemType := item.Get("type").String()
 			if itemType == "" && item.Get("role").String() != "" {
 				itemType = "message"
+			}
+			if itemType != "function_call" {
+				flushPendingToolCalls()
 			}
 
 			switch itemType {
@@ -112,9 +126,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				out, _ = sjson.SetRaw(out, "messages.-1", message)
 
 			case "function_call":
-				// Handle function call conversion to assistant message with tool_calls
-				assistantMessage := `{"role":"assistant","tool_calls":[]}`
-
+				// Buffer consecutive function calls and emit them as one assistant message.
 				toolCall := `{"id":"","type":"function","function":{"name":"","arguments":""}}`
 
 				if callId := item.Get("call_id"); callId.Exists() {
@@ -128,9 +140,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				if arguments := item.Get("arguments"); arguments.Exists() {
 					toolCall, _ = sjson.Set(toolCall, "function.arguments", arguments.String())
 				}
-
-				assistantMessage, _ = sjson.SetRaw(assistantMessage, "tool_calls.0", toolCall)
-				out, _ = sjson.SetRaw(out, "messages.-1", assistantMessage)
+				pendingToolCalls = append(pendingToolCalls, gjson.Parse(toolCall).Value())
 
 			case "function_call_output":
 				// Handle function call output conversion to tool message
@@ -149,6 +159,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 			return true
 		})
+		flushPendingToolCalls()
 	} else if input.Type == gjson.String {
 		msg := "{}"
 		msg, _ = sjson.Set(msg, "role", "user")

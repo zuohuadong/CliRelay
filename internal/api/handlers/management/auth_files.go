@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -378,6 +379,23 @@ func isWebUIRequest(c *gin.Context) bool {
 }
 
 func startCallbackForwarder(port int, provider, targetBase string) (*callbackForwarder, error) {
+	forwarder, _, err := startCallbackForwarderOnExactPort(port, provider, targetBase)
+	return forwarder, err
+}
+
+func startCallbackForwarderOnAvailablePort(preferredPort int, provider, targetBase string) (*callbackForwarder, int, error) {
+	forwarder, port, err := startCallbackForwarderOnExactPort(preferredPort, provider, targetBase)
+	if err == nil {
+		return forwarder, port, nil
+	}
+	if !errors.Is(err, syscall.EADDRINUSE) {
+		return nil, 0, err
+	}
+	log.WithError(err).Warnf("callback forwarder for %s could not listen on preferred port %d, trying a free port", provider, preferredPort)
+	return startCallbackForwarderOnExactPort(0, provider, targetBase)
+}
+
+func startCallbackForwarderOnExactPort(port int, provider, targetBase string) (*callbackForwarder, int, error) {
 	callbackForwardersMu.Lock()
 	prev := callbackForwarders[port]
 	if prev != nil {
@@ -392,7 +410,11 @@ func startCallbackForwarder(port int, provider, targetBase string) (*callbackFor
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
+		return nil, 0, fmt.Errorf("failed to listen on %s: %w", addr, err)
+	}
+	actualPort := port
+	if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok && tcpAddr != nil {
+		actualPort = tcpAddr.Port
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -429,12 +451,12 @@ func startCallbackForwarder(port int, provider, targetBase string) (*callbackFor
 	}
 
 	callbackForwardersMu.Lock()
-	callbackForwarders[port] = forwarder
+	callbackForwarders[actualPort] = forwarder
 	callbackForwardersMu.Unlock()
 
-	log.Infof("callback forwarder for %s listening on %s", provider, addr)
+	log.Infof("callback forwarder for %s listening on %s", provider, ln.Addr().String())
 
-	return forwarder, nil
+	return forwarder, actualPort, nil
 }
 
 func stopCallbackForwarder(port int) {
@@ -1564,18 +1586,17 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 		Endpoint:     google.Endpoint,
 	}
 
-	// Build authorization URL and return it immediately
 	state, errState := misc.GenerateRandomState()
 	if errState != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
 		return
 	}
-	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
 
 	RegisterOAuthSession(state, "gemini")
 
 	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
+	callbackPort := geminiCallbackPort
 	if isWebUI {
 		targetURL, errTarget := h.managementCallbackURL("/google/callback")
 		if errTarget != nil {
@@ -1584,16 +1605,20 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 			return
 		}
 		var errStart error
-		if forwarder, errStart = startCallbackForwarder(geminiCallbackPort, "gemini", targetURL); errStart != nil {
+		if forwarder, callbackPort, errStart = startCallbackForwarderOnAvailablePort(geminiCallbackPort, "gemini", targetURL); errStart != nil {
 			log.WithError(errStart).Error("failed to start gemini callback forwarder")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
 			return
 		}
+		conf.RedirectURL = fmt.Sprintf("http://localhost:%d/oauth2callback", callbackPort)
 	}
+
+	// Build authorization URL after selecting the callback port.
+	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
 
 	go func() {
 		if isWebUI {
-			defer stopCallbackForwarderInstance(ctx, geminiCallbackPort, forwarder)
+			defer stopCallbackForwarderInstance(ctx, callbackPort, forwarder)
 		}
 
 		// Wait for callback file written by server route

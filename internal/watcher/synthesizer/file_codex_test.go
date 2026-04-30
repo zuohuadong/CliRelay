@@ -11,7 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
-func TestFileSynthesizer_Synthesize_CodexFreeTierAddsExcludedModels(t *testing.T) {
+func TestFileSynthesizer_Synthesize_CodexFreeTierDoesNotInjectExcludedModels(t *testing.T) {
 	tempDir := t.TempDir()
 	authData := map[string]any{
 		"type":       "codex",

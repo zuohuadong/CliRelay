@@ -116,9 +116,6 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 
 		// Read per-account excluded models from the OAuth JSON file
 		perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
-		if provider == "codex" {
-			perAccountExcluded = mergeUniqueModels(perAccountExcluded, codexTierExcludedModels(metadata))
-		}
 
 		a := &coreauth.Auth{
 			ID:       id,
@@ -165,19 +162,6 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 	return out, nil
 }
 
-func codexTierExcludedModels(metadata map[string]any) []string {
-	if len(metadata) == 0 {
-		return nil
-	}
-	planType, _ := metadata["plan_type"].(string)
-	switch strings.ToLower(strings.TrimSpace(planType)) {
-	case "free", "legacy":
-		return nil
-	default:
-		return nil
-	}
-}
-
 func backfillCodexMetadata(metadata map[string]any) {
 	if len(metadata) == 0 {
 		return
@@ -199,31 +183,6 @@ func backfillCodexMetadata(metadata map[string]any) {
 	if planType != "" {
 		metadata["plan_type"] = planType
 	}
-}
-
-func mergeUniqueModels(base []string, extra []string) []string {
-	if len(extra) == 0 {
-		return base
-	}
-	seen := make(map[string]struct{}, len(base)+len(extra))
-	out := make([]string, 0, len(base)+len(extra))
-	appendUnique := func(list []string) {
-		for _, entry := range list {
-			trimmed := strings.TrimSpace(entry)
-			if trimmed == "" {
-				continue
-			}
-			key := strings.ToLower(trimmed)
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			out = append(out, trimmed)
-		}
-	}
-	appendUnique(base)
-	appendUnique(extra)
-	return out
 }
 
 // SynthesizeGeminiVirtualAuths creates virtual Auth entries for multi-project Gemini credentials.

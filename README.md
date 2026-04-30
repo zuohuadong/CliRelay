@@ -334,16 +334,20 @@ Contributions are welcome! Here's how to get started:
 ```bash
 # 1. Clone the repository
 git clone https://github.com/kittors/CliRelay.git
+cd CliRelay
 
-# 2. Create a feature branch
-git checkout -b feature/amazing-feature
+# 2. Create a feature branch from the latest dev baseline
+git fetch origin
+git switch -c feature/amazing-feature origin/dev
 
 # 3. Make your changes & commit
 git commit -m "feat: add amazing feature"
 
-# 4. Push to your branch & open a PR
+# 4. Push to your branch & open a PR targeting dev
 git push origin feature/amazing-feature
 ```
+
+Please target pull requests at `dev`, not `main`. Maintainers merge verified changes into `dev` first; `main` is updated separately for release/stable integration. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full branch and merge workflow.
 
 ## 📜 License
 

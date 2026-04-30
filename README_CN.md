@@ -334,16 +334,20 @@ CliRelay/
 ```bash
 # 1. 克隆代码仓库
 git clone https://github.com/kittors/CliRelay.git
+cd CliRelay
 
-# 2. 创建功能分支
-git checkout -b feature/amazing-feature
+# 2. 基于最新 dev 创建功能分支
+git fetch origin
+git switch -c feature/amazing-feature origin/dev
 
 # 3. 提交更改
 git commit -m "feat: add amazing feature"
 
-# 4. 推送到你的分支并提交 PR
+# 4. 推送到你的分支，并提交目标为 dev 的 PR
 git push origin feature/amazing-feature
 ```
+
+请将 Pull Request 的目标分支设为 `dev`，不要直接提交到 `main`。维护者会先把验证通过的改动合并到 `dev`；`main` 只用于后续发布/稳定集成。完整分支与合并流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 📜 许可证
 

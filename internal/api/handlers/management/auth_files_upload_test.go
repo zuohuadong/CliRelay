@@ -16,6 +16,20 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
+type recordingPersistAuthStore struct {
+	memoryAuthStore
+	persistedPaths []string
+}
+
+func (s *recordingPersistAuthStore) PersistAuthFiles(ctx context.Context, message string, paths ...string) error {
+	_ = ctx
+	_ = message
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.persistedPaths = append(s.persistedPaths, paths...)
+	return nil
+}
+
 func TestUploadAuthFileRejectsOversizedMultipart(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -61,6 +75,41 @@ func TestUploadAuthFileRejectsOversizedMultipart(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("expected no files written, got %d", len(entries))
+	}
+}
+
+func TestUploadAuthFilePersistsUploadedJSONThroughStorePersister(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	authDir := t.TempDir()
+	store := &recordingPersistAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	h := &Handler{
+		cfg: &config.Config{
+			AuthDir: authDir,
+		},
+		authManager: manager,
+		tokenStore:  store,
+	}
+
+	payload := []byte(`{"type":"codex","email":"subscriber@example.com","subscription_started_at":"2027-01-02T03:04:00Z","subscription_period":"monthly"}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/auth-files?name=codex-subscription.json", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.UploadAuthFile(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	wantPath := filepath.Join(authDir, "codex-subscription.json")
+	store.mu.Lock()
+	gotPaths := append([]string(nil), store.persistedPaths...)
+	store.mu.Unlock()
+	if len(gotPaths) != 1 || gotPaths[0] != wantPath {
+		t.Fatalf("persisted paths = %#v, want [%q]", gotPaths, wantPath)
 	}
 }
 

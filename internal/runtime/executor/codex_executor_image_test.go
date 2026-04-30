@@ -955,6 +955,32 @@ func TestParseCodexImageRequestAcceptsExtendedGenerationOptions(t *testing.T) {
 	}
 }
 
+func TestParseCodexImageRequestAcceptsArbitraryPositiveDimensions(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		size     string
+		wantSize string
+	}{
+		{name: "small square", size: "128x128", wantSize: "128x128"},
+		{name: "uppercase separator", size: "128X256", wantSize: "128x256"},
+		{name: "custom widescreen", size: "3000x1200", wantSize: "3000x1200"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := parseCodexImageRequest([]byte(`{
+				"model":"gpt-image-2",
+				"prompt":"draw a fox",
+				"size":"` + tc.size + `"
+			}`))
+			if err != nil {
+				t.Fatalf("parseCodexImageRequest(size=%s) error = %v", tc.size, err)
+			}
+			if parsed.Size != tc.wantSize {
+				t.Fatalf("size = %q, want %q", parsed.Size, tc.wantSize)
+			}
+		})
+	}
+}
+
 func TestParseCodexImageRequestAcceptsImageEditsPayload(t *testing.T) {
 	parsed, err := parseCodexImageRequest([]byte(`{
 		"model":"gpt-image-2",

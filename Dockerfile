@@ -45,7 +45,13 @@ FROM --platform=$BUILDPLATFORM golang:1.26.1 AS backend-builder
 WORKDIR /app
 
 COPY go.mod go.sum ./
-RUN go mod download
+
+ARG GOPROXY=https://proxy.golang.org,direct
+ARG GOSUMDB=sum.golang.org
+ARG GOPRIVATE=
+
+RUN GOPROXY="${GOPROXY}" GOSUMDB="${GOSUMDB}" GOPRIVATE="${GOPRIVATE}" go mod download || \
+    GOPROXY="https://goproxy.cn,direct" GOSUMDB="sum.golang.google.cn" GOPRIVATE="${GOPRIVATE}" go mod download
 
 COPY . .
 

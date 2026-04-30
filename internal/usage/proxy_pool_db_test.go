@@ -107,7 +107,43 @@ func TestProxyPoolMigrationMovesConfigEntriesIntoSQLite(t *testing.T) {
 	if strings.Contains(string(data), "proxy-pool:") {
 		t.Fatalf("proxy-pool should be removed from YAML after migration:\n%s", string(data))
 	}
-	if _, err := os.Stat(configPath + ".pre-proxy-pool-sqlite-migration"); err != nil {
-		t.Fatalf("expected migration backup: %v", err)
+	assertMigrationBackupMode(t, configPath+".pre-proxy-pool-sqlite-migration", 0o600)
+}
+
+func TestProxyPoolMigrationCleansYAMLWhenSQLiteAlreadyHasEntries(t *testing.T) {
+	cleanup := setupProxyPoolTestDB(t)
+	defer cleanup()
+
+	if err := ReplaceProxyPool([]config.ProxyPoolEntry{
+		{ID: "db-proxy", Name: "DB Proxy", URL: "http://127.0.0.1:7890", Enabled: true},
+	}); err != nil {
+		t.Fatalf("ReplaceProxyPool: %v", err)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("proxy-pool:\n  - id: yaml-proxy\n    url: http://127.0.0.1:7891\nlogging-to-file: true\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg := &config.Config{
+		ProxyPool: []config.ProxyPoolEntry{
+			{ID: "yaml-proxy", URL: "http://127.0.0.1:7891", Enabled: true},
+		},
+	}
+
+	if migrated := MigrateProxyPoolFromConfig(cfg, configPath); migrated != 0 {
+		t.Fatalf("MigrateProxyPoolFromConfig = %d, want 0 when DB already has entries", migrated)
+	}
+	if len(cfg.ProxyPool) != 0 {
+		t.Fatalf("cfg.ProxyPool after cleanup = %#v, want empty before DB apply", cfg.ProxyPool)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(data), "proxy-pool:") {
+		t.Fatalf("stale proxy-pool should be removed from YAML:\n%s", string(data))
+	}
+	if !strings.Contains(string(data), "logging-to-file: true") {
+		t.Fatalf("ordinary config should remain in YAML:\n%s", string(data))
 	}
 }

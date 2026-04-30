@@ -3,14 +3,12 @@ package usage
 import (
 	"database/sql"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 	"unicode"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	log "github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v3"
 )
 
 const createProxyPoolTableSQL = `
@@ -139,14 +137,24 @@ func ApplyStoredProxyPool(cfg *config.Config) bool {
 
 // MigrateProxyPoolFromConfig moves legacy YAML proxy-pool entries into SQLite.
 func MigrateProxyPoolFromConfig(cfg *config.Config, configFilePath string) int {
-	if cfg == nil || !ProxyPoolStoreAvailable() || len(cfg.ProxyPool) == 0 || len(ListProxyPool()) > 0 {
+	if cfg == nil || !ProxyPoolStoreAvailable() {
+		return 0
+	}
+	if len(ListProxyPool()) > 0 {
+		cfg.ProxyPool = nil
+		cleanProxyPoolFromYAML(configFilePath)
+		return 0
+	}
+	if len(cfg.ProxyPool) == 0 {
 		return 0
 	}
 
 	normalized := config.NormalizeProxyPool(cfg.ProxyPool)
 	if len(normalized) == 0 {
 		cfg.ProxyPool = nil
-		cleanProxyPoolFromYAML(configFilePath)
+		if backupConfigForMigration(configFilePath, proxyPoolMigrationBackupSuffix) {
+			cleanProxyPoolFromYAML(configFilePath)
+		}
 		return 0
 	}
 
@@ -156,13 +164,9 @@ func MigrateProxyPoolFromConfig(cfg *config.Config, configFilePath string) int {
 	}
 	cfg.ProxyPool = nil
 	if configFilePath != "" {
-		backupPath := configFilePath + ".pre-proxy-pool-sqlite-migration"
-		if data, err := os.ReadFile(configFilePath); err == nil {
-			if err := os.WriteFile(backupPath, data, 0o644); err != nil {
-				log.Warnf("usage: failed to backup config before proxy_pool cleanup: %v", err)
-			}
+		if backupConfigForMigration(configFilePath, proxyPoolMigrationBackupSuffix) {
+			cleanProxyPoolFromYAML(configFilePath)
 		}
-		cleanProxyPoolFromYAML(configFilePath)
 	}
 	log.Infof("usage: migrated %d proxy_pool entries from config to SQLite", len(normalized))
 	return len(normalized)
@@ -204,57 +208,4 @@ func normalizeProxyPoolEntryID(raw string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
-}
-
-func cleanProxyPoolFromYAML(configFilePath string) {
-	if strings.TrimSpace(configFilePath) == "" {
-		return
-	}
-	data, err := os.ReadFile(configFilePath)
-	if err != nil {
-		log.Warnf("usage: failed to read config for proxy_pool cleanup: %v", err)
-		return
-	}
-
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		log.Warnf("usage: failed to parse config YAML for proxy_pool cleanup: %v", err)
-		return
-	}
-	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
-		return
-	}
-	mapNode := root.Content[0]
-	if mapNode == nil || mapNode.Kind != yaml.MappingNode {
-		return
-	}
-
-	filtered := make([]*yaml.Node, 0, len(mapNode.Content))
-	removed := 0
-	for i := 0; i+1 < len(mapNode.Content); i += 2 {
-		keyNode := mapNode.Content[i]
-		if keyNode != nil && keyNode.Value == "proxy-pool" {
-			removed++
-			continue
-		}
-		filtered = append(filtered, mapNode.Content[i], mapNode.Content[i+1])
-	}
-	if removed == 0 {
-		return
-	}
-
-	mapNode.Content = filtered
-	f, err := os.Create(configFilePath)
-	if err != nil {
-		log.Warnf("usage: failed to create config for proxy_pool cleanup: %v", err)
-		return
-	}
-	defer f.Close()
-
-	enc := yaml.NewEncoder(f)
-	enc.SetIndent(2)
-	if err := enc.Encode(&root); err != nil {
-		log.Warnf("usage: failed to write cleaned proxy_pool config: %v", err)
-	}
-	_ = enc.Close()
 }

@@ -585,6 +585,7 @@ func (s *Service) Run(ctx context.Context) error {
 		if newCfg == nil {
 			return
 		}
+		internalusage.MigrateRoutingConfigFromConfig(newCfg, s.configPath)
 		internalusage.ApplyStoredRoutingConfig(newCfg)
 		internalusage.MigrateProxyPoolFromConfig(newCfg, s.configPath)
 		internalusage.ApplyStoredProxyPool(newCfg)

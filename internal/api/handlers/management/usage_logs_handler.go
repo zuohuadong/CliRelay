@@ -772,7 +772,7 @@ func fillDailyCountPoints(points []usage.DailyCountPoint, days int) []usage.Dail
 	start := usage.CutoffStartUTC(days)
 	result := make([]usage.DailyCountPoint, 0, days)
 	for i := 0; i < days; i++ {
-		date := start.AddDate(0, 0, i).Format("2006-01-02")
+		date := usage.LocalDayKeyAt(start.AddDate(0, 0, i))
 		result = append(result, usage.DailyCountPoint{Date: date, Requests: byDate[date]})
 	}
 	return result

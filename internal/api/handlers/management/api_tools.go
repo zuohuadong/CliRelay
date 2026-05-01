@@ -305,11 +305,7 @@ func (h *Handler) refreshClaudeOAuthAccessToken(ctx context.Context, auth *corea
 		return "", fmt.Errorf("claude refresh token missing")
 	}
 
-	var cfg *config.Config
-	if h != nil {
-		cfg = h.cfg
-	}
-	refresher := newClaudeOAuthRefresher(cfg)
+	refresher := newClaudeOAuthRefresher(h.claudeOAuthRefreshConfig(auth))
 	tokenData, errRefresh := refresher.RefreshTokens(ctx, refreshToken)
 	if errRefresh != nil {
 		return "", errRefresh
@@ -342,6 +338,27 @@ func (h *Handler) refreshClaudeOAuthAccessToken(ctx context.Context, auth *corea
 	}
 
 	return strings.TrimSpace(tokenData.AccessToken), nil
+}
+
+func (h *Handler) claudeOAuthRefreshConfig(auth *coreauth.Auth) *config.Config {
+	var cfgCopy config.Config
+	if h != nil && h.cfg != nil {
+		cfgCopy = *h.cfg
+	}
+	if auth == nil {
+		return &cfgCopy
+	}
+
+	var proxyURL string
+	if h != nil && h.cfg != nil {
+		proxyURL = h.cfg.ResolveProxyURL(auth.ProxyID, auth.ProxyURL)
+	} else {
+		proxyURL = auth.ProxyURL
+	}
+	if trimmed := strings.TrimSpace(proxyURL); trimmed != "" {
+		cfgCopy.ProxyURL = trimmed
+	}
+	return &cfgCopy
 }
 
 func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {

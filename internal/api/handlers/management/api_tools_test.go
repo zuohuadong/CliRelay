@@ -265,6 +265,90 @@ func TestResolveTokenForAuth_Claude_RefreshesExpiredToken(t *testing.T) {
 	}
 }
 
+func TestResolveTokenForAuth_Claude_RefreshUsesAuthProxyURL(t *testing.T) {
+	refresher := &fakeClaudeOAuthRefresher{
+		tokenData: &claudeauth.ClaudeTokenData{
+			AccessToken: "new-claude-token",
+			Expire:      time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	var gotProxyURL string
+	originalFactory := newClaudeOAuthRefresher
+	newClaudeOAuthRefresher = func(cfg *config.Config) claudeOAuthRefresher {
+		if cfg != nil {
+			gotProxyURL = cfg.ProxyURL
+		}
+		return refresher
+	}
+	t.Cleanup(func() { newClaudeOAuthRefresher = originalFactory })
+
+	auth := &coreauth.Auth{
+		ID:       "claude-proxy.json",
+		FileName: "claude-proxy.json",
+		Provider: "claude",
+		ProxyURL: "http://auth-proxy.local:8080",
+		Metadata: map[string]any{
+			"type":          "claude",
+			"access_token":  "old-claude-token",
+			"refresh_token": "old-claude-refresh",
+			"expired":       time.Now().Add(-time.Hour).Format(time.RFC3339),
+		},
+	}
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{ProxyURL: "http://global-proxy.local:8080"}}}
+
+	if _, err := h.resolveTokenForAuth(context.Background(), auth); err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if gotProxyURL != "http://auth-proxy.local:8080" {
+		t.Fatalf("expected Claude refresh to use auth proxy URL, got %q", gotProxyURL)
+	}
+}
+
+func TestResolveTokenForAuth_Claude_RefreshUsesProxyIDBeforeProxyURL(t *testing.T) {
+	refresher := &fakeClaudeOAuthRefresher{
+		tokenData: &claudeauth.ClaudeTokenData{
+			AccessToken: "new-claude-token",
+			Expire:      time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	var gotProxyURL string
+	originalFactory := newClaudeOAuthRefresher
+	newClaudeOAuthRefresher = func(cfg *config.Config) claudeOAuthRefresher {
+		if cfg != nil {
+			gotProxyURL = cfg.ProxyURL
+		}
+		return refresher
+	}
+	t.Cleanup(func() { newClaudeOAuthRefresher = originalFactory })
+
+	auth := &coreauth.Auth{
+		ID:       "claude-proxy-id.json",
+		FileName: "claude-proxy-id.json",
+		Provider: "claude",
+		ProxyID:  "premium-egress",
+		ProxyURL: "http://legacy-proxy.local:8080",
+		Metadata: map[string]any{
+			"type":          "claude",
+			"access_token":  "old-claude-token",
+			"refresh_token": "old-claude-refresh",
+			"expired":       time.Now().Add(-time.Hour).Format(time.RFC3339),
+		},
+	}
+	h := &Handler{cfg: &config.Config{
+		SDKConfig: config.SDKConfig{ProxyURL: "http://global-proxy.local:8080"},
+		ProxyPool: []config.ProxyPoolEntry{
+			{ID: "premium-egress", URL: "http://pool-proxy.local:8080", Enabled: true},
+		},
+	}}
+
+	if _, err := h.resolveTokenForAuth(context.Background(), auth); err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if gotProxyURL != "http://pool-proxy.local:8080" {
+		t.Fatalf("expected Claude refresh to use proxy-id URL, got %q", gotProxyURL)
+	}
+}
+
 func TestResolveTokenForAuth_Claude_SkipsRefreshWhenTokenValid(t *testing.T) {
 	refresher := &fakeClaudeOAuthRefresher{
 		tokenData: &claudeauth.ClaudeTokenData{AccessToken: "should-not-be-used"},

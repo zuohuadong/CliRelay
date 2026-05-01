@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -992,6 +993,11 @@ func localDayKeyAt(t time.Time) string {
 	return t.In(loc).Format("2006-01-02")
 }
 
+// LocalDayKeyAt returns the YYYY-MM-DD day key in the project-configured timezone.
+func LocalDayKeyAt(t time.Time) string {
+	return localDayKeyAt(t)
+}
+
 func cutoffDayKey(days int) string {
 	return localDayKeyAt(CutoffStartUTC(days))
 }
@@ -1626,11 +1632,10 @@ func QueryDailyCallsByAuthIndexes(authIndexes []string, days int) ([]DailyCountP
 	}
 
 	q := fmt.Sprintf(`
-		SELECT substr(timestamp, 1, 10) AS day_key, COUNT(*)
+		SELECT timestamp
 		FROM request_logs
 		WHERE timestamp >= ? AND auth_index IN (%s)
-		GROUP BY day_key
-		ORDER BY day_key ASC
+		ORDER BY timestamp ASC
 	`, placeholders)
 
 	rows, err := db.Query(q, args...)
@@ -1639,15 +1644,31 @@ func QueryDailyCallsByAuthIndexes(authIndexes []string, days int) ([]DailyCountP
 	}
 	defer rows.Close()
 
-	result := make([]DailyCountPoint, 0, days)
+	byDate := make(map[string]int64, days)
 	for rows.Next() {
-		var point DailyCountPoint
-		if err := rows.Scan(&point.Date, &point.Requests); err != nil {
+		var ts string
+		if err := rows.Scan(&ts); err != nil {
 			return nil, fmt.Errorf("usage: daily calls by auth indexes scan: %w", err)
 		}
+		parsed, ok := parseStoredTime(ts)
+		if !ok {
+			continue
+		}
+		byDate[localDayKeyAt(parsed)]++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	result := make([]DailyCountPoint, 0, len(byDate))
+	for date, requests := range byDate {
+		point := DailyCountPoint{Date: date, Requests: requests}
 		result = append(result, point)
 	}
-	return result, rows.Err()
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Date < result[j].Date
+	})
+	return result, nil
 }
 
 func QueryHourlyCallsByAuthIndex(authIndex string, hours int) ([]HourlyCountPoint, error) {

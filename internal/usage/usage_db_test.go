@@ -55,6 +55,36 @@ func TestCutoffStartUTCAtUsesProjectTimezoneForDayBoundaries(t *testing.T) {
 	}
 }
 
+func TestQueryDailyCallsByAuthIndexesBucketsByProjectTimezone(t *testing.T) {
+	CloseDB()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	loc := time.FixedZone("UTC+14", 14*3600)
+	if err := InitDB(dbPath, config.RequestLogStorageConfig{StoreContent: false}, loc); err != nil {
+		t.Fatalf("InitDB() error = %v", err)
+	}
+	stopRequestLogMaintenance()
+	t.Cleanup(CloseDB)
+
+	nowLocal := time.Now().In(loc)
+	localToday := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 30, 0, 0, loc)
+	InsertLog("", "", "gpt-5.4", "codex", "Codex", "auth-local-day", false, localToday, 1, 1, TokenStats{TotalTokens: 1}, "", "")
+
+	points, err := QueryDailyCallsByAuthIndexes([]string{"auth-local-day"}, 1)
+	if err != nil {
+		t.Fatalf("QueryDailyCallsByAuthIndexes() error = %v", err)
+	}
+	if len(points) != 1 {
+		t.Fatalf("points len = %d, want 1: %+v", len(points), points)
+	}
+	wantDate := localToday.Format("2006-01-02")
+	if points[0].Date != wantDate {
+		t.Fatalf("point date = %q, want local day %q", points[0].Date, wantDate)
+	}
+	if points[0].Requests != 1 {
+		t.Fatalf("point requests = %d, want 1", points[0].Requests)
+	}
+}
+
 func TestQuotaSnapshotPointsKeepFineGrainedSeries(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{})
 

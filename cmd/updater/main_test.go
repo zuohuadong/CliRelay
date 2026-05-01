@@ -43,6 +43,18 @@ func TestUpdaterDefaultPathsDoNotPointAtWorkspace(t *testing.T) {
 	}
 }
 
+func TestRequestedImageRefDoesNotDuplicateExistingTag(t *testing.T) {
+	if got := requestedImageRef("ghcr.io/zuohuadong/clirelay:dev", "dev"); got != "ghcr.io/zuohuadong/clirelay:dev" {
+		t.Fatalf("requestedImageRef(tagged dev) = %q", got)
+	}
+	if got := requestedImageRef("localhost:5000/clirelay:latest", "latest"); got != "localhost:5000/clirelay:latest" {
+		t.Fatalf("requestedImageRef(registry port) = %q", got)
+	}
+	if got := requestedImageRef("ghcr.io/zuohuadong/clirelay", "dev"); got != "ghcr.io/zuohuadong/clirelay:dev" {
+		t.Fatalf("requestedImageRef(untagged dev) = %q", got)
+	}
+}
+
 func TestUpdaterPersistsRequestedImageBeforeComposeUpdate(t *testing.T) {
 	envFile := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(envFile, []byte("CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:dev\nOTHER=value\n"), 0o600); err != nil {

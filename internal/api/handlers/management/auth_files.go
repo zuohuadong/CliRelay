@@ -1455,6 +1455,31 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	return store.Save(ctx, record)
 }
 
+func claudeOAuthMetadataFromTokenStorage(tokenStorage *claude.ClaudeTokenStorage) map[string]any {
+	metadata := map[string]any{
+		"type": "claude",
+	}
+	if tokenStorage == nil {
+		return metadata
+	}
+	if email := strings.TrimSpace(tokenStorage.Email); email != "" {
+		metadata["email"] = email
+	}
+	if accessToken := strings.TrimSpace(tokenStorage.AccessToken); accessToken != "" {
+		metadata["access_token"] = accessToken
+	}
+	if refreshToken := strings.TrimSpace(tokenStorage.RefreshToken); refreshToken != "" {
+		metadata["refresh_token"] = refreshToken
+	}
+	if expired := strings.TrimSpace(tokenStorage.Expire); expired != "" {
+		metadata["expired"] = expired
+	}
+	if lastRefresh := strings.TrimSpace(tokenStorage.LastRefresh); lastRefresh != "" {
+		metadata["last_refresh"] = lastRefresh
+	}
+	return metadata
+}
+
 func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 	ctx := detachedAuthContext(c)
 
@@ -1482,15 +1507,18 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 	isWebUI := isWebUIRequest(c)
 	redirectURI := claude.RedirectURI
 	var forwarder *callbackForwarder
+	callbackPort := anthropicCallbackPort
 	if isWebUI {
 		if targetURL, errTarget := h.managementCallbackURL("/anthropic/callback"); errTarget != nil {
 			log.WithError(errTarget).Warn("failed to compute anthropic callback target, falling back to Claude platform callback")
 			redirectURI = claude.PlatformRedirectURI
 		} else {
 			var errStart error
-			if forwarder, errStart = startCallbackForwarder(anthropicCallbackPort, "anthropic", targetURL); errStart != nil {
+			if forwarder, callbackPort, errStart = startCallbackForwarderOnAvailablePort(anthropicCallbackPort, "anthropic", targetURL); errStart != nil {
 				log.WithError(errStart).Warn("failed to start anthropic callback forwarder, falling back to Claude platform callback")
 				redirectURI = claude.PlatformRedirectURI
+			} else {
+				redirectURI = fmt.Sprintf("http://localhost:%d/callback", callbackPort)
 			}
 		}
 	}
@@ -1499,7 +1527,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 	authURL, state, err := anthropicAuth.GenerateAuthURLWithRedirectURI(state, pkceCodes, redirectURI)
 	if err != nil {
 		if forwarder != nil {
-			stopCallbackForwarderInstance(ctx, anthropicCallbackPort, forwarder)
+			stopCallbackForwarderInstance(ctx, callbackPort, forwarder)
 		}
 		log.Errorf("Failed to generate authorization URL: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
@@ -1510,7 +1538,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 
 	go func() {
 		if forwarder != nil {
-			defer stopCallbackForwarderInstance(ctx, anthropicCallbackPort, forwarder)
+			defer stopCallbackForwarderInstance(ctx, callbackPort, forwarder)
 		}
 
 		// Helper: wait for callback file
@@ -1580,7 +1608,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 			Provider: "claude",
 			FileName: fmt.Sprintf("claude-%s.json", tokenStorage.Email),
 			Storage:  tokenStorage,
-			Metadata: map[string]any{"email": tokenStorage.Email},
+			Metadata: claudeOAuthMetadataFromTokenStorage(tokenStorage),
 		}
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
 		if errSave != nil {

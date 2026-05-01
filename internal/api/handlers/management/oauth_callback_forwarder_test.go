@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
@@ -56,7 +55,7 @@ func TestStartCallbackForwarderOnAvailablePortFallsBackWhenPreferredBusy(t *test
 	}
 }
 
-func TestRequestAnthropicTokenFallsBackToPlatformCallbackWhenLocalPortBusy(t *testing.T) {
+func TestRequestAnthropicTokenUsesAvailableLocalCallbackWhenPreferredPortBusy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	busy, err := net.Listen("tcp", "127.0.0.1:54545")
@@ -98,8 +97,26 @@ func TestRequestAnthropicTokenFallsBackToPlatformCallbackWhenLocalPortBusy(t *te
 	if payload.State == "" {
 		t.Fatalf("expected state in response")
 	}
-	if !strings.Contains(payload.URL, url.QueryEscape(claude.PlatformRedirectURI)) {
-		t.Fatalf("auth URL should use platform callback fallback, got %s", payload.URL)
+	authURL, err := url.Parse(payload.URL)
+	if err != nil {
+		t.Fatalf("parse auth URL: %v", err)
+	}
+	redirectURI := authURL.Query().Get("redirect_uri")
+	if strings.TrimSpace(redirectURI) == "" {
+		t.Fatalf("auth URL missing redirect_uri: %s", payload.URL)
+	}
+	callbackURL, err := url.Parse(redirectURI)
+	if err != nil {
+		t.Fatalf("parse redirect_uri: %v", err)
+	}
+	if callbackURL.Scheme != "http" || callbackURL.Hostname() != "localhost" || callbackURL.Path != "/callback" {
+		t.Fatalf("redirect_uri = %q, want local callback URL", redirectURI)
+	}
+	if callbackURL.Port() == "54545" {
+		t.Fatalf("redirect_uri should use a free callback port when 54545 is busy, got %q", redirectURI)
+	}
+	if callbackURL.Port() == "" {
+		t.Fatalf("redirect_uri missing callback port: %q", redirectURI)
 	}
 	SetOAuthSessionError(payload.State, "test shutdown")
 }

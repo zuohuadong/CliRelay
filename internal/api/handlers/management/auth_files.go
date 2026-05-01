@@ -268,6 +268,23 @@ func normalizeSubscriptionUnix(raw int64) time.Time {
 	return time.Unix(raw, 0).UTC()
 }
 
+func routingMetadataString(metadata map[string]any, keys ...string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if raw, ok := metadata[key].(string); ok {
+			if value := strings.TrimSpace(raw); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
 func subscriptionExpirationFromStart(startedAt time.Time, period string) time.Time {
 	if strings.EqualFold(period, "yearly") {
 		return startedAt.AddDate(1, 0, 0).UTC()
@@ -1041,6 +1058,9 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 	auth := &coreauth.Auth{
 		ID:         authID,
 		Provider:   provider,
+		Prefix:     routingMetadataString(metadata, "prefix"),
+		ProxyURL:   routingMetadataString(metadata, "proxy_url", "proxy-url", "proxyUrl"),
+		ProxyID:    routingMetadataString(metadata, "proxy_id", "proxy-id", "proxyId"),
 		FileName:   filepath.Base(path),
 		Label:      label,
 		Status:     coreauth.StatusActive,
@@ -1210,11 +1230,29 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		changed = true
 	}
 	if req.Prefix != nil {
-		targetAuth.Prefix = *req.Prefix
+		targetAuth.Prefix = strings.TrimSpace(*req.Prefix)
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if targetAuth.Prefix == "" {
+			delete(targetAuth.Metadata, "prefix")
+		} else {
+			targetAuth.Metadata["prefix"] = targetAuth.Prefix
+		}
 		changed = true
 	}
 	if req.ProxyURL != nil {
-		targetAuth.ProxyURL = *req.ProxyURL
+		targetAuth.ProxyURL = strings.TrimSpace(*req.ProxyURL)
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if targetAuth.ProxyURL == "" {
+			delete(targetAuth.Metadata, "proxy_url")
+			delete(targetAuth.Metadata, "proxy-url")
+			delete(targetAuth.Metadata, "proxyUrl")
+		} else {
+			targetAuth.Metadata["proxy_url"] = targetAuth.ProxyURL
+		}
 		changed = true
 	}
 	if req.ProxyID != nil {

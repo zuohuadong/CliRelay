@@ -1479,9 +1479,28 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 	// Initialize Claude auth service
 	anthropicAuth := claude.NewClaudeAuth(h.cfg)
 
-	// Generate authorization URL (then override redirect_uri to reuse server port)
-	authURL, state, err := anthropicAuth.GenerateAuthURL(state, pkceCodes)
+	isWebUI := isWebUIRequest(c)
+	redirectURI := claude.RedirectURI
+	var forwarder *callbackForwarder
+	if isWebUI {
+		if targetURL, errTarget := h.managementCallbackURL("/anthropic/callback"); errTarget != nil {
+			log.WithError(errTarget).Warn("failed to compute anthropic callback target, falling back to Claude platform callback")
+			redirectURI = claude.PlatformRedirectURI
+		} else {
+			var errStart error
+			if forwarder, errStart = startCallbackForwarder(anthropicCallbackPort, "anthropic", targetURL); errStart != nil {
+				log.WithError(errStart).Warn("failed to start anthropic callback forwarder, falling back to Claude platform callback")
+				redirectURI = claude.PlatformRedirectURI
+			}
+		}
+	}
+
+	// Generate authorization URL after choosing the redirect URI; the same value must be used for token exchange.
+	authURL, state, err := anthropicAuth.GenerateAuthURLWithRedirectURI(state, pkceCodes, redirectURI)
 	if err != nil {
+		if forwarder != nil {
+			stopCallbackForwarderInstance(ctx, anthropicCallbackPort, forwarder)
+		}
 		log.Errorf("Failed to generate authorization URL: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
 		return
@@ -1489,25 +1508,8 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 
 	RegisterOAuthSession(state, "anthropic")
 
-	isWebUI := isWebUIRequest(c)
-	var forwarder *callbackForwarder
-	if isWebUI {
-		targetURL, errTarget := h.managementCallbackURL("/anthropic/callback")
-		if errTarget != nil {
-			log.WithError(errTarget).Error("failed to compute anthropic callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
-			return
-		}
-		var errStart error
-		if forwarder, errStart = startCallbackForwarder(anthropicCallbackPort, "anthropic", targetURL); errStart != nil {
-			log.WithError(errStart).Error("failed to start anthropic callback forwarder")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
-			return
-		}
-	}
-
 	go func() {
-		if isWebUI {
+		if forwarder != nil {
 			defer stopCallbackForwarderInstance(ctx, anthropicCallbackPort, forwarder)
 		}
 
@@ -1563,7 +1565,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		code := strings.Split(rawCode, "#")[0]
 
 		// Exchange code for tokens using internal auth service
-		bundle, errExchange := anthropicAuth.ExchangeCodeForTokens(ctx, code, state, pkceCodes)
+		bundle, errExchange := anthropicAuth.ExchangeCodeForTokensWithRedirectURI(ctx, code, state, pkceCodes, redirectURI)
 		if errExchange != nil {
 			authErr := claude.NewAuthenticationError(claude.ErrCodeExchangeFailed, errExchange)
 			log.Errorf("Failed to exchange authorization code for tokens: %v", authErr)

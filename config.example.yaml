@@ -72,7 +72,8 @@ auto-update:
   docker-image: ghcr.io/kittors/clirelay
   updater-url: http://clirelay-updater:8320
 
-# Authentication directory (supports ~ for home directory)
+# Authentication directory (supports ~ for home directory).
+# In Docker/cloud deployments, AUTH_PATH overrides this value at runtime.
 auth-dir: "~/.cli-proxy-api"
 
 # API keys for authentication

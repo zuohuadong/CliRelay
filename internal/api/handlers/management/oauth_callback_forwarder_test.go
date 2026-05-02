@@ -120,3 +120,70 @@ func TestRequestAnthropicTokenUsesAvailableLocalCallbackWhenPreferredPortBusy(t 
 	}
 	SetOAuthSessionError(payload.State, "test shutdown")
 }
+
+func TestRequestAntigravityTokenUsesAvailableLocalCallbackWhenPreferredPortBusy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	busy, err := net.Listen("tcp", "127.0.0.1:51121")
+	if err != nil {
+		t.Skipf("antigravity callback port already unavailable: %v", err)
+	}
+	defer func() { _ = busy.Close() }()
+
+	previousStore := oauthSessions
+	oauthSessions = newOAuthSessionStore(oauthCallbackWaitTimeout)
+	t.Cleanup(func() {
+		oauthSessions = previousStore
+	})
+
+	h := &Handler{
+		cfg: &config.Config{
+			AuthDir: t.TempDir(),
+			Port:    8317,
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodGet, "/antigravity-auth-url?is_webui=true", nil)
+	c.Request = req
+
+	h.RequestAntigravityToken(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		URL   string `json:"url"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if payload.State == "" {
+		t.Fatalf("expected state in response")
+	}
+	authURL, err := url.Parse(payload.URL)
+	if err != nil {
+		t.Fatalf("parse auth URL: %v", err)
+	}
+	redirectURI := authURL.Query().Get("redirect_uri")
+	if strings.TrimSpace(redirectURI) == "" {
+		t.Fatalf("auth URL missing redirect_uri: %s", payload.URL)
+	}
+	callbackURL, err := url.Parse(redirectURI)
+	if err != nil {
+		t.Fatalf("parse redirect_uri: %v", err)
+	}
+	if callbackURL.Scheme != "http" || callbackURL.Hostname() != "localhost" || callbackURL.Path != "/oauth-callback" {
+		t.Fatalf("redirect_uri = %q, want local antigravity callback URL", redirectURI)
+	}
+	if callbackURL.Port() == "51121" {
+		t.Fatalf("redirect_uri should use a free callback port when 51121 is busy, got %q", redirectURI)
+	}
+	if callbackURL.Port() == "" {
+		t.Fatalf("redirect_uri missing callback port: %q", redirectURI)
+	}
+
+	SetOAuthSessionError(payload.State, "test shutdown")
+}

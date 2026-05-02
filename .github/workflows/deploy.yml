@@ -80,7 +80,7 @@ jobs:
             SERVICE_NAME="$(basename "$SERVICE_BIN")"
             TEMP_BIN="/opt/clirelay2/cli-proxy-api-new"
             PANEL_SRC="/tmp/clirelay-panel-${{ github.sha }}"
-            PANEL_DIR="/var/www/html/relay-panel"
+            PANEL_DIR="/home/web/html/relay-panel"
             PANEL_NEXT="${PANEL_DIR}.new"
             if [ ! -f "$TEMP_BIN" ]; then
               echo "uploaded temp binary not found: $TEMP_BIN"

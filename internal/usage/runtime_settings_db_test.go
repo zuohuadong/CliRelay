@@ -75,6 +75,63 @@ debug: true
 	assertMigrationBackupMode(t, configPath+".pre-runtime-settings-sqlite-migration", 0o600)
 }
 
+func TestRuntimeSettingsMigrationMovesProviderCredentialsIntoSQLite(t *testing.T) {
+	cleanup := setupConfigMigrationTestDB(t)
+	defer cleanup()
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	content := `port: 8318
+codex-api-key:
+  - api-key: sk-codex-test
+    base-url: https://codex.example.com
+claude-api-key:
+  - api-key: sk-claude-test
+    name: claude-primary
+    base-url: https://claude.example.com
+debug: true
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg := &config.Config{
+		CodexKey: []config.CodexKey{
+			{APIKey: "sk-codex-test", BaseURL: "https://codex.example.com"},
+		},
+		ClaudeKey: []config.ClaudeKey{
+			{APIKey: "sk-claude-test", Name: "claude-primary", BaseURL: "https://claude.example.com"},
+		},
+	}
+
+	if migrated := MigrateRuntimeSettingsFromConfig(cfg, configPath); migrated != 2 {
+		t.Fatalf("MigrateRuntimeSettingsFromConfig = %d, want 2", migrated)
+	}
+
+	cfg.CodexKey = nil
+	cfg.ClaudeKey = nil
+	if !ApplyStoredRuntimeSettings(cfg) {
+		t.Fatal("ApplyStoredRuntimeSettings returned false")
+	}
+	if len(cfg.CodexKey) != 1 || cfg.CodexKey[0].APIKey != "sk-codex-test" || cfg.CodexKey[0].BaseURL != "https://codex.example.com" {
+		t.Fatalf("CodexKey after DB apply = %#v", cfg.CodexKey)
+	}
+	if len(cfg.ClaudeKey) != 1 || cfg.ClaudeKey[0].APIKey != "sk-claude-test" || cfg.ClaudeKey[0].Name != "claude-primary" {
+		t.Fatalf("ClaudeKey after DB apply = %#v", cfg.ClaudeKey)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	for _, forbidden := range []string{"codex-api-key:", "claude-api-key:"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("%s should be removed from YAML after migration:\n%s", forbidden, string(data))
+		}
+	}
+	if !strings.Contains(string(data), "port: 8318") || !strings.Contains(string(data), "debug: true") {
+		t.Fatalf("ordinary config should remain in YAML:\n%s", string(data))
+	}
+}
+
 func TestRuntimeSettingsSQLiteWinsOverStaleYAML(t *testing.T) {
 	cleanup := setupConfigMigrationTestDB(t)
 	defer cleanup()

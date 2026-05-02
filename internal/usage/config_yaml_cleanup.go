@@ -22,6 +22,13 @@ var dbBackedConfigYAMLKeys = map[string]bool{
 	"api-key-entries":        true,
 	"routing":                true,
 	"proxy-pool":             true,
+	"gemini-api-key":         true,
+	"codex-api-key":          true,
+	"claude-api-key":         true,
+	"bedrock-api-key":        true,
+	"opencode-go-api-key":    true,
+	"openai-compatibility":   true,
+	"vertex-api-key":         true,
 	"claude-header-defaults": true,
 	"kimi-header-defaults":   true,
 	"identity-fingerprint":   true,
@@ -83,6 +90,13 @@ func cleanRoutingConfigFromYAML(configFilePath string) {
 
 func cleanRuntimeSettingsFromYAML(configFilePath string) {
 	cleanConfigKeysFromYAML(configFilePath, map[string]bool{
+		"gemini-api-key":         true,
+		"codex-api-key":          true,
+		"claude-api-key":         true,
+		"bedrock-api-key":        true,
+		"opencode-go-api-key":    true,
+		"openai-compatibility":   true,
+		"vertex-api-key":         true,
 		"claude-header-defaults": true,
 		"kimi-header-defaults":   true,
 		"identity-fingerprint":   true,

@@ -1062,19 +1062,28 @@ func (cfg *Config) SanitizeCodexKeys() {
 	cfg.CodexKey = out
 }
 
-// SanitizeClaudeKeys normalizes headers for Claude credentials.
+// SanitizeClaudeKeys removes empty Claude API-key rows and normalizes headers.
 func (cfg *Config) SanitizeClaudeKeys() {
 	if cfg == nil || len(cfg.ClaudeKey) == 0 {
 		return
 	}
+	out := make([]ClaudeKey, 0, len(cfg.ClaudeKey))
 	for i := range cfg.ClaudeKey {
-		entry := &cfg.ClaudeKey[i]
+		entry := cfg.ClaudeKey[i]
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		if entry.APIKey == "" {
+			continue
+		}
+		entry.Name = strings.TrimSpace(entry.Name)
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		out = append(out, entry)
 	}
+	cfg.ClaudeKey = out
 }
 
 // SanitizeOpenCodeGoKeys deduplicates and normalizes OpenCode Go credentials.

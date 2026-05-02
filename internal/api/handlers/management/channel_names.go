@@ -115,26 +115,41 @@ func collectKnownChannelsWithPolicy(cfg *config.Config, auths []*coreauth.Auth, 
 	known := make(map[string]knownChannel)
 	if cfg != nil {
 		for _, entry := range cfg.GeminiKey {
+			if strings.TrimSpace(entry.APIKey) == "" {
+				continue
+			}
 			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Gemini API key config", failOnConflict); err != nil {
 				return nil, err
 			}
 		}
 		for _, entry := range cfg.ClaudeKey {
+			if strings.TrimSpace(entry.APIKey) == "" {
+				continue
+			}
 			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Claude API key config", failOnConflict); err != nil {
 				return nil, err
 			}
 		}
 		for _, entry := range cfg.CodexKey {
+			if strings.TrimSpace(entry.APIKey) == "" {
+				continue
+			}
 			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Codex API key config", failOnConflict); err != nil {
 				return nil, err
 			}
 		}
 		for _, entry := range cfg.OpenCodeGoKey {
+			if strings.TrimSpace(entry.APIKey) == "" {
+				continue
+			}
 			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "OpenCode Go API key config", failOnConflict); err != nil {
 				return nil, err
 			}
 		}
 		for _, entry := range cfg.OpenAICompatibility {
+			if strings.TrimSpace(entry.BaseURL) == "" {
+				continue
+			}
 			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "OpenAI compatibility config", failOnConflict); err != nil {
 				return nil, err
 			}

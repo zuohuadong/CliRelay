@@ -459,7 +459,7 @@ func TestPatchAuthFileFieldsRejectsDuplicateOAuthChannelLabel(t *testing.T) {
 	h := &Handler{
 		cfg: &config.Config{
 			ClaudeKey: []config.ClaudeKey{
-				{Name: "Shared Channel"},
+				{Name: "Shared Channel", APIKey: "claude-api-key"},
 			},
 		},
 		authManager: manager,

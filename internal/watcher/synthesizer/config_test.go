@@ -295,6 +295,49 @@ func TestConfigSynthesizer_CodexKeys_SkipsEmptyAndHeaders(t *testing.T) {
 	}
 }
 
+func TestConfigSynthesizer_OpenCodeGoKeys(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OpenCodeGoKey: []config.OpenCodeGoKey{
+				{
+					APIKey:         "go-key",
+					Name:           "go",
+					Priority:       9,
+					Prefix:         "team",
+					ProxyURL:       "http://proxy",
+					ProxyID:        "hk",
+					Headers:        map[string]string{"X-Test": "yes"},
+					ExcludedModels: []string{"minimax-m2.5"},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	auth := auths[0]
+	if auth.Provider != "opencode-go" || auth.Label != "go" || auth.Prefix != "team" {
+		t.Fatalf("unexpected auth identity: %+v", auth)
+	}
+	if auth.Attributes["api_key"] != "go-key" || auth.Attributes["priority"] != "9" || auth.Attributes["header:X-Test"] != "yes" {
+		t.Fatalf("unexpected attrs: %#v", auth.Attributes)
+	}
+	if auth.ProxyURL != "http://proxy" || auth.ProxyID != "hk" {
+		t.Fatalf("unexpected proxy settings: %+v", auth)
+	}
+	if auth.Attributes["auth_kind"] != "apikey" || auth.Attributes["excluded_models"] != "minimax-m2.5" {
+		t.Fatalf("expected api key exclusion metadata, got %#v", auth.Attributes)
+	}
+}
+
 func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -669,6 +712,9 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 			CodexKey: []config.CodexKey{
 				{APIKey: "codex-key"},
 			},
+			OpenCodeGoKey: []config.OpenCodeGoKey{
+				{APIKey: "opencode-go-key"},
+			},
 			OpenAICompatibility: []config.OpenAICompatibility{
 				{Name: "compat", BaseURL: "https://compat.api"},
 			},
@@ -687,8 +733,8 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(auths) != 6 {
-		t.Fatalf("expected 6 auths, got %d", len(auths))
+	if len(auths) != 7 {
+		t.Fatalf("expected 7 auths, got %d", len(auths))
 	}
 
 	providers := make(map[string]bool)
@@ -696,7 +742,7 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 		providers[a.Provider] = true
 	}
 
-	expected := []string{"gemini", "claude", "codex", "compat", "vertex", "bedrock"}
+	expected := []string{"gemini", "claude", "codex", "opencode-go", "compat", "vertex", "bedrock"}
 	for _, p := range expected {
 		if !providers[p] {
 			t.Errorf("expected provider %s not found", p)

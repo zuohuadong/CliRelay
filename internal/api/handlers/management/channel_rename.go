@@ -27,6 +27,9 @@ func (h *Handler) renameChannelReferences(oldNames []string, newName string) err
 		}
 		if renameOAuthModelAliasChannels(h.cfg, oldNameSet, newName) {
 			configChanged = true
+			if err := usage.UpsertRuntimeSetting(usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias); err != nil {
+				return fmt.Errorf("failed to persist oauth model aliases: %w", err)
+			}
 		}
 	}
 

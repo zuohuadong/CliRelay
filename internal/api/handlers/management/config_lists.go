@@ -1421,7 +1421,7 @@ func (h *Handler) PutOAuthExcludedModels(c *gin.Context) {
 		entries = wrapper.Items
 	}
 	h.cfg.OAuthExcludedModels = config.NormalizeOAuthExcludedModels(entries)
-	h.persist(c)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, h.cfg.OAuthExcludedModels)
 }
 
 func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
@@ -1452,14 +1452,14 @@ func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
 		if len(h.cfg.OAuthExcludedModels) == 0 {
 			h.cfg.OAuthExcludedModels = nil
 		}
-		h.persist(c)
+		h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, h.cfg.OAuthExcludedModels)
 		return
 	}
 	if h.cfg.OAuthExcludedModels == nil {
 		h.cfg.OAuthExcludedModels = make(map[string][]string)
 	}
 	h.cfg.OAuthExcludedModels[provider] = normalized
-	h.persist(c)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, h.cfg.OAuthExcludedModels)
 }
 
 func (h *Handler) DeleteOAuthExcludedModels(c *gin.Context) {
@@ -1480,7 +1480,7 @@ func (h *Handler) DeleteOAuthExcludedModels(c *gin.Context) {
 	if len(h.cfg.OAuthExcludedModels) == 0 {
 		h.cfg.OAuthExcludedModels = nil
 	}
-	h.persist(c)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, h.cfg.OAuthExcludedModels)
 }
 
 // oauth-model-alias: map[string][]OAuthModelAlias
@@ -1506,7 +1506,7 @@ func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
 		entries = wrapper.Items
 	}
 	h.cfg.OAuthModelAlias = sanitizedOAuthModelAlias(entries)
-	h.persist(c)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias)
 }
 
 func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
@@ -1546,14 +1546,14 @@ func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
 		if len(h.cfg.OAuthModelAlias) == 0 {
 			h.cfg.OAuthModelAlias = nil
 		}
-		h.persist(c)
+		h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias)
 		return
 	}
 	if h.cfg.OAuthModelAlias == nil {
 		h.cfg.OAuthModelAlias = make(map[string][]config.OAuthModelAlias)
 	}
 	h.cfg.OAuthModelAlias[channel] = normalized
-	h.persist(c)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias)
 }
 
 func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
@@ -1577,7 +1577,7 @@ func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
 	if len(h.cfg.OAuthModelAlias) == 0 {
 		h.cfg.OAuthModelAlias = nil
 	}
-	h.persist(c)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias)
 }
 
 // codex-api-key: []CodexKey

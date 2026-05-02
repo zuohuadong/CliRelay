@@ -332,6 +332,24 @@ func (h *Handler) persist(c *gin.Context) bool {
 	return true
 }
 
+func (h *Handler) persistRuntimeSetting(c *gin.Context, key string, value any) bool {
+	if !usage.ConfigStoreAvailable() {
+		return h.persist(c)
+	}
+	if err := usage.UpsertRuntimeSetting(key, value); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save runtime setting: %v", err)})
+		return false
+	}
+	if strings.TrimSpace(h.configFilePath) != "" {
+		usage.CleanDBBackedConfigFromYAML(h.configFilePath)
+	}
+	if h != nil && h.authManager != nil {
+		h.authManager.SetConfig(h.cfg)
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	return true
+}
+
 // Helper methods for simple types
 func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
 	var body struct {

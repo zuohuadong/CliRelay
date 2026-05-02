@@ -29,6 +29,7 @@ func setupConfigMigrationTestDB(t *testing.T) func() {
 	initAPIKeysTable(db)
 	initRoutingConfigTable(db)
 	initProxyPoolTable(db)
+	initRuntimeSettingsTable(db)
 
 	usageDBMu.Lock()
 	usageDB = db
@@ -107,20 +108,20 @@ func TestMigrateRoutingConfigFromConfigKeepsYAMLWhenDBUnavailable(t *testing.T) 
 
 func TestCleanDBBackedConfigFromYAMLCleansPersistedSections(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	content := []byte("port: 8318\napi-keys:\n  - sk-test\napi-key-entries:\n  - key: sk-entry\nrouting:\n  strategy: round-robin\nproxy-pool:\n  - id: hk\n    url: http://127.0.0.1:7890\nlogging-to-file: true\n")
+	content := []byte("port: 8318\napi-keys:\n  - sk-test\napi-key-entries:\n  - key: sk-entry\nrouting:\n  strategy: round-robin\nproxy-pool:\n  - id: hk\n    url: http://127.0.0.1:7890\nclaude-header-defaults:\n  user-agent: ClaudeCLI/1.0\nkimi-header-defaults:\n  user-agent: KimiCLI/1.24.0\nidentity-fingerprint:\n  codex:\n    enabled: true\noauth-excluded-models:\n  codex:\n    - gpt-4\noauth-model-alias:\n  codex:\n    - name: gpt-5\n      alias: codex-gpt5\npayload:\n  default:\n    - models:\n        - name: gpt-5\n      params:\n        temperature: 0.2\nlogging-to-file: true\n")
 	if err := os.WriteFile(configPath, content, 0o640); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	if removed := CleanDBBackedConfigFromYAML(configPath); removed != 4 {
-		t.Fatalf("CleanDBBackedConfigFromYAML removed %d sections, want 4", removed)
+	if removed := CleanDBBackedConfigFromYAML(configPath); removed != 10 {
+		t.Fatalf("CleanDBBackedConfigFromYAML removed %d sections, want 10", removed)
 	}
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	for _, forbidden := range []string{"api-keys:", "api-key-entries:", "routing:", "proxy-pool:"} {
+	for _, forbidden := range []string{"api-keys:", "api-key-entries:", "routing:", "proxy-pool:", "claude-header-defaults:", "kimi-header-defaults:", "identity-fingerprint:", "oauth-excluded-models:", "oauth-model-alias:", "payload:"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("%s should be removed from YAML:\n%s", forbidden, string(data))
 		}

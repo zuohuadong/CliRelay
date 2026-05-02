@@ -25,6 +25,9 @@ const (
 	DefaultAutoUpdateRepository  = "https://github.com/kittors/CliRelay"
 	DefaultAutoUpdateDockerImage = "ghcr.io/kittors/clirelay"
 	DefaultAutoUpdateUpdaterURL  = "http://clirelay-updater:8320"
+
+	// EnvAuthPath overrides auth-dir with the path visible inside the running container/process.
+	EnvAuthPath = "AUTH_PATH"
 )
 
 // Config represents the application's configuration, loaded from a YAML file.
@@ -755,6 +758,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
+	cfg.ApplyEnvOverrides()
 
 	// NOTE: Startup legacy key migration is intentionally disabled.
 	// Reason: avoid mutating config.yaml during server startup.
@@ -875,6 +879,16 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Return the populated configuration struct.
 	return &cfg, nil
+}
+
+// ApplyEnvOverrides applies process-level configuration overrides.
+func (cfg *Config) ApplyEnvOverrides() {
+	if cfg == nil {
+		return
+	}
+	if authPath := strings.TrimSpace(os.Getenv(EnvAuthPath)); authPath != "" {
+		cfg.AuthDir = authPath
+	}
 }
 
 // SanitizePayloadRules validates raw JSON payload rule params and drops invalid rules.

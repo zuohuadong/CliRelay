@@ -60,6 +60,9 @@ func TestAuthFilesQuotaAssetSupportsCurrentAntigravityModelCatalog(t *testing.T)
 		`agentModelSorts`,
 		`commandModelIds`,
 		`imageGenerationModelIds`,
+		`tabModelIds`,
+		`defaultAgentModelId`,
+		`Object.entries(e).forEach`,
 		`Ta(T,k)`,
 	} {
 		if !strings.Contains(content, want) {

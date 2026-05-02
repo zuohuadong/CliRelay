@@ -266,11 +266,13 @@ func runtimeSettingSpecs() []runtimeSettingSpec {
 		{
 			key: RuntimeSettingIdentityFingerprint,
 			meaningful: func(cfg *config.Config) bool {
-				return codexIdentityFingerprintMeaningful(cfg.IdentityFingerprint.Codex)
+				return codexIdentityFingerprintMeaningful(cfg.IdentityFingerprint.Codex) ||
+					claudeIdentityFingerprintMeaningful(cfg.IdentityFingerprint.Claude)
 			},
 			value: func(cfg *config.Config) any {
 				return config.IdentityFingerprintConfig{
-					Codex: config.NormalizeCodexIdentityFingerprint(cfg.IdentityFingerprint.Codex),
+					Codex:  config.NormalizeCodexIdentityFingerprint(cfg.IdentityFingerprint.Codex),
+					Claude: config.NormalizeClaudeIdentityFingerprint(cfg.IdentityFingerprint.Claude),
 				}
 			},
 			apply: func(cfg *config.Config, raw json.RawMessage) bool {
@@ -280,6 +282,7 @@ func runtimeSettingSpecs() []runtimeSettingSpec {
 					return false
 				}
 				value.Codex = config.NormalizeCodexIdentityFingerprint(value.Codex)
+				value.Claude = config.NormalizeClaudeIdentityFingerprint(value.Claude)
 				cfg.IdentityFingerprint = value
 				return true
 			},
@@ -355,6 +358,23 @@ func codexIdentityFingerprintMeaningful(fp config.CodexIdentityFingerprintConfig
 		normalized.Version != defaults.Version ||
 		normalized.Originator != defaults.Originator ||
 		normalized.WebsocketBeta != defaults.WebsocketBeta ||
+		normalized.SessionMode != defaults.SessionMode
+}
+
+func claudeIdentityFingerprintMeaningful(fp config.ClaudeIdentityFingerprintConfig) bool {
+	normalized := config.NormalizeClaudeIdentityFingerprint(fp)
+	defaults := config.DefaultClaudeIdentityFingerprint()
+	if normalized.Enabled || strings.TrimSpace(normalized.SessionID) != "" ||
+		strings.TrimSpace(normalized.DeviceID) != "" || len(normalized.CustomHeaders) > 0 {
+		return true
+	}
+	return normalized.CLIVersion != defaults.CLIVersion ||
+		normalized.Entrypoint != defaults.Entrypoint ||
+		normalized.UserAgent != defaults.UserAgent ||
+		normalized.AnthropicBeta != defaults.AnthropicBeta ||
+		normalized.StainlessPackageVersion != defaults.StainlessPackageVersion ||
+		normalized.StainlessRuntimeVersion != defaults.StainlessRuntimeVersion ||
+		normalized.StainlessTimeout != defaults.StainlessTimeout ||
 		normalized.SessionMode != defaults.SessionMode
 }
 

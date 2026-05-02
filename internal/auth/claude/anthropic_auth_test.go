@@ -57,7 +57,7 @@ func TestExchangeCodeForTokensWithRedirectURIUsesProvidedRedirect(t *testing.T) 
 						"refresh_token":"refresh-token",
 						"token_type":"Bearer",
 						"expires_in":3600,
-						"account":{"email_address":"user@example.com"}
+						"account":{"uuid":"account-uuid-123","email_address":"user@example.com"}
 					}`)),
 					Request: req,
 				}, nil
@@ -74,6 +74,9 @@ func TestExchangeCodeForTokensWithRedirectURIUsesProvidedRedirect(t *testing.T) 
 	}
 	if bundle.TokenData.Email != "user@example.com" {
 		t.Fatalf("email = %q, want %q", bundle.TokenData.Email, "user@example.com")
+	}
+	if bundle.TokenData.AccountUUID != "account-uuid-123" {
+		t.Fatalf("account uuid = %q, want %q", bundle.TokenData.AccountUUID, "account-uuid-123")
 	}
 	if got := requestBody["redirect_uri"]; got != PlatformRedirectURI {
 		t.Fatalf("redirect_uri = %v, want %q", got, PlatformRedirectURI)

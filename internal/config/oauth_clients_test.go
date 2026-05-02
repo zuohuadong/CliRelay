@@ -41,7 +41,7 @@ func TestGeminiOAuthClientCredentialsKeepsExplicitConfig(t *testing.T) {
 	}
 }
 
-func TestAntigravityOAuthClientCredentialsDoNotUseGeminiCLIDefault(t *testing.T) {
+func TestAntigravityOAuthClientCredentialsDefaultsToAntigravityClient(t *testing.T) {
 	t.Setenv(EnvAntigravityOAuthClientID, "")
 	t.Setenv(EnvAntigravityOAuthClientSecret, "")
 
@@ -49,10 +49,10 @@ func TestAntigravityOAuthClientCredentialsDoNotUseGeminiCLIDefault(t *testing.T)
 
 	clientID, clientSecret := cfg.OAuthClientCredentials(OAuthClientAntigravity)
 
-	if clientID != "" {
-		t.Fatalf("clientID = %q, want empty antigravity client ID", clientID)
+	if clientID != AntigravityOAuthClientID {
+		t.Fatalf("clientID = %q, want official Antigravity OAuth client", clientID)
 	}
-	if clientSecret != "" {
-		t.Fatalf("clientSecret = %q, want empty antigravity client secret", clientSecret)
+	if clientSecret != AntigravityOAuthClientSecret {
+		t.Fatalf("clientSecret = %q, want official Antigravity OAuth client secret", clientSecret)
 	}
 }

@@ -17,7 +17,7 @@ func TestDeployWorkflowPublishesNginxPanelAssets(t *testing.T) {
 		`Upload panel assets`,
 		`source: "manage.html,management.html,assets"`,
 		`PANEL_SRC="/tmp/clirelay-panel-${{ github.sha }}"`,
-		`PANEL_DIR="/var/www/html/relay-panel"`,
+		`PANEL_DIR="/home/web/html/relay-panel"`,
 		`cp -a "$PANEL_SRC"/. "$PANEL_NEXT"/`,
 		`mv "$PANEL_NEXT" "$PANEL_DIR"`,
 	} {

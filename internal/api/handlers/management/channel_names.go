@@ -82,6 +82,10 @@ func uniqueChannelGroups(values []string) []string {
 }
 
 func addKnownChannel(known map[string]knownChannel, rawName, canonicalName, source string) error {
+	return addKnownChannelWithPolicy(known, rawName, canonicalName, source, true)
+}
+
+func addKnownChannelWithPolicy(known map[string]knownChannel, rawName, canonicalName, source string, failOnConflict bool) error {
 	name := strings.TrimSpace(rawName)
 	canonicalName = strings.TrimSpace(canonicalName)
 	if name == "" || canonicalName == "" {
@@ -89,6 +93,9 @@ func addKnownChannel(known map[string]knownChannel, rawName, canonicalName, sour
 	}
 	key := strings.ToLower(name)
 	if existing, exists := known[key]; exists && !strings.EqualFold(existing.Canonical, canonicalName) {
+		if !failOnConflict {
+			return nil
+		}
 		return fmt.Errorf("channel name %q is already used by %s", name, existing.Source)
 	}
 	known[key] = knownChannel{Canonical: canonicalName, Source: source}
@@ -96,25 +103,34 @@ func addKnownChannel(known map[string]knownChannel, rawName, canonicalName, sour
 }
 
 func collectKnownChannels(cfg *config.Config, auths []*coreauth.Auth, excludeAuthID string) (map[string]knownChannel, error) {
+	return collectKnownChannelsWithPolicy(cfg, auths, excludeAuthID, true)
+}
+
+func collectKnownChannelsForAuthRename(cfg *config.Config, auths []*coreauth.Auth, excludeAuthID string) map[string]knownChannel {
+	known, _ := collectKnownChannelsWithPolicy(cfg, auths, excludeAuthID, false)
+	return known
+}
+
+func collectKnownChannelsWithPolicy(cfg *config.Config, auths []*coreauth.Auth, excludeAuthID string, failOnConflict bool) (map[string]knownChannel, error) {
 	known := make(map[string]knownChannel)
 	if cfg != nil {
 		for _, entry := range cfg.GeminiKey {
-			if err := addKnownChannel(known, entry.Name, entry.Name, "Gemini API key config"); err != nil {
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Gemini API key config", failOnConflict); err != nil {
 				return nil, err
 			}
 		}
 		for _, entry := range cfg.ClaudeKey {
-			if err := addKnownChannel(known, entry.Name, entry.Name, "Claude API key config"); err != nil {
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Claude API key config", failOnConflict); err != nil {
 				return nil, err
 			}
 		}
 		for _, entry := range cfg.CodexKey {
-			if err := addKnownChannel(known, entry.Name, entry.Name, "Codex API key config"); err != nil {
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Codex API key config", failOnConflict); err != nil {
 				return nil, err
 			}
 		}
 		for _, entry := range cfg.OpenAICompatibility {
-			if err := addKnownChannel(known, entry.Name, entry.Name, "OpenAI compatibility config"); err != nil {
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "OpenAI compatibility config", failOnConflict); err != nil {
 				return nil, err
 			}
 		}
@@ -133,7 +149,7 @@ func collectKnownChannels(cfg *config.Config, auths []*coreauth.Auth, excludeAut
 		}
 		canonical := auth.ChannelName()
 		for _, identifier := range auth.ChannelIdentifiers() {
-			if err := addKnownChannel(known, identifier, canonical, "OAuth auth file"); err != nil {
+			if err := addKnownChannelWithPolicy(known, identifier, canonical, "OAuth auth file", failOnConflict); err != nil {
 				return nil, err
 			}
 		}
@@ -292,10 +308,7 @@ func (h *Handler) validateAuthChannelName(name, excludeAuthID string) (string, e
 	if h != nil && h.authManager != nil {
 		auths = h.authManager.List()
 	}
-	known, err := collectKnownChannels(h.cfg, auths, excludeAuthID)
-	if err != nil {
-		return "", err
-	}
+	known := collectKnownChannelsForAuthRename(h.cfg, auths, excludeAuthID)
 	key := strings.ToLower(trimmed)
 	if existing, exists := known[key]; exists {
 		return "", fmt.Errorf("channel name %q is already used by %s", trimmed, existing.Source)

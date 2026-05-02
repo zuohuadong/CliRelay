@@ -66,6 +66,9 @@ type APIKeyClientResult struct {
 	// BedrockKeyCount is the number of AWS Bedrock credentials loaded
 	BedrockKeyCount int
 
+	// OpenCodeGoKeyCount is the number of OpenCode Go API keys loaded
+	OpenCodeGoKeyCount int
+
 	// OpenAICompatCount is the number of OpenAI compatibility API keys loaded
 	OpenAICompatCount int
 }

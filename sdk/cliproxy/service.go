@@ -428,6 +428,8 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
 	case "bedrock":
 		s.coreManager.RegisterExecutor(executor.NewBedrockExecutor(s.cfg))
+	case "opencode-go":
+		s.coreManager.RegisterExecutor(executor.NewOpenCodeGoExecutor(s.cfg))
 	case "qwen":
 		s.coreManager.RegisterExecutor(executor.NewQwenExecutor(s.cfg))
 	case "iflow":
@@ -870,6 +872,12 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 			}
 		}
 		models = applyExcludedModels(models, excluded)
+	case "opencode-go":
+		models = registry.GetOpenCodeGoModels()
+		if entry := s.resolveConfigOpenCodeGoKey(a); entry != nil && authKind == "apikey" {
+			excluded = entry.ExcludedModels
+		}
+		models = applyExcludedModels(models, excluded)
 	case "codex":
 		models = registry.GetOpenAIModels()
 		if entry := s.resolveConfigCodexKey(a); entry != nil {
@@ -1100,6 +1108,23 @@ func (s *Service) resolveConfigBedrockKey(auth *coreauth.Auth) *config.BedrockKe
 			return entry
 		}
 		if attrKey != "" && strings.EqualFold(cfgAccessKeyID, attrKey) {
+			return entry
+		}
+	}
+	return nil
+}
+
+func (s *Service) resolveConfigOpenCodeGoKey(auth *coreauth.Auth) *config.OpenCodeGoKey {
+	if auth == nil || s.cfg == nil {
+		return nil
+	}
+	var attrKey string
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+	}
+	for i := range s.cfg.OpenCodeGoKey {
+		entry := &s.cfg.OpenCodeGoKey[i]
+		if attrKey != "" && strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
 			return entry
 		}
 	}

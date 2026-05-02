@@ -135,6 +135,14 @@ func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
 		copy.CodexKey[i].ExcludedModels = nil
 	}
 
+	// Mask OpenCode Go API keys, names, proxy URLs, and exclusions
+	for i := range copy.OpenCodeGoKey {
+		copy.OpenCodeGoKey[i].APIKey = maskKey(copy.OpenCodeGoKey[i].APIKey)
+		copy.OpenCodeGoKey[i].Name = maskName(copy.OpenCodeGoKey[i].Name)
+		copy.OpenCodeGoKey[i].ProxyURL = maskBaseURL(copy.OpenCodeGoKey[i].ProxyURL)
+		copy.OpenCodeGoKey[i].ExcludedModels = nil
+	}
+
 	// Mask OpenAI compatibility API keys, names, URLs, and models
 	for i := range copy.OpenAICompatibility {
 		copy.OpenAICompatibility[i].Name = maskName(copy.OpenAICompatibility[i].Name)

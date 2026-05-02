@@ -121,6 +121,9 @@ type Config struct {
 	// BedrockKey defines AWS Bedrock Runtime credential configurations.
 	BedrockKey []BedrockKey `yaml:"bedrock-api-key" json:"bedrock-api-key"`
 
+	// OpenCodeGoKey defines OpenCode Go plan API key configurations.
+	OpenCodeGoKey []OpenCodeGoKey `yaml:"opencode-go-api-key" json:"opencode-go-api-key"`
+
 	// ClaudeHeaderDefaults configures default header values for Claude API requests.
 	// These are used as fallbacks when the client does not send its own headers.
 	ClaudeHeaderDefaults ClaudeHeaderDefaults `yaml:"claude-header-defaults" json:"claude-header-defaults"`
@@ -645,6 +648,35 @@ type OpenAICompatibilityModel struct {
 func (m OpenAICompatibilityModel) GetName() string  { return m.Name }
 func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
 
+// OpenCodeGoKey represents an OpenCode Go plan API key.
+// The upstream endpoint is fixed to https://opencode.ai/zen/go/v1.
+type OpenCodeGoKey struct {
+	// APIKey is the authentication key for OpenCode Go.
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Prefix optionally namespaces models for this credential.
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+}
+
 // LoadConfig reads a YAML configuration file from the given path,
 // unmarshals it into a Config struct, applies environment variable overrides,
 // and returns it.
@@ -798,6 +830,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Sanitize AWS Bedrock Runtime credentials.
 	cfg.SanitizeBedrockKeys()
+
+	// Sanitize OpenCode Go plan API keys.
+	cfg.SanitizeOpenCodeGoKeys()
 
 	// Normalize provider identity fingerprints.
 	cfg.SanitizeIdentityFingerprint()
@@ -1026,6 +1061,34 @@ func (cfg *Config) SanitizeClaudeKeys() {
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
 	}
+}
+
+// SanitizeOpenCodeGoKeys deduplicates and normalizes OpenCode Go credentials.
+func (cfg *Config) SanitizeOpenCodeGoKeys() {
+	if cfg == nil || len(cfg.OpenCodeGoKey) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(cfg.OpenCodeGoKey))
+	out := make([]OpenCodeGoKey, 0, len(cfg.OpenCodeGoKey))
+	for i := range cfg.OpenCodeGoKey {
+		entry := cfg.OpenCodeGoKey[i]
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		if entry.APIKey == "" {
+			continue
+		}
+		if _, exists := seen[entry.APIKey]; exists {
+			continue
+		}
+		seen[entry.APIKey] = struct{}{}
+		entry.Name = strings.TrimSpace(entry.Name)
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
+		entry.Headers = NormalizeHeaders(entry.Headers)
+		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		out = append(out, entry)
+	}
+	cfg.OpenCodeGoKey = out
 }
 
 // SanitizeGeminiKeys deduplicates and normalizes Gemini credentials.

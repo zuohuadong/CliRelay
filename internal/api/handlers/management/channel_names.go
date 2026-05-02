@@ -129,6 +129,11 @@ func collectKnownChannelsWithPolicy(cfg *config.Config, auths []*coreauth.Auth, 
 				return nil, err
 			}
 		}
+		for _, entry := range cfg.OpenCodeGoKey {
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "OpenCode Go API key config", failOnConflict); err != nil {
+				return nil, err
+			}
+		}
 		for _, entry := range cfg.OpenAICompatibility {
 			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "OpenAI compatibility config", failOnConflict); err != nil {
 				return nil, err

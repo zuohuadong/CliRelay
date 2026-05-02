@@ -30,6 +30,7 @@ type CodexKey = internalconfig.CodexKey
 type ClaudeKey = internalconfig.ClaudeKey
 type BedrockKey = internalconfig.BedrockKey
 type BedrockModel = internalconfig.BedrockModel
+type OpenCodeGoKey = internalconfig.OpenCodeGoKey
 type VertexCompatKey = internalconfig.VertexCompatKey
 type VertexCompatModel = internalconfig.VertexCompatModel
 type OpenAICompatibility = internalconfig.OpenAICompatibility

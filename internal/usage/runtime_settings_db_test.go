@@ -21,6 +21,10 @@ identity-fingerprint:
   codex:
     enabled: true
     user-agent: codex_cli_rs/0.125.0
+  claude:
+    enabled: true
+    cli-version: 2.1.88
+    entrypoint: cli
 oauth-model-alias:
   antigravity:
     - name: rev19-uic3-1p
@@ -34,6 +38,11 @@ debug: true
 		KimiHeaderDefaults: config.KimiHeaderDefaults{UserAgent: "KimiCLI/1.24.0"},
 		IdentityFingerprint: config.IdentityFingerprintConfig{
 			Codex: config.CodexIdentityFingerprintConfig{Enabled: true, UserAgent: "codex_cli_rs/0.125.0"},
+			Claude: config.ClaudeIdentityFingerprintConfig{
+				Enabled:    true,
+				CLIVersion: "2.1.88",
+				Entrypoint: "cli",
+			},
 		},
 		OAuthModelAlias: map[string][]config.OAuthModelAlias{
 			"antigravity": {{Name: "rev19-uic3-1p", Alias: "gemini-2.5-computer-use-preview-10-2025"}},
@@ -55,6 +64,9 @@ debug: true
 	}
 	if !cfg.IdentityFingerprint.Codex.Enabled || cfg.IdentityFingerprint.Codex.UserAgent != "codex_cli_rs/0.125.0" {
 		t.Fatalf("IdentityFingerprint.Codex = %#v", cfg.IdentityFingerprint.Codex)
+	}
+	if !cfg.IdentityFingerprint.Claude.Enabled || cfg.IdentityFingerprint.Claude.UserAgent != "claude-cli/2.1.88 (external, cli)" {
+		t.Fatalf("IdentityFingerprint.Claude = %#v", cfg.IdentityFingerprint.Claude)
 	}
 	if got := cfg.OAuthModelAlias["antigravity"]; len(got) != 1 || got[0].Alias != "gemini-2.5-computer-use-preview-10-2025" {
 		t.Fatalf("OAuthModelAlias = %#v", cfg.OAuthModelAlias)

@@ -26,6 +26,12 @@ func TestPutIdentityFingerprintPersistsToSQLite(t *testing.T) {
 			"user-agent": "codex_cli_rs/0.125.0",
 			"originator": "codex_cli_rs",
 			"session-mode": "per-request"
+		},
+		"claude": {
+			"enabled": true,
+			"cli-version": "2.1.88",
+			"entrypoint": "cli",
+			"session-mode": "server-stable"
 		}
 	}`), h.PutIdentityFingerprint)
 	if rec.Code != http.StatusOK {
@@ -38,6 +44,10 @@ func TestPutIdentityFingerprintPersistsToSQLite(t *testing.T) {
 	}
 	if !stored.IdentityFingerprint.Codex.Enabled || stored.IdentityFingerprint.Codex.UserAgent != "codex_cli_rs/0.125.0" {
 		t.Fatalf("stored identity fingerprint = %#v", stored.IdentityFingerprint.Codex)
+	}
+	if !stored.IdentityFingerprint.Claude.Enabled || stored.IdentityFingerprint.Claude.UserAgent != "claude-cli/2.1.88 (external, cli)" ||
+		stored.IdentityFingerprint.Claude.SessionMode != "server-stable" {
+		t.Fatalf("stored claude identity fingerprint = %#v", stored.IdentityFingerprint.Claude)
 	}
 
 	data, err := os.ReadFile(configPath)

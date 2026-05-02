@@ -209,6 +209,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokensWithRedirectURI(ctx context.Context, c
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		Email:        tokenResp.Account.EmailAddress,
+		AccountUUID:  tokenResp.Account.UUID,
 		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}
 
@@ -293,6 +294,7 @@ func (o *ClaudeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*C
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		Email:        tokenResp.Account.EmailAddress,
+		AccountUUID:  tokenResp.Account.UUID,
 		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}, nil
 }
@@ -312,6 +314,7 @@ func (o *ClaudeAuth) CreateTokenStorage(bundle *ClaudeAuthBundle) *ClaudeTokenSt
 		RefreshToken: bundle.TokenData.RefreshToken,
 		LastRefresh:  bundle.LastRefresh,
 		Email:        bundle.TokenData.Email,
+		AccountUUID:  bundle.TokenData.AccountUUID,
 		Expire:       bundle.TokenData.Expire,
 	}
 

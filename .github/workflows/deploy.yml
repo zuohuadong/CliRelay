@@ -48,6 +48,18 @@ jobs:
           target: "/opt/clirelay2/"
           overwrite: true
 
+      - name: Upload panel assets
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_PORT }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "manage.html,management.html,assets"
+          target: "/tmp/clirelay-panel-${{ github.sha }}/"
+          overwrite: true
+          rm: true
+
       - name: Stop, swap, and restart
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -67,10 +79,24 @@ jobs:
             SERVICE_DIR="$(dirname "$SERVICE_BIN")"
             SERVICE_NAME="$(basename "$SERVICE_BIN")"
             TEMP_BIN="/opt/clirelay2/cli-proxy-api-new"
+            PANEL_SRC="/tmp/clirelay-panel-${{ github.sha }}"
+            PANEL_DIR="/var/www/html/relay-panel"
+            PANEL_NEXT="${PANEL_DIR}.new"
             if [ ! -f "$TEMP_BIN" ]; then
               echo "uploaded temp binary not found: $TEMP_BIN"
               exit 1
             fi
+            if [ ! -f "$PANEL_SRC/manage.html" ] || [ ! -d "$PANEL_SRC/assets" ]; then
+              echo "uploaded panel assets not found under: $PANEL_SRC"
+              exit 1
+            fi
+            rm -rf "$PANEL_NEXT"
+            mkdir -p "$(dirname "$PANEL_DIR")"
+            mkdir -p "$PANEL_NEXT"
+            cp -a "$PANEL_SRC"/. "$PANEL_NEXT"/
+            chown -R root:root "$PANEL_NEXT"
+            find "$PANEL_NEXT" -type d -exec chmod 755 {} \;
+            find "$PANEL_NEXT" -type f -exec chmod 644 {} \;
             cd "$SERVICE_DIR"
             echo "Service binary: $SERVICE_BIN"
             # Stop via systemd
@@ -89,6 +115,13 @@ jobs:
             # Swap in new binary
             mv "$TEMP_BIN" "$SERVICE_NAME"
             chmod +x "$SERVICE_NAME"
+            # Atomically publish the management panel used by Nginx.
+            if [ -d "$PANEL_DIR" ]; then
+              mv "$PANEL_DIR" "${PANEL_DIR}.bak.$(date +%Y%m%d_%H%M%S)"
+            fi
+            mv "$PANEL_NEXT" "$PANEL_DIR"
+            rm -rf "$PANEL_SRC"
+            ls -1dt "${PANEL_DIR}.bak."* 2>/dev/null | tail -n +4 | xargs -r rm -rf
             # Clean up old backups, keep last 3
             ls -1t "${SERVICE_NAME}.bak."* 2>/dev/null | tail -n +4 | xargs -r rm -f
             # Start service

@@ -70,3 +70,29 @@ func TestAuthFilesQuotaAssetSupportsCurrentAntigravityModelCatalog(t *testing.T)
 		}
 	}
 }
+
+func TestAuthFilesQuotaAssetShowsAntigravityModelMetrics(t *testing.T) {
+	data, err := os.ReadFile("assets/AuthFilesPage-8ofG866A.js")
+	if err != nil {
+		t.Fatalf("read auth files asset: %v", err)
+	}
+	content := string(data)
+
+	for _, want := range []string{
+		`maxTokens`,
+		`maxOutputTokens`,
+		`apiProvider`,
+		`modelProvider`,
+		`modelCatalogMeta`,
+		`id:z.id`,
+		`meta:z.meta`,
+		`grid-cols-[minmax(10rem,1fr)_minmax(8rem,1fr)_5rem_8.25rem]`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("auth files quota asset missing Antigravity model metrics marker %q", want)
+		}
+	}
+	if strings.Contains(content, `grid-cols-[3.25rem_1fr_3.25rem_8.25rem]`) {
+		t.Fatal("auth files quota asset still truncates quota metric labels to 3.25rem")
+	}
+}

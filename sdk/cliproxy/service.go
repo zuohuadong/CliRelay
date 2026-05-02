@@ -598,6 +598,8 @@ func (s *Service) Run(ctx context.Context) error {
 		internalusage.ApplyStoredRoutingConfig(newCfg)
 		internalusage.MigrateProxyPoolFromConfig(newCfg, s.configPath)
 		internalusage.ApplyStoredProxyPool(newCfg)
+		internalusage.MigrateRuntimeSettingsFromConfig(newCfg, s.configPath)
+		internalusage.ApplyStoredRuntimeSettings(newCfg)
 
 		nextStrategy := strings.ToLower(strings.TrimSpace(newCfg.Routing.Strategy))
 		normalizeStrategy := func(strategy string) string {

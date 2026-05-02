@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
 type identityFingerprintResponse struct {
@@ -55,7 +56,7 @@ func (h *Handler) PutIdentityFingerprint(c *gin.Context) {
 	h.cfg.IdentityFingerprint = body
 	h.mu.Unlock()
 
-	h.persist(c)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingIdentityFingerprint, body)
 }
 
 func validateCodexIdentityFingerprint(fp config.CodexIdentityFingerprintConfig) error {

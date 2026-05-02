@@ -2,16 +2,43 @@ package main
 
 import (
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
 
-func TestAuthFilesQuotaAssetSupportsAnthropicOAuthUsage(t *testing.T) {
-	data, err := os.ReadFile("assets/AuthFilesPage-8ofG866A.js")
+const managementAssetCacheBust = "?v=issue77-antigravity-quota"
+
+func readActiveAuthFilesAsset(t *testing.T) (string, string) {
+	t.Helper()
+
+	indexData, err := os.ReadFile("assets/index-Byn9cpqP.js")
 	if err != nil {
-		t.Fatalf("read auth files asset: %v", err)
+		t.Fatalf("read main asset: %v", err)
 	}
-	content := string(data)
+	matches := regexp.MustCompile(`AuthFilesPage-[A-Za-z0-9_-]+\.js`).FindAllString(string(indexData), -1)
+	seen := make(map[string]bool)
+	var names []string
+	for _, match := range matches {
+		if !seen[match] {
+			seen[match] = true
+			names = append(names, match)
+		}
+	}
+	if len(names) != 1 {
+		t.Fatalf("main asset should reference exactly one AuthFilesPage chunk, got %v", names)
+	}
+	path := filepath.Join("assets", names[0])
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read active auth files asset %s: %v", path, err)
+	}
+	return names[0], string(data)
+}
+
+func TestAuthFilesQuotaAssetSupportsAnthropicOAuthUsage(t *testing.T) {
+	_, content := readActiveAuthFilesAsset(t)
 
 	for _, want := range []string{
 		`https://api.anthropic.com/api/oauth/usage`,
@@ -28,11 +55,7 @@ func TestAuthFilesQuotaAssetSupportsAnthropicOAuthUsage(t *testing.T) {
 }
 
 func TestAuthFilesQuotaColumnHasInlineRefreshAction(t *testing.T) {
-	data, err := os.ReadFile("assets/AuthFilesPage-8ofG866A.js")
-	if err != nil {
-		t.Fatalf("read auth files asset: %v", err)
-	}
-	content := string(data)
+	_, content := readActiveAuthFilesAsset(t)
 	quotaIdx := strings.Index(content, `key:"quota"`)
 	if quotaIdx < 0 {
 		t.Fatal("auth files asset missing quota column")
@@ -48,11 +71,7 @@ func TestAuthFilesQuotaColumnHasInlineRefreshAction(t *testing.T) {
 }
 
 func TestAuthFilesQuotaAssetSupportsCurrentAntigravityModelCatalog(t *testing.T) {
-	data, err := os.ReadFile("assets/AuthFilesPage-8ofG866A.js")
-	if err != nil {
-		t.Fatalf("read auth files asset: %v", err)
-	}
-	content := string(data)
+	_, content := readActiveAuthFilesAsset(t)
 
 	for _, want := range []string{
 		`agentModelSorts`,
@@ -70,11 +89,7 @@ func TestAuthFilesQuotaAssetSupportsCurrentAntigravityModelCatalog(t *testing.T)
 }
 
 func TestAuthFilesQuotaAssetShowsAntigravityModelMetrics(t *testing.T) {
-	data, err := os.ReadFile("assets/AuthFilesPage-8ofG866A.js")
-	if err != nil {
-		t.Fatalf("read auth files asset: %v", err)
-	}
-	content := string(data)
+	_, content := readActiveAuthFilesAsset(t)
 
 	for _, want := range []string{
 		`maxTokens`,
@@ -96,11 +111,7 @@ func TestAuthFilesQuotaAssetShowsAntigravityModelMetrics(t *testing.T) {
 }
 
 func TestAuthFilesQuotaAssetDoesNotFallBackToStaticAntigravityBuckets(t *testing.T) {
-	data, err := os.ReadFile("assets/AuthFilesPage-8ofG866A.js")
-	if err != nil {
-		t.Fatalf("read auth files asset: %v", err)
-	}
-	content := string(data)
+	_, content := readActiveAuthFilesAsset(t)
 
 	for _, stale := range []string{
 		`Sa=[{id:"claude-gpt"`,
@@ -126,5 +137,54 @@ func TestAuthFilesQuotaAssetDoesNotFallBackToStaticAntigravityBuckets(t *testing
 		if !strings.Contains(content, want) {
 			t.Fatalf("auth files quota asset missing dynamic Antigravity catalog marker %q", want)
 		}
+	}
+}
+
+func TestManagementIndexReferencesFreshAuthFilesQuotaAsset(t *testing.T) {
+	name, content := readActiveAuthFilesAsset(t)
+	if name == "AuthFilesPage-8ofG866A.js" {
+		t.Fatalf("main asset still references previously cached auth files chunk %s", name)
+	}
+
+	for _, stale := range []string{
+		`Sa=[{id:"claude-gpt"`,
+		`label:"Claude/GPT"`,
+		`label:"Gemini 3 Pro"`,
+		`Sa.forEach`,
+	} {
+		if strings.Contains(content, stale) {
+			t.Fatalf("fresh auth files asset still embeds stale Antigravity quota card logic %q", stale)
+		}
+	}
+}
+
+func TestManagementEntryAssetsBustCachedAuthFilesBundle(t *testing.T) {
+	for _, htmlPath := range []string{"manage.html", "management.html"} {
+		data, err := os.ReadFile(htmlPath)
+		if err != nil {
+			t.Fatalf("read %s: %v", htmlPath, err)
+		}
+		content := string(data)
+		for _, want := range []string{
+			`/manage/assets/manage-WL7l-ZQz.js` + managementAssetCacheBust,
+			`/manage/assets/index-Byn9cpqP.js` + managementAssetCacheBust,
+		} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s missing cache-busted management asset reference %q", htmlPath, want)
+			}
+		}
+	}
+
+	manageData, err := os.ReadFile("assets/manage-WL7l-ZQz.js")
+	if err != nil {
+		t.Fatalf("read manage asset: %v", err)
+	}
+	if !strings.Contains(string(manageData), `./index-Byn9cpqP.js`+managementAssetCacheBust) {
+		t.Fatalf("manage asset should import cache-busted index asset")
+	}
+
+	_, authContent := readActiveAuthFilesAsset(t)
+	if !strings.Contains(authContent, `./index-Byn9cpqP.js`+managementAssetCacheBust) {
+		t.Fatalf("auth files asset should import the same cache-busted index asset")
 	}
 }

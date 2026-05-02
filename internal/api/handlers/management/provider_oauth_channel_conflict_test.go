@@ -84,3 +84,48 @@ func TestPutOpenCodeGoKeysIgnoresStaleEmptyClaudeRowsDuringChannelValidation(t *
 		t.Fatalf("OpenCodeGoKey = %+v", h.cfg.OpenCodeGoKey)
 	}
 }
+
+func TestPutOpenCodeGoKeysIgnoresDuplicateOAuthEmailAliases(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	for _, auth := range []*coreauth.Auth{
+		{
+			ID:       "codex-yuan.json",
+			FileName: "codex-yuan.json",
+			Provider: "codex",
+			Label:    "GptPlus4",
+			Metadata: map[string]any{
+				"email": "yuan364299311@gmail.com",
+			},
+		},
+		{
+			ID:       "gemini-yuan.json",
+			FileName: "gemini-yuan.json",
+			Provider: "gemini-cli",
+			Metadata: map[string]any{
+				"email": "yuan364299311@gmail.com",
+			},
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register oauth auth %s: %v", auth.ID, err)
+		}
+	}
+	h := &Handler{cfg: &config.Config{}, configFilePath: configPath, authManager: manager}
+
+	body := []byte(`[{"name":"opencode-go","api-key":" go-api-key "}]`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPut, "/v0/management/opencode-go-api-key", bytes.NewReader(body))
+
+	h.PutOpenCodeGoKeys(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}

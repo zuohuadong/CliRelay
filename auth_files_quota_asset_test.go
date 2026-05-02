@@ -55,8 +55,6 @@ func TestAuthFilesQuotaAssetSupportsCurrentAntigravityModelCatalog(t *testing.T)
 	content := string(data)
 
 	for _, want := range []string{
-		`gemini-3.1-pro-high`,
-		`gemini-3.1-pro-low`,
 		`agentModelSorts`,
 		`commandModelIds`,
 		`imageGenerationModelIds`,
@@ -94,5 +92,39 @@ func TestAuthFilesQuotaAssetShowsAntigravityModelMetrics(t *testing.T) {
 	}
 	if strings.Contains(content, `grid-cols-[3.25rem_1fr_3.25rem_8.25rem]`) {
 		t.Fatal("auth files quota asset still truncates quota metric labels to 3.25rem")
+	}
+}
+
+func TestAuthFilesQuotaAssetDoesNotFallBackToStaticAntigravityBuckets(t *testing.T) {
+	data, err := os.ReadFile("assets/AuthFilesPage-8ofG866A.js")
+	if err != nil {
+		t.Fatalf("read auth files asset: %v", err)
+	}
+	content := string(data)
+
+	for _, stale := range []string{
+		`Sa=[{id:"claude-gpt"`,
+		`label:"Claude/GPT"`,
+		`label:"Gemini 3 Pro"`,
+		`Sa.forEach`,
+	} {
+		if strings.Contains(content, stale) {
+			t.Fatalf("auth files quota asset still uses static Antigravity quota bucket %q", stale)
+		}
+	}
+	for _, want := range []string{
+		`defaultAgentModelId`,
+		`agentModelSorts`,
+		`commandModelIds`,
+		`tabModelIds`,
+		`imageGenerationModelIds`,
+		`mqueryModelIds`,
+		`webSearchModelIds`,
+		`commitMessageModelIds`,
+		`Object.entries(e).forEach`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("auth files quota asset missing dynamic Antigravity catalog marker %q", want)
+		}
 	}
 }

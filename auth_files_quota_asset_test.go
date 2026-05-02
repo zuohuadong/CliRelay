@@ -46,3 +46,24 @@ func TestAuthFilesQuotaColumnHasInlineRefreshAction(t *testing.T) {
 		t.Fatal("quota column should expose an inline refresh action")
 	}
 }
+
+func TestAuthFilesQuotaAssetSupportsCurrentAntigravityModelCatalog(t *testing.T) {
+	data, err := os.ReadFile("assets/AuthFilesPage-8ofG866A.js")
+	if err != nil {
+		t.Fatalf("read auth files asset: %v", err)
+	}
+	content := string(data)
+
+	for _, want := range []string{
+		`gemini-3.1-pro-high`,
+		`gemini-3.1-pro-low`,
+		`agentModelSorts`,
+		`commandModelIds`,
+		`imageGenerationModelIds`,
+		`Ta(T,k)`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("auth files quota asset missing current Antigravity catalog marker %q", want)
+		}
+	}
+}

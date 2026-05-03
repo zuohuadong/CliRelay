@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -162,6 +163,32 @@ func TestBuildAuthFileEntryIncludesSubscriptionStartAndPeriod(t *testing.T) {
 	}
 	if _, ok := entry["subscription_remaining_days"].(int64); !ok {
 		t.Fatalf("subscription_remaining_days = %#v, want int64", entry["subscription_remaining_days"])
+	}
+}
+
+func TestClaudeOAuthMetadataFromTokenStorageIncludesRuntimeTokens(t *testing.T) {
+	expired := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	lastRefresh := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+
+	meta := claudeOAuthMetadataFromTokenStorage(&claude.ClaudeTokenStorage{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		Email:        "claude@example.com",
+		Expire:       expired,
+		LastRefresh:  lastRefresh,
+	})
+
+	for key, want := range map[string]string{
+		"type":          "claude",
+		"access_token":  "access-token",
+		"refresh_token": "refresh-token",
+		"email":         "claude@example.com",
+		"expired":       expired,
+		"last_refresh":  lastRefresh,
+	} {
+		if got, _ := meta[key].(string); got != want {
+			t.Fatalf("metadata[%s] = %q, want %q", key, got, want)
+		}
 	}
 }
 
@@ -432,7 +459,7 @@ func TestPatchAuthFileFieldsRejectsDuplicateOAuthChannelLabel(t *testing.T) {
 	h := &Handler{
 		cfg: &config.Config{
 			ClaudeKey: []config.ClaudeKey{
-				{Name: "Shared Channel"},
+				{Name: "Shared Channel", APIKey: "claude-api-key"},
 			},
 		},
 		authManager: manager,
@@ -466,6 +493,72 @@ func TestPatchAuthFileFieldsRejectsDuplicateOAuthChannelLabel(t *testing.T) {
 	}
 	if _, exists := updated.Metadata["label"]; exists {
 		t.Fatalf("unexpected metadata label after rejected update: %v", updated.Metadata["label"])
+	}
+}
+
+func TestPatchAuthFileFieldsAllowsRenameWhenUnrelatedOAuthAliasesConflict(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	for _, auth := range []*coreauth.Auth{
+		{
+			ID:       "oauth-alias-a",
+			FileName: "oauth-alias-a.json",
+			Provider: "codex",
+			Label:    "Team A",
+			Metadata: map[string]any{"email": "shared@example.com"},
+		},
+		{
+			ID:       "oauth-alias-b",
+			FileName: "oauth-alias-b.json",
+			Provider: "codex",
+			Label:    "Team B",
+			Metadata: map[string]any{"email": "shared@example.com"},
+		},
+		{
+			ID:       "oauth-auth-rename",
+			FileName: "oauth-auth-rename.json",
+			Provider: "claude",
+			Label:    "Original Channel",
+			Metadata: map[string]any{"email": "rename@example.com"},
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register auth %s: %v", auth.ID, err)
+		}
+	}
+
+	h := &Handler{
+		cfg:         &config.Config{},
+		authManager: manager,
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"name":  "oauth-auth-rename.json",
+		"label": "Renamed Channel",
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/auth-files/fields", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchAuthFileFields(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	updated, ok := manager.GetByID("oauth-auth-rename")
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	if updated.Label != "Renamed Channel" {
+		t.Fatalf("label = %q, want %q", updated.Label, "Renamed Channel")
 	}
 }
 

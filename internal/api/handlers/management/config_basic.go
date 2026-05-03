@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
@@ -133,6 +134,14 @@ func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
 		copy.CodexKey[i].ProxyURL = maskBaseURL(copy.CodexKey[i].ProxyURL)
 		copy.CodexKey[i].Models = nil
 		copy.CodexKey[i].ExcludedModels = nil
+	}
+
+	// Mask OpenCode Go API keys, names, proxy URLs, and exclusions
+	for i := range copy.OpenCodeGoKey {
+		copy.OpenCodeGoKey[i].APIKey = maskKey(copy.OpenCodeGoKey[i].APIKey)
+		copy.OpenCodeGoKey[i].Name = maskName(copy.OpenCodeGoKey[i].Name)
+		copy.OpenCodeGoKey[i].ProxyURL = maskBaseURL(copy.OpenCodeGoKey[i].ProxyURL)
+		copy.OpenCodeGoKey[i].ExcludedModels = nil
 	}
 
 	// Mask OpenAI compatibility API keys, names, URLs, and models
@@ -326,6 +335,10 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "reload_failed", "message": err.Error()})
 		return
+	}
+	if usage.ConfigStoreAvailable() {
+		usage.MigrateRuntimeSettingsFromConfig(newCfg, h.configFilePath)
+		usage.ApplyStoredRuntimeSettings(newCfg)
 	}
 	h.cfg = newCfg
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})

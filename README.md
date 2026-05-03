@@ -241,6 +241,8 @@ After startup:
 
 Set `CLIRELAY_LOCALE=en` or `CLIRELAY_LOCALE=zh` in your Compose environment to control the default TUI language.
 
+For cloud platforms that only allow one mounted directory, set `AUTH_PATH` to the authentication directory inside the container, for example `/CLIProxyAPI/auths`. `CLI_PROXY_AUTH_PATH` remains the host-side bind path, while `AUTH_PATH` is also used to override `auth-dir` at runtime.
+
 To disable automatic update prompts, set the following in `config.yaml` or turn off **Automatic Update Checks** in the Config page:
 
 ```yaml

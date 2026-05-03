@@ -1,1 +1,1 @@
-import{a as e}from"./index-Byn9cpqP.js";const o=[["path",{d:"M5 12h14",key:"1ays0h"}],["path",{d:"M12 5v14",key:"s699le"}]],a=e("plus",o);export{a as P};
+import{a as e}from"./index-Byn9cpqP.js?v=issue77-management-context";const o=[["path",{d:"M5 12h14",key:"1ays0h"}],["path",{d:"M12 5v14",key:"s699le"}]],a=e("plus",o);export{a as P};

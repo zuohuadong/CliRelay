@@ -949,6 +949,182 @@ func (h *Handler) DeleteBedrockKey(c *gin.Context) {
 	c.JSON(400, gin.H{"error": "missing api-key, access-key-id, name, or index"})
 }
 
+// opencode-go-api-key: []OpenCodeGoKey
+func (h *Handler) GetOpenCodeGoKeys(c *gin.Context) {
+	c.JSON(200, gin.H{"opencode-go-api-key": normalizedOpenCodeGoKeyEntries(h.cfg.OpenCodeGoKey)})
+}
+
+func (h *Handler) PutOpenCodeGoKeys(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var arr []config.OpenCodeGoKey
+	if err = json.Unmarshal(data, &arr); err != nil {
+		var obj struct {
+			Items []config.OpenCodeGoKey `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		arr = obj.Items
+	}
+	filtered := make([]config.OpenCodeGoKey, 0, len(arr))
+	for i := range arr {
+		normalizeOpenCodeGoKey(&arr[i])
+		if strings.TrimSpace(arr[i].APIKey) != "" {
+			filtered = append(filtered, arr[i])
+		}
+	}
+	prev := append([]config.OpenCodeGoKey(nil), h.cfg.OpenCodeGoKey...)
+	h.cfg.OpenCodeGoKey = filtered
+	h.cfg.SanitizeOpenCodeGoKeys()
+	if err := h.validateChannelNames(); err != nil {
+		h.cfg.OpenCodeGoKey = prev
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	h.persist(c)
+}
+
+func (h *Handler) PatchOpenCodeGoKey(c *gin.Context) {
+	type openCodeGoPatch struct {
+		APIKey         *string            `json:"api-key"`
+		Name           *string            `json:"name"`
+		Priority       *int               `json:"priority"`
+		Prefix         *string            `json:"prefix"`
+		ProxyURL       *string            `json:"proxy-url"`
+		ProxyID        *string            `json:"proxy-id"`
+		Headers        *map[string]string `json:"headers"`
+		ExcludedModels *[]string          `json:"excluded-models"`
+	}
+	var body struct {
+		APIKey *string          `json:"api-key"`
+		Name   *string          `json:"name"`
+		Index  *int             `json:"index"`
+		Value  *openCodeGoPatch `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	targetIndex := -1
+	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.OpenCodeGoKey) {
+		targetIndex = *body.Index
+	}
+	if targetIndex == -1 && body.APIKey != nil {
+		match := strings.TrimSpace(*body.APIKey)
+		for i := range h.cfg.OpenCodeGoKey {
+			if h.cfg.OpenCodeGoKey[i].APIKey == match {
+				targetIndex = i
+				break
+			}
+		}
+	}
+	if targetIndex == -1 && body.Name != nil {
+		match := strings.TrimSpace(*body.Name)
+		for i := range h.cfg.OpenCodeGoKey {
+			if h.cfg.OpenCodeGoKey[i].Name == match {
+				targetIndex = i
+				break
+			}
+		}
+	}
+	if targetIndex == -1 {
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+
+	entry := h.cfg.OpenCodeGoKey[targetIndex]
+	if body.Value.APIKey != nil {
+		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
+	}
+	if body.Value.Name != nil {
+		entry.Name = strings.TrimSpace(*body.Value.Name)
+	}
+	if body.Value.Priority != nil {
+		entry.Priority = *body.Value.Priority
+	}
+	if body.Value.Prefix != nil {
+		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
+	}
+	if body.Value.ProxyURL != nil {
+		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
+	}
+	if body.Value.ProxyID != nil {
+		entry.ProxyID = strings.TrimSpace(*body.Value.ProxyID)
+	}
+	if body.Value.Headers != nil {
+		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+	}
+	if body.Value.ExcludedModels != nil {
+		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	normalizeOpenCodeGoKey(&entry)
+	if entry.APIKey == "" {
+		h.cfg.OpenCodeGoKey = append(h.cfg.OpenCodeGoKey[:targetIndex], h.cfg.OpenCodeGoKey[targetIndex+1:]...)
+		h.cfg.SanitizeOpenCodeGoKeys()
+		h.persist(c)
+		return
+	}
+	prev := append([]config.OpenCodeGoKey(nil), h.cfg.OpenCodeGoKey...)
+	h.cfg.OpenCodeGoKey[targetIndex] = entry
+	h.cfg.SanitizeOpenCodeGoKeys()
+	if err := h.validateChannelNames(); err != nil {
+		h.cfg.OpenCodeGoKey = prev
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	h.persist(c)
+}
+
+func (h *Handler) DeleteOpenCodeGoKey(c *gin.Context) {
+	if apiKey := strings.TrimSpace(c.Query("api-key")); apiKey != "" {
+		out := make([]config.OpenCodeGoKey, 0, len(h.cfg.OpenCodeGoKey))
+		for _, v := range h.cfg.OpenCodeGoKey {
+			if v.APIKey != apiKey {
+				out = append(out, v)
+			}
+		}
+		if len(out) != len(h.cfg.OpenCodeGoKey) {
+			h.cfg.OpenCodeGoKey = out
+			h.cfg.SanitizeOpenCodeGoKeys()
+			h.persist(c)
+			return
+		}
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+	if name := strings.TrimSpace(c.Query("name")); name != "" {
+		out := make([]config.OpenCodeGoKey, 0, len(h.cfg.OpenCodeGoKey))
+		for _, v := range h.cfg.OpenCodeGoKey {
+			if v.Name != name {
+				out = append(out, v)
+			}
+		}
+		if len(out) != len(h.cfg.OpenCodeGoKey) {
+			h.cfg.OpenCodeGoKey = out
+			h.cfg.SanitizeOpenCodeGoKeys()
+			h.persist(c)
+			return
+		}
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+	if idxStr := c.Query("index"); idxStr != "" {
+		var idx int
+		if _, err := fmt.Sscanf(idxStr, "%d", &idx); err == nil && idx >= 0 && idx < len(h.cfg.OpenCodeGoKey) {
+			h.cfg.OpenCodeGoKey = append(h.cfg.OpenCodeGoKey[:idx], h.cfg.OpenCodeGoKey[idx+1:]...)
+			h.cfg.SanitizeOpenCodeGoKeys()
+			h.persist(c)
+			return
+		}
+	}
+	c.JSON(400, gin.H{"error": "missing api-key, name, or index"})
+}
+
 // openai-compatibility: []OpenAICompatibility
 func (h *Handler) GetOpenAICompat(c *gin.Context) {
 	c.JSON(200, gin.H{"openai-compatibility": normalizedOpenAICompatibilityEntries(h.cfg.OpenAICompatibility)})
@@ -1245,7 +1421,7 @@ func (h *Handler) PutOAuthExcludedModels(c *gin.Context) {
 		entries = wrapper.Items
 	}
 	h.cfg.OAuthExcludedModels = config.NormalizeOAuthExcludedModels(entries)
-	h.persist(c)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, h.cfg.OAuthExcludedModels)
 }
 
 func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
@@ -1276,14 +1452,14 @@ func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
 		if len(h.cfg.OAuthExcludedModels) == 0 {
 			h.cfg.OAuthExcludedModels = nil
 		}
-		h.persist(c)
+		h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, h.cfg.OAuthExcludedModels)
 		return
 	}
 	if h.cfg.OAuthExcludedModels == nil {
 		h.cfg.OAuthExcludedModels = make(map[string][]string)
 	}
 	h.cfg.OAuthExcludedModels[provider] = normalized
-	h.persist(c)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, h.cfg.OAuthExcludedModels)
 }
 
 func (h *Handler) DeleteOAuthExcludedModels(c *gin.Context) {
@@ -1304,7 +1480,7 @@ func (h *Handler) DeleteOAuthExcludedModels(c *gin.Context) {
 	if len(h.cfg.OAuthExcludedModels) == 0 {
 		h.cfg.OAuthExcludedModels = nil
 	}
-	h.persist(c)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, h.cfg.OAuthExcludedModels)
 }
 
 // oauth-model-alias: map[string][]OAuthModelAlias
@@ -1330,7 +1506,7 @@ func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
 		entries = wrapper.Items
 	}
 	h.cfg.OAuthModelAlias = sanitizedOAuthModelAlias(entries)
-	h.persist(c)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias)
 }
 
 func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
@@ -1370,14 +1546,14 @@ func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
 		if len(h.cfg.OAuthModelAlias) == 0 {
 			h.cfg.OAuthModelAlias = nil
 		}
-		h.persist(c)
+		h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias)
 		return
 	}
 	if h.cfg.OAuthModelAlias == nil {
 		h.cfg.OAuthModelAlias = make(map[string][]config.OAuthModelAlias)
 	}
 	h.cfg.OAuthModelAlias[channel] = normalized
-	h.persist(c)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias)
 }
 
 func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
@@ -1401,7 +1577,7 @@ func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
 	if len(h.cfg.OAuthModelAlias) == 0 {
 		h.cfg.OAuthModelAlias = nil
 	}
-	h.persist(c)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias)
 }
 
 // codex-api-key: []CodexKey
@@ -1570,6 +1746,31 @@ func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {
 			existing[trimmed] = struct{}{}
 		}
 	}
+}
+
+func normalizeOpenCodeGoKey(entry *config.OpenCodeGoKey) {
+	if entry == nil {
+		return
+	}
+	entry.Name = strings.TrimSpace(entry.Name)
+	entry.APIKey = strings.TrimSpace(entry.APIKey)
+	entry.Prefix = strings.TrimSpace(entry.Prefix)
+	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+	entry.ProxyID = strings.TrimSpace(entry.ProxyID)
+	entry.Headers = config.NormalizeHeaders(entry.Headers)
+	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
+}
+
+func normalizedOpenCodeGoKeyEntries(entries []config.OpenCodeGoKey) []config.OpenCodeGoKey {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]config.OpenCodeGoKey, len(entries))
+	for i := range entries {
+		out[i] = entries[i]
+		normalizeOpenCodeGoKey(&out[i])
+	}
+	return out
 }
 
 func normalizedOpenAICompatibilityEntries(entries []config.OpenAICompatibility) []config.OpenAICompatibility {

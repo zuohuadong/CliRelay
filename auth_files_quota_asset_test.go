@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-const managementAssetCacheBust = "?v=issue77-antigravity-quota"
+const managementAssetCacheBust = "?v=issue77-management-context"
 
 func readActiveAuthFilesAsset(t *testing.T) (string, string) {
 	t.Helper()
@@ -186,5 +186,49 @@ func TestManagementEntryAssetsBustCachedAuthFilesBundle(t *testing.T) {
 	_, authContent := readActiveAuthFilesAsset(t)
 	if !strings.Contains(authContent, `./index-Byn9cpqP.js`+managementAssetCacheBust) {
 		t.Fatalf("auth files asset should import the same cache-busted index asset")
+	}
+}
+
+func TestManagementAssetsDoNotMixBareAndCacheBustedAppModules(t *testing.T) {
+	indexAsset := "index-Byn9cpqP.js"
+
+	entries, err := os.ReadDir("assets")
+	if err != nil {
+		t.Fatalf("read assets dir: %v", err)
+	}
+
+	staticImport := regexp.MustCompile(`(?:from|import)\s*"(\./[^"]+\.js(?:\?[^"]*)?)"`)
+	dynamicImport := regexp.MustCompile(`import\("(\./[^"]+\.js(?:\?[^"]*)?)"\)`)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".js") {
+			continue
+		}
+		path := filepath.Join("assets", entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read asset %s: %v", path, err)
+		}
+		content := string(data)
+		for _, match := range staticImport.FindAllStringSubmatch(content, -1) {
+			ref := match[1]
+			if strings.Contains(ref, "/vendor-") || strings.HasPrefix(filepath.Base(ref), "vendor-") {
+				continue
+			}
+			if !strings.HasSuffix(ref, managementAssetCacheBust) {
+				t.Fatalf("%s imports app module without management cache bust: %s", path, ref)
+			}
+		}
+		for _, match := range dynamicImport.FindAllStringSubmatch(content, -1) {
+			ref := match[1]
+			if strings.Contains(ref, "/vendor-") || strings.HasPrefix(filepath.Base(ref), "vendor-") {
+				continue
+			}
+			if !strings.HasSuffix(ref, managementAssetCacheBust) {
+				t.Fatalf("%s dynamically imports app module without management cache bust: %s", path, ref)
+			}
+		}
+		if entry.Name() != indexAsset && strings.Contains(content, `./`+indexAsset+`"`) {
+			t.Fatalf("%s still imports bare %s, which can split shared React contexts", path, indexAsset)
+		}
 	}
 }

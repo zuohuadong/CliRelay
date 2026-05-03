@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestDeployWorkflowPublishesNginxPanelAssets(t *testing.T) {
+func TestDeployWorkflowOnlyPublishesBackendBinary(t *testing.T) {
 	data, err := os.ReadFile(".github/workflows/deploy.yml")
 	if err != nil {
 		t.Fatalf("read deploy workflow: %v", err)
@@ -14,15 +14,25 @@ func TestDeployWorkflowPublishesNginxPanelAssets(t *testing.T) {
 	content := string(data)
 
 	for _, want := range []string{
-		`Upload panel assets`,
-		`source: "manage.html,management.html,assets"`,
-		`PANEL_SRC="/tmp/clirelay-panel-${{ github.sha }}"`,
-		`PANEL_DIR="/home/web/html/relay-panel"`,
-		`cp -a "$PANEL_SRC"/. "$PANEL_NEXT"/`,
-		`mv "$PANEL_NEXT" "$PANEL_DIR"`,
+		`Upload binary (as temp name)`,
+		`source: "cli-proxy-api-new"`,
+		`target: "/opt/clirelay2/"`,
 	} {
 		if !strings.Contains(content, want) {
-			t.Fatalf("deploy workflow does not publish Nginx panel assets, missing %q", want)
+			t.Fatalf("deploy workflow missing backend binary deployment marker %q", want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		`Upload panel assets`,
+		`source: "manage.html,management.html,assets"`,
+		`PANEL_SRC=`,
+		`PANEL_DIR=`,
+		`relay-panel`,
+		`/home/web/html`,
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("backend deploy workflow must not publish frontend panel assets, found %q", forbidden)
 		}
 	}
 }

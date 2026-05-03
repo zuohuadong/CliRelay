@@ -268,6 +268,23 @@ func normalizeSubscriptionUnix(raw int64) time.Time {
 	return time.Unix(raw, 0).UTC()
 }
 
+func routingMetadataString(metadata map[string]any, keys ...string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if raw, ok := metadata[key].(string); ok {
+			if value := strings.TrimSpace(raw); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
 func subscriptionExpirationFromStart(startedAt time.Time, period string) time.Time {
 	if strings.EqualFold(period, "yearly") {
 		return startedAt.AddDate(1, 0, 0).UTC()
@@ -1041,6 +1058,9 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 	auth := &coreauth.Auth{
 		ID:         authID,
 		Provider:   provider,
+		Prefix:     routingMetadataString(metadata, "prefix"),
+		ProxyURL:   routingMetadataString(metadata, "proxy_url", "proxy-url", "proxyUrl"),
+		ProxyID:    routingMetadataString(metadata, "proxy_id", "proxy-id", "proxyId"),
 		FileName:   filepath.Base(path),
 		Label:      label,
 		Status:     coreauth.StatusActive,
@@ -1210,11 +1230,29 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		changed = true
 	}
 	if req.Prefix != nil {
-		targetAuth.Prefix = *req.Prefix
+		targetAuth.Prefix = strings.TrimSpace(*req.Prefix)
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if targetAuth.Prefix == "" {
+			delete(targetAuth.Metadata, "prefix")
+		} else {
+			targetAuth.Metadata["prefix"] = targetAuth.Prefix
+		}
 		changed = true
 	}
 	if req.ProxyURL != nil {
-		targetAuth.ProxyURL = *req.ProxyURL
+		targetAuth.ProxyURL = strings.TrimSpace(*req.ProxyURL)
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if targetAuth.ProxyURL == "" {
+			delete(targetAuth.Metadata, "proxy_url")
+			delete(targetAuth.Metadata, "proxy-url")
+			delete(targetAuth.Metadata, "proxyUrl")
+		} else {
+			targetAuth.Metadata["proxy_url"] = targetAuth.ProxyURL
+		}
 		changed = true
 	}
 	if req.ProxyID != nil {
@@ -1417,6 +1455,31 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	return store.Save(ctx, record)
 }
 
+func claudeOAuthMetadataFromTokenStorage(tokenStorage *claude.ClaudeTokenStorage) map[string]any {
+	metadata := map[string]any{
+		"type": "claude",
+	}
+	if tokenStorage == nil {
+		return metadata
+	}
+	if email := strings.TrimSpace(tokenStorage.Email); email != "" {
+		metadata["email"] = email
+	}
+	if accessToken := strings.TrimSpace(tokenStorage.AccessToken); accessToken != "" {
+		metadata["access_token"] = accessToken
+	}
+	if refreshToken := strings.TrimSpace(tokenStorage.RefreshToken); refreshToken != "" {
+		metadata["refresh_token"] = refreshToken
+	}
+	if expired := strings.TrimSpace(tokenStorage.Expire); expired != "" {
+		metadata["expired"] = expired
+	}
+	if lastRefresh := strings.TrimSpace(tokenStorage.LastRefresh); lastRefresh != "" {
+		metadata["last_refresh"] = lastRefresh
+	}
+	return metadata
+}
+
 func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 	ctx := detachedAuthContext(c)
 
@@ -1441,9 +1504,31 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 	// Initialize Claude auth service
 	anthropicAuth := claude.NewClaudeAuth(h.cfg)
 
-	// Generate authorization URL (then override redirect_uri to reuse server port)
-	authURL, state, err := anthropicAuth.GenerateAuthURL(state, pkceCodes)
+	isWebUI := isWebUIRequest(c)
+	redirectURI := claude.RedirectURI
+	var forwarder *callbackForwarder
+	callbackPort := anthropicCallbackPort
+	if isWebUI {
+		if targetURL, errTarget := h.managementCallbackURL("/anthropic/callback"); errTarget != nil {
+			log.WithError(errTarget).Warn("failed to compute anthropic callback target, falling back to Claude platform callback")
+			redirectURI = claude.PlatformRedirectURI
+		} else {
+			var errStart error
+			if forwarder, callbackPort, errStart = startCallbackForwarderOnAvailablePort(anthropicCallbackPort, "anthropic", targetURL); errStart != nil {
+				log.WithError(errStart).Warn("failed to start anthropic callback forwarder, falling back to Claude platform callback")
+				redirectURI = claude.PlatformRedirectURI
+			} else {
+				redirectURI = fmt.Sprintf("http://localhost:%d/callback", callbackPort)
+			}
+		}
+	}
+
+	// Generate authorization URL after choosing the redirect URI; the same value must be used for token exchange.
+	authURL, state, err := anthropicAuth.GenerateAuthURLWithRedirectURI(state, pkceCodes, redirectURI)
 	if err != nil {
+		if forwarder != nil {
+			stopCallbackForwarderInstance(ctx, callbackPort, forwarder)
+		}
 		log.Errorf("Failed to generate authorization URL: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
 		return
@@ -1451,26 +1536,9 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 
 	RegisterOAuthSession(state, "anthropic")
 
-	isWebUI := isWebUIRequest(c)
-	var forwarder *callbackForwarder
-	if isWebUI {
-		targetURL, errTarget := h.managementCallbackURL("/anthropic/callback")
-		if errTarget != nil {
-			log.WithError(errTarget).Error("failed to compute anthropic callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
-			return
-		}
-		var errStart error
-		if forwarder, errStart = startCallbackForwarder(anthropicCallbackPort, "anthropic", targetURL); errStart != nil {
-			log.WithError(errStart).Error("failed to start anthropic callback forwarder")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
-			return
-		}
-	}
-
 	go func() {
-		if isWebUI {
-			defer stopCallbackForwarderInstance(ctx, anthropicCallbackPort, forwarder)
+		if forwarder != nil {
+			defer stopCallbackForwarderInstance(ctx, callbackPort, forwarder)
 		}
 
 		// Helper: wait for callback file
@@ -1525,7 +1593,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		code := strings.Split(rawCode, "#")[0]
 
 		// Exchange code for tokens using internal auth service
-		bundle, errExchange := anthropicAuth.ExchangeCodeForTokens(ctx, code, state, pkceCodes)
+		bundle, errExchange := anthropicAuth.ExchangeCodeForTokensWithRedirectURI(ctx, code, state, pkceCodes, redirectURI)
 		if errExchange != nil {
 			authErr := claude.NewAuthenticationError(claude.ErrCodeExchangeFailed, errExchange)
 			log.Errorf("Failed to exchange authorization code for tokens: %v", authErr)
@@ -1540,7 +1608,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 			Provider: "claude",
 			FileName: fmt.Sprintf("claude-%s.json", tokenStorage.Email),
 			Storage:  tokenStorage,
-			Metadata: map[string]any{"email": tokenStorage.Email},
+			Metadata: claudeOAuthMetadataFromTokenStorage(tokenStorage),
 		}
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
 		if errSave != nil {
@@ -1998,17 +2066,9 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		return
 	}
 
-	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", antigravity.CallbackPort)
-	authURL := authSvc.BuildAuthURL(state, redirectURI)
-	if strings.TrimSpace(authURL) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "antigravity oauth client-id not configured"})
-		return
-	}
-
-	RegisterOAuthSession(state, "antigravity")
-
 	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
+	callbackPort := antigravity.CallbackPort
 	if isWebUI {
 		targetURL, errTarget := h.managementCallbackURL("/antigravity/callback")
 		if errTarget != nil {
@@ -2017,16 +2077,28 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			return
 		}
 		var errStart error
-		if forwarder, errStart = startCallbackForwarder(antigravity.CallbackPort, "antigravity", targetURL); errStart != nil {
+		if forwarder, callbackPort, errStart = startCallbackForwarderOnAvailablePort(antigravity.CallbackPort, "antigravity", targetURL); errStart != nil {
 			log.WithError(errStart).Error("failed to start antigravity callback forwarder")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
 			return
 		}
 	}
 
+	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", callbackPort)
+	authURL := authSvc.BuildAuthURL(state, redirectURI)
+	if strings.TrimSpace(authURL) == "" {
+		if isWebUI {
+			stopCallbackForwarderInstance(ctx, callbackPort, forwarder)
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "antigravity oauth client-id not configured"})
+		return
+	}
+
+	RegisterOAuthSession(state, "antigravity")
+
 	go func() {
 		if isWebUI {
-			defer stopCallbackForwarderInstance(ctx, antigravity.CallbackPort, forwarder)
+			defer stopCallbackForwarderInstance(ctx, callbackPort, forwarder)
 		}
 
 		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-antigravity-%s.oauth", state))

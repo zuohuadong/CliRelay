@@ -14,13 +14,27 @@ const (
 	apiKeysMigrationBackupSuffix   = ".pre-sqlite-migration"
 	proxyPoolMigrationBackupSuffix = ".pre-proxy-pool-sqlite-migration"
 	routingMigrationBackupSuffix   = ".pre-routing-sqlite-migration"
+	runtimeSettingsBackupSuffix    = ".pre-runtime-settings-sqlite-migration"
 )
 
 var dbBackedConfigYAMLKeys = map[string]bool{
-	"api-keys":        true,
-	"api-key-entries": true,
-	"routing":         true,
-	"proxy-pool":      true,
+	"api-keys":               true,
+	"api-key-entries":        true,
+	"routing":                true,
+	"proxy-pool":             true,
+	"gemini-api-key":         true,
+	"codex-api-key":          true,
+	"claude-api-key":         true,
+	"bedrock-api-key":        true,
+	"opencode-go-api-key":    true,
+	"openai-compatibility":   true,
+	"vertex-api-key":         true,
+	"claude-header-defaults": true,
+	"kimi-header-defaults":   true,
+	"identity-fingerprint":   true,
+	"oauth-excluded-models":  true,
+	"oauth-model-alias":      true,
+	"payload":                true,
 }
 
 // ConfigStoreAvailable reports whether the SQLite store that owns DB-backed
@@ -72,6 +86,24 @@ func cleanRoutingConfigFromYAML(configFilePath string) {
 	cleanConfigKeysFromYAML(configFilePath, map[string]bool{
 		"routing": true,
 	}, "routing_config")
+}
+
+func cleanRuntimeSettingsFromYAML(configFilePath string) {
+	cleanConfigKeysFromYAML(configFilePath, map[string]bool{
+		"gemini-api-key":         true,
+		"codex-api-key":          true,
+		"claude-api-key":         true,
+		"bedrock-api-key":        true,
+		"opencode-go-api-key":    true,
+		"openai-compatibility":   true,
+		"vertex-api-key":         true,
+		"claude-header-defaults": true,
+		"kimi-header-defaults":   true,
+		"identity-fingerprint":   true,
+		"oauth-excluded-models":  true,
+		"oauth-model-alias":      true,
+		"payload":                true,
+	}, "runtime_settings")
 }
 
 func cleanConfigKeysFromYAML(configFilePath string, keysToRemove map[string]bool, label string) int {

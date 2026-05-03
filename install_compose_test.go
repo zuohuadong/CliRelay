@@ -16,6 +16,7 @@ func TestInstallEnvProvidesHostAbsoluteBindPaths(t *testing.T) {
 	for _, want := range []string{
 		"CLI_PROXY_CONFIG_PATH=${INSTALL_DIR}/config.yaml",
 		"CLI_PROXY_AUTH_PATH=${INSTALL_DIR}/auths",
+		"AUTH_PATH=/root/.cli-proxy-api",
 		"CLI_PROXY_LOG_PATH=${INSTALL_DIR}/logs",
 		"CLI_PROXY_DATA_PATH=${INSTALL_DIR}/data",
 	} {
@@ -34,9 +35,10 @@ func TestInstallComposeUsesHostPathVariablesForDataMounts(t *testing.T) {
 
 	for _, want := range []string{
 		"${CLI_PROXY_CONFIG_PATH}:/CLIProxyAPI/config.yaml",
-		"${CLI_PROXY_AUTH_PATH}:/root/.cli-proxy-api",
+		"${CLI_PROXY_AUTH_PATH}:${AUTH_PATH}",
 		"${CLI_PROXY_LOG_PATH}:/CLIProxyAPI/logs",
 		"${CLI_PROXY_DATA_PATH}:/CLIProxyAPI/data",
+		"AUTH_PATH: ${AUTH_PATH}",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("install.sh generated compose missing %q", want)

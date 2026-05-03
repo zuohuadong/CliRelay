@@ -15,13 +15,26 @@ func TestRepositoryComposeUsesProjectDirForDefaultDataMounts(t *testing.T) {
 
 	for _, want := range []string{
 		"${CLI_PROXY_CONFIG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/config.yaml}:/CLIProxyAPI/config.yaml",
-		"${CLI_PROXY_AUTH_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/auths}:/root/.cli-proxy-api",
+		"${CLI_PROXY_AUTH_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/auths}:${AUTH_PATH:-/root/.cli-proxy-api}",
 		"${CLI_PROXY_LOG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/logs}:/CLIProxyAPI/logs",
 		"${CLI_PROXY_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/data}:/CLIProxyAPI/data",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("docker-compose.yml missing %q", want)
 		}
+	}
+}
+
+func TestRepositoryComposePassesContainerAuthPath(t *testing.T) {
+	data, err := os.ReadFile("docker-compose.yml")
+	if err != nil {
+		t.Fatalf("read docker-compose.yml: %v", err)
+	}
+	content := string(data)
+
+	want := "AUTH_PATH: ${AUTH_PATH:-/root/.cli-proxy-api}"
+	if !strings.Contains(content, want) {
+		t.Fatalf("docker-compose.yml missing %q", want)
 	}
 }
 

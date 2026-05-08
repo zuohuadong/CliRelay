@@ -25,6 +25,7 @@ const (
 	DefaultAutoUpdateRepository  = "https://github.com/kittors/CliRelay"
 	DefaultAutoUpdateDockerImage = "ghcr.io/kittors/clirelay"
 	DefaultAutoUpdateUpdaterURL  = "http://clirelay-updater:8320"
+	DefaultAuthDir               = "~/.cli-proxy-api"
 
 	// EnvAuthPath overrides auth-dir with the path visible inside the running container/process.
 	EnvAuthPath = "AUTH_PATH"

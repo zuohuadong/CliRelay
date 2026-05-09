@@ -68,6 +68,10 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 
 	switch {
 	case auth.Storage != nil:
+		if auth.Metadata == nil {
+			auth.Metadata = make(map[string]any)
+		}
+		auth.Metadata["disabled"] = auth.Disabled
 		baseauth.ApplyMetadata(auth.Storage, auth.Metadata)
 		if err = auth.Storage.SaveTokenToFile(path); err != nil {
 			return "", err

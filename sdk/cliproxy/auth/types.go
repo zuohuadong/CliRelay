@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -169,7 +170,80 @@ func stableAuthIndex(seed string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// EnsureIndex returns a stable index derived from the auth file name or API key.
+func (a *Auth) indexSeed() string {
+	if a == nil {
+		return ""
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(a.Provider))
+	compatName := ""
+	baseURL := ""
+	apiKey := ""
+	filePath := ""
+	if a.Attributes != nil {
+		compatName = strings.TrimSpace(a.Attributes["compat_name"])
+		baseURL = strings.TrimSpace(a.Attributes["base_url"])
+		apiKey = strings.TrimSpace(a.Attributes["api_key"])
+		filePath = strings.TrimSpace(a.Attributes["path"])
+		if filePath == "" {
+			filePath = strings.TrimSpace(a.Attributes["source"])
+		}
+	}
+
+	if filePath == "" {
+		filePath = strings.TrimSpace(a.FileName)
+	}
+	if filePath == "" {
+		filePath = strings.TrimSpace(a.ID)
+	}
+
+	if filePath != "" && strings.HasSuffix(strings.ToLower(filePath), ".json") {
+		abs, errAbs := filepath.Abs(filePath)
+		if errAbs == nil && strings.TrimSpace(abs) != "" {
+			filePath = abs
+		}
+		filePath = filepath.Clean(filePath)
+
+		authType := ""
+		if a.Metadata != nil {
+			if rawType, ok := a.Metadata["type"].(string); ok {
+				authType = strings.TrimSpace(rawType)
+			}
+		}
+		if authType == "" {
+			authType = strings.TrimSpace(provider)
+		}
+		authType = strings.ToLower(strings.TrimSpace(authType))
+		if authType != "" {
+			return authType + ":" + filePath
+		}
+	}
+
+	apiPrefix := ""
+	if apiKey != "" {
+		switch {
+		case compatName != "" || strings.EqualFold(provider, "openai-compatibility"):
+			apiPrefix = "openai-compatibility"
+		case strings.EqualFold(provider, "gemini"):
+			apiPrefix = "gemini-api-key"
+		case strings.EqualFold(provider, "codex"):
+			apiPrefix = "codex-api-key"
+		case strings.EqualFold(provider, "claude"):
+			apiPrefix = "claude-api-key"
+		}
+	}
+	if apiPrefix != "" {
+		return apiPrefix + ":" + strings.TrimSpace(baseURL) + "+" + strings.TrimSpace(apiKey)
+	}
+
+	if id := strings.TrimSpace(a.ID); id != "" {
+		return "id:" + id
+	}
+
+	return ""
+}
+
+// EnsureIndex returns a stable index derived from the auth file name or credential identity.
 func (a *Auth) EnsureIndex() string {
 	if a == nil {
 		return ""
@@ -178,20 +252,9 @@ func (a *Auth) EnsureIndex() string {
 		return a.Index
 	}
 
-	seed := strings.TrimSpace(a.FileName)
-	if seed != "" {
-		seed = "file:" + seed
-	} else if a.Attributes != nil {
-		if apiKey := strings.TrimSpace(a.Attributes["api_key"]); apiKey != "" {
-			seed = "api_key:" + apiKey
-		}
-	}
+	seed := a.indexSeed()
 	if seed == "" {
-		if id := strings.TrimSpace(a.ID); id != "" {
-			seed = "id:" + id
-		} else {
-			return ""
-		}
+		return ""
 	}
 
 	idx := stableAuthIndex(seed)

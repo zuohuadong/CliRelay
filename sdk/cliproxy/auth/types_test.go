@@ -1,6 +1,10 @@
 package auth
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestToolPrefixDisabled(t *testing.T) {
 	var a *Auth
@@ -50,5 +54,37 @@ func TestKimiTokenAuthReportsOAuthAccountInfo(t *testing.T) {
 	}
 	if account != "kimi" {
 		t.Fatalf("account = %q, want kimi", account)
+	}
+}
+
+func TestEnsureIndexUsesOAuthTypeAndAbsolutePath(t *testing.T) {
+	t.Parallel()
+
+	wd, errWd := os.Getwd()
+	if errWd != nil {
+		t.Fatalf("os.Getwd returned error: %v", errWd)
+	}
+
+	relPath := "test-oauth.json"
+	absPath := filepath.Join(wd, relPath)
+	expectedSeed := "gemini:" + filepath.Clean(absPath)
+	expectedIndex := stableAuthIndex(expectedSeed)
+
+	a := &Auth{
+		Provider: "gemini-cli",
+		Attributes: map[string]string{
+			"path": relPath,
+		},
+		Metadata: map[string]any{
+			"type": "gemini",
+		},
+	}
+
+	got := a.EnsureIndex()
+	if got == "" {
+		t.Fatal("auth index should not be empty")
+	}
+	if got != expectedIndex {
+		t.Fatalf("auth index = %q, want %q", got, expectedIndex)
 	}
 }

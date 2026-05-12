@@ -137,7 +137,7 @@ var (
 	usageDBMu     sync.Mutex
 	usageDBPath   string
 	usageLoc      *time.Location
-	insertLogMu   sync.Mutex
+	usageDBWriter *usageDBWriteLoop
 )
 
 func usageDBDSN(dbPath string) string {
@@ -341,6 +341,7 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	initProxyPoolTable(db)
 	log.Debugf("usage: initializing runtime_settings table")
 	initRuntimeSettingsTable(db)
+	usageDBWriter = newUsageDBWriter(db)
 	startRequestLogMaintenance(db)
 	log.Infof("usage: SQLite database initialised at %s", dbPath)
 	return nil
@@ -353,6 +354,7 @@ func CloseDB() {
 
 	stopRequestLogMaintenance()
 	if usageDB != nil {
+		stopUsageDBWriter()
 		_ = usageDB.Close()
 		usageDB = nil
 		usageLoc = nil
@@ -377,70 +379,55 @@ func InsertLogWithDetails(apiKey, apiKeyName, model, source, channelName, authIn
 func insertLog(apiKey, apiKeyName, model, source, channelName, authIndex string,
 	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
 	inputContent, outputContent, detailContent string) {
-	db := getDB()
-	if db == nil {
-		return
-	}
+	enqueueUsageLog(usageLogWrite{
+		APIKey:        apiKey,
+		APIKeyName:    apiKeyName,
+		Model:         model,
+		Source:        source,
+		ChannelName:   channelName,
+		AuthIndex:     authIndex,
+		Failed:        failed,
+		Timestamp:     timestamp,
+		LatencyMs:     latencyMs,
+		FirstTokenMs:  firstTokenMs,
+		Tokens:        tokens,
+		InputContent:  inputContent,
+		OutputContent: outputContent,
+		DetailContent: detailContent,
+	})
+}
 
-	insertLogMu.Lock()
-	defer insertLogMu.Unlock()
-
+func insertLogTx(tx *sql.Tx, entry usageLogWrite) error {
 	failedInt := 0
-	if failed {
+	if entry.Failed {
 		failedInt = 1
 	}
-
-	// Calculate cost based on model pricing
-	cost := CalculateCost(model, tokens.InputTokens, tokens.OutputTokens, tokens.CachedTokens)
-
-	// 插入 request log 的事务由 usage 存储层统一拥有，不从外部 HTTP 请求透传 context，
-	// 以避免请求取消把已经选定要持久化的审计记录中断在半途。
-	tx, err := db.BeginTx(context.Background(), nil)
-	if err != nil {
-		log.Errorf("usage: begin insert tx: %v", err)
-		return
-	}
-
+	cost := CalculateCost(entry.Model, entry.Tokens.InputTokens, entry.Tokens.OutputTokens, entry.Tokens.CachedTokens)
 	result, err := tx.Exec(
 		`INSERT INTO request_logs
 			(timestamp, api_key, api_key_name, model, source, channel_name, auth_index,
 			 failed, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		timestamp.UTC().Format(time.RFC3339Nano),
-		apiKey, apiKeyName, model, source, channelName, authIndex,
-		failedInt, latencyMs, firstTokenMs,
-		tokens.InputTokens, tokens.OutputTokens, tokens.ReasoningTokens,
-		tokens.CachedTokens, tokens.TotalTokens, cost,
+		entry.Timestamp.UTC().Format(time.RFC3339Nano),
+		entry.APIKey, entry.APIKeyName, entry.Model, entry.Source, entry.ChannelName, entry.AuthIndex,
+		failedInt, entry.LatencyMs, entry.FirstTokenMs,
+		entry.Tokens.InputTokens, entry.Tokens.OutputTokens, entry.Tokens.ReasoningTokens,
+		entry.Tokens.CachedTokens, entry.Tokens.TotalTokens, cost,
 	)
 	if err != nil {
-		_ = tx.Rollback()
-		log.Errorf("usage: insert log: %v", err)
-		return
+		return fmt.Errorf("usage: insert log: %w", err)
 	}
 
-	if requestLogStorage.StoreContent && (inputContent != "" || outputContent != "" || detailContent != "") {
+	if requestLogStorage.StoreContent && (entry.InputContent != "" || entry.OutputContent != "" || entry.DetailContent != "") {
 		logID, errLastID := result.LastInsertId()
 		if errLastID != nil {
-			_ = tx.Rollback()
-			log.Errorf("usage: resolve inserted log id: %v", errLastID)
-			return
+			return fmt.Errorf("usage: resolve inserted log id: %w", errLastID)
 		}
-		if errStore := insertLogContentTx(tx, logID, timestamp, inputContent, outputContent, detailContent); errStore != nil {
-			_ = tx.Rollback()
-			log.Errorf("usage: insert log content: %v", errStore)
-			return
+		if errStore := insertLogContentTx(tx, logID, entry.Timestamp, entry.InputContent, entry.OutputContent, entry.DetailContent); errStore != nil {
+			return fmt.Errorf("usage: insert log content: %w", errStore)
 		}
 	}
-
-	if errCommit := tx.Commit(); errCommit != nil {
-		log.Errorf("usage: commit log insert: %v", errCommit)
-		return
-	}
-
-	// Notify TPM tracker about token usage
-	if tokenUsageCallback != nil && tokens.TotalTokens > 0 {
-		tokenUsageCallback(apiKey, tokens.TotalTokens)
-	}
+	return nil
 }
 
 // tokenUsageCallback is set by SetTokenUsageCallback to notify external
@@ -455,6 +442,7 @@ func SetTokenUsageCallback(fn func(apiKey string, totalTokens int64)) {
 
 // QueryLogs returns a paginated, filtered list of log entries.
 func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
+	flushUsageDBWrites()
 	// Normalise parameters
 	if params.Page < 1 {
 		params.Page = 1
@@ -535,6 +523,7 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 
 // QueryFilters returns the distinct API keys and models within the time range.
 func QueryFilters(days int) (FilterOptions, error) {
+	flushUsageDBWrites()
 	if days < 1 {
 		days = 7
 	}
@@ -574,6 +563,7 @@ func QueryFilters(days int) (FilterOptions, error) {
 
 // QueryStats returns aggregated statistics over the filtered dataset.
 func QueryStats(params LogQueryParams) (LogStats, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return LogStats{}, nil
@@ -608,27 +598,30 @@ func QueryStats(params LogQueryParams) (LogStats, error) {
 // DeleteLogsByAPIKey removes all request_logs and request_log_content entries
 // for the given API key. Returns the number of deleted log rows.
 func DeleteLogsByAPIKey(apiKey string) (int64, error) {
-	db := getDB()
-	if db == nil {
-		return 0, fmt.Errorf("usage: database not initialised")
-	}
 	if apiKey == "" {
 		return 0, fmt.Errorf("usage: empty api_key")
 	}
 
-	// Delete associated content rows first (FK cascade may handle this,
-	// but be explicit to ensure cleanup even without FK enforcement).
-	_, _ = db.Exec(
-		`DELETE FROM request_log_content WHERE log_id IN
-		 (SELECT id FROM request_logs WHERE api_key = ?)`, apiKey)
+	var deleted int64
+	err := runUsageDBWrite(func(db *sql.DB) error {
+		// Delete associated content rows first (FK cascade may handle this,
+		// but be explicit to ensure cleanup even without FK enforcement).
+		_, _ = db.Exec(
+			`DELETE FROM request_log_content WHERE log_id IN
+			 (SELECT id FROM request_logs WHERE api_key = ?)`, apiKey)
 
-	result, err := db.Exec("DELETE FROM request_logs WHERE api_key = ?", apiKey)
+		result, err := db.Exec("DELETE FROM request_logs WHERE api_key = ?", apiKey)
+		if err != nil {
+			return fmt.Errorf("usage: delete logs by api_key: %w", err)
+		}
+		deleted, err = result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("usage: affected rows: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("usage: delete logs by api_key: %w", err)
-	}
-	deleted, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("usage: affected rows: %w", err)
+		return 0, err
 	}
 	if deleted > 0 {
 		log.Infof("usage: deleted %d request log(s) for api_key=%s", deleted, apiKey)
@@ -660,107 +653,108 @@ func normalizeClearRequestLogsOptions(options ClearRequestLogsOptions) (ClearReq
 
 // ClearRequestLogs selectively clears request log bodies, details, and/or full request records.
 func ClearRequestLogs(options ClearRequestLogsOptions) (ClearRequestLogsResult, error) {
-	db := getDB()
-	if db == nil {
-		return ClearRequestLogsResult{}, fmt.Errorf("usage: database not initialised")
-	}
 	options, err := normalizeClearRequestLogsOptions(options)
 	if err != nil {
 		return ClearRequestLogsResult{}, err
 	}
 
-	tx, err := db.Begin()
-	if err != nil {
-		return ClearRequestLogsResult{}, fmt.Errorf("usage: begin clear request logs: %w", err)
-	}
-
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
 	var result ClearRequestLogsResult
-
-	if options.ClearRequestRecords {
-		contentResult, err := tx.Exec("DELETE FROM request_log_content")
+	err = runUsageDBWrite(func(db *sql.DB) error {
+		tx, err := db.Begin()
 		if err != nil {
-			return ClearRequestLogsResult{}, fmt.Errorf("usage: clear request_log_content: %w", err)
-		}
-		logResult, err := tx.Exec("DELETE FROM request_logs")
-		if err != nil {
-			return ClearRequestLogsResult{}, fmt.Errorf("usage: clear request_logs: %w", err)
+			return fmt.Errorf("usage: begin clear request logs: %w", err)
 		}
 
-		result.DeletedContents, err = rowsAffected(contentResult)
-		if err != nil {
-			return ClearRequestLogsResult{}, fmt.Errorf("usage: content affected rows: %w", err)
-		}
-		result.DeletedLogs, err = rowsAffected(logResult)
-		if err != nil {
-			return ClearRequestLogsResult{}, fmt.Errorf("usage: log affected rows: %w", err)
-		}
-	} else {
-		if options.ClearBodyContent {
-			contentResult, err := tx.Exec(
-				"UPDATE request_log_content SET input_content = X'', output_content = X'' WHERE length(input_content) > 0 OR length(output_content) > 0",
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
+
+		if options.ClearRequestRecords {
+			contentResult, err := tx.Exec("DELETE FROM request_log_content")
+			if err != nil {
+				return fmt.Errorf("usage: clear request_log_content: %w", err)
+			}
+			logResult, err := tx.Exec("DELETE FROM request_logs")
+			if err != nil {
+				return fmt.Errorf("usage: clear request_logs: %w", err)
+			}
+
+			result.DeletedContents, err = rowsAffected(contentResult)
+			if err != nil {
+				return fmt.Errorf("usage: content affected rows: %w", err)
+			}
+			result.DeletedLogs, err = rowsAffected(logResult)
+			if err != nil {
+				return fmt.Errorf("usage: log affected rows: %w", err)
+			}
+		} else {
+			if options.ClearBodyContent {
+				contentResult, err := tx.Exec(
+					"UPDATE request_log_content SET input_content = X'', output_content = X'' WHERE length(input_content) > 0 OR length(output_content) > 0",
+				)
+				if err != nil {
+					return fmt.Errorf("usage: clear request_log_content bodies: %w", err)
+				}
+				result.ClearedBodyRows, err = rowsAffected(contentResult)
+				if err != nil {
+					return fmt.Errorf("usage: body affected rows: %w", err)
+				}
+
+				legacyResult, err := tx.Exec(
+					"UPDATE request_logs SET input_content = '', output_content = '' WHERE length(input_content) > 0 OR length(output_content) > 0",
+				)
+				if err != nil {
+					return fmt.Errorf("usage: clear legacy request log bodies: %w", err)
+				}
+				result.ClearedLegacyRows, err = rowsAffected(legacyResult)
+				if err != nil {
+					return fmt.Errorf("usage: legacy affected rows: %w", err)
+				}
+			}
+
+			if options.ClearDetailContent {
+				detailResult, err := tx.Exec(
+					"UPDATE request_log_content SET detail_content = X'' WHERE length(detail_content) > 0",
+				)
+				if err != nil {
+					return fmt.Errorf("usage: clear request_log_content details: %w", err)
+				}
+				result.ClearedDetailRows, err = rowsAffected(detailResult)
+				if err != nil {
+					return fmt.Errorf("usage: detail affected rows: %w", err)
+				}
+			}
+
+			deleteEmptyRowsResult, err := tx.Exec(
+				"DELETE FROM request_log_content WHERE length(input_content) = 0 AND length(output_content) = 0 AND length(detail_content) = 0",
 			)
 			if err != nil {
-				return ClearRequestLogsResult{}, fmt.Errorf("usage: clear request_log_content bodies: %w", err)
+				return fmt.Errorf("usage: delete empty request_log_content rows: %w", err)
 			}
-			result.ClearedBodyRows, err = rowsAffected(contentResult)
+			result.DeletedContents, err = rowsAffected(deleteEmptyRowsResult)
 			if err != nil {
-				return ClearRequestLogsResult{}, fmt.Errorf("usage: body affected rows: %w", err)
-			}
-
-			legacyResult, err := tx.Exec(
-				"UPDATE request_logs SET input_content = '', output_content = '' WHERE length(input_content) > 0 OR length(output_content) > 0",
-			)
-			if err != nil {
-				return ClearRequestLogsResult{}, fmt.Errorf("usage: clear legacy request log bodies: %w", err)
-			}
-			result.ClearedLegacyRows, err = rowsAffected(legacyResult)
-			if err != nil {
-				return ClearRequestLogsResult{}, fmt.Errorf("usage: legacy affected rows: %w", err)
+				return fmt.Errorf("usage: deleted empty content rows: %w", err)
 			}
 		}
 
-		if options.ClearDetailContent {
-			detailResult, err := tx.Exec(
-				"UPDATE request_log_content SET detail_content = X'' WHERE length(detail_content) > 0",
-			)
-			if err != nil {
-				return ClearRequestLogsResult{}, fmt.Errorf("usage: clear request_log_content details: %w", err)
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("usage: commit clear request logs: %w", err)
+		}
+		committed = true
+		refreshRequestLogContentBytes(db)
+
+		if usageDBSupportsVacuum() {
+			if _, err := db.Exec("VACUUM"); err != nil {
+				log.Warnf("usage: vacuum after request log cleanup failed: %v", err)
 			}
-			result.ClearedDetailRows, err = rowsAffected(detailResult)
-			if err != nil {
-				return ClearRequestLogsResult{}, fmt.Errorf("usage: detail affected rows: %w", err)
-			}
 		}
-
-		deleteEmptyRowsResult, err := tx.Exec(
-			"DELETE FROM request_log_content WHERE length(input_content) = 0 AND length(output_content) = 0 AND length(detail_content) = 0",
-		)
-		if err != nil {
-			return ClearRequestLogsResult{}, fmt.Errorf("usage: delete empty request_log_content rows: %w", err)
-		}
-		result.DeletedContents, err = rowsAffected(deleteEmptyRowsResult)
-		if err != nil {
-			return ClearRequestLogsResult{}, fmt.Errorf("usage: deleted empty content rows: %w", err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return ClearRequestLogsResult{}, fmt.Errorf("usage: commit clear request logs: %w", err)
-	}
-	committed = true
-	refreshRequestLogContentBytes(db)
-
-	if usageDBSupportsVacuum() {
-		if _, err := db.Exec("VACUUM"); err != nil {
-			log.Warnf("usage: vacuum after request log cleanup failed: %v", err)
-		}
+		return nil
+	})
+	if err != nil {
+		return ClearRequestLogsResult{}, err
 	}
 
 	if result.DeletedLogs > 0 || result.DeletedContents > 0 || result.ClearedBodyRows > 0 || result.ClearedDetailRows > 0 || result.ClearedLegacyRows > 0 {
@@ -819,6 +813,7 @@ type DashboardTrends struct {
 // QueryDashboardKPI returns aggregated KPI data from SQLite for the dashboard.
 // This replaces the old in-memory snapshot-based counting which lost data on restart.
 func QueryDashboardKPI(days int) (DashboardKPI, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return DashboardKPI{}, nil
@@ -881,6 +876,7 @@ const dashboardThroughputBucketCount = 7
 // KPI trends follow the selected day range, while throughput always shows the
 // most recent 7 one-minute buckets.
 func QueryDashboardTrends(days int) (DashboardTrends, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return emptyDashboardTrends(days), nil
@@ -1134,6 +1130,7 @@ func parseStoredTime(value string) (time.Time, bool) {
 }
 
 func getDB() *sql.DB {
+	flushUsageDBWrites()
 	usageDBMu.Lock()
 	defer usageDBMu.Unlock()
 	return usageDB
@@ -1306,6 +1303,7 @@ func queryDistinct(db *sql.DB, column, cutoff string) ([]string, error) {
 
 // QueryModelsForKey returns the distinct models used by a specific API key within the time range.
 func QueryModelsForKey(apiKey string, days int) ([]string, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return make([]string, 0), nil
@@ -1367,6 +1365,7 @@ func normalizeLogContentPart(part string) (string, error) {
 
 // QueryLogContent retrieves the stored request/response content for a single log entry.
 func QueryLogContent(id int64) (LogContentResult, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return LogContentResult{}, fmt.Errorf("usage: database not initialised")
@@ -1397,6 +1396,7 @@ func QueryLogContent(id int64) (LogContentResult, error) {
 // QueryLogContentPart retrieves only one side (input/output) of the stored request/response content
 // for a single log entry. This avoids decompressing/transferring both blobs for the UI.
 func QueryLogContentPart(id int64, part string) (LogContentPartResult, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return LogContentPartResult{}, fmt.Errorf("usage: database not initialised")
@@ -1454,6 +1454,7 @@ func QueryLogContentPart(id int64, part string) (LogContentPartResult, error) {
 // QueryLogContentForKey retrieves log content for a single entry, but only if it belongs to the given API key.
 // This is used by the public endpoint to ensure users can only access their own logs.
 func QueryLogContentForKey(id int64, apiKey string) (LogContentResult, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return LogContentResult{}, fmt.Errorf("usage: database not initialised")
@@ -1484,6 +1485,7 @@ func QueryLogContentForKey(id int64, apiKey string) (LogContentResult, error) {
 // QueryLogContentPartForKey retrieves only one side (input/output) of the stored request/response content
 // for a single entry, but only if it belongs to the given API key.
 func QueryLogContentPartForKey(id int64, apiKey string, part string) (LogContentPartResult, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return LogContentPartResult{}, fmt.Errorf("usage: database not initialised")
@@ -1556,6 +1558,7 @@ type ModelDistributionPoint struct {
 
 // QueryDailySeries returns per-day aggregated request count and token usage for a given API key.
 func QueryDailySeries(apiKey string, days int) ([]DailySeriesPoint, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return nil, nil
@@ -1596,6 +1599,7 @@ func QueryDailySeries(apiKey string, days int) ([]DailySeriesPoint, error) {
 
 // QueryModelDistribution returns request count and token usage grouped by model for a given API key.
 func QueryModelDistribution(apiKey string, days int) ([]ModelDistributionPoint, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return nil, nil
@@ -1640,6 +1644,7 @@ type APIKeyDistributionPoint struct {
 
 // QueryAPIKeyDistribution returns request count and token usage grouped by api_key.
 func QueryAPIKeyDistribution(days int) ([]APIKeyDistributionPoint, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return nil, nil
@@ -1702,6 +1707,7 @@ type HourlyModelPoint struct {
 
 // QueryHourlySeries returns per-hour token and model aggregates for the last N hours.
 func QueryHourlySeries(apiKey string, hours int) ([]HourlyTokenPoint, []HourlyModelPoint, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return nil, nil, nil
@@ -1777,6 +1783,7 @@ type EntityStatPoint struct {
 // QueryEntityStats returns aggregates grouped by a given column (e.g. "source" or "auth_index").
 // Time range is derived from days logic.
 func QueryEntityStats(apiKey string, days int, groupColumn string, entityNames []string) ([]EntityStatPoint, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return nil, nil
@@ -1848,6 +1855,7 @@ func normalizeEntityStatFilters(values []string) []string {
 }
 
 func QueryDailyCallsByAuthIndexes(authIndexes []string, days int) ([]DailyCountPoint, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return []DailyCountPoint{}, nil
@@ -1924,6 +1932,7 @@ func QueryDailyCallsByAuthIndexes(authIndexes []string, days int) ([]DailyCountP
 }
 
 func QueryHourlyCallsByAuthIndex(authIndex string, hours int) ([]HourlyCountPoint, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return []HourlyCountPoint{}, nil
@@ -1978,6 +1987,7 @@ func QueryHourlyCallsByAuthIndex(authIndex string, hours int) ([]HourlyCountPoin
 }
 
 func QueryRequestCountByAuthIndexSince(authIndex string, since time.Time) (int64, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return 0, nil
@@ -2079,11 +2089,6 @@ func knownDBIndexes() []string {
 }
 
 func RecordDailyQuotaSnapshot(authIndex, provider string, quotas map[string]*float64) error {
-	db := getDB()
-	if db == nil {
-		return nil
-	}
-
 	authIndex = strings.TrimSpace(authIndex)
 	if authIndex == "" || len(quotas) == 0 {
 		return nil
@@ -2093,69 +2098,68 @@ func RecordDailyQuotaSnapshot(authIndex, provider string, quotas map[string]*flo
 	dateKey := localDayKeyAt(now)
 	recordedAt := now.UTC().Format(time.RFC3339Nano)
 
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("usage: quota snapshot begin: %w", err)
-	}
-	defer func() {
+	return runUsageDBWrite(func(db *sql.DB) error {
+		tx, err := db.Begin()
 		if err != nil {
-			_ = tx.Rollback()
+			return fmt.Errorf("usage: quota snapshot begin: %w", err)
 		}
-	}()
-
-	stmt, err := tx.Prepare(`
-		INSERT INTO auth_file_quota_snapshots (date_key, auth_index, provider, quota_key, percent, recorded_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(date_key, auth_index, quota_key) DO UPDATE SET
-			provider = excluded.provider,
-			percent = excluded.percent,
-			recorded_at = excluded.recorded_at
-	`)
-	if err != nil {
-		return fmt.Errorf("usage: quota snapshot prepare: %w", err)
-	}
-	defer stmt.Close()
-
-	for key, rawPercent := range quotas {
-		quotaKey := strings.TrimSpace(key)
-		if quotaKey == "" {
-			continue
-		}
-		var value any
-		if rawPercent == nil {
-			value = nil
-		} else {
-			percent := *rawPercent
-			if percent < 0 {
-				percent = 0
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
 			}
-			if percent > 100 {
-				percent = 100
+		}()
+
+		stmt, err := tx.Prepare(`
+			INSERT INTO auth_file_quota_snapshots (date_key, auth_index, provider, quota_key, percent, recorded_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(date_key, auth_index, quota_key) DO UPDATE SET
+				provider = excluded.provider,
+				percent = excluded.percent,
+				recorded_at = excluded.recorded_at
+		`)
+		if err != nil {
+			return fmt.Errorf("usage: quota snapshot prepare: %w", err)
+		}
+		defer stmt.Close()
+
+		for key, rawPercent := range quotas {
+			quotaKey := strings.TrimSpace(key)
+			if quotaKey == "" {
+				continue
 			}
-			value = percent
+			var value any
+			if rawPercent == nil {
+				value = nil
+			} else {
+				percent := *rawPercent
+				if percent < 0 {
+					percent = 0
+				}
+				if percent > 100 {
+					percent = 100
+				}
+				value = percent
+			}
+			if _, err = stmt.Exec(dateKey, authIndex, provider, quotaKey, value, recordedAt); err != nil {
+				return fmt.Errorf("usage: quota snapshot upsert: %w", err)
+			}
 		}
-		if _, err = stmt.Exec(dateKey, authIndex, provider, quotaKey, value, recordedAt); err != nil {
-			return fmt.Errorf("usage: quota snapshot upsert: %w", err)
+
+		retentionCutoff := cutoffDayKey(7)
+		if _, err = tx.Exec(`DELETE FROM auth_file_quota_snapshots WHERE date_key < ?`, retentionCutoff); err != nil {
+			return fmt.Errorf("usage: quota snapshot prune: %w", err)
 		}
-	}
 
-	retentionCutoff := cutoffDayKey(7)
-	if _, err = tx.Exec(`DELETE FROM auth_file_quota_snapshots WHERE date_key < ?`, retentionCutoff); err != nil {
-		return fmt.Errorf("usage: quota snapshot prune: %w", err)
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("usage: quota snapshot commit: %w", err)
-	}
-	return nil
+		if err = tx.Commit(); err != nil {
+			return fmt.Errorf("usage: quota snapshot commit: %w", err)
+		}
+		committed = true
+		return nil
+	})
 }
 
 func RecordQuotaSnapshotPoints(authIndex, provider string, points []QuotaSnapshotPoint) error {
-	db := getDB()
-	if db == nil {
-		return nil
-	}
-
 	authIndex = strings.TrimSpace(authIndex)
 	if authIndex == "" || len(points) == 0 {
 		return nil
@@ -2163,86 +2167,112 @@ func RecordQuotaSnapshotPoints(authIndex, provider string, points []QuotaSnapsho
 	provider = strings.TrimSpace(provider)
 	now := time.Now()
 
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("usage: quota snapshot points begin: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	stmt, err := tx.Prepare(`
-		INSERT INTO auth_file_quota_snapshot_points
-			(recorded_at, auth_index, provider, quota_key, quota_label, percent, reset_at, window_seconds)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`)
-	if err != nil {
-		return fmt.Errorf("usage: quota snapshot points prepare: %w", err)
-	}
-	defer stmt.Close()
-
+	deduped := make([]QuotaSnapshotPoint, 0, len(points))
+	seen := make(map[string]int, len(points))
 	for _, point := range points {
 		quotaKey := strings.TrimSpace(point.QuotaKey)
 		if quotaKey == "" {
 			continue
 		}
-		quotaLabel := strings.TrimSpace(point.QuotaLabel)
-		if quotaLabel == "" {
-			quotaLabel = quotaKey
-		}
-		recordedAt := point.RecordedAt
-		if recordedAt.IsZero() {
-			recordedAt = now
-		}
-		pointProvider := strings.TrimSpace(point.Provider)
-		if pointProvider == "" {
-			pointProvider = provider
-		}
-		var value any
-		if point.Percent == nil {
-			value = nil
-		} else {
-			percent := *point.Percent
-			if percent < 0 {
-				percent = 0
-			}
-			if percent > 100 {
-				percent = 100
-			}
-			value = percent
-		}
-		var resetValue any
+		resetKey := ""
 		if point.ResetAt != nil && !point.ResetAt.IsZero() {
-			resetValue = point.ResetAt.UTC().Format(time.RFC3339Nano)
+			resetKey = point.ResetAt.UTC().Format(time.RFC3339Nano)
 		}
-		if _, err = stmt.Exec(
-			recordedAt.UTC().Format(time.RFC3339Nano),
-			authIndex,
-			pointProvider,
-			quotaKey,
-			quotaLabel,
-			value,
-			resetValue,
-			point.WindowSeconds,
-		); err != nil {
-			return fmt.Errorf("usage: quota snapshot points insert: %w", err)
+		key := strings.Join([]string{quotaKey, resetKey, fmt.Sprint(point.WindowSeconds)}, "\x00")
+		point.QuotaKey = quotaKey
+		if index, ok := seen[key]; ok {
+			deduped[index] = point
+			continue
 		}
+		seen[key] = len(deduped)
+		deduped = append(deduped, point)
+	}
+	if len(deduped) == 0 {
+		return nil
 	}
 
-	retentionCutoff := now.AddDate(0, 0, -8).UTC().Format(time.RFC3339Nano)
-	if _, err = tx.Exec(`DELETE FROM auth_file_quota_snapshot_points WHERE recorded_at < ?`, retentionCutoff); err != nil {
-		return fmt.Errorf("usage: quota snapshot points prune: %w", err)
-	}
+	return runUsageDBWrite(func(db *sql.DB) error {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("usage: quota snapshot points begin: %w", err)
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
 
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("usage: quota snapshot points commit: %w", err)
-	}
-	return nil
+		stmt, err := tx.Prepare(`
+			INSERT INTO auth_file_quota_snapshot_points
+				(recorded_at, auth_index, provider, quota_key, quota_label, percent, reset_at, window_seconds)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`)
+		if err != nil {
+			return fmt.Errorf("usage: quota snapshot points prepare: %w", err)
+		}
+		defer stmt.Close()
+
+		for _, point := range deduped {
+			quotaKey := strings.TrimSpace(point.QuotaKey)
+			quotaLabel := strings.TrimSpace(point.QuotaLabel)
+			if quotaLabel == "" {
+				quotaLabel = quotaKey
+			}
+			recordedAt := point.RecordedAt
+			if recordedAt.IsZero() {
+				recordedAt = now
+			}
+			pointProvider := strings.TrimSpace(point.Provider)
+			if pointProvider == "" {
+				pointProvider = provider
+			}
+			var value any
+			if point.Percent == nil {
+				value = nil
+			} else {
+				percent := *point.Percent
+				if percent < 0 {
+					percent = 0
+				}
+				if percent > 100 {
+					percent = 100
+				}
+				value = percent
+			}
+			var resetValue any
+			if point.ResetAt != nil && !point.ResetAt.IsZero() {
+				resetValue = point.ResetAt.UTC().Format(time.RFC3339Nano)
+			}
+			if _, err = stmt.Exec(
+				recordedAt.UTC().Format(time.RFC3339Nano),
+				authIndex,
+				pointProvider,
+				quotaKey,
+				quotaLabel,
+				value,
+				resetValue,
+				point.WindowSeconds,
+			); err != nil {
+				return fmt.Errorf("usage: quota snapshot points insert: %w", err)
+			}
+		}
+
+		retentionCutoff := now.AddDate(0, 0, -8).UTC().Format(time.RFC3339Nano)
+		if _, err = tx.Exec(`DELETE FROM auth_file_quota_snapshot_points WHERE recorded_at < ?`, retentionCutoff); err != nil {
+			return fmt.Errorf("usage: quota snapshot points prune: %w", err)
+		}
+
+		if err = tx.Commit(); err != nil {
+			return fmt.Errorf("usage: quota snapshot points commit: %w", err)
+		}
+		committed = true
+		return nil
+	})
 }
 
 func QueryDailyQuotaByAuthIndexes(authIndexes []string, quotaKey string, days int) ([]DailyQuotaPoint, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return []DailyQuotaPoint{}, nil
@@ -2313,6 +2343,7 @@ func QueryDailyQuotaByAuthIndexes(authIndexes []string, quotaKey string, days in
 }
 
 func QueryQuotaSnapshotPoints(authIndex string, start, end time.Time) ([]QuotaSnapshotPoint, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return []QuotaSnapshotPoint{}, nil
@@ -2408,6 +2439,7 @@ func QueryQuotaSnapshotSeries(authIndex string, start, end time.Time) ([]QuotaSn
 // request_log_content and any legacy inline content not yet migrated out of
 // request_logs.
 func GetRequestLogStorageBytes() (int64, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return 0, nil
@@ -2477,6 +2509,7 @@ func GetChannelAvgLatency(days int) ([]ChannelLatency, error) {
 
 // CountTodayByKey returns the number of requests made by the given API key today (project timezone).
 func CountTodayByKey(apiKey string) (int64, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return 0, nil
@@ -2494,6 +2527,7 @@ func CountTodayByKey(apiKey string) (int64, error) {
 
 // CountTotalByKey returns the total number of requests made by the given API key.
 func CountTotalByKey(apiKey string) (int64, error) {
+	flushUsageDBWrites()
 	db := getDB()
 	if db == nil {
 		return 0, nil

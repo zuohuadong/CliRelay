@@ -73,21 +73,18 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
   -o ./clirelay-updater ./cmd/updater/
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.6
 
-RUN apt-get update -qq \
-  && apt-get install -qq -y --no-install-recommends \
+RUN microdnf install -y \
     tzdata \
     ca-certificates \
     curl \
-  && rm -rf /var/lib/apt/lists/* \
-  && curl -fsSL https://download.docker.com/linux/debian/gpg -o /usr/share/keyrings/docker.asc \
-  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
-  && apt-get update -qq \
-  && apt-get install -qq -y --no-install-recommends \
+  && microdnf clean all \
+  && curl -fsSL https://download.docker.com/linux/centos/docker-ce.repo -o /etc/yum.repos.d/docker-ce.repo \
+  && microdnf install -y \
     docker-ce-cli \
     docker-compose-plugin \
-  && rm -rf /var/lib/apt/lists/*
+  && microdnf clean all
 
 RUN mkdir -p /CLIProxyAPI/panel
 
@@ -105,6 +102,6 @@ ENV TZ=Asia/Shanghai \
     MANAGEMENT_PANEL_DIR=/CLIProxyAPI/panel \
     CLIRELAY_LOCALE=zh
 
-RUN ln -sf /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
+RUN ln -sf /usr/share/zoneinfo/${TZ} /etc/localtime
 
 CMD ["./CLIProxyAPI"]

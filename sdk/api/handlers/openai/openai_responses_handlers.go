@@ -204,14 +204,28 @@ func shouldRetryCompactWithFallback(errMsg *interfaces.ErrorMessage) bool {
 		return true
 	}
 	switch errMsg.StatusCode {
-	case http.StatusNotFound, http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusNotImplemented:
+	case http.StatusRequestTimeout,
+		http.StatusNotFound,
+		http.StatusTooManyRequests,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+		http.StatusNotImplemented,
+		499:
 		return true
 	}
 	if errMsg.Error == nil {
 		return false
 	}
 	errText := strings.ToLower(strings.TrimSpace(errMsg.Error.Error()))
-	return strings.Contains(errText, "responses/compact") || strings.Contains(errText, "unknown provider")
+	return isCompactUpstreamTimeout(errText) || strings.Contains(errText, "responses/compact") || strings.Contains(errText, "unknown provider")
+}
+
+func isCompactUpstreamTimeout(errText string) bool {
+	return strings.Contains(errText, "timeout awaiting response headers") ||
+		strings.Contains(errText, "client.timeout exceeded") ||
+		strings.Contains(errText, "context deadline exceeded") ||
+		strings.Contains(errText, "i/o timeout")
 }
 
 func isCompactModelUnsupportedError(errMsg *interfaces.ErrorMessage) bool {

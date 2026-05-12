@@ -30,6 +30,7 @@ func NewAssignmentEngine(cfg config.ProxyAssignmentConfig, pool []config.ProxyPo
 	if strategy == "" {
 		strategy = config.ProxyAssignmentSpread
 	}
+	cfg.Strategy = strategy
 	return &AssignmentEngine{
 		cfg:      cfg,
 		pool:     enabled,
@@ -48,7 +49,7 @@ func (e *AssignmentEngine) Assign(auths []*coreauth.Auth) []*coreauth.Auth {
 		return nil
 	}
 
-	changed := make([]*coreauth.Auth, 0)
+	var changed []*coreauth.Auth
 	e.mu.Lock()
 	defer e.mu.Unlock()
 

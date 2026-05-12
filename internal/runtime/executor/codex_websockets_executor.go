@@ -38,7 +38,9 @@ const (
 
 type silentTimeoutErr struct{}
 
-func (e silentTimeoutErr) Error() string { return "upstream silent timeout: connected but no data received" }
+func (e silentTimeoutErr) Error() string {
+	return "upstream silent timeout: connected but no data received"
+}
 func (e silentTimeoutErr) StatusCode() int { return 504 }
 
 // CodexWebsocketsExecutor executes Codex Responses requests using a WebSocket transport.

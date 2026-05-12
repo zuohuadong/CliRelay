@@ -94,7 +94,6 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 		return
 	}
 
-
 	if cfg.IsProxyManagerEnabled() {
 		coreMgr := service.CoreAuthManager()
 		var authStore proxy.AuthStore

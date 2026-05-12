@@ -59,6 +59,7 @@ ARG FRONTEND_REF=main
 ARG FRONTEND_COMMIT=none
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+  -buildvcs=false \
   -ldflags="-s -w \
     -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Version=${VERSION}' \
     -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Commit=${COMMIT}' \
@@ -69,6 +70,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
   -o ./CLIProxyAPI ./cmd/server/
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+  -buildvcs=false \
   -ldflags="-s -w" \
   -o ./clirelay-updater ./cmd/updater/
 

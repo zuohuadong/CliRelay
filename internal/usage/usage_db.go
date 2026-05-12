@@ -11,7 +11,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	log "github.com/sirupsen/logrus"
-	_ "modernc.org/sqlite"
+	_ "turso.tech/database/tursogo"
 )
 
 // LogRow represents a single request log entry returned by QueryLogs.
@@ -130,6 +130,7 @@ type QuotaSnapshotSeries struct {
 }
 
 const systemRequestLogFilterValue = "__system__"
+const usageDBDriverName = "turso"
 
 var (
 	usageDB     *sql.DB
@@ -137,6 +138,14 @@ var (
 	usageDBPath string
 	usageLoc    *time.Location
 )
+
+func usageDBDSN(dbPath string) string {
+	separator := "?"
+	if strings.Contains(dbPath, "?") {
+		separator = "&"
+	}
+	return dbPath + separator + "_busy_timeout=5000"
+}
 
 const createTableSQL = `
 CREATE TABLE IF NOT EXISTS request_logs (
@@ -275,17 +284,14 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	}
 	usageLoc = loc
 
-	log.Debugf("usage: opening SQLite database at %s", dbPath)
-	// NOTE: Do NOT use _journal_mode or _busy_timeout in the connection string.
-	// Those are mattn/go-sqlite3 (CGO) conventions. modernc.org/sqlite ignores them,
-	// causing data to stay in-memory without flushing to disk.
-	db, err := sql.Open("sqlite", dbPath)
+	log.Debugf("usage: opening Turso SQLite-compatible database at %s", dbPath)
+	db, err := sql.Open(usageDBDriverName, usageDBDSN(dbPath))
 	if err != nil {
-		return fmt.Errorf("usage: open sqlite: %w", err)
+		return fmt.Errorf("usage: open turso sqlite: %w", err)
 	}
 
-	db.SetMaxOpenConns(1) // SQLite performs best with a single writer
-	db.SetMaxIdleConns(1)
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(4)
 
 	// Verify connectivity with a timeout to avoid hanging on WAL recovery
 	log.Debugf("usage: pinging database to verify connectivity")
@@ -295,19 +301,7 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	defer pingCancel()
 	if err := db.PingContext(pingCtx); err != nil {
 		_ = db.Close()
-		return fmt.Errorf("usage: ping sqlite: %w", err)
-	}
-
-	// Set PRAGMAs explicitly via Exec because modernc.org/sqlite does NOT
-	// support the _pragma=value connection-string syntax used by mattn/go-sqlite3.
-	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
-		_ = db.Close()
-		return fmt.Errorf("usage: set busy_timeout: %w", err)
-	}
-	if res, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
-		log.Warnf("usage: failed to enable WAL journal mode: %v (data may not persist correctly)", err)
-	} else {
-		log.Debugf("usage: journal_mode set (result: %v)", res)
+		return fmt.Errorf("usage: ping turso sqlite: %w", err)
 	}
 
 	log.Debugf("usage: creating tables")
@@ -758,8 +752,10 @@ func ClearRequestLogs(options ClearRequestLogsOptions) (ClearRequestLogsResult, 
 	committed = true
 	refreshRequestLogContentBytes(db)
 
-	if _, err := db.Exec("VACUUM"); err != nil {
-		log.Warnf("usage: vacuum after request log cleanup failed: %v", err)
+	if usageDBSupportsVacuum() {
+		if _, err := db.Exec("VACUUM"); err != nil {
+			log.Warnf("usage: vacuum after request log cleanup failed: %v", err)
+		}
 	}
 
 	if result.DeletedLogs > 0 || result.DeletedContents > 0 || result.ClearedBodyRows > 0 || result.ClearedDetailRows > 0 || result.ClearedLegacyRows > 0 {

@@ -129,7 +129,7 @@ CliRelay 会把 AI CLI 订阅、OAuth 凭据、API Key 以及兼容上游服务�
 | 📈 **分析聚合** | 预计算仪表盘：每日趋势、模型分布、每小时热力图、单 Key 统计 |
 | 🏥 **健康评分引擎** | 实时 0–100 健康评分，综合考虑成功率、延迟、活跃渠道和错误模式 |
 | 📡 **WebSocket 监控** | 通过 WebSocket 实时推送系统状态：CPU、内存、goroutines、网络 I/O、数据库大小 |
-| 🗄️ **No-CGO SQLite** | 使用 `modernc.org/sqlite` — 纯 Go 实现，无 CGO 依赖，易于交叉编译 |
+| 🗄️ **No-CGO SQLite** | 使用 Turso 的 SQLite 兼容 `tursogo` 驱动 — 无 CGO 依赖，并为本地用量存储启用受限连接池 |
 
 ### 🔐 API Key 与权限管理
 

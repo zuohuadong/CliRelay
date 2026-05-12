@@ -75,7 +75,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 # ── Runtime ──────────────────────────────────────────────────────────────────
 FROM alpine:3.22.0
 
-RUN apk add --no-cache tzdata ca-certificates docker-cli docker-cli-compose libgcc
+RUN apk add --no-cache tzdata ca-certificates docker-cli docker-cli-compose libgcc gcompat
 
 RUN mkdir -p /CLIProxyAPI/panel
 

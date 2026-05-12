@@ -30,7 +30,7 @@ import (
 const (
 	codexUserAgent                    = "Codex Desktop/0.130.0-alpha.5 (Mac OS 26.4.1; arm64) unknown (Codex Desktop; 26.506.31421)"
 	codexOriginator                   = "Codex Desktop"
-	codexCompactResponseHeaderTimeout = 2 * time.Minute
+	codexCompactResponseHeaderTimeout = 30 * time.Second
 )
 
 var dataTag = []byte("data:")

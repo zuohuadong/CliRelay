@@ -187,6 +187,50 @@ func TestOpenAIResponsesCompactFallsBackToSupportedModel(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesCompactFallsBackOnHeaderTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	executor := &compactCaptureExecutor{
+		provider: "codex",
+		failures: map[string]error{
+			"test-model": compactStatusErr{code: http.StatusGatewayTimeout, msg: `Post "https://chatgpt.com/backend-api/codex/responses/compact": http2: timeout awaiting response headers`},
+		},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth := &coreauth.Auth{ID: "auth-timeout", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{
+		{ID: "test-model"},
+		{ID: "gpt-5.5"},
+	})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.POST("/v1/responses/compact", h.Compact)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"test-model","input":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	if len(executor.models) != 2 {
+		t.Fatalf("models = %#v, want 2 attempts", executor.models)
+	}
+	if executor.models[1] != "gpt-5.5" {
+		t.Fatalf("fallback model = %q, want %q", executor.models[1], "gpt-5.5")
+	}
+}
+
 func TestOpenAIResponsesCompactFallsBackOnModelNotSupported(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	executor := &compactCaptureExecutor{

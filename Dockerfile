@@ -73,9 +73,15 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
   -o ./clirelay-updater ./cmd/updater/
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
-FROM alpine:3.22.0
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache tzdata ca-certificates docker-cli docker-cli-compose libgcc gcompat
+RUN apt-get update -qq \
+  && apt-get install -qq -y --no-install-recommends \
+    tzdata \
+    ca-certificates \
+    docker.io \
+    docker-compose-v2 \
+  && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /CLIProxyAPI/panel
 
@@ -93,6 +99,6 @@ ENV TZ=Asia/Shanghai \
     MANAGEMENT_PANEL_DIR=/CLIProxyAPI/panel \
     CLIRELAY_LOCALE=zh
 
-RUN cp /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
+RUN ln -sf /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
 
 CMD ["./CLIProxyAPI"]

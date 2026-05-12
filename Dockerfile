@@ -40,8 +40,9 @@ RUN bun install --frozen-lockfile
 RUN bunx vite build
 
 # ── Backend build ────────────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM golang:1.26.1-alpine AS backend-builder
+FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi10/go-toolset:10.1 AS backend-builder
 
+USER root
 WORKDIR /app
 
 COPY go.mod go.sum ./

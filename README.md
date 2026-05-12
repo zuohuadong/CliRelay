@@ -129,7 +129,7 @@ CliRelay turns AI CLI subscriptions, OAuth credentials, API keys, and compatible
 | 📈 **Analytics Aggregation** | Pre-computed dashboards: daily trends, model distribution, hourly heatmaps, per-key statistics |
 | 🏥 **Health Score Engine** | Real-time 0–100 health score considering success rate, latency, active channels, and error patterns |
 | 📡 **WebSocket Monitoring** | Live system stats streamed via WebSocket: CPU, memory, goroutines, network I/O, DB size |
-| 🗄️ **No-CGO SQLite** | Uses `modernc.org/sqlite` — pure Go, no CGO dependency, easy cross-compilation |
+| 🗄️ **No-CGO SQLite** | Uses Turso's SQLite-compatible `tursogo` driver — no CGO dependency and bounded connection pooling for local usage storage |
 
 ### 🔐 API Key & Access Management
 

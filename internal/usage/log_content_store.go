@@ -717,14 +717,16 @@ func compactLogContentStorageInternal(db *sql.DB, allowOptimize bool) {
 		return
 	}
 
-	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-		log.Warnf("usage: wal checkpoint failed: %v", err)
+	if usageDBSupportsWALMaintenance() {
+		if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			log.Warnf("usage: wal checkpoint failed: %v", err)
+		}
 	}
 
 	stats, errStats := querySQLiteSpaceStats(db)
 	if errStats != nil {
 		// If we can't read stats, still keep WAL under control and try optimize if asked.
-		if allowOptimize {
+		if allowOptimize && usageDBSupportsSQLiteOptimize() {
 			if _, err := db.Exec("PRAGMA optimize"); err != nil {
 				log.Warnf("usage: sqlite optimize failed: %v", err)
 			}
@@ -734,7 +736,7 @@ func compactLogContentStorageInternal(db *sql.DB, allowOptimize bool) {
 
 	didVacuum := false
 	now := time.Now()
-	if requestLogStorage.VacuumOnCleanup && shouldVacuum(stats) && vacuumAllowedNow(now) {
+	if requestLogStorage.VacuumOnCleanup && usageDBSupportsVacuum() && shouldVacuum(stats) && vacuumAllowedNow(now) {
 		freeBytes := reclaimableBytes(stats)
 		log.Infof("usage: reclaimable sqlite free space detected (freelist=%d pages, approx=%d bytes), running VACUUM", stats.FreeListCount, freeBytes)
 		if _, err := db.Exec("VACUUM"); err != nil {
@@ -746,16 +748,30 @@ func compactLogContentStorageInternal(db *sql.DB, allowOptimize bool) {
 	}
 
 	// Optimize when asked (maintenance pass) or after a successful VACUUM.
-	if allowOptimize || didVacuum {
+	if usageDBSupportsSQLiteOptimize() && (allowOptimize || didVacuum) {
 		if _, err := db.Exec("PRAGMA optimize"); err != nil {
 			log.Warnf("usage: sqlite optimize failed: %v", err)
 		}
 	}
 
 	// If WAL is still large after checkpoint, surface it as a hint in logs.
-	if walBytes := walBytesOnDisk(); walBytes > 0 && walBytes >= (64<<20) {
-		log.Warnf("usage: sqlite WAL remains large after checkpoint (%d bytes at %s); consider lowering cleanup-interval-minutes or checking long-lived transactions", walBytes, usageWALPath())
+	if usageDBSupportsWALMaintenance() {
+		if walBytes := walBytesOnDisk(); walBytes > 0 && walBytes >= (64<<20) {
+			log.Warnf("usage: sqlite WAL remains large after checkpoint (%d bytes at %s); consider lowering cleanup-interval-minutes or checking long-lived transactions", walBytes, usageWALPath())
+		}
 	}
+}
+
+func usageDBSupportsWALMaintenance() bool {
+	return usageDBDriverName != "turso"
+}
+
+func usageDBSupportsSQLiteOptimize() bool {
+	return usageDBDriverName != "turso"
+}
+
+func usageDBSupportsVacuum() bool {
+	return usageDBDriverName != "turso"
 }
 
 func queryCompressedLogContent(db *sql.DB, query string, args ...any) (LogContentResult, error) {

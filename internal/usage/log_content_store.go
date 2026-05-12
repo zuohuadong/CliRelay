@@ -239,6 +239,10 @@ func runRequestLogMaintenancePass(db *sql.DB) {
 	// - WAL is periodically truncated (usage.db-wal doesn't grow unbounded)
 	// - Large amounts of free pages can be reclaimed even if no rows were changed in this pass
 	compactLogContentStorageInternal(db, true)
+
+	if usageDBDriverName == "turso" {
+		repairIndexIntegrity(db)
+	}
 }
 
 func refreshRequestLogContentBytes(q logContentQuerier) {

@@ -20,9 +20,9 @@ const (
 )
 
 type ProxyAssignmentConfig struct {
-	Enabled   bool                   `yaml:"enabled" json:"enabled"`
+	Enabled   bool                    `yaml:"enabled" json:"enabled"`
 	Strategy  ProxyAssignmentStrategy `yaml:"strategy" json:"strategy"`
-	Providers []string               `yaml:"providers,omitempty" json:"providers,omitempty"`
+	Providers []string                `yaml:"providers,omitempty" json:"providers,omitempty"`
 }
 
 type ProxyHealthConfig struct {

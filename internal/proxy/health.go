@@ -255,11 +255,11 @@ func buildProxyTransport(proxyURL string, preferIPv4 bool) *http.Transport {
 
 	transport := &http.Transport{
 		DialContext:           dialer.DialContext,
-		Proxy:                http.ProxyURL(parsed),
+		Proxy:                 http.ProxyURL(parsed),
 		MaxIdleConns:          4,
 		IdleConnTimeout:       30 * time.Second,
-		TLSHandshakeTimeout:  10 * time.Second,
-		TLSClientConfig:      &tls.Config{MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout:   10 * time.Second,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}
@@ -278,8 +278,8 @@ func buildDefaultTransport(preferIPv4 bool) *http.Transport {
 		DialContext:           dialer.DialContext,
 		MaxIdleConns:          4,
 		IdleConnTimeout:       30 * time.Second,
-		TLSHandshakeTimeout:  10 * time.Second,
-		TLSClientConfig:      &tls.Config{MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout:   10 * time.Second,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}

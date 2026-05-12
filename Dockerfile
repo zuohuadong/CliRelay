@@ -79,8 +79,14 @@ RUN apt-get update -qq \
   && apt-get install -qq -y --no-install-recommends \
     tzdata \
     ca-certificates \
-    docker.io \
-    docker-compose-v2 \
+    curl \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -fsSL https://download.docker.com/linux/debian/gpg -o /usr/share/keyrings/docker.asc \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+  && apt-get update -qq \
+  && apt-get install -qq -y --no-install-recommends \
+    docker-ce-cli \
+    docker-compose-plugin \
   && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /CLIProxyAPI/panel

@@ -73,7 +73,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
   -o ./clirelay-updater ./cmd/updater/
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
-FROM registry.access.redhat.com/ubi9/ubi-minimal:9.6
+FROM registry.access.redhat.com/ubi10/ubi-minimal:10.1
 
 RUN microdnf install -y \
     tzdata \

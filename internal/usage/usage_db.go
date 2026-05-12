@@ -133,10 +133,11 @@ const systemRequestLogFilterValue = "__system__"
 const usageDBDriverName = "turso"
 
 var (
-	usageDB     *sql.DB
-	usageDBMu   sync.Mutex
-	usageDBPath string
-	usageLoc    *time.Location
+	usageDB       *sql.DB
+	usageDBMu     sync.Mutex
+	usageDBPath   string
+	usageLoc      *time.Location
+	insertLogMu   sync.Mutex
 )
 
 func usageDBDSN(dbPath string) string {
@@ -290,8 +291,8 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 		return fmt.Errorf("usage: open turso sqlite: %w", err)
 	}
 
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(2)
 
 	// Verify connectivity with a timeout to avoid hanging on WAL recovery
 	log.Debugf("usage: pinging database to verify connectivity")
@@ -313,6 +314,7 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	usageDB = db
 	usageDBPath = dbPath
 	requestLogStorage = normalizeRequestLogStorageConfig(storageCfg)
+	repairIndexIntegrity(db)
 	log.Debugf("usage: running content column migration")
 	migrateContentColumns(db)
 	log.Debugf("usage: running cost column migration")
@@ -379,6 +381,9 @@ func insertLog(apiKey, apiKeyName, model, source, channelName, authIndex string,
 	if db == nil {
 		return
 	}
+
+	insertLogMu.Lock()
+	defer insertLogMu.Unlock()
 
 	failedInt := 0
 	if failed {
@@ -1991,6 +1996,86 @@ func QueryRequestCountByAuthIndexSince(authIndex string, since time.Time) (int64
 		return 0, fmt.Errorf("usage: request count by auth index query: %w", err)
 	}
 	return count, nil
+}
+
+func repairIndexIntegrity(db *sql.DB) {
+	if db == nil {
+		return
+	}
+	if usageDBDriverName != "turso" {
+		return
+	}
+
+	rows, err := db.Query("PRAGMA integrity_check")
+	if err != nil {
+		log.Warnf("usage: integrity_check failed: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var corruptedIndexes []string
+	for rows.Next() {
+		var msg string
+		if err := rows.Scan(&msg); err != nil {
+			break
+		}
+		if msg == "ok" {
+			continue
+		}
+		for _, idx := range knownDBIndexes() {
+			if strings.Contains(msg, idx) {
+				corruptedIndexes = append(corruptedIndexes, idx)
+				break
+			}
+		}
+	}
+	_ = rows.Close()
+
+	if len(corruptedIndexes) == 0 {
+		return
+	}
+
+	seen := make(map[string]struct{}, len(corruptedIndexes))
+	unique := make([]string, 0, len(corruptedIndexes))
+	for _, idx := range corruptedIndexes {
+		if _, ok := seen[idx]; !ok {
+			seen[idx] = struct{}{}
+			unique = append(unique, idx)
+		}
+	}
+
+	log.Warnf("usage: detected %d corrupted index(es) during startup integrity_check: %v — running REINDEX", len(unique), unique)
+	for _, idx := range unique {
+		if _, err := db.Exec(fmt.Sprintf("REINDEX %s", idx)); err != nil {
+			log.Errorf("usage: REINDEX %s failed: %v", idx, err)
+		} else {
+			log.Infof("usage: REINDEX %s completed successfully", idx)
+		}
+	}
+
+	var checkResult string
+	if err := db.QueryRow("PRAGMA integrity_check").Scan(&checkResult); err != nil {
+		log.Errorf("usage: post-repair integrity_check query failed: %v", err)
+	} else if checkResult != "ok" {
+		log.Warnf("usage: post-repair integrity_check still reports issues: %s", checkResult)
+	} else {
+		log.Infof("usage: post-repair integrity_check passed")
+	}
+}
+
+func knownDBIndexes() []string {
+	return []string{
+		"idx_logs_timestamp",
+		"idx_logs_api_key",
+		"idx_logs_model",
+		"idx_logs_failed",
+		"idx_logs_auth_index",
+		"idx_log_content_timestamp",
+		"idx_quota_snapshots_date",
+		"idx_quota_snapshots_auth",
+		"idx_quota_snapshot_points_auth_time",
+		"idx_quota_snapshot_points_auth_key_time",
+	}
 }
 
 func RecordDailyQuotaSnapshot(authIndex, provider string, quotas map[string]*float64) error {

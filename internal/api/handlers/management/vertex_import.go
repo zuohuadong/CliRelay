@@ -1,15 +1,16 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/vertex"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/vertex"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 // ImportVertexCredential handles uploading a Vertex service account JSON and saving it as an auth record.
@@ -23,21 +24,9 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 		return
 	}
 
-	if c.Request != nil && c.Request.Body != nil && c.Writer != nil {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, bodyutil.VertexCredentialBodyLimit+(64<<10))
-	}
-
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
-		if bodyutil.IsTooLarge(err) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
-			return
-		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file required"})
-		return
-	}
-	if fileHeader.Size > bodyutil.VertexCredentialBodyLimit {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
 		return
 	}
 
@@ -48,12 +37,8 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 	}
 	defer file.Close()
 
-	data, err := bodyutil.ReadAll(file, bodyutil.VertexCredentialBodyLimit)
+	data, err := io.ReadAll(file)
 	if err != nil {
-		if bodyutil.IsTooLarge(err) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
-			return
-		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to read file: %v", err)})
 		return
 	}
@@ -112,7 +97,10 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 		Metadata: metadata,
 	}
 
-	ctx := requestAuthContext(c)
+	ctx := context.Background()
+	if reqCtx := c.Request.Context(); reqCtx != nil {
+		ctx = reqCtx
+	}
 	savedPath, err := h.saveTokenRecord(ctx, record)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "save_failed", "message": err.Error()})

@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/browser"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/antigravity"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/browser"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -67,9 +67,6 @@ func (AntigravityAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 
 	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", port)
 	authURL := authSvc.BuildAuthURL(state, redirectURI)
-	if strings.TrimSpace(authURL) == "" {
-		return nil, fmt.Errorf("antigravity oauth client-id not configured (set config oauth-clients.antigravity.client-id or env %s)", config.EnvAntigravityOAuthClientID)
-	}
 
 	if !opts.NoBrowser {
 		fmt.Println("Opening browser for antigravity authentication")
@@ -101,6 +98,9 @@ func (AntigravityAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 		defer manualPromptTimer.Stop()
 	}
 
+	var manualInputCh <-chan string
+	var manualInputErrCh <-chan error
+
 waitForCallback:
 	for {
 		select {
@@ -118,10 +118,11 @@ waitForCallback:
 				break waitForCallback
 			default:
 			}
-			input, errPrompt := opts.Prompt("Paste the antigravity callback URL (or press Enter to keep waiting): ")
-			if errPrompt != nil {
-				return nil, errPrompt
-			}
+			manualInputCh, manualInputErrCh = misc.AsyncPrompt(opts.Prompt, "Paste the antigravity callback URL (or press Enter to keep waiting): ")
+			continue
+		case input := <-manualInputCh:
+			manualInputCh = nil
+			manualInputErrCh = nil
 			parsed, errParse := misc.ParseOAuthCallback(input)
 			if errParse != nil {
 				return nil, errParse
@@ -135,6 +136,8 @@ waitForCallback:
 				Error: parsed.Error,
 			}
 			break waitForCallback
+		case errManual := <-manualInputErrCh:
+			return nil, errManual
 		case <-timeoutTimer.C:
 			return nil, fmt.Errorf("antigravity: authentication timed out")
 		}

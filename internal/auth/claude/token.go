@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 )
 
 // ClaudeTokenStorage stores OAuth2 token information for Anthropic Claude API authentication.
@@ -30,9 +30,6 @@ type ClaudeTokenStorage struct {
 
 	// Email is the Anthropic account email address associated with this token.
 	Email string `json:"email"`
-
-	// AccountUUID is the Anthropic OAuth account UUID associated with this token.
-	AccountUUID string `json:"account_uuid,omitempty"`
 
 	// Type indicates the authentication provider type, always "claude" for this storage.
 	Type string `json:"type"`

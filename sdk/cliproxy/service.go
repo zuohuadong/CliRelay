@@ -12,17 +12,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
-	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/wsrelay"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/wsrelay"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -35,6 +38,9 @@ type Service struct {
 
 	// cfgMu protects concurrent access to the configuration.
 	cfgMu sync.RWMutex
+
+	// configUpdateMu serializes config updates across watcher + home.
+	configUpdateMu sync.Mutex
 
 	// configPath is the path to the configuration file.
 	configPath string
@@ -75,9 +81,6 @@ type Service struct {
 	// authQueueStop cancels the auth update queue processing.
 	authQueueStop context.CancelFunc
 
-	// authQueueWG waits for the service-owned auth update queue goroutine.
-	authQueueWG sync.WaitGroup
-
 	// authManager handles legacy authentication operations.
 	authManager *sdkAuth.Manager
 
@@ -87,14 +90,14 @@ type Service struct {
 	// coreManager handles core authentication and execution.
 	coreManager *coreauth.Manager
 
-	// compositeHook receives auth lifecycle events (e.g. revoked) and dispatches to notifiers.
-	compositeHook *compositeHook
-
 	// shutdownOnce ensures shutdown is called only once.
 	shutdownOnce sync.Once
 
 	// wsGateway manages websocket Gemini providers.
 	wsGateway *wsrelay.Manager
+
+	homeClient *home.Client
+	homeCancel context.CancelFunc
 }
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
@@ -113,7 +116,6 @@ func newDefaultAuthManager() *sdkAuth.Manager {
 		sdkAuth.NewGeminiAuthenticator(),
 		sdkAuth.NewCodexAuthenticator(),
 		sdkAuth.NewClaudeAuthenticator(),
-		sdkAuth.NewQwenAuthenticator(),
 	)
 }
 
@@ -129,11 +131,7 @@ func (s *Service) ensureAuthUpdateQueue(ctx context.Context) {
 	}
 	queueCtx, cancel := context.WithCancel(ctx)
 	s.authQueueStop = cancel
-	s.authQueueWG.Add(1)
-	go func() {
-		defer s.authQueueWG.Done()
-		s.consumeAuthUpdates(queueCtx)
-	}()
+	go s.consumeAuthUpdates(queueCtx)
 }
 
 func (s *Service) consumeAuthUpdates(ctx context.Context) {
@@ -165,10 +163,6 @@ func (s *Service) emitAuthUpdate(ctx context.Context, update watcher.AuthUpdate)
 		return
 	}
 	if ctx == nil {
-		// Service-originated updates (for example websocket provider lifecycle events)
-		// may be emitted outside any request scope. In that case the service owns a
-		// detached root context and the downstream auth-update queue provides the
-		// bounded handoff/cleanup behavior.
 		ctx = context.Background()
 	}
 	if s.watcher != nil && s.watcher.DispatchRuntimeAuthUpdate(update) {
@@ -259,9 +253,7 @@ func (s *Service) wsOnConnected(channelID string) {
 		Metadata:   map[string]any{"email": channelID}, // metadata drives logging and usage tracking
 	}
 	log.Infof("websocket provider connected: %s", channelID)
-	// Websocket provider presence is a service-owned runtime signal, not a
-	// request-scoped action. Detach it from any transient caller cancellation.
-	s.emitAuthUpdate(context.WithoutCancel(context.Background()), watcher.AuthUpdate{
+	s.emitAuthUpdate(context.Background(), watcher.AuthUpdate{
 		Action: watcher.AuthUpdateActionAdd,
 		ID:     auth.ID,
 		Auth:   auth,
@@ -281,9 +273,8 @@ func (s *Service) wsOnDisconnected(channelID string, reason error) {
 	} else {
 		log.Infof("websocket provider disconnected: %s", channelID)
 	}
-	// Disconnect notifications are also service-owned runtime events and must
-	// still be processed during shutdown and reconnect churn.
-	s.emitAuthUpdate(context.WithoutCancel(context.Background()), watcher.AuthUpdate{
+	ctx := context.Background()
+	s.emitAuthUpdate(ctx, watcher.AuthUpdate{
 		Action: watcher.AuthUpdateActionDelete,
 		ID:     channelID,
 	})
@@ -299,14 +290,17 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 	// IMPORTANT: Update coreManager FIRST, before model registration.
 	// This ensures that configuration changes (proxy_url, prefix, etc.) take effect
 	// immediately for API calls, rather than waiting for model registration to complete.
-	// Model registration may involve network calls (e.g., FetchAntigravityModels) that
-	// could timeout if the new proxy_url is unreachable.
 	op := "register"
 	var err error
 	if existing, ok := s.coreManager.GetByID(auth.ID); ok {
 		auth.CreatedAt = existing.CreatedAt
-		auth.LastRefreshedAt = existing.LastRefreshedAt
-		auth.NextRefreshAfter = existing.NextRefreshAfter
+		if !existing.Disabled && existing.Status != coreauth.StatusDisabled && !auth.Disabled && auth.Status != coreauth.StatusDisabled {
+			auth.LastRefreshedAt = existing.LastRefreshedAt
+			auth.NextRefreshAfter = existing.NextRefreshAfter
+			if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
+				auth.ModelStates = existing.ModelStates
+			}
+		}
 		op = "update"
 		_, err = s.coreManager.Update(ctx, auth)
 	} else {
@@ -325,7 +319,14 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 	// Register models after auth is updated in coreManager.
 	// This operation may block on network calls, but the auth configuration
 	// is already effective at this point.
-	s.registerModelsForAuth(ctx, auth)
+	s.registerModelsForAuth(auth)
+	s.coreManager.ReconcileRegistryModelStates(ctx, auth.ID)
+
+	// Refresh the scheduler entry so that the auth's supportedModelSet is rebuilt
+	// from the now-populated global model registry. Without this, newly added auths
+	// have an empty supportedModelSet (because Register/Update upserts into the
+	// scheduler before registerModelsForAuth runs) and are invisible to the scheduler.
+	s.coreManager.RefreshSchedulerEntry(auth.ID)
 }
 
 func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
@@ -343,6 +344,7 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 			log.Errorf("failed to disable auth %s: %v", id, err)
 		}
 		if strings.EqualFold(strings.TrimSpace(existing.Provider), "codex") {
+			executor.CloseCodexWebsocketSessionsForAuthID(existing.ID, "auth_removed")
 			s.ensureExecutorsForAuth(existing)
 		}
 	}
@@ -353,70 +355,7 @@ func (s *Service) applyRetryConfig(cfg *config.Config) {
 		return
 	}
 	maxInterval := time.Duration(cfg.MaxRetryInterval) * time.Second
-	s.coreManager.SetRetryConfig(cfg.RequestRetry, maxInterval)
-}
-
-func (s *Service) applyConfigReload(newCfg *config.Config, refreshRegisteredModels bool) {
-	if s == nil {
-		return
-	}
-	previousStrategy := ""
-	s.cfgMu.RLock()
-	if s.cfg != nil {
-		previousStrategy = strings.ToLower(strings.TrimSpace(s.cfg.Routing.Strategy))
-	}
-	s.cfgMu.RUnlock()
-
-	if newCfg == nil {
-		s.cfgMu.RLock()
-		newCfg = s.cfg
-		s.cfgMu.RUnlock()
-	}
-	if newCfg == nil {
-		return
-	}
-	internalusage.MigrateRoutingConfigFromConfig(newCfg, s.configPath)
-	internalusage.ApplyStoredRoutingConfig(newCfg)
-	internalusage.MigrateProxyPoolFromConfig(newCfg, s.configPath)
-	internalusage.ApplyStoredProxyPool(newCfg)
-	internalusage.MigrateRuntimeSettingsFromConfig(newCfg, s.configPath)
-	internalusage.ApplyStoredRuntimeSettings(newCfg)
-
-	nextStrategy := strings.ToLower(strings.TrimSpace(newCfg.Routing.Strategy))
-	previousStrategy = config.NormalizeRoutingStrategy(previousStrategy)
-	nextStrategy = config.NormalizeRoutingStrategy(nextStrategy)
-	if s.coreManager != nil && previousStrategy != nextStrategy {
-		var selector coreauth.Selector
-		switch nextStrategy {
-		case "fill-first":
-			selector = &coreauth.FillFirstSelector{}
-		default:
-			selector = &coreauth.RoundRobinSelector{}
-		}
-		s.coreManager.SetSelector(selector)
-	}
-
-	s.applyRetryConfig(newCfg)
-	s.applyPprofConfig(newCfg)
-	if s.server != nil {
-		s.server.UpdateClients(newCfg)
-	}
-	s.cfgMu.Lock()
-	s.cfg = newCfg
-	s.cfgMu.Unlock()
-	if s.watcher != nil {
-		s.watcher.SetConfig(newCfg)
-	}
-	if s.coreManager != nil {
-		s.coreManager.SetConfig(newCfg)
-		s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
-	}
-	s.rebindExecutors()
-	if refreshRegisteredModels && s.coreManager != nil {
-		for _, auth := range s.coreManager.List() {
-			s.registerModelsForAuth(context.Background(), auth)
-		}
-	}
+	s.coreManager.SetRetryConfig(cfg.RequestRetry, maxInterval, cfg.MaxRetryCredentials)
 }
 
 func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName string, ok bool) {
@@ -462,7 +401,7 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 	}
 	// Skip disabled auth entries when (re)binding executors.
 	// Disabled auths can linger during config reloads (e.g., removed OpenAI-compat entries)
-	// and must not override active provider executors (such as iFlow OAuth accounts).
+	// and must not override active provider executors.
 	if a.Disabled {
 		return
 	}
@@ -492,14 +431,6 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
 	case "claude":
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
-	case "bedrock":
-		s.coreManager.RegisterExecutor(executor.NewBedrockExecutor(s.cfg))
-	case "opencode-go":
-		s.coreManager.RegisterExecutor(executor.NewOpenCodeGoExecutor(s.cfg))
-	case "qwen":
-		s.coreManager.RegisterExecutor(executor.NewQwenExecutor(s.cfg))
-	case "iflow":
-		s.coreManager.RegisterExecutor(executor.NewIFlowExecutor(s.cfg))
 	case "kimi":
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
 	default:
@@ -509,6 +440,17 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		}
 		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(providerKey, s.cfg))
 	}
+}
+
+func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey string, models []*ModelInfo) {
+	if a == nil || a.ID == "" {
+		return
+	}
+	if len(models) == 0 {
+		GlobalModelRegistry().UnregisterClient(a.ID)
+		return
+	}
+	GlobalModelRegistry().RegisterClient(a.ID, providerKey, models)
 }
 
 // rebindExecutors refreshes provider executors so they observe the latest configuration.
@@ -529,6 +471,270 @@ func (s *Service) rebindExecutors() {
 	}
 }
 
+func (s *Service) applyConfigUpdate(newCfg *config.Config) {
+	if s == nil {
+		return
+	}
+
+	s.configUpdateMu.Lock()
+	defer s.configUpdateMu.Unlock()
+
+	previousStrategy := ""
+	var previousSessionAffinity bool
+	var previousSessionAffinityTTL string
+	s.cfgMu.RLock()
+	if s.cfg != nil {
+		previousStrategy = strings.ToLower(strings.TrimSpace(s.cfg.Routing.Strategy))
+		previousSessionAffinity = s.cfg.Routing.SessionAffinity
+		previousSessionAffinityTTL = s.cfg.Routing.SessionAffinityTTL
+	}
+	s.cfgMu.RUnlock()
+
+	if newCfg == nil {
+		s.cfgMu.RLock()
+		newCfg = s.cfg
+		s.cfgMu.RUnlock()
+	}
+	if newCfg == nil {
+		return
+	}
+
+	nextStrategy := strings.ToLower(strings.TrimSpace(newCfg.Routing.Strategy))
+	normalizeStrategy := func(strategy string) string {
+		switch strategy {
+		case "fill-first", "fillfirst", "ff":
+			return "fill-first"
+		default:
+			return "round-robin"
+		}
+	}
+	previousStrategy = normalizeStrategy(previousStrategy)
+	nextStrategy = normalizeStrategy(nextStrategy)
+
+	nextSessionAffinity := newCfg.Routing.SessionAffinity
+	nextSessionAffinityTTL := newCfg.Routing.SessionAffinityTTL
+
+	selectorChanged := previousStrategy != nextStrategy ||
+		previousSessionAffinity != nextSessionAffinity ||
+		previousSessionAffinityTTL != nextSessionAffinityTTL
+
+	if s.coreManager != nil && selectorChanged {
+		var selector coreauth.Selector
+		switch nextStrategy {
+		case "fill-first":
+			selector = &coreauth.FillFirstSelector{}
+		default:
+			selector = &coreauth.RoundRobinSelector{}
+		}
+
+		if nextSessionAffinity {
+			ttl := time.Hour
+			if ttlStr := strings.TrimSpace(nextSessionAffinityTTL); ttlStr != "" {
+				if parsed, err := time.ParseDuration(ttlStr); err == nil && parsed > 0 {
+					ttl = parsed
+				}
+			}
+			selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
+				Fallback: selector,
+				TTL:      ttl,
+			})
+		}
+
+		s.coreManager.SetSelector(selector)
+	}
+
+	s.applyRetryConfig(newCfg)
+	s.applyPprofConfig(newCfg)
+	if s.server != nil {
+		s.server.UpdateClients(newCfg)
+	}
+	s.cfgMu.Lock()
+	s.cfg = newCfg
+	s.cfgMu.Unlock()
+	if s.coreManager != nil {
+		s.coreManager.SetConfig(newCfg)
+		s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
+	}
+	s.rebindExecutors()
+}
+
+func forceHomeRuntimeConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	cfg.APIKeys = nil
+	cfg.UsageStatisticsEnabled = true
+	cfg.DisableCooling = true
+	cfg.WebsocketAuth = false
+	cfg.EnableGeminiCLIEndpoint = false
+	cfg.RemoteManagement.AllowRemote = false
+	cfg.RemoteManagement.DisableControlPanel = true
+}
+
+func (s *Service) registerHomeExecutors() {
+	if s == nil || s.coreManager == nil || s.cfg == nil {
+		return
+	}
+
+	// Register baseline executors so home-dispatched auth entries can execute without
+	// requiring any local auth-dir credentials.
+	s.coreManager.RegisterExecutor(executor.NewCodexAutoExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewGeminiExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewGeminiVertexExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewGeminiCLIExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewAIStudioExecutor(s.cfg, "", s.wsGateway))
+	s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor("openai-compatibility", s.cfg))
+}
+
+func (s *Service) applyHomeOverlay(remoteCfg *config.Config) {
+	if s == nil || remoteCfg == nil {
+		return
+	}
+
+	s.cfgMu.RLock()
+	baseCfg := s.cfg
+	s.cfgMu.RUnlock()
+	if baseCfg == nil {
+		return
+	}
+
+	merged := *remoteCfg
+	merged.Host = baseCfg.Host
+	merged.Port = baseCfg.Port
+	merged.TLS = baseCfg.TLS
+	merged.Home = baseCfg.Home
+	forceHomeRuntimeConfig(&merged)
+
+	logHomeConfigChanges(baseCfg, &merged)
+	s.applyConfigUpdate(&merged)
+}
+
+func logHomeConfigChanges(oldCfg, newCfg *config.Config) {
+	if oldCfg == nil || newCfg == nil || !newCfg.Home.Enabled || (!oldCfg.Debug && !newCfg.Debug) {
+		return
+	}
+
+	details := diff.BuildConfigChangeDetails(oldCfg, newCfg)
+	if len(details) == 0 {
+		return
+	}
+
+	if newCfg.Debug && !log.IsLevelEnabled(log.DebugLevel) {
+		util.SetLogLevel(newCfg)
+	}
+
+	log.Debugf("home config changes detected:")
+	for _, detail := range details {
+		log.Debugf("  %s", detail)
+	}
+}
+
+func (s *Service) startHomeUsageForwarder(ctx context.Context, client *home.Client) {
+	if s == nil || client == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	sleep := func(d time.Duration) bool {
+		if d <= 0 {
+			return true
+		}
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return true
+		}
+	}
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			if !client.HeartbeatOK() {
+				if !sleep(time.Second) {
+					return
+				}
+				continue
+			}
+
+			items := redisqueue.PopOldest(64)
+			if len(items) == 0 {
+				if !sleep(500 * time.Millisecond) {
+					return
+				}
+				continue
+			}
+
+			for i := range items {
+				if errPush := client.LPushUsage(ctx, items[i]); errPush != nil {
+					for j := i; j < len(items); j++ {
+						redisqueue.Enqueue(items[j])
+					}
+					if !sleep(time.Second) {
+						return
+					}
+					break
+				}
+			}
+		}
+	}()
+}
+
+func (s *Service) startHomeSubscriber(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	s.cfgMu.RLock()
+	cfg := s.cfg
+	s.cfgMu.RUnlock()
+	if cfg == nil || !cfg.Home.Enabled {
+		return
+	}
+
+	if s.homeCancel != nil {
+		s.homeCancel()
+		s.homeCancel = nil
+	}
+	if s.homeClient != nil {
+		s.homeClient.Close()
+		s.homeClient = nil
+	}
+
+	homeCtx := ctx
+	if homeCtx == nil {
+		homeCtx = context.Background()
+	}
+	homeCtx, cancel := context.WithCancel(homeCtx)
+	s.homeCancel = cancel
+
+	client := home.New(cfg.Home)
+	s.homeClient = client
+	home.SetCurrent(client)
+
+	go client.StartConfigSubscriber(homeCtx, func(raw []byte) error {
+		parsed, err := config.ParseConfigBytes(raw)
+		if err != nil {
+			log.Warnf("failed to parse home config payload: %v", err)
+			return err
+		}
+		s.applyHomeOverlay(parsed)
+		return nil
+	})
+	s.startHomeUsageForwarder(homeCtx, client)
+}
+
 // Run starts the service and blocks until the context is cancelled or the server stops.
 // It initializes all components including authentication, file watching, HTTP server,
 // and starts processing requests. The method blocks until the context is cancelled.
@@ -543,16 +749,17 @@ func (s *Service) Run(ctx context.Context) error {
 		return fmt.Errorf("cliproxy: service is nil")
 	}
 	if ctx == nil {
-		// The top-level service may be started without an external owner context.
-		// In that case it owns the root process lifetime itself.
 		ctx = context.Background()
 	}
 
 	usage.StartDefault(ctx)
+	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
+	if homeEnabled {
+		forceHomeRuntimeConfig(s.cfg)
+		redisqueue.SetUsageStatisticsEnabled(true)
+	}
 
-	// Shutdown needs a bounded context that survives parent cancellation long
-	// enough to stop the HTTP server, watcher, websocket gateway, and pprof cleanly.
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 	defer func() {
 		if err := s.Shutdown(shutdownCtx); err != nil {
@@ -560,44 +767,49 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 	}()
 
-	if err := s.ensureAuthDir(); err != nil {
-		return err
+	if !homeEnabled {
+		if errEnsureAuthDir := s.ensureAuthDir(); errEnsureAuthDir != nil {
+			return errEnsureAuthDir
+		}
 	}
 
 	s.applyRetryConfig(s.cfg)
 
-	if s.coreManager != nil {
+	if s.coreManager != nil && !homeEnabled {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
-		for _, auth := range s.coreManager.List() {
-			if auth == nil || auth.ID == "" {
-				continue
-			}
-			s.ensureExecutorsForAuth(auth)
-			s.registerModelsForAuth(ctx, auth)
-		}
 	}
 
-	var err error
-	if _, err = s.tokenProvider.Load(ctx, s.cfg); err != nil && !errors.Is(err, context.Canceled) {
-		return err
-	}
-	if _, err = s.apiKeyProvider.Load(ctx, s.cfg); err != nil && !errors.Is(err, context.Canceled) {
-		return err
+	if !homeEnabled {
+		tokenResult, err := s.tokenProvider.Load(ctx, s.cfg)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			return err
+		}
+		if tokenResult == nil {
+			tokenResult = &TokenClientResult{}
+		}
+
+		apiKeyResult, err := s.apiKeyProvider.Load(ctx, s.cfg)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			return err
+		}
+		if apiKeyResult == nil {
+			apiKeyResult = &APIKeyClientResult{}
+		}
 	}
 
 	// legacy clients removed; no caches to refresh
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
-	serverOptions := append([]api.ServerOption(nil), s.serverOptions...)
-	serverOptions = append(serverOptions, api.WithConfigMutatedCallback(func(updated *config.Config) {
-		s.applyConfigReload(updated, true)
-	}))
-	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, serverOptions...)
+	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
 
 	if s.authManager == nil {
 		s.authManager = newDefaultAuthManager()
+	}
+
+	if homeEnabled {
+		s.startHomeSubscriber(ctx)
 	}
 
 	s.ensureWebsocketGateway()
@@ -608,9 +820,7 @@ func (s *Service) Run(ctx context.Context) error {
 				return
 			}
 			if !oldEnabled && newEnabled {
-				// Existing websocket sessions are service-owned and must be terminated
-				// even if the caller that changed config has already been cancelled.
-				ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				if errStop := s.wsGateway.Stop(ctx); errStop != nil {
 					log.Warnf("failed to reset websocket connections after ws-auth change %t -> %t: %v", oldEnabled, newEnabled, errStop)
@@ -623,13 +833,55 @@ func (s *Service) Run(ctx context.Context) error {
 		})
 	}
 
+	if homeEnabled {
+		s.registerHomeExecutors()
+		// Home mode does not expose in-process Redis RESP usage output; usage is forwarded to home instead.
+		redisqueue.SetEnabled(true)
+	}
+
 	if s.hooks.OnBeforeStart != nil {
 		s.hooks.OnBeforeStart(s.cfg)
 	}
 
+	// Register callback for startup and periodic model catalog refresh.
+	// When remote model definitions change, re-register models for affected providers.
+	// This intentionally rebuilds per-auth model availability from the latest catalog
+	// snapshot instead of preserving prior registry suppression state.
+	registry.SetModelRefreshCallback(func(changedProviders []string) {
+		if s == nil || s.coreManager == nil || len(changedProviders) == 0 {
+			return
+		}
+
+		providerSet := make(map[string]bool, len(changedProviders))
+		for _, p := range changedProviders {
+			providerSet[strings.ToLower(strings.TrimSpace(p))] = true
+		}
+
+		auths := s.coreManager.List()
+		refreshed := 0
+		for _, item := range auths {
+			if item == nil || item.ID == "" {
+				continue
+			}
+			auth, ok := s.coreManager.GetByID(item.ID)
+			if !ok || auth == nil || auth.Disabled {
+				continue
+			}
+			provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+			if !providerSet[provider] {
+				continue
+			}
+			if s.refreshModelRegistrationForAuth(auth) {
+				refreshed++
+			}
+		}
+
+		if refreshed > 0 {
+			log.Infof("re-registered models for %d auth(s) due to model catalog changes: %v", refreshed, changedProviders)
+		}
+	})
+
 	s.serverErr = make(chan error, 1)
-	// Service owns this server goroutine. The buffered channel lets it exit
-	// even when Shutdown stops the HTTP server before Start observes serverErr.
 	go func() {
 		if errStart := s.server.Start(); errStart != nil {
 			s.serverErr <- errStart
@@ -647,47 +899,42 @@ func (s *Service) Run(ctx context.Context) error {
 		s.hooks.OnAfterStart(s)
 	}
 
-	var watcherWrapper *WatcherWrapper
-	reloadCallback := func(newCfg *config.Config) {
-		s.applyConfigReload(newCfg, false)
-	}
+	if !homeEnabled {
+		var watcherWrapper *WatcherWrapper
+		reloadCallback := func(newCfg *config.Config) { s.applyConfigUpdate(newCfg) }
 
-	watcherWrapper, err = s.watcherFactory(s.configPath, s.cfg.AuthDir, reloadCallback)
-	if err != nil {
-		return fmt.Errorf("cliproxy: failed to create watcher: %w", err)
-	}
-	s.watcher = watcherWrapper
-	s.ensureAuthUpdateQueue(ctx)
-	if s.authUpdates != nil {
-		watcherWrapper.SetAuthUpdateQueue(s.authUpdates)
-	}
-	watcherWrapper.SetConfig(s.cfg)
+		watcherWrapper, errCreate := s.watcherFactory(s.configPath, s.cfg.AuthDir, reloadCallback)
+		if errCreate != nil {
+			return fmt.Errorf("cliproxy: failed to create watcher: %w", errCreate)
+		}
+		s.watcher = watcherWrapper
+		s.ensureAuthUpdateQueue(ctx)
+		if s.authUpdates != nil {
+			watcherWrapper.SetAuthUpdateQueue(s.authUpdates)
+		}
+		watcherWrapper.SetConfig(s.cfg)
 
-	// Service owns the watcher context and cancels it from Shutdown or when the
-	// parent Start context is cancelled.
-	watcherCtx, watcherCancel := context.WithCancel(ctx)
-	s.watcherCancel = watcherCancel
-	if err = watcherWrapper.Start(watcherCtx); err != nil {
-		return fmt.Errorf("cliproxy: failed to start watcher: %w", err)
+		watcherCtx, watcherCancel := context.WithCancel(context.Background())
+		s.watcherCancel = watcherCancel
+		if errStart := watcherWrapper.Start(watcherCtx); errStart != nil {
+			return fmt.Errorf("cliproxy: failed to start watcher: %w", errStart)
+		}
+		log.Info("file watcher started for config and auth directory changes")
 	}
-	log.Info("file watcher started for config and auth directory changes")
 
 	// Prefer core auth manager auto refresh if available.
-	if s.coreManager != nil {
+	if s.coreManager != nil && !homeEnabled {
 		interval := 15 * time.Minute
-		// Auto-refresh is a service-owned background loop and intentionally outlives
-		// any one request while remaining bound to the service lifetime.
-		s.coreManager.StartAutoRefresh(context.WithoutCancel(ctx), interval)
+		s.coreManager.StartAutoRefresh(context.Background(), interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 	}
-	internalusage.StartOpenRouterModelSyncScheduler(ctx)
 
 	select {
 	case <-ctx.Done():
 		log.Debug("service context cancelled, shutting down...")
 		return ctx.Err()
-	case err = <-s.serverErr:
-		return err
+	case errServer := <-s.serverErr:
+		return errServer
 	}
 }
 
@@ -707,10 +954,18 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	var shutdownErr error
 	s.shutdownOnce.Do(func() {
 		if ctx == nil {
-			// Shutdown may be invoked from deferred cleanup after the main service
-			// context is already gone. Fall back to a root context so cleanup can finish.
 			ctx = context.Background()
 		}
+
+		if s.homeCancel != nil {
+			s.homeCancel()
+			s.homeCancel = nil
+		}
+		if s.homeClient != nil {
+			s.homeClient.Close()
+			s.homeClient = nil
+		}
+		home.ClearCurrent()
 
 		// legacy refresh loop removed; only stopping core auth manager below
 
@@ -719,7 +974,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 		if s.coreManager != nil {
 			s.coreManager.StopAutoRefresh()
-			s.coreManager.CloseExecutionSession(coreauth.CloseAllExecutionSessionsID)
 		}
 		if s.watcher != nil {
 			if err := s.watcher.Stop(); err != nil {
@@ -737,7 +991,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 		if s.authQueueStop != nil {
 			s.authQueueStop()
-			s.authQueueWG.Wait()
 			s.authQueueStop = nil
 		}
 
@@ -785,7 +1038,7 @@ func (s *Service) ensureAuthDir() error {
 }
 
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
-func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
+func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	if a == nil || a.ID == "" {
 		return
 	}
@@ -797,8 +1050,6 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	if authKind == "" {
 		if kind, _ := a.AccountInfo(); strings.EqualFold(kind, "api_key") {
 			authKind = "apikey"
-		} else if strings.EqualFold(kind, "oauth") {
-			authKind = "oauth"
 		}
 	}
 	if a.Attributes != nil {
@@ -828,11 +1079,6 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 			excluded = strings.Split(val, ",")
 		}
 	}
-	if compatDetected {
-		if s.registerOpenAICompatibilityModels(a, compatProviderKey, compatDisplayName) {
-			return
-		}
-	}
 	var models []*ModelInfo
 	switch provider {
 	case "gemini":
@@ -849,9 +1095,12 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	case "vertex":
 		// Vertex AI Gemini supports the same model identifiers as Gemini.
 		models = registry.GetGeminiVertexModels()
-		if authKind == "apikey" {
-			if entry := s.resolveConfigVertexCompatKey(a); entry != nil && len(entry.Models) > 0 {
+		if entry := s.resolveConfigVertexCompatKey(a); entry != nil {
+			if len(entry.Models) > 0 {
 				models = buildVertexCompatConfigModels(entry)
+			}
+			if authKind == "apikey" {
+				excluded = entry.ExcludedModels
 			}
 		}
 		models = applyExcludedModels(models, excluded)
@@ -862,17 +1111,7 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		models = registry.GetAIStudioModels()
 		models = applyExcludedModels(models, excluded)
 	case "antigravity":
-		fetchCtx := ctx
-		if fetchCtx == nil {
-			// Model fetch can be called from service-owned refresh paths that have no
-			// request scope; fall back to a service-owned root context in that case.
-			fetchCtx = context.Background()
-		}
-		// Model registration should not be aborted by unrelated caller cancellation
-		// once the service has committed to refreshing the registry.
-		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(fetchCtx), 15*time.Second)
-		models = executor.FetchAntigravityModels(fetchCtx, a, s.cfg)
-		cancel()
+		models = registry.GetAntigravityModels()
 		models = applyExcludedModels(models, excluded)
 	case "claude":
 		models = registry.GetClaudeModels()
@@ -884,27 +1123,24 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 				excluded = entry.ExcludedModels
 			}
 		}
-		models = appendOAuthProviderModelConfigs(models, provider, authKind)
-		models = applyExcludedModels(models, excluded)
-	case "bedrock":
-		models = registry.GetBedrockModels()
-		if entry := s.resolveConfigBedrockKey(a); entry != nil {
-			if len(entry.Models) > 0 {
-				models = buildBedrockConfigModels(entry)
-			}
-			if authKind == "apikey" {
-				excluded = entry.ExcludedModels
-			}
-		}
-		models = applyExcludedModels(models, excluded)
-	case "opencode-go":
-		models = registry.GetOpenCodeGoModels()
-		if entry := s.resolveConfigOpenCodeGoKey(a); entry != nil && authKind == "apikey" {
-			excluded = entry.ExcludedModels
-		}
 		models = applyExcludedModels(models, excluded)
 	case "codex":
-		models = registry.GetOpenAIModels()
+		codexPlanType := ""
+		if a.Attributes != nil {
+			codexPlanType = strings.TrimSpace(a.Attributes["plan_type"])
+		}
+		switch strings.ToLower(codexPlanType) {
+		case "pro":
+			models = registry.GetCodexProModels()
+		case "plus":
+			models = registry.GetCodexPlusModels()
+		case "team", "business", "go":
+			models = registry.GetCodexTeamModels()
+		case "free":
+			models = registry.GetCodexFreeModels()
+		default:
+			models = registry.GetCodexProModels()
+		}
 		if entry := s.resolveConfigCodexKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildCodexConfigModels(entry)
@@ -914,15 +1150,98 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 			}
 		}
 		models = applyExcludedModels(models, excluded)
-	case "qwen":
-		models = registry.GetQwenModels()
-		models = applyExcludedModels(models, excluded)
-	case "iflow":
-		models = registry.GetIFlowModels()
-		models = applyExcludedModels(models, excluded)
 	case "kimi":
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
+	default:
+		// Handle OpenAI-compatibility providers by name using config
+		if s.cfg != nil {
+			providerKey := provider
+			compatName := strings.TrimSpace(a.Provider)
+			isCompatAuth := false
+			if compatDetected {
+				if compatProviderKey != "" {
+					providerKey = compatProviderKey
+				}
+				if compatDisplayName != "" {
+					compatName = compatDisplayName
+				}
+				isCompatAuth = true
+			}
+			if strings.EqualFold(providerKey, "openai-compatibility") {
+				isCompatAuth = true
+				if a.Attributes != nil {
+					if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
+						compatName = v
+					}
+					if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
+						providerKey = strings.ToLower(v)
+						isCompatAuth = true
+					}
+				}
+				if providerKey == "openai-compatibility" && compatName != "" {
+					providerKey = strings.ToLower(compatName)
+				}
+			} else if a.Attributes != nil {
+				if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
+					compatName = v
+					isCompatAuth = true
+				}
+				if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
+					providerKey = strings.ToLower(v)
+					isCompatAuth = true
+				}
+			}
+			for i := range s.cfg.OpenAICompatibility {
+				compat := &s.cfg.OpenAICompatibility[i]
+				if compat.Disabled {
+					continue
+				}
+				if strings.EqualFold(compat.Name, compatName) {
+					isCompatAuth = true
+					// Convert compatibility models to registry models
+					ms := make([]*ModelInfo, 0, len(compat.Models))
+					for j := range compat.Models {
+						m := compat.Models[j]
+						// Use alias as model ID, fallback to name if alias is empty
+						modelID := m.Alias
+						if modelID == "" {
+							modelID = m.Name
+						}
+						thinking := m.Thinking
+						if thinking == nil {
+							thinking = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
+						}
+						ms = append(ms, &ModelInfo{
+							ID:          modelID,
+							Object:      "model",
+							Created:     time.Now().Unix(),
+							OwnedBy:     compat.Name,
+							Type:        "openai-compatibility",
+							DisplayName: modelID,
+							UserDefined: false,
+							Thinking:    thinking,
+						})
+					}
+					// Register and return
+					if len(ms) > 0 {
+						if providerKey == "" {
+							providerKey = "openai-compatibility"
+						}
+						s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
+					} else {
+						// Ensure stale registrations are cleared when model list becomes empty.
+						GlobalModelRegistry().UnregisterClient(a.ID)
+					}
+					return
+				}
+			}
+			if isCompatAuth {
+				// No matching provider found or models removed entirely; drop any prior registration.
+				GlobalModelRegistry().UnregisterClient(a.ID)
+				return
+			}
+		}
 	}
 	models = applyOAuthModelAlias(s.cfg, provider, authKind, models)
 	if len(models) > 0 {
@@ -930,94 +1249,60 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		if key == "" {
 			key = strings.ToLower(strings.TrimSpace(a.Provider))
 		}
-		GlobalModelRegistry().RegisterClient(a.ID, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
-		if provider == "antigravity" {
-			s.backfillAntigravityModels(a, models)
-		}
+		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		return
 	}
 
 	GlobalModelRegistry().UnregisterClient(a.ID)
 }
 
-func (s *Service) registerOpenAICompatibilityModels(a *coreauth.Auth, providerKey, compatName string) bool {
-	if s == nil || s.cfg == nil || a == nil {
+// refreshModelRegistrationForAuth re-applies the latest model registration for
+// one auth and reconciles any concurrent auth changes that race with the
+// refresh. Callers are expected to pre-filter provider membership.
+//
+// Re-registration is deliberate: registry cooldown/suspension state is treated
+// as part of the previous registration snapshot and is cleared when the auth is
+// rebound to the refreshed model catalog.
+func (s *Service) refreshModelRegistrationForAuth(current *coreauth.Auth) bool {
+	if s == nil || s.coreManager == nil || current == nil || current.ID == "" {
 		return false
 	}
-	if providerKey == "" {
-		providerKey = strings.ToLower(strings.TrimSpace(a.Provider))
+
+	if !current.Disabled {
+		s.ensureExecutorsForAuth(current)
 	}
-	if compatName == "" {
-		compatName = strings.TrimSpace(a.Provider)
+	s.registerModelsForAuth(current)
+	s.coreManager.ReconcileRegistryModelStates(context.Background(), current.ID)
+
+	latest, ok := s.latestAuthForModelRegistration(current.ID)
+	if !ok || latest.Disabled {
+		GlobalModelRegistry().UnregisterClient(current.ID)
+		s.coreManager.RefreshSchedulerEntry(current.ID)
+		return false
 	}
-	if strings.EqualFold(providerKey, "openai-compatibility") {
-		if a.Attributes != nil {
-			if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
-				compatName = v
-			}
-			if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
-				providerKey = strings.ToLower(v)
-			}
-		}
-		if providerKey == "openai-compatibility" && compatName != "" {
-			providerKey = strings.ToLower(compatName)
-		}
-	} else if a.Attributes != nil {
-		if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
-			compatName = v
-		}
-		if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
-			providerKey = strings.ToLower(v)
-		}
-	}
-	for i := range s.cfg.OpenAICompatibility {
-		compat := &s.cfg.OpenAICompatibility[i]
-		if strings.EqualFold(compat.Name, compatName) {
-			now := time.Now().Unix()
-			ms := make([]*ModelInfo, 0, len(compat.Models)*2)
-			seenModels := make(map[string]struct{}, len(compat.Models)*2)
-			addModel := func(modelID string) {
-				modelID = strings.TrimSpace(modelID)
-				if modelID == "" {
-					return
-				}
-				key := strings.ToLower(modelID)
-				if _, exists := seenModels[key]; exists {
-					return
-				}
-				seenModels[key] = struct{}{}
-				ms = append(ms, &ModelInfo{
-					ID:          modelID,
-					Object:      "model",
-					Created:     now,
-					OwnedBy:     compat.Name,
-					Type:        "openai-compatibility",
-					DisplayName: modelID,
-					UserDefined: true,
-				})
-			}
-			for j := range compat.Models {
-				m := compat.Models[j]
-				name := strings.TrimSpace(m.Name)
-				alias := strings.TrimSpace(m.Alias)
-				if alias != "" {
-					addModel(alias)
-				}
-				addModel(name)
-			}
-			if len(ms) > 0 {
-				if providerKey == "" {
-					providerKey = "openai-compatibility"
-				}
-				GlobalModelRegistry().RegisterClient(a.ID, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
-			} else {
-				GlobalModelRegistry().UnregisterClient(a.ID)
-			}
-			return true
-		}
-	}
-	GlobalModelRegistry().UnregisterClient(a.ID)
+
+	// Re-apply the latest auth snapshot so concurrent auth updates cannot leave
+	// stale model registrations behind. This may duplicate registration work when
+	// no auth fields changed, but keeps the refresh path simple and correct.
+	s.ensureExecutorsForAuth(latest)
+	s.registerModelsForAuth(latest)
+	s.coreManager.ReconcileRegistryModelStates(context.Background(), latest.ID)
+	s.coreManager.RefreshSchedulerEntry(current.ID)
 	return true
+}
+
+// latestAuthForModelRegistration returns the latest auth snapshot regardless of
+// provider membership. Callers use this after a registration attempt to restore
+// whichever state currently owns the client ID in the global registry.
+func (s *Service) latestAuthForModelRegistration(authID string) (*coreauth.Auth, bool) {
+	if s == nil || s.coreManager == nil || authID == "" {
+		return nil, false
+	}
+	auth, ok := s.coreManager.GetByID(authID)
+	if !ok || auth == nil || auth.ID == "" {
+		return nil, false
+	}
+	return auth, true
 }
 
 func (s *Service) resolveConfigClaudeKey(auth *coreauth.Auth) *config.ClaudeKey {
@@ -1079,78 +1364,6 @@ func (s *Service) resolveConfigGeminiKey(auth *coreauth.Auth) *config.GeminiKey 
 			continue
 		}
 		if attrKey == "" && attrBase != "" && strings.EqualFold(cfgBase, attrBase) {
-			return entry
-		}
-	}
-	return nil
-}
-
-func (s *Service) resolveConfigBedrockKey(auth *coreauth.Auth) *config.BedrockKey {
-	if auth == nil || s.cfg == nil {
-		return nil
-	}
-	var attrKey, attrAccessKeyID, attrBase, attrRegion, attrMode string
-	if auth.Attributes != nil {
-		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
-		attrAccessKeyID = strings.TrimSpace(auth.Attributes["access_key_id"])
-		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
-		attrRegion = strings.TrimSpace(auth.Attributes["region"])
-		attrMode = strings.ToLower(strings.TrimSpace(auth.Attributes["auth_mode"]))
-	}
-	if attrMode == "apikey" || attrMode == "api_key" {
-		attrMode = "api-key"
-	}
-	for i := range s.cfg.BedrockKey {
-		entry := &s.cfg.BedrockKey[i]
-		cfgMode := strings.ToLower(strings.TrimSpace(entry.AuthMode))
-		if cfgMode == "" {
-			cfgMode = "sigv4"
-		}
-		if cfgMode == "apikey" || cfgMode == "api_key" {
-			cfgMode = "api-key"
-		}
-		if attrMode != "" && cfgMode != attrMode {
-			continue
-		}
-		cfgBase := strings.TrimSpace(entry.BaseURL)
-		if attrBase != "" && !strings.EqualFold(cfgBase, attrBase) {
-			continue
-		}
-		cfgRegion := strings.TrimSpace(entry.Region)
-		if cfgRegion == "" {
-			cfgRegion = config.DefaultBedrockRegion
-		}
-		if attrRegion != "" && !strings.EqualFold(cfgRegion, attrRegion) {
-			continue
-		}
-		if cfgMode == "api-key" {
-			if attrKey != "" && strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
-				return entry
-			}
-			continue
-		}
-		cfgAccessKeyID := strings.TrimSpace(entry.AccessKeyID)
-		if attrAccessKeyID != "" && strings.EqualFold(cfgAccessKeyID, attrAccessKeyID) {
-			return entry
-		}
-		if attrKey != "" && strings.EqualFold(cfgAccessKeyID, attrKey) {
-			return entry
-		}
-	}
-	return nil
-}
-
-func (s *Service) resolveConfigOpenCodeGoKey(auth *coreauth.Auth) *config.OpenCodeGoKey {
-	if auth == nil || s.cfg == nil {
-		return nil
-	}
-	var attrKey string
-	if auth.Attributes != nil {
-		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
-	}
-	for i := range s.cfg.OpenCodeGoKey {
-		entry := &s.cfg.OpenCodeGoKey[i]
-		if attrKey != "" && strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
 			return entry
 		}
 	}
@@ -1228,56 +1441,6 @@ func (s *Service) oauthExcludedModels(provider, authKind string) []string {
 		return nil
 	}
 	return cfg.OAuthExcludedModels[providerKey]
-}
-
-func (s *Service) backfillAntigravityModels(source *coreauth.Auth, primaryModels []*ModelInfo) {
-	if s == nil || s.coreManager == nil || len(primaryModels) == 0 {
-		return
-	}
-
-	sourceID := ""
-	if source != nil {
-		sourceID = strings.TrimSpace(source.ID)
-	}
-
-	reg := registry.GetGlobalRegistry()
-	for _, candidate := range s.coreManager.List() {
-		if candidate == nil || candidate.Disabled {
-			continue
-		}
-		candidateID := strings.TrimSpace(candidate.ID)
-		if candidateID == "" || candidateID == sourceID {
-			continue
-		}
-		if !strings.EqualFold(strings.TrimSpace(candidate.Provider), "antigravity") {
-			continue
-		}
-		if len(reg.GetModelsForClient(candidateID)) > 0 {
-			continue
-		}
-
-		authKind := strings.ToLower(strings.TrimSpace(candidate.Attributes["auth_kind"]))
-		if authKind == "" {
-			if kind, _ := candidate.AccountInfo(); strings.EqualFold(kind, "api_key") {
-				authKind = "apikey"
-			}
-		}
-		excluded := s.oauthExcludedModels("antigravity", authKind)
-		if candidate.Attributes != nil {
-			if val, ok := candidate.Attributes["excluded_models"]; ok && strings.TrimSpace(val) != "" {
-				excluded = strings.Split(val, ",")
-			}
-		}
-
-		models := applyExcludedModels(primaryModels, excluded)
-		models = applyOAuthModelAlias(s.cfg, "antigravity", authKind, models)
-		if len(models) == 0 {
-			continue
-		}
-
-		reg.RegisterClient(candidateID, "antigravity", applyModelPrefixes(models, candidate.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
-		log.Debugf("antigravity models backfilled for auth %s using primary model list", candidateID)
-	}
 }
 
 func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
@@ -1472,107 +1635,11 @@ func buildClaudeConfigModels(entry *config.ClaudeKey) []*ModelInfo {
 	return buildConfigModels(entry.Models, "anthropic", "claude")
 }
 
-func appendOAuthProviderModelConfigs(models []*ModelInfo, provider, authKind string) []*ModelInfo {
-	if !strings.EqualFold(strings.TrimSpace(authKind), "oauth") {
-		return models
-	}
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	if provider == "" {
-		return models
-	}
-	owners := modelConfigOwnerAliases(provider)
-	if len(owners) == 0 {
-		return models
-	}
-
-	out := append([]*ModelInfo(nil), models...)
-	seen := make(map[string]struct{}, len(out))
-	for _, model := range out {
-		if model == nil {
-			continue
-		}
-		id := strings.ToLower(strings.TrimSpace(model.ID))
-		if id != "" {
-			seen[id] = struct{}{}
-		}
-	}
-
-	now := time.Now().Unix()
-	for _, row := range internalusage.ListModelConfigs() {
-		modelID := strings.TrimSpace(row.ModelID)
-		if modelID == "" || !row.Enabled || !oauthProviderModelConfigSourceAllowed(row.Source) {
-			continue
-		}
-		if _, ok := owners[normalizeModelConfigOwner(row.OwnedBy)]; !ok {
-			continue
-		}
-		key := strings.ToLower(modelID)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, &ModelInfo{
-			ID:          modelID,
-			Object:      "model",
-			Created:     now,
-			OwnedBy:     strings.TrimSpace(row.OwnedBy),
-			Type:        provider,
-			DisplayName: strings.TrimSpace(row.Description),
-			Description: strings.TrimSpace(row.Description),
-			UserDefined: true,
-		})
-	}
-	return out
-}
-
-func oauthProviderModelConfigSourceAllowed(source string) bool {
-	switch strings.ToLower(strings.TrimSpace(source)) {
-	case "user", "seed", "openrouter":
-		return true
-	default:
-		return false
-	}
-}
-
-func modelConfigOwnerAliases(provider string) map[string]struct{} {
-	provider = normalizeModelConfigOwner(provider)
-	if provider == "" {
-		return nil
-	}
-	values := []string{provider}
-	switch provider {
-	case "claude":
-		values = append(values, "anthropic", "claude-code")
-	case "gemini", "gemini-cli", "vertex":
-		values = append(values, "google")
-	case "codex":
-		values = append(values, "openai")
-	}
-	out := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		if value = normalizeModelConfigOwner(value); value != "" {
-			out[value] = struct{}{}
-		}
-	}
-	return out
-}
-
-func normalizeModelConfigOwner(value string) string {
-	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), "-"))
-}
-
-func buildBedrockConfigModels(entry *config.BedrockKey) []*ModelInfo {
-	if entry == nil {
-		return nil
-	}
-	return buildConfigModels(entry.Models, "aws", "bedrock")
-}
-
 func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return buildConfigModels(entry.Models, "openai", "openai")
+	return registry.WithCodexBuiltins(buildConfigModels(entry.Models, "openai", "openai"))
 }
 
 func rewriteModelInfoName(name, oldID, newID string) string {

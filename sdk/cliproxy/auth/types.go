@@ -7,12 +7,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	baseauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth"
+	baseauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth"
 )
 
 // PostAuthHook defines a function that is called after an Auth record is created
@@ -68,8 +69,6 @@ type Auth struct {
 	Unavailable bool `json:"unavailable"`
 	// ProxyURL overrides the global proxy setting for this auth if provided.
 	ProxyURL string `json:"proxy_url,omitempty"`
-	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
-	ProxyID string `json:"proxy_id,omitempty"`
 	// Attributes stores provider specific metadata needed by executors (immutable configuration).
 	Attributes map[string]string `json:"attributes,omitempty"`
 	// Metadata stores runtime mutable provider state (e.g. tokens, cookies).
@@ -94,7 +93,32 @@ type Auth struct {
 	// Runtime carries non-serialisable data used during execution (in-memory only).
 	Runtime any `json:"-"`
 
-	indexAssigned bool `json:"-"`
+	Success int64 `json:"-"`
+	Failed  int64 `json:"-"`
+
+	recentRequests recentRequestRing `json:"-"`
+	indexAssigned  bool              `json:"-"`
+}
+
+const (
+	recentRequestBucketSeconds int64 = 10 * 60
+	recentRequestBucketCount         = 20
+)
+
+type recentRequestBucket struct {
+	bucketID int64
+	success  int64
+	failed   int64
+}
+
+type recentRequestRing struct {
+	buckets [recentRequestBucketCount]recentRequestBucket
+}
+
+type RecentRequestBucket struct {
+	Time    string `json:"time"`
+	Success int64  `json:"success"`
+	Failed  int64  `json:"failed"`
 }
 
 // QuotaState contains limiter tracking data for a credential.
@@ -103,11 +127,6 @@ type QuotaState struct {
 	Exceeded bool `json:"exceeded"`
 	// Reason provides an optional provider specific human readable description.
 	Reason string `json:"reason,omitempty"`
-	// Window identifies the provider quota window that was exhausted, such as
-	// "5h" or "week" for Codex.
-	Window string `json:"window,omitempty"`
-	// WindowMinutes stores the provider quota window duration when known.
-	WindowMinutes int `json:"window_minutes,omitempty"`
 	// NextRecoverAt is when the credential may become available again.
 	NextRecoverAt time.Time `json:"next_recover_at"`
 	// BackoffLevel stores the progressive cooldown exponent used for rate limits.
@@ -130,6 +149,70 @@ type ModelState struct {
 	Quota QuotaState `json:"quota"`
 	// UpdatedAt tracks the last update timestamp for this model state.
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func recentRequestBucketID(now time.Time) int64 {
+	if now.IsZero() {
+		return 0
+	}
+	return now.Unix() / recentRequestBucketSeconds
+}
+
+func recentRequestBucketIndex(bucketID int64) int {
+	mod := bucketID % int64(recentRequestBucketCount)
+	if mod < 0 {
+		mod += int64(recentRequestBucketCount)
+	}
+	return int(mod)
+}
+
+func formatRecentRequestBucketLabel(bucketID int64) string {
+	start := time.Unix(bucketID*recentRequestBucketSeconds, 0).In(time.Local)
+	end := start.Add(time.Duration(recentRequestBucketSeconds) * time.Second)
+	return start.Format("15:04") + "-" + end.Format("15:04")
+}
+
+func (a *Auth) recordRecentRequest(now time.Time, success bool) {
+	if a == nil {
+		return
+	}
+	bucketID := recentRequestBucketID(now)
+	idx := recentRequestBucketIndex(bucketID)
+	bucket := &a.recentRequests.buckets[idx]
+	if bucket.bucketID != bucketID {
+		bucket.bucketID = bucketID
+		bucket.success = 0
+		bucket.failed = 0
+	}
+	if success {
+		bucket.success++
+		return
+	}
+	bucket.failed++
+}
+
+func (a *Auth) RecentRequestsSnapshot(now time.Time) []RecentRequestBucket {
+	out := make([]RecentRequestBucket, 0, recentRequestBucketCount)
+	if a == nil {
+		return out
+	}
+
+	currentBucketID := recentRequestBucketID(now)
+	for i := recentRequestBucketCount - 1; i >= 0; i-- {
+		bucketID := currentBucketID - int64(i)
+		idx := recentRequestBucketIndex(bucketID)
+		bucket := a.recentRequests.buckets[idx]
+		entry := RecentRequestBucket{
+			Time: formatRecentRequestBucketLabel(bucketID),
+		}
+		if bucket.bucketID == bucketID {
+			entry.Success = bucket.success
+			entry.Failed = bucket.failed
+		}
+		out = append(out, entry)
+	}
+
+	return out
 }
 
 // Clone shallow copies the Auth structure, duplicating maps to avoid accidental mutation.
@@ -169,7 +252,80 @@ func stableAuthIndex(seed string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// EnsureIndex returns a stable index derived from the auth file name or API key.
+func (a *Auth) indexSeed() string {
+	if a == nil {
+		return ""
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(a.Provider))
+	compatName := ""
+	baseURL := ""
+	apiKey := ""
+	filePath := ""
+	if a.Attributes != nil {
+		compatName = strings.TrimSpace(a.Attributes["compat_name"])
+		baseURL = strings.TrimSpace(a.Attributes["base_url"])
+		apiKey = strings.TrimSpace(a.Attributes["api_key"])
+		filePath = strings.TrimSpace(a.Attributes["path"])
+		if filePath == "" {
+			filePath = strings.TrimSpace(a.Attributes["source"])
+		}
+	}
+
+	if filePath == "" {
+		filePath = strings.TrimSpace(a.FileName)
+	}
+	if filePath == "" {
+		filePath = strings.TrimSpace(a.ID)
+	}
+
+	if filePath != "" && strings.HasSuffix(strings.ToLower(filePath), ".json") {
+		abs, errAbs := filepath.Abs(filePath)
+		if errAbs == nil && strings.TrimSpace(abs) != "" {
+			filePath = abs
+		}
+		filePath = filepath.Clean(filePath)
+
+		authType := ""
+		if a.Metadata != nil {
+			if rawType, ok := a.Metadata["type"].(string); ok {
+				authType = strings.TrimSpace(rawType)
+			}
+		}
+		if authType == "" {
+			authType = strings.TrimSpace(provider)
+		}
+		authType = strings.ToLower(strings.TrimSpace(authType))
+		if authType != "" {
+			return authType + ":" + filePath
+		}
+	}
+
+	apiPrefix := ""
+	if apiKey != "" {
+		switch {
+		case compatName != "" || strings.EqualFold(provider, "openai-compatibility"):
+			apiPrefix = "openai-compatibility"
+		case strings.EqualFold(provider, "gemini"):
+			apiPrefix = "gemini-api-key"
+		case strings.EqualFold(provider, "codex"):
+			apiPrefix = "codex-api-key"
+		case strings.EqualFold(provider, "claude"):
+			apiPrefix = "claude-api-key"
+		}
+	}
+	if apiPrefix != "" {
+		return apiPrefix + ":" + strings.TrimSpace(baseURL) + "+" + strings.TrimSpace(apiKey)
+	}
+
+	if id := strings.TrimSpace(a.ID); id != "" {
+		return "id:" + id
+	}
+
+	return ""
+}
+
+// EnsureIndex returns a stable index derived from the auth file name or credential identity.
 func (a *Auth) EnsureIndex() string {
 	if a == nil {
 		return ""
@@ -178,20 +334,9 @@ func (a *Auth) EnsureIndex() string {
 		return a.Index
 	}
 
-	seed := strings.TrimSpace(a.FileName)
-	if seed != "" {
-		seed = "file:" + seed
-	} else if a.Attributes != nil {
-		if apiKey := strings.TrimSpace(a.Attributes["api_key"]); apiKey != "" {
-			seed = "api_key:" + apiKey
-		}
-	}
+	seed := a.indexSeed()
 	if seed == "" {
-		if id := strings.TrimSpace(a.ID); id != "" {
-			seed = "id:" + id
-		} else {
-			return ""
-		}
+		return ""
 	}
 
 	idx := stableAuthIndex(seed)
@@ -223,9 +368,6 @@ func (a *Auth) ProxyInfo() string {
 	}
 	proxyStr := strings.TrimSpace(a.ProxyURL)
 	if proxyStr == "" {
-		if strings.TrimSpace(a.ProxyID) != "" {
-			return "via proxy pool"
-		}
 		return ""
 	}
 	if idx := strings.Index(proxyStr, "://"); idx > 0 {
@@ -234,19 +376,28 @@ func (a *Auth) ProxyInfo() string {
 	return "via proxy"
 }
 
-// DisableCoolingOverride returns the auth-file scoped disable_cooling override when present.
+// DisableCoolingOverride returns the auth scoped disable_cooling override when present.
 // The value is read from metadata key "disable_cooling" (or legacy "disable-cooling").
+//
+// NOTE: This override is intentionally "true-only". When the metadata value is false, it is treated
+// as "not set" so the global disable-cooling flag can still take effect.
 func (a *Auth) DisableCoolingOverride() (bool, bool) {
 	if a == nil || a.Metadata == nil {
 		return false, false
 	}
 	if val, ok := a.Metadata["disable_cooling"]; ok {
 		if parsed, okParse := parseBoolAny(val); okParse {
+			if !parsed {
+				return false, false
+			}
 			return parsed, true
 		}
 	}
 	if val, ok := a.Metadata["disable-cooling"]; ok {
 		if parsed, okParse := parseBoolAny(val); okParse {
+			if !parsed {
+				return false, false
+			}
 			return parsed, true
 		}
 	}
@@ -374,18 +525,6 @@ func (a *Auth) AccountInfo() (string, string) {
 		}
 	}
 
-	// For iFlow provider, prioritize OAuth type if email is present
-	if strings.ToLower(a.Provider) == "iflow" {
-		if a.Metadata != nil {
-			if email, ok := a.Metadata["email"].(string); ok {
-				email = strings.TrimSpace(email)
-				if email != "" {
-					return "oauth", email
-				}
-			}
-		}
-	}
-
 	// Check metadata for email first (OAuth-style auth)
 	if a.Metadata != nil {
 		if v, ok := a.Metadata["email"].(string); ok {
@@ -395,9 +534,6 @@ func (a *Auth) AccountInfo() (string, string) {
 			}
 		}
 	}
-	if strings.EqualFold(strings.TrimSpace(a.Provider), "kimi") && hasKimiOAuthTokenMetadata(a.Metadata) {
-		return "oauth", "kimi"
-	}
 	// Fall back to API key (API-key auth)
 	if a.Attributes != nil {
 		if v := a.Attributes["api_key"]; v != "" {
@@ -405,88 +541,6 @@ func (a *Auth) AccountInfo() (string, string) {
 		}
 	}
 	return "", ""
-}
-
-func hasKimiOAuthTokenMetadata(metadata map[string]any) bool {
-	if metadata == nil {
-		return false
-	}
-	for _, key := range []string{"refresh_token", "access_token"} {
-		if value, ok := metadata[key].(string); ok && strings.TrimSpace(value) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-// ChannelName returns the user-facing channel label used by management UI and routing restrictions.
-func (a *Auth) ChannelName() string {
-	if a == nil {
-		return ""
-	}
-	if label := strings.TrimSpace(a.Label); label != "" {
-		return label
-	}
-	if a.Metadata != nil {
-		if raw, ok := a.Metadata["label"].(string); ok {
-			if label := strings.TrimSpace(raw); label != "" {
-				return label
-			}
-		}
-		if raw, ok := a.Metadata["email"].(string); ok {
-			if email := strings.TrimSpace(raw); email != "" {
-				return email
-			}
-		}
-	}
-	return strings.TrimSpace(a.Provider)
-}
-
-// ChannelIdentifiers returns the canonical channel name first, followed by any
-// legacy identifiers that should still resolve to the same channel.
-func (a *Auth) ChannelIdentifiers() []string {
-	if a == nil {
-		return nil
-	}
-	out := make([]string, 0, 2)
-	seen := make(map[string]struct{}, 2)
-	appendValue := func(value string) {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return
-		}
-		key := strings.ToLower(value)
-		if _, exists := seen[key]; exists {
-			return
-		}
-		seen[key] = struct{}{}
-		out = append(out, value)
-	}
-
-	appendValue(a.ChannelName())
-	if a.Metadata != nil {
-		if raw, ok := a.Metadata["email"].(string); ok {
-			appendValue(raw)
-		}
-	}
-
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func authMatchesChannelName(auth *Auth, candidate string) bool {
-	candidate = strings.TrimSpace(candidate)
-	if auth == nil || candidate == "" {
-		return false
-	}
-	for _, identifier := range auth.ChannelIdentifiers() {
-		if strings.EqualFold(identifier, candidate) {
-			return true
-		}
-	}
-	return false
 }
 
 // ExpirationTime attempts to extract the credential expiration timestamp from metadata.

@@ -4,19 +4,18 @@ package claude
 
 import (
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 
 	tls "github.com/refraction-networking/utls"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/proxy"
 )
 
-// utlsRoundTripper implements http.RoundTripper using utls with Firefox fingerprint
+// utlsRoundTripper implements http.RoundTripper using utls with Chrome fingerprint
 // to bypass Cloudflare's TLS fingerprinting on Anthropic domains.
 type utlsRoundTripper struct {
 	// mu protects the connections map and pending map
@@ -27,24 +26,17 @@ type utlsRoundTripper struct {
 	pending map[string]*sync.Cond
 	// dialer is used to create network connections, supporting proxies
 	dialer proxy.Dialer
-	// preferIPv4 forces IPv4-only dialing when true
-	preferIPv4 bool
 }
 
 // newUtlsRoundTripper creates a new utls-based round tripper with optional proxy support
 func newUtlsRoundTripper(cfg *config.SDKConfig) *utlsRoundTripper {
 	var dialer proxy.Dialer = proxy.Direct
-	if cfg != nil && cfg.ProxyURL != "" {
-		proxyURL, err := url.Parse(cfg.ProxyURL)
-		if err != nil {
-			log.Errorf("failed to parse proxy URL %q: %v", cfg.ProxyURL, err)
-		} else {
-			pDialer, err := proxy.FromURL(proxyURL, proxy.Direct)
-			if err != nil {
-				log.Errorf("failed to create proxy dialer for %q: %v", cfg.ProxyURL, err)
-			} else {
-				dialer = pDialer
-			}
+	if cfg != nil {
+		proxyDialer, mode, errBuild := proxyutil.BuildDialer(cfg.ProxyURL)
+		if errBuild != nil {
+			log.Errorf("failed to configure proxy dialer for %q: %v", cfg.ProxyURL, errBuild)
+		} else if mode != proxyutil.ModeInherit && proxyDialer != nil {
+			dialer = proxyDialer
 		}
 	}
 
@@ -52,7 +44,6 @@ func newUtlsRoundTripper(cfg *config.SDKConfig) *utlsRoundTripper {
 		connections: make(map[string]*http2.ClientConn),
 		pending:     make(map[string]*sync.Cond),
 		dialer:      dialer,
-		preferIPv4:  cfg != nil && cfg.PreferIPv4,
 	}
 }
 
@@ -104,19 +95,17 @@ func (t *utlsRoundTripper) getOrCreateConnection(host, addr string) (*http2.Clie
 	return h2Conn, nil
 }
 
-// createConnection creates a new HTTP/2 connection with Firefox TLS fingerprint
+// createConnection creates a new HTTP/2 connection with Chrome TLS fingerprint.
+// Chrome's TLS fingerprint is closer to Node.js/OpenSSL (which real Claude Code uses)
+// than Firefox, reducing the mismatch between TLS layer and HTTP headers.
 func (t *utlsRoundTripper) createConnection(host, addr string) (*http2.ClientConn, error) {
-	network := "tcp"
-	if t.preferIPv4 {
-		network = "tcp4"
-	}
-	conn, err := t.dialer.Dial(network, addr)
+	conn, err := t.dialer.Dial("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
 
 	tlsConfig := &tls.Config{ServerName: host}
-	tlsConn := tls.UClient(conn, tlsConfig, tls.HelloFirefox_Auto)
+	tlsConn := tls.UClient(conn, tlsConfig, tls.HelloChrome_Auto)
 
 	if err := tlsConn.Handshake(); err != nil {
 		conn.Close()
@@ -164,10 +153,10 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 // NewAnthropicHttpClient creates an HTTP client that bypasses TLS fingerprinting
-// for Anthropic domains by using utls with Firefox fingerprint.
+// for Anthropic domains by using utls with Chrome fingerprint.
 // It accepts optional SDK configuration for proxy settings.
 func NewAnthropicHttpClient(cfg *config.SDKConfig) *http.Client {
-	client := util.NewHTTPClient(util.DefaultHTTPClientTimeout)
-	client.Transport = newUtlsRoundTripper(cfg)
-	return client
+	return &http.Client{
+		Transport: newUtlsRoundTripper(cfg),
+	}
 }

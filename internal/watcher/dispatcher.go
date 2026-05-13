@@ -9,10 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/synthesizer"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
+
+var snapshotCoreAuthsFunc = snapshotCoreAuths
 
 func (w *Watcher) setAuthUpdateQueue(queue chan<- AuthUpdate) {
 	w.clientsMutex.Lock()
@@ -33,8 +35,6 @@ func (w *Watcher) setAuthUpdateQueue(queue chan<- AuthUpdate) {
 	if queue != nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		w.dispatchCancel = cancel
-		// The watcher owns this dispatch loop and stops it through dispatchCancel
-		// whenever the queue is replaced or the watcher shuts down.
 		go w.dispatchLoop(ctx)
 	}
 }
@@ -78,7 +78,11 @@ func (w *Watcher) dispatchRuntimeAuthUpdate(update AuthUpdate) bool {
 }
 
 func (w *Watcher) refreshAuthState(force bool) {
-	auths := w.SnapshotCoreAuths()
+	w.clientsMutex.RLock()
+	cfg := w.config
+	authDir := w.authDir
+	w.clientsMutex.RUnlock()
+	auths := snapshotCoreAuthsFunc(cfg, authDir)
 	w.clientsMutex.Lock()
 	if len(w.runtimeAuths) > 0 {
 		for _, a := range w.runtimeAuths {

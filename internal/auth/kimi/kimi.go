@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,8 +15,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -101,10 +102,24 @@ func NewDeviceFlowClient(cfg *config.Config) *DeviceFlowClient {
 
 // NewDeviceFlowClientWithDeviceID creates a new device flow client with the specified device ID.
 func NewDeviceFlowClientWithDeviceID(cfg *config.Config, deviceID string) *DeviceFlowClient {
+	return NewDeviceFlowClientWithDeviceIDAndProxyURL(cfg, deviceID, "")
+}
+
+// NewDeviceFlowClientWithDeviceIDAndProxyURL creates a new device flow client with a proxy override.
+// proxyURL takes precedence over cfg.ProxyURL when non-empty.
+func NewDeviceFlowClientWithDeviceIDAndProxyURL(cfg *config.Config, deviceID string, proxyURL string) *DeviceFlowClient {
 	client := &http.Client{Timeout: 30 * time.Second}
+	effectiveProxyURL := strings.TrimSpace(proxyURL)
+	var sdkCfg config.SDKConfig
 	if cfg != nil {
-		client = util.SetProxy(&cfg.SDKConfig, client)
+		sdkCfg = cfg.SDKConfig
+		if effectiveProxyURL == "" {
+			effectiveProxyURL = strings.TrimSpace(cfg.ProxyURL)
+		}
 	}
+	sdkCfg.ProxyURL = effectiveProxyURL
+	client = util.SetProxy(&sdkCfg, client)
+
 	resolvedDeviceID := strings.TrimSpace(deviceID)
 	if resolvedDeviceID == "" {
 		resolvedDeviceID = getOrCreateDeviceID()
@@ -183,7 +198,7 @@ func (c *DeviceFlowClient) RequestDeviceCode(ctx context.Context) (*DeviceCodeRe
 		}
 	}()
 
-	bodyBytes, err := util.ReadHTTPResponseBody("kimi-oauth", resp.Body)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("kimi: failed to read device code response: %w", err)
 	}
@@ -271,7 +286,7 @@ func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode st
 		}
 	}()
 
-	bodyBytes, err := util.ReadHTTPResponseBody("kimi-oauth", resp.Body)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("kimi: failed to read token response: %w", err), false
 	}
@@ -351,7 +366,7 @@ func (c *DeviceFlowClient) RefreshToken(ctx context.Context, refreshToken string
 		}
 	}()
 
-	bodyBytes, err := util.ReadHTTPResponseBody("kimi-oauth", resp.Body)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("kimi: failed to read refresh response: %w", err)
 	}

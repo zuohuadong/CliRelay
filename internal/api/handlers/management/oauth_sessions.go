@@ -12,9 +12,8 @@ import (
 )
 
 const (
-	oauthSessionTTL             = 10 * time.Minute
-	maxOAuthStateLength         = 128
-	oauthSessionStatusCompleted = "__completed__"
+	oauthSessionTTL     = 10 * time.Minute
+	maxOAuthStateLength = 128
 )
 
 var (
@@ -109,13 +108,7 @@ func (s *oauthSessionStore) Complete(state string) {
 	defer s.mu.Unlock()
 
 	s.purgeExpiredLocked(now)
-	session, ok := s.sessions[state]
-	if !ok {
-		return
-	}
-	session.Status = oauthSessionStatusCompleted
-	session.ExpiresAt = now.Add(s.ttl)
-	s.sessions[state] = session
+	delete(s.sessions, state)
 }
 
 func (s *oauthSessionStore) CompleteProvider(provider string) int {
@@ -132,9 +125,6 @@ func (s *oauthSessionStore) CompleteProvider(provider string) int {
 	removed := 0
 	for state, session := range s.sessions {
 		if strings.EqualFold(session.Provider, provider) {
-			if session.Status == oauthSessionStatusCompleted {
-				continue
-			}
 			delete(s.sessions, state)
 			removed++
 		}
@@ -235,12 +225,8 @@ func NormalizeOAuthProvider(provider string) (string, error) {
 		return "codex", nil
 	case "gemini", "google":
 		return "gemini", nil
-	case "iflow", "i-flow":
-		return "iflow", nil
 	case "antigravity", "anti-gravity":
 		return "antigravity", nil
-	case "qwen":
-		return "qwen", nil
 	default:
 		return "", errUnsupportedOAuthFlow
 	}

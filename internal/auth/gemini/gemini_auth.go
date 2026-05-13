@@ -9,21 +9,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
-	"net"
+	"io"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/browser"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/browser"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
-	"golang.org/x/net/proxy"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -31,6 +28,8 @@ import (
 
 // OAuth configuration constants for Gemini
 const (
+	ClientID            = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+	ClientSecret        = "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"
 	DefaultCallbackPort = 8085
 )
 
@@ -39,72 +38,6 @@ var Scopes = []string{
 	"https://www.googleapis.com/auth/cloud-platform",
 	"https://www.googleapis.com/auth/userinfo.email",
 	"https://www.googleapis.com/auth/userinfo.profile",
-}
-
-func EnrichOAuthTokenMap(tokenMap map[string]any, oauthConfig *oauth2.Config) map[string]any {
-	if tokenMap == nil {
-		tokenMap = make(map[string]any)
-	}
-	tokenMap["token_uri"] = "https://oauth2.googleapis.com/token"
-	if oauthConfig != nil {
-		if strings.TrimSpace(oauthConfig.ClientID) != "" {
-			tokenMap["client_id"] = strings.TrimSpace(oauthConfig.ClientID)
-		}
-		if strings.TrimSpace(oauthConfig.ClientSecret) != "" {
-			tokenMap["client_secret"] = strings.TrimSpace(oauthConfig.ClientSecret)
-		}
-		if len(oauthConfig.Scopes) > 0 {
-			tokenMap["scopes"] = append([]string(nil), oauthConfig.Scopes...)
-		} else {
-			tokenMap["scopes"] = append([]string(nil), Scopes...)
-		}
-	} else {
-		tokenMap["scopes"] = append([]string(nil), Scopes...)
-	}
-	tokenMap["universe_domain"] = "googleapis.com"
-	return tokenMap
-}
-
-func ResolveOAuthClientCredentials(appConfig *config.Config, tokenData, metadata map[string]any) (string, string) {
-	clientID := strings.TrimSpace(stringFromMap(tokenData, "client_id"))
-	clientSecret := strings.TrimSpace(stringFromMap(tokenData, "client_secret"))
-	if clientID == "" {
-		clientID = strings.TrimSpace(stringFromMap(metadata, "client_id"))
-	}
-	if clientSecret == "" {
-		clientSecret = strings.TrimSpace(stringFromMap(metadata, "client_secret"))
-	}
-	if clientID != "" {
-		if clientSecret == "" && appConfig != nil {
-			cfgClientID, cfgClientSecret := appConfig.OAuthClientCredentials(config.OAuthClientGemini)
-			if strings.TrimSpace(cfgClientID) == clientID {
-				clientSecret = strings.TrimSpace(cfgClientSecret)
-			}
-		}
-		if clientSecret == "" && clientID == config.GeminiCLIOAuthClientID {
-			clientSecret = config.GeminiCLIOAuthClientSecret
-		}
-		return clientID, clientSecret
-	}
-	if appConfig == nil {
-		appConfig = &config.Config{}
-	}
-	return appConfig.OAuthClientCredentials(config.OAuthClientGemini)
-}
-
-func stringFromMap(m map[string]any, key string) string {
-	if m == nil {
-		return ""
-	}
-	if v, ok := m[key]; ok {
-		switch typed := v.(type) {
-		case string:
-			return typed
-		case fmt.Stringer:
-			return typed.String()
-		}
-	}
-	return ""
 }
 
 // GeminiAuth provides methods for handling the Gemini OAuth2 authentication flow.
@@ -145,45 +78,20 @@ func (g *GeminiAuth) GetAuthenticatedClient(ctx context.Context, ts *GeminiToken
 	}
 	callbackURL := fmt.Sprintf("http://localhost:%d/oauth2callback", callbackPort)
 
-	// Configure proxy settings for the HTTP client if a proxy URL is provided.
-	proxyURL, err := url.Parse(cfg.ProxyURL)
-	if err == nil {
-		var transport *http.Transport
-		if proxyURL.Scheme == "socks5" {
-			// Handle SOCKS5 proxy.
-			username := proxyURL.User.Username()
-			password, _ := proxyURL.User.Password()
-			auth := &proxy.Auth{User: username, Password: password}
-			dialer, errSOCKS5 := proxy.SOCKS5("tcp", proxyURL.Host, auth, proxy.Direct)
-			if errSOCKS5 != nil {
-				log.Errorf("create SOCKS5 dialer failed: %v", errSOCKS5)
-				return nil, fmt.Errorf("create SOCKS5 dialer failed: %w", errSOCKS5)
-			}
-			transport = &http.Transport{
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return dialer.Dial(network, addr)
-				},
-			}
-		} else if proxyURL.Scheme == "http" || proxyURL.Scheme == "https" {
-			// Handle HTTP/HTTPS proxy.
-			transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
-		}
-
-		if transport != nil {
-			proxyClient := &http.Client{Transport: transport}
-			ctx = context.WithValue(ctx, oauth2.HTTPClient, proxyClient)
-		}
+	transport, _, errBuild := proxyutil.BuildHTTPTransport(cfg.ProxyURL)
+	if errBuild != nil {
+		log.Errorf("%v", errBuild)
+	} else if transport != nil {
+		proxyClient := &http.Client{Transport: transport}
+		ctx = context.WithValue(ctx, oauth2.HTTPClient, proxyClient)
 	}
 
-	clientID, clientSecret := cfg.OAuthClientCredentials(config.OAuthClientGemini)
-	if strings.TrimSpace(clientID) == "" {
-		return nil, fmt.Errorf("missing Gemini OAuth client-id (set config oauth-clients.gemini.client-id or env %s)", config.EnvGeminiOAuthClientID)
-	}
+	var err error
 
 	// Configure the OAuth2 client.
 	conf := &oauth2.Config{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientID:     ClientID,
+		ClientSecret: ClientSecret,
 		RedirectURL:  callbackURL, // This will be used by the local server.
 		Scopes:       Scopes,
 		Endpoint:     google.Endpoint,
@@ -248,7 +156,7 @@ func (g *GeminiAuth) createTokenStorage(ctx context.Context, config *oauth2.Conf
 		}
 	}()
 
-	bodyBytes, _ := util.ReadHTTPResponseBody("gemini-oauth", resp.Body)
+	bodyBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("get user info request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
@@ -267,7 +175,11 @@ func (g *GeminiAuth) createTokenStorage(ctx context.Context, config *oauth2.Conf
 		return nil, fmt.Errorf("failed to unmarshal token: %w", err)
 	}
 
-	ifToken = EnrichOAuthTokenMap(ifToken, config)
+	ifToken["token_uri"] = "https://oauth2.googleapis.com/token"
+	ifToken["client_id"] = ClientID
+	ifToken["client_secret"] = ClientSecret
+	ifToken["scopes"] = Scopes
+	ifToken["universe_domain"] = "googleapis.com"
 
 	ts := GeminiTokenStorage{
 		Token:     ifToken,
@@ -298,35 +210,18 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 	}
 	callbackURL := fmt.Sprintf("http://localhost:%d/oauth2callback", callbackPort)
 
-	state, errState := misc.GenerateRandomState()
-	if errState != nil {
-		return nil, errState
-	}
-
 	// Use a channel to pass the authorization code from the HTTP handler to the main function.
 	codeChan := make(chan string, 1)
 	errChan := make(chan error, 1)
 
 	// Create a new HTTP server with its own multiplexer.
 	mux := http.NewServeMux()
-	server := &http.Server{
-		Addr:              fmt.Sprintf("127.0.0.1:%d", callbackPort),
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	server := &http.Server{Addr: fmt.Sprintf(":%d", callbackPort), Handler: mux}
 	config.RedirectURL = callbackURL
 
 	mux.HandleFunc("/oauth2callback", func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Query().Get("state"); got != state {
-			_, _ = fmt.Fprint(w, "Authentication failed: invalid state.")
-			select {
-			case errChan <- fmt.Errorf("invalid oauth state"):
-			default:
-			}
-			return
-		}
 		if err := r.URL.Query().Get("error"); err != "" {
-			_, _ = fmt.Fprintf(w, "Authentication failed: %s", html.EscapeString(err))
+			_, _ = fmt.Fprintf(w, "Authentication failed: %s", err)
 			select {
 			case errChan <- fmt.Errorf("authentication failed via callback: %s", err):
 			default:
@@ -350,13 +245,9 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 	})
 
 	// Start the server in a goroutine.
-	listener, errListen := net.Listen("tcp", server.Addr)
-	if errListen != nil {
-		return nil, fmt.Errorf("failed to listen on %s: %w", server.Addr, errListen)
-	}
 	go func() {
-		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Errorf("Serve(): %v", err)
+		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			log.Errorf("ListenAndServe(): %v", err)
 			select {
 			case errChan <- err:
 			default:
@@ -365,7 +256,7 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 	}()
 
 	// Open the authorization URL in the user's browser.
-	authURL := config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
+	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
 
 	noBrowser := false
 	if opts != nil {
@@ -414,6 +305,9 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 		defer manualPromptTimer.Stop()
 	}
 
+	var manualInputCh <-chan string
+	var manualInputErrCh <-chan error
+
 waitForCallback:
 	for {
 		select {
@@ -435,13 +329,14 @@ waitForCallback:
 				return nil, err
 			default:
 			}
-			input, err := opts.Prompt("Paste the Gemini callback URL (or press Enter to keep waiting): ")
-			if err != nil {
-				return nil, err
-			}
-			parsed, err := misc.ParseOAuthCallback(input)
-			if err != nil {
-				return nil, err
+			manualInputCh, manualInputErrCh = misc.AsyncPrompt(opts.Prompt, "Paste the Gemini callback URL (or press Enter to keep waiting): ")
+			continue
+		case input := <-manualInputCh:
+			manualInputCh = nil
+			manualInputErrCh = nil
+			parsed, errParse := misc.ParseOAuthCallback(input)
+			if errParse != nil {
+				return nil, errParse
 			}
 			if parsed == nil {
 				continue
@@ -452,11 +347,10 @@ waitForCallback:
 			if parsed.Code == "" {
 				return nil, fmt.Errorf("code not found in callback")
 			}
-			if parsed.State != "" && parsed.State != state {
-				return nil, fmt.Errorf("invalid oauth state")
-			}
 			authCode = parsed.Code
 			break waitForCallback
+		case errManual := <-manualInputErrCh:
+			return nil, errManual
 		case <-timeoutTimer.C:
 			return nil, fmt.Errorf("oauth flow timed out")
 		}

@@ -4,21 +4,13 @@
 // embed CLIProxyAPI without importing internal packages.
 package config
 
-import internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+import internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 
 type SDKConfig = internalconfig.SDKConfig
 
 type Config = internalconfig.Config
-type APIKeyEntry = internalconfig.APIKeyEntry
 
 type StreamingConfig = internalconfig.StreamingConfig
-type CodexWebsocketConfig = internalconfig.CodexWebsocketConfig
-type ObservabilityConfig = internalconfig.ObservabilityConfig
-type ResponseTraceConfig = internalconfig.ResponseTraceConfig
-type RoutingConfig = internalconfig.RoutingConfig
-type RoutingChannelGroup = internalconfig.RoutingChannelGroup
-type RoutingPathRoute = internalconfig.RoutingPathRoute
-type ChannelGroupMatch = internalconfig.ChannelGroupMatch
 type TLSConfig = internalconfig.TLSConfig
 type RemoteManagement = internalconfig.RemoteManagement
 type AmpCode = internalconfig.AmpCode
@@ -27,17 +19,10 @@ type PayloadConfig = internalconfig.PayloadConfig
 type PayloadRule = internalconfig.PayloadRule
 type PayloadFilterRule = internalconfig.PayloadFilterRule
 type PayloadModelRule = internalconfig.PayloadModelRule
-type MultimodalAdaptersConfig = internalconfig.MultimodalAdaptersConfig
-type MultimodalAdapterRule = internalconfig.MultimodalAdapterRule
-type MultimodalAdapterMatch = internalconfig.MultimodalAdapterMatch
-type MultimodalExtractorConfig = internalconfig.MultimodalExtractorConfig
 
 type GeminiKey = internalconfig.GeminiKey
 type CodexKey = internalconfig.CodexKey
 type ClaudeKey = internalconfig.ClaudeKey
-type BedrockKey = internalconfig.BedrockKey
-type BedrockModel = internalconfig.BedrockModel
-type OpenCodeGoKey = internalconfig.OpenCodeGoKey
 type VertexCompatKey = internalconfig.VertexCompatKey
 type VertexCompatModel = internalconfig.VertexCompatModel
 type OpenAICompatibility = internalconfig.OpenAICompatibility
@@ -48,7 +33,6 @@ type TLS = internalconfig.TLSConfig
 
 const (
 	DefaultPanelGitHubRepository = internalconfig.DefaultPanelGitHubRepository
-	DefaultBedrockRegion         = internalconfig.DefaultBedrockRegion
 )
 
 func LoadConfig(configFile string) (*Config, error) { return internalconfig.LoadConfig(configFile) }
@@ -56,6 +40,8 @@ func LoadConfig(configFile string) (*Config, error) { return internalconfig.Load
 func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	return internalconfig.LoadConfigOptional(configFile, optional)
 }
+
+func ParseConfigBytes(data []byte) (*Config, error) { return internalconfig.ParseConfigBytes(data) }
 
 func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	return internalconfig.SaveConfigPreserveComments(configFile, cfg)
@@ -67,8 +53,4 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 
 func NormalizeCommentIndentation(data []byte) []byte {
 	return internalconfig.NormalizeCommentIndentation(data)
-}
-
-func NormalizeRoutingStrategy(strategy string) string {
-	return internalconfig.NormalizeRoutingStrategy(strategy)
 }

@@ -1,17 +1,6 @@
 # Binaries
 cli-proxy-api
-CLIProxyAPI*
-clirelay-updater
 *.exe
-*.bin
-*.gz
-*.zip
-*.tar
-*.tgz
-
-# Build outputs and dependencies
-dist/
-node_modules/
 
 # Configuration
 config.yaml
@@ -31,12 +20,6 @@ objectstore/*
 
 # Static assets
 static/*
-/assets/
-/manage.html
-/management.html
-/panel-meta.json
-/dist/
-/panel-dist.zip
 
 # Authentication data
 auths/*
@@ -44,64 +27,27 @@ auths/*
 
 # Documentation
 docs/*
-!docs/images/
-!docs/images/*.png
-!docs/internal-review/
-docs/internal-review/*
-!docs/internal-review/io-readall-inventory.md
-!docs/internal-review/monorepo-audit-report.md
-!docs/internal-review/monorepo-remediation-checklist.md
-!docs/internal-review/performance-regression-checks.md
-!docs/internal-review/quality-baseline.md
-!docs/internal-review/release-checklist.md
-!docs/internal-review/security-baseline-checks.md
-!docs/internal-review/sensitive-ops-audit-log-inventory.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md
 
-# Tool runtime/generated content
-node_modules/
-tools*/**/node_modules/
-tools*/**/.profiles/
-tools*/**/data/
-tools*/**/__pycache__/
-tools*/**/*.pyc
-
 # Tooling metadata
 .vscode/*
+.worktrees/
 .codex/*
 .claude/*
 .gemini/*
 .serena/*
-.hermes/*
-.playwright-mcp/*
-.tmp-go/*
 .agent/*
 .agents/*
-.agents/*
-.agentflow/*
 .opencode/*
+.idea/*
+.beads/*
 .bmad/*
 _bmad/*
 _bmad-output/*
 
-# Local backups / runtime data
-config.yaml.pre-sqlite-migration
-data/*
-
 # macOS
 .DS_Store
 ._*
-
-progress.md
-servers.local.md
-.mailbox/
-.agents/state/
-.cursorrules
-HERMES.md
-OPENCODE.md
-.goosehints
-.roomodes
-.roo/
-.zed/CONVENTIONS.md
+.gocache/

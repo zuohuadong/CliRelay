@@ -3,102 +3,18 @@ package handlers
 import (
 	"testing"
 
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"golang.org/x/net/context"
 )
 
-func TestEnrichRequestExecutionMetadataMarksTopLevelTools(t *testing.T) {
-	meta := map[string]any{}
-	raw := []byte(`{
-		"model": "gpt-5.3-codex",
-		"input": [{"role": "user", "content": "run tests"}],
-		"tools": [
-			{"type": "function", "name": "exec_command"},
-			{"type": "function", "name": "apply_patch"}
-		]
-	}`)
+func TestRequestExecutionMetadataIncludesExecutionSessionWithoutIdempotencyKey(t *testing.T) {
+	ctx := WithExecutionSessionID(context.Background(), "session-1")
 
-	enrichRequestExecutionMetadata(meta, raw)
-
-	if got := meta[coreexecutor.ToolDefinitionsMetadataKey]; got != 2 {
-		t.Fatalf("tool definitions = %v, want 2", got)
+	meta := requestExecutionMetadata(ctx)
+	if got := meta[coreexecutor.ExecutionSessionMetadataKey]; got != "session-1" {
+		t.Fatalf("ExecutionSessionMetadataKey = %v, want %q", got, "session-1")
 	}
-	features, ok := meta[coreexecutor.RequestFeaturesMetadataKey].([]string)
-	if !ok {
-		t.Fatalf("features metadata type = %T, want []string", meta[coreexecutor.RequestFeaturesMetadataKey])
-	}
-	for _, feature := range features {
-		if feature == "tools" {
-			return
-		}
-	}
-	t.Fatalf("features = %v, want tools", features)
-}
-
-func TestEnrichRequestExecutionMetadataDistinguishesMediaFeatures(t *testing.T) {
-	tests := []struct {
-		name    string
-		raw     string
-		wantHas string
-	}{
-		{
-			name:    "image",
-			raw:     `{"input":[{"role":"user","content":[{"type":"input_image","image_url":"https://example.com/x.png"}]}]}`,
-			wantHas: "image",
-		},
-		{
-			name:    "file",
-			raw:     `{"input":[{"role":"user","content":[{"type":"input_file","file_url":"https://example.com/x.txt"}]}]}`,
-			wantHas: "file",
-		},
-		{
-			name:    "video",
-			raw:     `{"input":[{"role":"user","content":[{"type":"input_video","video_url":"https://example.com/x.mp4"}]}]}`,
-			wantHas: "video",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			meta := map[string]any{}
-			enrichRequestExecutionMetadata(meta, []byte(tt.raw))
-			features, ok := meta[coreexecutor.RequestFeaturesMetadataKey].([]string)
-			if !ok {
-				t.Fatalf("features metadata type = %T, want []string", meta[coreexecutor.RequestFeaturesMetadataKey])
-			}
-			foundMultimodal := false
-			foundWanted := false
-			for _, feature := range features {
-				if feature == "multimodal" {
-					foundMultimodal = true
-				}
-				if feature == tt.wantHas {
-					foundWanted = true
-				}
-			}
-			if !foundMultimodal || !foundWanted {
-				t.Fatalf("features = %v, want multimodal and %s", features, tt.wantHas)
-			}
-		})
-	}
-}
-
-func TestEnrichRequestExecutionMetadataDoesNotTreatTextMentionsAsMedia(t *testing.T) {
-	meta := map[string]any{}
-	raw := []byte(`{
-		"model": "gpt-5.3-codex",
-		"input": [
-			{
-				"role": "user",
-				"content": "Previous logs mention input_image and image_url, but this request has no media attachment."
-			}
-		]
-	}`)
-
-	enrichRequestExecutionMetadata(meta, raw)
-
-	features, _ := meta[coreexecutor.RequestFeaturesMetadataKey].([]string)
-	for _, feature := range features {
-		if feature == "image" || feature == "multimodal" {
-			t.Fatalf("features = %v, want no image or multimodal feature for plain text mentions", features)
-		}
+	if _, ok := meta[idempotencyKeyMetadataKey]; ok {
+		t.Fatalf("unexpected idempotency key in metadata: %v", meta[idempotencyKeyMetadataKey])
 	}
 }

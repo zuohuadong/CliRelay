@@ -21,7 +21,6 @@ var errClosed = errors.New("websocket session closed")
 
 type pendingRequest struct {
 	ch        chan Message
-	done      chan struct{}
 	closeOnce sync.Once
 }
 
@@ -31,7 +30,6 @@ func (pr *pendingRequest) close() {
 	}
 	pr.closeOnce.Do(func() {
 		close(pr.ch)
-		close(pr.done)
 	})
 }
 
@@ -55,15 +53,9 @@ func newSession(conn *websocket.Conn, mgr *Manager, id string) *session {
 		closed:   make(chan struct{}),
 	}
 	conn.SetReadLimit(maxInboundMessageLen)
-	if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
-		_ = conn.Close()
-	}
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
 	conn.SetPongHandler(func(string) error {
-		// If we fail to extend the read deadline, close the connection so the
-		// session is eventually cleaned up.
-		if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
-			return err
-		}
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
 		return nil
 	})
 	s.startHeartbeat()
@@ -108,9 +100,6 @@ func (s *session) run(ctx context.Context) {
 
 func (s *session) dispatch(msg Message) {
 	if msg.Type == MessageTypePing {
-		// Pong responses are transport-level keepalive traffic initiated by the
-		// websocket peer, not by any caller request. They therefore use a detached
-		// context and rely on the session connection lifecycle for cleanup.
 		_ = s.send(context.Background(), Message{ID: msg.ID, Type: MessageTypePong})
 		return
 	}
@@ -153,7 +142,7 @@ func (s *session) request(ctx context.Context, msg Message) (<-chan Message, err
 	if msg.ID == "" {
 		return nil, fmt.Errorf("wsrelay: message id is required")
 	}
-	if _, loaded := s.pending.LoadOrStore(msg.ID, &pendingRequest{ch: make(chan Message, 8), done: make(chan struct{})}); loaded {
+	if _, loaded := s.pending.LoadOrStore(msg.ID, &pendingRequest{ch: make(chan Message, 8)}); loaded {
 		return nil, fmt.Errorf("wsrelay: duplicate message id %s", msg.ID)
 	}
 	value, _ := s.pending.Load(msg.ID)
@@ -165,18 +154,15 @@ func (s *session) request(ctx context.Context, msg Message) (<-chan Message, err
 		}
 		return nil, err
 	}
-	// The request waiter is owned by the pending request and exits on request
-	// completion, session shutdown, or caller cancellation.
-	go func(pr *pendingRequest) {
+	go func() {
 		select {
 		case <-ctx.Done():
 			if actual, loaded := s.pending.LoadAndDelete(msg.ID); loaded {
 				actual.(*pendingRequest).close()
 			}
-		case <-pr.done:
 		case <-s.closed:
 		}
-	}(req)
+	}()
 	return req.ch, nil
 }
 
@@ -190,10 +176,10 @@ func (s *session) cleanup(cause error) {
 			case req.ch <- msg:
 			default:
 			}
-			s.pending.Delete(key)
 			req.close()
 			return true
 		})
+		s.pending = sync.Map{}
 		_ = s.conn.Close()
 		if s.manager != nil {
 			s.manager.handleSessionClosed(s, cause)

@@ -5,7 +5,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,21 +14,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/contextretrieval"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
-	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"golang.org/x/net/context"
 )
 
 // ErrorResponse represents a standard error response format for the API.
@@ -37,10 +30,6 @@ import (
 type ErrorResponse struct {
 	// Error contains detailed information about the error that occurred.
 	Error ErrorDetail `json:"error"`
-}
-
-type upstreamErrorBodyProvider interface {
-	UpstreamErrorBody() []byte
 }
 
 // ErrorDetail provides specific information about an error that occurred.
@@ -59,45 +48,14 @@ type ErrorDetail struct {
 const idempotencyKeyMetadataKey = "idempotency_key"
 
 const (
-	defaultStreamingKeepAliveSeconds = 15
-	defaultWebsocketKeepAliveSeconds = 15
+	defaultStreamingKeepAliveSeconds = 0
 	defaultStreamingBootstrapRetries = 0
 )
 
 type pinnedAuthContextKey struct{}
 type selectedAuthCallbackContextKey struct{}
 type executionSessionContextKey struct{}
-type cooldownWaitDisabledContextKey struct{}
-
-// ReadJSONRequestBody applies the shared request-body limit and writes a standard API error response.
-func ReadJSONRequestBody(c *gin.Context) ([]byte, bool) {
-	if c == nil {
-		return nil, false
-	}
-
-	body, err := bodyutil.ReadRequestBody(c, bodyutil.DefaultRequestBodyLimit)
-	if err == nil {
-		return body, true
-	}
-
-	status := http.StatusBadRequest
-	message := fmt.Sprintf("Invalid request: %v", err)
-	code := ""
-	if bodyutil.IsTooLarge(err) {
-		status = http.StatusRequestEntityTooLarge
-		message = "Request body too large"
-		code = "request_body_too_large"
-	}
-
-	c.JSON(status, ErrorResponse{
-		Error: ErrorDetail{
-			Message: message,
-			Type:    "invalid_request_error",
-			Code:    code,
-		},
-	})
-	return nil, false
-}
+type disallowFreeAuthContextKey struct{}
 
 // WithPinnedAuthID returns a child context that requests execution on a specific auth ID.
 func WithPinnedAuthID(ctx context.Context, authID string) context.Context {
@@ -134,11 +92,12 @@ func WithExecutionSessionID(ctx context.Context, sessionID string) context.Conte
 	return context.WithValue(ctx, executionSessionContextKey{}, sessionID)
 }
 
-func WithCooldownWaitDisabled(ctx context.Context) context.Context {
+// WithDisallowFreeAuth returns a child context that requests skipping known free-tier credentials.
+func WithDisallowFreeAuth(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithValue(ctx, cooldownWaitDisabledContextKey{}, true)
+	return context.WithValue(ctx, disallowFreeAuthContextKey{}, true)
 }
 
 // BuildErrorResponseBody builds an OpenAI-compatible JSON error response body.
@@ -192,31 +151,16 @@ func BuildErrorResponseBody(status int, errText string) []byte {
 }
 
 // StreamingKeepAliveInterval returns the SSE keep-alive interval for this server.
-// Default is 15s. Set keepalive-seconds to a negative value in config to disable.
+// Returning 0 disables keep-alives (default when unset).
 func StreamingKeepAliveInterval(cfg *config.SDKConfig) time.Duration {
+	seconds := defaultStreamingKeepAliveSeconds
 	if cfg != nil {
-		if cfg.Streaming.KeepAliveSeconds < 0 {
-			return 0
-		}
-		if cfg.Streaming.KeepAliveSeconds > 0 {
-			return time.Duration(cfg.Streaming.KeepAliveSeconds) * time.Second
-		}
+		seconds = cfg.Streaming.KeepAliveSeconds
 	}
-	return time.Duration(defaultStreamingKeepAliveSeconds) * time.Second
-}
-
-// WebsocketKeepAliveInterval returns the downstream WebSocket ping interval.
-// Default is 15s. Set websocket-keepalive-seconds to a negative value in config to disable.
-func WebsocketKeepAliveInterval(cfg *config.SDKConfig) time.Duration {
-	if cfg != nil {
-		if cfg.Streaming.WebsocketKeepAliveSeconds < 0 {
-			return 0
-		}
-		if cfg.Streaming.WebsocketKeepAliveSeconds > 0 {
-			return time.Duration(cfg.Streaming.WebsocketKeepAliveSeconds) * time.Second
-		}
+	if seconds <= 0 {
+		return 0
 	}
-	return time.Duration(defaultWebsocketKeepAliveSeconds) * time.Second
+	return time.Duration(seconds) * time.Second
 }
 
 // NonStreamingKeepAliveInterval returns the keep-alive interval for non-streaming responses.
@@ -252,59 +196,25 @@ func PassthroughHeadersEnabled(cfg *config.SDKConfig) bool {
 
 func requestExecutionMetadata(ctx context.Context) map[string]any {
 	// Idempotency-Key is an optional client-supplied header used to correlate retries.
-	// It is forwarded as execution metadata; when absent we generate a UUID.
+	// Only include it if the client explicitly provides it.
 	key := ""
-	allowedChannels := ""
-	allowedChannelGroups := ""
-	routeGroup := ""
-	routeFallback := ""
-	if route := internalrouting.PathRouteContextFromContext(ctx); route != nil {
-		routeGroup = strings.TrimSpace(route.Group)
-		routeFallback = strings.TrimSpace(route.Fallback)
-	}
+	requestPath := ""
 	if ctx != nil {
-		if ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
-			if metadataVal, exists := ginCtx.Get("accessMetadata"); exists {
-				if metadata, okMeta := metadataVal.(map[string]string); okMeta {
-					allowedChannels = strings.TrimSpace(metadata["allowed-channels"])
-					allowedChannelGroups = strings.TrimSpace(metadata["allowed-channel-groups"])
-				}
-			}
-			if routeVal, exists := ginCtx.Get(internalrouting.GinPathRouteContextKey); exists {
-				if route, okRoute := routeVal.(*internalrouting.PathRouteContext); okRoute && route != nil {
-					routeGroup = strings.TrimSpace(route.Group)
-					routeFallback = strings.TrimSpace(route.Fallback)
-				}
-			}
-			if (routeGroup == "" || routeFallback == "") && ginCtx.Request != nil {
-				if route := internalrouting.PathRouteContextFromContext(ginCtx.Request.Context()); route != nil {
-					if routeGroup == "" {
-						routeGroup = strings.TrimSpace(route.Group)
-					}
-					if routeFallback == "" {
-						routeFallback = strings.TrimSpace(route.Fallback)
-					}
-				}
+			requestPath = strings.TrimSpace(ginCtx.FullPath())
+			if requestPath == "" && ginCtx.Request.URL != nil {
+				requestPath = strings.TrimSpace(ginCtx.Request.URL.Path)
 			}
 		}
 	}
-	if key == "" {
-		key = uuid.NewString()
-	}
 
-	meta := map[string]any{idempotencyKeyMetadataKey: key}
-	if allowedChannels != "" {
-		meta["allowed-channels"] = allowedChannels
+	meta := make(map[string]any)
+	if key != "" {
+		meta[idempotencyKeyMetadataKey] = key
 	}
-	if allowedChannelGroups != "" {
-		meta["allowed-channel-groups"] = allowedChannelGroups
-	}
-	if routeGroup != "" {
-		meta[coreexecutor.RouteGroupMetadataKey] = routeGroup
-	}
-	if routeFallback != "" {
-		meta[coreexecutor.RouteFallbackMetadataKey] = routeFallback
+	if requestPath != "" {
+		meta[coreexecutor.RequestPathMetadataKey] = requestPath
 	}
 	if pinnedAuthID := pinnedAuthIDFromContext(ctx); pinnedAuthID != "" {
 		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
@@ -315,138 +225,23 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if executionSessionID := executionSessionIDFromContext(ctx); executionSessionID != "" {
 		meta[coreexecutor.ExecutionSessionMetadataKey] = executionSessionID
 	}
-	if cooldownWaitDisabledFromContext(ctx) {
-		meta[coreexecutor.DisableCooldownWaitMetadataKey] = true
+	if disallowFreeAuthFromContext(ctx) {
+		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true
 	}
 	return meta
 }
 
-func enrichRequestExecutionMetadata(meta map[string]any, rawJSON []byte) {
-	if meta == nil || len(rawJSON) == 0 {
-		return
+// headersFromContext extracts the original HTTP request headers from the gin context
+// embedded in the provided context. This allows session affinity selectors to read
+// client headers like X-Amp-Thread-Id.
+func headersFromContext(ctx context.Context) http.Header {
+	if ctx == nil {
+		return nil
 	}
-	inputItems := countTopLevelItems(rawJSON)
-	toolDefinitions := countTopLevelTools(rawJSON)
-	toolCalls := countJSONOccurrences(rawJSON, []string{"function_call", "tool_call", "function_call_output", "tool_result"})
-	features := requestFeatures(rawJSON, inputItems, toolDefinitions, toolCalls)
-	meta[coreexecutor.InputItemsMetadataKey] = inputItems
-	meta[coreexecutor.ToolDefinitionsMetadataKey] = toolDefinitions
-	meta[coreexecutor.ToolCallsMetadataKey] = toolCalls
-	if len(features) > 0 {
-		meta[coreexecutor.RequestFeaturesMetadataKey] = features
+	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+		return ginCtx.Request.Header.Clone()
 	}
-}
-
-func countTopLevelItems(rawJSON []byte) int {
-	for _, path := range []string{"input", "messages"} {
-		result := gjson.GetBytes(rawJSON, path)
-		if result.IsArray() {
-			return len(result.Array())
-		}
-	}
-	return 0
-}
-
-func countTopLevelTools(rawJSON []byte) int {
-	result := gjson.GetBytes(rawJSON, "tools")
-	if result.IsArray() {
-		return len(result.Array())
-	}
-	return 0
-}
-
-func countJSONOccurrences(rawJSON []byte, needles []string) int {
-	text := strings.ToLower(string(rawJSON))
-	total := 0
-	for _, needle := range needles {
-		total += strings.Count(text, strings.ToLower(needle))
-	}
-	return total
-}
-
-func requestFeatures(rawJSON []byte, inputItems int, toolDefinitions int, toolCalls int) []string {
-	features := make([]string, 0, 4)
-	hasImage, hasFile, hasVideo := structuredMediaFeatures(rawJSON)
-	if hasImage || hasFile || hasVideo {
-		features = append(features, "multimodal")
-	}
-	if hasImage {
-		features = append(features, "image")
-	}
-	if hasFile {
-		features = append(features, "file")
-	}
-	if hasVideo {
-		features = append(features, "video")
-	}
-	if toolDefinitions > 0 || toolCalls > 0 {
-		features = append(features, "tools")
-	}
-	if toolCalls >= 16 {
-		features = append(features, "tool-heavy")
-	}
-	if inputItems >= 80 {
-		features = append(features, "long-thread")
-	}
-	return features
-}
-
-func structuredMediaFeatures(rawJSON []byte) (hasImage, hasFile, hasVideo bool) {
-	if len(rawJSON) == 0 {
-		return false, false, false
-	}
-	var payload any
-	if err := json.Unmarshal(rawJSON, &payload); err != nil {
-		return false, false, false
-	}
-	var walk func(any)
-	walk = func(value any) {
-		switch typed := value.(type) {
-		case map[string]any:
-			for key, child := range typed {
-				switch strings.ToLower(strings.TrimSpace(key)) {
-				case "type":
-					if s, ok := child.(string); ok {
-						switch strings.ToLower(strings.TrimSpace(s)) {
-						case "input_image", "image":
-							hasImage = true
-						case "input_file", "file":
-							hasFile = true
-						case "input_video", "video":
-							hasVideo = true
-						}
-					}
-				case "image_url":
-					hasImage = true
-				case "file_url":
-					hasFile = true
-				case "video_url":
-					hasVideo = true
-				}
-				walk(child)
-			}
-		case []any:
-			for _, child := range typed {
-				walk(child)
-			}
-		}
-	}
-	walk(payload)
-	return hasImage, hasFile, hasVideo
-}
-
-func isGroupedRouteRequestMeta(meta map[string]any) bool {
-	if len(meta) == 0 {
-		return false
-	}
-	switch raw := meta[coreexecutor.RouteGroupMetadataKey].(type) {
-	case string:
-		return strings.TrimSpace(raw) != ""
-	case []byte:
-		return strings.TrimSpace(string(raw)) != ""
-	default:
-		return false
-	}
+	return nil
 }
 
 func pinnedAuthIDFromContext(ctx context.Context) string {
@@ -490,12 +285,12 @@ func executionSessionIDFromContext(ctx context.Context) string {
 	}
 }
 
-func cooldownWaitDisabledFromContext(ctx context.Context) bool {
+func disallowFreeAuthFromContext(ctx context.Context) bool {
 	if ctx == nil {
 		return false
 	}
-	enabled, _ := ctx.Value(cooldownWaitDisabledContextKey{}).(bool)
-	return enabled
+	raw, ok := ctx.Value(disallowFreeAuthContextKey{}).(bool)
+	return ok && raw
 }
 
 // BaseAPIHandler contains the handlers for API endpoints.
@@ -523,22 +318,6 @@ func NewBaseAPIHandlers(cfg *config.SDKConfig, authManager *coreauth.Manager) *B
 		Cfg:         cfg,
 		AuthManager: authManager,
 	}
-}
-
-func (h *BaseAPIHandler) applyContextRetrieval(ctx context.Context, modelName string, handlerType string, rawJSON []byte) []byte {
-	if h == nil || h.Cfg == nil || !h.Cfg.ContextRetrieval.Enabled || len(rawJSON) == 0 {
-		return rawJSON
-	}
-	reduced, report, err := contextretrieval.Reduce(ctx, rawJSON, modelName, handlerType, h.Cfg.ContextRetrieval)
-	if err != nil {
-		log.WithError(err).Warnf("context retrieval: failed for model=%s protocol=%s", modelName, handlerType)
-		return rawJSON
-	}
-	if report.Applied {
-		log.Infof("context retrieval: reduced request model=%s protocol=%s %s", modelName, handlerType, report.String())
-		return reduced
-	}
-	return rawJSON
 }
 
 // UpdateClients updates the handlers' client list and configuration.
@@ -570,59 +349,6 @@ func (h *BaseAPIHandler) GetAlt(c *gin.Context) string {
 	return alt
 }
 
-func requestContextFromGin(c *gin.Context) context.Context {
-	if c != nil && c.Request != nil {
-		if requestCtx := c.Request.Context(); requestCtx != nil {
-			return requestCtx
-		}
-	}
-	return nil
-}
-
-func requestContextOrBackground(c *gin.Context) context.Context {
-	if requestCtx := requestContextFromGin(c); requestCtx != nil {
-		return requestCtx
-	}
-	return context.Background()
-}
-
-func requestNeedsWriteTimeoutBypass(c *gin.Context) bool {
-	if c == nil || c.Request == nil {
-		return false
-	}
-	req := c.Request
-	if strings.EqualFold(strings.TrimSpace(req.Header.Get("Upgrade")), "websocket") {
-		return true
-	}
-	accept := strings.ToLower(strings.TrimSpace(req.Header.Get("Accept")))
-	if strings.Contains(accept, "text/event-stream") {
-		return true
-	}
-	if alt, ok := c.GetQuery("alt"); ok && strings.EqualFold(strings.TrimSpace(alt), "sse") {
-		return true
-	}
-	if alt, ok := c.GetQuery("$alt"); ok && strings.EqualFold(strings.TrimSpace(alt), "sse") {
-		return true
-	}
-	switch req.Method {
-	case http.MethodPost, http.MethodPut, http.MethodPatch:
-	default:
-		return false
-	}
-	body, err := bodyutil.ReadRequestBody(c, bodyutil.DefaultRequestBodyLimit)
-	if err != nil || len(body) == 0 {
-		return false
-	}
-	return gjson.GetBytes(body, "stream").Bool()
-}
-
-func clearWriteDeadlineForLongLivedRequest(c *gin.Context) {
-	if !requestNeedsWriteTimeoutBypass(c) || c == nil || c.Writer == nil {
-		return
-	}
-	_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
-}
-
 // GetContextWithCancel creates a new context with cancellation capabilities.
 // It embeds the Gin context and the API handler into the new context for later use.
 // The returned cancel function also handles logging the API response if request logging is enabled.
@@ -636,36 +362,61 @@ func clearWriteDeadlineForLongLivedRequest(c *gin.Context) {
 //   - context.Context: The new context with cancellation and embedded values.
 //   - APIHandlerCancelFunc: A function to cancel the context and log the response.
 func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *gin.Context, ctx context.Context) (context.Context, APIHandlerCancelFunc) {
-	requestCtx := requestContextFromGin(c)
 	parentCtx := ctx
 	if parentCtx == nil {
-		if requestCtx != nil {
-			parentCtx = requestCtx
-		} else {
-			parentCtx = context.Background()
-		}
+		parentCtx = context.Background()
 	}
-	clearWriteDeadlineForLongLivedRequest(c)
+
+	var requestCtx context.Context
+	if c != nil && c.Request != nil {
+		requestCtx = c.Request.Context()
+	}
 
 	if requestCtx != nil && logging.GetRequestID(parentCtx) == "" {
 		if requestID := logging.GetRequestID(requestCtx); requestID != "" {
 			parentCtx = logging.WithRequestID(parentCtx, requestID)
-		} else if requestID := logging.GetGinRequestID(c); requestID != "" {
+		} else if requestID = logging.GetGinRequestID(c); requestID != "" {
 			parentCtx = logging.WithRequestID(parentCtx, requestID)
 		}
 	}
 	newCtx, cancel := context.WithCancel(parentCtx)
+
+	endpoint := ""
+	if c != nil && c.Request != nil {
+		path := strings.TrimSpace(c.FullPath())
+		if path == "" && c.Request.URL != nil {
+			path = strings.TrimSpace(c.Request.URL.Path)
+		}
+		if path != "" {
+			method := strings.TrimSpace(c.Request.Method)
+			if method != "" {
+				endpoint = method + " " + path
+			} else {
+				endpoint = path
+			}
+		}
+	}
+	if endpoint != "" {
+		newCtx = logging.WithEndpoint(newCtx, endpoint)
+	}
+	newCtx = logging.WithResponseStatusHolder(newCtx)
+
+	cancelCtx := newCtx
 	if requestCtx != nil && requestCtx != parentCtx {
 		go func() {
 			select {
 			case <-requestCtx.Done():
 				cancel()
-			case <-newCtx.Done():
+			case <-cancelCtx.Done():
 			}
 		}()
 	}
-	newCtx = context.WithValue(newCtx, util.ContextKeyGin, c)
+	newCtx = context.WithValue(newCtx, "gin", c)
+	newCtx = context.WithValue(newCtx, "handler", handler)
 	return newCtx, func(params ...interface{}) {
+		if c != nil {
+			logging.SetResponseStatus(cancelCtx, c.Writer.Status())
+		}
 		if h.Cfg.RequestLog && len(params) == 1 {
 			if existing, exists := c.Get("API_RESPONSE"); exists {
 				if existingBytes, ok := existing.([]byte); ok && len(bytes.TrimSpace(existingBytes)) > 0 {
@@ -721,7 +472,7 @@ func (h *BaseAPIHandler) StartNonStreamingKeepAlive(c *gin.Context, ctx context.
 		return func() {}
 	}
 	if ctx == nil {
-		ctx = requestContextOrBackground(c)
+		ctx = context.Background()
 	}
 
 	stopChan := make(chan struct{})
@@ -783,16 +534,12 @@ func appendAPIResponse(c *gin.Context, data []byte) {
 // ExecuteWithAuthManager executes a non-streaming request via the core auth manager.
 // This path is the only supported execution route.
 func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetails(ctx, modelName)
+	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
 	if errMsg != nil {
 		return nil, nil, errMsg
 	}
-	originalJSON := rawJSON
-	rawJSON = h.applyContextRetrieval(ctx, normalizedModel, handlerType, rawJSON)
 	reqMeta := requestExecutionMetadata(ctx)
-	enrichRequestExecutionMetadata(reqMeta, originalJSON)
-	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
-	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
+	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -806,14 +553,14 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 		Alt:             alt,
 		OriginalRequest: rawJSON,
 		SourceFormat:    sdktranslator.FromString(handlerType),
+		Headers:         headersFromContext(ctx),
 	}
 	opts.Metadata = reqMeta
 	resp, err := h.AuthManager.Execute(ctx, providers, req, opts)
 	if err != nil {
+		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		status := http.StatusInternalServerError
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			status = 499 // Client Closed Request
-		} else if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
+		if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
 			if code := se.StatusCode(); code > 0 {
 				status = code
 			}
@@ -835,14 +582,12 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 // ExecuteCountWithAuthManager executes a non-streaming request via the core auth manager.
 // This path is the only supported execution route.
 func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetails(ctx, modelName)
+	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
 	if errMsg != nil {
 		return nil, nil, errMsg
 	}
 	reqMeta := requestExecutionMetadata(ctx)
-	enrichRequestExecutionMetadata(reqMeta, rawJSON)
-	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
-	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
+	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -856,14 +601,14 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 		Alt:             alt,
 		OriginalRequest: rawJSON,
 		SourceFormat:    sdktranslator.FromString(handlerType),
+		Headers:         headersFromContext(ctx),
 	}
 	opts.Metadata = reqMeta
 	resp, err := h.AuthManager.ExecuteCount(ctx, providers, req, opts)
 	if err != nil {
+		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		status := http.StatusInternalServerError
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			status = 499 // Client Closed Request
-		} else if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
+		if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
 			if code := se.StatusCode(); code > 0 {
 				status = code
 			}
@@ -886,20 +631,15 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 // This path is the only supported execution route.
 // The returned http.Header carries upstream response headers captured before streaming begins.
 func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetails(ctx, modelName)
+	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
 	if errMsg != nil {
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
 		close(errChan)
 		return nil, nil, errChan
 	}
-	originalJSON := rawJSON
-	rawJSON = h.applyContextRetrieval(ctx, normalizedModel, handlerType, rawJSON)
 	reqMeta := requestExecutionMetadata(ctx)
-	enrichRequestExecutionMetadata(reqMeta, originalJSON)
-	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
-	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
-	groupedRoute := isGroupedRouteRequestMeta(reqMeta)
+	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -913,15 +653,15 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 		Alt:             alt,
 		OriginalRequest: rawJSON,
 		SourceFormat:    sdktranslator.FromString(handlerType),
+		Headers:         headersFromContext(ctx),
 	}
 	opts.Metadata = reqMeta
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	if err != nil {
+		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		status := http.StatusInternalServerError
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			status = 499 // Client Closed Request
-		} else if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
+		if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
 			if code := se.StatusCode(); code > 0 {
 				status = code
 			}
@@ -1017,17 +757,19 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 					streamErr := chunk.Err
 					// Safe bootstrap recovery: if the upstream fails before any payload bytes are sent,
 					// retry a few times (to allow auth rotation / transient recovery) and then attempt model fallback.
-					if !sentPayload && !groupedRoute && bootstrapRetries < maxBootstrapRetries && bootstrapEligible(streamErr) {
-						bootstrapRetries++
-						retryResult, retryErr := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
-						if retryErr == nil {
-							if passthroughHeadersEnabled {
-								replaceHeader(upstreamHeaders, FilterUpstreamHeaders(retryResult.Headers))
+					if !sentPayload {
+						if bootstrapRetries < maxBootstrapRetries && bootstrapEligible(streamErr) {
+							bootstrapRetries++
+							retryResult, retryErr := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+							if retryErr == nil {
+								if passthroughHeadersEnabled {
+									replaceHeader(upstreamHeaders, FilterUpstreamHeaders(retryResult.Headers))
+								}
+								chunks = retryResult.Chunks
+								continue outer
 							}
-							chunks = retryResult.Chunks
-							continue outer
+							streamErr = enrichAuthSelectionError(retryErr, providers, normalizedModel)
 						}
-						streamErr = retryErr
 					}
 
 					status := http.StatusInternalServerError
@@ -1104,137 +846,50 @@ func statusFromError(err error) int {
 	return 0
 }
 
-func scopedProvidersForModel(modelName string, groups []string) []string {
-	registryRef := registry.GetGlobalRegistry()
-	providers := make([]string, 0, 4)
-	seen := make(map[string]struct{})
-	appendProviders := func(candidates []string) {
-		for _, provider := range candidates {
-			provider = strings.TrimSpace(provider)
-			if provider == "" {
-				continue
-			}
-			if _, exists := seen[provider]; exists {
-				continue
-			}
-			seen[provider] = struct{}{}
-			providers = append(providers, provider)
-		}
-	}
-	appendProviders(util.GetProviderName(modelName))
-	if registryRef != nil {
-		for _, group := range groups {
-			group = internalrouting.NormalizeGroupName(group)
-			if group == "" || group == "default" {
-				continue
-			}
-			appendProviders(registryRef.GetModelProviders(group + "/" + modelName))
-		}
-	}
-	return providers
-}
-
-func routeContextFromExecutionContext(ctx context.Context) *internalrouting.PathRouteContext {
-	if ctx == nil {
-		return nil
-	}
-	if route := internalrouting.PathRouteContextFromContext(ctx); route != nil {
-		return route
-	}
-	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
-	if !ok || ginCtx == nil {
-		return nil
-	}
-	raw, exists := ginCtx.Get(internalrouting.GinPathRouteContextKey)
-	if !exists {
-		return nil
-	}
-	route, _ := raw.(*internalrouting.PathRouteContext)
-	return route
-}
-
-func allowedChannelGroupsFromExecutionContext(ctx context.Context) []string {
-	if ctx == nil {
-		return nil
-	}
-	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
-	if !ok || ginCtx == nil {
-		return nil
-	}
-	metadataVal, exists := ginCtx.Get("accessMetadata")
-	if !exists {
-		return nil
-	}
-	metadata, ok := metadataVal.(map[string]string)
-	if !ok {
-		return nil
-	}
-	set := internalrouting.ParseNormalizedSet(metadata["allowed-channel-groups"], internalrouting.NormalizeGroupName)
-	if len(set) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(set))
-	for group := range set {
-		out = append(out, group)
-	}
-	return out
-}
-
-func splitRequestedModelPrefix(modelName string) (string, string) {
-	trimmed := strings.TrimSpace(modelName)
-	if trimmed == "" {
-		return "", ""
-	}
-	parts := strings.SplitN(trimmed, "/", 2)
-	if len(parts) != 2 {
-		return "", trimmed
-	}
-	return internalrouting.NormalizeGroupName(parts[0]), strings.TrimSpace(parts[1])
-}
-
-func (h *BaseAPIHandler) getRequestDetails(ctx context.Context, modelName string) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
-	var resolvedModelName string
+func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
+	resolvedModelName := modelName
 	initialSuffix := thinking.ParseSuffix(modelName)
 	if initialSuffix.ModelName == "auto" {
-		resolvedBase := util.ResolveAutoModel(initialSuffix.ModelName)
-		if initialSuffix.HasSuffix {
-			resolvedModelName = fmt.Sprintf("%s(%s)", resolvedBase, initialSuffix.RawSuffix)
+		if h != nil && h.AuthManager != nil && h.AuthManager.HomeEnabled() {
+			resolvedModelName = modelName
 		} else {
-			resolvedModelName = resolvedBase
+			resolvedBase := util.ResolveAutoModel(initialSuffix.ModelName)
+			if initialSuffix.HasSuffix {
+				resolvedModelName = fmt.Sprintf("%s(%s)", resolvedBase, initialSuffix.RawSuffix)
+			} else {
+				resolvedModelName = resolvedBase
+			}
 		}
 	} else {
-		resolvedModelName = util.ResolveAutoModel(modelName)
+		if h != nil && h.AuthManager != nil && h.AuthManager.HomeEnabled() {
+			resolvedModelName = modelName
+		} else {
+			resolvedModelName = util.ResolveAutoModel(modelName)
+		}
 	}
 
 	parsed := thinking.ParseSuffix(resolvedModelName)
 	baseModel := strings.TrimSpace(parsed.ModelName)
-	routeCtx := routeContextFromExecutionContext(ctx)
-	requestedPrefix, unprefixedModel := splitRequestedModelPrefix(baseModel)
-	if routeCtx != nil && routeCtx.Group != "" && requestedPrefix != "" && requestedPrefix != routeCtx.Group {
+
+	if strings.EqualFold(baseModel, "gpt-image-2") {
 		return nil, "", &interfaces.ErrorMessage{
-			StatusCode: http.StatusBadRequest,
-			Error:      fmt.Errorf(`{"error":{"message":"model prefix conflicts with route group","type":"invalid_request_error","code":"model_prefix_conflict"}}`),
+			StatusCode: http.StatusServiceUnavailable,
+			Error:      fmt.Errorf("model %s is only supported on /v1/images/generations and /v1/images/edits", baseModel),
 		}
 	}
 
-	scopedGroups := allowedChannelGroupsFromExecutionContext(ctx)
-	if routeCtx != nil && routeCtx.Group != "" {
-		scopedGroups = append(scopedGroups, routeCtx.Group)
-	}
-	lookupModel := baseModel
-	if routeCtx != nil && routeCtx.Group != "" && requestedPrefix == "" && routeCtx.Group != "default" && unprefixedModel != "" {
-		lookupModel = unprefixedModel
+	if h != nil && h.AuthManager != nil && h.AuthManager.HomeEnabled() {
+		return []string{"home"}, resolvedModelName, nil
 	}
 
-	providers = scopedProvidersForModel(lookupModel, scopedGroups)
+	providers = util.GetProviderName(baseModel)
+	// Fallback: if baseModel has no provider but differs from resolvedModelName,
+	// try using the full model name. This handles edge cases where custom models
+	// may be registered with their full suffixed name (e.g., "my-model(8192)").
+	// Evaluated in Story 11.8: This fallback is intentionally preserved to support
+	// custom model registrations that include thinking suffixes.
 	if len(providers) == 0 && baseModel != resolvedModelName {
-		providers = scopedProvidersForModel(resolvedModelName, scopedGroups)
-	}
-
-	if len(providers) == 0 {
-		if info := registry.LookupStaticModelInfo(lookupModel); info != nil && info.Type != "" {
-			providers = []string{strings.ToLower(info.Type)}
-		}
+		providers = util.GetProviderName(resolvedModelName)
 	}
 
 	if len(providers) == 0 {
@@ -1275,6 +930,54 @@ func replaceHeader(dst http.Header, src http.Header) {
 	}
 }
 
+func enrichAuthSelectionError(err error, providers []string, model string) error {
+	if err == nil {
+		return nil
+	}
+
+	var authErr *coreauth.Error
+	if !errors.As(err, &authErr) || authErr == nil {
+		return err
+	}
+
+	code := strings.TrimSpace(authErr.Code)
+	if code != "auth_not_found" && code != "auth_unavailable" {
+		return err
+	}
+
+	providerText := strings.Join(providers, ",")
+	if providerText == "" {
+		providerText = "unknown"
+	}
+	modelText := strings.TrimSpace(model)
+	if modelText == "" {
+		modelText = "unknown"
+	}
+
+	baseMessage := strings.TrimSpace(authErr.Message)
+	if baseMessage == "" {
+		baseMessage = "no auth available"
+	}
+	detail := fmt.Sprintf("%s (providers=%s, model=%s)", baseMessage, providerText, modelText)
+
+	// Clarify the most common alias confusion between Anthropic route names and internal provider keys.
+	if strings.Contains(","+providerText+",", ",claude,") {
+		detail += "; check Claude auth/key session and cooldown state via /v0/management/auth-files"
+	}
+
+	status := authErr.HTTPStatus
+	if status <= 0 {
+		status = http.StatusServiceUnavailable
+	}
+
+	return &coreauth.Error{
+		Code:       authErr.Code,
+		Message:    detail,
+		Retryable:  authErr.Retryable,
+		HTTPStatus: status,
+	}
+}
+
 // WriteErrorResponse writes an error message to the response writer using the HTTP status embedded in the message.
 func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.ErrorMessage) {
 	status := http.StatusInternalServerError
@@ -1294,20 +997,13 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 	}
 
 	errText := http.StatusText(status)
-	var upstreamBody []byte
 	if msg != nil && msg.Error != nil {
 		if v := strings.TrimSpace(msg.Error.Error()); v != "" {
 			errText = v
 		}
-		if upstreamErr, ok := msg.Error.(upstreamErrorBodyProvider); ok && upstreamErr != nil {
-			upstreamBody = bytes.TrimSpace(upstreamErr.UpstreamErrorBody())
-		}
 	}
 
 	body := BuildErrorResponseBody(status, errText)
-	if len(upstreamBody) > 0 {
-		body = BuildErrorResponseBody(status, string(upstreamBody))
-	}
 	// Append first to preserve upstream response logs, then drop duplicate payloads if already recorded.
 	var previous []byte
 	if existing, exists := c.Get("API_RESPONSE"); exists {
@@ -1334,7 +1030,7 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 
 func (h *BaseAPIHandler) LoggingAPIResponseError(ctx context.Context, err *interfaces.ErrorMessage) {
 	if h.Cfg.RequestLog {
-		if ginContext, ok := ctx.Value(util.ContextKeyGin).(*gin.Context); ok {
+		if ginContext, ok := ctx.Value("gin").(*gin.Context); ok {
 			if apiResponseErrors, isExist := ginContext.Get("API_RESPONSE_ERROR"); isExist {
 				if slicesAPIResponseError, isOk := apiResponseErrors.([]*interfaces.ErrorMessage); isOk {
 					slicesAPIResponseError = append(slicesAPIResponseError, err)

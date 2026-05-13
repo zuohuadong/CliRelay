@@ -7,16 +7,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/browser"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/browser"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -65,7 +66,7 @@ func (a *CodexAuthenticator) loginWithDeviceFlow(ctx context.Context, cfg *confi
 		ctx = context.Background()
 	}
 
-	httpClient := util.SetProxy(&cfg.SDKConfig, util.NewHTTPClient(util.DefaultHTTPClientTimeout))
+	httpClient := util.SetProxy(&cfg.SDKConfig, &http.Client{})
 
 	userCodeResp, err := requestCodexDeviceUserCode(ctx, httpClient)
 	if err != nil {
@@ -143,7 +144,7 @@ func requestCodexDeviceUserCode(ctx context.Context, client *http.Client) (*code
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := util.ReadHTTPResponseBody("codex-device", resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read codex device code response: %w", err)
 	}
@@ -195,7 +196,7 @@ func pollCodexDeviceToken(ctx context.Context, client *http.Client, deviceAuthID
 			return nil, fmt.Errorf("failed to poll codex device token: %w", err)
 		}
 
-		respBody, readErr := util.ReadHTTPResponseBody("codex-device", resp.Body)
+		respBody, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {
 			return nil, fmt.Errorf("failed to read codex device poll response: %w", readErr)
@@ -259,11 +260,10 @@ func (a *CodexAuthenticator) buildAuthRecord(authSvc *codex.CodexAuth, authBundl
 
 	planType := ""
 	hashAccountID := ""
-	accountID := ""
 	if tokenStorage.IDToken != "" {
 		if claims, errParse := codex.ParseJWTToken(tokenStorage.IDToken); errParse == nil && claims != nil {
-			planType = strings.ToLower(strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType))
-			accountID = strings.TrimSpace(claims.CodexAuthInfo.ChatgptAccountID)
+			planType = strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType)
+			accountID := strings.TrimSpace(claims.CodexAuthInfo.ChatgptAccountID)
 			if accountID != "" {
 				digest := sha256.Sum256([]byte(accountID))
 				hashAccountID = hex.EncodeToString(digest[:])[:8]
@@ -274,12 +274,6 @@ func (a *CodexAuthenticator) buildAuthRecord(authSvc *codex.CodexAuth, authBundl
 	fileName := codex.CredentialFileName(tokenStorage.Email, planType, hashAccountID, true)
 	metadata := map[string]any{
 		"email": tokenStorage.Email,
-	}
-	if accountID != "" {
-		metadata["account_id"] = accountID
-	}
-	if planType != "" {
-		metadata["plan_type"] = planType
 	}
 
 	fmt.Println("Codex authentication successful")
@@ -293,5 +287,8 @@ func (a *CodexAuthenticator) buildAuthRecord(authSvc *codex.CodexAuth, authBundl
 		FileName: fileName,
 		Storage:  tokenStorage,
 		Metadata: metadata,
+		Attributes: map[string]string{
+			"plan_type": planType,
+		},
 	}, nil
 }

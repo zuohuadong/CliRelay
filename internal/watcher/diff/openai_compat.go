@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 // DiffOpenAICompatibility produces human-readable change descriptions.
@@ -144,9 +144,6 @@ func openAICompatSignature(entry config.OpenAICompatibility) string {
 	}
 	if v := strings.TrimSpace(entry.BaseURL); v != "" {
 		parts = append(parts, "base="+v)
-	}
-	if entry.Disabled {
-		parts = append(parts, "disabled=true")
 	}
 
 	models := make([]string, 0, len(entry.Models))

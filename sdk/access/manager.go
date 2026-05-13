@@ -4,33 +4,17 @@ import (
 	"context"
 	"net/http"
 	"sync"
-	"sync/atomic"
 )
 
 // Manager coordinates authentication providers.
 type Manager struct {
 	mu        sync.RWMutex
 	providers []Provider
-
-	// allowAllWhenNoProviders preserves legacy behavior: when no providers are
-	// configured, Authenticate() returns success (nil error) instead of rejecting.
-	// Default is false (secure-by-default).
-	allowAllWhenNoProviders atomic.Bool
 }
 
 // NewManager constructs an empty manager.
 func NewManager() *Manager {
 	return &Manager{}
-}
-
-// SetAllowAllWhenNoProviders configures legacy behavior. When set to true and
-// no providers are configured, Authenticate returns success (nil error).
-// Default behavior is to return a "Missing API key" error.
-func (m *Manager) SetAllowAllWhenNoProviders(allow bool) {
-	if m == nil {
-		return
-	}
-	m.allowAllWhenNoProviders.Store(allow)
 }
 
 // SetProviders replaces the active provider list.
@@ -64,10 +48,7 @@ func (m *Manager) Authenticate(ctx context.Context, r *http.Request) (*Result, *
 	}
 	providers := m.Providers()
 	if len(providers) == 0 {
-		if m.allowAllWhenNoProviders.Load() {
-			return nil, nil
-		}
-		return nil, NewNoCredentialsError()
+		return nil, nil
 	}
 
 	var (

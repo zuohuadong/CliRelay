@@ -4,40 +4,28 @@ import (
 	"net/http"
 	"net/url"
 
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
 // RequestedModelMetadataKey stores the client-requested model name in Options.Metadata.
 const RequestedModelMetadataKey = "requested_model"
 
+// RequestPathMetadataKey stores the inbound HTTP request path (e.g. "/v1/images/generations") in Options.Metadata.
+// It is optional and may be absent for non-HTTP executions.
+const RequestPathMetadataKey = "request_path"
+
+// DisallowFreeAuthMetadataKey instructs auth selection to skip known free-tier credentials.
+const DisallowFreeAuthMetadataKey = "disallow_free_auth"
+
 const (
-	// RequestBytesMetadataKey stores the inbound request body size in bytes.
-	RequestBytesMetadataKey = "request_bytes"
-	// RequestFeaturesMetadataKey stores derived request features used by routing policies.
-	RequestFeaturesMetadataKey = "request_features"
-	// InputItemsMetadataKey stores the number of top-level input/messages items.
-	InputItemsMetadataKey = "input_items"
-	// ToolCallsMetadataKey stores the number of detected tool/function calls and outputs.
-	ToolCallsMetadataKey = "tool_calls"
-	// ToolDefinitionsMetadataKey stores the number of top-level tools advertised by the request.
-	ToolDefinitionsMetadataKey = "tool_definitions"
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
-	// SinglePickMetadataKey forces the auth manager to use exactly one picked auth
-	// for the request and return its error directly without internal retry/fallback.
-	SinglePickMetadataKey = "single_pick"
-	// RouteGroupMetadataKey scopes execution to a channel group resolved from the URL path.
-	RouteGroupMetadataKey = "route_group"
-	// RouteFallbackMetadataKey controls whether groupURL requests may fall back to the default scope.
-	RouteFallbackMetadataKey = "route_fallback"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.
 	SelectedAuthMetadataKey = "selected_auth_id"
 	// SelectedAuthCallbackMetadataKey carries an optional callback invoked with the selected auth ID.
 	SelectedAuthCallbackMetadataKey = "selected_auth_callback"
 	// ExecutionSessionMetadataKey identifies a long-lived downstream execution session.
 	ExecutionSessionMetadataKey = "execution_session_id"
-	// DisableCooldownWaitMetadataKey skips manager-level cooldown waiting for latency-sensitive requests.
-	DisableCooldownWaitMetadataKey = "disable_cooldown_wait"
 )
 
 // Request encapsulates the translated payload that will be sent to a provider executor.

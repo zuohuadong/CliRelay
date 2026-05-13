@@ -6,9 +6,9 @@ package cliproxy
 import (
 	"context"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
 // TokenClientProvider loads clients backed by stored authentication tokens.
@@ -62,12 +62,6 @@ type APIKeyClientResult struct {
 
 	// CodexKeyCount is the number of Codex API keys loaded
 	CodexKeyCount int
-
-	// BedrockKeyCount is the number of AWS Bedrock credentials loaded
-	BedrockKeyCount int
-
-	// OpenCodeGoKeyCount is the number of OpenCode Go API keys loaded
-	OpenCodeGoKeyCount int
 
 	// OpenAICompatCount is the number of OpenAI compatibility API keys loaded
 	OpenAICompatCount int

@@ -4,36 +4,36 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"math/rand/v2"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 // RoundRobinSelector provides a simple provider scoped round-robin selection strategy.
 type RoundRobinSelector struct {
-	mu       sync.Mutex
-	cursors  map[string]int
-	weighted map[string]*weightedCursorState
-	maxKeys  int
+	mu      sync.Mutex
+	cursors map[string]int
+	maxKeys int
 }
 
 // FillFirstSelector selects the first available credential (deterministic ordering).
 // This "burns" one account before moving to the next, which can help stagger
 // rolling-window subscription caps (e.g. chat message limits).
 type FillFirstSelector struct{}
-
-type weightedCursorState struct {
-	current   map[string]int
-	tieCursor int
-}
 
 type blockReason int
 
@@ -50,28 +50,11 @@ type modelCooldownError struct {
 	provider string
 }
 
-type modelUnavailableError struct {
-	model    string
-	resetIn  time.Duration
-	provider string
-}
-
 func newModelCooldownError(model, provider string, resetIn time.Duration) *modelCooldownError {
 	if resetIn < 0 {
 		resetIn = 0
 	}
 	return &modelCooldownError{
-		model:    model,
-		provider: provider,
-		resetIn:  resetIn,
-	}
-}
-
-func newModelUnavailableError(model, provider string, resetIn time.Duration) *modelUnavailableError {
-	if resetIn < 0 {
-		resetIn = 0
-	}
-	return &modelUnavailableError{
 		model:    model,
 		provider: provider,
 		resetIn:  resetIn,
@@ -130,79 +113,19 @@ func (e *modelCooldownError) Headers() http.Header {
 	return headers
 }
 
-func (e *modelUnavailableError) Error() string {
-	modelName := e.model
-	if modelName == "" {
-		modelName = "requested model"
-	}
-	message := fmt.Sprintf("All credentials for model %s are temporarily unavailable", modelName)
-	if e.provider != "" {
-		message = fmt.Sprintf("%s via provider %s", message, e.provider)
-	}
-	resetSeconds := int(math.Ceil(e.resetIn.Seconds()))
-	if resetSeconds < 0 {
-		resetSeconds = 0
-	}
-	displayDuration := e.resetIn
-	if displayDuration > 0 && displayDuration < time.Second {
-		displayDuration = time.Second
-	} else {
-		displayDuration = displayDuration.Round(time.Second)
-	}
-	errorBody := map[string]any{
-		"code":          "model_unavailable",
-		"message":       message,
-		"model":         e.model,
-		"reset_time":    displayDuration.String(),
-		"reset_seconds": resetSeconds,
-	}
-	if e.provider != "" {
-		errorBody["provider"] = e.provider
-	}
-	payload := map[string]any{"error": errorBody}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Sprintf(`{"error":{"code":"model_unavailable","message":"%s"}}`, message)
-	}
-	return string(data)
-}
-
-func (e *modelUnavailableError) StatusCode() int {
-	return http.StatusServiceUnavailable
-}
-
-func (e *modelUnavailableError) Headers() http.Header {
-	headers := make(http.Header)
-	headers.Set("Content-Type", "application/json")
-	resetSeconds := int(math.Ceil(e.resetIn.Seconds()))
-	if resetSeconds < 0 {
-		resetSeconds = 0
-	}
-	headers.Set("Retry-After", strconv.Itoa(resetSeconds))
-	return headers
-}
-
 func authPriority(auth *Auth) int {
-	priority, ok := authPriorityValue(auth)
-	if !ok {
-		return 0
-	}
-	return priority
-}
-
-func authPriorityValue(auth *Auth) (int, bool) {
 	if auth == nil || auth.Attributes == nil {
-		return 0, false
+		return 0
 	}
 	raw := strings.TrimSpace(auth.Attributes["priority"])
 	if raw == "" {
-		return 0, false
+		return 0
 	}
 	parsed, err := strconv.Atoi(raw)
 	if err != nil {
-		return 0, false
+		return 0
 	}
-	return parsed, true
+	return parsed
 }
 
 func canonicalModelKey(model string) string {
@@ -274,7 +197,7 @@ func preferCodexWebsocketAuths(ctx context.Context, provider string, available [
 	return available
 }
 
-func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount int, cooldownEarliest time.Time, temporaryCount int, temporaryEarliest time.Time) {
+func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount int, earliest time.Time) {
 	available = make(map[int][]*Auth)
 	for i := 0; i < len(auths); i++ {
 		candidate := auths[i]
@@ -286,112 +209,20 @@ func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (ava
 		}
 		if reason == blockReasonCooldown {
 			cooldownCount++
-			if !next.IsZero() && (cooldownEarliest.IsZero() || next.Before(cooldownEarliest)) {
-				cooldownEarliest = next
-			}
-		}
-		if reason == blockReasonCooldown || reason == blockReasonOther {
-			if !next.IsZero() {
-				temporaryCount++
-				if temporaryEarliest.IsZero() || next.Before(temporaryEarliest) {
-					temporaryEarliest = next
-				}
+			if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
+				earliest = next
 			}
 		}
 	}
-	return available, cooldownCount, cooldownEarliest, temporaryCount, temporaryEarliest
+	return available, cooldownCount, earliest
 }
 
-func routeGroupSelectionScope(meta map[string]any) string {
-	if len(meta) == 0 {
-		return ""
-	}
-	switch raw := meta[cliproxyexecutor.RouteGroupMetadataKey].(type) {
-	case string:
-		return strings.TrimSpace(raw)
-	case []byte:
-		return strings.TrimSpace(string(raw))
-	default:
-		return ""
-	}
-}
-
-func allowedChannelGroupsSelectionScope(meta map[string]any) string {
-	if len(meta) == 0 {
-		return ""
-	}
-	raw, ok := meta["allowed-channel-groups"]
-	if !ok || raw == nil {
-		return ""
-	}
-	var values []string
-	switch v := raw.(type) {
-	case string:
-		values = strings.Split(v, ",")
-	case []string:
-		values = v
-	case []any:
-		values = make([]string, 0, len(v))
-		for _, item := range v {
-			values = append(values, fmt.Sprint(item))
-		}
-	case []byte:
-		values = strings.Split(string(v), ",")
-	default:
-		return ""
-	}
-	normalized := make([]string, 0, len(values))
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		value = strings.ToLower(strings.TrimSpace(value))
-		value = strings.Trim(value, "/")
-		if value == "" {
-			continue
-		}
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		normalized = append(normalized, value)
-	}
-	if len(normalized) == 0 {
-		return ""
-	}
-	sort.Strings(normalized)
-	return strings.Join(normalized, ",")
-}
-
-func weightedSelectionScope(meta map[string]any) string {
-	if routeGroup := routeGroupSelectionScope(meta); routeGroup != "" {
-		return "route:" + routeGroup
-	}
-	if allowedGroups := allowedChannelGroupsSelectionScope(meta); allowedGroups != "" {
-		return "allowed:" + allowedGroups
-	}
-	return ""
-}
-
-func isWeightedPrioritySelection(meta map[string]any) bool {
-	return weightedSelectionScope(meta) != ""
-}
-
-func authSelectionWeight(auth *Auth) int {
-	weight, ok := authPriorityValue(auth)
-	if !ok {
-		return 1
-	}
-	if weight <= 0 {
-		return 0
-	}
-	return weight
-}
-
-func getAvailableAuths(auths []*Auth, provider, model string, now time.Time, includeAllPriorities bool) ([]*Auth, error) {
+func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
 	if len(auths) == 0 {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
 	}
 
-	availableByPriority, cooldownCount, earliest, temporaryCount, temporaryEarliest := collectAvailableByPriority(auths, model, now)
+	availableByPriority, cooldownCount, earliest := collectAvailableByPriority(auths, model, now)
 	if len(availableByPriority) == 0 {
 		if cooldownCount == len(auths) && !earliest.IsZero() {
 			providerForError := provider
@@ -404,47 +235,7 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time, inc
 			}
 			return nil, newModelCooldownError(model, providerForError, resetIn)
 		}
-		if temporaryCount == len(auths) && !temporaryEarliest.IsZero() {
-			providerForError := provider
-			if providerForError == "mixed" {
-				providerForError = ""
-			}
-			resetIn := temporaryEarliest.Sub(now)
-			if resetIn < 0 {
-				resetIn = 0
-			}
-			return nil, newModelUnavailableError(model, providerForError, resetIn)
-		}
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
-	}
-
-	if includeAllPriorities {
-		priorities := make([]int, 0, len(availableByPriority))
-		total := 0
-		for priority, items := range availableByPriority {
-			priorities = append(priorities, priority)
-			for _, item := range items {
-				if authSelectionWeight(item) > 0 {
-					total++
-				}
-			}
-		}
-		sort.Ints(priorities)
-
-		available := make([]*Auth, 0, total)
-		for _, priority := range priorities {
-			for _, item := range availableByPriority[priority] {
-				if authSelectionWeight(item) <= 0 {
-					continue
-				}
-				available = append(available, item)
-			}
-		}
-		if len(available) == 0 {
-			return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
-		}
-		sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
-		return available, nil
 	}
 
 	bestPriority := 0
@@ -463,93 +254,14 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time, inc
 	return available, nil
 }
 
-func ensureWeightedState(states map[string]*weightedCursorState, key string, limit int) map[string]*weightedCursorState {
-	if states == nil {
-		states = make(map[string]*weightedCursorState)
-	}
-	if _, ok := states[key]; !ok && len(states) >= limit {
-		states = make(map[string]*weightedCursorState)
-	}
-	if _, ok := states[key]; !ok {
-		states[key] = &weightedCursorState{current: make(map[string]int)}
-	}
-	return states
-}
-
-func weightedSelectionKey(provider, model string, opts cliproxyexecutor.Options) string {
-	return provider + ":" + canonicalModelKey(model) + ":" + weightedSelectionScope(opts.Metadata)
-}
-
-func pickWeightedAvailable(states map[string]*weightedCursorState, key string, available []*Auth) *Auth {
-	if len(available) == 0 {
-		return nil
-	}
-	state := states[key]
-	if state == nil {
-		state = &weightedCursorState{current: make(map[string]int)}
-		states[key] = state
-	}
-	if state.current == nil {
-		state.current = make(map[string]int)
-	}
-
-	activeIDs := make(map[string]struct{}, len(available))
-	totalWeight := 0
-	for _, auth := range available {
-		if auth == nil {
-			continue
-		}
-		activeIDs[auth.ID] = struct{}{}
-		weight := authSelectionWeight(auth)
-		if weight <= 0 {
-			continue
-		}
-		totalWeight += weight
-		state.current[auth.ID] += weight
-	}
-	for id := range state.current {
-		if _, ok := activeIDs[id]; !ok {
-			delete(state.current, id)
-		}
-	}
-	if totalWeight <= 0 {
-		return nil
-	}
-
-	start := 0
-	if len(available) > 0 {
-		start = state.tieCursor % len(available)
-	}
-	bestIndex := -1
-	bestScore := 0
-	for offset := 0; offset < len(available); offset++ {
-		index := (start + offset) % len(available)
-		score := state.current[available[index].ID]
-		if bestIndex == -1 || score > bestScore {
-			bestIndex = index
-			bestScore = score
-		}
-	}
-	if bestIndex < 0 {
-		bestIndex = 0
-	}
-	selected := available[bestIndex]
-	state.current[selected.ID] -= totalWeight
-	if state.tieCursor >= 2_147_483_640 {
-		state.tieCursor = 0
-	}
-	state.tieCursor++
-	return selected
-}
-
 // Pick selects the next available auth for the provider in a round-robin manner.
 // For gemini-cli virtual auths (identified by the gemini_virtual_parent attribute),
 // a two-level round-robin is used: first cycling across credential groups (parent
 // accounts), then cycling within each group's project auths.
 func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	_ = opts
 	now := time.Now()
-	weightedSelection := isWeightedPrioritySelection(opts.Metadata)
-	available, err := getAvailableAuths(auths, provider, model, now, weightedSelection)
+	available, err := getAvailableAuths(auths, provider, model, now)
 	if err != nil {
 		return nil, err
 	}
@@ -562,19 +274,6 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 	limit := s.maxKeys
 	if limit <= 0 {
 		limit = 4096
-	}
-	if weightedSelection {
-		if s.weighted == nil {
-			s.weighted = make(map[string]*weightedCursorState)
-		}
-		weightedKey := weightedSelectionKey(provider, model, opts)
-		s.weighted = ensureWeightedState(s.weighted, weightedKey, limit)
-		selected := pickWeightedAvailable(s.weighted, weightedKey, available)
-		s.mu.Unlock()
-		if selected == nil {
-			return nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
-		}
-		return selected, nil
 	}
 
 	// Check if any available auth has gemini_virtual_parent attribute,
@@ -659,8 +358,9 @@ func groupByVirtualParent(auths []*Auth) (map[string][]*Auth, []string) {
 
 // Pick selects the first available auth for the provider in a deterministic manner.
 func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	_ = opts
 	now := time.Now()
-	available, err := getAvailableAuths(auths, provider, model, now, false)
+	available, err := getAvailableAuths(auths, provider, model, now)
 	if err != nil {
 		return nil, err
 	}
@@ -675,27 +375,6 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true, blockReasonDisabled, time.Time{}
 	}
-	if auth.Status == StatusRevoked {
-		return true, blockReasonOther, auth.NextRetryAfter
-	}
-
-	// Quota exceeded is an auth-level cooldown signal. Once we know an auth is cooling down,
-	// we should block *all* model requests for that auth until recovery, even if per-model
-	// state hasn't been initialized yet. This prevents clients from burning extra upstream
-	// requests by switching models during the same quota window.
-	if auth.Quota.Exceeded {
-		next := auth.Quota.NextRecoverAt
-		if !next.IsZero() && next.After(now) {
-			if auth.NextRetryAfter.After(now) && (next.IsZero() || auth.NextRetryAfter.Before(next)) {
-				next = auth.NextRetryAfter
-			}
-			if next.Before(now) {
-				next = now
-			}
-			return true, blockReasonCooldown, next
-		}
-	}
-
 	if model != "" {
 		if len(auth.ModelStates) > 0 {
 			state, ok := auth.ModelStates[model]
@@ -746,4 +425,476 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 		return true, blockReasonOther, next
 	}
 	return false, blockReasonNone, time.Time{}
+}
+
+// sessionPattern matches Claude Code user_id format:
+// user_{hash}_account__session_{uuid}
+var sessionPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
+
+// SessionAffinitySelector wraps another selector with session-sticky behavior.
+// It extracts session ID from multiple sources and maintains session-to-auth
+// mappings with automatic failover when the bound auth becomes unavailable.
+type SessionAffinitySelector struct {
+	fallback Selector
+	cache    *SessionCache
+}
+
+// SessionAffinityConfig configures the session affinity selector.
+type SessionAffinityConfig struct {
+	Fallback Selector
+	TTL      time.Duration
+}
+
+// NewSessionAffinitySelector creates a new session-aware selector.
+func NewSessionAffinitySelector(fallback Selector) *SessionAffinitySelector {
+	return NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: fallback,
+		TTL:      time.Hour,
+	})
+}
+
+// NewSessionAffinitySelectorWithConfig creates a selector with custom configuration.
+func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAffinitySelector {
+	if cfg.Fallback == nil {
+		cfg.Fallback = &RoundRobinSelector{}
+	}
+	if cfg.TTL <= 0 {
+		cfg.TTL = time.Hour
+	}
+	return &SessionAffinitySelector{
+		fallback: cfg.Fallback,
+		cache:    NewSessionCache(cfg.TTL),
+	}
+}
+
+// Pick selects an auth with session affinity when possible.
+// Priority for session ID extraction:
+//  1. metadata.user_id (Claude Code format with _session_{uuid}) - highest priority
+//  2. X-Session-ID header
+//  3. Session_id header (Codex)
+//  4. X-Amp-Thread-Id header (Amp CLI thread ID)
+//  5. X-Client-Request-Id header (PI)
+//  6. metadata.user_id (non-Claude Code format)
+//  7. conversation_id field in request body
+//  8. Stable hash from first few messages content (fallback)
+//
+// Note: The cache key includes provider, session ID, and model to handle cases where
+// a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)
+// that may be supported by different auth credentials, and to avoid cross-provider conflicts.
+func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	entry := selectorLogEntry(ctx)
+	primaryID, fallbackID := extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	if primaryID == "" {
+		entry.Debugf("session-affinity: no session ID extracted, falling back to default selector | provider=%s model=%s", provider, model)
+		return s.fallback.Pick(ctx, provider, model, opts, auths)
+	}
+
+	now := time.Now()
+	available, err := getAvailableAuths(auths, provider, model, now)
+	if err != nil {
+		return nil, err
+	}
+
+	cacheKey := provider + "::" + primaryID + "::" + model
+
+	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
+		for _, auth := range available {
+			if auth.ID == cachedAuthID {
+				entry.Infof("session-affinity: cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+				return auth, nil
+			}
+		}
+		// Cached auth not available, reselect via fallback selector for even distribution
+		auth, err := s.fallback.Pick(ctx, provider, model, opts, auths)
+		if err != nil {
+			return nil, err
+		}
+		s.cache.Set(cacheKey, auth.ID)
+		entry.Infof("session-affinity: cache hit but auth unavailable, reselected | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+		return auth, nil
+	}
+
+	if fallbackID != "" && fallbackID != primaryID {
+		fallbackKey := provider + "::" + fallbackID + "::" + model
+		if cachedAuthID, ok := s.cache.Get(fallbackKey); ok {
+			for _, auth := range available {
+				if auth.ID == cachedAuthID {
+					s.cache.Set(cacheKey, auth.ID)
+					entry.Infof("session-affinity: fallback cache hit | session=%s fallback=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
+					return auth, nil
+				}
+			}
+		}
+	}
+
+	auth, err := s.fallback.Pick(ctx, provider, model, opts, auths)
+	if err != nil {
+		return nil, err
+	}
+	s.cache.Set(cacheKey, auth.ID)
+	entry.Infof("session-affinity: cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+	return auth, nil
+}
+
+func selectorLogEntry(ctx context.Context) *log.Entry {
+	if ctx == nil {
+		return log.NewEntry(log.StandardLogger())
+	}
+	if reqID := logging.GetRequestID(ctx); reqID != "" {
+		return log.WithField("request_id", reqID)
+	}
+	return log.NewEntry(log.StandardLogger())
+}
+
+// truncateSessionID shortens session ID for logging (first 8 chars + "...")
+func truncateSessionID(id string) string {
+	if len(id) <= 20 {
+		return id
+	}
+	return id[:8] + "..."
+}
+
+// Stop releases resources held by the selector.
+func (s *SessionAffinitySelector) Stop() {
+	if s.cache != nil {
+		s.cache.Stop()
+	}
+}
+
+// InvalidateAuth removes all session bindings for a specific auth.
+// Called when an auth becomes rate-limited or unavailable.
+func (s *SessionAffinitySelector) InvalidateAuth(authID string) {
+	if s.cache != nil {
+		s.cache.InvalidateAuth(authID)
+	}
+}
+
+// ExtractSessionID extracts session identifier from multiple sources.
+// Priority order:
+//  1. metadata.user_id (Claude Code format with _session_{uuid}) - highest priority for Claude Code clients
+//  2. X-Session-ID header
+//  3. Session_id header (Codex)
+//  4. X-Amp-Thread-Id header (Amp CLI thread ID)
+//  5. X-Client-Request-Id header (PI)
+//  6. metadata.user_id (non-Claude Code format)
+//  7. conversation_id field in request body
+//  8. Stable hash from first few messages content (fallback)
+func ExtractSessionID(headers http.Header, payload []byte, metadata map[string]any) string {
+	primary, _ := extractSessionIDs(headers, payload, metadata)
+	return primary
+}
+
+// extractSessionIDs returns (primaryID, fallbackID) for session affinity.
+// primaryID: full hash including assistant response (stable after first turn)
+// fallbackID: short hash without assistant (used to inherit binding from first turn)
+func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]any) (string, string) {
+	// 1. metadata.user_id with Claude Code session format (highest priority)
+	if len(payload) > 0 {
+		userID := gjson.GetBytes(payload, "metadata.user_id").String()
+		if userID != "" {
+			// Old format: user_{hash}_account__session_{uuid}
+			if matches := sessionPattern.FindStringSubmatch(userID); len(matches) >= 2 {
+				id := "claude:" + matches[1]
+				return id, ""
+			}
+			// New format: JSON object with session_id field
+			// e.g. {"device_id":"...","account_uuid":"...","session_id":"uuid"}
+			if len(userID) > 0 && userID[0] == '{' {
+				if sid := gjson.Get(userID, "session_id").String(); sid != "" {
+					return "claude:" + sid, ""
+				}
+			}
+		}
+	}
+
+	// 2. X-Session-ID header
+	if headers != nil {
+		if sid := headers.Get("X-Session-ID"); sid != "" {
+			return "header:" + sid, ""
+		}
+	}
+
+	// 3. Session_id header (Codex)
+	if headers != nil {
+		if sid := headers.Get("Session_id"); sid != "" {
+			return "codex:" + sid, ""
+		}
+	}
+
+	// 4. X-Amp-Thread-Id header (Amp CLI thread ID)
+	if headers != nil {
+		if tid := headers.Get("X-Amp-Thread-Id"); tid != "" {
+			return "amp:" + tid, ""
+		}
+	}
+
+	// 5. X-Client-Request-Id header (PI)
+	if headers != nil {
+		if rid := headers.Get("X-Client-Request-Id"); rid != "" {
+			return "clientreq:" + rid, ""
+		}
+	}
+
+	if len(payload) == 0 {
+		return "", ""
+	}
+
+	// 6. metadata.user_id (non-Claude Code format)
+	userID := gjson.GetBytes(payload, "metadata.user_id").String()
+	if userID != "" {
+		return "user:" + userID, ""
+	}
+
+	// 7. conversation_id field
+	if convID := gjson.GetBytes(payload, "conversation_id").String(); convID != "" {
+		return "conv:" + convID, ""
+	}
+
+	// 8. Hash-based fallback from message content
+	return extractMessageHashIDs(payload)
+}
+
+func extractMessageHashIDs(payload []byte) (primaryID, fallbackID string) {
+	var systemPrompt, firstUserMsg, firstAssistantMsg string
+
+	// OpenAI/Claude messages format
+	messages := gjson.GetBytes(payload, "messages")
+	if messages.Exists() && messages.IsArray() {
+		messages.ForEach(func(_, msg gjson.Result) bool {
+			role := msg.Get("role").String()
+			content := extractMessageContent(msg.Get("content"))
+			if content == "" {
+				return true
+			}
+
+			switch role {
+			case "system":
+				if systemPrompt == "" {
+					systemPrompt = truncateString(content, 100)
+				}
+			case "user":
+				if firstUserMsg == "" {
+					firstUserMsg = truncateString(content, 100)
+				}
+			case "assistant":
+				if firstAssistantMsg == "" {
+					firstAssistantMsg = truncateString(content, 100)
+				}
+			}
+
+			if systemPrompt != "" && firstUserMsg != "" && firstAssistantMsg != "" {
+				return false
+			}
+			return true
+		})
+	}
+
+	// Claude API: top-level "system" field (array or string)
+	if systemPrompt == "" {
+		topSystem := gjson.GetBytes(payload, "system")
+		if topSystem.Exists() {
+			if topSystem.IsArray() {
+				topSystem.ForEach(func(_, part gjson.Result) bool {
+					if text := part.Get("text").String(); text != "" && systemPrompt == "" {
+						systemPrompt = truncateString(text, 100)
+						return false
+					}
+					return true
+				})
+			} else if topSystem.Type == gjson.String {
+				systemPrompt = truncateString(topSystem.String(), 100)
+			}
+		}
+	}
+
+	// Gemini format
+	if systemPrompt == "" && firstUserMsg == "" {
+		sysInstr := gjson.GetBytes(payload, "systemInstruction.parts")
+		if sysInstr.Exists() && sysInstr.IsArray() {
+			sysInstr.ForEach(func(_, part gjson.Result) bool {
+				if text := part.Get("text").String(); text != "" && systemPrompt == "" {
+					systemPrompt = truncateString(text, 100)
+					return false
+				}
+				return true
+			})
+		}
+
+		contents := gjson.GetBytes(payload, "contents")
+		if contents.Exists() && contents.IsArray() {
+			contents.ForEach(func(_, msg gjson.Result) bool {
+				role := msg.Get("role").String()
+				msg.Get("parts").ForEach(func(_, part gjson.Result) bool {
+					text := part.Get("text").String()
+					if text == "" {
+						return true
+					}
+					switch role {
+					case "user":
+						if firstUserMsg == "" {
+							firstUserMsg = truncateString(text, 100)
+						}
+					case "model":
+						if firstAssistantMsg == "" {
+							firstAssistantMsg = truncateString(text, 100)
+						}
+					}
+					return false
+				})
+				if firstUserMsg != "" && firstAssistantMsg != "" {
+					return false
+				}
+				return true
+			})
+		}
+	}
+
+	// OpenAI Responses API format (v1/responses)
+	if systemPrompt == "" && firstUserMsg == "" {
+		if instr := gjson.GetBytes(payload, "instructions").String(); instr != "" {
+			systemPrompt = truncateString(instr, 100)
+		}
+
+		input := gjson.GetBytes(payload, "input")
+		if input.Exists() && input.IsArray() {
+			input.ForEach(func(_, item gjson.Result) bool {
+				itemType := item.Get("type").String()
+				if itemType == "reasoning" {
+					return true
+				}
+				// Skip non-message typed items (function_call, function_call_output, etc.)
+				// but allow items with no type that have a role (inline message format).
+				if itemType != "" && itemType != "message" {
+					return true
+				}
+
+				role := item.Get("role").String()
+				if itemType == "" && role == "" {
+					return true
+				}
+
+				// Handle both string content and array content (multimodal).
+				content := item.Get("content")
+				var text string
+				if content.Type == gjson.String {
+					text = content.String()
+				} else {
+					text = extractResponsesAPIContent(content)
+				}
+				if text == "" {
+					return true
+				}
+
+				switch role {
+				case "developer", "system":
+					if systemPrompt == "" {
+						systemPrompt = truncateString(text, 100)
+					}
+				case "user":
+					if firstUserMsg == "" {
+						firstUserMsg = truncateString(text, 100)
+					}
+				case "assistant":
+					if firstAssistantMsg == "" {
+						firstAssistantMsg = truncateString(text, 100)
+					}
+				}
+
+				if firstUserMsg != "" && firstAssistantMsg != "" {
+					return false
+				}
+				return true
+			})
+		}
+	}
+
+	if systemPrompt == "" && firstUserMsg == "" {
+		return "", ""
+	}
+
+	shortHash := computeSessionHash(systemPrompt, firstUserMsg, "")
+	if firstAssistantMsg == "" {
+		return shortHash, ""
+	}
+
+	fullHash := computeSessionHash(systemPrompt, firstUserMsg, firstAssistantMsg)
+	return fullHash, shortHash
+}
+
+func computeSessionHash(systemPrompt, userMsg, assistantMsg string) string {
+	h := fnv.New64a()
+	if systemPrompt != "" {
+		h.Write([]byte("sys:" + systemPrompt + "\n"))
+	}
+	if userMsg != "" {
+		h.Write([]byte("usr:" + userMsg + "\n"))
+	}
+	if assistantMsg != "" {
+		h.Write([]byte("ast:" + assistantMsg + "\n"))
+	}
+	return fmt.Sprintf("msg:%016x", h.Sum64())
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) > maxLen {
+		return s[:maxLen]
+	}
+	return s
+}
+
+// extractMessageContent extracts text content from a message content field.
+// Handles both string content and array content (multimodal messages).
+// For array content, extracts text from all text-type elements.
+func extractMessageContent(content gjson.Result) string {
+	// String content: "Hello world"
+	if content.Type == gjson.String {
+		return content.String()
+	}
+
+	// Array content: [{"type":"text","text":"Hello"},{"type":"image",...}]
+	if content.IsArray() {
+		var texts []string
+		content.ForEach(func(_, part gjson.Result) bool {
+			// Handle Claude format: {"type":"text","text":"content"}
+			if part.Get("type").String() == "text" {
+				if text := part.Get("text").String(); text != "" {
+					texts = append(texts, text)
+				}
+			}
+			// Handle OpenAI format: {"type":"text","text":"content"}
+			// Same structure as Claude, already handled above
+			return true
+		})
+		if len(texts) > 0 {
+			return strings.Join(texts, " ")
+		}
+	}
+
+	return ""
+}
+
+func extractResponsesAPIContent(content gjson.Result) string {
+	if !content.IsArray() {
+		return ""
+	}
+	var texts []string
+	content.ForEach(func(_, part gjson.Result) bool {
+		partType := part.Get("type").String()
+		if partType == "input_text" || partType == "output_text" || partType == "text" {
+			if text := part.Get("text").String(); text != "" {
+				texts = append(texts, text)
+			}
+		}
+		return true
+	})
+	if len(texts) > 0 {
+		return strings.Join(texts, " ")
+	}
+	return ""
+}
+
+// extractSessionID is kept for backward compatibility.
+// Deprecated: Use ExtractSessionID instead.
+func extractSessionID(payload []byte) string {
+	return ExtractSessionID(nil, payload, nil)
 }

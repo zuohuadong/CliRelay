@@ -13,12 +13,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 )
 
 const (
 	defaultLogFileName      = "main.log"
-	defaultLogLimit         = 5000
 	logScannerInitialBuffer = 64 * 1024
 	logScannerMaxBuffer     = 8 * 1024 * 1024
 )
@@ -34,12 +33,7 @@ func (h *Handler) GetLogs(c *gin.Context) {
 		return
 	}
 	if !h.cfg.LoggingToFile {
-		cutoff := parseCutoff(c.Query("after"))
-		c.JSON(http.StatusOK, gin.H{
-			"lines":            []string{},
-			"line-count":       0,
-			"latest-timestamp": cutoff,
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "logging to file disabled"})
 		return
 	}
 
@@ -496,7 +490,7 @@ func parseCutoff(raw string) int64 {
 func parseLimit(raw string) (int, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		return defaultLogLimit, nil
+		return 0, nil
 	}
 	limit, err := strconv.Atoi(value)
 	if err != nil {
@@ -509,7 +503,9 @@ func parseLimit(raw string) (int, error) {
 }
 
 func parseTimestamp(line string) int64 {
-	line = strings.TrimPrefix(line, "[")
+	if strings.HasPrefix(line, "[") {
+		line = line[1:]
+	}
 	if len(line) < 19 {
 		return 0
 	}
@@ -564,7 +560,9 @@ func timestampRotationOrder(name string) (int64, bool) {
 		return 0, false
 	}
 	clean := strings.TrimPrefix(name, prefix)
-	clean = strings.TrimSuffix(clean, ".gz")
+	if strings.HasSuffix(clean, ".gz") {
+		clean = strings.TrimSuffix(clean, ".gz")
+	}
 	if ext != "" {
 		if !strings.HasSuffix(clean, ext) {
 			return 0, false

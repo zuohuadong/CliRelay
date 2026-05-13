@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 )
 
 // Manager exposes a websocket endpoint that proxies Gemini requests to
@@ -57,7 +56,9 @@ func NewManager(opts Options) *Manager {
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
-			CheckOrigin:     util.WebsocketOriginAllowed,
+			CheckOrigin: func(r *http.Request) bool {
+				return true
+			},
 		},
 		providerFactory: opts.ProviderFactory,
 		onConnected:     opts.OnConnected,
@@ -155,9 +156,6 @@ func (m *Manager) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		m.onConnected(s.provider)
 	}
 
-	// Each websocket session owns its own read loop for as long as the
-	// underlying connection stays alive. Session cleanup closes the connection,
-	// removes it from the manager, and terminates this detached loop.
 	go s.run(context.Background())
 }
 

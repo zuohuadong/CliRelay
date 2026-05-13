@@ -6,26 +6,113 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 )
 
 // OAuth configuration constants for Claude/Anthropic
 const (
-	AuthURL             = "https://claude.ai/oauth/authorize"
-	TokenURL            = "https://api.anthropic.com/v1/oauth/token"
-	ClientID            = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	LocalRedirectURI    = "http://localhost:54545/callback"
-	PlatformRedirectURI = "https://platform.claude.com/oauth/code/callback"
-	RedirectURI         = LocalRedirectURI
+	AuthURL     = "https://claude.ai/oauth/authorize"
+	TokenURL    = "https://api.anthropic.com/v1/oauth/token"
+	ClientID    = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	RedirectURI = "http://localhost:54545/callback"
+
+	claudeRefreshMinBackoff = 5 * time.Second
+	claudeRefreshMaxBackoff = 5 * time.Minute
 )
+
+var (
+	claudeRefreshGroup singleflight.Group
+	claudeRefreshMu    sync.Mutex
+	claudeRefreshBlock = make(map[string]time.Time)
+)
+
+type refreshHTTPError struct {
+	status    int
+	message   string
+	retryable bool
+}
+
+func (e *refreshHTTPError) Error() string {
+	return fmt.Sprintf("token refresh failed with status %d: %s", e.status, e.message)
+}
+
+func (e *refreshHTTPError) Retryable() bool {
+	return e != nil && e.retryable
+}
+
+func resetClaudeRefreshState() {
+	claudeRefreshMu.Lock()
+	defer claudeRefreshMu.Unlock()
+	claudeRefreshBlock = make(map[string]time.Time)
+	claudeRefreshGroup = singleflight.Group{}
+}
+
+func claudeRefreshBlockedUntil(refreshToken string) time.Time {
+	claudeRefreshMu.Lock()
+	defer claudeRefreshMu.Unlock()
+	return claudeRefreshBlock[refreshToken]
+}
+
+func setClaudeRefreshBlockedUntil(refreshToken string, until time.Time) {
+	claudeRefreshMu.Lock()
+	defer claudeRefreshMu.Unlock()
+	claudeRefreshBlock[refreshToken] = until
+}
+
+func clearClaudeRefreshBlockedUntil(refreshToken string) {
+	claudeRefreshMu.Lock()
+	defer claudeRefreshMu.Unlock()
+	delete(claudeRefreshBlock, refreshToken)
+}
+
+func clampClaudeRefreshBackoff(d time.Duration) time.Duration {
+	if d < claudeRefreshMinBackoff {
+		return claudeRefreshMinBackoff
+	}
+	if d > claudeRefreshMaxBackoff {
+		return claudeRefreshMaxBackoff
+	}
+	return d
+}
+
+func parseClaudeRetryAfter(resp *http.Response) time.Duration {
+	if resp == nil {
+		return claudeRefreshMinBackoff
+	}
+	if raw := strings.TrimSpace(resp.Header.Get("Retry-After")); raw != "" {
+		if seconds, err := time.ParseDuration(raw + "s"); err == nil {
+			return clampClaudeRefreshBackoff(seconds)
+		}
+		if when, err := http.ParseTime(raw); err == nil {
+			return clampClaudeRefreshBackoff(time.Until(when))
+		}
+	}
+	if raw := strings.TrimSpace(resp.Header.Get("Retry-After-Ms")); raw != "" {
+		if ms, err := time.ParseDuration(raw + "ms"); err == nil {
+			return clampClaudeRefreshBackoff(ms)
+		}
+	}
+	return claudeRefreshMinBackoff
+}
+
+func isClaudeRefreshRetryable(err error) bool {
+	var httpErr *refreshHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.Retryable()
+	}
+	return true
+}
 
 // tokenResponse represents the response structure from Anthropic's OAuth token endpoint.
 // It contains access token, refresh token, and associated user/organization information.
@@ -61,10 +148,30 @@ type ClaudeAuth struct {
 // Returns:
 //   - *ClaudeAuth: A new Claude authentication service instance
 func NewClaudeAuth(cfg *config.Config) *ClaudeAuth {
+	return NewClaudeAuthWithProxyURL(cfg, "")
+}
+
+// NewClaudeAuthWithProxyURL creates a new Anthropic authentication service with a proxy override.
+// proxyURL takes precedence over cfg.ProxyURL when non-empty.
+func NewClaudeAuthWithProxyURL(cfg *config.Config, proxyURL string) *ClaudeAuth {
+	effectiveProxyURL := strings.TrimSpace(proxyURL)
+	var sdkCfg *config.SDKConfig
+	if cfg != nil {
+		sdkCfgCopy := cfg.SDKConfig
+		if effectiveProxyURL == "" {
+			effectiveProxyURL = strings.TrimSpace(cfg.ProxyURL)
+		}
+		sdkCfgCopy.ProxyURL = effectiveProxyURL
+		sdkCfg = &sdkCfgCopy
+	} else if effectiveProxyURL != "" {
+		sdkCfgCopy := config.SDKConfig{ProxyURL: effectiveProxyURL}
+		sdkCfg = &sdkCfgCopy
+	}
+
 	// Use custom HTTP client with Firefox TLS fingerprint to bypass
 	// Cloudflare's bot detection on Anthropic domains
 	return &ClaudeAuth{
-		httpClient: NewAnthropicHttpClient(&cfg.SDKConfig),
+		httpClient: NewAnthropicHttpClient(sdkCfg),
 	}
 }
 
@@ -81,22 +188,16 @@ func NewClaudeAuth(cfg *config.Config) *ClaudeAuth {
 //   - string: The state parameter for verification
 //   - error: An error if PKCE codes are missing or URL generation fails
 func (o *ClaudeAuth) GenerateAuthURL(state string, pkceCodes *PKCECodes) (string, string, error) {
-	return o.GenerateAuthURLWithRedirectURI(state, pkceCodes, RedirectURI)
-}
-
-// GenerateAuthURLWithRedirectURI creates the OAuth authorization URL with a caller-selected redirect URI.
-func (o *ClaudeAuth) GenerateAuthURLWithRedirectURI(state string, pkceCodes *PKCECodes, redirectURI string) (string, string, error) {
 	if pkceCodes == nil {
 		return "", "", fmt.Errorf("PKCE codes are required")
 	}
-	redirectURI = normalizeRedirectURI(redirectURI)
 
 	params := url.Values{
 		"code":                  {"true"},
 		"client_id":             {ClientID},
 		"response_type":         {"code"},
-		"redirect_uri":          {redirectURI},
-		"scope":                 {"org:create_api_key user:profile user:inference"},
+		"redirect_uri":          {RedirectURI},
+		"scope":                 {"user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"},
 		"code_challenge":        {pkceCodes.CodeChallenge},
 		"code_challenge_method": {"S256"},
 		"state":                 {state},
@@ -138,15 +239,9 @@ func (c *ClaudeAuth) parseCodeAndState(code string) (parsedCode, parsedState str
 //   - *ClaudeAuthBundle: The complete authentication bundle with tokens
 //   - error: An error if token exchange fails
 func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state string, pkceCodes *PKCECodes) (*ClaudeAuthBundle, error) {
-	return o.ExchangeCodeForTokensWithRedirectURI(ctx, code, state, pkceCodes, RedirectURI)
-}
-
-// ExchangeCodeForTokensWithRedirectURI exchanges an authorization code using the redirect URI from the auth request.
-func (o *ClaudeAuth) ExchangeCodeForTokensWithRedirectURI(ctx context.Context, code, state string, pkceCodes *PKCECodes, redirectURI string) (*ClaudeAuthBundle, error) {
 	if pkceCodes == nil {
 		return nil, fmt.Errorf("PKCE codes are required for token exchange")
 	}
-	redirectURI = normalizeRedirectURI(redirectURI)
 	newCode, newState := o.parseCodeAndState(code)
 
 	// Prepare token exchange request
@@ -155,7 +250,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokensWithRedirectURI(ctx context.Context, c
 		"state":         state,
 		"grant_type":    "authorization_code",
 		"client_id":     ClientID,
-		"redirect_uri":  redirectURI,
+		"redirect_uri":  RedirectURI,
 		"code_verifier": pkceCodes.CodeVerifier,
 	}
 
@@ -188,7 +283,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokensWithRedirectURI(ctx context.Context, c
 		}
 	}()
 
-	body, err := util.ReadHTTPResponseBody("claude-oauth", resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read token response: %w", err)
 	}
@@ -209,7 +304,6 @@ func (o *ClaudeAuth) ExchangeCodeForTokensWithRedirectURI(ctx context.Context, c
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		Email:        tokenResp.Account.EmailAddress,
-		AccountUUID:  tokenResp.Account.UUID,
 		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}
 
@@ -220,14 +314,6 @@ func (o *ClaudeAuth) ExchangeCodeForTokensWithRedirectURI(ctx context.Context, c
 	}
 
 	return bundle, nil
-}
-
-func normalizeRedirectURI(redirectURI string) string {
-	redirectURI = strings.TrimSpace(redirectURI)
-	if redirectURI == "" {
-		return RedirectURI
-	}
-	return redirectURI
 }
 
 // RefreshTokens refreshes the access token using the refresh token.
@@ -244,6 +330,35 @@ func normalizeRedirectURI(redirectURI string) string {
 func (o *ClaudeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*ClaudeTokenData, error) {
 	if refreshToken == "" {
 		return nil, fmt.Errorf("refresh token is required")
+	}
+	if blockedUntil := claudeRefreshBlockedUntil(refreshToken); blockedUntil.After(time.Now()) {
+		return nil, &refreshHTTPError{
+			status:    http.StatusTooManyRequests,
+			message:   fmt.Sprintf("refresh temporarily blocked until %s", blockedUntil.Format(time.RFC3339)),
+			retryable: false,
+		}
+	}
+
+	result, err, _ := claudeRefreshGroup.Do(refreshToken, func() (interface{}, error) {
+		return o.refreshTokensSingleFlight(context.WithoutCancel(ctx), refreshToken)
+	})
+	if err != nil {
+		return nil, err
+	}
+	tokenData, ok := result.(*ClaudeTokenData)
+	if !ok || tokenData == nil {
+		return nil, fmt.Errorf("token refresh failed: invalid single-flight result")
+	}
+	return tokenData, nil
+}
+
+func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken string) (*ClaudeTokenData, error) {
+	if blockedUntil := claudeRefreshBlockedUntil(refreshToken); blockedUntil.After(time.Now()) {
+		return nil, &refreshHTTPError{
+			status:    http.StatusTooManyRequests,
+			message:   fmt.Sprintf("refresh temporarily blocked until %s", blockedUntil.Format(time.RFC3339)),
+			retryable: false,
+		}
 	}
 
 	reqBody := map[string]interface{}{
@@ -273,13 +388,23 @@ func (o *ClaudeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*C
 		_ = resp.Body.Close()
 	}()
 
-	body, err := util.ReadHTTPResponseBody("claude-oauth", resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read refresh response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed with status %d: %s", resp.StatusCode, string(body))
+		message := string(body)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			retryAfter := parseClaudeRetryAfter(resp)
+			setClaudeRefreshBlockedUntil(refreshToken, time.Now().Add(retryAfter))
+			return nil, &refreshHTTPError{status: resp.StatusCode, message: message, retryable: false}
+		}
+		return nil, &refreshHTTPError{
+			status:    resp.StatusCode,
+			message:   message,
+			retryable: resp.StatusCode >= http.StatusInternalServerError,
+		}
 	}
 
 	// log.Debugf("Token response: %s", string(body))
@@ -290,11 +415,12 @@ func (o *ClaudeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*C
 	}
 
 	// Create token data
+	clearClaudeRefreshBlockedUntil(refreshToken)
+
 	return &ClaudeTokenData{
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		Email:        tokenResp.Account.EmailAddress,
-		AccountUUID:  tokenResp.Account.UUID,
 		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}, nil
 }
@@ -314,7 +440,6 @@ func (o *ClaudeAuth) CreateTokenStorage(bundle *ClaudeAuthBundle) *ClaudeTokenSt
 		RefreshToken: bundle.TokenData.RefreshToken,
 		LastRefresh:  bundle.LastRefresh,
 		Email:        bundle.TokenData.Email,
-		AccountUUID:  bundle.TokenData.AccountUUID,
 		Expire:       bundle.TokenData.Expire,
 	}
 
@@ -353,6 +478,9 @@ func (o *ClaudeAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken st
 
 		lastErr = err
 		log.Warnf("Token refresh attempt %d failed: %v", attempt+1, err)
+		if !isClaudeRefreshRetryable(err) {
+			break
+		}
 	}
 
 	return nil, fmt.Errorf("token refresh failed after %d attempts: %w", maxRetries, lastErr)

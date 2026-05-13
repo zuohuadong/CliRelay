@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 func TestDiffOpenAICompatibility(t *testing.T) {
@@ -65,30 +65,6 @@ func TestDiffOpenAICompatibility_RemovedAndUnchanged(t *testing.T) {
 	newList = nil
 	changes := DiffOpenAICompatibility(oldList, newList)
 	expectContains(t, changes, "provider removed: provider-a (api-keys=1, models=1)")
-}
-
-func TestDiffOpenAICompatibility_DisabledFlagChange(t *testing.T) {
-	oldList := []config.OpenAICompatibility{
-		{
-			Name:          "provider-a",
-			BaseURL:       "https://provider-a.example/v1",
-			APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "key-a"}},
-		},
-	}
-	newList := []config.OpenAICompatibility{
-		{
-			Name:          "provider-a",
-			Disabled:      true,
-			BaseURL:       "https://provider-a.example/v1",
-			APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "key-a"}},
-		},
-	}
-
-	changes := DiffOpenAICompatibility(oldList, newList)
-	if len(changes) != 1 {
-		t.Fatalf("expected one change, got %v", changes)
-	}
-	expectContains(t, changes, "provider updated: provider-a (disabled false -> true)")
 }
 
 func TestOpenAICompatKeyFallbacks(t *testing.T) {

@@ -14,10 +14,6 @@ const (
 	StatusRefreshing Status = "refreshing"
 	// StatusError indicates the auth is temporarily unavailable due to errors.
 	StatusError Status = "error"
-	// StatusRevoked indicates the credential has been permanently revoked
-	// (e.g. account banned, OAuth authorization removed, refresh token invalid).
-	// This is distinct from StatusError which represents transient failures.
-	StatusRevoked Status = "revoked"
 	// StatusDisabled marks the auth as intentionally disabled.
 	StatusDisabled Status = "disabled"
 )

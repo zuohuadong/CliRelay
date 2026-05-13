@@ -4,18 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
-	baseauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 // FileTokenStore persists token records and auth metadata using the filesystem as backing storage.
@@ -64,11 +64,21 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("auth filestore: create dir failed: %w", err)
 	}
-	syncRoutingMetadata(auth)
+
+	// metadataSetter is a private interface for TokenStorage implementations that support metadata injection.
+	type metadataSetter interface {
+		SetMetadata(map[string]any)
+	}
 
 	switch {
 	case auth.Storage != nil:
-		baseauth.ApplyMetadata(auth.Storage, auth.Metadata)
+		if auth.Metadata == nil {
+			auth.Metadata = make(map[string]any)
+		}
+		auth.Metadata["disabled"] = auth.Disabled
+		if setter, ok := auth.Storage.(metadataSetter); ok {
+			setter.SetMetadata(auth.Metadata)
+		}
 		if err = auth.Storage.SaveTokenToFile(path); err != nil {
 			return "", err
 		}
@@ -234,9 +244,6 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 	auth := &cliproxyauth.Auth{
 		ID:               id,
 		Provider:         provider,
-		Prefix:           metadataString(metadata, "prefix"),
-		ProxyURL:         metadataString(metadata, "proxy_url", "proxy-url", "proxyUrl"),
-		ProxyID:          metadataString(metadata, "proxy_id", "proxy-id", "proxyId"),
 		FileName:         id,
 		Label:            s.labelFor(metadata),
 		Status:           status,
@@ -251,59 +258,22 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 	if email, ok := metadata["email"].(string); ok && email != "" {
 		auth.Attributes["email"] = email
 	}
+	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
 	return auth, nil
 }
 
-func metadataString(metadata map[string]any, keys ...string) string {
-	if len(metadata) == 0 {
-		return ""
-	}
-	for _, key := range keys {
-		if key == "" {
-			continue
-		}
-		if raw, ok := metadata[key].(string); ok {
-			if value := strings.TrimSpace(raw); value != "" {
-				return value
-			}
-		}
-	}
-	return ""
-}
-
-func syncRoutingMetadata(auth *cliproxyauth.Auth) {
-	if auth == nil {
-		return
-	}
-	prefix := strings.TrimSpace(auth.Prefix)
-	proxyURL := strings.TrimSpace(auth.ProxyURL)
-	proxyID := strings.TrimSpace(auth.ProxyID)
-	if prefix == "" && proxyURL == "" && proxyID == "" {
-		return
-	}
-	if auth.Metadata == nil {
-		auth.Metadata = make(map[string]any)
-	}
-	if prefix != "" {
-		auth.Metadata["prefix"] = prefix
-	}
-	if proxyURL != "" {
-		auth.Metadata["proxy_url"] = proxyURL
-	}
-	if proxyID != "" {
-		auth.Metadata["proxy_id"] = proxyID
-	}
-}
-
 func (s *FileTokenStore) idFor(path, baseDir string) string {
-	if baseDir == "" {
-		return path
+	id := path
+	if baseDir != "" {
+		if rel, errRel := filepath.Rel(baseDir, path); errRel == nil && rel != "" {
+			id = rel
+		}
 	}
-	rel, err := filepath.Rel(baseDir, path)
-	if err != nil {
-		return path
+	// On Windows, normalize ID casing to avoid duplicate auth entries caused by case-insensitive paths.
+	if runtime.GOOS == "windows" {
+		id = strings.ToLower(id)
 	}
-	return rel
+	return id
 }
 
 func (s *FileTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error) {
@@ -401,7 +371,7 @@ func refreshGeminiAccessToken(tokenMap map[string]any, httpClient *http.Client) 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, _ := util.ReadHTTPResponseBody("codex-device", resp.Body)
+	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("refresh failed: status %d", resp.StatusCode)
 	}

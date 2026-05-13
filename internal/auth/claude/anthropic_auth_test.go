@@ -2,89 +2,122 @@ package claude
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
-func TestGenerateAuthURLWithRedirectURIUsesProvidedRedirect(t *testing.T) {
-	auth := &ClaudeAuth{}
-	pkceCodes := &PKCECodes{
-		CodeVerifier:  "verifier",
-		CodeChallenge: "challenge",
-	}
+type roundTripFunc func(*http.Request) (*http.Response, error)
 
-	authURL, state, err := auth.GenerateAuthURLWithRedirectURI("state-123", pkceCodes, PlatformRedirectURI)
-	if err != nil {
-		t.Fatalf("GenerateAuthURLWithRedirectURI returned error: %v", err)
-	}
-	if state != "state-123" {
-		t.Fatalf("state = %q, want %q", state, "state-123")
-	}
-
-	parsed, err := url.Parse(authURL)
-	if err != nil {
-		t.Fatalf("parse auth URL: %v", err)
-	}
-	if got := parsed.Query().Get("redirect_uri"); got != PlatformRedirectURI {
-		t.Fatalf("redirect_uri = %q, want %q", got, PlatformRedirectURI)
-	}
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
-func TestExchangeCodeForTokensWithRedirectURIUsesProvidedRedirect(t *testing.T) {
-	var requestBody map[string]any
+func TestRefreshTokensWithRetry_429BlocksImmediateReplay(t *testing.T) {
+	resetClaudeRefreshState()
+	defer resetClaudeRefreshState()
+
+	var calls int32
 	auth := &ClaudeAuth{
 		httpClient: &http.Client{
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				if req.URL.String() != TokenURL {
-					t.Fatalf("request URL = %q, want %q", req.URL.String(), TokenURL)
-				}
-				body, err := io.ReadAll(req.Body)
-				if err != nil {
-					t.Fatalf("read request body: %v", err)
-				}
-				if err := json.Unmarshal(body, &requestBody); err != nil {
-					t.Fatalf("unmarshal request body: %v", err)
-				}
+				atomic.AddInt32(&calls, 1)
+				return &http.Response{
+					StatusCode: http.StatusTooManyRequests,
+					Body:       io.NopCloser(strings.NewReader(`{"error":"rate_limited"}`)),
+					Header:     http.Header{"Retry-After": []string{"60"}},
+					Request:    req,
+				}, nil
+			}),
+		},
+	}
+
+	_, err := auth.RefreshTokensWithRetry(context.Background(), "dummy_refresh_token", 3)
+	if err == nil {
+		t.Fatalf("expected 429 refresh error")
+	}
+	if !strings.Contains(err.Error(), "status 429") {
+		t.Fatalf("expected status 429 in error, got %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected 1 refresh attempt after 429, got %d", got)
+	}
+
+	_, err = auth.RefreshTokensWithRetry(context.Background(), "dummy_refresh_token", 3)
+	if err == nil {
+		t.Fatalf("expected immediate blocked refresh error")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected blocked retry to avoid a second refresh call, got %d attempts", got)
+	}
+	if blockedUntil := claudeRefreshBlockedUntil("dummy_refresh_token"); !blockedUntil.After(time.Now()) {
+		t.Fatalf("expected blocked-until timestamp to be set, got %v", blockedUntil)
+	}
+}
+
+func TestRefreshTokens_DeduplicatesConcurrentRefresh(t *testing.T) {
+	resetClaudeRefreshState()
+	defer resetClaudeRefreshState()
+
+	var calls int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+
+	auth := &ClaudeAuth{
+		httpClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				atomic.AddInt32(&calls, 1)
+				once.Do(func() { close(started) })
+				<-release
 				return &http.Response{
 					StatusCode: http.StatusOK,
-					Header:     make(http.Header),
 					Body: io.NopCloser(strings.NewReader(`{
-						"access_token":"access-token",
-						"refresh_token":"refresh-token",
+						"access_token":"new-access",
+						"refresh_token":"new-refresh",
 						"token_type":"Bearer",
 						"expires_in":3600,
-						"account":{"uuid":"account-uuid-123","email_address":"user@example.com"}
+						"account":{"email_address":"shared@example.com"}
 					}`)),
+					Header:  make(http.Header),
 					Request: req,
 				}, nil
 			}),
 		},
 	}
 
-	bundle, err := auth.ExchangeCodeForTokensWithRedirectURI(context.Background(), "code-123", "state-123", &PKCECodes{
-		CodeVerifier:  "verifier",
-		CodeChallenge: "challenge",
-	}, PlatformRedirectURI)
-	if err != nil {
-		t.Fatalf("ExchangeCodeForTokensWithRedirectURI returned error: %v", err)
+	results := make(chan *ClaudeTokenData, 2)
+	errs := make(chan error, 2)
+	runRefresh := func() {
+		td, err := auth.RefreshTokens(context.Background(), "shared-refresh-token")
+		results <- td
+		errs <- err
 	}
-	if bundle.TokenData.Email != "user@example.com" {
-		t.Fatalf("email = %q, want %q", bundle.TokenData.Email, "user@example.com")
-	}
-	if bundle.TokenData.AccountUUID != "account-uuid-123" {
-		t.Fatalf("account uuid = %q, want %q", bundle.TokenData.AccountUUID, "account-uuid-123")
-	}
-	if got := requestBody["redirect_uri"]; got != PlatformRedirectURI {
-		t.Fatalf("redirect_uri = %v, want %q", got, PlatformRedirectURI)
-	}
-}
 
-type roundTripFunc func(*http.Request) (*http.Response, error)
+	go runRefresh()
+	go runRefresh()
 
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
+	<-started
+	time.Sleep(20 * time.Millisecond)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected concurrent refresh to share a single upstream call, got %d", got)
+	}
+	close(release)
+
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("expected refresh to succeed, got %v", err)
+		}
+		td := <-results
+		if td == nil || td.AccessToken != "new-access" {
+			t.Fatalf("expected refreshed access token, got %#v", td)
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected exactly 1 upstream refresh call, got %d", got)
+	}
 }

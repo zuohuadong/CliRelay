@@ -11,8 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -32,8 +33,6 @@ type userInfo struct {
 // AntigravityAuth handles Antigravity OAuth authentication
 type AntigravityAuth struct {
 	httpClient *http.Client
-	clientID   string
-	secret     string
 }
 
 // NewAntigravityAuth creates a new Antigravity auth service.
@@ -41,15 +40,16 @@ func NewAntigravityAuth(cfg *config.Config, httpClient *http.Client) *Antigravit
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	clientID, clientSecret := cfg.OAuthClientCredentials(config.OAuthClientAntigravity)
 	if httpClient != nil {
-		return &AntigravityAuth{httpClient: httpClient, clientID: clientID, secret: clientSecret}
+		return &AntigravityAuth{httpClient: httpClient}
 	}
 	return &AntigravityAuth{
-		httpClient: util.SetProxy(&cfg.SDKConfig, util.NewHTTPClient(util.DefaultHTTPClientTimeout)),
-		clientID:   clientID,
-		secret:     clientSecret,
+		httpClient: util.SetProxy(&cfg.SDKConfig, &http.Client{}),
 	}
+}
+
+func (o *AntigravityAuth) loadCodeAssistUserAgent() string {
+	return misc.AntigravityLoadCodeAssistUserAgent("")
 }
 
 // BuildAuthURL generates the OAuth authorization URL.
@@ -57,13 +57,9 @@ func (o *AntigravityAuth) BuildAuthURL(state, redirectURI string) string {
 	if strings.TrimSpace(redirectURI) == "" {
 		redirectURI = fmt.Sprintf("http://localhost:%d/oauth-callback", CallbackPort)
 	}
-	clientID := strings.TrimSpace(o.clientID)
-	if clientID == "" {
-		return ""
-	}
 	params := url.Values{}
 	params.Set("access_type", "offline")
-	params.Set("client_id", clientID)
+	params.Set("client_id", ClientID)
 	params.Set("prompt", "consent")
 	params.Set("redirect_uri", redirectURI)
 	params.Set("response_type", "code")
@@ -74,14 +70,10 @@ func (o *AntigravityAuth) BuildAuthURL(state, redirectURI string) string {
 
 // ExchangeCodeForTokens exchanges authorization code for access and refresh tokens
 func (o *AntigravityAuth) ExchangeCodeForTokens(ctx context.Context, code, redirectURI string) (*TokenResponse, error) {
-	clientID := strings.TrimSpace(o.clientID)
-	if clientID == "" {
-		return nil, fmt.Errorf("antigravity token exchange: missing oauth client-id (set config oauth-clients.antigravity.client-id or env %s)", config.EnvAntigravityOAuthClientID)
-	}
 	data := url.Values{}
 	data.Set("code", code)
-	data.Set("client_id", clientID)
-	data.Set("client_secret", strings.TrimSpace(o.secret))
+	data.Set("client_id", ClientID)
+	data.Set("client_secret", ClientSecret)
 	data.Set("redirect_uri", redirectURI)
 	data.Set("grant_type", "authorization_code")
 
@@ -131,6 +123,7 @@ func (o *AntigravityAuth) FetchUserInfo(ctx context.Context, accessToken string)
 		return "", fmt.Errorf("antigravity userinfo: create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("User-Agent", o.loadCodeAssistUserAgent())
 
 	resp, errDo := o.httpClient.Do(req)
 	if errDo != nil {
@@ -166,11 +159,12 @@ func (o *AntigravityAuth) FetchUserInfo(ctx context.Context, accessToken string)
 
 // FetchProjectID retrieves the project ID for the authenticated user via loadCodeAssist
 func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string) (string, error) {
+	userAgent := o.loadCodeAssistUserAgent()
 	loadReqBody := map[string]any{
 		"metadata": map[string]string{
-			"ideType":    "ANTIGRAVITY",
-			"platform":   "PLATFORM_UNSPECIFIED",
-			"pluginType": "GEMINI",
+			"ide_type":    "ANTIGRAVITY",
+			"ide_version": misc.AntigravityVersionFromUserAgent(userAgent),
+			"ide_name":    "antigravity",
 		},
 	}
 
@@ -186,9 +180,8 @@ func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", APIUserAgent)
-	req.Header.Set("X-Goog-Api-Client", APIClient)
-	req.Header.Set("Client-Metadata", ClientMetadata)
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("X-Goog-Api-Client", misc.AntigravityGoogAPIClientUA)
 
 	resp, errDo := o.httpClient.Do(req)
 	if errDo != nil {
@@ -200,7 +193,7 @@ func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string
 		}
 	}()
 
-	bodyBytes, errRead := util.ReadHTTPResponseBody("antigravity-oauth", resp.Body)
+	bodyBytes, errRead := io.ReadAll(resp.Body)
 	if errRead != nil {
 		return "", fmt.Errorf("read response: %w", errRead)
 	}
@@ -257,12 +250,13 @@ func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string
 // OnboardUser attempts to fetch the project ID via onboardUser by polling for completion
 func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID string) (string, error) {
 	log.Infof("Antigravity: onboarding user with tier: %s", tierID)
+	userAgent := o.loadCodeAssistUserAgent()
 	requestBody := map[string]any{
 		"tierId": tierID,
 		"metadata": map[string]string{
-			"ideType":    "ANTIGRAVITY",
-			"platform":   "PLATFORM_UNSPECIFIED",
-			"pluginType": "GEMINI",
+			"ide_type":    "ANTIGRAVITY",
+			"ide_version": misc.AntigravityVersionFromUserAgent(userAgent),
+			"ide_name":    "antigravity",
 		},
 	}
 
@@ -290,9 +284,8 @@ func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID s
 		}
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", APIUserAgent)
-		req.Header.Set("X-Goog-Api-Client", APIClient)
-		req.Header.Set("Client-Metadata", ClientMetadata)
+		req.Header.Set("User-Agent", userAgent)
+		req.Header.Set("X-Goog-Api-Client", misc.AntigravityGoogAPIClientUA)
 
 		resp, errDo := o.httpClient.Do(req)
 		if errDo != nil {
@@ -300,7 +293,7 @@ func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID s
 			return "", fmt.Errorf("execute request: %w", errDo)
 		}
 
-		bodyBytes, errRead := util.ReadHTTPResponseBody("antigravity-oauth", resp.Body)
+		bodyBytes, errRead := io.ReadAll(resp.Body)
 		if errClose := resp.Body.Close(); errClose != nil {
 			log.Errorf("close body error: %v", errClose)
 		}

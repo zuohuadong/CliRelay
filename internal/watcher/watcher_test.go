@@ -14,11 +14,11 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/diff"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/synthesizer"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"gopkg.in/yaml.v3"
 )
 
@@ -68,19 +68,14 @@ func TestBuildAPIKeyClientsCounts(t *testing.T) {
 		},
 		ClaudeKey: []config.ClaudeKey{{APIKey: "c1"}},
 		CodexKey:  []config.CodexKey{{APIKey: "x1"}, {APIKey: "x2"}},
-		BedrockKey: []config.BedrockKey{
-			{AuthMode: "api-key", APIKey: "b1"},
-			{AuthMode: "sigv4", AccessKeyID: "AKIA", SecretAccessKey: "SECRET"},
-		},
-		OpenCodeGoKey: []config.OpenCodeGoKey{{APIKey: "go1"}},
 		OpenAICompatibility: []config.OpenAICompatibility{
 			{APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "o1"}, {APIKey: "o2"}}},
 		},
 	}
 
-	gemini, vertex, claude, codex, bedrock, opencodeGo, compat := BuildAPIKeyClients(cfg)
-	if gemini != 2 || vertex != 1 || claude != 1 || codex != 2 || bedrock != 2 || opencodeGo != 1 || compat != 2 {
-		t.Fatalf("unexpected counts: %d %d %d %d %d %d %d", gemini, vertex, claude, codex, bedrock, opencodeGo, compat)
+	gemini, vertex, claude, codex, compat := BuildAPIKeyClients(cfg)
+	if gemini != 2 || vertex != 1 || claude != 1 || codex != 2 || compat != 2 {
+		t.Fatalf("unexpected counts: %d %d %d %d %d", gemini, vertex, claude, codex, compat)
 	}
 }
 
@@ -316,7 +311,7 @@ func TestStartFailsWhenConfigMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create watcher: %v", err)
 	}
-	defer func() { _ = w.Stop() }()
+	defer w.Stop()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -411,8 +406,8 @@ func TestAddOrUpdateClientTriggersReloadAndHash(t *testing.T) {
 
 	w.addOrUpdateClient(authFile)
 
-	if got := atomic.LoadInt32(&reloads); got != 1 {
-		t.Fatalf("expected reload callback once, got %d", got)
+	if got := atomic.LoadInt32(&reloads); got != 0 {
+		t.Fatalf("expected no reload callback for auth update, got %d", got)
 	}
 	// Use normalizeAuthPath to match how addOrUpdateClient stores the key
 	normalized := w.normalizeAuthPath(authFile)
@@ -441,8 +436,150 @@ func TestRemoveClientRemovesHash(t *testing.T) {
 	if _, ok := w.lastAuthHashes[w.normalizeAuthPath(authFile)]; ok {
 		t.Fatal("expected hash to be removed after deletion")
 	}
+	if got := atomic.LoadInt32(&reloads); got != 0 {
+		t.Fatalf("expected no reload callback for auth removal, got %d", got)
+	}
+}
+
+func TestAuthFileEventsDoNotInvokeSnapshotCoreAuths(t *testing.T) {
+	tmpDir := t.TempDir()
+	authFile := filepath.Join(tmpDir, "sample.json")
+	if err := os.WriteFile(authFile, []byte(`{"type":"codex","email":"u@example.com"}`), 0o644); err != nil {
+		t.Fatalf("failed to create auth file: %v", err)
+	}
+
+	origSnapshot := snapshotCoreAuthsFunc
+	var snapshotCalls int32
+	snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string) []*coreauth.Auth {
+		atomic.AddInt32(&snapshotCalls, 1)
+		return origSnapshot(cfg, authDir)
+	}
+	defer func() { snapshotCoreAuthsFunc = origSnapshot }()
+
+	w := &Watcher{
+		authDir:          tmpDir,
+		lastAuthHashes:   make(map[string]string),
+		lastAuthContents: make(map[string]*coreauth.Auth),
+		fileAuthsByPath:  make(map[string]map[string]*coreauth.Auth),
+	}
+	w.SetConfig(&config.Config{AuthDir: tmpDir})
+
+	w.addOrUpdateClient(authFile)
+	w.removeClient(authFile)
+
+	if got := atomic.LoadInt32(&snapshotCalls); got != 0 {
+		t.Fatalf("expected auth file events to avoid full snapshot, got %d calls", got)
+	}
+}
+
+func TestAuthSliceToMap(t *testing.T) {
+	t.Parallel()
+
+	valid1 := &coreauth.Auth{ID: "a"}
+	valid2 := &coreauth.Auth{ID: "b"}
+	dupOld := &coreauth.Auth{ID: "dup", Label: "old"}
+	dupNew := &coreauth.Auth{ID: "dup", Label: "new"}
+	empty := &coreauth.Auth{ID: "  "}
+
+	tests := []struct {
+		name string
+		in   []*coreauth.Auth
+		want map[string]*coreauth.Auth
+	}{
+		{
+			name: "nil input",
+			in:   nil,
+			want: map[string]*coreauth.Auth{},
+		},
+		{
+			name: "empty input",
+			in:   []*coreauth.Auth{},
+			want: map[string]*coreauth.Auth{},
+		},
+		{
+			name: "filters invalid auths",
+			in:   []*coreauth.Auth{nil, empty},
+			want: map[string]*coreauth.Auth{},
+		},
+		{
+			name: "keeps valid auths",
+			in:   []*coreauth.Auth{valid1, nil, valid2},
+			want: map[string]*coreauth.Auth{"a": valid1, "b": valid2},
+		},
+		{
+			name: "last duplicate wins",
+			in:   []*coreauth.Auth{dupOld, dupNew},
+			want: map[string]*coreauth.Auth{"dup": dupNew},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := authSliceToMap(tc.in)
+			if len(tc.want) == 0 {
+				if got == nil {
+					t.Fatal("expected empty map, got nil")
+				}
+				if len(got) != 0 {
+					t.Fatalf("expected empty map, got %#v", got)
+				}
+				return
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("unexpected map length: got %d, want %d", len(got), len(tc.want))
+			}
+			for id, wantAuth := range tc.want {
+				gotAuth, ok := got[id]
+				if !ok {
+					t.Fatalf("missing id %q in result map", id)
+				}
+				if !authEqual(gotAuth, wantAuth) {
+					t.Fatalf("unexpected auth for id %q: got %#v, want %#v", id, gotAuth, wantAuth)
+				}
+			}
+		})
+	}
+}
+
+func TestTriggerServerUpdateCancelsPendingTimerOnImmediate(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{AuthDir: tmpDir}
+
+	var reloads int32
+	w := &Watcher{
+		reloadCallback: func(*config.Config) {
+			atomic.AddInt32(&reloads, 1)
+		},
+	}
+	w.SetConfig(cfg)
+
+	w.serverUpdateMu.Lock()
+	w.serverUpdateLast = time.Now().Add(-(serverUpdateDebounce - 100*time.Millisecond))
+	w.serverUpdateMu.Unlock()
+	w.triggerServerUpdate(cfg)
+
+	if got := atomic.LoadInt32(&reloads); got != 0 {
+		t.Fatalf("expected no immediate reload, got %d", got)
+	}
+
+	w.serverUpdateMu.Lock()
+	if !w.serverUpdatePend || w.serverUpdateTimer == nil {
+		w.serverUpdateMu.Unlock()
+		t.Fatal("expected a pending server update timer")
+	}
+	w.serverUpdateLast = time.Now().Add(-(serverUpdateDebounce + 10*time.Millisecond))
+	w.serverUpdateMu.Unlock()
+
+	w.triggerServerUpdate(cfg)
 	if got := atomic.LoadInt32(&reloads); got != 1 {
-		t.Fatalf("expected reload callback once, got %d", got)
+		t.Fatalf("expected immediate reload once, got %d", got)
+	}
+
+	time.Sleep(250 * time.Millisecond)
+	if got := atomic.LoadInt32(&reloads); got != 1 {
+		t.Fatalf("expected pending timer to be cancelled, got %d reloads", got)
 	}
 }
 
@@ -569,7 +706,7 @@ func TestReloadClientsFiltersProvidersWithNilCurrentAuths(t *testing.T) {
 		config:  &config.Config{AuthDir: tmp},
 	}
 	w.reloadClients(false, []string{"match"}, false)
-	if len(w.currentAuths) != 0 {
+	if w.currentAuths != nil && len(w.currentAuths) != 0 {
 		t.Fatalf("expected currentAuths to be nil or empty, got %d", len(w.currentAuths))
 	}
 }
@@ -660,8 +797,8 @@ func TestHandleEventRemovesAuthFile(t *testing.T) {
 
 	w.handleEvent(fsnotify.Event{Name: authFile, Op: fsnotify.Remove})
 
-	if atomic.LoadInt32(&reloads) != 1 {
-		t.Fatalf("expected reload callback once, got %d", reloads)
+	if atomic.LoadInt32(&reloads) != 0 {
+		t.Fatalf("expected no reload callback for auth removal, got %d", reloads)
 	}
 	if _, ok := w.lastAuthHashes[w.normalizeAuthPath(authFile)]; ok {
 		t.Fatal("expected hash entry to be removed")
@@ -858,8 +995,8 @@ func TestHandleEventAuthWriteTriggersUpdate(t *testing.T) {
 	w.SetConfig(&config.Config{AuthDir: authDir})
 
 	w.handleEvent(fsnotify.Event{Name: authFile, Op: fsnotify.Write})
-	if atomic.LoadInt32(&reloads) != 1 {
-		t.Fatalf("expected auth write to trigger reload callback, got %d", reloads)
+	if atomic.LoadInt32(&reloads) != 0 {
+		t.Fatalf("expected auth write to avoid global reload callback, got %d", reloads)
 	}
 }
 
@@ -955,8 +1092,8 @@ func TestHandleEventAtomicReplaceChangedTriggersUpdate(t *testing.T) {
 	w.lastAuthHashes[w.normalizeAuthPath(authFile)] = hexString(oldSum[:])
 
 	w.handleEvent(fsnotify.Event{Name: authFile, Op: fsnotify.Rename})
-	if atomic.LoadInt32(&reloads) != 1 {
-		t.Fatalf("expected changed atomic replace to trigger update, got %d", reloads)
+	if atomic.LoadInt32(&reloads) != 0 {
+		t.Fatalf("expected changed atomic replace to avoid global reload, got %d", reloads)
 	}
 }
 
@@ -1010,8 +1147,8 @@ func TestHandleEventRemoveKnownFileDeletes(t *testing.T) {
 	w.lastAuthHashes[w.normalizeAuthPath(authFile)] = "hash"
 
 	w.handleEvent(fsnotify.Event{Name: authFile, Op: fsnotify.Remove})
-	if atomic.LoadInt32(&reloads) != 1 {
-		t.Fatalf("expected known remove to trigger reload, got %d", reloads)
+	if atomic.LoadInt32(&reloads) != 0 {
+		t.Fatalf("expected known remove to avoid global reload, got %d", reloads)
 	}
 	if _, ok := w.lastAuthHashes[w.normalizeAuthPath(authFile)]; ok {
 		t.Fatal("expected known auth hash to be deleted")
@@ -1244,6 +1381,67 @@ func TestReloadConfigFiltersAffectedOAuthProviders(t *testing.T) {
 	}
 }
 
+func TestReloadConfigTriggersCallbackForMaxRetryCredentialsChange(t *testing.T) {
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	oldCfg := &config.Config{
+		AuthDir:             authDir,
+		MaxRetryCredentials: 0,
+		RequestRetry:        1,
+		MaxRetryInterval:    5,
+	}
+	newCfg := &config.Config{
+		AuthDir:             authDir,
+		MaxRetryCredentials: 2,
+		RequestRetry:        1,
+		MaxRetryInterval:    5,
+	}
+	data, errMarshal := yaml.Marshal(newCfg)
+	if errMarshal != nil {
+		t.Fatalf("failed to marshal config: %v", errMarshal)
+	}
+	if errWrite := os.WriteFile(configPath, data, 0o644); errWrite != nil {
+		t.Fatalf("failed to write config: %v", errWrite)
+	}
+
+	callbackCalls := 0
+	callbackMaxRetryCredentials := -1
+	w := &Watcher{
+		configPath:     configPath,
+		authDir:        authDir,
+		lastAuthHashes: make(map[string]string),
+		reloadCallback: func(cfg *config.Config) {
+			callbackCalls++
+			if cfg != nil {
+				callbackMaxRetryCredentials = cfg.MaxRetryCredentials
+			}
+		},
+	}
+	w.SetConfig(oldCfg)
+
+	if ok := w.reloadConfig(); !ok {
+		t.Fatal("expected reloadConfig to succeed")
+	}
+
+	if callbackCalls != 1 {
+		t.Fatalf("expected reload callback to be called once, got %d", callbackCalls)
+	}
+	if callbackMaxRetryCredentials != 2 {
+		t.Fatalf("expected callback MaxRetryCredentials=2, got %d", callbackMaxRetryCredentials)
+	}
+
+	w.clientsMutex.RLock()
+	defer w.clientsMutex.RUnlock()
+	if w.config == nil || w.config.MaxRetryCredentials != 2 {
+		t.Fatalf("expected watcher config MaxRetryCredentials=2, got %+v", w.config)
+	}
+}
+
 func TestStartFailsWhenAuthDirMissing(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
@@ -1256,7 +1454,7 @@ func TestStartFailsWhenAuthDirMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create watcher: %v", err)
 	}
-	defer func() { _ = w.Stop() }()
+	defer w.Stop()
 	w.SetConfig(&config.Config{AuthDir: authDir})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1285,7 +1483,6 @@ func TestNormalizeAuthNil(t *testing.T) {
 
 // stubStore implements coreauth.Store plus watcher-specific persistence helpers.
 type stubStore struct {
-	mu              sync.Mutex
 	authDir         string
 	cfgPersisted    int32
 	authPersisted   int32
@@ -1304,10 +1501,8 @@ func (s *stubStore) PersistConfig(context.Context) error {
 }
 func (s *stubStore) PersistAuthFiles(_ context.Context, message string, paths ...string) error {
 	atomic.AddInt32(&s.authPersisted, 1)
-	s.mu.Lock()
 	s.lastAuthMessage = message
-	s.lastAuthPaths = append([]string(nil), paths...)
-	s.mu.Unlock()
+	s.lastAuthPaths = paths
 	return nil
 }
 func (s *stubStore) AuthDir() string { return s.authDir }
@@ -1339,29 +1534,19 @@ func TestPersistConfigAndAuthAsyncInvokePersister(t *testing.T) {
 	w.persistConfigAsync()
 	w.persistAuthAsync("msg", " a ", "", "b ")
 
+	time.Sleep(30 * time.Millisecond)
 	store := w.storePersister.(*stubStore)
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for atomic.LoadInt32(&store.cfgPersisted) != 1 || atomic.LoadInt32(&store.authPersisted) != 1 {
-		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for persister calls: cfg=%d auth=%d", store.cfgPersisted, store.authPersisted)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
 	if atomic.LoadInt32(&store.cfgPersisted) != 1 {
 		t.Fatalf("expected PersistConfig to be called once, got %d", store.cfgPersisted)
 	}
 	if atomic.LoadInt32(&store.authPersisted) != 1 {
 		t.Fatalf("expected PersistAuthFiles to be called once, got %d", store.authPersisted)
 	}
-	store.mu.Lock()
-	msg := store.lastAuthMessage
-	paths := append([]string(nil), store.lastAuthPaths...)
-	store.mu.Unlock()
-	if msg != "msg" {
-		t.Fatalf("unexpected auth message: %s", msg)
+	if store.lastAuthMessage != "msg" {
+		t.Fatalf("unexpected auth message: %s", store.lastAuthMessage)
 	}
-	if len(paths) != 2 || paths[0] != "a" || paths[1] != "b" {
-		t.Fatalf("unexpected filtered paths: %#v", paths)
+	if len(store.lastAuthPaths) != 2 || store.lastAuthPaths[0] != "a" || store.lastAuthPaths[1] != "b" {
+		t.Fatalf("unexpected filtered paths: %#v", store.lastAuthPaths)
 	}
 }
 
@@ -1389,10 +1574,7 @@ func TestScheduleConfigReloadDebounces(t *testing.T) {
 	if atomic.LoadInt32(&reloads) != 1 {
 		t.Fatalf("expected single debounced reload, got %d", reloads)
 	}
-	w.clientsMutex.RLock()
-	hash := w.lastConfigHash
-	w.clientsMutex.RUnlock()
-	if hash == "" {
+	if w.lastConfigHash == "" {
 		t.Fatal("expected lastConfigHash to be set after reload")
 	}
 }

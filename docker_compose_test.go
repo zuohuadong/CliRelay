@@ -6,6 +6,10 @@ import (
 	"testing"
 )
 
+func composeForbiddenTerm(parts ...string) string {
+	return strings.Join(parts, "")
+}
+
 func TestRepositoryComposeUsesProjectDirForDefaultDataMounts(t *testing.T) {
 	data, err := os.ReadFile("docker-compose.yml")
 	if err != nil {
@@ -38,36 +42,30 @@ func TestRepositoryComposePassesContainerAuthPath(t *testing.T) {
 	}
 }
 
-func TestRepositoryComposeMirrorsDeploymentFilesAtProjectDirInUpdater(t *testing.T) {
+func TestRepositoryComposeDoesNotIncludeUpdaterSidecar(t *testing.T) {
 	data, err := os.ReadFile("docker-compose.yml")
 	if err != nil {
 		t.Fatalf("read docker-compose.yml: %v", err)
 	}
 	content := string(data)
 
-	for _, want := range []string{
-		"CLIRELAY_PROJECT_DIR: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}",
-		"CLIRELAY_COMPOSE_FILE: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/docker-compose.yml",
-		"CLIRELAY_ENV_FILE: ${CLIRELAY_ENV_FILE:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/.env}",
-		"${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}",
-		"${CLI_PROXY_CONFIG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/config.yaml}:/CLIProxyAPI/config.yaml",
-	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("docker-compose.yml updater config missing %q", want)
-		}
-	}
-
 	for _, forbidden := range []string{
+		composeForbiddenTerm("clirelay", "-updater"),
+		composeForbiddenTerm("CLIRELAY", "_UPDATER"),
+		"CLIRELAY_COMPOSE_FILE",
+		"CLIRELAY_ENV_FILE",
+		"CLIRELAY_TARGET_SERVICE",
+		composeForbiddenTerm("CLIRELAY", "_UPDATE", "_CHANNEL"),
 		"/workspace/docker-compose.yml",
 		"/workspace/.env",
 	} {
 		if strings.Contains(content, forbidden) {
-			t.Fatalf("docker-compose.yml still contains updater /workspace path %q", forbidden)
+			t.Fatalf("docker-compose.yml still contains removed sidecar config %q", forbidden)
 		}
 	}
 }
 
-func TestRepositoryComposeDoesNotCreateEnvDirectoryForUpdater(t *testing.T) {
+func TestRepositoryComposeDoesNotBindUpdaterEnvFile(t *testing.T) {
 	data, err := os.ReadFile("docker-compose.yml")
 	if err != nil {
 		t.Fatalf("read docker-compose.yml: %v", err)

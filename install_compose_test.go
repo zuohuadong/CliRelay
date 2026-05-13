@@ -57,32 +57,25 @@ func TestInstallComposeUsesHostPathVariablesForDataMounts(t *testing.T) {
 	}
 }
 
-func TestInstallComposeMirrorsDeploymentFilesAtHostPathInUpdater(t *testing.T) {
+func TestInstallComposeDoesNotIncludeUpdaterSidecar(t *testing.T) {
 	data, err := os.ReadFile("install.sh")
 	if err != nil {
 		t.Fatalf("read install.sh: %v", err)
 	}
 	content := string(data)
 
-	for _, want := range []string{
-		"CLIRELAY_COMPOSE_FILE: ${CLIRELAY_INSTALL_DIR}/docker-compose.yml",
-		"CLIRELAY_ENV_FILE: ${CLIRELAY_INSTALL_DIR}/.env",
-		"./docker-compose.yml:${CLIRELAY_INSTALL_DIR}/docker-compose.yml:ro",
-		"./.env:${CLIRELAY_INSTALL_DIR}/.env",
-	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("install.sh generated updater compose missing %q", want)
-		}
-	}
-
 	for _, forbidden := range []string{
-		"CLIRELAY_COMPOSE_FILE: /workspace/docker-compose.yml",
-		"CLIRELAY_ENV_FILE: /workspace/.env",
-		"./docker-compose.yml:/workspace/docker-compose.yml:ro",
-		"./.env:/workspace/.env",
+		composeForbiddenTerm("clirelay", "-updater"),
+		composeForbiddenTerm("CLIRELAY", "_UPDATER"),
+		"CLIRELAY_COMPOSE_FILE",
+		"CLIRELAY_ENV_FILE",
+		"CLIRELAY_TARGET_SERVICE",
+		composeForbiddenTerm("CLIRELAY", "_UPDATE", "_CHANNEL"),
+		"/workspace/docker-compose.yml",
+		"/workspace/.env",
 	} {
 		if strings.Contains(content, forbidden) {
-			t.Fatalf("install.sh generated updater compose still contains /workspace mapping %q", forbidden)
+			t.Fatalf("install.sh generated compose still contains removed sidecar config %q", forbidden)
 		}
 	}
 }

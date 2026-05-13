@@ -3,7 +3,7 @@ package claude
 import (
 	"testing"
 
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v7/internal/routing"
 	"github.com/tidwall/gjson"
 )
 

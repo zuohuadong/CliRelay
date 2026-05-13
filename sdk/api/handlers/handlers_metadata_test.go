@@ -3,7 +3,7 @@ package handlers
 import (
 	"testing"
 
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 func TestEnrichRequestExecutionMetadataMarksTopLevelTools(t *testing.T) {

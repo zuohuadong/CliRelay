@@ -3,7 +3,7 @@ package config
 import (
 	"strings"
 
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v7/internal/routing"
 )
 
 // ChannelGroupMatch defines how auth channels are assigned to a routing group.

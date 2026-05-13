@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

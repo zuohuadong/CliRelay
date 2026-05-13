@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 const maxCustomAuthTags = 3

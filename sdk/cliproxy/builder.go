@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"strings"
 
-	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	log "github.com/sirupsen/logrus"
 )
 

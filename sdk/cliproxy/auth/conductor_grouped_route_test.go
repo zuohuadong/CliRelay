@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 type sequenceExecutor struct {

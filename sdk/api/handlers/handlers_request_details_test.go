@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v7/internal/routing"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
 func TestGetRequestDetails_PreservesSuffix(t *testing.T) {

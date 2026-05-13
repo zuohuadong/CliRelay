@@ -1,8 +1,8 @@
 package cliproxy
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 func (s *Service) RegisterProxyBanNotifier(notifier ProxyBanNotifier) {

@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
 // Register ensures the config-access provider is available to the access manager.

@@ -5,10 +5,10 @@ import (
 	"strconv"
 	"strings"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v7/internal/routing"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 func metadataStringSet(meta map[string]any, key string, normalizer func(string) string) map[string]struct{} {

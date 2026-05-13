@@ -67,12 +67,12 @@ ARG FRONTEND_COMMIT=none
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
   -buildvcs=false \
   -ldflags="-s -w \
-    -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Version=${VERSION}' \
-    -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Commit=${COMMIT}' \
-    -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.BuildDate=${BUILD_DATE}' \
-    -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.FrontendVersion=${UI_VERSION}' \
-    -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.FrontendCommit=${FRONTEND_COMMIT}' \
-    -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.FrontendRef=${FRONTEND_REF}'" \
+    -X 'github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo.Version=${VERSION}' \
+    -X 'github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo.Commit=${COMMIT}' \
+    -X 'github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo.BuildDate=${BUILD_DATE}' \
+    -X 'github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo.FrontendVersion=${UI_VERSION}' \
+    -X 'github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo.FrontendCommit=${FRONTEND_COMMIT}' \
+    -X 'github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo.FrontendRef=${FRONTEND_REF}'" \
   -o ./CLIProxyAPI ./cmd/server/
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \

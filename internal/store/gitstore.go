@@ -18,8 +18,8 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
-	baseauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	baseauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 // gcInterval defines minimum time between garbage collection runs.

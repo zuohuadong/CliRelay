@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	defaultManagementReleaseURL  = "https://api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center/releases/latest"
+	defaultManagementReleaseURL  = "https://api.github.com/repos/zuohuadong/codeProxy/releases/latest"
 	defaultManagementFallbackURL = "https://cpamc.router-for.me/"
 	managementAssetName          = "management.html"
 	panelDistAssetName           = "panel-dist.zip"
@@ -269,7 +269,8 @@ func AssetPath(configFilePath string, relativePath string) (string, bool) {
 	return target, true
 }
 
-// EnsureLatestManagementHTML checks the latest management.html asset and updates the local copy when needed.
+// EnsureLatestManagementHTML checks the latest management panel asset and updates the local copy when needed.
+// It prefers the SPA zip bundle (panel-dist.zip) and falls back to the single management.html asset.
 // It coalesces concurrent sync attempts and returns whether the asset exists after the sync attempt.
 func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL string, panelRepository string) bool {
 	if ctx == nil {

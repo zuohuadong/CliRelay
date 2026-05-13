@@ -111,8 +111,11 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 	legacyReq.Header.Set("Authorization", "Bearer test-management-key")
 	legacyRR := httptest.NewRecorder()
 	server.engine.ServeHTTP(legacyRR, legacyReq)
-	if legacyRR.Code != http.StatusNotFound {
-		t.Fatalf("legacy usage status = %d, want %d body=%s", legacyRR.Code, http.StatusNotFound, legacyRR.Body.String())
+	if legacyRR.Code != http.StatusOK {
+		t.Fatalf("usage summary status = %d, want %d body=%s", legacyRR.Code, http.StatusOK, legacyRR.Body.String())
+	}
+	if !strings.Contains(legacyRR.Body.String(), `"usage"`) {
+		t.Fatalf("usage summary body missing usage payload: %s", legacyRR.Body.String())
 	}
 
 	authReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=2", nil)
@@ -171,6 +174,42 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
 		}
 	})
+}
+
+func TestManageRouteServesSPAPanel(t *testing.T) {
+	panelDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(panelDir, "assets"), 0o755); err != nil {
+		t.Fatalf("create assets dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(panelDir, "manage.html"), []byte("<html><body>panel-root</body></html>"), 0o644); err != nil {
+		t.Fatalf("write manage.html: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(panelDir, "assets", "app-abcdef12.js"), []byte("console.log('panel')"), 0o644); err != nil {
+		t.Fatalf("write asset: %v", err)
+	}
+	t.Setenv("MANAGEMENT_STATIC_PATH", panelDir)
+
+	server := newTestServer(t)
+
+	htmlReq := httptest.NewRequest(http.MethodGet, "/manage/dashboard", nil)
+	htmlRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(htmlRR, htmlReq)
+	if htmlRR.Code != http.StatusOK {
+		t.Fatalf("html status = %d, want %d body=%s", htmlRR.Code, http.StatusOK, htmlRR.Body.String())
+	}
+	if !strings.Contains(htmlRR.Body.String(), "panel-root") {
+		t.Fatalf("html body missing panel content: %s", htmlRR.Body.String())
+	}
+
+	assetReq := httptest.NewRequest(http.MethodGet, "/manage/assets/app-abcdef12.js", nil)
+	assetRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(assetRR, assetReq)
+	if assetRR.Code != http.StatusOK {
+		t.Fatalf("asset status = %d, want %d body=%s", assetRR.Code, http.StatusOK, assetRR.Body.String())
+	}
+	if !strings.Contains(assetRR.Body.String(), "panel") {
+		t.Fatalf("asset body missing content: %s", assetRR.Body.String())
+	}
 }
 
 func TestAmpProviderModelRoutes(t *testing.T) {

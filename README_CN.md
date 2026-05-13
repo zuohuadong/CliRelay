@@ -73,6 +73,10 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 `remote-management.disable-control-panel` 为 `false` 即可托管面板；仅在需要停止后台周期性同步面板资源时，才将
 `remote-management.disable-auto-update-panel` 设为 `true`。
 
+本 fork 默认使用 [zuohuadong/codeProxy](https://github.com/zuohuadong/codeProxy)，
+并支持 `panel-dist.zip` release 包。v7 运行时已有能力会直接由后端提供；仅存在于旧
+dev/v6 线的功能在迁移前会返回空只读模型或明确的 `unsupported` 错误。
+
 ## 使用量统计
 
 自v6.10.0版本以后，CLIProxyAPI及 [CPAMC](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) 项目不再预置数据统计功能，如果有数据统计需求的请使用以下项目：

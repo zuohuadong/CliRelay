@@ -74,6 +74,11 @@ The backend only hosts `/manage` and syncs panel release assets. Configure
 set `remote-management.disable-auto-update-panel` to `true` only when you want to
 stop periodic background panel asset sync.
 
+This fork defaults to [zuohuadong/codeProxy](https://github.com/zuohuadong/codeProxy)
+and supports `panel-dist.zip` release bundles. Endpoints backed by v7 runtime
+state are served directly; features that only exist in the older dev/v6 line
+return empty read models or explicit `unsupported` errors until they are ported.
+
 ## Usage Statistics
 
 Since v6.10.0, CLIProxyAPI and [CPAMC](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) no longer ship built-in usage statistics. If you need usage statistics, use:

@@ -11,15 +11,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
 // Helper: compress data with gzip
 func gzipBytes(b []byte) []byte {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
-	zw.Write(b)
-	zw.Close()
+	if _, err := zw.Write(b); err != nil {
+		panic(err)
+	}
+	if err := zw.Close(); err != nil {
+		panic(err)
+	}
 	return buf.Bytes()
 }
 
@@ -129,11 +133,11 @@ func TestModifyResponse_GzipScenarios(t *testing.T) {
 			wantCE:   "",
 		},
 		{
-			name:     "decompresses_non_2xx_status_when_gzip_detected",
+			name:     "skips_non_2xx_status",
 			header:   http.Header{},
 			body:     good,
 			status:   404,
-			wantBody: goodJSON,
+			wantBody: good,
 			wantCE:   "",
 		},
 	}
@@ -246,7 +250,7 @@ func TestReverseProxy_InjectsHeaders(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHeaders <- r.Header.Clone()
 		w.WriteHeader(200)
-		w.Write([]byte(`ok`))
+		_, _ = w.Write([]byte(`ok`))
 	}))
 	defer upstream.Close()
 
@@ -280,7 +284,7 @@ func TestReverseProxy_EmptySecret(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHeaders <- r.Header.Clone()
 		w.WriteHeader(200)
-		w.Write([]byte(`ok`))
+		_, _ = w.Write([]byte(`ok`))
 	}))
 	defer upstream.Close()
 
@@ -319,7 +323,7 @@ func TestReverseProxy_StripsClientCredentialsFromHeadersAndQuery(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got <- captured{headers: r.Header.Clone(), query: r.URL.RawQuery}
 		w.WriteHeader(200)
-		w.Write([]byte(`ok`))
+		_, _ = w.Write([]byte(`ok`))
 	}))
 	defer upstream.Close()
 
@@ -379,7 +383,7 @@ func TestReverseProxy_InjectsMappedSecret_FromRequestContext(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHeaders <- r.Header.Clone()
 		w.WriteHeader(200)
-		w.Write([]byte(`ok`))
+		_, _ = w.Write([]byte(`ok`))
 	}))
 	defer upstream.Close()
 
@@ -424,7 +428,7 @@ func TestReverseProxy_MappedSecret_FallsBackToDefault(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHeaders <- r.Header.Clone()
 		w.WriteHeader(200)
-		w.Write([]byte(`ok`))
+		_, _ = w.Write([]byte(`ok`))
 	}))
 	defer upstream.Close()
 
@@ -521,7 +525,7 @@ func TestReverseProxy_FullRoundTrip_Gzip(t *testing.T) {
 	// Upstream returns gzipped JSON without Content-Encoding header
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write(gzipBytes([]byte(`{"upstream":"ok"}`)))
+		_, _ = w.Write(gzipBytes([]byte(`{"upstream":"ok"}`)))
 	}))
 	defer upstream.Close()
 
@@ -553,7 +557,7 @@ func TestReverseProxy_FullRoundTrip_PlainJSON(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
-		w.Write([]byte(`{"plain":"json"}`))
+		_, _ = w.Write([]byte(`{"plain":"json"}`))
 	}))
 	defer upstream.Close()
 

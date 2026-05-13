@@ -1,0 +1,22 @@
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosimple
+    - ineffassign
+    - staticcheck
+
+issues:
+  exclude-dirs:
+    - internal/translator
+  exclude-rules:
+    # "alt" is a legacy cross-package context key also consumed by translator code.
+    # We keep the string key for compatibility and suppress SA1029 for now.
+    - path: internal/runtime/executor/.*
+      text: "SA1029"
+      linters:
+        - staticcheck

@@ -14,7 +14,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -77,9 +77,6 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputi
 		req.Header.Del("X-Api-Key")
 		req.Header.Del("X-Goog-Api-Key")
 
-		// Remove proxy, client identity, and browser fingerprint headers
-		misc.ScrubProxyAndFingerprintHeaders(req)
-
 		// Remove query-based credentials if they match the authenticated client API key.
 		// This prevents leaking client auth material to the Amp upstream while avoiding
 		// breaking unrelated upstream query parameters.
@@ -89,7 +86,7 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputi
 
 		// Preserve correlation headers for debugging
 		if req.Header.Get("X-Request-ID") == "" {
-			// Could generate one here if needed
+			req.Header.Set("X-Request-ID", uuid.NewString())
 		}
 
 		// Note: We do NOT filter Anthropic-Beta headers in the proxy path
@@ -108,6 +105,11 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputi
 	// Modify incoming responses to handle gzip without Content-Encoding
 	// This addresses the same issue as inline handler gzip handling, but at the proxy level
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		// Only process successful responses
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil
+		}
+
 		// Skip if already marked as gzip (Content-Encoding set)
 		if resp.Header.Get("Content-Encoding") != "" {
 			return nil

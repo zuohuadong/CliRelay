@@ -15,3 +15,19 @@ type TokenStorage interface {
 	//   - error: An error if the save operation fails, nil otherwise
 	SaveTokenToFile(authFilePath string) error
 }
+
+// MetadataSetter is implemented by token storages that can accept arbitrary
+// metadata before serializing themselves to disk.
+type MetadataSetter interface {
+	SetMetadata(map[string]any)
+}
+
+// ApplyMetadata injects metadata into a token storage when supported.
+func ApplyMetadata(storage TokenStorage, meta map[string]any) {
+	if storage == nil {
+		return
+	}
+	if setter, ok := storage.(MetadataSetter); ok {
+		setter.SetMetadata(meta)
+	}
+}

@@ -10,80 +10,91 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
-	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cmd"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/store"
-	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/tui"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cmd"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/store"
+	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/tui"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
 var (
-	Version           = "dev"
-	Commit            = "none"
-	BuildDate         = "unknown"
 	DefaultConfigPath = ""
 )
+
+type cliModeOptions struct {
+	vertexImport     string
+	projectID        string
+	password         string
+	login            bool
+	codexLogin       bool
+	codexDeviceLogin bool
+	claudeLogin      bool
+	qwenLogin        bool
+	iflowLogin       bool
+	iflowCookie      bool
+	antigravityLogin bool
+	kimiLogin        bool
+	tuiMode          bool
+	standalone       bool
+	isCloudDeploy    bool
+	configFileExists bool
+}
 
 // init initializes the shared logger setup.
 func init() {
 	logging.SetupBaseLogger()
-	buildinfo.Version = Version
-	buildinfo.Commit = Commit
-	buildinfo.BuildDate = BuildDate
 }
 
 // main is the entry point of the application.
 // It parses command-line flags, loads configuration, and starts the appropriate
 // service based on the provided flags (login, codex-login, or server mode).
 func main() {
-	fmt.Printf("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+	fmt.Printf("CliRelay Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
 
 	// Command-line flags to control the application's behavior.
 	var login bool
 	var codexLogin bool
 	var codexDeviceLogin bool
 	var claudeLogin bool
+	var qwenLogin bool
+	var iflowLogin bool
+	var iflowCookie bool
 	var noBrowser bool
 	var oauthCallbackPort int
 	var antigravityLogin bool
 	var kimiLogin bool
 	var projectID string
 	var vertexImport string
-	var vertexImportPrefix string
 	var configPath string
 	var password string
-	var homeAddr string
-	var homePassword string
 	var tuiMode bool
 	var standalone bool
-	var localModel bool
 
 	// Define command-line flags for different operation modes.
 	flag.BoolVar(&login, "login", false, "Login Google Account")
 	flag.BoolVar(&codexLogin, "codex-login", false, "Login to Codex using OAuth")
 	flag.BoolVar(&codexDeviceLogin, "codex-device-login", false, "Login to Codex using device code flow")
 	flag.BoolVar(&claudeLogin, "claude-login", false, "Login to Claude using OAuth")
+	flag.BoolVar(&qwenLogin, "qwen-login", false, "Login to Qwen using OAuth")
+	flag.BoolVar(&iflowLogin, "iflow-login", false, "Login to iFlow using OAuth")
+	flag.BoolVar(&iflowCookie, "iflow-cookie", false, "Login to iFlow using Cookie")
 	flag.BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically for OAuth")
 	flag.IntVar(&oauthCallbackPort, "oauth-callback-port", 0, "Override OAuth callback port (defaults to provider-specific port)")
 	flag.BoolVar(&antigravityLogin, "antigravity-login", false, "Login to Antigravity using OAuth")
@@ -91,13 +102,9 @@ func main() {
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
-	flag.StringVar(&vertexImportPrefix, "vertex-import-prefix", "", "Prefix for Vertex model namespacing (use with -vertex-import)")
 	flag.StringVar(&password, "password", "", "")
-	flag.StringVar(&homeAddr, "home", "", "Home control plane address in host:port format (loads config from home and skips local config file)")
-	flag.StringVar(&homePassword, "home-password", "", "Home control plane password (Redis AUTH)")
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
-	flag.BoolVar(&localModel, "local-model", false, "Use embedded model catalog only, skip remote model fetching")
 
 	flag.CommandLine.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -133,7 +140,6 @@ func main() {
 	var err error
 	var cfg *config.Config
 	var isCloudDeploy bool
-	var configLoadedFromHome bool
 	var (
 		usePostgresStore     bool
 		pgStoreDSN           string
@@ -144,7 +150,6 @@ func main() {
 		gitStoreRemoteURL    string
 		gitStoreUser         string
 		gitStorePassword     string
-		gitStoreBranch       string
 		gitStoreLocalPath    string
 		gitStoreInst         *store.GitTokenStore
 		gitStoreRoot         string
@@ -214,9 +219,6 @@ func main() {
 	if value, ok := lookupEnv("GITSTORE_LOCAL_PATH", "gitstore_local_path"); ok {
 		gitStoreLocalPath = value
 	}
-	if value, ok := lookupEnv("GITSTORE_GIT_BRANCH", "gitstore_git_branch"); ok {
-		gitStoreBranch = value
-	}
 	if value, ok := lookupEnv("OBJECTSTORE_ENDPOINT", "objectstore_endpoint"); ok {
 		useObjectStore = true
 		objectStoreEndpoint = value
@@ -244,68 +246,7 @@ func main() {
 	// Determine and load the configuration file.
 	// Prefer the Postgres store when configured, otherwise fallback to git or local files.
 	var configFilePath string
-	if strings.TrimSpace(homeAddr) != "" {
-		configLoadedFromHome = true
-		trimmedHomePassword := strings.TrimSpace(homePassword)
-		host, portStr, errSplit := net.SplitHostPort(strings.TrimSpace(homeAddr))
-		if errSplit != nil {
-			log.Errorf("invalid -home address %q (expected host:port): %v", homeAddr, errSplit)
-			return
-		}
-		host = strings.TrimSpace(host)
-		if host == "" {
-			log.Errorf("invalid -home address %q: host is empty", homeAddr)
-			return
-		}
-		port, errPort := strconv.Atoi(strings.TrimSpace(portStr))
-		if errPort != nil || port <= 0 {
-			log.Errorf("invalid -home address %q: invalid port %q", homeAddr, portStr)
-			return
-		}
-
-		homeCfg := config.HomeConfig{
-			Enabled:  true,
-			Host:     host,
-			Port:     port,
-			Password: trimmedHomePassword,
-		}
-		homeClient := home.New(homeCfg)
-		defer homeClient.Close()
-
-		ctxHome, cancelHome := context.WithTimeout(context.Background(), 30*time.Second)
-		raw, errGetConfig := homeClient.GetConfig(ctxHome)
-		cancelHome()
-		if errGetConfig != nil {
-			log.Errorf("failed to fetch config from home: %v", errGetConfig)
-			return
-		}
-
-		parsed, errParseConfig := config.ParseConfigBytes(raw)
-		if errParseConfig != nil {
-			log.Errorf("failed to parse config payload from home: %v", errParseConfig)
-			return
-		}
-		if parsed == nil {
-			parsed = &config.Config{}
-		}
-		parsed.Home = homeCfg
-		parsed.Port = 8317 // Default to 8317 for home mode, can be overridden by home config
-		parsed.UsageStatisticsEnabled = true
-		cfg = parsed
-
-		// Keep a non-empty config path for downstream components (log paths, management assets, etc),
-		// but do not require the file to exist when loading config from home.
-		if strings.TrimSpace(configPath) != "" {
-			configFilePath = configPath
-		} else {
-			configFilePath = filepath.Join(wd, "config.yaml")
-		}
-
-		// Local stores are intentionally disabled when config is loaded from home.
-		usePostgresStore = false
-		useObjectStore = false
-		useGitStore = false
-	} else if usePostgresStore {
+	if usePostgresStore {
 		if pgStoreLocalPath == "" {
 			pgStoreLocalPath = wd
 		}
@@ -412,7 +353,7 @@ func main() {
 		}
 		gitStoreRoot = filepath.Join(gitStoreLocalPath, "gitstore")
 		authDir := filepath.Join(gitStoreRoot, "auths")
-		gitStoreInst = store.NewGitTokenStore(gitStoreRemoteURL, gitStoreUser, gitStorePassword, gitStoreBranch)
+		gitStoreInst = store.NewGitTokenStore(gitStoreRemoteURL, gitStoreUser, gitStorePassword)
 		gitStoreInst.SetBaseDir(authDir)
 		if errRepo := gitStoreInst.EnsureRepository(); errRepo != nil {
 			log.Errorf("failed to prepare git token store: %v", errRepo)
@@ -469,29 +410,24 @@ func main() {
 	// In cloud deploy mode, check if we have a valid configuration
 	var configFileExists bool
 	if isCloudDeploy {
-		if configLoadedFromHome && cfg != nil {
-			configFileExists = cfg.Port != 0
+		if info, errStat := os.Stat(configFilePath); errStat != nil {
+			// Don't mislead: API server will not start until configuration is provided.
+			log.Info("Cloud deploy mode: No configuration file detected; standing by for configuration")
+			configFileExists = false
+		} else if info.IsDir() {
+			log.Info("Cloud deploy mode: Config path is a directory; standing by for configuration")
+			configFileExists = false
+		} else if cfg.Port == 0 {
+			// LoadConfigOptional returns empty config when file is empty or invalid.
+			// Config file exists but is empty or invalid; treat as missing config
+			log.Info("Cloud deploy mode: Configuration file is empty or invalid; standing by for valid configuration")
+			configFileExists = false
 		} else {
-			if info, errStat := os.Stat(configFilePath); errStat != nil {
-				// Don't mislead: API server will not start until configuration is provided.
-				log.Info("Cloud deploy mode: No configuration file detected; standing by for configuration")
-				configFileExists = false
-			} else if info.IsDir() {
-				log.Info("Cloud deploy mode: Config path is a directory; standing by for configuration")
-				configFileExists = false
-			} else if cfg.Port == 0 {
-				// LoadConfigOptional returns empty config when file is empty or invalid.
-				// Config file exists but is empty or invalid; treat as missing config
-				log.Info("Cloud deploy mode: Configuration file is empty or invalid; standing by for valid configuration")
-				configFileExists = false
-			} else {
-				log.Info("Cloud deploy mode: Configuration file detected; starting service")
-				configFileExists = true
-			}
+			log.Info("Cloud deploy mode: Configuration file detected; starting service")
+			configFileExists = true
 		}
 	}
-	redisqueue.SetUsageStatisticsEnabled(cfg.UsageStatisticsEnabled)
-	redisqueue.SetRetentionSeconds(cfg.RedisUsageQueueRetentionSeconds)
+	usage.SetStatisticsEnabled(cfg.UsageStatisticsEnabled)
 	coreauth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 
 	if err = logging.ConfigureLogOutput(cfg); err != nil {
@@ -499,7 +435,7 @@ func main() {
 		return
 	}
 
-	log.Infof("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+	log.Infof("CliRelay Version: %s, Commit: %s, BuiltAt: %s", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
 
 	// Set the log level based on the configuration.
 	util.SetLogLevel(cfg)
@@ -532,127 +468,134 @@ func main() {
 	// Register built-in access providers before constructing services.
 	configaccess.Register(&cfg.SDKConfig)
 
-	// Handle different command modes based on the provided flags.
+	runSelectedMode(cfg, configFilePath, options, cliModeOptions{
+		vertexImport:     vertexImport,
+		projectID:        projectID,
+		password:         password,
+		login:            login,
+		codexLogin:       codexLogin,
+		codexDeviceLogin: codexDeviceLogin,
+		claudeLogin:      claudeLogin,
+		qwenLogin:        qwenLogin,
+		iflowLogin:       iflowLogin,
+		iflowCookie:      iflowCookie,
+		antigravityLogin: antigravityLogin,
+		kimiLogin:        kimiLogin,
+		tuiMode:          tuiMode,
+		standalone:       standalone,
+		isCloudDeploy:    isCloudDeploy,
+		configFileExists: configFileExists,
+	})
+}
 
-	if vertexImport != "" {
-		// Handle Vertex service account import
-		cmd.DoVertexImport(cfg, vertexImport, vertexImportPrefix)
-	} else if login {
-		// Handle Google/Gemini login
-		cmd.DoLogin(cfg, projectID, options)
-	} else if antigravityLogin {
-		// Handle Antigravity login
+func runSelectedMode(cfg *config.Config, configFilePath string, options *cmd.LoginOptions, mode cliModeOptions) {
+	switch {
+	case mode.vertexImport != "":
+		cmd.DoVertexImport(cfg, mode.vertexImport)
+	case mode.login:
+		cmd.DoLogin(cfg, mode.projectID, options)
+	case mode.antigravityLogin:
 		cmd.DoAntigravityLogin(cfg, options)
-	} else if codexLogin {
-		// Handle Codex login
+	case mode.codexLogin:
 		cmd.DoCodexLogin(cfg, options)
-	} else if codexDeviceLogin {
-		// Handle Codex device-code login
+	case mode.codexDeviceLogin:
 		cmd.DoCodexDeviceLogin(cfg, options)
-	} else if claudeLogin {
-		// Handle Claude login
+	case mode.claudeLogin:
 		cmd.DoClaudeLogin(cfg, options)
-	} else if kimiLogin {
+	case mode.qwenLogin:
+		cmd.DoQwenLogin(cfg, options)
+	case mode.iflowLogin:
+		cmd.DoIFlowLogin(cfg, options)
+	case mode.iflowCookie:
+		cmd.DoIFlowCookieAuth(cfg, options)
+	case mode.kimiLogin:
 		cmd.DoKimiLogin(cfg, options)
-	} else {
-		// In cloud deploy mode without config file, just wait for shutdown signals
-		if isCloudDeploy && !configFileExists {
-			// No config file available, just wait for shutdown
-			cmd.WaitForCloudDeploy()
-			return
-		}
-		if localModel && (!tuiMode || standalone) {
-			log.Info("Local model mode: using embedded model catalog, remote model updates disabled")
-		}
-		if tuiMode {
-			if standalone {
-				// Standalone mode: start an embedded local server and connect TUI client to it.
-				managementasset.StartAutoUpdater(context.Background(), configFilePath)
-				misc.StartAntigravityVersionUpdater(context.Background())
-				if !localModel && !cfg.Home.Enabled {
-					registry.StartModelsUpdater(context.Background())
-				} else if cfg.Home.Enabled {
-					log.Info("Home mode: remote model updates disabled")
-				}
-				hook := tui.NewLogHook(2000)
-				hook.SetFormatter(&logging.LogFormatter{})
-				log.AddHook(hook)
+	default:
+		runServiceMode(cfg, configFilePath, mode.password, mode)
+	}
+}
 
-				origStdout := os.Stdout
-				origStderr := os.Stderr
-				origLogOutput := log.StandardLogger().Out
-				log.SetOutput(io.Discard)
+func runServiceMode(cfg *config.Config, configFilePath, password string, mode cliModeOptions) {
+	if mode.isCloudDeploy && !mode.configFileExists {
+		cmd.WaitForCloudDeploy()
+		return
+	}
+	if !mode.tuiMode {
+		managementasset.StartAutoUpdater(context.Background(), configFilePath)
+		cmd.StartService(cfg, configFilePath, password)
+		return
+	}
+	if mode.standalone {
+		runStandaloneTUI(cfg, configFilePath, password)
+		return
+	}
+	if errRun := tui.Run(cfg.Port, password, nil, os.Stdout); errRun != nil {
+		fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
+	}
+}
 
-				devNull, errOpenDevNull := os.Open(os.DevNull)
-				if errOpenDevNull == nil {
-					os.Stdout = devNull
-					os.Stderr = devNull
-				}
+func runStandaloneTUI(cfg *config.Config, configFilePath, password string) {
+	managementasset.StartAutoUpdater(context.Background(), configFilePath)
+	hook := tui.NewLogHook(2000)
+	hook.SetFormatter(&logging.LogFormatter{})
+	log.AddHook(hook)
 
-				restoreIO := func() {
-					os.Stdout = origStdout
-					os.Stderr = origStderr
-					log.SetOutput(origLogOutput)
-					if devNull != nil {
-						_ = devNull.Close()
-					}
-				}
+	origStdout := os.Stdout
+	origStderr := os.Stderr
+	origLogOutput := log.StandardLogger().Out
+	log.SetOutput(io.Discard)
 
-				localMgmtPassword := fmt.Sprintf("tui-%d-%d", os.Getpid(), time.Now().UnixNano())
-				if password == "" {
-					password = localMgmtPassword
-				}
+	devNull, errOpenDevNull := os.Open(os.DevNull)
+	if errOpenDevNull == nil {
+		os.Stdout = devNull
+		os.Stderr = devNull
+	}
 
-				cancel, done := cmd.StartServiceBackground(cfg, configFilePath, password)
-
-				client := tui.NewClient(cfg.Port, password)
-				ready := false
-				backoff := 100 * time.Millisecond
-				for i := 0; i < 30; i++ {
-					if _, errGetConfig := client.GetConfig(); errGetConfig == nil {
-						ready = true
-						break
-					}
-					time.Sleep(backoff)
-					if backoff < time.Second {
-						backoff = time.Duration(float64(backoff) * 1.5)
-					}
-				}
-
-				if !ready {
-					restoreIO()
-					cancel()
-					<-done
-					fmt.Fprintf(os.Stderr, "TUI error: embedded server is not ready\n")
-					return
-				}
-
-				if errRun := tui.Run(cfg.Port, password, hook, origStdout); errRun != nil {
-					restoreIO()
-					fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
-				} else {
-					restoreIO()
-				}
-
-				cancel()
-				<-done
-			} else {
-				// Default TUI mode: pure management client.
-				// The proxy server must already be running.
-				if errRun := tui.Run(cfg.Port, password, nil, os.Stdout); errRun != nil {
-					fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
-				}
-			}
-		} else {
-			// Start the main proxy service
-			managementasset.StartAutoUpdater(context.Background(), configFilePath)
-			misc.StartAntigravityVersionUpdater(context.Background())
-			if !localModel && !cfg.Home.Enabled {
-				registry.StartModelsUpdater(context.Background())
-			} else if cfg.Home.Enabled {
-				log.Info("Home mode: remote model updates disabled")
-			}
-			cmd.StartService(cfg, configFilePath, password)
+	restoreIO := func() {
+		os.Stdout = origStdout
+		os.Stderr = origStderr
+		log.SetOutput(origLogOutput)
+		if devNull != nil {
+			_ = devNull.Close()
 		}
 	}
+
+	localMgmtPassword := fmt.Sprintf("tui-%d-%d", os.Getpid(), time.Now().UnixNano())
+	if password == "" {
+		password = localMgmtPassword
+	}
+
+	cancel, done := cmd.StartServiceBackground(cfg, configFilePath, password)
+
+	client := tui.NewClient(cfg.Port, password)
+	ready := false
+	backoff := 100 * time.Millisecond
+	for i := 0; i < 30; i++ {
+		if _, errGetConfig := client.GetConfig(); errGetConfig == nil {
+			ready = true
+			break
+		}
+		time.Sleep(backoff)
+		if backoff < time.Second {
+			backoff = time.Duration(float64(backoff) * 1.5)
+		}
+	}
+
+	if !ready {
+		restoreIO()
+		cancel()
+		<-done
+		fmt.Fprintf(os.Stderr, "TUI error: embedded server is not ready\n")
+		return
+	}
+
+	if errRun := tui.Run(cfg.Port, password, hook, origStdout); errRun != nil {
+		restoreIO()
+		fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
+	} else {
+		restoreIO()
+	}
+
+	cancel()
+	<-done
 }

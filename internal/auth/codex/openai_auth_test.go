@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -37,6 +37,9 @@ func TestRefreshTokensWithRetry_NonRetryableOnlyAttemptsOnce(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for non-retryable refresh failure")
 	}
+	if !cliproxyauth.IsPermanentAuthError(err) {
+		t.Fatalf("expected PermanentAuthError, got: %T %v", err, err)
+	}
 	if !strings.Contains(strings.ToLower(err.Error()), "refresh_token_reused") {
 		t.Fatalf("expected refresh_token_reused in error, got: %v", err)
 	}
@@ -45,36 +48,30 @@ func TestRefreshTokensWithRetry_NonRetryableOnlyAttemptsOnce(t *testing.T) {
 	}
 }
 
-func TestNewCodexAuthWithProxyURL_OverrideDirectDisablesProxy(t *testing.T) {
-	cfg := &config.Config{SDKConfig: config.SDKConfig{ProxyURL: "http://proxy.example.com:8080"}}
-	auth := NewCodexAuthWithProxyURL(cfg, "direct")
+func TestRefreshTokensWithRetry_InvalidGrant_IsPermanent(t *testing.T) {
+	var calls int32
+	auth := &CodexAuth{
+		httpClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				atomic.AddInt32(&calls, 1)
+				return &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Body:       io.NopCloser(strings.NewReader(`{"error":"invalid_grant","error_description":"Refresh token is invalid"}`)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			}),
+		},
+	}
 
-	transport, ok := auth.httpClient.Transport.(*http.Transport)
-	if !ok || transport == nil {
-		t.Fatalf("expected http.Transport, got %T", auth.httpClient.Transport)
+	_, err := auth.RefreshTokensWithRetry(context.Background(), "expired_refresh_token", 3)
+	if err == nil {
+		t.Fatalf("expected error for invalid_grant")
 	}
-	if transport.Proxy != nil {
-		t.Fatal("expected direct transport to disable proxy function")
+	if !cliproxyauth.IsPermanentAuthError(err) {
+		t.Fatalf("expected PermanentAuthError for invalid_grant, got: %T %v", err, err)
 	}
-}
-
-func TestNewCodexAuthWithProxyURL_OverrideProxyTakesPrecedence(t *testing.T) {
-	cfg := &config.Config{SDKConfig: config.SDKConfig{ProxyURL: "http://global.example.com:8080"}}
-	auth := NewCodexAuthWithProxyURL(cfg, "http://override.example.com:8081")
-
-	transport, ok := auth.httpClient.Transport.(*http.Transport)
-	if !ok || transport == nil {
-		t.Fatalf("expected http.Transport, got %T", auth.httpClient.Transport)
-	}
-	req, errReq := http.NewRequest(http.MethodGet, "https://example.com", nil)
-	if errReq != nil {
-		t.Fatalf("new request: %v", errReq)
-	}
-	proxyURL, errProxy := transport.Proxy(req)
-	if errProxy != nil {
-		t.Fatalf("proxy func: %v", errProxy)
-	}
-	if proxyURL == nil || proxyURL.String() != "http://override.example.com:8081" {
-		t.Fatalf("proxy URL = %v, want http://override.example.com:8081", proxyURL)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected 1 refresh attempt for invalid_grant, got %d", got)
 	}
 }

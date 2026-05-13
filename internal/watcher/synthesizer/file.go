@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/geminicli"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 // FileSynthesizer generates Auth entries from OAuth JSON files.
@@ -22,6 +21,22 @@ type FileSynthesizer struct{}
 // NewFileSynthesizer creates a new FileSynthesizer instance.
 func NewFileSynthesizer() *FileSynthesizer {
 	return &FileSynthesizer{}
+}
+
+func fileAuthLabel(metadata map[string]any, provider string) string {
+	if metadata != nil {
+		if raw, ok := metadata["label"].(string); ok {
+			if label := strings.TrimSpace(raw); label != "" {
+				return label
+			}
+		}
+		if raw, ok := metadata["email"].(string); ok {
+			if email := strings.TrimSpace(raw); email != "" {
+				return email
+			}
+		}
+	}
+	return strings.TrimSpace(provider)
 }
 
 // Synthesize generates Auth entries from auth files in the auth directory.
@@ -37,6 +52,9 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		return out, nil
 	}
 
+	now := ctx.Now
+	cfg := ctx.Config
+
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -50,137 +68,121 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		if errRead != nil || len(data) == 0 {
 			continue
 		}
-		auths := synthesizeFileAuths(ctx, full, data)
-		if len(auths) == 0 {
+		var metadata map[string]any
+		if errUnmarshal := json.Unmarshal(data, &metadata); errUnmarshal != nil {
 			continue
 		}
-		out = append(out, auths...)
+		t, _ := metadata["type"].(string)
+		if t == "" {
+			continue
+		}
+		provider := strings.ToLower(t)
+		if provider == "gemini" {
+			provider = "gemini-cli"
+		}
+		if provider == "codex" {
+			backfillCodexMetadata(metadata)
+		}
+		label := fileAuthLabel(metadata, provider)
+		// Use relative path under authDir as ID to stay consistent with the file-based token store
+		id := full
+		if rel, errRel := filepath.Rel(ctx.AuthDir, full); errRel == nil && rel != "" {
+			id = rel
+		}
+
+		proxyURL := ""
+		if p, ok := metadata["proxy_url"].(string); ok {
+			proxyURL = p
+		}
+		proxyID := ""
+		if p, ok := metadata["proxy_id"].(string); ok {
+			proxyID = p
+		}
+
+		prefix := ""
+		if rawPrefix, ok := metadata["prefix"].(string); ok {
+			trimmed := strings.TrimSpace(rawPrefix)
+			trimmed = strings.Trim(trimmed, "/")
+			if trimmed != "" && !strings.Contains(trimmed, "/") {
+				prefix = trimmed
+			}
+		}
+
+		disabled, _ := metadata["disabled"].(bool)
+		status := coreauth.StatusActive
+		if disabled {
+			status = coreauth.StatusDisabled
+		}
+
+		// Read per-account excluded models from the OAuth JSON file
+		perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
+
+		a := &coreauth.Auth{
+			ID:       id,
+			Provider: provider,
+			Label:    label,
+			Prefix:   prefix,
+			Status:   status,
+			Disabled: disabled,
+			Attributes: map[string]string{
+				"source": full,
+				"path":   full,
+			},
+			ProxyURL:  proxyURL,
+			ProxyID:   proxyID,
+			Metadata:  metadata,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		// Read priority from auth file
+		if rawPriority, ok := metadata["priority"]; ok {
+			switch v := rawPriority.(type) {
+			case float64:
+				a.Attributes["priority"] = strconv.Itoa(int(v))
+			case string:
+				priority := strings.TrimSpace(v)
+				if _, errAtoi := strconv.Atoi(priority); errAtoi == nil {
+					a.Attributes["priority"] = priority
+				}
+			}
+		}
+		ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
+		if provider == "gemini-cli" {
+			if virtuals := SynthesizeGeminiVirtualAuths(a, metadata, now); len(virtuals) > 0 {
+				for _, v := range virtuals {
+					ApplyAuthExcludedModelsMeta(v, cfg, perAccountExcluded, "oauth")
+				}
+				out = append(out, a)
+				out = append(out, virtuals...)
+				continue
+			}
+		}
+		out = append(out, a)
 	}
 	return out, nil
 }
 
-// SynthesizeAuthFile generates Auth entries for one auth JSON file payload.
-// It shares exactly the same mapping behavior as FileSynthesizer.Synthesize.
-func SynthesizeAuthFile(ctx *SynthesisContext, fullPath string, data []byte) []*coreauth.Auth {
-	return synthesizeFileAuths(ctx, fullPath, data)
-}
-
-func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []*coreauth.Auth {
-	if ctx == nil || len(data) == 0 {
-		return nil
+func backfillCodexMetadata(metadata map[string]any) {
+	if len(metadata) == 0 {
+		return
 	}
-	now := ctx.Now
-	cfg := ctx.Config
-	var metadata map[string]any
-	if errUnmarshal := json.Unmarshal(data, &metadata); errUnmarshal != nil {
-		return nil
+	if planType, _ := metadata["plan_type"].(string); strings.TrimSpace(planType) != "" {
+		metadata["plan_type"] = strings.ToLower(strings.TrimSpace(planType))
+		return
 	}
-	t, _ := metadata["type"].(string)
-	if t == "" {
-		return nil
+	idToken, _ := metadata["id_token"].(string)
+	idToken = strings.TrimSpace(idToken)
+	if idToken == "" {
+		return
 	}
-	provider := strings.ToLower(t)
-	if provider == "gemini" {
-		provider = "gemini-cli"
+	claims, err := codex.ParseJWTToken(idToken)
+	if err != nil || claims == nil {
+		return
 	}
-	label := provider
-	if email, _ := metadata["email"].(string); email != "" {
-		label = email
+	planType := strings.ToLower(strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType))
+	if planType != "" {
+		metadata["plan_type"] = planType
 	}
-	// Use relative path under authDir as ID to stay consistent with the file-based token store.
-	id := fullPath
-	if strings.TrimSpace(ctx.AuthDir) != "" {
-		if rel, errRel := filepath.Rel(ctx.AuthDir, fullPath); errRel == nil && rel != "" {
-			id = rel
-		}
-	}
-	if runtime.GOOS == "windows" {
-		id = strings.ToLower(id)
-	}
-
-	proxyURL := ""
-	if p, ok := metadata["proxy_url"].(string); ok {
-		proxyURL = p
-	}
-
-	prefix := ""
-	if rawPrefix, ok := metadata["prefix"].(string); ok {
-		trimmed := strings.TrimSpace(rawPrefix)
-		trimmed = strings.Trim(trimmed, "/")
-		if trimmed != "" && !strings.Contains(trimmed, "/") {
-			prefix = trimmed
-		}
-	}
-
-	disabled, _ := metadata["disabled"].(bool)
-	status := coreauth.StatusActive
-	if disabled {
-		status = coreauth.StatusDisabled
-	}
-
-	// Read per-account excluded models from the OAuth JSON file.
-	perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
-
-	a := &coreauth.Auth{
-		ID:       id,
-		Provider: provider,
-		Label:    label,
-		Prefix:   prefix,
-		Status:   status,
-		Disabled: disabled,
-		Attributes: map[string]string{
-			"source": fullPath,
-			"path":   fullPath,
-		},
-		ProxyURL:  proxyURL,
-		Metadata:  metadata,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	// Read priority from auth file.
-	if rawPriority, ok := metadata["priority"]; ok {
-		switch v := rawPriority.(type) {
-		case float64:
-			a.Attributes["priority"] = strconv.Itoa(int(v))
-		case string:
-			priority := strings.TrimSpace(v)
-			if _, errAtoi := strconv.Atoi(priority); errAtoi == nil {
-				a.Attributes["priority"] = priority
-			}
-		}
-	}
-	// Read note from auth file.
-	if rawNote, ok := metadata["note"]; ok {
-		if note, isStr := rawNote.(string); isStr {
-			if trimmed := strings.TrimSpace(note); trimmed != "" {
-				a.Attributes["note"] = trimmed
-			}
-		}
-	}
-	coreauth.ApplyCustomHeadersFromMetadata(a)
-	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
-	// For codex auth files, extract plan_type from the JWT id_token.
-	if provider == "codex" {
-		if idTokenRaw, ok := metadata["id_token"].(string); ok && strings.TrimSpace(idTokenRaw) != "" {
-			if claims, errParse := codex.ParseJWTToken(idTokenRaw); errParse == nil && claims != nil {
-				if pt := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); pt != "" {
-					a.Attributes["plan_type"] = pt
-				}
-			}
-		}
-	}
-	if provider == "gemini-cli" {
-		if virtuals := SynthesizeGeminiVirtualAuths(a, metadata, now); len(virtuals) > 0 {
-			for _, v := range virtuals {
-				ApplyAuthExcludedModelsMeta(v, cfg, perAccountExcluded, "oauth")
-			}
-			out := make([]*coreauth.Auth, 0, 1+len(virtuals))
-			out = append(out, a)
-			out = append(out, virtuals...)
-			return out
-		}
-	}
-	return []*coreauth.Auth{a}
 }
 
 // SynthesizeGeminiVirtualAuths creates virtual Auth entries for multi-project Gemini credentials.
@@ -230,15 +232,6 @@ func SynthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 		if priorityVal, hasPriority := primary.Attributes["priority"]; hasPriority && priorityVal != "" {
 			attrs["priority"] = priorityVal
 		}
-		// Propagate note from primary auth to virtual auths
-		if noteVal, hasNote := primary.Attributes["note"]; hasNote && noteVal != "" {
-			attrs["note"] = noteVal
-		}
-		for k, v := range primary.Attributes {
-			if strings.HasPrefix(k, "header:") && strings.TrimSpace(v) != "" {
-				attrs[k] = v
-			}
-		}
 		metadataCopy := map[string]any{
 			"email":             email,
 			"project_id":        projectID,
@@ -260,6 +253,10 @@ func SynthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 		if proxy != "" {
 			metadataCopy["proxy_url"] = proxy
 		}
+		proxyID := strings.TrimSpace(primary.ProxyID)
+		if proxyID != "" {
+			metadataCopy["proxy_id"] = proxyID
+		}
 		virtual := &coreauth.Auth{
 			ID:         buildGeminiVirtualID(primary.ID, projectID),
 			Provider:   originalProvider,
@@ -268,6 +265,7 @@ func SynthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 			Attributes: attrs,
 			Metadata:   metadataCopy,
 			ProxyURL:   primary.ProxyURL,
+			ProxyID:    primary.ProxyID,
 			Prefix:     primary.Prefix,
 			CreatedAt:  primary.CreatedAt,
 			UpdatedAt:  primary.UpdatedAt,

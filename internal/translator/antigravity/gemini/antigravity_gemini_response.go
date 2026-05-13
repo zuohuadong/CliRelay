@@ -8,8 +8,8 @@ package gemini
 import (
 	"bytes"
 	"context"
+	"fmt"
 
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -29,8 +29,8 @@ import (
 //   - param: A pointer to a parameter object for the conversion (unused in current implementation)
 //
 // Returns:
-//   - [][]byte: The transformed response data in Gemini API format.
-func ConvertAntigravityResponseToGemini(ctx context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) [][]byte {
+//   - []string: The transformed request data in Gemini API format
+func ConvertAntigravityResponseToGemini(ctx context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []string {
 	if bytes.HasPrefix(rawJSON, []byte("data:")) {
 		rawJSON = bytes.TrimSpace(rawJSON[5:])
 	}
@@ -44,22 +44,22 @@ func ConvertAntigravityResponseToGemini(ctx context.Context, _ string, originalR
 				chunk = restoreUsageMetadata(chunk)
 			}
 		} else {
-			chunkTemplate := []byte("[]")
+			chunkTemplate := "[]"
 			responseResult := gjson.ParseBytes(chunk)
 			if responseResult.IsArray() {
 				responseResultItems := responseResult.Array()
 				for i := 0; i < len(responseResultItems); i++ {
 					responseResultItem := responseResultItems[i]
 					if responseResultItem.Get("response").Exists() {
-						chunkTemplate, _ = sjson.SetRawBytes(chunkTemplate, "-1", []byte(responseResultItem.Get("response").Raw))
+						chunkTemplate, _ = sjson.SetRaw(chunkTemplate, "-1", responseResultItem.Get("response").Raw)
 					}
 				}
 			}
-			chunk = chunkTemplate
+			chunk = []byte(chunkTemplate)
 		}
-		return [][]byte{chunk}
+		return []string{string(chunk)}
 	}
-	return [][]byte{}
+	return []string{}
 }
 
 // ConvertAntigravityResponseToGeminiNonStream converts a non-streaming Gemini CLI request to a non-streaming Gemini response.
@@ -73,18 +73,18 @@ func ConvertAntigravityResponseToGemini(ctx context.Context, _ string, originalR
 //   - param: A pointer to a parameter object for the conversion (unused in current implementation)
 //
 // Returns:
-//   - []byte: A Gemini-compatible JSON response containing the response data.
-func ConvertAntigravityResponseToGeminiNonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
+//   - string: A Gemini-compatible JSON response containing the response data
+func ConvertAntigravityResponseToGeminiNonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) string {
 	responseResult := gjson.GetBytes(rawJSON, "response")
 	if responseResult.Exists() {
 		chunk := restoreUsageMetadata([]byte(responseResult.Raw))
-		return chunk
+		return string(chunk)
 	}
-	return rawJSON
+	return string(rawJSON)
 }
 
-func GeminiTokenCount(ctx context.Context, count int64) []byte {
-	return translatorcommon.GeminiTokenCountJSON(count)
+func GeminiTokenCount(ctx context.Context, count int64) string {
+	return fmt.Sprintf(`{"totalTokens":%d,"promptTokensDetails":[{"modality":"TEXT","tokenCount":%d}]}`, count, count)
 }
 
 // restoreUsageMetadata renames cpaUsageMetadata back to usageMetadata.

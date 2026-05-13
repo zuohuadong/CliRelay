@@ -13,10 +13,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/proxy"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -37,15 +40,32 @@ type Handler struct {
 	cfg                 *config.Config
 	configFilePath      string
 	mu                  sync.Mutex
+	authFilesMu         sync.Mutex
 	attemptsMu          sync.Mutex
 	failedAttempts      map[string]*attemptInfo // keyed by client IP
 	authManager         *coreauth.Manager
+	usageStats          *usage.RequestStatistics
 	tokenStore          coreauth.Store
 	localPassword       string
 	allowRemoteOverride bool
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
+	onConfigMutated     func(*config.Config)
+	startTime           time.Time
+	attemptCleanupStop  chan struct{}
+	attemptCleanupOnce  sync.Once
+	accessManager       *sdkaccess.Manager
+	proxyMgr            *proxy.ProxyManager
+	trendCacheMu        sync.Mutex
+	trendCache          map[string]trendCacheEntry
+	imageTasksMu        sync.Mutex
+	imageTasks          map[string]*imageGenerationTask
+}
+
+type trendCacheEntry struct {
+	expiresAt time.Time
+	payload   any
 }
 
 // NewHandler creates a new management handler instance.
@@ -58,9 +78,14 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		configFilePath:      configFilePath,
 		failedAttempts:      make(map[string]*attemptInfo),
 		authManager:         manager,
+		usageStats:          usage.GetRequestStatistics(),
 		tokenStore:          sdkAuth.GetTokenStore(),
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
+		startTime:           time.Now(),
+		attemptCleanupStop:  make(chan struct{}),
+		trendCache:          make(map[string]trendCacheEntry),
+		imageTasks:          make(map[string]*imageGenerationTask),
 	}
 	h.startAttemptCleanup()
 	return h
@@ -72,10 +97,25 @@ func (h *Handler) startAttemptCleanup() {
 	go func() {
 		ticker := time.NewTicker(attemptCleanupInterval)
 		defer ticker.Stop()
-		for range ticker.C {
-			h.purgeStaleAttempts()
+		for {
+			select {
+			case <-ticker.C:
+				h.purgeStaleAttempts()
+			case <-h.attemptCleanupStop:
+				return
+			}
 		}
 	}()
+}
+
+// Close stops background cleanup workers owned by the management handler.
+func (h *Handler) Close() {
+	if h == nil {
+		return
+	}
+	h.attemptCleanupOnce.Do(func() {
+		close(h.attemptCleanupStop)
+	})
 }
 
 // purgeStaleAttempts removes IP entries that have been idle beyond attemptMaxIdleTime
@@ -102,24 +142,19 @@ func NewHandlerWithoutConfigFilePath(cfg *config.Config, manager *coreauth.Manag
 }
 
 // SetConfig updates the in-memory config reference when the server hot-reloads.
-func (h *Handler) SetConfig(cfg *config.Config) {
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	h.cfg = cfg
-	h.mu.Unlock()
-}
+func (h *Handler) SetConfig(cfg *config.Config) { h.cfg = cfg }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
-func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	h.authManager = manager
-	h.mu.Unlock()
-}
+func (h *Handler) SetAuthManager(manager *coreauth.Manager) { h.authManager = manager }
+
+func (h *Handler) SetConfigMutatedHook(fn func(*config.Config)) { h.onConfigMutated = fn }
+
+// SetAccessManager wires the request authentication access manager so management writes
+// (such as API key channel/model restrictions) can be applied immediately at runtime.
+func (h *Handler) SetAccessManager(manager *sdkaccess.Manager) { h.accessManager = manager }
+
+// SetUsageStatistics allows replacing the usage statistics reference.
+func (h *Handler) SetUsageStatistics(stats *usage.RequestStatistics) { h.usageStats = stats }
 
 // SetLocalPassword configures the runtime-local password accepted for localhost requests.
 func (h *Handler) SetLocalPassword(password string) { h.localPassword = password }
@@ -143,16 +178,111 @@ func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
 }
 
 // Middleware enforces access control for management endpoints.
-// All requests (local and remote) require a valid management key.
+// All requests (local and remote) require a valid management key, except the
+// sanitized read-only config used by the management UI before login.
 // Additionally, remote access requires allow-remote-management=true.
 func (h *Handler) Middleware() gin.HandlerFunc {
+	// Sensible defaults: generous failure limit, short ban window.
+	const defaultMaxFailures = 20
+	const defaultBanDuration = 5 * time.Minute
+
 	return func(c *gin.Context) {
 		c.Header("X-CPA-VERSION", buildinfo.Version)
 		c.Header("X-CPA-COMMIT", buildinfo.Commit)
 		c.Header("X-CPA-BUILD-DATE", buildinfo.BuildDate)
+		currentUIVersion, currentUICommit := h.currentFrontendState()
+		c.Header("X-CPA-UI-VERSION", currentUIVersion)
+		c.Header("X-CPA-UI-COMMIT", currentUICommit)
 
 		clientIP := c.ClientIP()
 		localClient := clientIP == "127.0.0.1" || clientIP == "::1"
+		cfg := h.cfg
+		var (
+			allowRemote bool
+			secretHash  string
+		)
+		maxFailures := defaultMaxFailures
+		banDuration := defaultBanDuration
+		if cfg != nil {
+			allowRemote = cfg.RemoteManagement.AllowRemote
+			secretHash = cfg.RemoteManagement.SecretKey
+			if cfg.RemoteManagement.MaxAuthFailures < 0 {
+				// Negative value disables the ban mechanism entirely.
+				maxFailures = 0
+			} else if cfg.RemoteManagement.MaxAuthFailures > 0 {
+				maxFailures = cfg.RemoteManagement.MaxAuthFailures
+			}
+			if d := cfg.RemoteManagement.AuthBanDuration; d != "" {
+				if parsed, err := time.ParseDuration(d); err == nil {
+					banDuration = parsed
+				}
+			}
+		}
+		if h.allowRemoteOverride {
+			allowRemote = true
+		}
+		envSecret := h.envSecret
+
+		fail := func() {}
+		isBanned := func() (time.Duration, bool) { return 0, false }
+		clearFailures := func() {}
+		if !localClient {
+			if !allowRemote {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "remote management disabled"})
+				return
+			}
+
+			isBanned = func() (time.Duration, bool) {
+				h.attemptsMu.Lock()
+				defer h.attemptsMu.Unlock()
+				ai := h.failedAttempts[clientIP]
+				if ai == nil || ai.blockedUntil.IsZero() {
+					return 0, false
+				}
+				if time.Now().Before(ai.blockedUntil) {
+					return time.Until(ai.blockedUntil).Round(time.Second), true
+				}
+				ai.blockedUntil = time.Time{}
+				ai.count = 0
+				return 0, false
+			}
+
+			fail = func() {
+				h.attemptsMu.Lock()
+				aip := h.failedAttempts[clientIP]
+				if aip == nil {
+					aip = &attemptInfo{}
+					h.failedAttempts[clientIP] = aip
+				}
+				if maxFailures > 0 {
+					aip.count++
+					aip.lastActivity = time.Now()
+					if aip.count >= maxFailures {
+						aip.blockedUntil = time.Now().Add(banDuration)
+						aip.count = 0
+					}
+				}
+				h.attemptsMu.Unlock()
+			}
+
+			clearFailures = func() {
+				h.attemptsMu.Lock()
+				if ai := h.failedAttempts[clientIP]; ai != nil {
+					ai.count = 0
+					ai.blockedUntil = time.Time{}
+				}
+				h.attemptsMu.Unlock()
+			}
+		}
+		if secretHash == "" && envSecret == "" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "remote management key not set"})
+			return
+		}
+
+		if isPublicManagementConfigRequest(c) {
+			c.Next()
+			return
+		}
 
 		// Accept either Authorization: Bearer <key> or X-Management-Key
 		var provided string
@@ -167,134 +297,127 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		if provided == "" {
 			provided = c.GetHeader("X-Management-Key")
 		}
+		// Fallback: ?token= query param (needed for WebSocket — browsers can't set custom headers)
+		if provided == "" {
+			provided = c.Query("token")
+		}
 
-		allowed, statusCode, errMsg := h.AuthenticateManagementKey(clientIP, localClient, provided)
-		if !allowed {
-			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
+		if provided == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing management key"})
 			return
 		}
+
+		if localClient {
+			if lp := h.localPassword; lp != "" {
+				if subtle.ConstantTimeCompare([]byte(provided), []byte(lp)) == 1 {
+					c.Next()
+					return
+				}
+			}
+		}
+
+		if envSecret != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(envSecret)) == 1 {
+			clearFailures()
+			c.Next()
+			return
+		}
+
+		if secretHash == "" || bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
+			if !localClient {
+				if remaining, banned := isBanned(); banned {
+					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)})
+					return
+				}
+				fail()
+			}
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid management key"})
+			return
+		}
+
+		clearFailures()
+
 		c.Next()
 	}
 }
 
-// AuthenticateManagementKey verifies the provided management key for the given client.
-// It mirrors the behaviour of Middleware() so non-HTTP callers can reuse the same logic.
-func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string) {
-	const maxFailures = 5
-	const banDuration = 30 * time.Minute
-
-	if h == nil {
-		return false, http.StatusForbidden, "remote management disabled"
+func isPublicManagementConfigRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.Method != http.MethodGet {
+		return false
 	}
-
-	cfg := h.cfg
-	var (
-		allowRemote bool
-		secretHash  string
-	)
-	if cfg != nil {
-		allowRemote = cfg.RemoteManagement.AllowRemote
-		secretHash = cfg.RemoteManagement.SecretKey
-	}
-	if h.allowRemoteOverride {
-		allowRemote = true
-	}
-	envSecret := h.envSecret
-
-	now := time.Now()
-	h.attemptsMu.Lock()
-	ai := h.failedAttempts[clientIP]
-	if ai != nil && !ai.blockedUntil.IsZero() {
-		if now.Before(ai.blockedUntil) {
-			remaining := ai.blockedUntil.Sub(now).Round(time.Second)
-			h.attemptsMu.Unlock()
-			return false, http.StatusForbidden, fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)
-		}
-		// Ban expired, reset state
-		ai.blockedUntil = time.Time{}
-		ai.count = 0
-	}
-	h.attemptsMu.Unlock()
-
-	if !localClient && !allowRemote {
-		return false, http.StatusForbidden, "remote management disabled"
-	}
-
-	fail := func() {
-		h.attemptsMu.Lock()
-		aip := h.failedAttempts[clientIP]
-		if aip == nil {
-			aip = &attemptInfo{}
-			h.failedAttempts[clientIP] = aip
-		}
-		aip.count++
-		aip.lastActivity = time.Now()
-		if aip.count >= maxFailures {
-			aip.blockedUntil = time.Now().Add(banDuration)
-			aip.count = 0
-		}
-		h.attemptsMu.Unlock()
-	}
-
-	reset := func() {
-		h.attemptsMu.Lock()
-		if ai := h.failedAttempts[clientIP]; ai != nil {
-			ai.count = 0
-			ai.blockedUntil = time.Time{}
-		}
-		h.attemptsMu.Unlock()
-	}
-
-	if secretHash == "" && envSecret == "" {
-		return false, http.StatusForbidden, "remote management key not set"
-	}
-
-	if provided == "" {
-		fail()
-		return false, http.StatusUnauthorized, "missing management key"
-	}
-
-	if localClient {
-		if lp := h.localPassword; lp != "" {
-			if subtle.ConstantTimeCompare([]byte(provided), []byte(lp)) == 1 {
-				reset()
-				return true, 0, ""
-			}
-		}
-	}
-
-	if envSecret != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(envSecret)) == 1 {
-		reset()
-		return true, 0, ""
-	}
-
-	if secretHash == "" || bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
-		fail()
-		return false, http.StatusUnauthorized, "invalid management key"
-	}
-
-	reset()
-
-	return true, 0, ""
+	path := strings.TrimRight(c.Request.URL.Path, "/")
+	return path == "/v0/management/config"
 }
 
 // persist saves the current in-memory config to disk.
 func (h *Handler) persist(c *gin.Context) bool {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.persistLocked(c)
-}
-
-// persistLocked saves the current in-memory config to disk.
-// It expects the caller to hold h.mu.
-func (h *Handler) persistLocked(c *gin.Context) bool {
+	cfg := h.cfg
+	mutated := h.onConfigMutated
+	if usage.ConfigStoreAvailable() {
+		usage.PersistRuntimeSettingsFromConfig(cfg)
+	}
 	// Preserve comments when writing
-	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
+	if err := config.SaveConfigPreserveComments(h.configFilePath, cfg); err != nil {
+		h.mu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		return false
 	}
+	if usage.ConfigStoreAvailable() {
+		usage.CleanDBBackedConfigFromYAML(h.configFilePath)
+	}
+	h.mu.Unlock()
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	if mutated != nil {
+		mutated(cfg)
+	}
 	return true
+}
+
+func (h *Handler) persistRuntimeSetting(c *gin.Context, key string, value any) bool {
+	if !usage.ConfigStoreAvailable() {
+		return h.persist(c)
+	}
+	if err := usage.UpsertRuntimeSetting(key, value); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save runtime setting: %v", err)})
+		return false
+	}
+	if strings.TrimSpace(h.configFilePath) != "" {
+		usage.CleanDBBackedConfigFromYAML(h.configFilePath)
+	}
+	cfg := h.cfg
+	if h.authManager != nil {
+		h.authManager.SetConfig(cfg)
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	if h.onConfigMutated != nil {
+		h.onConfigMutated(cfg)
+	}
+	return true
+}
+
+func tryAcquireManagementSlot(c *gin.Context, sem chan struct{}, operation string) bool {
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
+	select {
+	case sem <- struct{}{}:
+		return true
+	case <-timeout.C:
+		c.Header("Retry-After", "2")
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error":     "management operation busy",
+			"operation": operation,
+		})
+		return false
+	case <-c.Request.Context().Done():
+		return false
+	}
+}
+
+func releaseManagementSlot(sem chan struct{}) {
+	select {
+	case <-sem:
+	default:
+	}
 }
 
 // Helper methods for simple types
@@ -332,4 +455,94 @@ func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 	}
 	set(*body.Value)
 	h.persist(c)
+}
+
+func (h *Handler) SetProxyManager(pm *proxy.ProxyManager) {
+	h.proxyMgr = pm
+}
+
+func (h *Handler) NotifyProxyConfigReload(cfg *config.Config) {
+	if h == nil || h.proxyMgr == nil {
+		return
+	}
+	h.proxyMgr.OnConfigReload(cfg)
+}
+
+func (h *Handler) HasProxyManager() bool {
+	return h.proxyMgr != nil && h.proxyMgr.IsEnabled()
+}
+
+func (h *Handler) GetProxyManagerStatus(c *gin.Context) {
+	if h.proxyMgr == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	status := gin.H{
+		"enabled": h.proxyMgr.IsEnabled(),
+	}
+	if health := h.proxyMgr.GetHealthStatuses(); health != nil {
+		status["health"] = health
+	}
+	if dist := h.proxyMgr.GetDistribution(); dist != nil {
+		status["distribution"] = dist
+	}
+	c.JSON(http.StatusOK, status)
+}
+
+func (h *Handler) GetProxyHealth(c *gin.Context) {
+	if h.proxyMgr == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":  true,
+		"statuses": h.proxyMgr.GetHealthStatuses(),
+	})
+}
+
+func (h *Handler) GetProxyDistribution(c *gin.Context) {
+	if h.proxyMgr == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":      true,
+		"distribution": h.proxyMgr.GetDistribution(),
+	})
+}
+
+func (h *Handler) GetBanEvents(c *gin.Context) {
+	if h.proxyMgr == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	proxyID := c.Query("proxy_id")
+	limit := 50
+	events := h.proxyMgr.GetBanEvents(proxyID, limit)
+	c.JSON(http.StatusOK, gin.H{
+		"enabled": true,
+		"events":  events,
+	})
+}
+
+func (h *Handler) PostForceHealthCheck(c *gin.Context) {
+	if h.proxyMgr == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	disabled := h.proxyMgr.ForceHealthCheck(c.Request.Context())
+	c.JSON(http.StatusOK, gin.H{
+		"disabled_proxies": disabled,
+	})
+}
+
+func (h *Handler) PostTriggerAssignment(c *gin.Context) {
+	if h.proxyMgr == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	count := h.proxyMgr.TriggerAssignment()
+	c.JSON(http.StatusOK, gin.H{
+		"assigned_count": count,
+	})
 }

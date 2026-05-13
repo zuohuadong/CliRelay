@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"testing"
@@ -61,105 +60,65 @@ func TestParseCodexRetryAfter(t *testing.T) {
 	})
 }
 
-func TestNewCodexStatusErrTreatsCapacityAsRetryableRateLimit(t *testing.T) {
-	body := []byte(`{"error":{"message":"Selected model is at capacity. Please try a different model."}}`)
+func TestParseCodexQuotaProbe(t *testing.T) {
+	t.Run("does not recover when primary window is exhausted", func(t *testing.T) {
+		primaryResetAt := time.Date(2030, 1, 1, 1, 0, 0, 0, time.UTC).Unix()
+		secondaryResetAt := time.Date(2030, 1, 1, 0, 15, 0, 0, time.UTC).Unix()
+		body := []byte(`{"rate_limit":{"primary_window":{"used_percent":100,"reset_at":` + itoa(primaryResetAt) + `},"secondary_window":{"used_percent":70,"reset_at":` + itoa(secondaryResetAt) + `}}}`)
 
-	err := newCodexStatusErr(http.StatusBadRequest, body)
+		got := parseCodexQuotaProbe(body)
+		if got == nil {
+			t.Fatal("expected quota probe result, got nil")
+		}
+		if got.Recovered {
+			t.Fatal("Recovered = true, want false while primary window is exhausted")
+		}
+		wantRecoverAt := time.Unix(primaryResetAt, 0)
+		if !got.NextRecoverAt.Equal(wantRecoverAt) {
+			t.Fatalf("NextRecoverAt = %v, want %v", got.NextRecoverAt, wantRecoverAt)
+		}
+	})
 
-	if got := err.StatusCode(); got != http.StatusTooManyRequests {
-		t.Fatalf("status code = %d, want %d", got, http.StatusTooManyRequests)
-	}
-	if err.RetryAfter() != nil {
-		t.Fatalf("expected nil explicit retryAfter for capacity fallback, got %v", *err.RetryAfter())
-	}
-}
+	t.Run("does not recover when explicit limit reached", func(t *testing.T) {
+		resetAt := time.Date(2030, 1, 1, 1, 0, 0, 0, time.UTC).Unix()
+		body := []byte(`{"rate_limit":{"allowed":false,"limit_reached":true,"primary_window":{"used_percent":80,"reset_at":` + itoa(resetAt) + `},"secondary_window":{"used_percent":70,"reset_at":` + itoa(resetAt) + `}}}`)
 
-func TestNewCodexStatusErrClassifiesKnownCodexFailures(t *testing.T) {
-	tests := []struct {
-		name       string
-		statusCode int
-		body       []byte
-		wantStatus int
-		wantType   string
-		wantCode   string
-	}{
-		{
-			name:       "context length status",
-			statusCode: http.StatusRequestEntityTooLarge,
-			body:       []byte(`{"error":{"message":"context length exceeded","type":"invalid_request_error","code":"context_length_exceeded"}}`),
-			wantStatus: http.StatusRequestEntityTooLarge,
-			wantType:   "invalid_request_error",
-			wantCode:   "context_too_large",
-		},
-		{
-			name:       "thinking signature",
-			statusCode: http.StatusBadRequest,
-			body:       []byte(`{"error":{"message":"Invalid signature in thinking block","type":"invalid_request_error","code":"invalid_request_error"}}`),
-			wantStatus: http.StatusBadRequest,
-			wantType:   "invalid_request_error",
-			wantCode:   "thinking_signature_invalid",
-		},
-		{
-			name:       "previous response missing",
-			statusCode: http.StatusBadRequest,
-			body:       []byte(`{"error":{"message":"No response found for previous_response_id resp_123","type":"invalid_request_error","code":"previous_response_not_found"}}`),
-			wantStatus: http.StatusBadRequest,
-			wantType:   "invalid_request_error",
-			wantCode:   "previous_response_not_found",
-		},
-		{
-			name:       "auth unavailable",
-			statusCode: http.StatusUnauthorized,
-			body:       []byte(`{"error":{"message":"invalid or expired token","type":"authentication_error","code":"invalid_api_key"}}`),
-			wantStatus: http.StatusUnauthorized,
-			wantType:   "authentication_error",
-			wantCode:   "auth_unavailable",
-		},
-	}
+		got := parseCodexQuotaProbe(body)
+		if got == nil {
+			t.Fatal("expected quota probe result, got nil")
+		}
+		if got.Recovered {
+			t.Fatal("Recovered = true, want false while limit_reached is true")
+		}
+		if !got.NextRecoverAt.Equal(time.Unix(resetAt, 0)) {
+			t.Fatalf("NextRecoverAt = %v, want %v", got.NextRecoverAt, time.Unix(resetAt, 0))
+		}
+	})
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := newCodexStatusErr(tc.statusCode, tc.body)
+	t.Run("recovers when all windows have capacity", func(t *testing.T) {
+		body := []byte(`{"rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":20},"secondary_window":{"used_percent":80}}}`)
+		result := parseCodexQuotaProbe(body)
+		if result == nil {
+			t.Fatalf("expected quota probe result")
+		}
+		if !result.Recovered {
+			t.Fatalf("expected recovered result when all quota windows have capacity")
+		}
+	})
 
-			if got := err.StatusCode(); got != tc.wantStatus {
-				t.Fatalf("status code = %d, want %d", got, tc.wantStatus)
-			}
-			assertCodexErrorCode(t, err.Error(), tc.wantType, tc.wantCode)
-		})
-	}
-}
-
-func TestNewCodexStatusErrPreservesUnclassifiedErrors(t *testing.T) {
-	body := []byte(`{"error":{"message":"documentation mentions too many tokens, but this is a billing configuration failure","type":"server_error","code":"billing_config_error"}}`)
-
-	err := newCodexStatusErr(http.StatusBadGateway, body)
-
-	if got := err.StatusCode(); got != http.StatusBadGateway {
-		t.Fatalf("status code = %d, want %d", got, http.StatusBadGateway)
-	}
-	if got := err.Error(); got != string(body) {
-		t.Fatalf("error body = %s, want original %s", got, string(body))
-	}
-}
-
-func assertCodexErrorCode(t *testing.T, raw string, wantType string, wantCode string) {
-	t.Helper()
-
-	var payload struct {
-		Error struct {
-			Type string `json:"type"`
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		t.Fatalf("error body is not valid JSON: %v; body=%s", err, raw)
-	}
-	if payload.Error.Type != wantType {
-		t.Fatalf("error.type = %q, want %q; body=%s", payload.Error.Type, wantType, raw)
-	}
-	if payload.Error.Code != wantCode {
-		t.Fatalf("error.code = %q, want %q; body=%s", payload.Error.Code, wantCode, raw)
-	}
+	t.Run("recognizes explicit weekly window", func(t *testing.T) {
+		body := []byte(`{"rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":20},"weekly_window":{"used_percent":100,"reset_after_seconds":3600}}}`)
+		result := parseCodexQuotaProbe(body)
+		if result == nil {
+			t.Fatalf("expected quota probe result")
+		}
+		if result.Recovered {
+			t.Fatalf("expected blocked result when weekly_window is exhausted")
+		}
+		if result.NextRecoverAt.IsZero() {
+			t.Fatalf("expected NextRecoverAt from weekly_window reset_after_seconds")
+		}
+	})
 }
 
 func itoa(v int64) string {

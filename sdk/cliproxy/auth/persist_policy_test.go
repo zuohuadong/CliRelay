@@ -10,6 +10,12 @@ type countingStore struct {
 	saveCount atomic.Int32
 }
 
+type snapshotStore struct {
+	entered       chan struct{}
+	release       chan struct{}
+	observedToken atomic.Value
+}
+
 func (s *countingStore) List(context.Context) ([]*Auth, error) { return nil, nil }
 
 func (s *countingStore) Save(context.Context, *Auth) (string, error) {
@@ -18,6 +24,26 @@ func (s *countingStore) Save(context.Context, *Auth) (string, error) {
 }
 
 func (s *countingStore) Delete(context.Context, string) error { return nil }
+
+func (s *snapshotStore) List(context.Context) ([]*Auth, error) { return nil, nil }
+
+func (s *snapshotStore) Save(_ context.Context, auth *Auth) (string, error) {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	<-s.release
+	token := ""
+	if auth != nil && auth.Metadata != nil {
+		if raw, ok := auth.Metadata["access_token"].(string); ok {
+			token = raw
+		}
+	}
+	s.observedToken.Store(token)
+	return "", nil
+}
+
+func (s *snapshotStore) Delete(context.Context, string) error { return nil }
 
 func TestWithSkipPersist_DisablesUpdatePersistence(t *testing.T) {
 	store := &countingStore{}
@@ -58,5 +84,69 @@ func TestWithSkipPersist_DisablesRegisterPersistence(t *testing.T) {
 	}
 	if got := store.saveCount.Load(); got != 0 {
 		t.Fatalf("expected 0 Save calls, got %d", got)
+	}
+}
+
+func TestRegister_PersistsSnapshotInsteadOfCallerPointer(t *testing.T) {
+	store := &snapshotStore{
+		entered: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	mgr := NewManager(store, nil, nil)
+	auth := &Auth{
+		ID:       "auth-1",
+		Provider: "antigravity",
+		Metadata: map[string]any{"access_token": "initial"},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := mgr.Register(context.Background(), auth); err != nil {
+			t.Errorf("Register returned error: %v", err)
+		}
+	}()
+
+	<-store.entered
+	auth.Metadata["access_token"] = "mutated"
+	close(store.release)
+	<-done
+
+	if got, _ := store.observedToken.Load().(string); got != "initial" {
+		t.Fatalf("expected persisted token to stay at snapshot value, got %q", got)
+	}
+}
+
+func TestUpdate_PersistsSnapshotInsteadOfCallerPointer(t *testing.T) {
+	store := &snapshotStore{
+		entered: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	mgr := NewManager(store, nil, nil)
+	auth := &Auth{
+		ID:       "auth-1",
+		Provider: "antigravity",
+		Metadata: map[string]any{"access_token": "initial"},
+	}
+
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := mgr.Update(context.Background(), auth); err != nil {
+			t.Errorf("Update returned error: %v", err)
+		}
+	}()
+
+	<-store.entered
+	auth.Metadata["access_token"] = "mutated"
+	close(store.release)
+	<-done
+
+	if got, _ := store.observedToken.Load().(string); got != "initial" {
+		t.Fatalf("expected persisted token to stay at snapshot value, got %q", got)
 	}
 }

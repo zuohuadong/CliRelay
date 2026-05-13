@@ -13,16 +13,21 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
+	DefaultPanelGitHubRepository = "https://github.com/kittors/codeProxy"
 	DefaultPprofAddr             = "127.0.0.1:8316"
-	DefaultAuthDir               = "~/.cli-proxy-api"
+	DefaultAutoUpdateChannel     = "main"
+	DefaultAutoUpdateRepository  = "https://github.com/kittors/CliRelay"
+	DefaultAutoUpdateDockerImage = "ghcr.io/kittors/clirelay"
+	DefaultAutoUpdateUpdaterURL  = "http://clirelay-updater:8320"
+
+	// EnvAuthPath overrides auth-dir with the path visible inside the running container/process.
+	EnvAuthPath = "AUTH_PATH"
 )
 
 // Config represents the application's configuration, loaded from a YAML file.
@@ -34,14 +39,39 @@ type Config struct {
 	// Port is the network port on which the API server will listen.
 	Port int `yaml:"port" json:"-"`
 
+	// Timezone configures the project's timezone (IANA name, e.g. "Asia/Shanghai").
+	// It affects "today" boundaries and day-based aggregation in monitoring/usage pages.
+	// When empty, the process local timezone (time.Local) is used.
+	Timezone string `yaml:"timezone,omitempty" json:"timezone,omitempty"`
+
+	// Redis config controls the Redis connection for usage persistence.
+	Redis RedisConfig `yaml:"redis" json:"redis"`
+
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 
-	// Home config enables the Redis-based control plane integration.
-	Home HomeConfig `yaml:"home" json:"-"`
+	// CORSAllowOrigins defines the explicit browser origins allowed to call API routes cross-origin.
+	// Leave empty to disable cross-origin browser access by default.
+	CORSAllowOrigins []string `yaml:"cors-allow-origins" json:"cors-allow-origins"`
+
+	// TrustedProxies lists reverse proxy IPs or CIDRs whose forwarding headers may be trusted.
+	// Leave empty to ignore X-Forwarded-For/X-Real-IP and use the direct peer address.
+	TrustedProxies []string `yaml:"trusted-proxies,omitempty" json:"trusted-proxies,omitempty"`
 
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
+
+	// AutoUpdate controls Docker-first update checks and updater sidecar integration.
+	AutoUpdate AutoUpdateConfig `yaml:"auto-update" json:"auto-update"`
+
+	// OAuthClients stores optional OAuth client credentials used by provider login flows.
+	// When empty, the runtime may fall back to environment variables (see oauth_clients.go).
+	OAuthClients OAuthClients `yaml:"oauth-clients" json:"-"`
+
+	// OAuthUserAgent sets the User-Agent header for OAuth HTTP requests.
+	// Some providers may reject the default Go HTTP client User-Agent.
+	// When empty, a browser-like default is used.
+	OAuthUserAgent string `yaml:"oauth-user-agent" json:"oauth-user-agent"`
 
 	// AuthDir is the directory where authentication token files are stored.
 	AuthDir string `yaml:"auth-dir" json:"-"`
@@ -69,23 +99,11 @@ type Config struct {
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
-	// RedisUsageQueueRetentionSeconds controls how long (in seconds) usage queue items
-	// are retained in memory for the Redis RESP interface (LPOP/RPOP).
-	// Default: 60. Max: 3600.
-	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds" json:"redis-usage-queue-retention-seconds"`
-
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
-	// AuthAutoRefreshWorkers overrides the size of the core auth auto-refresh worker pool.
-	// When <= 0, the default worker count is used.
-	AuthAutoRefreshWorkers int `yaml:"auth-auto-refresh-workers" json:"auth-auto-refresh-workers"`
-
 	// RequestRetry defines the retry times when the request failed.
 	RequestRetry int `yaml:"request-retry" json:"request-retry"`
-	// MaxRetryCredentials defines the maximum number of credentials to try for a failed request.
-	// Set to 0 or a negative value to keep trying all available credentials (legacy behavior).
-	MaxRetryCredentials int `yaml:"max-retry-credentials" json:"max-retry-credentials"`
 	// MaxRetryInterval defines the maximum wait time in seconds before retrying a cooled-down credential.
 	MaxRetryInterval int `yaml:"max-retry-interval" json:"max-retry-interval"`
 
@@ -98,32 +116,46 @@ type Config struct {
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
 
-	// AntigravitySignatureCacheEnabled controls whether signature cache validation is enabled for thinking blocks.
-	// When true (default), cached signatures are preferred and validated.
-	// When false, client signatures are used directly after normalization (bypass mode).
-	AntigravitySignatureCacheEnabled *bool `yaml:"antigravity-signature-cache-enabled,omitempty" json:"antigravity-signature-cache-enabled,omitempty"`
-
-	AntigravitySignatureBypassStrict *bool `yaml:"antigravity-signature-bypass-strict,omitempty" json:"antigravity-signature-bypass-strict,omitempty"`
-
 	// GeminiKey defines Gemini API key configurations with optional routing overrides.
 	GeminiKey []GeminiKey `yaml:"gemini-api-key" json:"gemini-api-key"`
 
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
 
-	// CodexHeaderDefaults configures fallback headers for Codex OAuth model requests.
-	// These are used only when the client does not send its own headers.
-	CodexHeaderDefaults CodexHeaderDefaults `yaml:"codex-header-defaults" json:"codex-header-defaults"`
-
 	// ClaudeKey defines a list of Claude API key configurations as specified in the YAML configuration file.
 	ClaudeKey []ClaudeKey `yaml:"claude-api-key" json:"claude-api-key"`
+
+	// BedrockKey defines AWS Bedrock Runtime credential configurations.
+	BedrockKey []BedrockKey `yaml:"bedrock-api-key" json:"bedrock-api-key"`
+
+	// OpenCodeGoKey defines OpenCode Go plan API key configurations.
+	OpenCodeGoKey []OpenCodeGoKey `yaml:"opencode-go-api-key" json:"opencode-go-api-key"`
 
 	// ClaudeHeaderDefaults configures default header values for Claude API requests.
 	// These are used as fallbacks when the client does not send its own headers.
 	ClaudeHeaderDefaults ClaudeHeaderDefaults `yaml:"claude-header-defaults" json:"claude-header-defaults"`
 
+	// KimiHeaderDefaults configures default header values for Kimi API requests.
+	// These control how requests appear in the Kimi console (e.g., User-Agent as source).
+	KimiHeaderDefaults KimiHeaderDefaults `yaml:"kimi-header-defaults" json:"kimi-header-defaults"`
+
+	// IdentityFingerprint controls provider-specific upstream identity headers.
+	IdentityFingerprint IdentityFingerprintConfig `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
+
+	// ProxyPool stores reusable outbound proxies that can be referenced by providers and auth files.
+	ProxyPool []ProxyPoolEntry `yaml:"proxy-pool,omitempty" json:"proxy-pool,omitempty"`
+
+	// ProxyManager controls automatic proxy assignment, health checking, and ban-aware rotation.
+	ProxyManager ProxyManagerConfig `yaml:"proxy-manager,omitempty" json:"proxy-manager,omitempty"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
+
+	// RequestPolicies define request-size and routing guards evaluated before upstream execution.
+	RequestPolicies []RequestPolicy `yaml:"request-policies,omitempty" json:"request-policies,omitempty"`
+
+	// ProviderPreferences define model-scoped upstream provider priority overrides.
+	ProviderPreferences []ProviderPreference `yaml:"provider-preferences,omitempty" json:"provider-preferences,omitempty"`
 
 	// VertexCompatAPIKey defines Vertex AI-compatible API key configurations for third-party providers.
 	// Used for services that use Vertex AI-style paths but with simple API key authentication.
@@ -137,7 +169,7 @@ type Config struct {
 
 	// OAuthModelAlias defines global model name aliases for OAuth/file-backed auth channels.
 	// These aliases affect both model listing and model routing for supported channels:
-	// gemini-cli, vertex, aistudio, antigravity, claude, codex, kimi.
+	// gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow.
 	//
 	// NOTE: This does not apply to existing per-credential model alias features under:
 	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
@@ -149,27 +181,111 @@ type Config struct {
 	legacyMigrationPending bool `yaml:"-" json:"-"`
 }
 
-// ClaudeHeaderDefaults configures default header values injected into Claude API requests.
-// In legacy mode, UserAgent/PackageVersion/RuntimeVersion/Timeout act as fallbacks when
-// the client omits them, while OS/Arch remain runtime-derived. When stabilized device
-// profiles are enabled, OS/Arch become the pinned platform baseline, while
-// UserAgent/PackageVersion/RuntimeVersion seed the upgradeable software fingerprint.
+// ClaudeHeaderDefaults configures default header values injected into Claude API requests
+// when the client does not send them. Update these when Claude Code releases a new version.
 type ClaudeHeaderDefaults struct {
-	UserAgent              string `yaml:"user-agent" json:"user-agent"`
-	PackageVersion         string `yaml:"package-version" json:"package-version"`
-	RuntimeVersion         string `yaml:"runtime-version" json:"runtime-version"`
-	OS                     string `yaml:"os" json:"os"`
-	Arch                   string `yaml:"arch" json:"arch"`
-	Timeout                string `yaml:"timeout" json:"timeout"`
-	StabilizeDeviceProfile *bool  `yaml:"stabilize-device-profile,omitempty" json:"stabilize-device-profile,omitempty"`
+	UserAgent      string `yaml:"user-agent" json:"user-agent"`
+	PackageVersion string `yaml:"package-version" json:"package-version"`
+	RuntimeVersion string `yaml:"runtime-version" json:"runtime-version"`
+	Timeout        string `yaml:"timeout" json:"timeout"`
 }
 
-// CodexHeaderDefaults configures fallback header values injected into Codex
-// model requests for OAuth/file-backed auth when the client omits them.
-// UserAgent applies to HTTP and websocket requests; BetaFeatures only applies to websockets.
-type CodexHeaderDefaults struct {
-	UserAgent    string `yaml:"user-agent" json:"user-agent"`
-	BetaFeatures string `yaml:"beta-features" json:"beta-features"`
+// KimiHeaderDefaults configures default header values for Kimi API requests.
+// These headers identify the client to the Kimi API and affect how requests
+// appear in the Kimi console (e.g., User-Agent shows as the source).
+type KimiHeaderDefaults struct {
+	UserAgent string `yaml:"user-agent" json:"user-agent"`
+	Platform  string `yaml:"platform" json:"platform"`
+	Version   string `yaml:"version" json:"version"`
+}
+
+const (
+	DefaultCodexFingerprintUserAgent     = "Codex Desktop/0.130.0-alpha.5 (Mac OS 26.4.1; arm64) unknown (Codex Desktop; 26.506.31421)"
+	DefaultCodexFingerprintVersion       = "0.130.0-alpha.5"
+	DefaultCodexFingerprintOriginator    = "Codex Desktop"
+	DefaultCodexFingerprintWebsocketBeta = "responses_websockets=2026-02-06"
+	DefaultCodexFingerprintSessionMode   = "per-request"
+
+	DefaultClaudeFingerprintCLIVersion              = "2.1.88"
+	DefaultClaudeFingerprintEntrypoint              = "cli"
+	DefaultClaudeFingerprintAnthropicBeta           = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24"
+	DefaultClaudeFingerprintStainlessPackageVersion = "0.74.0"
+	DefaultClaudeFingerprintStainlessRuntimeVersion = "v22.13.0"
+	DefaultClaudeFingerprintStainlessTimeout        = "600"
+	DefaultClaudeFingerprintSessionMode             = "per-request"
+)
+
+// IdentityFingerprintConfig groups provider-specific upstream identity settings.
+type IdentityFingerprintConfig struct {
+	Codex  CodexIdentityFingerprintConfig  `yaml:"codex,omitempty" json:"codex,omitempty"`
+	Claude ClaudeIdentityFingerprintConfig `yaml:"claude,omitempty" json:"claude,omitempty"`
+}
+
+// CodexIdentityFingerprintConfig configures Codex upstream identity headers.
+type CodexIdentityFingerprintConfig struct {
+	Enabled       bool              `yaml:"enabled" json:"enabled"`
+	UserAgent     string            `yaml:"user-agent,omitempty" json:"user-agent,omitempty"`
+	Version       string            `yaml:"version,omitempty" json:"version,omitempty"`
+	Originator    string            `yaml:"originator,omitempty" json:"originator,omitempty"`
+	WebsocketBeta string            `yaml:"websocket-beta,omitempty" json:"websocket-beta,omitempty"`
+	SessionMode   string            `yaml:"session-mode,omitempty" json:"session-mode,omitempty"`
+	SessionID     string            `yaml:"session-id,omitempty" json:"session-id,omitempty"`
+	CustomHeaders map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
+}
+
+// DefaultCodexIdentityFingerprint returns the recommended Codex identity template.
+func DefaultCodexIdentityFingerprint() CodexIdentityFingerprintConfig {
+	return CodexIdentityFingerprintConfig{
+		Enabled:       false,
+		UserAgent:     DefaultCodexFingerprintUserAgent,
+		Version:       DefaultCodexFingerprintVersion,
+		Originator:    DefaultCodexFingerprintOriginator,
+		WebsocketBeta: DefaultCodexFingerprintWebsocketBeta,
+		SessionMode:   DefaultCodexFingerprintSessionMode,
+		CustomHeaders: map[string]string{},
+	}
+}
+
+// ClaudeIdentityFingerprintConfig configures Claude Code-style Anthropic OAuth identity.
+type ClaudeIdentityFingerprintConfig struct {
+	Enabled                 bool              `yaml:"enabled" json:"enabled"`
+	CLIVersion              string            `yaml:"cli-version,omitempty" json:"cli-version,omitempty"`
+	Entrypoint              string            `yaml:"entrypoint,omitempty" json:"entrypoint,omitempty"`
+	UserAgent               string            `yaml:"user-agent,omitempty" json:"user-agent,omitempty"`
+	AnthropicBeta           string            `yaml:"anthropic-beta,omitempty" json:"anthropic-beta,omitempty"`
+	StainlessPackageVersion string            `yaml:"stainless-package-version,omitempty" json:"stainless-package-version,omitempty"`
+	StainlessRuntimeVersion string            `yaml:"stainless-runtime-version,omitempty" json:"stainless-runtime-version,omitempty"`
+	StainlessTimeout        string            `yaml:"stainless-timeout,omitempty" json:"stainless-timeout,omitempty"`
+	SessionMode             string            `yaml:"session-mode,omitempty" json:"session-mode,omitempty"`
+	SessionID               string            `yaml:"session-id,omitempty" json:"session-id,omitempty"`
+	DeviceID                string            `yaml:"device-id,omitempty" json:"device-id,omitempty"`
+	CustomHeaders           map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
+}
+
+// DefaultClaudeIdentityFingerprint returns the recommended Claude Code identity template.
+func DefaultClaudeIdentityFingerprint() ClaudeIdentityFingerprintConfig {
+	cliVersion := DefaultClaudeFingerprintCLIVersion
+	entrypoint := DefaultClaudeFingerprintEntrypoint
+	return ClaudeIdentityFingerprintConfig{
+		Enabled:                 false,
+		CLIVersion:              cliVersion,
+		Entrypoint:              entrypoint,
+		UserAgent:               BuildClaudeFingerprintUserAgent(cliVersion, entrypoint),
+		AnthropicBeta:           DefaultClaudeFingerprintAnthropicBeta,
+		StainlessPackageVersion: DefaultClaudeFingerprintStainlessPackageVersion,
+		StainlessRuntimeVersion: DefaultClaudeFingerprintStainlessRuntimeVersion,
+		StainlessTimeout:        DefaultClaudeFingerprintStainlessTimeout,
+		SessionMode:             DefaultClaudeFingerprintSessionMode,
+		CustomHeaders:           map[string]string{},
+	}
+}
+
+// RedisConfig holds the configuration for connecting to a Redis instance for data persistence.
+type RedisConfig struct {
+	Enable   bool   `yaml:"enable" json:"enable"`
+	Addr     string `yaml:"addr" json:"addr"`
+	Password string `yaml:"password" json:"password"`
+	DB       int    `yaml:"db" json:"db"`
 }
 
 // TLSConfig holds HTTPS server settings.
@@ -188,6 +304,8 @@ type PprofConfig struct {
 	Enable bool `yaml:"enable" json:"enable"`
 	// Addr is the host:port address for the pprof HTTP server.
 	Addr string `yaml:"addr" json:"addr"`
+	// AllowRemote permits binding pprof to non-loopback addresses.
+	AllowRemote bool `yaml:"allow-remote" json:"allow-remote"`
 }
 
 // RemoteManagement holds management API configuration under 'remote-management'.
@@ -198,12 +316,29 @@ type RemoteManagement struct {
 	SecretKey string `yaml:"secret-key"`
 	// DisableControlPanel skips serving and syncing the bundled management UI when true.
 	DisableControlPanel bool `yaml:"disable-control-panel"`
-	// DisableAutoUpdatePanel disables automatic periodic background updates of the management panel asset from GitHub.
-	// When false (the default), the background updater remains enabled; when true, the panel is only downloaded on first access if missing.
-	DisableAutoUpdatePanel bool `yaml:"disable-auto-update-panel"`
 	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
 	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
+	// MaxAuthFailures is the number of failed auth attempts before an IP is temporarily banned.
+	// Set to -1 to disable the ban mechanism entirely. Defaults to 20 when unset (zero).
+	MaxAuthFailures int `yaml:"max-auth-failures"`
+	// AuthBanDuration is how long an IP remains banned after exceeding MaxAuthFailures.
+	// Parsed as a Go duration string (e.g. "5m", "1h"). Defaults to "5m" when empty.
+	AuthBanDuration string `yaml:"auth-ban-duration"`
+}
+
+// AutoUpdateConfig holds Docker-first update check and sidecar settings.
+type AutoUpdateConfig struct {
+	// Enabled controls whether the management UI should automatically prompt for updates.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Channel can be auto, main, or dev. Auto infers from the running build metadata.
+	Channel string `yaml:"channel,omitempty" json:"channel,omitempty"`
+	// Repository is the GitHub repository used for branch commits and release notes.
+	Repository string `yaml:"repository,omitempty" json:"repository,omitempty"`
+	// DockerImage is the image repository pulled by the updater sidecar.
+	DockerImage string `yaml:"docker-image,omitempty" json:"docker-image,omitempty"`
+	// UpdaterURL is the internal URL of the independent updater sidecar.
+	UpdaterURL string `yaml:"updater-url,omitempty" json:"updater-url,omitempty"`
 }
 
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
@@ -214,11 +349,6 @@ type QuotaExceeded struct {
 
 	// SwitchPreviewModel indicates whether to automatically switch to a preview model when a quota is exceeded.
 	SwitchPreviewModel bool `yaml:"switch-preview-model" json:"switch-preview-model"`
-
-	// AntigravityCredits enables credits-based last-resort fallback for Claude models.
-	// When all free-tier auths are exhausted (429/503), the conductor retries with
-	// an auth that has available Google One AI credits.
-	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
 }
 
 // RoutingConfig configures how credentials are selected for requests.
@@ -227,17 +357,14 @@ type RoutingConfig struct {
 	// Supported values: "round-robin" (default), "fill-first".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
-	// SessionAffinity enables universal session-sticky routing for all clients.
-	// Session IDs are extracted from multiple sources:
-	// metadata.user_id (Claude Code session format), X-Session-ID, Session_id (Codex),
-	// X-Amp-Thread-Id (Amp CLI thread), X-Client-Request-Id (PI), metadata.user_id,
-	// conversation_id, or message hash.
-	// Automatic failover is always enabled when bound auth becomes unavailable.
-	SessionAffinity bool `yaml:"session-affinity,omitempty" json:"session-affinity,omitempty"`
+	// IncludeDefaultGroup keeps unprefixed channels addressable via the implicit "default" group.
+	IncludeDefaultGroup bool `yaml:"include-default-group,omitempty" json:"include-default-group,omitempty"`
 
-	// SessionAffinityTTL specifies how long session-to-auth bindings are retained.
-	// Default: 1h. Accepts duration strings like "30m", "1h", "2h30m".
-	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
+	// ChannelGroups defines named channel groups used by path routing and API key permissions.
+	ChannelGroups []RoutingChannelGroup `yaml:"channel-groups,omitempty" json:"channel-groups,omitempty"`
+
+	// PathRoutes maps URL path namespaces to channel groups.
+	PathRoutes []RoutingPathRoute `yaml:"path-routes,omitempty" json:"path-routes,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
@@ -277,8 +404,8 @@ type AmpCode struct {
 	UpstreamAPIKey string `yaml:"upstream-api-key" json:"upstream-api-key"`
 
 	// UpstreamAPIKeys maps client API keys (from top-level api-keys) to upstream API keys.
-	// When a request is authenticated with one of the APIKeys, the corresponding UpstreamAPIKey
-	// is used for the upstream Amp request.
+	// When a client authenticates with a key that matches an entry, that upstream key is used.
+	// If no match is found, falls back to UpstreamAPIKey (default behavior).
 	UpstreamAPIKeys []AmpUpstreamAPIKeyEntry `yaml:"upstream-api-keys,omitempty" json:"upstream-api-keys,omitempty"`
 
 	// RestrictManagementToLocalhost restricts Amp management routes (/api/user, /api/threads, etc.)
@@ -375,6 +502,9 @@ type ClaudeKey struct {
 	// APIKey is the authentication key for accessing Claude API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
@@ -389,6 +519,9 @@ type ClaudeKey struct {
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
 	// Models defines upstream model names and aliases for request routing.
 	Models []ClaudeModel `yaml:"models" json:"models"`
 
@@ -398,16 +531,14 @@ type ClaudeKey struct {
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 
-	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
-	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
-
 	// Cloak configures request cloaking for non-Claude-Code clients.
 	Cloak *CloakConfig `yaml:"cloak,omitempty" json:"cloak,omitempty"`
 
-	// ExperimentalCCHSigning enables opt-in final-body cch signing for cloaked
-	// Claude /v1/messages requests. It is disabled by default so upstream seed
-	// changes do not alter the proxy's legacy behavior.
-	ExperimentalCCHSigning bool `yaml:"experimental-cch-signing,omitempty" json:"experimental-cch-signing,omitempty"`
+	// SkipAnthropicProcessing disables Anthropic-specific request processing
+	// (cloaking, cache_control injection, tool prefix, thinking constraints).
+	// Enable this when the base URL points to a third-party Claude-compatible API.
+	// Default: false (Anthropic processing enabled).
+	SkipAnthropicProcessing bool `yaml:"skip-anthropic-processing,omitempty" json:"skip-anthropic-processing,omitempty"`
 }
 
 func (k ClaudeKey) GetAPIKey() string  { return k.APIKey }
@@ -431,6 +562,9 @@ type CodexKey struct {
 	// APIKey is the authentication key for accessing Codex API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
@@ -448,6 +582,9 @@ type CodexKey struct {
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
 	// Models defines upstream model names and aliases for request routing.
 	Models []CodexModel `yaml:"models" json:"models"`
 
@@ -456,9 +593,6 @@ type CodexKey struct {
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
-
-	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
-	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 }
 
 func (k CodexKey) GetAPIKey() string  { return k.APIKey }
@@ -482,6 +616,9 @@ type GeminiKey struct {
 	// APIKey is the authentication key for accessing Gemini API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
@@ -495,6 +632,9 @@ type GeminiKey struct {
 	// ProxyURL optionally overrides the global proxy for this API key.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
 
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
 	// Models defines upstream model names and aliases for request routing.
 	Models []GeminiModel `yaml:"models,omitempty" json:"models,omitempty"`
 
@@ -503,9 +643,6 @@ type GeminiKey struct {
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
-
-	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
-	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 }
 
 func (k GeminiKey) GetAPIKey() string  { return k.APIKey }
@@ -529,12 +666,12 @@ type OpenAICompatibility struct {
 	// Name is the identifier for this OpenAI compatibility configuration.
 	Name string `yaml:"name" json:"name"`
 
+	// Disabled marks this provider as inactive while preserving its configuration.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
 	// Priority controls selection preference when multiple providers or credentials match.
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
-
-	// Disabled prevents this provider from being used for routing.
-	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 
 	// Prefix optionally namespaces model aliases for this provider (e.g., "teamA/kimi-k2").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -551,8 +688,19 @@ type OpenAICompatibility struct {
 	// Headers optionally adds extra HTTP headers for requests sent to this provider.
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 
-	// DisableCooling disables auth/model cooldown scheduling for this provider when true.
-	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+	// IdentityFingerprint optionally reuses a configured provider identity template
+	// for upstream requests. Currently supported value: "codex".
+	IdentityFingerprint string `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
+
+	// ImageEditsMode controls how OpenAI /v1/images/edits requests are adapted
+	// for this OpenAI-compatible provider. Supported values: "passthrough",
+	// "chat-multimodal", "image-generations". Empty defaults to "passthrough".
+	ImageEditsMode string `yaml:"image-edits-mode,omitempty" json:"image-edits-mode,omitempty"`
+
+	// ImageGenerationsImageField controls the image field emitted when
+	// image-edits-mode is "image-generations". Supported values: "image",
+	// "image_url". Empty defaults to "image".
+	ImageGenerationsImageField string `yaml:"image-generations-image-field,omitempty" json:"image-generations-image-field,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.
@@ -560,8 +708,14 @@ type OpenAICompatibilityAPIKey struct {
 	// APIKey is the authentication key for accessing the external API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// Disabled marks this API key entry as inactive while preserving the config.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
 }
 
 // OpenAICompatibilityModel represents a model configuration for OpenAI compatibility,
@@ -572,14 +726,83 @@ type OpenAICompatibilityModel struct {
 
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
-
-	// Thinking configures the thinking/reasoning capability for this model.
-	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
-	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
 func (m OpenAICompatibilityModel) GetName() string  { return m.Name }
 func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
+
+// RequestPolicy defines a generic pre-execution policy for matching requests and channels.
+type RequestPolicy struct {
+	Name      string                 `yaml:"name,omitempty" json:"name,omitempty"`
+	Match     RequestPolicyMatch     `yaml:"match,omitempty" json:"match,omitempty"`
+	Limits    RequestPolicyLimits    `yaml:"limits,omitempty" json:"limits,omitempty"`
+	OverLimit RequestPolicyOverLimit `yaml:"over-limit,omitempty" json:"over-limit,omitempty"`
+}
+
+// RequestPolicyMatch controls which requested/upstream model route a policy applies to.
+type RequestPolicyMatch struct {
+	RequestedModels   []string `yaml:"requested-models,omitempty" json:"requested-models,omitempty"`
+	UpstreamProviders []string `yaml:"upstream-providers,omitempty" json:"upstream-providers,omitempty"`
+	UpstreamModels    []string `yaml:"upstream-models,omitempty" json:"upstream-models,omitempty"`
+	RequestFeatures   []string `yaml:"request-features,omitempty" json:"request-features,omitempty"`
+}
+
+// RequestPolicyLimits contains hard request limits.
+type RequestPolicyLimits struct {
+	MaxRequestBytes int64 `yaml:"max-request-bytes,omitempty" json:"max-request-bytes,omitempty"`
+	MinRequestBytes int64 `yaml:"min-request-bytes,omitempty" json:"min-request-bytes,omitempty"`
+	MinInputItems   int   `yaml:"min-input-items,omitempty" json:"min-input-items,omitempty"`
+	MinToolCalls    int   `yaml:"min-tool-calls,omitempty" json:"min-tool-calls,omitempty"`
+}
+
+// RequestPolicyOverLimit controls behavior after a request exceeds a configured limit.
+type RequestPolicyOverLimit struct {
+	// Action is "skip-channel" or "reject". Empty defaults to "skip-channel".
+	Action string `yaml:"action,omitempty" json:"action,omitempty"`
+}
+
+// ProviderPreference sets model-scoped upstream provider selection priority.
+type ProviderPreference struct {
+	Name     string                  `yaml:"name,omitempty" json:"name,omitempty"`
+	Match    ProviderPreferenceMatch `yaml:"match,omitempty" json:"match,omitempty"`
+	Priority int                     `yaml:"priority,omitempty" json:"priority,omitempty"`
+}
+
+// ProviderPreferenceMatch controls which requested/upstream route receives the priority override.
+type ProviderPreferenceMatch struct {
+	RequestedModels   []string `yaml:"requested-models,omitempty" json:"requested-models,omitempty"`
+	UpstreamProviders []string `yaml:"upstream-providers,omitempty" json:"upstream-providers,omitempty"`
+	UpstreamModels    []string `yaml:"upstream-models,omitempty" json:"upstream-models,omitempty"`
+}
+
+// OpenCodeGoKey represents an OpenCode Go plan API key.
+// The upstream endpoint is fixed to https://opencode.ai/zen/go/v1.
+type OpenCodeGoKey struct {
+	// APIKey is the authentication key for OpenCode Go.
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Prefix optionally namespaces models for this credential.
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+}
 
 // LoadConfig reads a YAML configuration file from the given path,
 // unmarshals it into a Config struct, applies environment variable overrides,
@@ -599,6 +822,16 @@ func LoadConfig(configFile string) (*Config, error) {
 // If optional is true and the file is missing, it returns an empty Config.
 // If optional is true and the file is empty or invalid, it returns an empty Config.
 func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
+	// NOTE: Startup oauth-model-alias migration is intentionally disabled.
+	// Reason: avoid mutating config.yaml during server startup.
+	// Re-enable the block below if automatic startup migration is needed again.
+	// if migrated, err := MigrateOAuthModelAlias(configFile); err != nil {
+	// 	// Log warning but don't fail - config loading should still work
+	// 	fmt.Printf("Warning: oauth-model-alias migration failed: %v\n", err)
+	// } else if migrated {
+	// 	fmt.Println("Migrated oauth-model-mappings to oauth-model-alias")
+	// }
+
 	// Read the entire configuration file into memory.
 	data, err := os.ReadFile(configFile)
 	if err != nil {
@@ -624,13 +857,24 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
-	cfg.RedisUsageQueueRetentionSeconds = 60
+	cfg.RequestLogStorage.StoreContent = true
+	cfg.RequestLogStorage.ContentRetentionDays = 30
+	cfg.RequestLogStorage.CleanupIntervalMinutes = 1440
+	// Default cap for stored request/response bodies in usage.db.
+	// This controls the compressed body payloads only (metadata rows are separate).
+	cfg.RequestLogStorage.MaxTotalSizeMB = 1024
+	cfg.RequestLogStorage.VacuumOnCleanup = true
 	cfg.DisableCooling = false
-	cfg.DisableImageGeneration = DisableImageGenerationOff
+	cfg.Routing.IncludeDefaultGroup = true
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.AutoUpdate.Enabled = true
+	cfg.AutoUpdate.Channel = DefaultAutoUpdateChannel
+	cfg.AutoUpdate.Repository = DefaultAutoUpdateRepository
+	cfg.AutoUpdate.DockerImage = DefaultAutoUpdateDockerImage
+	cfg.AutoUpdate.UpdaterURL = DefaultAutoUpdateUpdaterURL
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -638,6 +882,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
+	cfg.ApplyEnvOverrides()
 
 	// NOTE: Startup legacy key migration is intentionally disabled.
 	// Reason: avoid mutating config.yaml during server startup.
@@ -673,6 +918,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if cfg.RemoteManagement.PanelGitHubRepository == "" {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	}
+	cfg.SanitizeAutoUpdate()
 
 	cfg.Pprof.Addr = strings.TrimSpace(cfg.Pprof.Addr)
 	if cfg.Pprof.Addr == "" {
@@ -687,37 +933,52 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		cfg.ErrorLogsMaxFiles = 10
 	}
 
-	if cfg.RedisUsageQueueRetentionSeconds <= 0 {
-		cfg.RedisUsageQueueRetentionSeconds = 60
-	} else if cfg.RedisUsageQueueRetentionSeconds > 3600 {
-		log.WithField("value", cfg.RedisUsageQueueRetentionSeconds).Warn("redis-usage-queue-retention-seconds too large; clamping to 3600")
-		cfg.RedisUsageQueueRetentionSeconds = 3600
+	if cfg.RequestLogStorage.ContentRetentionDays < 0 {
+		cfg.RequestLogStorage.ContentRetentionDays = 0
 	}
 
-	if cfg.MaxRetryCredentials < 0 {
-		cfg.MaxRetryCredentials = 0
+	if cfg.RequestLogStorage.CleanupIntervalMinutes <= 0 {
+		cfg.RequestLogStorage.CleanupIntervalMinutes = 1440
+	}
+	if cfg.RequestLogStorage.MaxTotalSizeMB < 0 {
+		cfg.RequestLogStorage.MaxTotalSizeMB = 0
 	}
 
 	// Sanitize Gemini API key configuration and migrate legacy entries.
 	cfg.SanitizeGeminiKeys()
 
-	// Sanitize Vertex-compatible API keys.
+	// Sanitize Vertex-compatible API keys: drop entries without base-url
 	cfg.SanitizeVertexCompatKeys()
 
 	// Sanitize Codex keys: drop entries without base-url
 	cfg.SanitizeCodexKeys()
 
-	// Sanitize Codex header defaults.
-	cfg.SanitizeCodexHeaderDefaults()
-
-	// Sanitize Claude header defaults.
-	cfg.SanitizeClaudeHeaderDefaults()
-
 	// Sanitize Claude key headers
 	cfg.SanitizeClaudeKeys()
 
+	// Sanitize AWS Bedrock Runtime credentials.
+	cfg.SanitizeBedrockKeys()
+
+	// Sanitize OpenCode Go plan API keys.
+	cfg.SanitizeOpenCodeGoKeys()
+
+	// Normalize provider identity fingerprints.
+	cfg.SanitizeIdentityFingerprint()
+
+	// Normalize reusable outbound proxy entries.
+	cfg.SanitizeProxyPool()
+
+	// Normalize proxy manager configuration (assignment, health, ban detection).
+	cfg.SanitizeProxyManager()
+
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
+
+	// Normalize request policies.
+	cfg.SanitizeRequestPolicies()
+
+	// Normalize upstream provider preference rules.
+	cfg.SanitizeProviderPreferences()
 
 	// Normalize OAuth provider model exclusion map.
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
@@ -725,8 +986,20 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()
 
+	// Normalize routing configuration.
+	cfg.SanitizeRouting()
+
+	// Normalize API-key group restrictions.
+	cfg.SanitizeAPIKeyEntries()
+
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
+
+	// Normalize local context retrieval config.
+	cfg.SanitizeContextRetrieval()
+
+	// Normalize multimodal preprocessing config.
+	cfg.SanitizeMultimodalAdapters()
 
 	// NOTE: Legacy migration persistence is intentionally disabled together with
 	// startup legacy migration to keep startup read-only for config.yaml.
@@ -745,6 +1018,16 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Return the populated configuration struct.
 	return &cfg, nil
+}
+
+// ApplyEnvOverrides applies process-level configuration overrides.
+func (cfg *Config) ApplyEnvOverrides() {
+	if cfg == nil {
+		return
+	}
+	if authPath := strings.TrimSpace(os.Getenv(EnvAuthPath)); authPath != "" {
+		cfg.AuthDir = authPath
+	}
 }
 
 // SanitizePayloadRules validates raw JSON payload rule params and drops invalid rules.
@@ -802,28 +1085,32 @@ func payloadRawString(value any) ([]byte, bool) {
 	}
 }
 
-// SanitizeCodexHeaderDefaults trims surrounding whitespace from the
-// configured Codex header fallback values.
-func (cfg *Config) SanitizeCodexHeaderDefaults() {
+// SanitizeAutoUpdate normalizes Docker update settings while preserving an explicit disabled flag.
+func (cfg *Config) SanitizeAutoUpdate() {
 	if cfg == nil {
 		return
 	}
-	cfg.CodexHeaderDefaults.UserAgent = strings.TrimSpace(cfg.CodexHeaderDefaults.UserAgent)
-	cfg.CodexHeaderDefaults.BetaFeatures = strings.TrimSpace(cfg.CodexHeaderDefaults.BetaFeatures)
-}
-
-// SanitizeClaudeHeaderDefaults trims surrounding whitespace from the
-// configured Claude fingerprint baseline values.
-func (cfg *Config) SanitizeClaudeHeaderDefaults() {
-	if cfg == nil {
-		return
+	channel := strings.ToLower(strings.TrimSpace(cfg.AutoUpdate.Channel))
+	switch channel {
+	case "":
+		cfg.AutoUpdate.Channel = DefaultAutoUpdateChannel
+	case "main", "dev", "auto":
+		cfg.AutoUpdate.Channel = channel
+	default:
+		cfg.AutoUpdate.Channel = DefaultAutoUpdateChannel
 	}
-	cfg.ClaudeHeaderDefaults.UserAgent = strings.TrimSpace(cfg.ClaudeHeaderDefaults.UserAgent)
-	cfg.ClaudeHeaderDefaults.PackageVersion = strings.TrimSpace(cfg.ClaudeHeaderDefaults.PackageVersion)
-	cfg.ClaudeHeaderDefaults.RuntimeVersion = strings.TrimSpace(cfg.ClaudeHeaderDefaults.RuntimeVersion)
-	cfg.ClaudeHeaderDefaults.OS = strings.TrimSpace(cfg.ClaudeHeaderDefaults.OS)
-	cfg.ClaudeHeaderDefaults.Arch = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Arch)
-	cfg.ClaudeHeaderDefaults.Timeout = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Timeout)
+	cfg.AutoUpdate.Repository = strings.TrimSpace(cfg.AutoUpdate.Repository)
+	if cfg.AutoUpdate.Repository == "" {
+		cfg.AutoUpdate.Repository = DefaultAutoUpdateRepository
+	}
+	cfg.AutoUpdate.DockerImage = strings.TrimSpace(cfg.AutoUpdate.DockerImage)
+	if cfg.AutoUpdate.DockerImage == "" {
+		cfg.AutoUpdate.DockerImage = DefaultAutoUpdateDockerImage
+	}
+	cfg.AutoUpdate.UpdaterURL = strings.TrimSpace(cfg.AutoUpdate.UpdaterURL)
+	if cfg.AutoUpdate.UpdaterURL == "" {
+		cfg.AutoUpdate.UpdaterURL = DefaultAutoUpdateUpdaterURL
+	}
 }
 
 // SanitizeOAuthModelAlias normalizes and deduplicates global OAuth model name aliases.
@@ -877,7 +1164,13 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		e.Name = strings.TrimSpace(e.Name)
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		e.ImageEditsMode = normalizeOpenAICompatImageEditsMode(e.ImageEditsMode)
+		e.ImageGenerationsImageField = normalizeOpenAICompatImageGenerationsImageField(e.ImageGenerationsImageField)
 		e.Headers = NormalizeHeaders(e.Headers)
+		for j := range e.APIKeyEntries {
+			e.APIKeyEntries[j].ProxyURL = strings.TrimSpace(e.APIKeyEntries[j].ProxyURL)
+			e.APIKeyEntries[j].ProxyID = strings.TrimSpace(e.APIKeyEntries[j].ProxyID)
+		}
 		if e.BaseURL == "" {
 			// Skip providers with no base-url; treated as removed
 			continue
@@ -885,6 +1178,319 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		out = append(out, e)
 	}
 	cfg.OpenAICompatibility = out
+}
+
+func normalizeOpenAICompatImageEditsMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "passthrough", "native", "image-edits":
+		return "passthrough"
+	case "chat-multimodal":
+		return "chat-multimodal"
+	case "image-generations":
+		return "image-generations"
+	default:
+		return ""
+	}
+}
+
+func normalizeOpenAICompatImageGenerationsImageField(field string) string {
+	switch strings.ToLower(strings.TrimSpace(field)) {
+	case "image_url":
+		return "image_url"
+	case "image":
+		return "image"
+	default:
+		return ""
+	}
+}
+
+// SanitizeRequestPolicies normalizes request policy matching and drops inactive rules.
+func (cfg *Config) SanitizeRequestPolicies() {
+	if cfg == nil || len(cfg.RequestPolicies) == 0 {
+		return
+	}
+	out := make([]RequestPolicy, 0, len(cfg.RequestPolicies))
+	for i := range cfg.RequestPolicies {
+		policy := cfg.RequestPolicies[i]
+		policy.Name = strings.TrimSpace(policy.Name)
+		policy.Match.RequestedModels = normalizePolicyValues(policy.Match.RequestedModels, false)
+		policy.Match.UpstreamProviders = normalizePolicyValues(policy.Match.UpstreamProviders, true)
+		policy.Match.UpstreamModels = normalizePolicyValues(policy.Match.UpstreamModels, false)
+		policy.Match.RequestFeatures = normalizePolicyValues(policy.Match.RequestFeatures, true)
+		policy.OverLimit.Action = strings.ToLower(strings.TrimSpace(policy.OverLimit.Action))
+		switch policy.OverLimit.Action {
+		case "", "skip-channel", "reject":
+		default:
+			policy.OverLimit.Action = "skip-channel"
+		}
+		if policy.Limits.MaxRequestBytes <= 0 && policy.Limits.MinRequestBytes <= 0 && policy.Limits.MinInputItems <= 0 && policy.Limits.MinToolCalls <= 0 && len(policy.Match.RequestFeatures) == 0 {
+			continue
+		}
+		out = append(out, policy)
+	}
+	cfg.RequestPolicies = out
+}
+
+// SanitizeProviderPreferences normalizes model-scoped upstream provider priority overrides.
+func (cfg *Config) SanitizeProviderPreferences() {
+	if cfg == nil || len(cfg.ProviderPreferences) == 0 {
+		return
+	}
+	out := make([]ProviderPreference, 0, len(cfg.ProviderPreferences))
+	for i := range cfg.ProviderPreferences {
+		rule := cfg.ProviderPreferences[i]
+		rule.Name = strings.TrimSpace(rule.Name)
+		rule.Match.RequestedModels = normalizePolicyValues(rule.Match.RequestedModels, false)
+		rule.Match.UpstreamProviders = normalizePolicyValues(rule.Match.UpstreamProviders, true)
+		rule.Match.UpstreamModels = normalizePolicyValues(rule.Match.UpstreamModels, false)
+		if rule.Priority <= 0 {
+			continue
+		}
+		if len(rule.Match.RequestedModels) == 0 && len(rule.Match.UpstreamProviders) == 0 && len(rule.Match.UpstreamModels) == 0 {
+			continue
+		}
+		out = append(out, rule)
+	}
+	cfg.ProviderPreferences = out
+}
+
+func normalizePolicyValues(values []string, lower bool) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if lower {
+			trimmed = strings.ToLower(trimmed)
+		}
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+// SanitizeContextRetrieval normalizes local context retrieval defaults.
+func (cfg *Config) SanitizeContextRetrieval() {
+	if cfg == nil {
+		return
+	}
+	cr := &cfg.ContextRetrieval
+	if !cr.Enabled {
+		return
+	}
+	if cr.MaxInputBytes <= 0 {
+		cr.MaxInputBytes = 700000
+	}
+	if cr.PreserveRecentTurns <= 0 {
+		cr.PreserveRecentTurns = 6
+	}
+	if cr.Chunk.MaxBytes <= 0 {
+		cr.Chunk.MaxBytes = 12000
+	}
+	if cr.Retrieval.TopK <= 0 {
+		cr.Retrieval.TopK = 20
+	}
+	cr.Retrieval.Strategy = strings.ToLower(strings.TrimSpace(cr.Retrieval.Strategy))
+	if cr.Retrieval.Strategy == "" {
+		cr.Retrieval.Strategy = "keyword"
+	}
+	if cr.Retrieval.Strategy != "keyword" {
+		cr.Retrieval.Strategy = "keyword"
+	}
+	if cr.CodexAware.Enabled {
+		cr.CodexAware.ToolPairRepair = strings.ToLower(strings.TrimSpace(cr.CodexAware.ToolPairRepair))
+		if cr.CodexAware.ToolPairRepair == "" && cr.CodexAware.PreserveToolPairs {
+			cr.CodexAware.ToolPairRepair = "drop-orphans"
+		}
+		if cr.CodexAware.MaxSummaryBytes <= 0 {
+			cr.CodexAware.MaxSummaryBytes = 4000
+		}
+		if cr.CodexAware.PreserveRecentCommands <= 0 {
+			cr.CodexAware.PreserveRecentCommands = 8
+		}
+		if cr.CodexAware.PreserveRecentErrors <= 0 {
+			cr.CodexAware.PreserveRecentErrors = 8
+		}
+	}
+	if cr.Secondary.Enabled {
+		if cr.Secondary.MaxInputBytes <= 0 || cr.Secondary.MaxInputBytes >= cr.MaxInputBytes {
+			cr.Secondary.MaxInputBytes = cr.MaxInputBytes * 2 / 3
+		}
+		if cr.Secondary.MaxInputBytes <= 0 {
+			cr.Secondary.MaxInputBytes = cr.MaxInputBytes
+		}
+		if cr.Secondary.PreserveRecentTurns <= 0 || cr.Secondary.PreserveRecentTurns >= cr.PreserveRecentTurns {
+			cr.Secondary.PreserveRecentTurns = cr.PreserveRecentTurns / 2
+		}
+		if cr.Secondary.PreserveRecentTurns <= 0 {
+			cr.Secondary.PreserveRecentTurns = 1
+		}
+		if cr.Secondary.TopK <= 0 || cr.Secondary.TopK >= cr.Retrieval.TopK {
+			cr.Secondary.TopK = cr.Retrieval.TopK / 2
+		}
+		if cr.Secondary.TopK <= 0 {
+			cr.Secondary.TopK = 8
+		}
+		if cr.Secondary.MaxSummaryBytes <= 0 {
+			cr.Secondary.MaxSummaryBytes = cr.CodexAware.MaxSummaryBytes / 2
+		}
+		if cr.Secondary.MaxSummaryBytes <= 0 {
+			cr.Secondary.MaxSummaryBytes = 2000
+		}
+		if cr.Secondary.MaxItemBytes <= 0 {
+			cr.Secondary.MaxItemBytes = cr.Secondary.MaxInputBytes / 4
+		}
+		if cr.Secondary.MaxItemBytes <= 0 {
+			cr.Secondary.MaxItemBytes = 24000
+		}
+	}
+	out := make([]PayloadModelRule, 0, len(cr.Models))
+	for _, rule := range cr.Models {
+		rule.Name = strings.TrimSpace(rule.Name)
+		rule.Protocol = strings.TrimSpace(rule.Protocol)
+		if rule.Name == "" {
+			continue
+		}
+		out = append(out, rule)
+	}
+	cr.Models = out
+}
+
+// SanitizeMultimodalAdapters normalizes media-to-text preprocessing defaults.
+func (cfg *Config) SanitizeMultimodalAdapters() {
+	if cfg == nil {
+		return
+	}
+	ma := &cfg.MultimodalAdapters
+	configured := ma.Enabled != nil || strings.TrimSpace(ma.DefaultAction) != "" || strings.TrimSpace(ma.UnavailableAction) != "" ||
+		strings.TrimSpace(ma.InjectAs) != "" || ma.MaxMediaItems > 0 || ma.MaxOutputBytes > 0 || len(ma.Rules) > 0 || len(ma.Extractors) > 0
+	if !configured {
+		return
+	}
+	ma.DefaultAction = normalizeMultimodalAdapterAction(ma.DefaultAction)
+	ma.UnavailableAction = normalizeMultimodalUnavailableAction(ma.UnavailableAction)
+	ma.InjectAs = strings.TrimSpace(ma.InjectAs)
+	if ma.InjectAs == "" {
+		ma.InjectAs = "visual_context"
+	}
+	if ma.MaxMediaItems <= 0 {
+		ma.MaxMediaItems = 4
+	}
+	if ma.MaxOutputBytes <= 0 {
+		ma.MaxOutputBytes = 12000
+	}
+	extractors := make([]MultimodalExtractorConfig, 0, len(ma.Extractors))
+	seenExtractors := map[string]struct{}{}
+	for _, extractor := range ma.Extractors {
+		extractor.Name = strings.TrimSpace(extractor.Name)
+		extractor.Type = strings.ToLower(strings.TrimSpace(extractor.Type))
+		if extractor.Type == "" {
+			if strings.TrimSpace(extractor.Endpoint) != "" {
+				extractor.Type = "http"
+			} else if strings.TrimSpace(extractor.Command) != "" {
+				extractor.Type = "mcp"
+			}
+		}
+		if extractor.Type != "http" && extractor.Type != "mcp" && extractor.Type != "zai-vision-http" {
+			continue
+		}
+		extractor.Endpoint = strings.TrimSpace(extractor.Endpoint)
+		extractor.Command = strings.TrimSpace(extractor.Command)
+		extractor.ToolName = strings.TrimSpace(extractor.ToolName)
+		if extractor.TimeoutSeconds <= 0 {
+			extractor.TimeoutSeconds = 60
+		}
+		if strings.TrimSpace(extractor.Prompt) == "" {
+			extractor.Prompt = "Describe this visual input for a coding assistant. Extract visible text, UI elements, errors, filenames, paths, code snippets, charts, and anything needed to answer the user's request. Be concise and factual."
+		}
+		if extractor.Name == "" {
+			extractor.Name = extractor.Type
+		}
+		key := strings.ToLower(extractor.Name)
+		if _, ok := seenExtractors[key]; ok {
+			continue
+		}
+		seenExtractors[key] = struct{}{}
+		extractors = append(extractors, extractor)
+	}
+	ma.Extractors = extractors
+
+	rules := make([]MultimodalAdapterRule, 0, len(ma.Rules))
+	for _, rule := range ma.Rules {
+		rule.Name = strings.TrimSpace(rule.Name)
+		rule.Extractor = strings.TrimSpace(rule.Extractor)
+		if rule.Extractor == "" {
+			rule.Extractor = firstMultimodalExtractorName(extractors)
+		}
+		rule.Action = normalizeMultimodalAdapterAction(rule.Action)
+		if strings.TrimSpace(rule.UnavailableAction) != "" {
+			rule.UnavailableAction = normalizeMultimodalUnavailableAction(rule.UnavailableAction)
+		}
+		rule.InjectAs = strings.TrimSpace(rule.InjectAs)
+		rule.Match.RequestedModels = normalizePolicyValues(rule.Match.RequestedModels, false)
+		rule.Match.UpstreamProviders = normalizePolicyValues(rule.Match.UpstreamProviders, true)
+		rule.Match.UpstreamModels = normalizePolicyValues(rule.Match.UpstreamModels, false)
+		rule.Match.Protocols = normalizePolicyValues(rule.Match.Protocols, true)
+		if len(rule.Match.RequestedModels) == 0 && len(rule.Match.UpstreamProviders) == 0 && len(rule.Match.UpstreamModels) == 0 && len(rule.Match.Protocols) == 0 {
+			continue
+		}
+		rules = append(rules, rule)
+	}
+	if len(rules) == 0 {
+		rules = []MultimodalAdapterRule{
+			{
+				Name:      "glm-5.1-codex-vision",
+				Extractor: firstMultimodalExtractorName(extractors),
+				Match: MultimodalAdapterMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"bigmodel-coding"},
+					UpstreamModels:    []string{"glm-5.1"},
+					Protocols:         []string{"openai-response", "openai"},
+				},
+			},
+		}
+	}
+	ma.Rules = rules
+}
+
+func normalizeMultimodalAdapterAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "extract", "mcp-extract", "http-extract":
+		return "extract"
+	case "reject":
+		return "reject"
+	case "strip":
+		return "strip"
+	default:
+		return "extract"
+	}
+}
+
+func normalizeMultimodalUnavailableAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "strip":
+		return "strip"
+	case "pass-through":
+		return "pass-through"
+	default:
+		return "reject"
+	}
+}
+
+func firstMultimodalExtractorName(extractors []MultimodalExtractorConfig) string {
+	if len(extractors) == 0 {
+		return ""
+	}
+	return extractors[0].Name
 }
 
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.
@@ -898,6 +1504,8 @@ func (cfg *Config) SanitizeCodexKeys() {
 		e := cfg.CodexKey[i]
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		e.ProxyURL = strings.TrimSpace(e.ProxyURL)
+		e.ProxyID = strings.TrimSpace(e.ProxyID)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
 		if e.BaseURL == "" {
@@ -908,21 +1516,59 @@ func (cfg *Config) SanitizeCodexKeys() {
 	cfg.CodexKey = out
 }
 
-// SanitizeClaudeKeys normalizes headers for Claude credentials.
+// SanitizeClaudeKeys removes empty Claude API-key rows and normalizes headers.
 func (cfg *Config) SanitizeClaudeKeys() {
 	if cfg == nil || len(cfg.ClaudeKey) == 0 {
 		return
 	}
+	out := make([]ClaudeKey, 0, len(cfg.ClaudeKey))
 	for i := range cfg.ClaudeKey {
-		entry := &cfg.ClaudeKey[i]
+		entry := cfg.ClaudeKey[i]
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		if entry.APIKey == "" {
+			continue
+		}
+		entry.Name = strings.TrimSpace(entry.Name)
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		out = append(out, entry)
 	}
+	cfg.ClaudeKey = out
+}
+
+// SanitizeOpenCodeGoKeys deduplicates and normalizes OpenCode Go credentials.
+func (cfg *Config) SanitizeOpenCodeGoKeys() {
+	if cfg == nil || len(cfg.OpenCodeGoKey) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(cfg.OpenCodeGoKey))
+	out := make([]OpenCodeGoKey, 0, len(cfg.OpenCodeGoKey))
+	for i := range cfg.OpenCodeGoKey {
+		entry := cfg.OpenCodeGoKey[i]
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		if entry.APIKey == "" {
+			continue
+		}
+		if _, exists := seen[entry.APIKey]; exists {
+			continue
+		}
+		seen[entry.APIKey] = struct{}{}
+		entry.Name = strings.TrimSpace(entry.Name)
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
+		entry.Headers = NormalizeHeaders(entry.Headers)
+		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		out = append(out, entry)
+	}
+	cfg.OpenCodeGoKey = out
 }
 
 // SanitizeGeminiKeys deduplicates and normalizes Gemini credentials.
-// It uses API key + base URL as the uniqueness key.
 func (cfg *Config) SanitizeGeminiKeys() {
 	if cfg == nil {
 		return
@@ -939,13 +1585,13 @@ func (cfg *Config) SanitizeGeminiKeys() {
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
 		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
-		uniqueKey := entry.APIKey + "|" + entry.BaseURL
-		if _, exists := seen[uniqueKey]; exists {
+		if _, exists := seen[entry.APIKey]; exists {
 			continue
 		}
-		seen[uniqueKey] = struct{}{}
+		seen[entry.APIKey] = struct{}{}
 		out = append(out, entry)
 	}
 	cfg.GeminiKey = out
@@ -1243,7 +1889,10 @@ func mergeMappingPreserve(dst, src *yaml.Node, path ...[]string) {
 			// New key: only add if value is non-zero and not a known default
 			candidate := deepCopyNode(sv)
 			pruneKnownDefaultsInNewNode(childPath, candidate)
-			if isKnownDefaultValue(childPath, candidate) {
+			if (candidate.Kind == yaml.MappingNode || candidate.Kind == yaml.SequenceNode) && len(candidate.Content) == 0 {
+				continue
+			}
+			if candidate.Kind != yaml.MappingNode && candidate.Kind != yaml.SequenceNode && isKnownDefaultValue(childPath, candidate) {
 				continue
 			}
 			dst.Content = append(dst.Content, deepCopyNode(sk), candidate)
@@ -1348,18 +1997,18 @@ func appendPath(path []string, key string) []string {
 // represents a known default value that should not be written to the config file.
 // This prevents non-zero defaults from polluting the config.
 func isKnownDefaultValue(path []string, node *yaml.Node) bool {
-	// First check if it's a zero value
+	if len(path) == 0 {
+		return isZeroValueNode(node)
+	}
+
+	fullPath := strings.Join(path, ".")
+
+	// Zero values remain defaults for all other paths.
 	if isZeroValueNode(node) {
 		return true
 	}
 
 	// Match known non-zero defaults by exact dotted path.
-	if len(path) == 0 {
-		return false
-	}
-
-	fullPath := strings.Join(path, ".")
-
 	// Check string defaults
 	if node.Kind == yaml.ScalarNode && node.Tag == "!!str" {
 		switch fullPath {
@@ -1674,6 +2323,9 @@ func pruneMappingToGeneratedKeys(dstRoot, srcRoot *yaml.Node, key string) {
 	srcIdx := findMapKeyIndex(srcRoot, key)
 	if srcIdx < 0 {
 		// Keep an explicit empty mapping for oauth-model-alias when it was previously present.
+		//
+		// Rationale: LoadConfig runs MigrateOAuthModelAlias before unmarshalling. If the
+		// oauth-model-alias key is missing, migration will add the default antigravity aliases.
 		// When users delete the last channel from oauth-model-alias via the management API,
 		// we want that deletion to persist across hot reloads and restarts.
 		if key == "oauth-model-alias" {

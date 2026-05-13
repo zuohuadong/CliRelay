@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 )
 
 func TestRegisterManagementRoutes(t *testing.T) {
@@ -23,7 +23,7 @@ func TestRegisterManagementRoutes(t *testing.T) {
 	mockProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxyCalled = true
 		w.WriteHeader(200)
-		w.Write([]byte("proxied"))
+		_, _ = w.Write([]byte("proxied"))
 	}))
 	defer mockProxy.Close()
 
@@ -49,7 +49,6 @@ func TestRegisterManagementRoutes(t *testing.T) {
 		{"/api/meta", http.MethodGet},
 		{"/api/telemetry", http.MethodGet},
 		{"/api/threads", http.MethodGet},
-		{"/api/thread-actors", http.MethodPost},
 		{"/threads/", http.MethodGet},
 		{"/threads.rss", http.MethodGet}, // Root-level route (no /api prefix)
 		{"/api/otel", http.MethodGet},

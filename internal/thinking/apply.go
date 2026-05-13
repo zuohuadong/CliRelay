@@ -4,7 +4,7 @@ package thinking
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -16,6 +16,7 @@ var providerAppliers = map[string]ProviderApplier{
 	"claude":      nil,
 	"openai":      nil,
 	"codex":       nil,
+	"iflow":       nil,
 	"antigravity": nil,
 	"kimi":        nil,
 }
@@ -62,7 +63,7 @@ func IsUserDefinedModel(modelInfo *registry.ModelInfo) bool {
 //   - body: Original request body JSON
 //   - model: Model name, optionally with thinking suffix (e.g., "claude-sonnet-4-5(16384)")
 //   - fromFormat: Source request format (e.g., openai, codex, gemini)
-//   - toFormat: Target provider format for the request body (gemini, gemini-cli, antigravity, claude, openai, codex, kimi)
+//   - toFormat: Target provider format for the request body (gemini, gemini-cli, antigravity, claude, openai, codex, iflow)
 //   - providerKey: Provider identifier used for registry model lookups (may differ from toFormat, e.g., openrouter -> openai)
 //
 // Returns:
@@ -256,10 +257,7 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 	if suffixResult.HasSuffix {
 		config = parseSuffixToConfig(suffixResult.RawSuffix, toFormat, modelID)
 	} else {
-		config = extractThinkingConfig(body, fromFormat)
-		if !hasThinkingConfig(config) && fromFormat != toFormat {
-			config = extractThinkingConfig(body, toFormat)
-		}
+		config = extractThinkingConfig(body, toFormat)
 	}
 
 	if !hasThinkingConfig(config) {
@@ -295,10 +293,7 @@ func normalizeUserDefinedConfig(config ThinkingConfig, fromFormat, toFormat stri
 	if config.Mode != ModeLevel {
 		return config
 	}
-	if toFormat == "claude" {
-		return config
-	}
-	if !isBudgetCapableProvider(toFormat) {
+	if !isBudgetBasedProvider(toFormat) || !isLevelBasedProvider(fromFormat) {
 		return config
 	}
 	budget, ok := ConvertLevelToBudget(string(config.Level))
@@ -326,6 +321,12 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 		return extractOpenAIConfig(body)
 	case "codex":
 		return extractCodexConfig(body)
+	case "iflow":
+		config := extractIFlowConfig(body)
+		if hasThinkingConfig(config) {
+			return config
+		}
+		return extractOpenAIConfig(body)
 	case "kimi":
 		// Kimi uses OpenAI-compatible reasoning_effort format
 		return extractOpenAIConfig(body)
@@ -351,26 +352,6 @@ func extractClaudeConfig(body []byte) ThinkingConfig {
 	thinkingType := gjson.GetBytes(body, "thinking.type").String()
 	if thinkingType == "disabled" {
 		return ThinkingConfig{Mode: ModeNone, Budget: 0}
-	}
-	if thinkingType == "adaptive" || thinkingType == "auto" {
-		// Claude adaptive thinking uses output_config.effort (low/medium/high/max).
-		// We only treat it as a thinking config when effort is explicitly present;
-		// otherwise we passthrough and let upstream defaults apply.
-		if effort := gjson.GetBytes(body, "output_config.effort"); effort.Exists() && effort.Type == gjson.String {
-			value := strings.ToLower(strings.TrimSpace(effort.String()))
-			if value == "" {
-				return ThinkingConfig{}
-			}
-			switch value {
-			case "none":
-				return ThinkingConfig{Mode: ModeNone, Budget: 0}
-			case "auto":
-				return ThinkingConfig{Mode: ModeAuto, Budget: -1}
-			default:
-				return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
-			}
-		}
-		return ThinkingConfig{}
 	}
 
 	// Check budget_tokens
@@ -452,13 +433,21 @@ func extractGeminiConfig(body []byte, provider string) ThinkingConfig {
 // extractOpenAIConfig extracts thinking configuration from OpenAI format request body.
 //
 // OpenAI API format:
-//   - reasoning_effort: "none", "low", "medium", "high" (discrete levels)
+//   - reasoning_effort: "none", "low", "medium", "high" (Chat Completions)
+//   - reasoning.effort: "none", "low", "medium", "high" (Responses)
 //
 // OpenAI uses level-based thinking configuration only, no numeric budget support.
 // The "none" value is treated specially to return ModeNone.
 func extractOpenAIConfig(body []byte) ThinkingConfig {
 	// Check reasoning_effort (OpenAI Chat Completions format)
 	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
+		value := effort.String()
+		if value == "none" {
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		}
+		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+	}
+	if effort := gjson.GetBytes(body, "reasoning.effort"); effort.Exists() {
 		value := effort.String()
 		if value == "none" {
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
@@ -483,6 +472,37 @@ func extractCodexConfig(body []byte) ThinkingConfig {
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
 		}
 		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+	}
+
+	return ThinkingConfig{}
+}
+
+// extractIFlowConfig extracts thinking configuration from iFlow format request body.
+//
+// iFlow API format (supports multiple model families):
+//   - GLM format: chat_template_kwargs.enable_thinking (boolean)
+//   - MiniMax format: reasoning_split (boolean)
+//
+// Returns ModeBudget with Budget=1 as a sentinel value indicating "enabled".
+// The actual budget/configuration is determined by the iFlow applier based on model capabilities.
+// Budget=1 is used because iFlow models don't use numeric budgets; they only support on/off.
+func extractIFlowConfig(body []byte) ThinkingConfig {
+	// GLM format: chat_template_kwargs.enable_thinking
+	if enabled := gjson.GetBytes(body, "chat_template_kwargs.enable_thinking"); enabled.Exists() {
+		if enabled.Bool() {
+			// Budget=1 is a sentinel meaning "enabled" (iFlow doesn't use numeric budgets)
+			return ThinkingConfig{Mode: ModeBudget, Budget: 1}
+		}
+		return ThinkingConfig{Mode: ModeNone, Budget: 0}
+	}
+
+	// MiniMax format: reasoning_split
+	if split := gjson.GetBytes(body, "reasoning_split"); split.Exists() {
+		if split.Bool() {
+			// Budget=1 is a sentinel meaning "enabled" (iFlow doesn't use numeric budgets)
+			return ThinkingConfig{Mode: ModeBudget, Budget: 1}
+		}
+		return ThinkingConfig{Mode: ModeNone, Budget: 0}
 	}
 
 	return ThinkingConfig{}

@@ -1,11 +1,19 @@
 package middleware
 
 import (
+	"bytes"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 )
 
 func TestShouldSkipMethodForRequestLogging(t *testing.T) {
@@ -134,5 +142,52 @@ func TestShouldCaptureRequestBody(t *testing.T) {
 		if got != tests[i].want {
 			t.Fatalf("%s: got %t, want %t", tests[i].name, got, tests[i].want)
 		}
+	}
+}
+
+type stubStreamingLogWriter struct{}
+
+func (stubStreamingLogWriter) WriteChunkAsync([]byte)                     {}
+func (stubStreamingLogWriter) WriteStatus(int, map[string][]string) error { return nil }
+func (stubStreamingLogWriter) WriteAPIRequest([]byte) error               { return nil }
+func (stubStreamingLogWriter) WriteAPIResponse([]byte) error              { return nil }
+func (stubStreamingLogWriter) SetFirstChunkTimestamp(time.Time)           {}
+func (stubStreamingLogWriter) Close() error                               { return nil }
+
+type stubRequestLogger struct{}
+
+func (stubRequestLogger) LogRequest(string, string, map[string][]string, []byte, int, map[string][]string, []byte, []byte, []byte, []*interfaces.ErrorMessage, string, time.Time, time.Time) error {
+	return nil
+}
+
+func (stubRequestLogger) LogStreamingRequest(string, string, map[string][]string, []byte, string) (logging.StreamingLogWriter, error) {
+	return stubStreamingLogWriter{}, nil
+}
+
+func (stubRequestLogger) IsEnabled() bool { return true }
+
+func TestRequestLoggingMiddlewareRejectsOversizedBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var reachedHandler bool
+	r := gin.New()
+	r.Use(RequestLoggingMiddleware(stubRequestLogger{}))
+	r.POST("/v1/chat/completions", func(c *gin.Context) {
+		reachedHandler = true
+		c.Status(http.StatusNoContent)
+	})
+
+	body := bytes.Repeat([]byte("a"), int(bodyutil.DefaultRequestBodyLimit)+1)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, w.Code)
+	}
+	if reachedHandler {
+		t.Fatal("request should have been rejected before reaching handler")
 	}
 }

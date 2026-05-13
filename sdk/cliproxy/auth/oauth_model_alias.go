@@ -3,8 +3,8 @@ package auth
 import (
 	"strings"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 )
 
 type modelAliasEntry interface {
@@ -16,6 +16,11 @@ type oauthModelAliasTable struct {
 	// reverse maps channel -> alias (lower) -> original upstream model name.
 	reverse map[string]map[string]string
 }
+
+const (
+	codexAutoReviewModel         = "codex-auto-review"
+	codexAutoReviewUpstreamModel = "gpt-5.5"
+)
 
 func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelAlias) *oauthModelAliasTable {
 	if len(aliases) == 0 {
@@ -75,102 +80,81 @@ func (m *Manager) SetOAuthModelAlias(aliases map[string][]internalconfig.OAuthMo
 func (m *Manager) applyOAuthModelAlias(auth *Auth, requestedModel string) string {
 	upstreamModel := m.resolveOAuthUpstreamModel(auth, requestedModel)
 	if upstreamModel == "" {
+		if modelAliasChannel(auth) != "" {
+			if builtIn := resolveBuiltInCodexModelAlias(auth, requestedModel); builtIn != "" {
+				return builtIn
+			}
+		}
 		return requestedModel
 	}
 	return upstreamModel
 }
 
-func modelAliasLookupCandidates(requestedModel string) (thinking.SuffixResult, []string) {
+func resolveBuiltInCodexModelAlias(auth *Auth, requestedModel string) string {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return ""
+	}
 	requestedModel = strings.TrimSpace(requestedModel)
 	if requestedModel == "" {
-		return thinking.SuffixResult{}, nil
+		return ""
 	}
+	parsed := thinking.ParseSuffix(requestedModel)
+	if !strings.EqualFold(strings.TrimSpace(parsed.ModelName), codexAutoReviewModel) {
+		return ""
+	}
+	if parsed.HasSuffix && parsed.RawSuffix != "" {
+		return codexAutoReviewUpstreamModel + "(" + parsed.RawSuffix + ")"
+	}
+	return codexAutoReviewUpstreamModel
+}
+
+func resolveModelAliasFromConfigModels(requestedModel string, models []modelAliasEntry) string {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" {
+		return ""
+	}
+	if len(models) == 0 {
+		return ""
+	}
+
 	requestResult := thinking.ParseSuffix(requestedModel)
 	base := requestResult.ModelName
-	if base == "" {
-		base = requestedModel
-	}
 	candidates := []string{base}
 	if base != requestedModel {
 		candidates = append(candidates, requestedModel)
 	}
-	return requestResult, candidates
-}
 
-func preserveResolvedModelSuffix(resolved string, requestResult thinking.SuffixResult) string {
-	resolved = strings.TrimSpace(resolved)
-	if resolved == "" {
-		return ""
-	}
-	if thinking.ParseSuffix(resolved).HasSuffix {
+	preserveSuffix := func(resolved string) string {
+		resolved = strings.TrimSpace(resolved)
+		if resolved == "" {
+			return ""
+		}
+		if thinking.ParseSuffix(resolved).HasSuffix {
+			return resolved
+		}
+		if requestResult.HasSuffix && requestResult.RawSuffix != "" {
+			return resolved + "(" + requestResult.RawSuffix + ")"
+		}
 		return resolved
 	}
-	if requestResult.HasSuffix && requestResult.RawSuffix != "" {
-		return resolved + "(" + requestResult.RawSuffix + ")"
-	}
-	return resolved
-}
 
-func resolveModelAliasPoolFromConfigModels(requestedModel string, models []modelAliasEntry) []string {
-	requestedModel = strings.TrimSpace(requestedModel)
-	if requestedModel == "" {
-		return nil
-	}
-	if len(models) == 0 {
-		return nil
-	}
-
-	requestResult, candidates := modelAliasLookupCandidates(requestedModel)
-	if len(candidates) == 0 {
-		return nil
-	}
-
-	out := make([]string, 0)
-	seen := make(map[string]struct{})
 	for i := range models {
 		name := strings.TrimSpace(models[i].GetName())
 		alias := strings.TrimSpace(models[i].GetAlias())
 		for _, candidate := range candidates {
-			if candidate == "" || alias == "" || !strings.EqualFold(alias, candidate) {
+			if candidate == "" {
 				continue
 			}
-			resolved := candidate
-			if name != "" {
-				resolved = name
+			if alias != "" && strings.EqualFold(alias, candidate) {
+				if name != "" {
+					return preserveSuffix(name)
+				}
+				return preserveSuffix(candidate)
 			}
-			resolved = preserveResolvedModelSuffix(resolved, requestResult)
-			key := strings.ToLower(strings.TrimSpace(resolved))
-			if key == "" {
-				break
+			if name != "" && strings.EqualFold(name, candidate) {
+				return preserveSuffix(name)
 			}
-			if _, exists := seen[key]; exists {
-				break
-			}
-			seen[key] = struct{}{}
-			out = append(out, resolved)
-			break
 		}
-	}
-	if len(out) > 0 {
-		return out
-	}
-
-	for i := range models {
-		name := strings.TrimSpace(models[i].GetName())
-		for _, candidate := range candidates {
-			if candidate == "" || name == "" || !strings.EqualFold(name, candidate) {
-				continue
-			}
-			return []string{preserveResolvedModelSuffix(name, requestResult)}
-		}
-	}
-	return nil
-}
-
-func resolveModelAliasFromConfigModels(requestedModel string, models []modelAliasEntry) string {
-	resolved := resolveModelAliasPoolFromConfigModels(requestedModel, models)
-	if len(resolved) > 0 {
-		return resolved[0]
 	}
 	return ""
 }
@@ -265,7 +249,7 @@ func modelAliasChannel(auth *Auth) string {
 // and auth kind. Returns empty string if the provider/authKind combination doesn't support
 // OAuth model alias (e.g., API key authentication).
 //
-// Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, kimi.
+// Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow, kimi.
 func OAuthModelAliasChannel(provider, authKind string) string {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	authKind = strings.ToLower(strings.TrimSpace(authKind))
@@ -289,7 +273,7 @@ func OAuthModelAliasChannel(provider, authKind string) string {
 			return ""
 		}
 		return "codex"
-	case "gemini-cli", "aistudio", "antigravity", "kimi":
+	case "gemini-cli", "aistudio", "antigravity", "qwen", "iflow", "kimi":
 		return provider
 	default:
 		return ""

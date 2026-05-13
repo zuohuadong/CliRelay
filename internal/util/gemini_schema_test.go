@@ -293,7 +293,9 @@ func TestCleanJSONSchemaForAntigravity_CyclicRefDefaults(t *testing.T) {
 	result := CleanJSONSchemaForAntigravity(input)
 
 	var resMap map[string]interface{}
-	json.Unmarshal([]byte(result), &resMap)
+	if err := json.Unmarshal([]byte(result), &resMap); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
 
 	if resMap["type"] != "object" {
 		t.Errorf("Expected type: object, got: %v", resMap["type"])
@@ -388,7 +390,9 @@ func TestCleanJSONSchemaForAntigravity_PropertyNameCollision(t *testing.T) {
 	compareJSON(t, expected, result)
 
 	var resMap map[string]interface{}
-	json.Unmarshal([]byte(result), &resMap)
+	if err := json.Unmarshal([]byte(result), &resMap); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
 	props, _ := resMap["properties"].(map[string]interface{})
 	if _, ok := props["description"]; ok {
 		t.Errorf("Invalid 'description' property injected into properties map")
@@ -1044,29 +1048,5 @@ func TestRemoveExtensionFields(t *testing.T) {
 			actual := removeExtensionFields(tt.input)
 			compareJSON(t, tt.expected, actual)
 		})
-	}
-}
-
-// uniqueItems should be stripped and moved to description hint (#2123).
-func TestCleanJSONSchemaForAntigravity_UniqueItemsStripped(t *testing.T) {
-	input := `{
-		"type": "object",
-		"properties": {
-			"ids": {
-				"type": "array",
-				"description": "Unique identifiers",
-				"items": {"type": "string"},
-				"uniqueItems": true
-			}
-		}
-	}`
-
-	result := CleanJSONSchemaForAntigravity(input)
-
-	if strings.Contains(result, `"uniqueItems"`) {
-		t.Errorf("uniqueItems should be removed from schema")
-	}
-	if !strings.Contains(result, "uniqueItems: true") {
-		t.Errorf("uniqueItems hint missing in description")
 	}
 }

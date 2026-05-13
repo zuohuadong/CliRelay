@@ -1,15 +1,18 @@
 package handlers
 
 import (
-	"net/http"
+	"context"
+	"net/http/httptest"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
 func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
@@ -102,7 +105,7 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			providers, model, errMsg := handler.getRequestDetails(tt.inputModel)
+			providers, model, errMsg := handler.getRequestDetails(context.Background(), tt.inputModel)
 			if (errMsg != nil) != tt.wantErr {
 				t.Fatalf("getRequestDetails() error = %v, wantErr %v", errMsg, tt.wantErr)
 			}
@@ -119,21 +122,128 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 	}
 }
 
-func TestGetRequestDetails_ImageModelReturns503(t *testing.T) {
+func TestGetRequestDetails_AllowedGroupResolvesPrefixedModelProvider(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	modelRegistry := registry.GetGlobalRegistry()
+	now := time.Now().Unix()
+	modelRegistry.RegisterClient("test-request-details-pro", "openai", []*registry.ModelInfo{
+		{ID: "pro/gpt-5", Created: now},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient("test-request-details-pro")
+	})
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Set("accessMetadata", map[string]string{"allowed-channel-groups": "pro"})
+	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
+
+	providers, model, errMsg := handler.getRequestDetails(ctx, "gpt-5")
+	if errMsg != nil {
+		t.Fatalf("getRequestDetails() unexpected error = %v", errMsg)
+	}
+	if !reflect.DeepEqual(providers, []string{"openai"}) {
+		t.Fatalf("providers = %v, want [openai]", providers)
+	}
+	if model != "gpt-5" {
+		t.Fatalf("model = %q, want gpt-5", model)
+	}
+}
+
+func TestGetRequestDetails_RegisteredOpenAICompatUpstreamModelsDoNotReturnUnknownProvider(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient("test-request-details-bigmodel", "bigmodel-coding", []*registry.ModelInfo{
+		{ID: "gpt-5.3-codex", Created: time.Now().Unix()},
+		{ID: "glm-5.1", Created: time.Now().Unix()},
+		{ID: "custom-public-model", Created: time.Now().Unix()},
+		{ID: "vendor/custom-model", Created: time.Now().Unix()},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient("test-request-details-bigmodel")
+	})
+
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
 
-	_, _, errMsg := handler.getRequestDetails("gpt-image-2")
+	for _, modelID := range []string{"glm-5.1", "vendor/custom-model"} {
+		t.Run(modelID, func(t *testing.T) {
+			providers, model, errMsg := handler.getRequestDetails(context.Background(), modelID)
+			if errMsg != nil {
+				t.Fatalf("getRequestDetails() unexpected error = %v", errMsg)
+			}
+			if !reflect.DeepEqual(providers, []string{"bigmodel-coding"}) {
+				t.Fatalf("providers = %v, want [bigmodel-coding]", providers)
+			}
+			if model != modelID {
+				t.Fatalf("model = %q, want %q", model, modelID)
+			}
+		})
+	}
+}
+
+func TestGetRequestDetails_RouteGroupRejectsConflictingModelPrefix(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Set(internalrouting.GinPathRouteContextKey, &internalrouting.PathRouteContext{
+		RoutePath: "/pro",
+		Group:     "pro",
+		Fallback:  "none",
+	})
+	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
+
+	_, _, errMsg := handler.getRequestDetails(ctx, "free/gpt-5")
 	if errMsg == nil {
-		t.Fatalf("expected error for gpt-image-2, got nil")
+		t.Fatal("expected model_prefix_conflict error")
 	}
-	if errMsg.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("unexpected status code: got %d want %d", errMsg.StatusCode, http.StatusServiceUnavailable)
+	if errMsg.StatusCode != 400 {
+		t.Fatalf("status = %d, want 400", errMsg.StatusCode)
 	}
-	if errMsg.Error == nil {
-		t.Fatalf("expected error message, got nil")
+}
+
+func TestRequestExecutionMetadata_UsesPathRouteContextFromRequestContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Request = httptest.NewRequest("POST", "/openai/plus/v1/responses", nil)
+	route := &internalrouting.PathRouteContext{
+		RoutePath: "/openai/plus",
+		Group:     "pro",
+		Fallback:  "none",
 	}
-	msg := errMsg.Error.Error()
-	if !strings.Contains(msg, "/v1/images/generations") || !strings.Contains(msg, "/v1/images/edits") {
-		t.Fatalf("unexpected error message: %q", msg)
+	ctx := internalrouting.WithPathRouteContext(context.Background(), route)
+	ctx = context.WithValue(ctx, util.ContextKeyGin, ginCtx)
+
+	meta := requestExecutionMetadata(ctx)
+	if got := meta["route_group"]; got != "pro" {
+		t.Fatalf("route_group = %v, want %q", got, "pro")
+	}
+	if got := meta["route_fallback"]; got != "none" {
+		t.Fatalf("route_fallback = %v, want %q", got, "none")
+	}
+}
+
+func TestRequestExecutionMetadata_UsesGinRequestContextPathRouteAfterHandleContextReset(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	route := &internalrouting.PathRouteContext{
+		RoutePath: "/openai/plus",
+		Group:     "pro",
+		Fallback:  "none",
+	}
+	req := httptest.NewRequest("POST", "/v1/responses", nil)
+	req = req.WithContext(internalrouting.WithPathRouteContext(req.Context(), route))
+
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Request = req
+
+	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
+	meta := requestExecutionMetadata(ctx)
+	if got := meta["route_group"]; got != "pro" {
+		t.Fatalf("route_group = %v, want %q", got, "pro")
+	}
+	if got := meta["route_fallback"]; got != "none" {
+		t.Fatalf("route_fallback = %v, want %q", got, "none")
 	}
 }

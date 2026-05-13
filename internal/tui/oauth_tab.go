@@ -23,7 +23,9 @@ var oauthProviders = []oauthProvider{
 	{"Claude (Anthropic)", "anthropic-auth-url", "🟧"},
 	{"Codex (OpenAI)", "codex-auth-url", "🟩"},
 	{"Antigravity", "antigravity-auth-url", "🟪"},
+	{"Qwen", "qwen-auth-url", "🟨"},
 	{"Kimi", "kimi-auth-url", "🟫"},
+	{"IFlow", "iflow-auth-url", "⬜"},
 }
 
 // oauthTabModel handles OAuth login flows.
@@ -76,9 +78,9 @@ type oauthCallbackSubmitMsg struct {
 
 func newOAuthTabModel(client *Client) oauthTabModel {
 	ti := textinput.New()
-	ti.Placeholder = "http://localhost:.../auth/callback?code=...&state=..."
+	ti.Placeholder = T("oauth_callback_placeholder")
 	ti.CharLimit = 2048
-	ti.Prompt = "  回调 URL: "
+	ti.Prompt = "  " + T("oauth_callback_url") + " "
 	return oauthTabModel{
 		client:        client,
 		callbackInput: ti,
@@ -92,6 +94,7 @@ func (m oauthTabModel) Init() tea.Cmd {
 func (m oauthTabModel) Update(msg tea.Msg) (oauthTabModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case localeChangedMsg:
+		m.refreshInputTexts()
 		m.viewport.SetContent(m.renderContent())
 		return m, nil
 	case oauthStartMsg:
@@ -246,13 +249,13 @@ func (m oauthTabModel) startOAuth(provider oauthProvider) tea.Cmd {
 		// Call the auth URL endpoint with is_webui=true
 		data, err := m.client.getJSON("/v0/management/" + provider.apiPath + "?is_webui=true")
 		if err != nil {
-			return oauthStartMsg{err: fmt.Errorf("failed to start %s login: %w", provider.name, err)}
+			return oauthStartMsg{err: fmt.Errorf(T("oauth_start_failed"), provider.name, err)}
 		}
 
 		authURL := getString(data, "url")
 		state := getString(data, "state")
 		if authURL == "" {
-			return oauthStartMsg{err: fmt.Errorf("no auth URL returned for %s", provider.name)}
+			return oauthStartMsg{err: fmt.Errorf(T("oauth_missing_auth_url"), provider.name)}
 		}
 
 		// Try to open browser (best effort)
@@ -260,6 +263,14 @@ func (m oauthTabModel) startOAuth(provider oauthProvider) tea.Cmd {
 
 		return oauthStartMsg{url: authURL, state: state, providerName: provider.name}
 	}
+}
+
+func (m *oauthTabModel) refreshInputTexts() {
+	if m == nil {
+		return
+	}
+	m.callbackInput.Prompt = "  " + T("oauth_callback_url") + " "
+	m.callbackInput.Placeholder = T("oauth_callback_placeholder")
 }
 
 func (m oauthTabModel) submitCallback(callbackURL string) tea.Cmd {
@@ -278,8 +289,12 @@ func (m oauthTabModel) submitCallback(callbackURL string) tea.Cmd {
 					providerKey = "codex"
 				case "antigravity-auth-url":
 					providerKey = "antigravity"
+				case "qwen-auth-url":
+					providerKey = "qwen"
 				case "kimi-auth-url":
 					providerKey = "kimi"
+				case "iflow-auth-url":
+					providerKey = "iflow"
 				}
 				break
 			}

@@ -85,6 +85,7 @@ func (m keysTabModel) fetchKeys() tea.Msg {
 func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case localeChangedMsg:
+		m.refreshInputPrompt()
 		m.viewport.SetContent(m.renderContent())
 		return m, nil
 	case keysDataMsg:
@@ -339,13 +340,13 @@ func (m keysTabModel) renderContent() string {
 	sb.WriteString("\n")
 
 	// ━━━ Provider Keys (read-only display) ━━━
-	renderProviderKeys(&sb, "Gemini API Keys", m.gemini)
-	renderProviderKeys(&sb, "Claude API Keys", m.claude)
-	renderProviderKeys(&sb, "Codex API Keys", m.codex)
-	renderProviderKeys(&sb, "Vertex API Keys", m.vertex)
+	renderProviderKeys(&sb, "provider_gemini_api_keys", m.gemini)
+	renderProviderKeys(&sb, "provider_claude_api_keys", m.claude)
+	renderProviderKeys(&sb, "provider_codex_api_keys", m.codex)
+	renderProviderKeys(&sb, "provider_vertex_api_keys", m.vertex)
 
 	if len(m.openai) > 0 {
-		renderSection(&sb, "OpenAI Compatibility", len(m.openai))
+		renderSection(&sb, "provider_openai_compatibility", len(m.openai))
 		for i, entry := range m.openai {
 			name := getString(entry, "name")
 			baseURL := getString(entry, "base-url")
@@ -370,17 +371,17 @@ func (m keysTabModel) renderContent() string {
 	return sb.String()
 }
 
-func renderSection(sb *strings.Builder, title string, count int) {
-	header := fmt.Sprintf("%s (%d)", title, count)
+func renderSection(sb *strings.Builder, titleKey string, count int) {
+	header := fmt.Sprintf("%s (%d)", T(titleKey), count)
 	sb.WriteString(tableHeaderStyle.Render("  " + header))
 	sb.WriteString("\n")
 }
 
-func renderProviderKeys(sb *strings.Builder, title string, keys []map[string]any) {
+func renderProviderKeys(sb *strings.Builder, titleKey string, keys []map[string]any) {
 	if len(keys) == 0 {
 		return
 	}
-	renderSection(sb, title, len(keys))
+	renderSection(sb, titleKey, len(keys))
 	for i, key := range keys {
 		apiKey := getString(key, "api-key")
 		prefix := getString(key, "prefix")
@@ -402,4 +403,16 @@ func maskKey(key string) string {
 		return strings.Repeat("*", len(key))
 	}
 	return key[:4] + strings.Repeat("*", len(key)-8) + key[len(key)-4:]
+}
+
+func (m *keysTabModel) refreshInputPrompt() {
+	if m == nil {
+		return
+	}
+	switch {
+	case m.adding:
+		m.editInput.Prompt = T("new_key_prompt")
+	case m.editing:
+		m.editInput.Prompt = T("edit_key_prompt")
+	}
 }

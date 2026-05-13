@@ -5,15 +5,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -28,12 +32,174 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		c.JSON(200, gin.H{})
 		return
 	}
-	c.JSON(200, new(*h.cfg))
+	c.JSON(200, sanitizeConfigForAPI(h.cfg))
+}
+
+// maskKey masks an API key / secret, preserving first 6 and last 4 characters.
+func maskKey(key string) string {
+	if key == "" {
+		return ""
+	}
+	if len(key) <= 12 {
+		return "****"
+	}
+	return key[:6] + "****" + key[len(key)-4:]
+}
+
+// maskName masks a person's or channel's name, keeping the first rune + "***".
+func maskName(name string) string {
+	if name == "" {
+		return ""
+	}
+	runes := []rune(name)
+	if len(runes) <= 1 {
+		return "***"
+	}
+	return string(runes[0:1]) + "***"
+}
+
+// maskBaseURL masks a URL, preserving the scheme + host but replacing the path with /***.
+func maskBaseURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return "***"
+	}
+	return u.Scheme + "://" + u.Host + "/***"
+}
+
+// sanitizeConfigForAPI creates a sanitized copy of the config suitable for the management API.
+// It masks provider API keys, Redis passwords, user names, provider URLs/models, and other sensitive fields.
+func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
+	// Deep copy via JSON round-trip to avoid mutating the live config.
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return cfg // fallback to original on error
+	}
+	var copy config.Config
+	if err := json.Unmarshal(data, &copy); err != nil {
+		return cfg
+	}
+
+	// ── Infrastructure ──────────────────────────────────────────────────────
+
+	// Mask Redis password and address
+	if copy.Redis.Password != "" {
+		copy.Redis.Password = "***"
+	}
+	if copy.Redis.Addr != "" {
+		copy.Redis.Addr = "***"
+	}
+
+	// Mask pprof address
+	copy.Pprof.Addr = "***"
+
+	// Mask TLS cert/key paths
+	if copy.TLS.Cert != "" {
+		copy.TLS.Cert = "***"
+	}
+	if copy.TLS.Key != "" {
+		copy.TLS.Key = "***"
+	}
+
+	// ── Provider channels ──────────────────────────────────────────────────
+
+	// Mask Gemini API keys, names, URLs, and models
+	for i := range copy.GeminiKey {
+		copy.GeminiKey[i].APIKey = maskKey(copy.GeminiKey[i].APIKey)
+		copy.GeminiKey[i].Name = maskName(copy.GeminiKey[i].Name)
+		copy.GeminiKey[i].BaseURL = maskBaseURL(copy.GeminiKey[i].BaseURL)
+		copy.GeminiKey[i].ProxyURL = maskBaseURL(copy.GeminiKey[i].ProxyURL)
+		copy.GeminiKey[i].Models = nil
+		copy.GeminiKey[i].ExcludedModels = nil
+	}
+
+	// Mask Claude API keys, names, URLs, and models
+	for i := range copy.ClaudeKey {
+		copy.ClaudeKey[i].APIKey = maskKey(copy.ClaudeKey[i].APIKey)
+		copy.ClaudeKey[i].Name = maskName(copy.ClaudeKey[i].Name)
+		copy.ClaudeKey[i].BaseURL = maskBaseURL(copy.ClaudeKey[i].BaseURL)
+		copy.ClaudeKey[i].ProxyURL = maskBaseURL(copy.ClaudeKey[i].ProxyURL)
+		copy.ClaudeKey[i].Models = nil
+		copy.ClaudeKey[i].ExcludedModels = nil
+	}
+
+	// Mask Codex API keys, names, URLs, and models
+	for i := range copy.CodexKey {
+		copy.CodexKey[i].APIKey = maskKey(copy.CodexKey[i].APIKey)
+		copy.CodexKey[i].Name = maskName(copy.CodexKey[i].Name)
+		copy.CodexKey[i].BaseURL = maskBaseURL(copy.CodexKey[i].BaseURL)
+		copy.CodexKey[i].ProxyURL = maskBaseURL(copy.CodexKey[i].ProxyURL)
+		copy.CodexKey[i].Models = nil
+		copy.CodexKey[i].ExcludedModels = nil
+	}
+
+	// Mask OpenCode Go API keys, names, proxy URLs, and exclusions
+	for i := range copy.OpenCodeGoKey {
+		copy.OpenCodeGoKey[i].APIKey = maskKey(copy.OpenCodeGoKey[i].APIKey)
+		copy.OpenCodeGoKey[i].Name = maskName(copy.OpenCodeGoKey[i].Name)
+		copy.OpenCodeGoKey[i].ProxyURL = maskBaseURL(copy.OpenCodeGoKey[i].ProxyURL)
+		copy.OpenCodeGoKey[i].ExcludedModels = nil
+	}
+
+	// Mask OpenAI compatibility API keys, names, URLs, and models
+	for i := range copy.OpenAICompatibility {
+		copy.OpenAICompatibility[i].Name = maskName(copy.OpenAICompatibility[i].Name)
+		copy.OpenAICompatibility[i].BaseURL = maskBaseURL(copy.OpenAICompatibility[i].BaseURL)
+		copy.OpenAICompatibility[i].Models = nil
+		for j := range copy.OpenAICompatibility[i].APIKeyEntries {
+			copy.OpenAICompatibility[i].APIKeyEntries[j].APIKey = maskKey(copy.OpenAICompatibility[i].APIKeyEntries[j].APIKey)
+			copy.OpenAICompatibility[i].APIKeyEntries[j].ProxyURL = maskBaseURL(copy.OpenAICompatibility[i].APIKeyEntries[j].ProxyURL)
+		}
+	}
+
+	// Mask Vertex API keys, URLs, and models
+	for i := range copy.VertexCompatAPIKey {
+		copy.VertexCompatAPIKey[i].APIKey = maskKey(copy.VertexCompatAPIKey[i].APIKey)
+		copy.VertexCompatAPIKey[i].BaseURL = maskBaseURL(copy.VertexCompatAPIKey[i].BaseURL)
+		copy.VertexCompatAPIKey[i].ProxyURL = maskBaseURL(copy.VertexCompatAPIKey[i].ProxyURL)
+		copy.VertexCompatAPIKey[i].Models = nil
+	}
+
+	// ── Amp module ──────────────────────────────────────────────────────────
+
+	copy.AmpCode.UpstreamURL = maskBaseURL(copy.AmpCode.UpstreamURL)
+	copy.AmpCode.UpstreamAPIKey = maskKey(copy.AmpCode.UpstreamAPIKey)
+	for i := range copy.AmpCode.UpstreamAPIKeys {
+		copy.AmpCode.UpstreamAPIKeys[i].UpstreamAPIKey = maskKey(copy.AmpCode.UpstreamAPIKeys[i].UpstreamAPIKey)
+	}
+	copy.AmpCode.ModelMappings = nil
+
+	// ── User-facing API keys ────────────────────────────────────────────────
+
+	for i := range copy.APIKeys {
+		copy.APIKeys[i] = maskKey(copy.APIKeys[i])
+	}
+	for i := range copy.APIKeyEntries {
+		copy.APIKeyEntries[i].Key = maskKey(copy.APIKeyEntries[i].Key)
+		copy.APIKeyEntries[i].Name = maskName(copy.APIKeyEntries[i].Name)
+	}
+
+	// ── OAuth model alias & excluded models (internal mapping, no reason to expose) ──
+	copy.OAuthModelAlias = nil
+	copy.OAuthExcludedModels = nil
+
+	// ── Global proxy URL ────────────────────────────────────────────────────
+	copy.ProxyURL = maskBaseURL(copy.ProxyURL)
+	for i := range copy.ProxyPool {
+		copy.ProxyPool[i].URL = maskProxyPoolURL(copy.ProxyPool[i].URL)
+	}
+
+	return &copy
 }
 
 type releaseInfo struct {
 	TagName string `json:"tag_name"`
 	Name    string `json:"name"`
+	Body    string `json:"body"`
+	HTMLURL string `json:"html_url"`
 }
 
 // GetLatestVersion returns the latest release version from GitHub without downloading assets.
@@ -45,6 +211,10 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 	}
 	if proxyURL != "" {
 		sdkCfg := &sdkconfig.SDKConfig{ProxyURL: proxyURL}
+		if h != nil && h.cfg != nil {
+			sdkCfg.InsecureSkipVerify = h.cfg.InsecureSkipVerify
+			sdkCfg.CACert = h.cfg.CACert
+		}
 		util.SetProxy(sdkCfg, client)
 	}
 
@@ -109,8 +279,12 @@ func WriteConfig(path string, data []byte) error {
 }
 
 func (h *Handler) PutConfigYAML(c *gin.Context) {
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := bodyutil.ReadRequestBody(c, bodyutil.ConfigYAMLBodyLimit)
 	if err != nil {
+		if bodyutil.IsTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large", "message": "request body exceeds limit"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": "cannot read request body"})
 		return
 	}
@@ -146,6 +320,14 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
+	var auths []*coreauth.Auth
+	if h != nil && h.authManager != nil {
+		auths = h.authManager.List()
+	}
+	if err = validateRoutingAndAPIKeyRestrictions(&cfg, auths); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if WriteConfig(h.configFilePath, body) != nil {
@@ -158,12 +340,22 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "reload_failed", "message": err.Error()})
 		return
 	}
+	if usage.ConfigStoreAvailable() {
+		usage.PersistRuntimeSettingsPresentInYAML(newCfg, body)
+		usage.MigrateRuntimeSettingsFromConfig(newCfg, h.configFilePath)
+		usage.ApplyStoredRuntimeSettings(newCfg)
+		usage.ApplyStoredRoutingConfig(newCfg)
+		usage.ApplyStoredProxyPool(newCfg)
+	}
 	h.cfg = newCfg
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})
 }
 
 // GetConfigYAML returns the raw config.yaml file bytes without re-encoding.
 // It preserves comments and original formatting/styles.
+// When the SQLite config store is active, DB-backed sections (payload, routing,
+// api-keys, etc.) are merged back into the returned YAML so the management panel
+// can read and edit them seamlessly.
 func (h *Handler) GetConfigYAML(c *gin.Context) {
 	data, err := os.ReadFile(h.configFilePath)
 	if err != nil {
@@ -174,10 +366,18 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
 		return
 	}
+	// When the SQLite config store is active, DB-backed sections have been stripped
+	// from the YAML file. Merge them back from the in-memory config so the
+	// management panel can read and edit them.
+	if usage.ConfigStoreAvailable() {
+		h.mu.Lock()
+		cfg := h.cfg
+		h.mu.Unlock()
+		data = usage.MergeDBSettingsIntoYAML(data, cfg)
+	}
 	c.Header("Content-Type", "application/yaml; charset=utf-8")
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Content-Type-Options", "nosniff")
-	// Write raw bytes as-is
 	_, _ = c.Writer.Write(data)
 }
 

@@ -5,27 +5,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/geminicli"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
+	geminiAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/net/proxy"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
 
 const defaultAPICallTimeout = 60 * time.Second
-
 const (
-	geminiOAuthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
-	geminiOAuthClientSecret = "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"
+	managementAPICallResponseLimit    int64 = 4 << 20
+	managementOAuthTokenResponseLimit int64 = 64 << 10
 )
+
+var managementAPICallSlots = make(chan struct{}, 8)
 
 var geminiOAuthScopes = []string{
 	"https://www.googleapis.com/auth/cloud-platform",
@@ -33,12 +39,21 @@ var geminiOAuthScopes = []string{
 	"https://www.googleapis.com/auth/userinfo.profile",
 }
 
-const (
-	antigravityOAuthClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-	antigravityOAuthClientSecret = "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"
-)
-
 var antigravityOAuthTokenURL = "https://oauth2.googleapis.com/token"
+
+type claudeOAuthRefresher interface {
+	RefreshTokens(ctx context.Context, refreshToken string) (*claudeauth.ClaudeTokenData, error)
+}
+
+var newClaudeOAuthRefresher = func(cfg *config.Config) claudeOAuthRefresher {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	return claudeauth.NewClaudeAuth(cfg)
+}
+
+const kimiOAuthClientID = "17e5f671-d194-4dfb-9706-5516cb48c098"
+const kimiOAuthTokenURL = "https://auth.kimi.com/api/oauth/token"
 
 type apiCallRequest struct {
 	AuthIndexSnake  *string           `json:"auth_index"`
@@ -107,6 +122,11 @@ type apiCallResponse struct {
 //	  -H "Content-Type: application/json" \
 //	  -d '{"auth_index":"<AUTH_INDEX>","method":"POST","url":"https://api.example.com/v1/fetchAvailableModels","header":{"Authorization":"Bearer $TOKEN$","Content-Type":"application/json","User-Agent":"cliproxyapi"},"data":"{}"}'
 func (h *Handler) APICall(c *gin.Context) {
+	if !tryAcquireManagementSlot(c, managementAPICallSlots, "api-call") {
+		return
+	}
+	defer releaseManagementSlot(managementAPICallSlots)
+
 	var body apiCallRequest
 	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
@@ -186,9 +206,7 @@ func (h *Handler) APICall(c *gin.Context) {
 		req.Host = hostOverride
 	}
 
-	httpClient := &http.Client{
-		Timeout: defaultAPICallTimeout,
-	}
+	httpClient := util.NewHTTPClient(defaultAPICallTimeout)
 	httpClient.Transport = h.apiCallTransport(auth)
 
 	resp, errDo := httpClient.Do(req)
@@ -203,10 +221,17 @@ func (h *Handler) APICall(c *gin.Context) {
 		}
 	}()
 
-	respBody, errReadAll := io.ReadAll(resp.Body)
+	respBody, errReadAll := bodyutil.ReadAll(resp.Body, managementAPICallResponseLimit)
 	if errReadAll != nil {
+		if bodyutil.IsTooLarge(errReadAll) {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "upstream response too large"})
+			return
+		}
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
 		return
+	}
+	if errReconcile := h.reconcileCodexWhamUsagePlan(c.Request.Context(), auth, parsedURL, resp.StatusCode, respBody); errReconcile != nil {
+		log.WithError(errReconcile).Warn("failed to reconcile codex usage plan type")
 	}
 
 	c.JSON(http.StatusOK, apiCallResponse{
@@ -226,6 +251,94 @@ func firstNonEmptyString(values ...*string) string {
 		}
 	}
 	return ""
+}
+
+func (h *Handler) reconcileCodexWhamUsagePlan(ctx context.Context, auth *coreauth.Auth, parsedURL *url.URL, statusCode int, respBody []byte) error {
+	if h == nil || h.authManager == nil || auth == nil {
+		return nil
+	}
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return nil
+	}
+	if !isCodexWhamUsageURL(parsedURL) {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return nil
+	}
+
+	var payload struct {
+		PlanType string `json:"plan_type"`
+	}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return nil
+	}
+	planType := normalizeTagValue(payload.PlanType)
+	if planType == "" {
+		return nil
+	}
+
+	if auth.Metadata == nil {
+		return nil
+	}
+	changed := false
+	if currentType, _ := auth.Metadata["type"].(string); strings.TrimSpace(currentType) == "" {
+		auth.Metadata["type"] = "codex"
+		changed = true
+	}
+	currentPlanType := normalizeTagValue(metadataString(auth.Metadata, "plan_type", "planType"))
+	if currentPlanType != planType {
+		auth.Metadata["plan_type"] = planType
+		delete(auth.Metadata, "planType")
+		changed = true
+	}
+	if reconcileAuthExplicitDisplayTags(auth) {
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+
+	now := time.Now()
+	auth.UpdatedAt = now
+	_, err := h.authManager.Update(ctx, auth)
+	return err
+}
+
+func isCodexWhamUsageURL(parsedURL *url.URL) bool {
+	if parsedURL == nil {
+		return false
+	}
+	path := strings.TrimRight(parsedURL.EscapedPath(), "/")
+	return path == "/backend-api/wham/usage"
+}
+
+func reconcileAuthExplicitDisplayTags(auth *coreauth.Auth) bool {
+	if auth == nil || auth.Metadata == nil {
+		return false
+	}
+	currentTags, ok := metadataStringSliceWithPresence(auth.Metadata, "display_tags")
+	if !ok {
+		return false
+	}
+	reconciledTags := buildAuthTagPayload(auth).DisplayTags
+	if normalizedStringSlicesEqual(currentTags, reconciledTags) {
+		return false
+	}
+	auth.Metadata["display_tags"] = reconciledTags
+	return true
+}
+
+func normalizedStringSlicesEqual(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if normalizeTagValue(a[i]) != normalizeTagValue(b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func tokenValueForAuth(auth *coreauth.Auth) string {
@@ -262,8 +375,95 @@ func (h *Handler) resolveTokenForAuth(ctx context.Context, auth *coreauth.Auth) 
 		token, errToken := h.refreshAntigravityOAuthAccessToken(ctx, auth)
 		return token, errToken
 	}
+	if provider == "claude" || provider == "anthropic" {
+		token, errToken := h.refreshClaudeOAuthAccessToken(ctx, auth)
+		return token, errToken
+	}
+	if provider == "kimi" {
+		token, errToken := h.refreshKimiOAuthAccessToken(ctx, auth)
+		return token, errToken
+	}
 
 	return tokenValueForAuth(auth), nil
+}
+
+func (h *Handler) refreshClaudeOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if auth == nil {
+		return "", nil
+	}
+
+	metadata := auth.Metadata
+	if len(metadata) == 0 {
+		return "", fmt.Errorf("claude oauth metadata missing")
+	}
+
+	current := strings.TrimSpace(tokenValueFromMetadata(metadata))
+	if current != "" && !claudeTokenNeedsRefresh(metadata) {
+		return current, nil
+	}
+
+	refreshToken := stringValue(metadata, "refresh_token")
+	if refreshToken == "" {
+		return "", fmt.Errorf("claude refresh token missing")
+	}
+
+	refresher := newClaudeOAuthRefresher(h.claudeOAuthRefreshConfig(auth))
+	tokenData, errRefresh := refresher.RefreshTokens(ctx, refreshToken)
+	if errRefresh != nil {
+		return "", errRefresh
+	}
+	if tokenData == nil || strings.TrimSpace(tokenData.AccessToken) == "" {
+		return "", fmt.Errorf("claude oauth token refresh returned empty access_token")
+	}
+
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	auth.Metadata["access_token"] = strings.TrimSpace(tokenData.AccessToken)
+	if strings.TrimSpace(tokenData.RefreshToken) != "" {
+		auth.Metadata["refresh_token"] = strings.TrimSpace(tokenData.RefreshToken)
+	}
+	if strings.TrimSpace(tokenData.Email) != "" {
+		auth.Metadata["email"] = strings.TrimSpace(tokenData.Email)
+	}
+	if strings.TrimSpace(tokenData.Expire) != "" {
+		auth.Metadata["expired"] = strings.TrimSpace(tokenData.Expire)
+	}
+	auth.Metadata["type"] = "claude"
+	now := time.Now()
+	auth.Metadata["last_refresh"] = now.Format(time.RFC3339)
+
+	if h != nil && h.authManager != nil {
+		auth.LastRefreshedAt = now
+		auth.UpdatedAt = now
+		_, _ = h.authManager.Update(ctx, auth)
+	}
+
+	return strings.TrimSpace(tokenData.AccessToken), nil
+}
+
+func (h *Handler) claudeOAuthRefreshConfig(auth *coreauth.Auth) *config.Config {
+	var cfgCopy config.Config
+	if h != nil && h.cfg != nil {
+		cfgCopy = *h.cfg
+	}
+	if auth == nil {
+		return &cfgCopy
+	}
+
+	var proxyURL string
+	if h != nil && h.cfg != nil {
+		proxyURL = h.cfg.ResolveProxyURL(auth.ProxyID, auth.ProxyURL)
+	} else {
+		proxyURL = auth.ProxyURL
+	}
+	if trimmed := strings.TrimSpace(proxyURL); trimmed != "" {
+		cfgCopy.ProxyURL = trimmed
+	}
+	return &cfgCopy
 }
 
 func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
@@ -308,18 +508,27 @@ func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *corea
 		}
 	}
 
+	var cfg *config.Config
+	if h != nil {
+		cfg = h.cfg
+	}
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	clientID, clientSecret := geminiAuth.ResolveOAuthClientCredentials(cfg, base, metadata)
+	if strings.TrimSpace(clientID) == "" {
+		return "", fmt.Errorf("gemini oauth client-id missing (set config oauth-clients.gemini.client-id or env %s)", config.EnvGeminiOAuthClientID)
+	}
 	conf := &oauth2.Config{
-		ClientID:     geminiOAuthClientID,
-		ClientSecret: geminiOAuthClientSecret,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 		Scopes:       geminiOAuthScopes,
 		Endpoint:     google.Endpoint,
 	}
 
 	ctxToken := ctx
-	httpClient := &http.Client{
-		Timeout:   defaultAPICallTimeout,
-		Transport: h.apiCallTransport(auth),
-	}
+	httpClient := util.NewHTTPClient(defaultAPICallTimeout)
+	httpClient.Transport = h.apiCallTransport(auth)
 	ctxToken = context.WithValue(ctxToken, oauth2.HTTPClient, httpClient)
 
 	src := conf.TokenSource(ctxToken, &token)
@@ -364,8 +573,16 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 		tokenURL = "https://oauth2.googleapis.com/token"
 	}
 	form := url.Values{}
-	form.Set("client_id", antigravityOAuthClientID)
-	form.Set("client_secret", antigravityOAuthClientSecret)
+	cfg := h.cfg
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	clientID, clientSecret := cfg.OAuthClientCredentials(config.OAuthClientAntigravity)
+	if strings.TrimSpace(clientID) == "" {
+		return "", fmt.Errorf("antigravity oauth client-id missing (set config oauth-clients.antigravity.client-id or env %s)", config.EnvAntigravityOAuthClientID)
+	}
+	form.Set("client_id", clientID)
+	form.Set("client_secret", clientSecret)
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 
@@ -375,10 +592,8 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	httpClient := &http.Client{
-		Timeout:   defaultAPICallTimeout,
-		Transport: h.apiCallTransport(auth),
-	}
+	httpClient := util.NewHTTPClient(defaultAPICallTimeout)
+	httpClient.Transport = h.apiCallTransport(auth)
 	resp, errDo := httpClient.Do(req)
 	if errDo != nil {
 		return "", errDo
@@ -389,8 +604,11 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 		}
 	}()
 
-	bodyBytes, errRead := io.ReadAll(resp.Body)
+	bodyBytes, errRead := bodyutil.ReadAll(resp.Body, managementOAuthTokenResponseLimit)
 	if errRead != nil {
+		if bodyutil.IsTooLarge(errRead) {
+			return "", fmt.Errorf("antigravity oauth token refresh response too large")
+		}
 		return "", errRead
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
@@ -435,6 +653,116 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 	return strings.TrimSpace(tokenResp.AccessToken), nil
 }
 
+func (h *Handler) refreshKimiOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if auth == nil {
+		return "", nil
+	}
+
+	metadata := auth.Metadata
+	if len(metadata) == 0 {
+		return "", fmt.Errorf("kimi oauth metadata missing")
+	}
+
+	current := strings.TrimSpace(tokenValueFromMetadata(metadata))
+	expStr := stringValue(metadata, "expired")
+	if current != "" && expStr != "" {
+		if ts, errParse := time.Parse(time.RFC3339, strings.TrimSpace(expStr)); errParse == nil {
+			if time.Now().Add(30 * time.Second).Before(ts) {
+				return current, nil
+			}
+		}
+	}
+
+	refreshToken := stringValue(metadata, "refresh_token")
+	if refreshToken == "" {
+		return "", fmt.Errorf("kimi refresh token missing")
+	}
+
+	deviceID := stringValue(metadata, "device_id")
+
+	form := url.Values{}
+	form.Set("client_id", kimiOAuthClientID)
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, kimiOAuthTokenURL, strings.NewReader(form.Encode()))
+	if errReq != nil {
+		return "", errReq
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Msh-Platform", "cli-proxy-api")
+	if deviceID != "" {
+		req.Header.Set("X-Msh-Device-Id", deviceID)
+	}
+
+	httpClient := util.NewHTTPClient(30 * time.Second)
+	httpClient.Transport = h.apiCallTransport(auth)
+	resp, errDo := httpClient.Do(req)
+	if errDo != nil {
+		return "", errDo
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("response body close error: %v", errClose)
+		}
+	}()
+
+	bodyBytes, errRead := bodyutil.ReadAll(resp.Body, managementOAuthTokenResponseLimit)
+	if errRead != nil {
+		if bodyutil.IsTooLarge(errRead) {
+			return "", fmt.Errorf("kimi oauth token refresh response too large")
+		}
+		return "", errRead
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("kimi oauth token refresh failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+
+	var tokenResp struct {
+		AccessToken  string  `json:"access_token"`
+		RefreshToken string  `json:"refresh_token"`
+		ExpiresIn    float64 `json:"expires_in"`
+		TokenType    string  `json:"token_type"`
+	}
+	if errUnmarshal := json.Unmarshal(bodyBytes, &tokenResp); errUnmarshal != nil {
+		return "", errUnmarshal
+	}
+
+	if strings.TrimSpace(tokenResp.AccessToken) == "" {
+		return "", fmt.Errorf("kimi oauth token refresh returned empty access_token")
+	}
+
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	now := time.Now()
+	auth.Metadata["access_token"] = strings.TrimSpace(tokenResp.AccessToken)
+	if strings.TrimSpace(tokenResp.RefreshToken) != "" {
+		auth.Metadata["refresh_token"] = strings.TrimSpace(tokenResp.RefreshToken)
+	}
+	auth.Metadata["type"] = "kimi"
+	if deviceID != "" {
+		auth.Metadata["device_id"] = deviceID
+	}
+	if tokenResp.ExpiresIn > 0 {
+		auth.Metadata["expires_in"] = int64(tokenResp.ExpiresIn)
+		auth.Metadata["timestamp"] = now.UnixMilli()
+		auth.Metadata["expired"] = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
+	}
+
+	if h != nil && h.authManager != nil {
+		auth.LastRefreshedAt = now
+		auth.UpdatedAt = now
+		_, _ = h.authManager.Update(ctx, auth)
+	}
+
+	return strings.TrimSpace(tokenResp.AccessToken), nil
+}
+
 func antigravityTokenNeedsRefresh(metadata map[string]any) bool {
 	// Refresh a bit early to avoid requests racing token expiry.
 	const skew = 30 * time.Second
@@ -454,6 +782,23 @@ func antigravityTokenNeedsRefresh(metadata map[string]any) bool {
 		return !exp.After(time.Now().Add(skew))
 	}
 	return true
+}
+
+func claudeTokenNeedsRefresh(metadata map[string]any) bool {
+	// Refresh a bit early to avoid requests racing token expiry.
+	const skew = 30 * time.Second
+
+	if metadata == nil {
+		return true
+	}
+	for _, key := range []string{"expired", "expiry", "expires_at", "expiresAt"} {
+		if expStr, ok := metadata[key].(string); ok {
+			if ts, errParse := time.Parse(time.RFC3339, strings.TrimSpace(expStr)); errParse == nil {
+				return !ts.After(time.Now().Add(skew))
+			}
+		}
+	}
+	return false
 }
 
 func int64Value(raw any) int64 {
@@ -633,162 +978,77 @@ func (h *Handler) authByIndex(authIndex string) *coreauth.Auth {
 
 func (h *Handler) apiCallTransport(auth *coreauth.Auth) http.RoundTripper {
 	var proxyCandidates []string
-	if auth != nil {
-		if proxyStr := strings.TrimSpace(auth.ProxyURL); proxyStr != "" {
+	if h != nil && h.cfg != nil {
+		proxyID := ""
+		fallbackURL := ""
+		if auth != nil {
+			proxyID = auth.ProxyID
+			fallbackURL = auth.ProxyURL
+		}
+		if proxyStr := strings.TrimSpace(h.cfg.ResolveProxyURL(proxyID, fallbackURL)); proxyStr != "" {
 			proxyCandidates = append(proxyCandidates, proxyStr)
 		}
-		if h != nil && h.cfg != nil {
-			if proxyStr := strings.TrimSpace(proxyURLFromAPIKeyConfig(h.cfg, auth)); proxyStr != "" {
-				proxyCandidates = append(proxyCandidates, proxyStr)
-			}
-		}
-	}
-	if h != nil && h.cfg != nil {
-		if proxyStr := strings.TrimSpace(h.cfg.ProxyURL); proxyStr != "" {
+	} else if auth != nil {
+		if proxyStr := strings.TrimSpace(auth.ProxyURL); proxyStr != "" {
 			proxyCandidates = append(proxyCandidates, proxyStr)
 		}
 	}
 
+	var sdkCfg *config.SDKConfig
+	if h != nil && h.cfg != nil {
+		sdkCfg = &h.cfg.SDKConfig
+	}
 	for _, proxyStr := range proxyCandidates {
-		if transport := buildProxyTransport(proxyStr); transport != nil {
+		if transport := buildProxyTransport(proxyStr, sdkCfg); transport != nil {
 			return transport
 		}
 	}
 
-	transport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok || transport == nil {
-		return &http.Transport{Proxy: nil}
-	}
-	clone := transport.Clone()
-	clone.Proxy = nil
-	return clone
-}
-
-type apiKeyConfigEntry interface {
-	GetAPIKey() string
-	GetBaseURL() string
-}
-
-func resolveAPIKeyConfig[T apiKeyConfigEntry](entries []T, auth *coreauth.Auth) *T {
-	if auth == nil || len(entries) == 0 {
-		return nil
-	}
-	attrKey, attrBase := "", ""
-	if auth.Attributes != nil {
-		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
-		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
-	}
-	for i := range entries {
-		entry := &entries[i]
-		cfgKey := strings.TrimSpace((*entry).GetAPIKey())
-		cfgBase := strings.TrimSpace((*entry).GetBaseURL())
-		if attrKey != "" && attrBase != "" {
-			if strings.EqualFold(cfgKey, attrKey) && strings.EqualFold(cfgBase, attrBase) {
-				return entry
-			}
-			continue
-		}
-		if attrKey != "" && strings.EqualFold(cfgKey, attrKey) {
-			if cfgBase == "" || strings.EqualFold(cfgBase, attrBase) {
-				return entry
-			}
-		}
-		if attrKey == "" && attrBase != "" && strings.EqualFold(cfgBase, attrBase) {
-			return entry
-		}
-	}
-	if attrKey != "" {
-		for i := range entries {
-			entry := &entries[i]
-			if strings.EqualFold(strings.TrimSpace((*entry).GetAPIKey()), attrKey) {
-				return entry
-			}
-		}
-	}
 	return nil
 }
 
-func proxyURLFromAPIKeyConfig(cfg *config.Config, auth *coreauth.Auth) string {
-	if cfg == nil || auth == nil {
-		return ""
-	}
-	authKind, authAccount := auth.AccountInfo()
-	if !strings.EqualFold(strings.TrimSpace(authKind), "api_key") {
-		return ""
-	}
-
-	attrs := auth.Attributes
-	compatName := ""
-	providerKey := ""
-	if len(attrs) > 0 {
-		compatName = strings.TrimSpace(attrs["compat_name"])
-		providerKey = strings.TrimSpace(attrs["provider_key"])
-	}
-	if compatName != "" || strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") {
-		return resolveOpenAICompatAPIKeyProxyURL(cfg, auth, strings.TrimSpace(authAccount), providerKey, compatName)
-	}
-
-	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
-	case "gemini":
-		if entry := resolveAPIKeyConfig(cfg.GeminiKey, auth); entry != nil {
-			return strings.TrimSpace(entry.ProxyURL)
-		}
-	case "claude":
-		if entry := resolveAPIKeyConfig(cfg.ClaudeKey, auth); entry != nil {
-			return strings.TrimSpace(entry.ProxyURL)
-		}
-	case "codex":
-		if entry := resolveAPIKeyConfig(cfg.CodexKey, auth); entry != nil {
-			return strings.TrimSpace(entry.ProxyURL)
-		}
-	}
-	return ""
-}
-
-func resolveOpenAICompatAPIKeyProxyURL(cfg *config.Config, auth *coreauth.Auth, apiKey, providerKey, compatName string) string {
-	if cfg == nil || auth == nil {
-		return ""
-	}
-	apiKey = strings.TrimSpace(apiKey)
-	if apiKey == "" {
-		return ""
-	}
-	candidates := make([]string, 0, 3)
-	if v := strings.TrimSpace(compatName); v != "" {
-		candidates = append(candidates, v)
-	}
-	if v := strings.TrimSpace(providerKey); v != "" {
-		candidates = append(candidates, v)
-	}
-	if v := strings.TrimSpace(auth.Provider); v != "" {
-		candidates = append(candidates, v)
-	}
-
-	for i := range cfg.OpenAICompatibility {
-		compat := &cfg.OpenAICompatibility[i]
-		if compat.Disabled {
-			continue
-		}
-		for _, candidate := range candidates {
-			if candidate != "" && strings.EqualFold(strings.TrimSpace(candidate), compat.Name) {
-				for j := range compat.APIKeyEntries {
-					entry := &compat.APIKeyEntries[j]
-					if strings.EqualFold(strings.TrimSpace(entry.APIKey), apiKey) {
-						return strings.TrimSpace(entry.ProxyURL)
-					}
-				}
-				return ""
-			}
-		}
-	}
-	return ""
-}
-
-func buildProxyTransport(proxyStr string) *http.Transport {
-	transport, _, errBuild := proxyutil.BuildHTTPTransport(proxyStr)
-	if errBuild != nil {
-		log.WithError(errBuild).Debug("build proxy transport failed")
+func buildProxyTransport(proxyStr string, sdkCfg *config.SDKConfig) *http.Transport {
+	proxyStr = strings.TrimSpace(proxyStr)
+	if proxyStr == "" {
 		return nil
 	}
-	return transport
+
+	proxyURL, errParse := url.Parse(proxyStr)
+	if errParse != nil {
+		log.WithError(errParse).Debug("parse proxy URL failed")
+		return nil
+	}
+	if proxyURL.Scheme == "" || proxyURL.Host == "" {
+		log.Debug("proxy URL missing scheme/host")
+		return nil
+	}
+
+	if proxyURL.Scheme == "socks5" {
+		var proxyAuth *proxy.Auth
+		if proxyURL.User != nil {
+			username := proxyURL.User.Username()
+			password, _ := proxyURL.User.Password()
+			proxyAuth = &proxy.Auth{User: username, Password: password}
+		}
+		dialer, errSOCKS5 := proxy.SOCKS5("tcp", proxyURL.Host, proxyAuth, proxy.Direct)
+		if errSOCKS5 != nil {
+			log.WithError(errSOCKS5).Debug("create SOCKS5 dialer failed")
+			return nil
+		}
+		return &http.Transport{
+			Proxy: nil,
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return dialer.Dial(network, addr)
+			},
+		}
+	}
+
+	if proxyURL.Scheme == "http" || proxyURL.Scheme == "https" {
+		transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+		util.ApplyTLSConfig(transport, sdkCfg)
+		return transport
+	}
+
+	log.Debugf("unsupported proxy scheme: %s", proxyURL.Scheme)
+	return nil
 }

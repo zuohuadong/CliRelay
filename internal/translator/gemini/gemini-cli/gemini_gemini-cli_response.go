@@ -7,8 +7,8 @@ package geminiCLI
 import (
 	"bytes"
 	"context"
+	"fmt"
 
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/sjson"
 )
 
@@ -26,18 +26,19 @@ var dataTag = []byte("data:")
 //   - param: A pointer to a parameter object for the conversion (unused).
 //
 // Returns:
-//   - [][]byte: A slice of Gemini CLI-compatible JSON responses.
-func ConvertGeminiResponseToGeminiCLI(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) [][]byte {
+//   - []string: A slice of strings, each containing a Gemini CLI-compatible JSON response.
+func ConvertGeminiResponseToGeminiCLI(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []string {
 	if !bytes.HasPrefix(rawJSON, dataTag) {
-		return [][]byte{}
+		return []string{}
 	}
 	rawJSON = bytes.TrimSpace(rawJSON[5:])
 
 	if bytes.Equal(rawJSON, []byte("[DONE]")) {
-		return [][]byte{}
+		return []string{}
 	}
-	rawJSON, _ = sjson.SetRawBytes([]byte(`{"response":{}}`), "response", rawJSON)
-	return [][]byte{rawJSON}
+	json := `{"response": {}}`
+	rawJSON, _ = sjson.SetRawBytes([]byte(json), "response", rawJSON)
+	return []string{string(rawJSON)}
 }
 
 // ConvertGeminiResponseToGeminiCLINonStream converts a non-streaming Gemini response to a non-streaming Gemini CLI response.
@@ -49,12 +50,13 @@ func ConvertGeminiResponseToGeminiCLI(_ context.Context, _ string, originalReque
 //   - param: A pointer to a parameter object for the conversion (unused).
 //
 // Returns:
-//   - []byte: A Gemini CLI-compatible JSON response.
-func ConvertGeminiResponseToGeminiCLINonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
-	rawJSON, _ = sjson.SetRawBytes([]byte(`{"response":{}}`), "response", rawJSON)
-	return rawJSON
+//   - string: A Gemini CLI-compatible JSON response.
+func ConvertGeminiResponseToGeminiCLINonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) string {
+	json := `{"response": {}}`
+	rawJSON, _ = sjson.SetRawBytes([]byte(json), "response", rawJSON)
+	return string(rawJSON)
 }
 
-func GeminiCLITokenCount(ctx context.Context, count int64) []byte {
-	return translatorcommon.GeminiTokenCountJSON(count)
+func GeminiCLITokenCount(ctx context.Context, count int64) string {
+	return fmt.Sprintf(`{"totalTokens":%d,"promptTokensDetails":[{"modality":"TEXT","tokenCount":%d}]}`, count, count)
 }

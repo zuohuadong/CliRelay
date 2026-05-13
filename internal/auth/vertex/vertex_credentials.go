@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -30,10 +30,6 @@ type VertexCredentialStorage struct {
 
 	// Type is the provider identifier stored alongside credentials. Always "vertex".
 	Type string `json:"type"`
-
-	// Prefix optionally namespaces models for this credential (e.g., "teamA").
-	// This results in model names like "teamA/gemini-2.0-flash".
-	Prefix string `json:"prefix,omitempty"`
 }
 
 // SaveTokenToFile writes the credential payload to the given file path in JSON format.

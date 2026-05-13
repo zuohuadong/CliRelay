@@ -6,13 +6,19 @@ package cmd
 import (
 	"context"
 	"errors"
+	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/proxy"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -25,6 +31,46 @@ import (
 //   - configPath: The path to the configuration file
 //   - localPassword: Optional password accepted for local management requests
 func StartService(cfg *config.Config, configPath string, localPassword string) {
+	loc := config.ApplyTimeZone(cfg.Timezone)
+	dataDir := filepath.Join(filepath.Dir(configPath), "data")
+	_ = os.MkdirAll(dataDir, 0755)
+	dbPath := filepath.Join(dataDir, "usage.db")
+
+	// Migrate legacy usage.db from config directory to data/ subdirectory.
+	if oldPath := filepath.Join(filepath.Dir(configPath), "usage.db"); oldPath != dbPath {
+		if _, err := os.Stat(oldPath); err == nil {
+			if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+				if err := os.Rename(oldPath, dbPath); err != nil {
+					log.Warnf("usage: failed to migrate %s → %s: %v", oldPath, dbPath, err)
+				} else {
+					log.Infof("usage: migrated database from %s → %s", oldPath, dbPath)
+					// Also move WAL and SHM files if they exist.
+					for _, suffix := range []string{"-wal", "-shm"} {
+						if err := os.Rename(oldPath+suffix, dbPath+suffix); err != nil && !os.IsNotExist(err) {
+							log.Warnf("usage: failed to migrate %s: %v", oldPath+suffix, err)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if err := usage.InitDB(dbPath, cfg.RequestLogStorage, loc); err != nil {
+		log.Errorf("usage: failed to initialize SQLite: %v", err)
+	}
+	usage.MigrateAPIKeysFromConfig(cfg, configPath)
+	usage.MigrateAPIKeyPermissionProfilesFromYAML(configPath)
+	usage.MigrateRoutingConfigFromConfig(cfg, configPath)
+	usage.ApplyStoredRoutingConfig(cfg)
+	usage.MigrateProxyPoolFromConfig(cfg, configPath)
+	usage.ApplyStoredProxyPool(cfg)
+	usage.MigrateRuntimeSettingsFromConfig(cfg, configPath)
+	usage.ApplyStoredRuntimeSettings(cfg)
+	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey)
+	usage.SetTokenUsageCallback(middleware.RecordTokenUsage)
+	usage.InitRedis(cfg.Redis)
+	defer usage.StopRedis()
+
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath).
@@ -49,6 +95,26 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 		return
 	}
 
+	if cfg.IsProxyManagerEnabled() {
+		coreMgr := service.CoreAuthManager()
+		var authStore proxy.AuthStore
+		if coreMgr != nil {
+			authStore = proxy.NewCoreManagerAuthStore(
+				coreMgr,
+				sdkAuth.GetTokenStore(),
+			)
+		}
+		pm := proxy.NewProxyManager(
+			cfg.ProxyManager,
+			&proxy.SQLitePoolMutator{},
+			authStore,
+			&cfg.SDKConfig,
+		)
+		service.RegisterProxyBanNotifier(pm)
+		service.AddServerOption(api.WithProxyManager(pm))
+		go pm.Start(runCtx)
+		log.Info("proxy manager enabled and started")
+	}
 	err = service.Run(runCtx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Errorf("proxy service exited with error: %v", err)
@@ -58,6 +124,44 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 // StartServiceBackground starts the proxy service in a background goroutine
 // and returns a cancel function for shutdown and a done channel.
 func StartServiceBackground(cfg *config.Config, configPath string, localPassword string) (cancel func(), done <-chan struct{}) {
+	loc := config.ApplyTimeZone(cfg.Timezone)
+	dataDir := filepath.Join(filepath.Dir(configPath), "data")
+	_ = os.MkdirAll(dataDir, 0755)
+	dbPath := filepath.Join(dataDir, "usage.db")
+
+	// Migrate legacy usage.db from config directory to data/ subdirectory.
+	if oldPath := filepath.Join(filepath.Dir(configPath), "usage.db"); oldPath != dbPath {
+		if _, err := os.Stat(oldPath); err == nil {
+			if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+				if err := os.Rename(oldPath, dbPath); err != nil {
+					log.Warnf("usage: failed to migrate %s → %s: %v", oldPath, dbPath, err)
+				} else {
+					log.Infof("usage: migrated database from %s → %s", oldPath, dbPath)
+					for _, suffix := range []string{"-wal", "-shm"} {
+						if err := os.Rename(oldPath+suffix, dbPath+suffix); err != nil && !os.IsNotExist(err) {
+							log.Warnf("usage: failed to migrate %s: %v", oldPath+suffix, err)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if err := usage.InitDB(dbPath, cfg.RequestLogStorage, loc); err != nil {
+		log.Errorf("usage: failed to initialize SQLite: %v", err)
+	}
+	usage.MigrateAPIKeysFromConfig(cfg, configPath)
+	usage.MigrateAPIKeyPermissionProfilesFromYAML(configPath)
+	usage.MigrateRoutingConfigFromConfig(cfg, configPath)
+	usage.ApplyStoredRoutingConfig(cfg)
+	usage.MigrateProxyPoolFromConfig(cfg, configPath)
+	usage.ApplyStoredProxyPool(cfg)
+	usage.MigrateRuntimeSettingsFromConfig(cfg, configPath)
+	usage.ApplyStoredRuntimeSettings(cfg)
+	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey)
+	usage.SetTokenUsageCallback(middleware.RecordTokenUsage)
+	usage.InitRedis(cfg.Redis)
+
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath).
@@ -73,8 +177,31 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 		return cancelFn, doneCh
 	}
 
+	// ProxyManager initialization for background mode
+	if cfg.IsProxyManagerEnabled() {
+		coreMgr := service.CoreAuthManager()
+		var authStore proxy.AuthStore
+		if coreMgr != nil {
+			authStore = proxy.NewCoreManagerAuthStore(
+				coreMgr,
+				sdkAuth.GetTokenStore(),
+			)
+		}
+		pm := proxy.NewProxyManager(
+			cfg.ProxyManager,
+			&proxy.SQLitePoolMutator{},
+			authStore,
+			&cfg.SDKConfig,
+		)
+		service.RegisterProxyBanNotifier(pm)
+		service.AddServerOption(api.WithProxyManager(pm))
+		go pm.Start(ctx)
+		log.Info("proxy manager enabled and started (background)")
+	}
+
 	go func() {
 		defer close(doneCh)
+		defer usage.StopRedis()
 		if err := service.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Errorf("proxy service exited with error: %v", err)
 		}

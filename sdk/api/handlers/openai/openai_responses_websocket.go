@@ -353,26 +353,32 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 
 	// Websocket v2 mode uses response.create with previous_response_id + incremental input.
 	// Do not expand it into a full input transcript; upstream expects the incremental payload.
+	// The upstream API requires previous_response_id to begin with "resp_"; IDs that do not
+	// match this format (e.g. internal Codex session IDs) are stripped so the request falls
+	// through to the transcript-merge path instead of being rejected upstream.
 	if allowIncrementalInputWithPreviousResponseID {
 		if prev := strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String()); prev != "" {
-			normalized, errDelete := sjson.DeleteBytes(rawJSON, "type")
-			if errDelete != nil {
-				normalized = bytes.Clone(rawJSON)
-			}
-			if !gjson.GetBytes(normalized, "model").Exists() {
-				modelName := strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
-				if modelName != "" {
-					normalized, _ = sjson.SetBytes(normalized, "model", modelName)
+			if strings.HasPrefix(prev, "resp_") {
+				normalized, errDelete := sjson.DeleteBytes(rawJSON, "type")
+				if errDelete != nil {
+					normalized = bytes.Clone(rawJSON)
 				}
-			}
-			if !gjson.GetBytes(normalized, "instructions").Exists() {
-				instructions := gjson.GetBytes(lastRequest, "instructions")
-				if instructions.Exists() {
-					normalized, _ = sjson.SetRawBytes(normalized, "instructions", []byte(instructions.Raw))
+				if !gjson.GetBytes(normalized, "model").Exists() {
+					modelName := strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
+					if modelName != "" {
+						normalized, _ = sjson.SetBytes(normalized, "model", modelName)
+					}
 				}
+				if !gjson.GetBytes(normalized, "instructions").Exists() {
+					instructions := gjson.GetBytes(lastRequest, "instructions")
+					if instructions.Exists() {
+						normalized, _ = sjson.SetRawBytes(normalized, "instructions", []byte(instructions.Raw))
+					}
+				}
+				normalized, _ = sjson.SetBytes(normalized, "stream", true)
+				return normalized, bytes.Clone(normalized), nil
 			}
-			normalized, _ = sjson.SetBytes(normalized, "stream", true)
-			return normalized, bytes.Clone(normalized), nil
+			log.Infof("responses websocket: stripping invalid previous_response_id (missing resp_ prefix): %s", prev)
 		}
 	}
 

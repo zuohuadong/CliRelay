@@ -2074,6 +2074,14 @@ func (m *Manager) GetByID(id string) (*Auth, bool) {
 	return auth.Clone(), true
 }
 
+// GetExecutionSessionAuthByID retrieves an execution-session scoped runtime auth.
+// This branch does not keep a separate Home runtime-auth cache yet, so callers
+// fall back to the regular auth store when no session-scoped auth is available.
+func (m *Manager) GetExecutionSessionAuthByID(sessionID string, authID string) (*Auth, bool) {
+	_ = strings.TrimSpace(sessionID)
+	return m.GetByID(strings.TrimSpace(authID))
+}
+
 // Executor returns the registered provider executor for a provider key.
 func (m *Manager) Executor(provider string) (ProviderExecutor, bool) {
 	if m == nil {
@@ -2187,15 +2195,21 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	selector := m.selectorForRoutingScopeLocked(cfg, routeGroup, allowedGroups)
-	selected, errPick := selector.Pick(ctx, provider, model, opts, candidates)
-	if errPick != nil {
-		m.mu.RUnlock()
-		return nil, nil, errPick
-	}
-	if selected == nil {
-		m.mu.RUnlock()
-		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+	var selected *Auth
+	if pinnedAuthID != "" {
+		selected = candidates[0]
+	} else {
+		selector := m.selectorForRoutingScopeLocked(cfg, routeGroup, allowedGroups)
+		picked, errPick := selector.Pick(ctx, provider, model, opts, candidates)
+		if errPick != nil {
+			m.mu.RUnlock()
+			return nil, nil, errPick
+		}
+		if picked == nil {
+			m.mu.RUnlock()
+			return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+		}
+		selected = picked
 	}
 	authCopy := selected.Clone()
 	m.mu.RUnlock()
@@ -2315,15 +2329,21 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		}
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	selector := m.selectorForRoutingScopeLocked(cfg, routeGroup, allowedGroups)
-	selected, errPick := selector.Pick(ctx, "mixed", model, opts, candidates)
-	if errPick != nil {
-		m.mu.RUnlock()
-		return nil, nil, "", errPick
-	}
-	if selected == nil {
-		m.mu.RUnlock()
-		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+	var selected *Auth
+	if pinnedAuthID != "" {
+		selected = candidates[0]
+	} else {
+		selector := m.selectorForRoutingScopeLocked(cfg, routeGroup, allowedGroups)
+		picked, errPick := selector.Pick(ctx, "mixed", model, opts, candidates)
+		if errPick != nil {
+			m.mu.RUnlock()
+			return nil, nil, "", errPick
+		}
+		if picked == nil {
+			m.mu.RUnlock()
+			return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+		}
+		selected = picked
 	}
 	providerKey := strings.TrimSpace(strings.ToLower(selected.Provider))
 	executor, okExecutor := m.executors[providerKey]

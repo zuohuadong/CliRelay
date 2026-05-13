@@ -66,6 +66,14 @@ CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
 
 see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
 
+## Management Panel Assets
+
+The backend only hosts `/manage` and syncs panel release assets. Configure
+`remote-management.panel-github-repository` to choose the panel repository, keep
+`remote-management.disable-control-panel` set to `false` to serve the panel, and
+set `remote-management.disable-auto-update-panel` to `true` only when you want to
+stop periodic background panel asset sync.
+
 ## Usage Statistics
 
 Since v6.10.0, CLIProxyAPI and [CPAMC](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) no longer ship built-in usage statistics. If you need usage statistics, use:
@@ -158,7 +166,7 @@ Windows desktop app built with Tauri + React for monitoring AI coding assistant 
 
 ### [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X)
 
-A lightweight web admin panel for CLIProxyAPI with health checks, resource monitoring, real-time logs, auto-update, request statistics and pricing display. Supports one-click installation and systemd service.
+A lightweight web admin panel for CLIProxyAPI with health checks, resource monitoring, real-time logs, request statistics and pricing display. Supports one-click installation and systemd service.
 
 ### [CLIProxyAPI Tray](https://github.com/kitephp/CLIProxyAPI_Tray)
 

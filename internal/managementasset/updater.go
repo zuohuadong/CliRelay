@@ -28,7 +28,7 @@ const (
 	defaultManagementReleaseURL  = "https://api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center/releases/latest"
 	defaultManagementFallbackURL = "https://cpamc.router-for.me/"
 	managementAssetName          = "management.html"
-	httpUserAgent                = "CLIProxyAPI-management-updater"
+	httpUserAgent                = "CLIProxyAPI-management-syncer"
 	managementSyncMinInterval    = 30 * time.Second
 	updateCheckInterval          = 3 * time.Hour
 	maxAssetDownloadSize         = 50 << 20 // 10 MB safety limit for management asset downloads
@@ -55,23 +55,23 @@ func SetCurrentConfig(cfg *config.Config) {
 	currentConfigPtr.Store(cfg)
 }
 
-// StartAutoUpdater launches a background goroutine that periodically ensures the management asset is up to date.
+// StartPanelAssetSyncer launches a background goroutine that periodically ensures the management asset is up to date.
 // It respects the disable-control-panel flag on every iteration and supports hot-reloaded configurations.
-func StartAutoUpdater(ctx context.Context, configFilePath string) {
+func StartPanelAssetSyncer(ctx context.Context, configFilePath string) {
 	configFilePath = strings.TrimSpace(configFilePath)
 	if configFilePath == "" {
-		log.Debug("management asset auto-updater skipped: empty config path")
+		log.Debug("management asset syncer skipped: empty config path")
 		return
 	}
 
 	schedulerConfigPath.Store(configFilePath)
 
 	schedulerOnce.Do(func() {
-		go runAutoUpdater(ctx)
+		go runPanelAssetSyncer(ctx)
 	})
 }
 
-func runAutoUpdater(ctx context.Context) {
+func runPanelAssetSyncer(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -82,15 +82,15 @@ func runAutoUpdater(ctx context.Context) {
 	runOnce := func() {
 		cfg := currentConfigPtr.Load()
 		if cfg == nil {
-			log.Debug("management asset auto-updater skipped: config not yet available")
+			log.Debug("management asset syncer skipped: config not yet available")
 			return
 		}
 		if cfg.RemoteManagement.DisableControlPanel {
-			log.Debug("management asset auto-updater skipped: control panel disabled")
+			log.Debug("management asset syncer skipped: control panel disabled")
 			return
 		}
 		if cfg.RemoteManagement.DisableAutoUpdatePanel {
-			log.Debug("management asset auto-updater skipped: disable-auto-update-panel is enabled")
+			log.Debug("management asset syncer skipped: disable-auto-update-panel is enabled")
 			return
 		}
 
@@ -273,7 +273,7 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			return nil, nil
 		}
 
-		log.Infof("management asset updated successfully (hash=%s)", downloadedHash)
+		log.Infof("management asset synced successfully (hash=%s)", downloadedHash)
 		return nil, nil
 	})
 
@@ -289,14 +289,14 @@ func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, loca
 	}
 
 	log.Warnf("management asset downloaded from fallback URL without digest verification (hash=%s) — "+
-		"enable verified GitHub updates by keeping disable-auto-update-panel set to false", downloadedHash)
+		"keep disable-auto-update-panel set to false to enable verified GitHub panel asset sync", downloadedHash)
 
 	if err = atomicWriteFile(localPath, data); err != nil {
 		log.WithError(err).Warn("failed to persist fallback management control panel page")
 		return false
 	}
 
-	log.Infof("management asset updated from fallback page successfully (hash=%s)", downloadedHash)
+	log.Infof("management asset synced from fallback page successfully (hash=%s)", downloadedHash)
 	return true
 }
 

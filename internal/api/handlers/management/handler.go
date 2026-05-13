@@ -461,6 +461,13 @@ func (h *Handler) SetProxyManager(pm *proxy.ProxyManager) {
 	h.proxyMgr = pm
 }
 
+func (h *Handler) NotifyProxyConfigReload(cfg *config.Config) {
+	if h == nil || h.proxyMgr == nil {
+		return
+	}
+	h.proxyMgr.OnConfigReload(cfg)
+}
+
 func (h *Handler) HasProxyManager() bool {
 	return h.proxyMgr != nil && h.proxyMgr.IsEnabled()
 }

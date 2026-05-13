@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/proxy"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
 	log "github.com/sirupsen/logrus"
 )
@@ -100,7 +101,7 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 		if coreMgr != nil {
 			authStore = proxy.NewCoreManagerAuthStore(
 				coreMgr,
-				nil,
+				sdkAuth.GetTokenStore(),
 			)
 		}
 		pm := proxy.NewProxyManager(
@@ -183,7 +184,7 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 		if coreMgr != nil {
 			authStore = proxy.NewCoreManagerAuthStore(
 				coreMgr,
-				nil,
+				sdkAuth.GetTokenStore(),
 			)
 		}
 		pm := proxy.NewProxyManager(

@@ -2,16 +2,15 @@ package proxy
 
 import (
 	"context"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 type CoreManagerAuthStore struct {
 	manager *coreauth.Manager
-	store   *auth.FileTokenStore
+	store   coreauth.Store
 }
 
-func NewCoreManagerAuthStore(manager *coreauth.Manager, store *auth.FileTokenStore) *CoreManagerAuthStore {
+func NewCoreManagerAuthStore(manager *coreauth.Manager, store coreauth.Store) *CoreManagerAuthStore {
 	return &CoreManagerAuthStore{
 		manager: manager,
 		store:   store,

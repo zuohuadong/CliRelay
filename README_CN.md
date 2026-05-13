@@ -79,7 +79,7 @@ OpenAI 兼容执行器增加了多模态适配、图片编辑转换、compact fa
 <a id="配置与运行时运维"></a>
 ### ⚙️ 配置与运行时运维
 
-扩展了上下文检索、多模态适配器、请求策略、Provider 偏好、OpenAI 兼容图片编辑模式、GPT-5.4 / GPT-5.5 1M 上下文模型注册、管理端认证限流、运行时设置持久化，以及容器/挂载配置下更安全的 updater 行为。
+扩展了上下文检索、多模态适配器、请求策略、Provider 偏好、OpenAI 兼容图片编辑模式、GPT-5.4 / GPT-5.5 1M 上下文模型注册、管理端认证限流、运行时设置持久化，以及容器/挂载配置下更安全的管理面板资源同步。
 
 <a id="cicd-与上游同步"></a>
 ### 🔄 CI/CD 与上游同步
@@ -90,7 +90,7 @@ OpenAI 兼容执行器增加了多模态适配、图片编辑转换、compact fa
 
 > **✨ 基于 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的深度增强版** — 补强了生产级管理层、Web 控制面板托管能力，以及面向日常运维的终端 TUI。
 
-CliRelay 会把 AI CLI 订阅、OAuth 凭据、API Key 以及兼容上游服务整合成一个可管理的 API 层。它可以让 Claude Code、Gemini CLI、OpenAI Codex、Amp CLI、OpenAI 兼容客户端等工具通过统一端点访问多类上游，同时围绕流量提供分组路由、故障转移、请求日志、配额管控、模型价格、生图配置、API Key 自助查询、在线更新、`/manage` Web 面板托管和终端管理流程。
+CliRelay 会把 AI CLI 订阅、OAuth 凭据、API Key 以及兼容上游服务整合成一个可管理的 API 层。它可以让 Claude Code、Gemini CLI、OpenAI Codex、Amp CLI、OpenAI 兼容客户端等工具通过统一端点访问多类上游，同时围绕流量提供分组路由、故障转移、请求日志、配额管控、模型价格、生图配置、API Key 自助查询、`/manage` Web 面板托管和终端管理流程。
 
 ```
 ┌───────────────────────┐         ┌──────────────┐         ┌────────────────────┐
@@ -169,11 +169,11 @@ CliRelay 会把 AI CLI 订阅、OAuth 凭据、API Key 以及兼容上游服务�
 
 | 特性 | 说明 |
 |:-----|:-----|
-| 🖥️ **可视化管理面板** | 在 `/manage` 中配置服务商、认证、API Key、模型、路由、日志、更新与系统状态 |
+| 🖥️ **可视化管理面板** | 在 `/manage` 中配置服务商、认证、API Key、模型、路由、日志与系统状态 |
 | 🌐 **中英文界面** | 管理面板内置 i18n，Docker Compose 和 TUI 也支持语言选择 |
 | 🌙 **Dark Mode** | 为长时间运维提供完整暗色主题 |
 | 🧬 **可视化配置编辑** | 可通过表单编辑运行时配置，也能切换到 YAML 源码视图精细控制 |
-| 🔄 **在线更新机制** | 在面板中检查版本、查看更新内容、触发 updater sidecar，并等待后端恢复 |
+| 🔄 **面板资源同步** | 从配置的面板 release 仓库同步 `/manage` 资源，不再与后端服务升级耦合 |
 | 📥 **CC Switch 导入** | 将 cc-switch 风格配置导入到可管理的模型/渠道工作区 |
 
 ### 🗄️ 数据持久化
@@ -239,15 +239,15 @@ CliRelay 可以在 `/manage` 暴露内置 Web 控制面板。服务端既可以�
 | :------------- |
 | <img src="docs/images/readme-showcase/cc-switch-import.png" width="100%" alt="cc switch 导入可配置" /> |
 
-### 模型、生图与更新
+### 模型与生图
 
 | OpenRouter 模型同步 | 自定义模型维护 |
 | :------------------ | :------------- |
 | <img src="docs/images/readme-showcase/model-openrouter-sync.png" width="100%" alt="从 OpenRouter 同步模型 ID 和价格" /> | <img src="docs/images/readme-showcase/custom-model-maintenance.png" width="100%" alt="支持高度自定义的模型维护" /> |
 
-| 生图配置 | 在线更新机制 |
-| :------- | :----------- |
-| <img src="docs/images/readme-showcase/image-generation-config.png" width="100%" alt="生图配置" /> | <img src="docs/images/readme-showcase/online-update.png" width="100%" alt="在线更新机制" /> |
+| 生图配置 |
+| :------- |
+| <img src="docs/images/readme-showcase/image-generation-config.png" width="100%" alt="生图配置" /> |
 
 | 系统信息 |
 | :------- |
@@ -274,7 +274,7 @@ CliRelay 可以在 `/manage` 暴露内置 Web 控制面板。服务端既可以�
 
 ### 🐳 使用 Docker Compose 安装
 
-Docker Compose 是 CliRelay 推荐的安装方式。仓库内的 `docker-compose.yml` 默认使用已发布的 `ghcr.io/kittors/clirelay:latest` 镜像，并同时启动 API 服务和 updater sidecar。
+Docker Compose 是 CliRelay 推荐的安装方式。仓库内的 `docker-compose.yml` 默认使用已发布的 `ghcr.io/kittors/clirelay:latest` 镜像，并启动 API 服务。
 
 ```bash
 git clone https://github.com/kittors/CliRelay.git
@@ -305,18 +305,18 @@ docker compose restart cli-proxy-api
 
 如果云平台只允许一个挂载目录，可以把 `AUTH_PATH` 设置为容器内的认证目录，例如 `/CLIProxyAPI/auths`。`CLI_PROXY_AUTH_PATH` 仍表示宿主机侧绑定路径，`AUTH_PATH` 会同时作为容器内挂载目标，并在运行时覆盖 `auth-dir`。
 
-如果不希望自动提示更新，可以在 `config.yaml` 中关闭，或在配置页关闭 **自动检查更新**：
+管理面板由后端托管，并可从 `remote-management.panel-github-repository` 同步 release 资源。如果只想停止后台周期性同步、但继续使用已有面板资源，可以设置：
 
 ```yaml
-auto-update:
-  enabled: false
+remote-management:
+  disable-auto-update-panel: true
 ```
 
-更新检查默认跟随稳定的 `main` Docker 镜像。如果你想测试 dev 构建，可以在 `config.yaml` 中设置 `channel: dev`，或在配置页的 **更新渠道** 中选择 **开发版（dev）**：
+如果要完全关闭管理面板路由，可以设置：
 
 ```yaml
-auto-update:
-  channel: dev
+remote-management:
+  disable-control-panel: true
 ```
 
 ### 🗄️ 开启数据持久化

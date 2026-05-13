@@ -521,7 +521,7 @@ func runServiceMode(cfg *config.Config, configFilePath, password string, mode cl
 		return
 	}
 	if !mode.tuiMode {
-		managementasset.StartAutoUpdater(context.Background(), configFilePath)
+		managementasset.StartPanelAssetSyncer(context.Background(), configFilePath)
 		cmd.StartService(cfg, configFilePath, password)
 		return
 	}
@@ -535,7 +535,7 @@ func runServiceMode(cfg *config.Config, configFilePath, password string, mode cl
 }
 
 func runStandaloneTUI(cfg *config.Config, configFilePath, password string) {
-	managementasset.StartAutoUpdater(context.Background(), configFilePath)
+	managementasset.StartPanelAssetSyncer(context.Background(), configFilePath)
 	hook := tui.NewLogHook(2000)
 	hook.SetFormatter(&logging.LogFormatter{})
 	log.AddHook(hook)

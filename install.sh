@@ -464,13 +464,7 @@ remote-management:
   allow-remote: ${CFG_REMOTE}
   secret-key: "${CFG_SECRET}"
   disable-control-panel: false
-
-auto-update:
-  enabled: true
-  channel: main
-  repository: https://github.com/kittors/CliRelay
-  docker-image: ghcr.io/kittors/clirelay
-  updater-url: http://clirelay-updater:8320
+  disable-auto-update-panel: false
 
 auth-dir: "/root/.cli-proxy-api"
 
@@ -498,10 +492,6 @@ CLIRELAY_LOCALE=${SCRIPT_LOCALE}
 CLIRELAY_LANG=$(lang_tag)
 CLIRELAY_LANGUAGE=$(language_tag)
 CLIRELAY_PORT=${CFG_PORT}
-CLIRELAY_UPDATE_CHANNEL=main
-CLIRELAY_UPDATER_URL=http://clirelay-updater:8320
-CLIRELAY_UPDATER_TOKEN=$(rand_hex 16)
-CLIRELAY_TARGET_SERVICE=clirelay
 CLIRELAY_COMPOSE_PROJECT_NAME=$(basename "${INSTALL_DIR}")
 CLI_PROXY_CONFIG_PATH=${INSTALL_DIR}/config.yaml
 CLI_PROXY_AUTH_PATH=${INSTALL_DIR}/auths
@@ -530,10 +520,6 @@ services:
     environment:
       TZ: ${TZ}
       CLIRELAY_LOCALE: ${CLIRELAY_LOCALE}
-      CLIRELAY_UPDATE_CHANNEL: ${CLIRELAY_UPDATE_CHANNEL}
-      CLIRELAY_UPDATER_URL: ${CLIRELAY_UPDATER_URL}
-      CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN}
-      CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE}
       AUTH_PATH: ${AUTH_PATH}
       LANG: ${CLIRELAY_LANG}
       LANGUAGE: ${CLIRELAY_LANGUAGE}
@@ -545,22 +531,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
-    restart: unless-stopped
-
-  clirelay-updater:
-    image: ${CLI_PROXY_IMAGE}
-    platform: ${CLI_PROXY_PLATFORM}
-    command: ["./clirelay-updater"]
-    environment:
-      CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN}
-      CLIRELAY_COMPOSE_FILE: ${CLIRELAY_INSTALL_DIR}/docker-compose.yml
-      CLIRELAY_ENV_FILE: ${CLIRELAY_INSTALL_DIR}/.env
-      CLIRELAY_COMPOSE_PROJECT_NAME: ${CLIRELAY_COMPOSE_PROJECT_NAME}
-      CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./docker-compose.yml:${CLIRELAY_INSTALL_DIR}/docker-compose.yml:ro
-      - ./.env:${CLIRELAY_INSTALL_DIR}/.env
     restart: unless-stopped
 YAML
 }

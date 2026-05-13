@@ -686,6 +686,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/ccswitch-import-configs", s.mgmt.PutCCSwitchImportConfigs)
 		mgmt.GET("/identity-fingerprint", s.mgmt.GetIdentityFingerprint)
 		mgmt.PUT("/identity-fingerprint", s.mgmt.PutIdentityFingerprint)
+		mgmt.PATCH("/identity-fingerprint", s.mgmt.PatchIdentityFingerprint)
 
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)

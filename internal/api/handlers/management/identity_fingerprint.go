@@ -1,7 +1,9 @@
 package management
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -35,8 +37,16 @@ func (h *Handler) GetIdentityFingerprint(c *gin.Context) {
 }
 
 func (h *Handler) PutIdentityFingerprint(c *gin.Context) {
-	var body config.IdentityFingerprintConfig
-	if err := c.ShouldBindJSON(&body); err != nil {
+	h.updateIdentityFingerprint(c, false)
+}
+
+func (h *Handler) PatchIdentityFingerprint(c *gin.Context) {
+	h.updateIdentityFingerprint(c, true)
+}
+
+func (h *Handler) updateIdentityFingerprint(c *gin.Context, merge bool) {
+	body, err := h.decodeIdentityFingerprintRequest(c, merge)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
@@ -66,6 +76,59 @@ func (h *Handler) PutIdentityFingerprint(c *gin.Context) {
 	h.mu.Unlock()
 
 	h.persist(c)
+}
+
+func (h *Handler) decodeIdentityFingerprintRequest(c *gin.Context, merge bool) (config.IdentityFingerprintConfig, error) {
+	var body config.IdentityFingerprintConfig
+	if merge {
+		h.mu.Lock()
+		if h.cfg != nil {
+			body = h.cfg.IdentityFingerprint
+		}
+		h.mu.Unlock()
+	}
+
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return body, err
+	}
+
+	source := raw
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return body, err
+	}
+	if nested, ok := top["identity-fingerprint"]; ok {
+		source = nested
+		if err := json.Unmarshal(nested, &top); err != nil {
+			return body, err
+		}
+	} else if nested, ok := top["identityFingerprint"]; ok {
+		source = nested
+		if err := json.Unmarshal(nested, &top); err != nil {
+			return body, err
+		}
+	}
+
+	var hasProvider bool
+	if rawCodex, ok := top["codex"]; ok {
+		if err := json.Unmarshal(rawCodex, &body.Codex); err != nil {
+			return body, err
+		}
+		hasProvider = true
+	}
+	if rawClaude, ok := top["claude"]; ok {
+		if err := json.Unmarshal(rawClaude, &body.Claude); err != nil {
+			return body, err
+		}
+		hasProvider = true
+	}
+	if !hasProvider {
+		if err := json.Unmarshal(source, &body); err != nil {
+			return body, err
+		}
+	}
+	return body, nil
 }
 
 func validateCodexIdentityFingerprint(fp config.CodexIdentityFingerprintConfig) error {

@@ -63,6 +63,63 @@ func TestApplyConfigReloadRefreshesModelRegistryForConfigAuths(t *testing.T) {
 	}
 }
 
+func TestApplyConfigReloadDropsDisabledOpenAICompatibleProviderModels(t *testing.T) {
+	cfg := &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:    "Compat Hot Reload",
+			BaseURL: "https://compat.example.com/v1",
+			Models: []config.OpenAICompatibilityModel{{
+				Name:  "upstream-compat-hot-reload-model",
+				Alias: "compat-hot-reload-model",
+			}},
+		}},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	service := &Service{cfg: cfg, coreManager: manager}
+	auth := &coreauth.Auth{
+		ID:       "compat-hot-reload-auth",
+		Provider: "compat hot reload",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind":    "apikey",
+			"compat_name":  "Compat Hot Reload",
+			"provider_key": "compat hot reload",
+			"source":       "config:compat hot reload[test]",
+		},
+	}
+	ctx := context.Background()
+	if _, err := manager.Register(ctx, auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		registry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(ctx, auth)
+	if !hasModelID(registry.GetAvailableModelsByProvider("compat hot reload"), "compat-hot-reload-model") {
+		t.Fatal("expected compatible provider model to be registered before config reload")
+	}
+
+	next := *cfg
+	next.OpenAICompatibility = []config.OpenAICompatibility{{
+		Name:     "Compat Hot Reload",
+		Disabled: true,
+		BaseURL:  "https://compat.example.com/v1",
+		Models: []config.OpenAICompatibilityModel{{
+			Name:  "upstream-compat-hot-reload-model",
+			Alias: "compat-hot-reload-model",
+		}},
+	}}
+	service.applyConfigReload(&next, true)
+
+	if hasModelID(registry.GetAvailableModelsByProvider("compat hot reload"), "compat-hot-reload-model") {
+		t.Fatal("expected model registry to drop disabled OpenAI-compatible provider models after config reload")
+	}
+}
+
 func hasModelID(models []*ModelInfo, id string) bool {
 	for _, model := range models {
 		if model != nil && strings.EqualFold(strings.TrimSpace(model.ID), id) {

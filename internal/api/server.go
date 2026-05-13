@@ -343,7 +343,11 @@ func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 		}
 		if c != nil && c.Request != nil {
 			path := c.Request.URL.Path
-			if strings.HasPrefix(path, "/v0/management/") || path == "/v0/management" || path == "/management.html" {
+			if strings.HasPrefix(path, "/v0/management/") ||
+				path == "/v0/management" ||
+				path == "/management.html" ||
+				path == "/manage" ||
+				strings.HasPrefix(path, "/manage/") {
 				c.Next()
 				return
 			}
@@ -372,6 +376,10 @@ func (s *Server) setupRoutes() {
 	s.engine.HEAD("/healthz", healthzHandler)
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.GET("/manage", func(c *gin.Context) {
+		c.Redirect(http.StatusFound, "/manage/")
+	})
+	s.engine.GET("/manage/*filepath", s.serveManagementControlPanelAsset)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -709,33 +717,83 @@ func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
 }
 
 func (s *Server) serveManagementControlPanel(c *gin.Context) {
-	cfg := s.cfg
-	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
-		c.AbortWithStatus(http.StatusNotFound)
+	if !s.ensureManagementControlPanel(c) {
 		return
 	}
+
 	filePath := managementasset.FilePath(s.configFilePath)
 	if strings.TrimSpace(filePath) == "" {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
 
+	c.File(filePath)
+}
+
+func (s *Server) serveManagementControlPanelAsset(c *gin.Context) {
+	if !s.ensureManagementControlPanel(c) {
+		return
+	}
+
+	requestedPath := strings.TrimPrefix(c.Param("filepath"), "/")
+	if requestedPath == "" {
+		c.File(managementasset.FilePath(s.configFilePath))
+		return
+	}
+
+	filePath, ok := managementasset.AssetPath(s.configFilePath, requestedPath)
+	if !ok {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	info, err := os.Stat(filePath)
+	if err == nil && !info.IsDir() {
+		c.File(filePath)
+		return
+	}
+	if err != nil && !os.IsNotExist(err) {
+		log.WithError(err).Error("failed to stat management control panel asset")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	if strings.HasPrefix(requestedPath, "assets/") {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	c.File(managementasset.FilePath(s.configFilePath))
+}
+
+func (s *Server) ensureManagementControlPanel(c *gin.Context) bool {
+	cfg := s.cfg
+	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
+		c.AbortWithStatus(http.StatusNotFound)
+		return false
+	}
+	filePath := managementasset.FilePath(s.configFilePath)
+	if strings.TrimSpace(filePath) == "" {
+		c.AbortWithStatus(http.StatusNotFound)
+		return false
+	}
+
 	if _, err := os.Stat(filePath); err != nil {
 		if os.IsNotExist(err) {
-			// Synchronously ensure management.html is available with a detached context.
+			// Synchronously ensure the panel asset is available with a detached context.
 			// Control panel bootstrap should not be canceled by client disconnects.
 			if !managementasset.EnsureLatestManagementHTML(context.Background(), managementasset.StaticDir(s.configFilePath), cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository) {
 				c.AbortWithStatus(http.StatusNotFound)
-				return
+				return false
 			}
 		} else {
 			log.WithError(err).Error("failed to stat management control panel asset")
 			c.AbortWithStatus(http.StatusInternalServerError)
-			return
+			return false
 		}
 	}
 
-	c.File(filePath)
+	return true
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {

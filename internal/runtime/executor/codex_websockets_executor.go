@@ -1168,10 +1168,21 @@ func parseCodexWebsocketErrorHeaders(payload []byte) http.Header {
 }
 
 func normalizeCodexWebsocketCompletion(payload []byte) []byte {
-	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.done" {
+	eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	if eventType == "response.done" {
 		updated, err := sjson.SetBytes(payload, "type", "response.completed")
 		if err == nil && len(updated) > 0 {
-			return updated
+			payload = updated
+			eventType = "response.completed"
+		}
+	}
+	if eventType == "response.created" || eventType == "response.in_progress" || eventType == "response.completed" {
+		responseID := strings.TrimSpace(gjson.GetBytes(payload, "response.id").String())
+		if responseID != "" && !strings.HasPrefix(responseID, "resp_") {
+			updated, err := sjson.SetBytes(payload, "response.id", "resp_"+responseID)
+			if err == nil && len(updated) > 0 {
+				payload = updated
+			}
 		}
 	}
 	return payload

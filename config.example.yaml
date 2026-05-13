@@ -369,8 +369,15 @@ nonstream-keepalive-interval: 0
 
 # Streaming behavior (SSE keep-alives + safe bootstrap retries).
 streaming:
-  keepalive-seconds: 15   # Default: 15. Set < 0 to disable keep-alives.
-  bootstrap-retries: 1    # Default: 1. Retries before first byte is sent.
+  keepalive-seconds: 15             # Default: 15. SSE heartbeat interval; set < 0 to disable.
+  websocket-keepalive-seconds: 15   # Default: 15. Downstream WebSocket ping interval; set < 0 to disable.
+  bootstrap-retries: 1              # Default: 1. Retries before first byte is sent.
+
+# Codex upstream Responses WebSocket timeouts.
+codex-websocket:
+  handshake-timeout-seconds: 30      # Default: 30. Upstream WebSocket handshake timeout.
+  first-message-timeout-seconds: 30  # Default: 30. Treat upstream as silent if no first event arrives.
+  idle-timeout-seconds: 1200         # Default: 1200. Established upstream WebSocket read idle timeout.
 
 # Gemini API keys
 # gemini-api-key:

@@ -44,6 +44,9 @@ type SDKConfig struct {
 	// Streaming configures server-side streaming behavior (keep-alives and safe bootstrap retries).
 	Streaming StreamingConfig `yaml:"streaming" json:"streaming"`
 
+	// CodexWebsocket configures Codex Responses WebSocket upstream transport timeouts.
+	CodexWebsocket CodexWebsocketConfig `yaml:"codex-websocket,omitempty" json:"codex-websocket,omitempty"`
+
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
@@ -195,10 +198,29 @@ type StreamingConfig struct {
 	// < 0 disables keep-alives. Default is 15.
 	KeepAliveSeconds int `yaml:"keepalive-seconds,omitempty" json:"keepalive-seconds,omitempty"`
 
+	// WebsocketKeepAliveSeconds controls how often the server emits downstream WebSocket ping frames.
+	// < 0 disables WebSocket pings. Default is 15.
+	WebsocketKeepAliveSeconds int `yaml:"websocket-keepalive-seconds,omitempty" json:"websocket-keepalive-seconds,omitempty"`
+
 	// BootstrapRetries controls how many times the server may retry a streaming request before any bytes are sent,
 	// to allow auth rotation / transient recovery.
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+}
+
+// CodexWebsocketConfig holds Codex upstream WebSocket timeout configuration.
+type CodexWebsocketConfig struct {
+	// HandshakeTimeoutSeconds controls the upstream WebSocket handshake timeout.
+	// <= 0 uses the default of 30 seconds.
+	HandshakeTimeoutSeconds int `yaml:"handshake-timeout-seconds,omitempty" json:"handshake-timeout-seconds,omitempty"`
+
+	// FirstMessageTimeoutSeconds controls how long to wait for the first upstream event.
+	// <= 0 uses the default of 30 seconds.
+	FirstMessageTimeoutSeconds int `yaml:"first-message-timeout-seconds,omitempty" json:"first-message-timeout-seconds,omitempty"`
+
+	// IdleTimeoutSeconds controls how long an established upstream WebSocket may stay silent.
+	// <= 0 uses the default of 20 minutes.
+	IdleTimeoutSeconds int `yaml:"idle-timeout-seconds,omitempty" json:"idle-timeout-seconds,omitempty"`
 }
 
 // APIKeyEntry represents an API key with optional metadata for advanced management.

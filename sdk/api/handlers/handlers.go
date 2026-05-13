@@ -60,6 +60,7 @@ const idempotencyKeyMetadataKey = "idempotency_key"
 
 const (
 	defaultStreamingKeepAliveSeconds = 15
+	defaultWebsocketKeepAliveSeconds = 15
 	defaultStreamingBootstrapRetries = 0
 )
 
@@ -202,6 +203,20 @@ func StreamingKeepAliveInterval(cfg *config.SDKConfig) time.Duration {
 		}
 	}
 	return time.Duration(defaultStreamingKeepAliveSeconds) * time.Second
+}
+
+// WebsocketKeepAliveInterval returns the downstream WebSocket ping interval.
+// Default is 15s. Set websocket-keepalive-seconds to a negative value in config to disable.
+func WebsocketKeepAliveInterval(cfg *config.SDKConfig) time.Duration {
+	if cfg != nil {
+		if cfg.Streaming.WebsocketKeepAliveSeconds < 0 {
+			return 0
+		}
+		if cfg.Streaming.WebsocketKeepAliveSeconds > 0 {
+			return time.Duration(cfg.Streaming.WebsocketKeepAliveSeconds) * time.Second
+		}
+	}
+	return time.Duration(defaultWebsocketKeepAliveSeconds) * time.Second
 }
 
 // NonStreamingKeepAliveInterval returns the keep-alive interval for non-streaming responses.

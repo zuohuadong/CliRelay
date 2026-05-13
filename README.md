@@ -79,7 +79,7 @@ Extends the OpenAI-compatible executor with multimodal adaptation, image edit co
 <a id="configuration-and-runtime-operations"></a>
 ### ⚙️ Configuration and Runtime Operations
 
-Adds config surface for context retrieval, multimodal adapters, request policies, provider preferences, OpenAI-compatible image edit modes, GPT-5.4 / GPT-5.5 1M-context registry updates, management auth-rate tuning, runtime settings persistence, and safer updater behavior in bind-mounted or containerized deployments.
+Adds config surface for context retrieval, multimodal adapters, request policies, provider preferences, OpenAI-compatible image edit modes, GPT-5.4 / GPT-5.5 1M-context registry updates, management auth-rate tuning, runtime settings persistence, and safer management panel asset sync in bind-mounted or containerized deployments.
 
 <a id="cicd-and-upstream-synchronization"></a>
 ### 🔄 CI/CD and Upstream Synchronization
@@ -90,7 +90,7 @@ Adds an upstream sync workflow for `kittors/CliRelay`, Docker publishing adjustm
 
 > **✨ Heavily enhanced fork of the [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) project** — rebuilt with a production-grade management layer, web control panel hosting, and a terminal TUI for day-2 operations.
 
-CliRelay turns AI CLI subscriptions, OAuth credentials, API keys, and compatible upstream services into one managed API layer. It proxies Claude Code, Gemini CLI, OpenAI Codex, Amp CLI, OpenAI-compatible clients, and other AI coding tools through a unified endpoint, then adds routing groups, failover, request logging, quota control, model pricing, image-generation support, API-key self-service, online updates, `/manage` web hosting, and terminal management workflows around that traffic.
+CliRelay turns AI CLI subscriptions, OAuth credentials, API keys, and compatible upstream services into one managed API layer. It proxies Claude Code, Gemini CLI, OpenAI Codex, Amp CLI, OpenAI-compatible clients, and other AI coding tools through a unified endpoint, then adds routing groups, failover, request logging, quota control, model pricing, image-generation support, API-key self-service, `/manage` web hosting, and terminal management workflows around that traffic.
 
 ```
 ┌───────────────────────┐         ┌──────────────┐         ┌────────────────────┐
@@ -169,11 +169,11 @@ CliRelay turns AI CLI subscriptions, OAuth credentials, API keys, and compatible
 
 | Feature | Description |
 |:--------|:------------|
-| 🖥️ **Visual Management Panel** | Configure providers, auth, API keys, models, routing, logs, updates, and system status from `/manage` |
+| 🖥️ **Visual Management Panel** | Configure providers, auth, API keys, models, routing, logs, and system status from `/manage` |
 | 🌐 **Chinese / English UI** | Built-in i18n for the management panel and Compose/TUI language selection |
 | 🌙 **Dark Mode** | Full dark theme for long-running operational sessions |
 | 🧬 **Visual Config Editor** | Edit runtime config visually or inspect source YAML when you need exact control |
-| 🔄 **Online Update Flow** | Check versions, review update notes, trigger the updater sidecar, and wait for backend recovery from the panel |
+| 🔄 **Panel Asset Sync** | Keep `/manage` assets synced from the configured panel release repository without coupling it to backend service upgrades |
 | 📥 **CC Switch Import** | Import cc-switch style configuration into the managed model/channel workspace |
 
 ### 🗄️ Data Persistence
@@ -239,15 +239,15 @@ The gallery below uses the latest supplied screenshots, covering the current end
 | :--------------- |
 | <img src="docs/images/readme-showcase/cc-switch-import.png" width="100%" alt="Configurable CC Switch import" /> |
 
-### Models, Image Generation & Updates
+### Models & Image Generation
 
 | OpenRouter model sync | Custom model maintenance |
 | :-------------------- | :----------------------- |
 | <img src="docs/images/readme-showcase/model-openrouter-sync.png" width="100%" alt="OpenRouter model ID and pricing sync" /> | <img src="docs/images/readme-showcase/custom-model-maintenance.png" width="100%" alt="Custom model maintenance" /> |
 
-| Image generation config | Online update flow |
-| :---------------------- | :----------------- |
-| <img src="docs/images/readme-showcase/image-generation-config.png" width="100%" alt="Image generation configuration" /> | <img src="docs/images/readme-showcase/online-update.png" width="100%" alt="Online update mechanism" /> |
+| Image generation config |
+| :---------------------- |
+| <img src="docs/images/readme-showcase/image-generation-config.png" width="100%" alt="Image generation configuration" /> |
 
 | System information |
 | :----------------- |
@@ -274,7 +274,7 @@ The gallery below uses the latest supplied screenshots, covering the current end
 
 ### 🐳 Install With Docker Compose
 
-Docker Compose is the recommended installation path for CliRelay. The included `docker-compose.yml` uses the published `ghcr.io/kittors/clirelay:latest` image by default and starts both the API service and updater sidecar.
+Docker Compose is the recommended installation path for CliRelay. The included `docker-compose.yml` uses the published `ghcr.io/kittors/clirelay:latest` image by default and starts the API service.
 
 ```bash
 git clone https://github.com/kittors/CliRelay.git
@@ -305,18 +305,18 @@ Set `CLIRELAY_LOCALE=en` or `CLIRELAY_LOCALE=zh` in your Compose environment to 
 
 For cloud platforms that only allow one mounted directory, set `AUTH_PATH` to the authentication directory inside the container, for example `/CLIProxyAPI/auths`. `CLI_PROXY_AUTH_PATH` remains the host-side bind path, while `AUTH_PATH` is also used to override `auth-dir` at runtime.
 
-To disable automatic update prompts, set the following in `config.yaml` or turn off **Automatic Update Checks** in the Config page:
+The management panel is served by the backend and can sync release assets from `remote-management.panel-github-repository`. To stop periodic background panel asset sync while still allowing the panel route to serve existing assets, set:
 
 ```yaml
-auto-update:
-  enabled: false
+remote-management:
+  disable-auto-update-panel: true
 ```
 
-Update checks follow the stable `main` Docker image by default. To test dev builds, set `channel: dev` in `config.yaml` or choose **Development (dev)** from **Update Channel** in the Config page:
+To disable the management panel route entirely, set:
 
 ```yaml
-auto-update:
-  channel: dev
+remote-management:
+  disable-control-panel: true
 ```
 
 ### 🗄️ Enabling Data Persistence

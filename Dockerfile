@@ -68,19 +68,14 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.FrontendRef=${FRONTEND_REF}'" \
   -o ./CLIProxyAPI ./cmd/server/
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
-  -ldflags="-s -w" \
-  -o ./clirelay-updater ./cmd/updater/
-
 # ── Runtime ──────────────────────────────────────────────────────────────────
 FROM alpine:3.22.0
 
-RUN apk add --no-cache tzdata ca-certificates docker-cli docker-cli-compose
+RUN apk add --no-cache tzdata ca-certificates
 
 RUN mkdir -p /CLIProxyAPI/panel
 
 COPY --from=backend-builder /app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
-COPY --from=backend-builder /app/clirelay-updater /CLIProxyAPI/clirelay-updater
 COPY --from=frontend-builder /frontend/dist/ /CLIProxyAPI/panel/
 
 COPY config.example.yaml /CLIProxyAPI/config.example.yaml

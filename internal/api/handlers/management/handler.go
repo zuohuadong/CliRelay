@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/proxy"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -175,6 +176,46 @@ func (h *Handler) SetLogDirectory(dir string) {
 // SetPostAuthHook registers a hook to be called after auth record creation but before persistence.
 func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
 	h.postAuthHook = hook
+}
+
+func (h *Handler) currentFrontendState() (string, string) {
+	version := strings.TrimSpace(buildinfo.FrontendVersion)
+	ref := strings.TrimSpace(buildinfo.FrontendRef)
+	commit := strings.TrimSpace(buildinfo.FrontendCommit)
+
+	if h != nil {
+		if meta, ok := managementasset.CurrentPanelMetadata(h.configFilePath); ok {
+			if meta.Version != "" {
+				version = strings.TrimSpace(meta.Version)
+			}
+			if meta.Ref != "" {
+				ref = strings.TrimSpace(meta.Ref)
+			}
+			if meta.Commit != "" {
+				commit = strings.TrimSpace(meta.Commit)
+			}
+		}
+	}
+
+	if version == "" || strings.EqualFold(version, "dev") {
+		version = panelDisplayVersion(ref, commit)
+	}
+	return version, commit
+}
+
+func panelDisplayVersion(ref string, commit string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		ref = "main"
+	}
+	short := strings.TrimSpace(commit)
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	if short == "" {
+		return "panel-" + ref
+	}
+	return "panel-" + ref + "-" + short
 }
 
 // Middleware enforces access control for management endpoints.

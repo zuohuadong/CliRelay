@@ -58,28 +58,28 @@ func SetCurrentConfig(cfg *config.Config) {
 	currentConfigPtr.Store(cfg)
 }
 
-// StartAutoUpdater launches a background goroutine that periodically ensures the management asset is up to date.
+// StartPanelAssetSyncer launches a background goroutine that periodically ensures the management asset is up to date.
 // It respects the disable-control-panel flag on every iteration and supports hot-reloaded configurations.
-func StartAutoUpdater(ctx context.Context, configFilePath string) {
+func StartPanelAssetSyncer(ctx context.Context, configFilePath string) {
 	configFilePath = strings.TrimSpace(configFilePath)
 	if configFilePath == "" {
-		log.Debug("management asset auto-updater skipped: empty config path")
+		log.Debug("management asset syncer skipped: empty config path")
 		return
 	}
 
 	schedulerConfigPath.Store(configFilePath)
 
 	schedulerOnce.Do(func() {
-		// 管理面板自动更新器是 managementasset 包级后台任务：
+		// 管理面板资源同步器是 managementasset 包级后台任务：
 		// - owner: 全局 schedulerOnce / 当前配置快照
 		// - 取消条件: 调用方传入的 ctx 结束（通常是服务 shutdown）
 		// - 超时策略: 每次网络请求由 HTTP client timeout 控制
-		// - 清理方式: runAutoUpdater 在 ctx.Done 后退出 ticker 循环
-		go runAutoUpdater(ctx)
+		// - 清理方式: runPanelAssetSyncer 在 ctx.Done 后退出 ticker 循环
+		go runPanelAssetSyncer(ctx)
 	})
 }
 
-func runAutoUpdater(ctx context.Context) {
+func runPanelAssetSyncer(ctx context.Context) {
 	if ctx == nil {
 		// 调用方未提供服务级 context 时，退化为包级根 context。
 		// 该模式仅用于非嵌入式调用；正常服务模式应传入可取消的 service/shutdown context。
@@ -92,11 +92,15 @@ func runAutoUpdater(ctx context.Context) {
 	runOnce := func() {
 		cfg := currentConfigPtr.Load()
 		if cfg == nil {
-			log.Debug("management asset auto-updater skipped: config not yet available")
+			log.Debug("management asset syncer skipped: config not yet available")
 			return
 		}
 		if cfg.RemoteManagement.DisableControlPanel {
-			log.Debug("management asset auto-updater skipped: control panel disabled")
+			log.Debug("management asset syncer skipped: control panel disabled")
+			return
+		}
+		if cfg.RemoteManagement.DisableAutoUpdatePanel {
+			log.Debug("management asset syncer skipped: disable-auto-update-panel is enabled")
 			return
 		}
 

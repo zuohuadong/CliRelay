@@ -86,6 +86,36 @@ func TestPatchIdentityFingerprintPreservesUnspecifiedProvider(t *testing.T) {
 	}
 }
 
+func TestPatchOpenAICompatPreservesIdentityFingerprint(t *testing.T) {
+	cfg := &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{
+				Name:    "qwen",
+				BaseURL: "https://example.com/v1",
+				APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+					{APIKey: "sk-test"},
+				},
+			},
+		},
+	}
+	h := newIdentityFingerprintTestHandler(t, cfg)
+
+	body := `{
+		"name": "qwen",
+		"value": {
+			"identity-fingerprint": " CODEX "
+		}
+	}`
+
+	rec := runIdentityFingerprintRequest(t, h, http.MethodPatch, body, h.PatchOpenAICompat)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := cfg.OpenAICompatibility[0].IdentityFingerprint; got != "codex" {
+		t.Fatalf("expected normalized identity fingerprint %q, got %q", "codex", got)
+	}
+}
+
 func newIdentityFingerprintTestHandler(t *testing.T, cfg *config.Config) *Handler {
 	t.Helper()
 	if cfg == nil {

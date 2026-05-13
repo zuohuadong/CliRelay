@@ -66,6 +66,13 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 
 请参见 [MANAGEMENT_API_CN.md](https://help.router-for.me/cn/management/api)
 
+## 管理面板资源
+
+后端只负责托管 `/manage` 并同步面板 release 资源。通过
+`remote-management.panel-github-repository` 指定面板仓库；保持
+`remote-management.disable-control-panel` 为 `false` 即可托管面板；仅在需要停止后台周期性同步面板资源时，才将
+`remote-management.disable-auto-update-panel` 设为 `true`。
+
 ## 使用量统计
 
 自v6.10.0版本以后，CLIProxyAPI及 [CPAMC](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) 项目不再预置数据统计功能，如果有数据统计需求的请使用以下项目：

@@ -54,6 +54,29 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		clientRemoteAddr = strings.TrimSpace(c.Request.RemoteAddr)
 	}
 	log.Infof("responses websocket: client connected id=%s remote=%s", passthroughSessionID, clientRemoteAddr)
+	wsDone := make(chan struct{})
+	defer close(wsDone)
+
+	if h != nil && h.AuthManager != nil {
+		if exec, ok := h.AuthManager.Executor("codex"); ok && exec != nil {
+			type upstreamDisconnectSubscriber interface {
+				UpstreamDisconnectChan(sessionID string) <-chan error
+			}
+			if subscriber, ok := exec.(upstreamDisconnectSubscriber); ok && subscriber != nil {
+				disconnectCh := subscriber.UpstreamDisconnectChan(passthroughSessionID)
+				if disconnectCh != nil {
+					go func() {
+						select {
+						case <-wsDone:
+						case <-disconnectCh:
+							_ = conn.Close()
+						}
+					}()
+				}
+			}
+		}
+	}
+
 	var wsTerminateErr error
 	var wsBodyLog strings.Builder
 	defer func() {
@@ -428,6 +451,14 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 ) ([]byte, error) {
 	completed := false
 	completedOutput := []byte("[]")
+	keepAliveInterval := handlers.WebsocketKeepAliveInterval(h.Cfg)
+	var keepAlive *time.Ticker
+	var keepAliveC <-chan time.Time
+	if keepAliveInterval > 0 {
+		keepAlive = time.NewTicker(keepAliveInterval)
+		defer keepAlive.Stop()
+		keepAliveC = keepAlive.C
+	}
 
 	for {
 		select {
@@ -532,6 +563,11 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					cancel(errWrite)
 					return completedOutput, errWrite
 				}
+			}
+		case <-keepAliveC:
+			if errPing := conn.WriteControl(websocket.PingMessage, []byte("keep-alive"), time.Now().Add(10*time.Second)); errPing != nil {
+				cancel(errPing)
+				return completedOutput, errPing
 			}
 		}
 	}

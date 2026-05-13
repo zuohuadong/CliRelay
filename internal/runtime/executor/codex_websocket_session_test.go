@@ -187,3 +187,37 @@ func TestCodexWebsocketSession_ConcurrentReadLoopNoPanic(t *testing.T) {
 	case <-time.After(2 * time.Second):
 	}
 }
+
+func TestCodexWebsocketUpstreamDisconnectChanNotifiesOnce(t *testing.T) {
+	exec := NewCodexWebsocketsExecutor(nil)
+	ch := exec.UpstreamDisconnectChan("test-session")
+	if ch == nil {
+		t.Fatal("expected upstream disconnect channel")
+	}
+
+	sess := exec.getOrCreateSession("test-session")
+	errDisconnect := fmt.Errorf("upstream gone")
+	sess.notifyUpstreamDisconnect(errDisconnect)
+	sess.notifyUpstreamDisconnect(fmt.Errorf("second error"))
+
+	select {
+	case got, ok := <-ch:
+		if !ok {
+			t.Fatal("expected disconnect error before channel close")
+		}
+		if got != errDisconnect {
+			t.Fatalf("disconnect error = %v, want %v", got, errDisconnect)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for disconnect notification")
+	}
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected upstream disconnect channel to close after first notification")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for disconnect channel close")
+	}
+}

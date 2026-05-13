@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
@@ -356,6 +357,22 @@ func TestExecuteStreamWithAuthManager_RetriesBeforeFirstByte(t *testing.T) {
 	upstreamAttemptHeader := upstreamHeaders.Get("X-Upstream-Attempt")
 	if upstreamAttemptHeader != "2" {
 		t.Fatalf("expected upstream header from retry attempt, got %q", upstreamAttemptHeader)
+	}
+}
+
+func TestWebsocketKeepAliveInterval(t *testing.T) {
+	t.Parallel()
+
+	if got := WebsocketKeepAliveInterval(nil); got != 15*time.Second {
+		t.Fatalf("default websocket keepalive = %v, want 15s", got)
+	}
+
+	if got := WebsocketKeepAliveInterval(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{WebsocketKeepAliveSeconds: 7}}); got != 7*time.Second {
+		t.Fatalf("configured websocket keepalive = %v, want 7s", got)
+	}
+
+	if got := WebsocketKeepAliveInterval(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{WebsocketKeepAliveSeconds: -1}}); got != 0 {
+		t.Fatalf("disabled websocket keepalive = %v, want 0", got)
 	}
 }
 

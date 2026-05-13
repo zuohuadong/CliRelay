@@ -12,6 +12,7 @@ type Config = internalconfig.Config
 type APIKeyEntry = internalconfig.APIKeyEntry
 
 type StreamingConfig = internalconfig.StreamingConfig
+type CodexWebsocketConfig = internalconfig.CodexWebsocketConfig
 type ObservabilityConfig = internalconfig.ObservabilityConfig
 type ResponseTraceConfig = internalconfig.ResponseTraceConfig
 type RoutingConfig = internalconfig.RoutingConfig

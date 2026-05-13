@@ -391,3 +391,17 @@ func sleepWithContext(ctx context.Context, d time.Duration) {
 		return
 	}
 }
+
+var globalClient atomic.Pointer[Client]
+
+func SetCurrent(c *Client) {
+	globalClient.Store(c)
+}
+
+func ClearCurrent() {
+	globalClient.Store(nil)
+}
+
+func Current() *Client {
+	return globalClient.Load()
+}

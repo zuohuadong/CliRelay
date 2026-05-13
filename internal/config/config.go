@@ -51,6 +51,9 @@ type Config struct {
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 
+	// Home config enables the Redis-based control plane integration.
+	Home HomeConfig `yaml:"home" json:"-"`
+
 	// CORSAllowOrigins defines the explicit browser origins allowed to call API routes cross-origin.
 	// Leave empty to disable cross-origin browser access by default.
 	CORSAllowOrigins []string `yaml:"cors-allow-origins" json:"cors-allow-origins"`
@@ -287,6 +290,13 @@ type RedisConfig struct {
 	Addr     string `yaml:"addr" json:"addr"`
 	Password string `yaml:"password" json:"password"`
 	DB       int    `yaml:"db" json:"db"`
+}
+
+type HomeConfig struct {
+	Enabled  bool   `yaml:"enabled" json:"enabled"`
+	Host     string `yaml:"host" json:"host"`
+	Port     int    `yaml:"port" json:"port"`
+	Password string `yaml:"password" json:"password"`
 }
 
 // TLSConfig holds HTTPS server settings.
@@ -837,6 +847,39 @@ type OpenCodeGoKey struct {
 //   - error: An error if the configuration could not be loaded
 func LoadConfig(configFile string) (*Config, error) {
 	return LoadConfigOptional(configFile, false)
+}
+
+func ParseConfigBytes(data []byte) (*Config, error) {
+	if len(data) == 0 {
+		return &Config{}, nil
+	}
+	var cfg Config
+	cfg.Host = ""
+	cfg.LoggingToFile = false
+	cfg.LogsMaxTotalSizeMB = 0
+	cfg.ErrorLogsMaxFiles = 10
+	cfg.UsageStatisticsEnabled = false
+	cfg.RequestLogStorage.StoreContent = true
+	cfg.RequestLogStorage.ContentRetentionDays = 30
+	cfg.RequestLogStorage.CleanupIntervalMinutes = 1440
+	cfg.RequestLogStorage.MaxTotalSizeMB = 1024
+	cfg.RequestLogStorage.VacuumOnCleanup = true
+	cfg.DisableCooling = false
+	cfg.Routing.IncludeDefaultGroup = true
+	cfg.Pprof.Enable = false
+	cfg.Pprof.Addr = DefaultPprofAddr
+	cfg.AmpCode.RestrictManagementToLocalhost = false
+	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.AutoUpdate.Enabled = true
+	cfg.AutoUpdate.Channel = DefaultAutoUpdateChannel
+	cfg.AutoUpdate.Repository = DefaultAutoUpdateRepository
+	cfg.AutoUpdate.DockerImage = DefaultAutoUpdateDockerImage
+	cfg.AutoUpdate.UpdaterURL = DefaultAutoUpdateUpdaterURL
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+	cfg.ApplyEnvOverrides()
+	return &cfg, nil
 }
 
 // LoadConfigOptional reads YAML from configFile.

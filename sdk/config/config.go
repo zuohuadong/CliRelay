@@ -15,6 +15,7 @@ type StreamingConfig = internalconfig.StreamingConfig
 type CodexWebsocketConfig = internalconfig.CodexWebsocketConfig
 type ObservabilityConfig = internalconfig.ObservabilityConfig
 type ResponseTraceConfig = internalconfig.ResponseTraceConfig
+type HomeConfig = internalconfig.HomeConfig
 type RoutingConfig = internalconfig.RoutingConfig
 type RoutingChannelGroup = internalconfig.RoutingChannelGroup
 type RoutingPathRoute = internalconfig.RoutingPathRoute
@@ -52,6 +53,8 @@ const (
 )
 
 func LoadConfig(configFile string) (*Config, error) { return internalconfig.LoadConfig(configFile) }
+
+func ParseConfigBytes(data []byte) (*Config, error) { return internalconfig.ParseConfigBytes(data) }
 
 func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	return internalconfig.LoadConfigOptional(configFile, optional)

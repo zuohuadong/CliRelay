@@ -75,13 +75,16 @@ type serverOptionConfig struct {
 type ServerOption func(*serverOptionConfig)
 
 func defaultRequestLoggerFactory(cfg *config.Config, configPath string) logging.RequestLogger {
+	if cfg == nil {
+		return logging.NewFileRequestLogger(false, "logs", ".", 10)
+	}
 	configDir := filepath.Dir(configPath)
 	logsDir := "logs"
 	if base := util.WritablePath(); base != "" {
 		logsDir = filepath.Join(base, "logs")
 	}
 	logger := logging.NewFileRequestLogger(cfg.RequestLog, logsDir, configDir, cfg.ErrorLogsMaxFiles)
-	logger.SetHomeEnabled(cfg != nil && cfg.Home.Enabled)
+	logger.SetHomeEnabled(cfg.Home.Enabled)
 	return logger
 }
 

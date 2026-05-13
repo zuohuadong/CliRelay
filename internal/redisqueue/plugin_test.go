@@ -13,6 +13,10 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
+type ctxKey string
+
+const ginCtxKey ctxKey = "gin"
+
 func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 	withEnabledQueue(t, func() {
 		ctx := internallogging.WithRequestID(context.Background(), "ctx-request-id")
@@ -96,7 +100,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndFailureAndGinRequestID(t 
 func TestUsageQueuePluginAsyncIgnoresRecycledGinContext(t *testing.T) {
 	withEnabledQueue(t, func() {
 		ginCtx := newTestGinContext(t, http.MethodPost, "/v1/chat/completions", http.StatusOK)
-		ctx := context.WithValue(context.Background(), "gin", ginCtx)
+		ctx := context.WithValue(context.Background(), ginCtxKey, ginCtx)
 		ctx = internallogging.WithRequestID(ctx, "ctx-request-id")
 		ctx = internallogging.WithEndpoint(ctx, "POST /v1/chat/completions")
 		ctx = internallogging.WithResponseStatusHolder(ctx)

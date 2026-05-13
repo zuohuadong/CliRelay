@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
@@ -35,6 +36,9 @@ type Service struct {
 
 	// cfgMu protects concurrent access to the configuration.
 	cfgMu sync.RWMutex
+
+	// configUpdateMu serializes config updates across watcher and home subscribers.
+	configUpdateMu sync.Mutex
 
 	// configPath is the path to the configuration file.
 	configPath string
@@ -95,6 +99,9 @@ type Service struct {
 
 	// wsGateway manages websocket Gemini providers.
 	wsGateway *wsrelay.Manager
+
+	homeClient *home.Client
+	homeCancel context.CancelFunc
 }
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
@@ -305,8 +312,13 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 	var err error
 	if existing, ok := s.coreManager.GetByID(auth.ID); ok {
 		auth.CreatedAt = existing.CreatedAt
-		auth.LastRefreshedAt = existing.LastRefreshedAt
-		auth.NextRefreshAfter = existing.NextRefreshAfter
+		if !existing.Disabled && existing.Status != coreauth.StatusDisabled && !auth.Disabled && auth.Status != coreauth.StatusDisabled {
+			auth.LastRefreshedAt = existing.LastRefreshedAt
+			auth.NextRefreshAfter = existing.NextRefreshAfter
+			if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
+				auth.ModelStates = existing.ModelStates
+			}
+		}
 		op = "update"
 		_, err = s.coreManager.Update(ctx, auth)
 	} else {
@@ -552,6 +564,73 @@ func (s *Service) rebindExecutors() {
 	}
 }
 
+func forceHomeRuntimeConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	cfg.APIKeys = nil
+	cfg.UsageStatisticsEnabled = true
+	cfg.DisableCooling = true
+	cfg.WebsocketAuth = false
+	cfg.RemoteManagement.AllowRemote = false
+	cfg.RemoteManagement.DisableControlPanel = true
+}
+
+func (s *Service) applyConfigUpdate(newCfg *config.Config) {
+	if s == nil || newCfg == nil {
+		return
+	}
+	s.configUpdateMu.Lock()
+	defer s.configUpdateMu.Unlock()
+	s.applyConfigReload(newCfg, true)
+}
+
+func (s *Service) registerHomeExecutors() {
+	if s == nil || s.coreManager == nil || s.cfg == nil {
+		return
+	}
+	s.coreManager.RegisterExecutor(executor.NewCodexAutoExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewGeminiExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewGeminiVertexExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewGeminiCLIExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewAIStudioExecutor(s.cfg, "", s.wsGateway))
+	s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor("openai-compatibility", s.cfg))
+}
+
+func (s *Service) applyHomeOverlay(remoteCfg *config.Config) {
+	if s == nil || remoteCfg == nil {
+		return
+	}
+	s.cfgMu.RLock()
+	baseCfg := s.cfg
+	s.cfgMu.RUnlock()
+	if baseCfg == nil {
+		return
+	}
+
+	merged := *remoteCfg
+	merged.Host = baseCfg.Host
+	merged.Port = baseCfg.Port
+	merged.TLS = baseCfg.TLS
+	merged.Home = baseCfg.Home
+	forceHomeRuntimeConfig(&merged)
+
+	logHomeConfigChanges(baseCfg, &merged)
+	s.applyConfigUpdate(&merged)
+}
+
+func logHomeConfigChanges(oldCfg, newCfg *config.Config) {
+}
+
+func (s *Service) startHomeUsageForwarder(ctx context.Context, client *home.Client) {
+}
+
+func (s *Service) startHomeSubscriber(ctx context.Context) {
+}
+
 // Run starts the service and blocks until the context is cancelled or the server stops.
 // It initializes all components including authentication, file watching, HTTP server,
 // and starts processing requests. The method blocks until the context is cancelled.
@@ -572,6 +651,10 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	usage.StartDefault(ctx)
+	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
+	if homeEnabled {
+		forceHomeRuntimeConfig(s.cfg)
+	}
 
 	// Shutdown needs a bounded context that survives parent cancellation long
 	// enough to stop the HTTP server, watcher, websocket gateway, and pprof cleanly.
@@ -583,13 +666,15 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 	}()
 
-	if err := s.ensureAuthDir(); err != nil {
-		return err
+	if !homeEnabled {
+		if err := s.ensureAuthDir(); err != nil {
+			return err
+		}
 	}
 
 	s.applyRetryConfig(s.cfg)
 
-	if s.coreManager != nil {
+	if s.coreManager != nil && !homeEnabled {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
@@ -603,11 +688,13 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	var err error
-	if _, err = s.tokenProvider.Load(ctx, s.cfg); err != nil && !errors.Is(err, context.Canceled) {
-		return err
-	}
-	if _, err = s.apiKeyProvider.Load(ctx, s.cfg); err != nil && !errors.Is(err, context.Canceled) {
-		return err
+	if !homeEnabled {
+		if _, err = s.tokenProvider.Load(ctx, s.cfg); err != nil && !errors.Is(err, context.Canceled) {
+			return err
+		}
+		if _, err = s.apiKeyProvider.Load(ctx, s.cfg); err != nil && !errors.Is(err, context.Canceled) {
+			return err
+		}
 	}
 
 	// legacy clients removed; no caches to refresh
@@ -621,6 +708,9 @@ func (s *Service) Run(ctx context.Context) error {
 
 	if s.authManager == nil {
 		s.authManager = newDefaultAuthManager()
+	}
+	if homeEnabled {
+		s.startHomeSubscriber(ctx)
 	}
 
 	s.ensureWebsocketGateway()
@@ -644,6 +734,9 @@ func (s *Service) Run(ctx context.Context) error {
 			}
 			log.Debugf("ws-auth disabled; existing websocket sessions remain connected")
 		})
+	}
+	if homeEnabled {
+		s.registerHomeExecutors()
 	}
 
 	if s.hooks.OnBeforeStart != nil {
@@ -670,33 +763,35 @@ func (s *Service) Run(ctx context.Context) error {
 		s.hooks.OnAfterStart(s)
 	}
 
-	var watcherWrapper *WatcherWrapper
-	reloadCallback := func(newCfg *config.Config) {
-		s.applyConfigReload(newCfg, false)
-	}
+	if !homeEnabled {
+		var watcherWrapper *WatcherWrapper
+		reloadCallback := func(newCfg *config.Config) {
+			s.applyConfigUpdate(newCfg)
+		}
 
-	watcherWrapper, err = s.watcherFactory(s.configPath, s.cfg.AuthDir, reloadCallback)
-	if err != nil {
-		return fmt.Errorf("cliproxy: failed to create watcher: %w", err)
-	}
-	s.watcher = watcherWrapper
-	s.ensureAuthUpdateQueue(ctx)
-	if s.authUpdates != nil {
-		watcherWrapper.SetAuthUpdateQueue(s.authUpdates)
-	}
-	watcherWrapper.SetConfig(s.cfg)
+		watcherWrapper, err = s.watcherFactory(s.configPath, s.cfg.AuthDir, reloadCallback)
+		if err != nil {
+			return fmt.Errorf("cliproxy: failed to create watcher: %w", err)
+		}
+		s.watcher = watcherWrapper
+		s.ensureAuthUpdateQueue(ctx)
+		if s.authUpdates != nil {
+			watcherWrapper.SetAuthUpdateQueue(s.authUpdates)
+		}
+		watcherWrapper.SetConfig(s.cfg)
 
-	// Service owns the watcher context and cancels it from Shutdown or when the
-	// parent Start context is cancelled.
-	watcherCtx, watcherCancel := context.WithCancel(ctx)
-	s.watcherCancel = watcherCancel
-	if err = watcherWrapper.Start(watcherCtx); err != nil {
-		return fmt.Errorf("cliproxy: failed to start watcher: %w", err)
+		// Service owns the watcher context and cancels it from Shutdown or when the
+		// parent Start context is cancelled.
+		watcherCtx, watcherCancel := context.WithCancel(ctx)
+		s.watcherCancel = watcherCancel
+		if err = watcherWrapper.Start(watcherCtx); err != nil {
+			return fmt.Errorf("cliproxy: failed to start watcher: %w", err)
+		}
+		log.Info("file watcher started for config and auth directory changes")
 	}
-	log.Info("file watcher started for config and auth directory changes")
 
 	// Prefer core auth manager auto refresh if available.
-	if s.coreManager != nil {
+	if s.coreManager != nil && !homeEnabled {
 		interval := 15 * time.Minute
 		// Auto-refresh is a service-owned background loop and intentionally outlives
 		// any one request while remaining bound to the service lifetime.
@@ -734,6 +829,16 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			// context is already gone. Fall back to a root context so cleanup can finish.
 			ctx = context.Background()
 		}
+
+		if s.homeCancel != nil {
+			s.homeCancel()
+			s.homeCancel = nil
+		}
+		if s.homeClient != nil {
+			s.homeClient.Close()
+			s.homeClient = nil
+		}
+		home.ClearCurrent()
 
 		// legacy refresh loop removed; only stopping core auth manager below
 

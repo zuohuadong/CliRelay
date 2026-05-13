@@ -70,7 +70,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 
 	detail := requestDetail{
 		Timestamp: timestamp,
-		LatencyMs: record.Latency.Milliseconds(),
+		LatencyMs: usageLatencyMs(record),
 		Source:    record.Source,
 		AuthIndex: record.AuthIndex,
 		Tokens:    tokens,
@@ -92,6 +92,13 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		return
 	}
 	Enqueue(payload)
+}
+
+func usageLatencyMs(record coreusage.Record) int64 {
+	if record.Latency > 0 {
+		return record.Latency.Milliseconds()
+	}
+	return record.LatencyMs
 }
 
 type queuedUsageDetail struct {

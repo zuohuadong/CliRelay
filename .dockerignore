@@ -20,6 +20,11 @@ auths/*
 logs/*
 conv/*
 config.yaml
+manage.html
+management.html
+panel-meta.json
+dist/
+panel-dist.zip
 
 # Development/editor
 bin/*

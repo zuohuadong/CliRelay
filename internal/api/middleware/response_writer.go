@@ -42,8 +42,8 @@ type ResponseWriterWrapper struct {
 	statusCode          int                        // statusCode stores the HTTP status code of the response.
 	headers             map[string][]string        // headers stores the response headers.
 	ginCtx              *gin.Context
-	logOnErrorOnly      bool                       // logOnErrorOnly enables logging only when an error response is detected.
-	firstChunkTimestamp time.Time                  // firstChunkTimestamp captures TTFB for streaming responses.
+	logOnErrorOnly      bool      // logOnErrorOnly enables logging only when an error response is detected.
+	firstChunkTimestamp time.Time // firstChunkTimestamp captures TTFB for streaming responses.
 }
 
 // NewResponseWriterWrapper creates and initializes a new ResponseWriterWrapper.

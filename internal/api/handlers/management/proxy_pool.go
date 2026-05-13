@@ -78,7 +78,9 @@ func (h *Handler) PutProxyPool(c *gin.Context) {
 			h.cfg = &config.Config{}
 		}
 		h.cfg.ProxyPool = usage.ListProxyPool()
+		updatedCfg := h.cfg
 		h.mu.Unlock()
+		h.NotifyProxyConfigReload(updatedCfg)
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		return
 	}
@@ -88,7 +90,9 @@ func (h *Handler) PutProxyPool(c *gin.Context) {
 		h.cfg = &config.Config{}
 	}
 	h.cfg.ProxyPool = normalized
+	updatedCfg := h.cfg
 	h.mu.Unlock()
+	h.NotifyProxyConfigReload(updatedCfg)
 
 	h.persist(c)
 }

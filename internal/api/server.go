@@ -1610,6 +1610,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	if s.mgmt != nil {
 		s.mgmt.SetConfig(cfg)
 		s.mgmt.SetAuthManager(s.handlers.AuthManager)
+		s.mgmt.NotifyProxyConfigReload(cfg)
 	}
 
 	// Notify Amp module only when Amp config has changed.

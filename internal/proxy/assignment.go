@@ -3,6 +3,7 @@ package proxy
 import (
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +38,17 @@ func NewAssignmentEngine(cfg config.ProxyAssignmentConfig, pool []config.ProxyPo
 		rrCursor: 0,
 		rand:     rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
+}
+
+func (e *AssignmentEngine) UpdateConfig(cfg config.ProxyAssignmentConfig) {
+	strategy := cfg.Strategy
+	if strategy == "" {
+		strategy = config.ProxyAssignmentSpread
+	}
+	cfg.Strategy = strategy
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.cfg = cfg
 }
 
 func (e *AssignmentEngine) Assign(auths []*coreauth.Auth) []*coreauth.Auth {
@@ -177,6 +189,53 @@ func (e *AssignmentEngine) Reassign(auths []*coreauth.Auth, excludeProxyID strin
 	}
 	if len(changed) > 0 {
 		log.Infof("proxy reassignment: %d auth entries moved away from proxy %s", len(changed), excludeProxyID)
+	}
+	return changed
+}
+
+func (e *AssignmentEngine) ReassignUnavailable(auths []*coreauth.Auth) []*coreauth.Auth {
+	if len(e.pool) == 0 {
+		return nil
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	available := make(map[string]struct{}, len(e.pool))
+	for _, proxyEntry := range e.pool {
+		proxyID := strings.ToLower(strings.TrimSpace(proxyEntry.ID))
+		if proxyID == "" {
+			continue
+		}
+		available[proxyID] = struct{}{}
+	}
+	if len(available) == 0 {
+		return nil
+	}
+
+	changed := make([]*coreauth.Auth, 0)
+	for _, auth := range auths {
+		if auth == nil || auth.Disabled {
+			continue
+		}
+		currentProxyID := strings.TrimSpace(auth.ProxyID)
+		if currentProxyID == "" {
+			continue
+		}
+		if _, ok := available[strings.ToLower(currentProxyID)]; ok {
+			continue
+		}
+		newProxyID := e.pool[e.rrCursor%len(e.pool)].ID
+		e.rrCursor++
+		auth.ProxyID = newProxyID
+		if auth.Metadata == nil {
+			auth.Metadata = make(map[string]any)
+		}
+		auth.Metadata["proxy_id"] = newProxyID
+		changed = append(changed, auth)
+	}
+	if len(changed) > 0 {
+		log.Infof("proxy reassignment: %d auth entries moved away from unavailable proxies", len(changed))
 	}
 	return changed
 }

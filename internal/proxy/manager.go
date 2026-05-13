@@ -220,8 +220,23 @@ func (pm *ProxyManager) OnConfigReload(cfg *config.Config) {
 	if cfg == nil {
 		return
 	}
+	pm.cfg = cfg.ProxyManager
+	pm.engine.UpdateConfig(pm.cfg.Assignment)
 	pool := pm.mutator.GetPool()
 	pm.engine.UpdatePool(pool)
+	pm.reconcileAssignments()
+}
+
+func (pm *ProxyManager) reconcileAssignments() {
+	if !pm.cfg.Assignment.Enabled || pm.authStore == nil {
+		return
+	}
+	auths := pm.authStore.ListAuths()
+	changed := pm.engine.ReassignUnavailable(auths)
+	changed = append(changed, pm.engine.Assign(auths)...)
+	if len(changed) > 0 {
+		pm.persistAuthChanges(changed)
+	}
 }
 
 func (pm *ProxyManager) persistAuthChanges(auths []*coreauth.Auth) {
@@ -271,7 +286,8 @@ func (pm *ProxyManager) TriggerAssignment() int {
 		return 0
 	}
 	auths := pm.authStore.ListAuths()
-	changed := pm.engine.Assign(auths)
+	changed := pm.engine.ReassignUnavailable(auths)
+	changed = append(changed, pm.engine.Assign(auths)...)
 	if len(changed) > 0 {
 		pm.persistAuthChanges(changed)
 	}

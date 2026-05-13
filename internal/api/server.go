@@ -545,6 +545,10 @@ func (s *Server) registerManagementRoutes() {
 	mgmt := s.engine.Group("/v0/management")
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
 	{
+		mgmt.GET("/dashboard-summary", s.mgmt.GetDashboardSummary)
+		mgmt.GET("/system-stats", s.mgmt.GetSystemStats)
+		mgmt.GET("/system-stats/ws", s.mgmt.SystemStatsWebSocket)
+
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)

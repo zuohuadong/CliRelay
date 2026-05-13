@@ -86,3 +86,62 @@ func findSSEPayloadByType(data []byte, eventType string) []byte {
 	}
 	return nil
 }
+
+func TestNormalizeCodexWebsocketCompletionPrefixesResponseID(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		wantID string
+	}{
+		{
+			name:   "numeric_id_gets_resp_prefix",
+			input:  `{"type":"response.created","response":{"id":"202605131251361c390ef60c044cec"}}`,
+			wantID: "resp_202605131251361c390ef60c044cec",
+		},
+		{
+			name:   "resp_prefix_preserved",
+			input:  `{"type":"response.created","response":{"id":"resp_abc123"}}`,
+			wantID: "resp_abc123",
+		},
+		{
+			name:   "response_completed_numeric_id",
+			input:  `{"type":"response.completed","response":{"id":"202605131251361c390ef60c044cec","output":[]}}`,
+			wantID: "resp_202605131251361c390ef60c044cec",
+		},
+		{
+			name:   "response_done_normalized_and_id_prefixed",
+			input:  `{"type":"response.done","response":{"id":"abc123","output":[]}}`,
+			wantID: "resp_abc123",
+		},
+		{
+			name:   "empty_id_unchanged",
+			input:  `{"type":"response.created","response":{"id":""}}`,
+			wantID: "",
+		},
+		{
+			name:   "in_progress_id_prefixed",
+			input:  `{"type":"response.in_progress","response":{"id":"xyz789"}}`,
+			wantID: "resp_xyz789",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeCodexWebsocketCompletion([]byte(tc.input))
+			gotID := gjson.GetBytes(got, "response.id").String()
+			if gotID != tc.wantID {
+				t.Fatalf("response.id = %q, want %q", gotID, tc.wantID)
+			}
+		})
+	}
+}
+
+func TestNormalizeCodexWebsocketCompletionDoneToCompleted(t *testing.T) {
+	input := `{"type":"response.done","response":{"id":"resp_1","output":[]}}`
+	got := normalizeCodexWebsocketCompletion([]byte(input))
+	if gjson.GetBytes(got, "type").String() != "response.completed" {
+		t.Fatalf("type = %q, want response.completed", gjson.GetBytes(got, "type").String())
+	}
+	if gjson.GetBytes(got, "response.id").String() != "resp_1" {
+		t.Fatalf("response.id = %q, want resp_1", gjson.GetBytes(got, "response.id").String())
+	}
+}

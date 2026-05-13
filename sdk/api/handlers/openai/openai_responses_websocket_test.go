@@ -172,7 +172,7 @@ func (e *websocketAuthCaptureExecutor) ExecuteStream(_ context.Context, auth *co
 	e.mu.Unlock()
 
 	chunks := make(chan coreexecutor.StreamChunk, 1)
-	chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"response.completed","response":{"id":"resp-upstream","output":[{"type":"message","id":"out-1"}]}}`)}
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"response.completed","response":{"id":"resp_upstream","output":[{"type":"message","id":"out-1"}]}}`)}
 	close(chunks)
 	return &coreexecutor.StreamResult{Chunks: chunks}, nil
 }
@@ -231,7 +231,7 @@ func (e *websocketPinnedFailoverExecutor) ExecuteStream(_ context.Context, auth 
 	}
 
 	chunks := make(chan coreexecutor.StreamChunk, 1)
-	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp-%s-%d","output":[{"type":"message","id":"out-%s-%d"}]}}`, authID, call, authID, call))}
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp_%s_%d","output":[{"type":"message","id":"out_%s_%d"}]}}`, authID, call, authID, call))}
 	close(chunks)
 	return &coreexecutor.StreamResult{Chunks: chunks}, nil
 }
@@ -275,7 +275,7 @@ func (e *websocketCaptureExecutor) ExecuteStream(_ context.Context, _ *coreauth.
 	e.streamCalls++
 	e.payloads = append(e.payloads, bytes.Clone(req.Payload))
 	chunks := make(chan coreexecutor.StreamChunk, 1)
-	chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"response.completed","response":{"id":"resp-upstream","output":[{"type":"message","id":"out-1"}]}}`)}
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"response.completed","response":{"id":"resp_upstream","output":[{"type":"message","id":"out-1"}]}}`)}
 	close(chunks)
 	return &coreexecutor.StreamResult{Chunks: chunks}, nil
 }
@@ -313,11 +313,11 @@ func (e *websocketCompactionCaptureExecutor) ExecuteStream(_ context.Context, _ 
 	var payload []byte
 	switch callIndex {
 	case 0:
-		payload = []byte(`{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"function_call","id":"fc-1","call_id":"call-1","name":"tool"}]}}`)
+		payload = []byte(`{"type":"response.completed","response":{"id":"resp_1","output":[{"type":"function_call","id":"fc-1","call_id":"call-1","name":"tool"}]}}`)
 	case 1:
-		payload = []byte(`{"type":"response.completed","response":{"id":"resp-2","output":[{"type":"message","id":"assistant-1"}]}}`)
+		payload = []byte(`{"type":"response.completed","response":{"id":"resp_2","output":[{"type":"message","id":"assistant-1"}]}}`)
 	default:
-		payload = []byte(`{"type":"response.completed","response":{"id":"resp-3","output":[{"type":"message","id":"assistant-2"}]}}`)
+		payload = []byte(`{"type":"response.completed","response":{"id":"resp_3","output":[{"type":"message","id":"assistant-2"}]}}`)
 	}
 
 	chunks := make(chan coreexecutor.StreamChunk, 1)
@@ -399,7 +399,7 @@ func TestNormalizeResponsesWebsocketRequestWithPreviousResponseIDIncremental(t *
 		{"type":"function_call","id":"fc-1","call_id":"call-1"},
 		{"type":"message","id":"assistant-1"}
 	]`)
-	raw := []byte(`{"type":"response.create","previous_response_id":"resp-1","input":[{"type":"function_call_output","call_id":"call-1","id":"tool-out-1"}]}`)
+	raw := []byte(`{"type":"response.create","previous_response_id":"resp_1","input":[{"type":"function_call_output","call_id":"call-1","id":"tool-out-1"}]}`)
 
 	normalized, next, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, true, false)
 	if errMsg != nil {
@@ -408,7 +408,7 @@ func TestNormalizeResponsesWebsocketRequestWithPreviousResponseIDIncremental(t *
 	if gjson.GetBytes(normalized, "type").Exists() {
 		t.Fatalf("normalized request must not include type field")
 	}
-	if gjson.GetBytes(normalized, "previous_response_id").String() != "resp-1" {
+	if gjson.GetBytes(normalized, "previous_response_id").String() != "resp_1" {
 		t.Fatalf("previous_response_id must be preserved in incremental mode")
 	}
 	input := gjson.GetBytes(normalized, "input").Array()
@@ -429,13 +429,34 @@ func TestNormalizeResponsesWebsocketRequestWithPreviousResponseIDIncremental(t *
 	}
 }
 
+func TestNormalizeResponsesWebsocketRequestStripsInvalidPreviousResponseID(t *testing.T) {
+	lastRequest := []byte(`{"model":"test-model","stream":true,"instructions":"be helpful","input":[{"type":"message","id":"msg-1"}]}`)
+	lastResponseOutput := []byte(`[
+		{"type":"function_call","id":"fc-1","call_id":"call-1"},
+		{"type":"message","id":"assistant-1"}
+	]`)
+	raw := []byte(`{"type":"response.create","previous_response_id":"202605131251361c390ef60c044cec","input":[{"type":"function_call_output","call_id":"call-1","id":"tool-out-1"}]}`)
+
+	normalized, _, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, true, false)
+	if errMsg != nil {
+		t.Fatalf("unexpected error: %v", errMsg.Error)
+	}
+	if gjson.GetBytes(normalized, "previous_response_id").Exists() {
+		t.Fatalf("previous_response_id with non-resp_ prefix must be stripped even in incremental mode, got: %s", gjson.GetBytes(normalized, "previous_response_id").String())
+	}
+	input := gjson.GetBytes(normalized, "input").Array()
+	if len(input) != 4 {
+		t.Fatalf("merged input len = %d, want 4 (fell through to merge path)", len(input))
+	}
+}
+
 func TestNormalizeResponsesWebsocketRequestWithPreviousResponseIDMergedWhenIncrementalDisabled(t *testing.T) {
 	lastRequest := []byte(`{"model":"test-model","stream":true,"input":[{"type":"message","id":"msg-1"}]}`)
 	lastResponseOutput := []byte(`[
 		{"type":"function_call","id":"fc-1","call_id":"call-1"},
 		{"type":"message","id":"assistant-1"}
 	]`)
-	raw := []byte(`{"type":"response.create","previous_response_id":"resp-1","input":[{"type":"function_call_output","call_id":"call-1","id":"tool-out-1"}]}`)
+	raw := []byte(`{"type":"response.create","previous_response_id":"resp_1","input":[{"type":"function_call_output","call_id":"call-1","id":"tool-out-1"}]}`)
 
 	normalized, next, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, false, false)
 	if errMsg != nil {
@@ -512,7 +533,7 @@ func TestWebsocketJSONPayloadsFromChunk(t *testing.T) {
 }
 
 func TestWebsocketJSONPayloadsFromPlainJSONChunk(t *testing.T) {
-	chunk := []byte(`{"type":"response.completed","response":{"id":"resp-1"}}`)
+	chunk := []byte(`{"type":"response.completed","response":{"id":"resp_1"}}`)
 
 	payloads := websocketJSONPayloadsFromChunk(chunk)
 	if len(payloads) != 1 {
@@ -524,7 +545,7 @@ func TestWebsocketJSONPayloadsFromPlainJSONChunk(t *testing.T) {
 }
 
 func TestResponseCompletedOutputFromPayload(t *testing.T) {
-	payload := []byte(`{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"message","id":"out-1"}]}}`)
+	payload := []byte(`{"type":"response.completed","response":{"id":"resp_1","output":[{"type":"message","id":"out-1"}]}}`)
 
 	output := responseCompletedOutputFromPayload(payload)
 	items := gjson.ParseBytes(output).Array()
@@ -597,7 +618,7 @@ func TestRepairResponsesWebsocketToolCallsInsertsCachedOutput(t *testing.T) {
 	cache := newWebsocketToolOutputCache(time.Minute, 10)
 	sessionKey := "session-1"
 
-	cacheWarm := []byte(`{"previous_response_id":"resp-1","input":[{"type":"function_call_output","call_id":"call-1","output":"ok"}]}`)
+	cacheWarm := []byte(`{"previous_response_id":"resp_1","input":[{"type":"function_call_output","call_id":"call-1","output":"ok"}]}`)
 	warmed := repairResponsesWebsocketToolCallsWithCache(cache, sessionKey, cacheWarm)
 	if gjson.GetBytes(warmed, "input.0.call_id").String() != "call-1" {
 		t.Fatalf("expected warmup output to remain")
@@ -669,11 +690,11 @@ func TestRepairResponsesWebsocketToolCallsInsertsCachedCallForPreviousResponseOu
 
 	callCache.record(sessionKey, "call-1", []byte(`{"type":"function_call","id":"fc-1","call_id":"call-1","name":"tool"}`))
 
-	raw := []byte(`{"previous_response_id":"resp-latest","input":[{"type":"function_call_output","call_id":"call-1","id":"tool-out-1","output":"ok"},{"type":"message","id":"msg-1"}]}`)
+	raw := []byte(`{"previous_response_id":"resp_latest","input":[{"type":"function_call_output","call_id":"call-1","id":"tool-out-1","output":"ok"},{"type":"message","id":"msg-1"}]}`)
 	repaired := repairResponsesWebsocketToolCallsWithCaches(outputCache, callCache, sessionKey, raw)
 
-	if got := gjson.GetBytes(repaired, "previous_response_id").String(); got != "resp-latest" {
-		t.Fatalf("previous_response_id = %q, want resp-latest", got)
+	if got := gjson.GetBytes(repaired, "previous_response_id").String(); got != "resp_latest" {
+		t.Fatalf("previous_response_id = %q, want resp_latest", got)
 	}
 	input := gjson.GetBytes(repaired, "input").Array()
 	if len(input) != 3 {
@@ -711,7 +732,7 @@ func TestRepairResponsesWebsocketToolCallsInsertsCachedCustomToolOutput(t *testi
 	cache := newWebsocketToolOutputCache(time.Minute, 10)
 	sessionKey := "session-1"
 
-	cacheWarm := []byte(`{"previous_response_id":"resp-1","input":[{"type":"custom_tool_call_output","call_id":"call-1","output":"ok"}]}`)
+	cacheWarm := []byte(`{"previous_response_id":"resp_1","input":[{"type":"custom_tool_call_output","call_id":"call-1","output":"ok"}]}`)
 	warmed := repairResponsesWebsocketToolCallsWithCache(cache, sessionKey, cacheWarm)
 	if gjson.GetBytes(warmed, "input.0.call_id").String() != "call-1" {
 		t.Fatalf("expected warmup output to remain")
@@ -797,7 +818,7 @@ func TestRecordResponsesWebsocketToolCallsFromPayloadWithCache(t *testing.T) {
 	cache := newWebsocketToolOutputCache(time.Minute, 10)
 	sessionKey := "session-1"
 
-	payload := []byte(`{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"function_call","id":"fc-1","call_id":"call-1","name":"tool","arguments":"{}"}]}}`)
+	payload := []byte(`{"type":"response.completed","response":{"id":"resp_1","output":[{"type":"function_call","id":"fc-1","call_id":"call-1","name":"tool","arguments":"{}"}]}}`)
 	recordResponsesWebsocketToolCallsFromPayloadWithCache(cache, sessionKey, payload)
 
 	cached, ok := cache.get(sessionKey, "call-1")
@@ -813,7 +834,7 @@ func TestRecordResponsesWebsocketCustomToolCallsFromCompletedPayloadWithCache(t 
 	cache := newWebsocketToolOutputCache(time.Minute, 10)
 	sessionKey := "session-1"
 
-	payload := []byte(`{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"custom_tool_call","id":"ctc-1","call_id":"call-1","name":"apply_patch","input":"*** Begin Patch"}]}}`)
+	payload := []byte(`{"type":"response.completed","response":{"id":"resp_1","output":[{"type":"custom_tool_call","id":"ctc-1","call_id":"call-1","name":"apply_patch","input":"*** Begin Patch"}]}}`)
 	recordResponsesWebsocketToolCallsFromPayloadWithCache(cache, sessionKey, payload)
 
 	cached, ok := cache.get(sessionKey, "call-1")
@@ -1396,8 +1417,8 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterQuotaError(t *testing.T) {
 
 	requests := []string{
 		`{"type":"response.create","model":"quota-model","input":[{"type":"message","id":"msg-1"}]}`,
-		`{"type":"response.create","previous_response_id":"resp-auth-a-1","input":[{"type":"message","id":"msg-2"}]}`,
-		`{"type":"response.create","previous_response_id":"resp-auth-a-1","input":[{"type":"message","id":"msg-3"}]}`,
+		`{"type":"response.create","previous_response_id":"resp_auth_a_1","input":[{"type":"message","id":"msg-2"}]}`,
+		`{"type":"response.create","previous_response_id":"resp_auth_a_1","input":[{"type":"message","id":"msg-3"}]}`,
 	}
 	wantTypes := []string{wsEventTypeCompleted, wsEventTypeError, wsEventTypeCompleted}
 	for i := range requests {

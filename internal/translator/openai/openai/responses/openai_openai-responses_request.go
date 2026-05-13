@@ -112,7 +112,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				deferredMessages = append(deferredMessages, message)
 				return
 			}
-			out, _ = sjson.SetRawBytes(out, "messages.-1", message)
+			out, _ = sjson.SetRaw(out, "messages.-1", message)
 		}
 
 		for _, item := range inputItems {

@@ -122,6 +122,9 @@ type Config struct {
 	// These are used as fallbacks when the client does not send its own headers.
 	ClaudeHeaderDefaults ClaudeHeaderDefaults `yaml:"claude-header-defaults" json:"claude-header-defaults"`
 
+	// IdentityFingerprint controls provider-specific upstream identity headers.
+	IdentityFingerprint IdentityFingerprintConfig `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
@@ -170,6 +173,87 @@ type ClaudeHeaderDefaults struct {
 type CodexHeaderDefaults struct {
 	UserAgent    string `yaml:"user-agent" json:"user-agent"`
 	BetaFeatures string `yaml:"beta-features" json:"beta-features"`
+}
+
+const (
+	DefaultCodexFingerprintUserAgent     = "Codex Desktop/0.130.0-alpha.5 (Mac OS 26.4.1; arm64) unknown (Codex Desktop; 26.506.31421)"
+	DefaultCodexFingerprintVersion       = "0.130.0-alpha.5"
+	DefaultCodexFingerprintOriginator    = "Codex Desktop"
+	DefaultCodexFingerprintWebsocketBeta = "responses_websockets=2026-02-06"
+	DefaultCodexFingerprintSessionMode   = "per-request"
+
+	DefaultClaudeFingerprintCLIVersion              = "2.1.88"
+	DefaultClaudeFingerprintEntrypoint              = "cli"
+	DefaultClaudeFingerprintAnthropicBeta           = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24"
+	DefaultClaudeFingerprintStainlessPackageVersion = "0.74.0"
+	DefaultClaudeFingerprintStainlessRuntimeVersion = "v22.13.0"
+	DefaultClaudeFingerprintStainlessTimeout        = "600"
+	DefaultClaudeFingerprintSessionMode             = "per-request"
+)
+
+// IdentityFingerprintConfig groups provider-specific upstream identity settings.
+type IdentityFingerprintConfig struct {
+	Codex  CodexIdentityFingerprintConfig  `yaml:"codex,omitempty" json:"codex,omitempty"`
+	Claude ClaudeIdentityFingerprintConfig `yaml:"claude,omitempty" json:"claude,omitempty"`
+}
+
+// CodexIdentityFingerprintConfig configures Codex upstream identity headers.
+type CodexIdentityFingerprintConfig struct {
+	Enabled       bool              `yaml:"enabled" json:"enabled"`
+	UserAgent     string            `yaml:"user-agent,omitempty" json:"user-agent,omitempty"`
+	Version       string            `yaml:"version,omitempty" json:"version,omitempty"`
+	Originator    string            `yaml:"originator,omitempty" json:"originator,omitempty"`
+	WebsocketBeta string            `yaml:"websocket-beta,omitempty" json:"websocket-beta,omitempty"`
+	SessionMode   string            `yaml:"session-mode,omitempty" json:"session-mode,omitempty"`
+	SessionID     string            `yaml:"session-id,omitempty" json:"session-id,omitempty"`
+	CustomHeaders map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
+}
+
+// DefaultCodexIdentityFingerprint returns the recommended Codex identity template.
+func DefaultCodexIdentityFingerprint() CodexIdentityFingerprintConfig {
+	return CodexIdentityFingerprintConfig{
+		Enabled:       false,
+		UserAgent:     DefaultCodexFingerprintUserAgent,
+		Version:       DefaultCodexFingerprintVersion,
+		Originator:    DefaultCodexFingerprintOriginator,
+		WebsocketBeta: DefaultCodexFingerprintWebsocketBeta,
+		SessionMode:   DefaultCodexFingerprintSessionMode,
+		CustomHeaders: map[string]string{},
+	}
+}
+
+// ClaudeIdentityFingerprintConfig configures Claude Code-style Anthropic OAuth identity.
+type ClaudeIdentityFingerprintConfig struct {
+	Enabled                 bool              `yaml:"enabled" json:"enabled"`
+	CLIVersion              string            `yaml:"cli-version,omitempty" json:"cli-version,omitempty"`
+	Entrypoint              string            `yaml:"entrypoint,omitempty" json:"entrypoint,omitempty"`
+	UserAgent               string            `yaml:"user-agent,omitempty" json:"user-agent,omitempty"`
+	AnthropicBeta           string            `yaml:"anthropic-beta,omitempty" json:"anthropic-beta,omitempty"`
+	StainlessPackageVersion string            `yaml:"stainless-package-version,omitempty" json:"stainless-package-version,omitempty"`
+	StainlessRuntimeVersion string            `yaml:"stainless-runtime-version,omitempty" json:"stainless-runtime-version,omitempty"`
+	StainlessTimeout        string            `yaml:"stainless-timeout,omitempty" json:"stainless-timeout,omitempty"`
+	SessionMode             string            `yaml:"session-mode,omitempty" json:"session-mode,omitempty"`
+	SessionID               string            `yaml:"session-id,omitempty" json:"session-id,omitempty"`
+	DeviceID                string            `yaml:"device-id,omitempty" json:"device-id,omitempty"`
+	CustomHeaders           map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
+}
+
+// DefaultClaudeIdentityFingerprint returns the recommended Claude Code identity template.
+func DefaultClaudeIdentityFingerprint() ClaudeIdentityFingerprintConfig {
+	cliVersion := DefaultClaudeFingerprintCLIVersion
+	entrypoint := DefaultClaudeFingerprintEntrypoint
+	return ClaudeIdentityFingerprintConfig{
+		Enabled:                 false,
+		CLIVersion:              cliVersion,
+		Entrypoint:              entrypoint,
+		UserAgent:               BuildClaudeFingerprintUserAgent(cliVersion, entrypoint),
+		AnthropicBeta:           DefaultClaudeFingerprintAnthropicBeta,
+		StainlessPackageVersion: DefaultClaudeFingerprintStainlessPackageVersion,
+		StainlessRuntimeVersion: DefaultClaudeFingerprintStainlessRuntimeVersion,
+		StainlessTimeout:        DefaultClaudeFingerprintStainlessTimeout,
+		SessionMode:             DefaultClaudeFingerprintSessionMode,
+		CustomHeaders:           map[string]string{},
+	}
 }
 
 // TLSConfig holds HTTPS server settings.
@@ -551,6 +635,10 @@ type OpenAICompatibility struct {
 	// Headers optionally adds extra HTTP headers for requests sent to this provider.
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 
+	// IdentityFingerprint optionally reuses a configured provider identity template
+	// for upstream requests. Currently supported value: "codex".
+	IdentityFingerprint string `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
+
 	// DisableCooling disables auth/model cooldown scheduling for this provider when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 }
@@ -716,6 +804,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize Claude key headers
 	cfg.SanitizeClaudeKeys()
 
+	// Normalize provider identity fingerprints.
+	cfg.SanitizeIdentityFingerprint()
+
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
 
@@ -878,6 +969,7 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
+		e.IdentityFingerprint = strings.ToLower(strings.TrimSpace(e.IdentityFingerprint))
 		if e.BaseURL == "" {
 			// Skip providers with no base-url; treated as removed
 			continue

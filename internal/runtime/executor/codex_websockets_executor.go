@@ -854,6 +854,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 
 	isAPIKey := codexAuthUsesAPIKey(auth)
 	cfgUserAgent, cfgBetaFeatures := codexHeaderDefaults(cfg, auth)
+	fp, fingerprintEnabled := codexIdentityFingerprint(cfg)
 	ensureHeaderWithPriority(headers, ginHeaders, "x-codex-beta-features", cfgBetaFeatures, "")
 	misc.EnsureHeader(headers, ginHeaders, "x-codex-turn-state", "")
 	misc.EnsureHeader(headers, ginHeaders, "x-codex-turn-metadata", "")
@@ -862,6 +863,8 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	misc.EnsureHeader(headers, ginHeaders, "Version", "")
 	if isAPIKey {
 		ensureHeaderWithPriority(headers, ginHeaders, "User-Agent", "", "")
+	} else if fingerprintEnabled {
+		applyCodexIdentityFingerprintHeaders(headers, fp, true)
 	} else {
 		ensureHeaderWithConfigPrecedence(headers, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
 	}
@@ -871,7 +874,11 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		betaHeader = strings.TrimSpace(ginHeaders.Get("OpenAI-Beta"))
 	}
 	if betaHeader == "" || !strings.Contains(betaHeader, "responses_websockets=") {
-		betaHeader = codexResponsesWebsocketBetaHeaderValue
+		if fingerprintEnabled && strings.TrimSpace(fp.WebsocketBeta) != "" {
+			betaHeader = fp.WebsocketBeta
+		} else {
+			betaHeader = codexResponsesWebsocketBetaHeaderValue
+		}
 	}
 	headers.Set("OpenAI-Beta", betaHeader)
 	if strings.Contains(headers.Get("User-Agent"), "Mac OS") {
@@ -881,7 +888,11 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	if originator := strings.TrimSpace(ginHeaders.Get("Originator")); originator != "" {
 		headers.Set("Originator", originator)
 	} else if !isAPIKey {
-		headers.Set("Originator", codexOriginator)
+		if fingerprintEnabled {
+			headers.Set("Originator", fp.Originator)
+		} else {
+			headers.Set("Originator", codexOriginator)
+		}
 	}
 	if !isAPIKey {
 		if auth != nil && auth.Metadata != nil {
@@ -898,6 +909,12 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: headers}, attrs)
+	if fingerprintEnabled && !isAPIKey {
+		applyCodexIdentityFingerprintHeaders(headers, fp, true)
+		if strings.TrimSpace(ginHeaders.Get("Originator")) == "" {
+			headers.Set("Originator", fp.Originator)
+		}
+	}
 
 	return headers
 }

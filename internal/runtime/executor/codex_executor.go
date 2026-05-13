@@ -784,11 +784,16 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 	if ginHeaders.Get("X-Codex-Beta-Features") != "" {
 		r.Header.Set("X-Codex-Beta-Features", ginHeaders.Get("X-Codex-Beta-Features"))
 	}
+	fp, fingerprintEnabled := codexIdentityFingerprint(cfg)
 	misc.EnsureHeader(r.Header, ginHeaders, "Version", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-Metadata", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Client-Request-Id", "")
 	cfgUserAgent, _ := codexHeaderDefaults(cfg, auth)
-	ensureHeaderWithConfigPrecedence(r.Header, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
+	if fingerprintEnabled {
+		applyCodexIdentityFingerprintHeaders(r.Header, fp, false)
+	} else {
+		ensureHeaderWithConfigPrecedence(r.Header, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
+	}
 
 	if strings.Contains(r.Header.Get("User-Agent"), "Mac OS") {
 		misc.EnsureHeader(r.Header, ginHeaders, "Session_id", uuid.NewString())
@@ -810,7 +815,11 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 	if originator := strings.TrimSpace(ginHeaders.Get("Originator")); originator != "" {
 		r.Header.Set("Originator", originator)
 	} else if !isAPIKey {
-		r.Header.Set("Originator", codexOriginator)
+		if fingerprintEnabled {
+			r.Header.Set("Originator", fp.Originator)
+		} else {
+			r.Header.Set("Originator", codexOriginator)
+		}
 	}
 	if !isAPIKey {
 		if auth != nil && auth.Metadata != nil {
@@ -824,6 +833,12 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+	if fingerprintEnabled {
+		applyCodexIdentityFingerprintHeaders(r.Header, fp, false)
+		if strings.TrimSpace(ginHeaders.Get("Originator")) == "" && !isAPIKey {
+			r.Header.Set("Originator", fp.Originator)
+		}
+	}
 }
 
 func newCodexStatusErr(statusCode int, body []byte) statusErr {

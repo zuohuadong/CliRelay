@@ -41,7 +41,6 @@ type SDKConfig struct {
 	// Streaming configures server-side streaming behavior (keep-alives and safe bootstrap retries).
 	Streaming StreamingConfig `yaml:"streaming" json:"streaming"`
 
-
 	// ContextRetrieval reduces oversized conversational payloads using local retrieval.
 	ContextRetrieval ContextRetrievalConfig `yaml:"context-retrieval,omitempty" json:"context-retrieval,omitempty"`
 

@@ -17,14 +17,14 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/contextretrieval"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"golang.org/x/net/context"
 )
 
@@ -233,7 +233,6 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	}
 	return meta
 }
-
 
 func enrichRequestExecutionMetadata(meta map[string]any, rawJSON []byte) {
 	if meta == nil || len(rawJSON) == 0 {

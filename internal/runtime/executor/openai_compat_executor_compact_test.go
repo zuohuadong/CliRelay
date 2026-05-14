@@ -3,6 +3,8 @@ package executor
 import (
 	"context"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -236,4 +238,121 @@ func TestOpenAICompatExecutorStreamSkipsKeepAliveUntilDataLine(t *testing.T) {
 	if gjson.Get(got.String(), "choices.0.delta.content").String() != "hello" {
 		t.Fatalf("stream payload = %s", got.String())
 	}
+}
+
+func TestOpenAICompatExecutorPassesImageGenerationsToImagesEndpoint(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1770000000,"data":[{"url":"https://example.com/image.png"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("qwen tokenplan", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"qwen-image-2.0","prompt":"draw a red square","size":"1024x1024"}`)
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "qwen-image-2.0",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Alt:          "images/generations",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/images/generations" {
+		t.Fatalf("path = %q, want /v1/images/generations", gotPath)
+	}
+	if got := gjson.GetBytes(gotBody, "prompt").String(); got != "draw a red square" {
+		t.Fatalf("prompt = %q", got)
+	}
+	if gjson.GetBytes(gotBody, "messages").Exists() {
+		t.Fatalf("unexpected chat messages in image generation body: %s", string(gotBody))
+	}
+	if string(resp.Payload) != `{"created":1770000000,"data":[{"url":"https://example.com/image.png"}]}` {
+		t.Fatalf("payload = %s", string(resp.Payload))
+	}
+}
+
+func TestOpenAICompatExecutorPassesImageEditsToImagesEndpointByDefault(t *testing.T) {
+	var gotPath string
+	var gotForm map[string][]string
+	var gotImage []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil {
+			t.Fatalf("parse content type: %v", err)
+		}
+		if mediaType != "multipart/form-data" {
+			t.Fatalf("content type = %q, want multipart/form-data", mediaType)
+		}
+		reader := multipart.NewReader(r.Body, params["boundary"])
+		form, err := reader.ReadForm(1 << 20)
+		if err != nil {
+			t.Fatalf("read multipart form: %v", err)
+		}
+		gotForm = form.Value
+		file, err := form.File["image"][0].Open()
+		if err != nil {
+			t.Fatalf("open image part: %v", err)
+		}
+		gotImage, _ = io.ReadAll(file)
+		_ = file.Close()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1770000000,"data":[{"b64_json":"aW1hZ2U="}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("qwen tokenplan", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{
+		"model":"qwen-image-2.0",
+		"prompt":"extract the print",
+		"size":"1024x1024",
+		"image_files":[{"file_name":"shirt.png","content_type":"image/png","data_base64":"aGVsbG8="}]
+	}`)
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "qwen-image-2.0",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Alt:          "images/edits",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/images/edits" {
+		t.Fatalf("path = %q, want /v1/images/edits", gotPath)
+	}
+	if got := firstFormValue(gotForm, "prompt"); got != "extract the print" {
+		t.Fatalf("prompt = %q", got)
+	}
+	if got := firstFormValue(gotForm, "model"); got != "qwen-image-2.0" {
+		t.Fatalf("model = %q", got)
+	}
+	if string(gotImage) != "hello" {
+		t.Fatalf("image data = %q", string(gotImage))
+	}
+	if string(resp.Payload) != `{"created":1770000000,"data":[{"b64_json":"aW1hZ2U="}]}` {
+		t.Fatalf("payload = %s", string(resp.Payload))
+	}
+}
+
+func firstFormValue(values map[string][]string, key string) string {
+	if len(values[key]) == 0 {
+		return ""
+	}
+	return values[key][0]
 }

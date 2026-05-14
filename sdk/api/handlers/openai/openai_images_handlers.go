@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"strconv"
@@ -27,6 +28,9 @@ const (
 	defaultImagesToolModel = "gpt-image-2"
 	imagesGenerationsPath  = "/v1/images/generations"
 	imagesEditsPath        = "/v1/images/edits"
+	openAIImageEditsAlt    = "images/edits"
+	openAIImageMaxUpload   = 20 << 20
+	openAIImageMaxN        = 4
 )
 
 type imageCallResult struct {
@@ -198,6 +202,334 @@ func parseBoolField(raw string, fallback bool) bool {
 	}
 }
 
+func parseLegacyOpenAIImageEditRequest(c *gin.Context) ([]byte, bool) {
+	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
+		payload, parseErr := buildLegacyOpenAIImageEditPayloadFromMultipart(c)
+		if parseErr != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+				Error: handlers.ErrorDetail{
+					Message: parseErr.Error(),
+					Type:    "invalid_request_error",
+				},
+			})
+			return nil, false
+		}
+		return payload, true
+	}
+
+	rawJSON, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: fmt.Sprintf("Invalid request: %v", err),
+				Type:    "invalid_request_error",
+			},
+		})
+		return nil, false
+	}
+	if !json.Valid(rawJSON) {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: "Invalid request: body must be valid JSON",
+				Type:    "invalid_request_error",
+			},
+		})
+		return nil, false
+	}
+	return rawJSON, true
+}
+
+func buildLegacyOpenAIImageEditPayloadFromMultipart(c *gin.Context) ([]byte, error) {
+	form, err := c.MultipartForm()
+	if err != nil {
+		return nil, fmt.Errorf("invalid multipart body")
+	}
+	if form == nil {
+		return nil, fmt.Errorf("invalid multipart body")
+	}
+
+	payload := map[string]any{
+		"model":  firstOpenAIImagesFormValue(form.Value, "model", defaultImagesToolModel),
+		"prompt": firstOpenAIImagesFormValue(form.Value, "prompt", ""),
+	}
+	for _, field := range []string{"size", "quality", "response_format", "background", "output_format", "moderation", "input_fidelity", "style"} {
+		if value := firstOpenAIImagesFormValue(form.Value, field, ""); value != "" {
+			payload[field] = value
+		}
+	}
+	for _, field := range []string{"output_compression", "partial_images"} {
+		if value := firstOpenAIImagesFormValue(form.Value, field, ""); value != "" {
+			parsed, parseErr := strconv.Atoi(value)
+			if parseErr != nil {
+				return nil, fmt.Errorf("%s must be a positive integer", field)
+			}
+			payload[field] = parsed
+		}
+	}
+	if value := firstOpenAIImagesFormValue(form.Value, "n", ""); value != "" {
+		n, parseErr := strconv.Atoi(value)
+		if parseErr != nil {
+			return nil, fmt.Errorf("n must be a positive integer")
+		}
+		payload["n"] = n
+	}
+
+	files := form.File["image"]
+	for key, value := range form.File {
+		if strings.HasPrefix(key, "image[") {
+			files = append(files, value...)
+		}
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("image file is required")
+	}
+
+	uploads := make([]map[string]any, 0, len(files))
+	for _, fileHeader := range files {
+		if fileHeader == nil {
+			continue
+		}
+		upload, uploadErr := buildLegacyOpenAIImageUploadPayload(fileHeader)
+		if uploadErr != nil {
+			return nil, uploadErr
+		}
+		uploads = append(uploads, upload)
+	}
+	payload["image_files"] = uploads
+
+	if maskFiles := form.File["mask"]; len(maskFiles) > 0 && maskFiles[0] != nil {
+		maskFile, maskErr := buildLegacyOpenAIImageUploadPayload(maskFiles[0])
+		if maskErr != nil {
+			return nil, maskErr
+		}
+		payload["mask_file"] = maskFile
+	}
+	return json.Marshal(payload)
+}
+
+func buildLegacyOpenAIImageUploadPayload(fileHeader *multipart.FileHeader) (map[string]any, error) {
+	if fileHeader == nil {
+		return nil, fmt.Errorf("image file is required")
+	}
+	if fileHeader.Size > openAIImageMaxUpload {
+		return nil, fmt.Errorf("image file is too large")
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		return nil, fmt.Errorf("read image file: %w", err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			log.Errorf("openai images: close upload file error: %v", closeErr)
+		}
+	}()
+
+	data, err := io.ReadAll(io.LimitReader(file, openAIImageMaxUpload+1))
+	if err != nil {
+		return nil, fmt.Errorf("read image file: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("image file is empty")
+	}
+	if len(data) > openAIImageMaxUpload {
+		return nil, fmt.Errorf("image file is too large")
+	}
+
+	contentType := strings.TrimSpace(fileHeader.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return map[string]any{
+		"file_name":    fileHeader.Filename,
+		"content_type": contentType,
+		"data_base64":  base64.StdEncoding.EncodeToString(data),
+	}, nil
+}
+
+func firstOpenAIImagesFormValue(values map[string][]string, key, fallback string) string {
+	for _, value := range values[key] {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return fallback
+}
+
+func openAIImageRequestCount(rawJSON []byte) (int, error) {
+	nResult := gjson.GetBytes(rawJSON, "n")
+	if !nResult.Exists() {
+		return 1, nil
+	}
+	if nResult.Type != gjson.Number {
+		return 0, fmt.Errorf("n must be a number")
+	}
+	n := int(nResult.Int())
+	if n < 1 || n > openAIImageMaxN {
+		return 0, fmt.Errorf("n must be between 1 and %d", openAIImageMaxN)
+	}
+	return n, nil
+}
+
+func mergeOpenAIImageResponses(payloads [][]byte) ([]byte, error) {
+	if len(payloads) == 0 {
+		return nil, fmt.Errorf("image generation returned no responses")
+	}
+	if len(payloads) == 1 {
+		return payloads[0], nil
+	}
+
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(payloads[0], &merged); err != nil {
+		return nil, fmt.Errorf("parse image generation response: %w", err)
+	}
+
+	data := make([]json.RawMessage, 0, len(payloads))
+	for _, payload := range payloads {
+		var item struct {
+			Data []json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(payload, &item); err != nil {
+			return nil, fmt.Errorf("parse image generation response: %w", err)
+		}
+		data = append(data, item.Data...)
+	}
+
+	encodedData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("encode image generation response: %w", err)
+	}
+	merged["data"] = encodedData
+	return json.Marshal(merged)
+}
+
+func (h *OpenAIAPIHandler) executeLegacyOpenAIImages(c *gin.Context, rawJSON []byte, alt string) {
+	modelName := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
+	if modelName == "" {
+		modelName = defaultImagesToolModel
+		if updated, err := sjson.SetBytes(rawJSON, "model", modelName); err == nil {
+			rawJSON = updated
+		}
+	}
+
+	imageCount, countErr := openAIImageRequestCount(rawJSON)
+	if countErr != nil {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: countErr.Error(),
+				Type:    "invalid_request_error",
+			},
+		})
+		return
+	}
+
+	if h == nil || h.BaseAPIHandler == nil || h.BaseAPIHandler.AuthManager == nil {
+		c.JSON(http.StatusInternalServerError, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: "authentication manager not initialized",
+				Type:    "server_error",
+			},
+		})
+		return
+	}
+
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	defer stopKeepAlive()
+
+	payloads := make([][]byte, 0, imageCount)
+	var responseHeaders http.Header
+	for i := 0; i < imageCount; i++ {
+		execPayload := rawJSON
+		if imageCount > 1 {
+			var setErr error
+			execPayload, setErr = sjson.SetBytes(rawJSON, "n", 1)
+			if setErr != nil {
+				c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+					Error: handlers.ErrorDetail{
+						Message: "invalid image generation request",
+						Type:    "invalid_request_error",
+					},
+				})
+				cliCancel(setErr)
+				return
+			}
+		}
+
+		payload, headers, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, execPayload, alt)
+		if errMsg != nil {
+			h.WriteErrorResponse(c, errMsg)
+			cliCancel(errMsg.Error)
+			return
+		}
+		if responseHeaders == nil {
+			responseHeaders = headers
+		}
+		payloads = append(payloads, payload)
+	}
+
+	payload, mergeErr := mergeOpenAIImageResponses(payloads)
+	if mergeErr != nil {
+		c.JSON(http.StatusBadGateway, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: mergeErr.Error(),
+				Type:    "server_error",
+			},
+		})
+		cliCancel(mergeErr)
+		return
+	}
+
+	handlers.WriteUpstreamHeaders(c.Writer.Header(), responseHeaders)
+	c.Data(http.StatusOK, "application/json; charset=utf-8", payload)
+	cliCancel(nil)
+}
+
+func collectImageInputs(rawJSON []byte) []string {
+	images := make([]string, 0, 2)
+
+	imagesResult := gjson.GetBytes(rawJSON, "images")
+	if imagesResult.IsArray() {
+		for _, img := range imagesResult.Array() {
+			url := strings.TrimSpace(img.Get("image_url").String())
+			if url == "" {
+				continue
+			}
+			images = append(images, url)
+		}
+	}
+
+	legacyImage := gjson.GetBytes(rawJSON, "image")
+	switch legacyImage.Type {
+	case gjson.String:
+		url := strings.TrimSpace(legacyImage.String())
+		if url != "" {
+			images = append(images, url)
+		}
+	case gjson.JSON:
+		if legacyImage.IsArray() {
+			for _, item := range legacyImage.Array() {
+				switch item.Type {
+				case gjson.String:
+					url := strings.TrimSpace(item.String())
+					if url != "" {
+						images = append(images, url)
+					}
+				case gjson.JSON:
+					url := strings.TrimSpace(item.Get("image_url").String())
+					if url != "" {
+						images = append(images, url)
+					}
+				}
+			}
+		}
+	}
+
+	return images
+}
+
 func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 	if h != nil && h.BaseAPIHandler != nil && h.BaseAPIHandler.Cfg != nil && h.BaseAPIHandler.Cfg.DisableImageGeneration == internalconfig.DisableImageGenerationAll {
 		c.AbortWithStatus(http.StatusNotFound)
@@ -326,7 +658,12 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 	if imageModel == "" {
 		imageModel = defaultImagesToolModel
 	}
-	if rejectUnsupportedImagesModel(c, imageModel) {
+	if !isSupportedImagesModel(imageModel) {
+		legacyJSON, ok := parseLegacyOpenAIImageEditRequest(c)
+		if !ok {
+			return
+		}
+		h.executeLegacyOpenAIImages(c, legacyJSON, openAIImageEditsAlt)
 		return
 	}
 
@@ -459,7 +796,8 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 	if imageModel == "" {
 		imageModel = defaultImagesToolModel
 	}
-	if rejectUnsupportedImagesModel(c, imageModel) {
+	if !isSupportedImagesModel(imageModel) {
+		h.executeLegacyOpenAIImages(c, rawJSON, openAIImageEditsAlt)
 		return
 	}
 
@@ -474,17 +812,7 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 		return
 	}
 
-	var images []string
-	imagesResult := gjson.GetBytes(rawJSON, "images")
-	if imagesResult.IsArray() {
-		for _, img := range imagesResult.Array() {
-			url := strings.TrimSpace(img.Get("image_url").String())
-			if url == "" {
-				continue
-			}
-			images = append(images, url)
-		}
-	}
+	images := collectImageInputs(rawJSON)
 	if len(images) == 0 {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{

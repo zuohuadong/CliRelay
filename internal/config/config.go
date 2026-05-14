@@ -712,7 +712,6 @@ type ProviderPreferenceMatch struct {
 	UpstreamModels    []string `yaml:"upstream-models,omitempty" json:"upstream-models,omitempty"`
 }
 
-
 // LoadConfig reads a YAML configuration file from the given path,
 // unmarshals it into a Config struct, applies environment variable overrides,
 // and returns it.

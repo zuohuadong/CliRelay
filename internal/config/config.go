@@ -146,6 +146,12 @@ type Config struct {
 	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
 	OAuthModelAlias map[string][]OAuthModelAlias `yaml:"oauth-model-alias,omitempty" json:"oauth-model-alias,omitempty"`
 
+	// RequestPolicies define request-size and routing guards evaluated before upstream execution.
+	RequestPolicies []RequestPolicy `yaml:"request-policies,omitempty" json:"request-policies,omitempty"`
+
+	// ProviderPreferences define model-scoped upstream provider priority overrides.
+	ProviderPreferences []ProviderPreference `yaml:"provider-preferences,omitempty" json:"provider-preferences,omitempty"`
+
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
@@ -307,21 +313,14 @@ type QuotaExceeded struct {
 
 // RoutingConfig configures how credentials are selected for requests.
 type RoutingConfig struct {
-	// Strategy selects the credential selection strategy.
-	// Supported values: "round-robin" (default), "fill-first".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
-	// SessionAffinity enables universal session-sticky routing for all clients.
-	// Session IDs are extracted from multiple sources:
-	// metadata.user_id (Claude Code session format), X-Session-ID, Session_id (Codex),
-	// X-Amp-Thread-Id (Amp CLI thread), X-Client-Request-Id (PI), metadata.user_id,
-	// conversation_id, or message hash.
-	// Automatic failover is always enabled when bound auth becomes unavailable.
-	SessionAffinity bool `yaml:"session-affinity,omitempty" json:"session-affinity,omitempty"`
-
-	// SessionAffinityTTL specifies how long session-to-auth bindings are retained.
-	// Default: 1h. Accepts duration strings like "30m", "1h", "2h30m".
+	SessionAffinity    bool   `yaml:"session-affinity,omitempty" json:"session-affinity,omitempty"`
 	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
+
+	IncludeDefaultGroup bool                  `yaml:"include-default-group,omitempty" json:"include-default-group,omitempty"`
+	ChannelGroups       []RoutingChannelGroup `yaml:"channel-groups,omitempty" json:"channel-groups,omitempty"`
+	PathRoutes          []RoutingPathRoute    `yaml:"path-routes,omitempty" json:"path-routes,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
@@ -669,6 +668,51 @@ type OpenAICompatibilityModel struct {
 func (m OpenAICompatibilityModel) GetName() string  { return m.Name }
 func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
 
+// RequestPolicy defines a generic pre-execution policy for matching requests and channels.
+type RequestPolicy struct {
+	Name      string                 `yaml:"name,omitempty" json:"name,omitempty"`
+	Match     RequestPolicyMatch     `yaml:"match,omitempty" json:"match,omitempty"`
+	Limits    RequestPolicyLimits    `yaml:"limits,omitempty" json:"limits,omitempty"`
+	OverLimit RequestPolicyOverLimit `yaml:"over-limit,omitempty" json:"over-limit,omitempty"`
+}
+
+// RequestPolicyMatch controls which requested/upstream model route a policy applies to.
+type RequestPolicyMatch struct {
+	RequestedModels   []string `yaml:"requested-models,omitempty" json:"requested-models,omitempty"`
+	UpstreamProviders []string `yaml:"upstream-providers,omitempty" json:"upstream-providers,omitempty"`
+	UpstreamModels    []string `yaml:"upstream-models,omitempty" json:"upstream-models,omitempty"`
+	RequestFeatures   []string `yaml:"request-features,omitempty" json:"request-features,omitempty"`
+}
+
+// RequestPolicyLimits contains hard request limits.
+type RequestPolicyLimits struct {
+	MaxRequestBytes int64 `yaml:"max-request-bytes,omitempty" json:"max-request-bytes,omitempty"`
+	MinRequestBytes int64 `yaml:"min-request-bytes,omitempty" json:"min-request-bytes,omitempty"`
+	MinInputItems   int   `yaml:"min-input-items,omitempty" json:"min-input-items,omitempty"`
+	MinToolCalls    int   `yaml:"min-tool-calls,omitempty" json:"min-tool-calls,omitempty"`
+}
+
+// RequestPolicyOverLimit controls behavior after a request exceeds a configured limit.
+type RequestPolicyOverLimit struct {
+	// Action is "skip-channel" or "reject". Empty defaults to "skip-channel".
+	Action string `yaml:"action,omitempty" json:"action,omitempty"`
+}
+
+// ProviderPreference sets model-scoped upstream provider selection priority.
+type ProviderPreference struct {
+	Name     string                  `yaml:"name,omitempty" json:"name,omitempty"`
+	Match    ProviderPreferenceMatch `yaml:"match,omitempty" json:"match,omitempty"`
+	Priority int                     `yaml:"priority,omitempty" json:"priority,omitempty"`
+}
+
+// ProviderPreferenceMatch controls which requested/upstream route receives the priority override.
+type ProviderPreferenceMatch struct {
+	RequestedModels   []string `yaml:"requested-models,omitempty" json:"requested-models,omitempty"`
+	UpstreamProviders []string `yaml:"upstream-providers,omitempty" json:"upstream-providers,omitempty"`
+	UpstreamModels    []string `yaml:"upstream-models,omitempty" json:"upstream-models,omitempty"`
+}
+
+
 // LoadConfig reads a YAML configuration file from the given path,
 // unmarshals it into a Config struct, applies environment variable overrides,
 // and returns it.
@@ -817,7 +861,13 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.SanitizeOAuthModelAlias()
 
 	// Validate raw payload rules and drop invalid entries.
+	cfg.SanitizeRequestPolicies()
+	cfg.SanitizeProviderPreferences()
+	cfg.SanitizeContextRetrieval()
+	cfg.SanitizeMultimodalAdapters()
 	cfg.SanitizePayloadRules()
+	cfg.SanitizeRouting()
+	cfg.SanitizeAPIKeyEntries()
 
 	// NOTE: Legacy migration persistence is intentionally disabled together with
 	// startup legacy migration to keep startup read-only for config.yaml.
@@ -836,6 +886,242 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Return the populated configuration struct.
 	return &cfg, nil
+}
+
+// SanitizeRequestPolicies normalizes request policy matching and drops inactive rules.
+func (cfg *Config) SanitizeRequestPolicies() {
+	if cfg == nil || len(cfg.RequestPolicies) == 0 {
+		return
+	}
+	out := make([]RequestPolicy, 0, len(cfg.RequestPolicies))
+	for i := range cfg.RequestPolicies {
+		policy := cfg.RequestPolicies[i]
+		policy.Name = strings.TrimSpace(policy.Name)
+		policy.Match.RequestedModels = normalizePolicyValues(policy.Match.RequestedModels, false)
+		policy.Match.UpstreamProviders = normalizePolicyValues(policy.Match.UpstreamProviders, true)
+		policy.Match.UpstreamModels = normalizePolicyValues(policy.Match.UpstreamModels, false)
+		policy.Match.RequestFeatures = normalizePolicyValues(policy.Match.RequestFeatures, true)
+		policy.OverLimit.Action = strings.ToLower(strings.TrimSpace(policy.OverLimit.Action))
+		switch policy.OverLimit.Action {
+		case "", "skip-channel", "reject":
+		default:
+			policy.OverLimit.Action = "skip-channel"
+		}
+		if policy.Limits.MaxRequestBytes <= 0 && policy.Limits.MinRequestBytes <= 0 && policy.Limits.MinInputItems <= 0 && policy.Limits.MinToolCalls <= 0 && len(policy.Match.RequestFeatures) == 0 {
+			continue
+		}
+		out = append(out, policy)
+	}
+	cfg.RequestPolicies = out
+}
+
+// SanitizeProviderPreferences normalizes model-scoped upstream provider priority overrides.
+func (cfg *Config) SanitizeProviderPreferences() {
+	if cfg == nil || len(cfg.ProviderPreferences) == 0 {
+		return
+	}
+	out := make([]ProviderPreference, 0, len(cfg.ProviderPreferences))
+	for i := range cfg.ProviderPreferences {
+		rule := cfg.ProviderPreferences[i]
+		rule.Name = strings.TrimSpace(rule.Name)
+		rule.Match.RequestedModels = normalizePolicyValues(rule.Match.RequestedModels, false)
+		rule.Match.UpstreamProviders = normalizePolicyValues(rule.Match.UpstreamProviders, true)
+		rule.Match.UpstreamModels = normalizePolicyValues(rule.Match.UpstreamModels, false)
+		if rule.Priority <= 0 {
+			continue
+		}
+		if len(rule.Match.RequestedModels) == 0 && len(rule.Match.UpstreamProviders) == 0 && len(rule.Match.UpstreamModels) == 0 {
+			continue
+		}
+		out = append(out, rule)
+	}
+	cfg.ProviderPreferences = out
+}
+
+// SanitizeContextRetrieval normalizes local context retrieval defaults.
+func (cfg *Config) SanitizeContextRetrieval() {
+	if cfg == nil {
+		return
+	}
+	cr := &cfg.ContextRetrieval
+	if !cr.Enabled {
+		return
+	}
+	if cr.MaxInputBytes <= 0 {
+		cr.MaxInputBytes = 700000
+	}
+	if cr.PreserveRecentTurns <= 0 {
+		cr.PreserveRecentTurns = 6
+	}
+	if cr.Chunk.MaxBytes <= 0 {
+		cr.Chunk.MaxBytes = 12000
+	}
+	if cr.Retrieval.TopK <= 0 {
+		cr.Retrieval.TopK = 20
+	}
+	cr.Retrieval.Strategy = strings.ToLower(strings.TrimSpace(cr.Retrieval.Strategy))
+	if cr.Retrieval.Strategy == "" {
+		cr.Retrieval.Strategy = "keyword"
+	}
+	if cr.Retrieval.Strategy != "keyword" {
+		cr.Retrieval.Strategy = "keyword"
+	}
+	if cr.CodexAware.Enabled {
+		cr.CodexAware.ToolPairRepair = strings.ToLower(strings.TrimSpace(cr.CodexAware.ToolPairRepair))
+		if cr.CodexAware.ToolPairRepair == "" && cr.CodexAware.PreserveToolPairs {
+			cr.CodexAware.ToolPairRepair = "drop-orphans"
+		}
+		if cr.CodexAware.MaxSummaryBytes <= 0 {
+			cr.CodexAware.MaxSummaryBytes = 4000
+		}
+		if cr.CodexAware.PreserveRecentCommands <= 0 {
+			cr.CodexAware.PreserveRecentCommands = 8
+		}
+		if cr.CodexAware.PreserveRecentErrors <= 0 {
+			cr.CodexAware.PreserveRecentErrors = 8
+		}
+	}
+	if cr.Secondary.Enabled {
+		if cr.Secondary.MaxInputBytes <= 0 || cr.Secondary.MaxInputBytes >= cr.MaxInputBytes {
+			cr.Secondary.MaxInputBytes = cr.MaxInputBytes * 2 / 3
+		}
+		if cr.Secondary.MaxInputBytes <= 0 {
+			cr.Secondary.MaxInputBytes = cr.MaxInputBytes
+		}
+		if cr.Secondary.PreserveRecentTurns <= 0 || cr.Secondary.PreserveRecentTurns >= cr.PreserveRecentTurns {
+			cr.Secondary.PreserveRecentTurns = cr.PreserveRecentTurns / 2
+		}
+		if cr.Secondary.PreserveRecentTurns <= 0 {
+			cr.Secondary.PreserveRecentTurns = 1
+		}
+		if cr.Secondary.TopK <= 0 || cr.Secondary.TopK >= cr.Retrieval.TopK {
+			cr.Secondary.TopK = cr.Retrieval.TopK / 2
+		}
+		if cr.Secondary.TopK <= 0 {
+			cr.Secondary.TopK = 8
+		}
+		if cr.Secondary.MaxSummaryBytes <= 0 {
+			cr.Secondary.MaxSummaryBytes = cr.CodexAware.MaxSummaryBytes / 2
+		}
+		if cr.Secondary.MaxSummaryBytes <= 0 {
+			cr.Secondary.MaxSummaryBytes = 2000
+		}
+		if cr.Secondary.MaxItemBytes <= 0 {
+			cr.Secondary.MaxItemBytes = cr.Secondary.MaxInputBytes / 4
+		}
+		if cr.Secondary.MaxItemBytes <= 0 {
+			cr.Secondary.MaxItemBytes = 24000
+		}
+	}
+}
+
+// SanitizeMultimodalAdapters normalizes multimodal adapter configuration.
+func (cfg *Config) SanitizeMultimodalAdapters() {
+	if cfg == nil {
+		return
+	}
+	ma := &cfg.MultimodalAdapters
+	if ma.Enabled == nil || !*ma.Enabled {
+		return
+	}
+	ma.DefaultAction = normalizeMultimodalAdapterAction(ma.DefaultAction)
+	ma.UnavailableAction = normalizeMultimodalUnavailableAction(ma.UnavailableAction)
+	if strings.TrimSpace(ma.InjectAs) == "" {
+		ma.InjectAs = "visual_context"
+	}
+	if ma.MaxMediaItems <= 0 {
+		ma.MaxMediaItems = 4
+	}
+	if ma.MaxOutputBytes <= 0 {
+		ma.MaxOutputBytes = 12000
+	}
+	seen := make(map[string]struct{})
+	extractors := make([]MultimodalExtractorConfig, 0, len(ma.Extractors))
+	for _, extractor := range ma.Extractors {
+		extractor.Name = strings.TrimSpace(extractor.Name)
+		if extractor.Name == "" {
+			continue
+		}
+		key := strings.ToLower(extractor.Name)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		extractors = append(extractors, extractor)
+	}
+	ma.Extractors = extractors
+
+	rules := make([]MultimodalAdapterRule, 0, len(ma.Rules))
+	for _, rule := range ma.Rules {
+		rule.Name = strings.TrimSpace(rule.Name)
+		rule.Extractor = strings.TrimSpace(rule.Extractor)
+		if rule.Extractor == "" && len(extractors) > 0 {
+			rule.Extractor = extractors[0].Name
+		}
+		rule.Action = normalizeMultimodalAdapterAction(rule.Action)
+		if strings.TrimSpace(rule.UnavailableAction) != "" {
+			rule.UnavailableAction = normalizeMultimodalUnavailableAction(rule.UnavailableAction)
+		}
+		rule.InjectAs = strings.TrimSpace(rule.InjectAs)
+		rule.Match.RequestedModels = normalizePolicyValues(rule.Match.RequestedModels, false)
+		rule.Match.UpstreamProviders = normalizePolicyValues(rule.Match.UpstreamProviders, true)
+		rule.Match.UpstreamModels = normalizePolicyValues(rule.Match.UpstreamModels, false)
+		rule.Match.Protocols = normalizePolicyValues(rule.Match.Protocols, true)
+		if len(rule.Match.RequestedModels) == 0 && len(rule.Match.UpstreamProviders) == 0 && len(rule.Match.UpstreamModels) == 0 && len(rule.Match.Protocols) == 0 {
+			continue
+		}
+		rules = append(rules, rule)
+	}
+	ma.Rules = rules
+}
+
+func normalizeMultimodalAdapterAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "extract", "mcp-extract", "http-extract":
+		return "extract"
+	case "reject":
+		return "reject"
+	case "strip":
+		return "strip"
+	default:
+		return "extract"
+	}
+}
+
+func normalizeMultimodalUnavailableAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "reject":
+		return "reject"
+	case "strip":
+		return "strip"
+	case "pass-through":
+		return "pass-through"
+	default:
+		return "strip"
+	}
+}
+
+func normalizePolicyValues(values []string, lower bool) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, v := range values {
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			continue
+		}
+		if lower {
+			trimmed = strings.ToLower(trimmed)
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 // SanitizePayloadRules validates raw JSON payload rule params and drops invalid rules.

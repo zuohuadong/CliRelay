@@ -17,6 +17,33 @@ const RequestPathMetadataKey = "request_path"
 // DisallowFreeAuthMetadataKey instructs auth selection to skip known free-tier credentials.
 const DisallowFreeAuthMetadataKey = "disallow_free_auth"
 
+// RequestBytesMetadataKey stores the inbound request body size in bytes.
+const RequestBytesMetadataKey = "request_bytes"
+
+// RequestFeaturesMetadataKey stores derived request features used by routing policies.
+const RequestFeaturesMetadataKey = "request_features"
+
+// InputItemsMetadataKey stores the number of top-level input/messages items.
+const InputItemsMetadataKey = "input_items"
+
+// ToolCallsMetadataKey stores the number of detected tool/function calls and outputs.
+const ToolCallsMetadataKey = "tool_calls"
+
+// ToolDefinitionsMetadataKey stores the number of top-level tools advertised by the request.
+const ToolDefinitionsMetadataKey = "tool_definitions"
+
+// SinglePickMetadataKey forces the auth manager to use exactly one picked auth.
+const SinglePickMetadataKey = "single_pick"
+
+// RouteGroupMetadataKey scopes execution to a channel group resolved from the URL path.
+const RouteGroupMetadataKey = "route_group"
+
+// RouteFallbackMetadataKey controls whether groupURL requests may fall back to the default scope.
+const RouteFallbackMetadataKey = "route_fallback"
+
+// DisableCooldownWaitMetadataKey skips manager-level cooldown waiting for latency-sensitive requests.
+const DisableCooldownWaitMetadataKey = "disable_cooldown_wait"
+
 const (
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"

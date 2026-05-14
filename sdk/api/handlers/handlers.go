@@ -14,8 +14,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/contextretrieval"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -229,6 +232,138 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true
 	}
 	return meta
+}
+
+
+func enrichRequestExecutionMetadata(meta map[string]any, rawJSON []byte) {
+	if meta == nil || len(rawJSON) == 0 {
+		return
+	}
+	inputItems := countTopLevelItems(rawJSON)
+	toolDefinitions := countTopLevelTools(rawJSON)
+	toolCalls := countJSONOccurrences(rawJSON, []string{"function_call", "tool_call", "function_call_output", "tool_result"})
+	features := requestFeatures(rawJSON, inputItems, toolDefinitions, toolCalls)
+	meta[coreexecutor.InputItemsMetadataKey] = inputItems
+	meta[coreexecutor.ToolDefinitionsMetadataKey] = toolDefinitions
+	meta[coreexecutor.ToolCallsMetadataKey] = toolCalls
+	if len(features) > 0 {
+		meta[coreexecutor.RequestFeaturesMetadataKey] = features
+	}
+}
+
+func countTopLevelItems(rawJSON []byte) int {
+	for _, path := range []string{"input", "messages"} {
+		result := gjson.GetBytes(rawJSON, path)
+		if result.IsArray() {
+			return len(result.Array())
+		}
+	}
+	return 0
+}
+
+func countTopLevelTools(rawJSON []byte) int {
+	result := gjson.GetBytes(rawJSON, "tools")
+	if result.IsArray() {
+		return len(result.Array())
+	}
+	return 0
+}
+
+func countJSONOccurrences(rawJSON []byte, needles []string) int {
+	text := strings.ToLower(string(rawJSON))
+	total := 0
+	for _, needle := range needles {
+		total += strings.Count(text, strings.ToLower(needle))
+	}
+	return total
+}
+
+func requestFeatures(rawJSON []byte, inputItems int, toolDefinitions int, toolCalls int) []string {
+	features := make([]string, 0, 4)
+	hasImage, hasFile, hasVideo := structuredMediaFeatures(rawJSON)
+	if hasImage || hasFile || hasVideo {
+		features = append(features, "multimodal")
+	}
+	if hasImage {
+		features = append(features, "image")
+	}
+	if hasFile {
+		features = append(features, "file")
+	}
+	if hasVideo {
+		features = append(features, "video")
+	}
+	if toolDefinitions > 0 || toolCalls > 0 {
+		features = append(features, "tools")
+	}
+	if toolCalls >= 16 {
+		features = append(features, "tool-heavy")
+	}
+	if inputItems >= 80 {
+		features = append(features, "long-thread")
+	}
+	return features
+}
+
+func structuredMediaFeatures(rawJSON []byte) (hasImage, hasFile, hasVideo bool) {
+	if len(rawJSON) == 0 {
+		return false, false, false
+	}
+	var payload any
+	if err := json.Unmarshal(rawJSON, &payload); err != nil {
+		return false, false, false
+	}
+	var walk func(any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				switch strings.ToLower(strings.TrimSpace(key)) {
+				case "type":
+					if s, ok := child.(string); ok {
+						switch strings.ToLower(strings.TrimSpace(s)) {
+						case "input_image", "image":
+							hasImage = true
+						case "input_file", "file":
+							hasFile = true
+						case "input_video", "video":
+							hasVideo = true
+						}
+					}
+				case "image_url":
+					hasImage = true
+				case "file_url":
+					hasFile = true
+				case "video_url":
+					hasVideo = true
+				}
+				walk(child)
+			}
+		case []any:
+			for _, item := range typed {
+				walk(item)
+			}
+		}
+	}
+	walk(payload)
+	return hasImage, hasFile, hasVideo
+}
+
+// applyContextRetrieval reduces oversized request payloads when context retrieval is enabled.
+func (h *BaseAPIHandler) applyContextRetrieval(ctx context.Context, modelName string, handlerType string, rawJSON []byte) []byte {
+	if h == nil || h.Cfg == nil || !h.Cfg.ContextRetrieval.Enabled || len(rawJSON) == 0 {
+		return rawJSON
+	}
+	reduced, report, err := contextretrieval.Reduce(ctx, rawJSON, modelName, handlerType, h.Cfg.ContextRetrieval)
+	if err != nil {
+		log.WithError(err).Warnf("context retrieval: failed for model=%s protocol=%s", modelName, handlerType)
+		return rawJSON
+	}
+	if report.Applied {
+		log.Infof("context retrieval: reduced request model=%s protocol=%s %s", modelName, handlerType, report.String())
+		return reduced
+	}
+	return rawJSON
 }
 
 // headersFromContext extracts the original HTTP request headers from the gin context
@@ -540,6 +675,8 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
+	enrichRequestExecutionMetadata(reqMeta, rawJSON)
+	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -588,6 +725,8 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
+	enrichRequestExecutionMetadata(reqMeta, rawJSON)
+	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -640,6 +779,8 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
+	enrichRequestExecutionMetadata(reqMeta, rawJSON)
+	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil

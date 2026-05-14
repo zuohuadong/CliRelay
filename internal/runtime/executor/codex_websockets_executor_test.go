@@ -360,6 +360,54 @@ func TestApplyCodexPromptCacheHeadersSetsLowercaseSessionAndLegacyConversation(t
 	}
 }
 
+func TestNormalizeCodexWebsocketCompletionPrefixesResponseID(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		wantID string
+	}{
+		{
+			name:   "bare_id_gets_resp_prefix",
+			input:  `{"type":"response.created","response":{"id":"202605131251361c390ef60c044cec"}}`,
+			wantID: "resp_202605131251361c390ef60c044cec",
+		},
+		{
+			name:   "resp_prefix_preserved",
+			input:  `{"type":"response.created","response":{"id":"resp_abc123"}}`,
+			wantID: "resp_abc123",
+		},
+		{
+			name:   "completed_bare_id_gets_resp_prefix",
+			input:  `{"type":"response.completed","response":{"id":"abc123","output":[]}}`,
+			wantID: "resp_abc123",
+		},
+		{
+			name:   "done_event_normalized_and_prefixed",
+			input:  `{"type":"response.done","response":{"id":"abc123","output":[]}}`,
+			wantID: "resp_abc123",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeCodexWebsocketCompletion([]byte(tc.input))
+			if gotID := gjson.GetBytes(got, "response.id").String(); gotID != tc.wantID {
+				t.Fatalf("response.id = %q, want %q", gotID, tc.wantID)
+			}
+		})
+	}
+}
+
+func TestNormalizeCodexWebsocketCompletionDoneToCompleted(t *testing.T) {
+	got := normalizeCodexWebsocketCompletion([]byte(`{"type":"response.done","response":{"id":"resp_1","output":[]}}`))
+	if gotType := gjson.GetBytes(got, "type").String(); gotType != "response.completed" {
+		t.Fatalf("type = %q, want response.completed", gotType)
+	}
+	if gotID := gjson.GetBytes(got, "response.id").String(); gotID != "resp_1" {
+		t.Fatalf("response.id = %q, want resp_1", gotID)
+	}
+}
+
 func TestApplyCodexWebsocketHeadersUsesCanonicalAccountHeader(t *testing.T) {
 	auth := &cliproxyauth.Auth{Provider: "codex", Metadata: map[string]any{"account_id": "acct-1"}}
 

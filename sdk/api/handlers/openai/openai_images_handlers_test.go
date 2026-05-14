@@ -69,16 +69,21 @@ func TestImagesGenerationsRejectsUnsupportedModel(t *testing.T) {
 	assertUnsupportedImagesModelResponse(t, resp, "gpt-5.4-mini")
 }
 
-func TestImagesEditsJSONRejectsUnsupportedModel(t *testing.T) {
+func TestImagesEditsJSONUnsupportedModelFallsBackToLegacyPath(t *testing.T) {
 	handler := &OpenAIAPIHandler{}
 	body := strings.NewReader(`{"model":"gpt-5.4-mini","prompt":"edit this","images":[{"image_url":"data:image/png;base64,AA=="}]}`)
 
 	resp := performImagesEndpointRequest(t, imagesEditsPath, "application/json", body, handler.ImagesEdits)
 
-	assertUnsupportedImagesModelResponse(t, resp, "gpt-5.4-mini")
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusInternalServerError, resp.Body.String())
+	}
+	if message := gjson.GetBytes(resp.Body.Bytes(), "error.message").String(); message != "authentication manager not initialized" {
+		t.Fatalf("error message = %q, want %q", message, "authentication manager not initialized")
+	}
 }
 
-func TestImagesEditsMultipartRejectsUnsupportedModel(t *testing.T) {
+func TestImagesEditsMultipartUnsupportedModelFallsBackToLegacyPath(t *testing.T) {
 	handler := &OpenAIAPIHandler{}
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -88,13 +93,25 @@ func TestImagesEditsMultipartRejectsUnsupportedModel(t *testing.T) {
 	if err := writer.WriteField("prompt", "edit this"); err != nil {
 		t.Fatalf("write prompt field: %v", err)
 	}
+	part, err := writer.CreateFormFile("image", "input.png")
+	if err != nil {
+		t.Fatalf("create image file part: %v", err)
+	}
+	if _, errWrite := part.Write([]byte{0x89, 0x50, 0x4e, 0x47}); errWrite != nil {
+		t.Fatalf("write image file part: %v", errWrite)
+	}
 	if errClose := writer.Close(); errClose != nil {
 		t.Fatalf("close multipart writer: %v", errClose)
 	}
 
 	resp := performImagesEndpointRequest(t, imagesEditsPath, writer.FormDataContentType(), &body, handler.ImagesEdits)
 
-	assertUnsupportedImagesModelResponse(t, resp, "gpt-5.4-mini")
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusInternalServerError, resp.Body.String())
+	}
+	if message := gjson.GetBytes(resp.Body.Bytes(), "error.message").String(); message != "authentication manager not initialized" {
+		t.Fatalf("error message = %q, want %q", message, "authentication manager not initialized")
+	}
 }
 
 func TestImagesGenerations_DisableImageGeneration_Returns404(t *testing.T) {
@@ -140,7 +157,7 @@ func TestImagesEdits_DisableImageGenerationChat_DoesNotReturn404(t *testing.T) {
 
 	resp := performImagesEndpointRequest(t, imagesEditsPath, "application/json", body, handler.ImagesEdits)
 
-	if resp.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusBadRequest, resp.Body.String())
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusInternalServerError, resp.Body.String())
 	}
 }

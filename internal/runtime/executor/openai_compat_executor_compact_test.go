@@ -102,6 +102,64 @@ func TestOpenAICompatExecutorPayloadOverrideWinsOverThinkingSuffix(t *testing.T)
 	}
 }
 
+func TestOpenAICompatExecutorIdentityFingerprintOverridesProviderHeaders(t *testing.T) {
+	var gotHeaders http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"glm-5.1","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{
+		IdentityFingerprint: config.IdentityFingerprintConfig{
+			Codex: config.CodexIdentityFingerprintConfig{
+				Enabled:     true,
+				UserAgent:   "Codex Desktop/test",
+				Version:     "0.130.0-alpha.5",
+				Originator:  "Codex Desktop",
+				SessionMode: "fixed",
+				SessionID:   "server-session",
+			},
+		},
+	})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url":             server.URL + "/v1",
+		"api_key":              "test",
+		"identity_fingerprint": "codex",
+		"header:User-Agent":    "codex-tui/old",
+		"header:Version":       "0.124.0",
+		"header:Originator":    "codex-tui",
+		"header:X-Keep":        "ok",
+	}}
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex","messages":[{"role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got := gotHeaders.Get("User-Agent"); got != "Codex Desktop/test" {
+		t.Fatalf("User-Agent = %q, want fingerprint value", got)
+	}
+	if got := gotHeaders.Get("Version"); got != "0.130.0-alpha.5" {
+		t.Fatalf("Version = %q, want fingerprint value", got)
+	}
+	if got := gotHeaders.Get("Originator"); got != "Codex Desktop" {
+		t.Fatalf("Originator = %q, want fingerprint value", got)
+	}
+	if got := gotHeaders.Get("Session_id"); got != "server-session" {
+		t.Fatalf("Session_id = %q, want fingerprint value", got)
+	}
+	if got := gotHeaders.Get("X-Keep"); got != "ok" {
+		t.Fatalf("X-Keep = %q, want custom provider header preserved", got)
+	}
+}
+
 func TestOpenAICompatExecutorStreamRejectsPlainJSONAfterBlankLines(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

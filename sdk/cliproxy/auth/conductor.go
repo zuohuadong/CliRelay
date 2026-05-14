@@ -2865,6 +2865,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	runtimeConfig, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 
 	m.mu.RLock()
 	executor, okExecutor := m.executors[provider]
@@ -2896,6 +2897,15 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 			continue
 		}
 		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
+			continue
+		}
+		upstreamModel := rewriteModelForAuth(model, candidate)
+		upstreamModel = m.applyOAuthModelAlias(candidate, upstreamModel)
+		upstreamModel = m.applyAPIKeyModelAlias(candidate, upstreamModel)
+		if blocked, policyErr := requestPolicyDecision(runtimeConfig, candidate, opts, model, provider, upstreamModel); blocked {
+			if policyErr != nil {
+				logEntryWithRequestID(ctx).Debugf("request policy skipped auth=%s provider=%s model=%s policy=%s reason=%s", candidate.ID, provider, model, policyErr.policy, policyErr.reason)
+			}
 			continue
 		}
 		candidates = append(candidates, candidate)
@@ -2974,6 +2984,14 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 			return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 		}
 		if disallowFreeAuth && isFreeCodexAuth(selected) {
+			if tried == nil {
+				tried = make(map[string]struct{})
+			}
+			tried[selected.ID] = struct{}{}
+			continue
+		}
+		runtimeConfig, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+		if blocked, _ := requestPolicyDecision(runtimeConfig, selected, opts, model, provider, model); blocked {
 			if tried == nil {
 				tried = make(map[string]struct{})
 			}
@@ -3155,6 +3173,20 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 		}
 		if disallowFreeAuth && isFreeCodexAuth(selected) {
+			if tried == nil {
+				tried = make(map[string]struct{})
+			}
+			tried[selected.ID] = struct{}{}
+			continue
+		}
+		runtimeConfig, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+		upstreamModel := rewriteModelForAuth(model, selected)
+		upstreamModel = m.applyOAuthModelAlias(selected, upstreamModel)
+		upstreamModel = m.applyAPIKeyModelAlias(selected, upstreamModel)
+		if blocked, policyErr := requestPolicyDecision(runtimeConfig, selected, opts, model, providerKey, upstreamModel); blocked {
+			if policyErr != nil && policyErr.action == requestPolicyActionReject {
+				return nil, nil, "", policyErr
+			}
 			if tried == nil {
 				tried = make(map[string]struct{})
 			}
@@ -4288,4 +4320,19 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 		return nil, &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey}
 	}
 	return exec.HttpRequest(ctx, auth, req)
+}
+
+func authAllowedByChannels(auth *Auth, allowed map[string]struct{}) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	if auth == nil {
+		return false
+	}
+	for _, identifier := range auth.ChannelIdentifiers() {
+		if _, ok := allowed[strings.ToLower(strings.TrimSpace(identifier))]; ok {
+			return true
+		}
+	}
+	return false
 }

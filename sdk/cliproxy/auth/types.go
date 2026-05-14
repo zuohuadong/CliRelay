@@ -243,6 +243,73 @@ func (a *Auth) Clone() *Auth {
 	return &copyAuth
 }
 
+func (a *Auth) ChannelName() string {
+	if a == nil {
+		return ""
+	}
+	if label := strings.TrimSpace(a.Label); label != "" {
+		return label
+	}
+	if a.Metadata != nil {
+		if raw, ok := a.Metadata["label"].(string); ok {
+			if label := strings.TrimSpace(raw); label != "" {
+				return label
+			}
+		}
+		if raw, ok := a.Metadata["email"].(string); ok {
+			if email := strings.TrimSpace(raw); email != "" {
+				return email
+			}
+		}
+	}
+	return strings.TrimSpace(a.Provider)
+}
+
+func (a *Auth) ChannelIdentifiers() []string {
+	if a == nil {
+		return nil
+	}
+	out := make([]string, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	appendValue := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		key := strings.ToLower(value)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+
+	appendValue(a.ChannelName())
+	if a.Metadata != nil {
+		if raw, ok := a.Metadata["email"].(string); ok {
+			appendValue(raw)
+		}
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func authMatchesChannelName(auth *Auth, candidate string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if auth == nil || candidate == "" {
+		return false
+	}
+	for _, identifier := range auth.ChannelIdentifiers() {
+		if strings.EqualFold(identifier, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 func stableAuthIndex(seed string) string {
 	seed = strings.TrimSpace(seed)
 	if seed == "" {

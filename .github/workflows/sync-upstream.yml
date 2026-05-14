@@ -64,14 +64,14 @@ jobs:
           fi
 
           if [ -s "${conflict_file}" ]; then
-            grep -E '^\.github/workflows/' "${conflict_file}" | while IFS= read -r path; do
+            while IFS= read -r path; do
               [ -n "${path}" ] || continue
               if git cat-file -e "HEAD:${path}" 2>/dev/null; then
                 git restore --source=HEAD --staged --worktree -- "${path}" || true
               else
                 git rm -f -- "${path}" || true
               fi
-            done
+            done < <(grep -E '^\.github/workflows/' "${conflict_file}" || true)
           fi
 
           git add -A

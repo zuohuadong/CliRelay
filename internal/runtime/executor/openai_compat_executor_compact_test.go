@@ -18,6 +18,79 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestOpenAICompatExecutorNormalizesBigModelWebSearchTool(t *testing.T) {
+	executor := NewOpenAICompatExecutor("bigmodel-coding", &config.Config{})
+	payload := []byte(`{
+		"model":"glm-5.1",
+		"messages":[{"role":"user","content":"latest news"}],
+		"tools":[{"type":"web_search_preview","search_context_size":"high"}],
+		"tool_choice":{"type":"web_search_preview"}
+	}`)
+
+	out, err := executor.normalizeBigModelTools(payload, "https://open.bigmodel.cn/api/coding/paas/v4")
+	if err != nil {
+		t.Fatalf("normalizeBigModelTools error: %v", err)
+	}
+	if got := gjson.GetBytes(out, "tools.0.web_search.enable").Bool(); !got {
+		t.Fatalf("tools.0.web_search.enable = false, want true: %s", string(out))
+	}
+	if got := gjson.GetBytes(out, "tools.0.web_search.search_engine").String(); got != "search_pro" {
+		t.Fatalf("tools.0.web_search.search_engine = %q, want search_pro: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "tools.0.web_search.content_size").String(); got != "high" {
+		t.Fatalf("tools.0.web_search.content_size = %q, want high: %s", got, string(out))
+	}
+	if gjson.GetBytes(out, "tools.0.search_context_size").Exists() {
+		t.Fatalf("unexpected OpenAI web_search field in BigModel tool: %s", string(out))
+	}
+	if got := gjson.GetBytes(out, "tools.0.type").String(); got != "web_search" {
+		t.Fatalf("tools.0.type = %q, want web_search: %s", got, string(out))
+	}
+	if gjson.GetBytes(out, "tool_choice").Exists() {
+		t.Fatalf("BigModel web_search should remove unsupported tool_choice object: %s", string(out))
+	}
+}
+
+func TestOpenAICompatExecutorNormalizesBigModelMCPTool(t *testing.T) {
+	executor := NewOpenAICompatExecutor("bigmodel-coding", &config.Config{})
+	payload := []byte(`{
+		"model":"glm-5.1",
+		"messages":[{"role":"user","content":"use mcp"}],
+		"tools":[{"type":"mcp","server_label":"web-search-prime","server_url":"https://open.bigmodel.cn/api/mcp/web_search_prime/mcp","headers":{"Authorization":"Bearer test"}}],
+		"tool_choice":{"type":"mcp"}
+	}`)
+
+	out, err := executor.normalizeBigModelTools(payload, "https://open.bigmodel.cn/api/coding/paas/v4")
+	if err != nil {
+		t.Fatalf("normalizeBigModelTools error: %v", err)
+	}
+	if got := gjson.GetBytes(out, "tools.0.mcp.server_label").String(); got != "web-search-prime" {
+		t.Fatalf("tools.0.mcp.server_label = %q, want web-search-prime: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "tools.0.mcp.transport_type").String(); got != "streamable-http" {
+		t.Fatalf("tools.0.mcp.transport_type = %q, want streamable-http: %s", got, string(out))
+	}
+	if gjson.GetBytes(out, "tools.0.server_url").Exists() {
+		t.Fatalf("unexpected flat MCP field in BigModel tool: %s", string(out))
+	}
+	if gjson.GetBytes(out, "tool_choice").Exists() {
+		t.Fatalf("BigModel MCP should remove unsupported tool_choice object: %s", string(out))
+	}
+}
+
+func TestOpenAICompatExecutorLeavesOtherProviderWebSearchToolUnchanged(t *testing.T) {
+	executor := NewOpenAICompatExecutor("openrouter", &config.Config{})
+	payload := []byte(`{"model":"gpt-5","tools":[{"type":"web_search","search_context_size":"high"}]}`)
+
+	out, err := executor.normalizeBigModelTools(payload, "https://openrouter.ai/api/v1")
+	if err != nil {
+		t.Fatalf("normalizeBigModelTools error: %v", err)
+	}
+	if string(out) != string(payload) {
+		t.Fatalf("payload changed for non-BigModel provider: %s", string(out))
+	}
+}
+
 func TestOpenAICompatExecutorStreamAddsKimiReasoningForAssistantToolCalls(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

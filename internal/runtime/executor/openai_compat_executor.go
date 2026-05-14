@@ -151,6 +151,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 				return resp, err
 			}
 		}
+		translated, err = e.normalizeBigModelTools(translated, baseURL)
+		if err != nil {
+			return resp, err
+		}
 		if opts.Alt == "images/edits" && e.imageEditsMode(auth) == "chat-multimodal" {
 			translated, err = convertImageEditPayloadToChatMultimodal(translated)
 			if err != nil {
@@ -282,6 +286,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if err != nil {
 			return nil, err
 		}
+	}
+	translated, err = e.normalizeBigModelTools(translated, baseURL)
+	if err != nil {
+		return nil, err
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
@@ -435,6 +443,137 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 	usageJSON := buildOpenAIUsageJSON(count)
 	translatedUsage := sdktranslator.TranslateTokenCount(ctx, to, from, count, usageJSON)
 	return cliproxyexecutor.Response{Payload: []byte(translatedUsage)}, nil
+}
+
+func (e *OpenAICompatExecutor) normalizeBigModelTools(payload []byte, baseURL string) ([]byte, error) {
+	if !isBigModelCompatProvider(e.Identifier(), baseURL) || !gjson.GetBytes(payload, "tools").Exists() {
+		return payload, nil
+	}
+	var root map[string]any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return nil, fmt.Errorf("normalize bigmodel tools: invalid payload: %w", err)
+	}
+	tools, ok := root["tools"].([]any)
+	if !ok {
+		return payload, nil
+	}
+	changed := false
+	for i, item := range tools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		toolType := strings.ToLower(strings.TrimSpace(fmt.Sprint(tool["type"])))
+		switch {
+		case isOpenAIWebSearchToolType(toolType):
+			tools[i] = normalizeBigModelWebSearchTool(tool)
+			changed = true
+		case toolType == "mcp":
+			tools[i] = normalizeBigModelMCPTool(tool)
+			changed = true
+		}
+	}
+	if changed {
+		root["tools"] = tools
+	}
+	if toolChoice, ok := root["tool_choice"].(map[string]any); ok {
+		choiceType := strings.ToLower(strings.TrimSpace(fmt.Sprint(toolChoice["type"])))
+		switch {
+		case isOpenAIWebSearchToolType(choiceType), choiceType == "mcp":
+			delete(root, "tool_choice")
+			changed = true
+		}
+	}
+	if !changed {
+		return payload, nil
+	}
+	out, err := json.Marshal(root)
+	if err != nil {
+		return nil, fmt.Errorf("normalize bigmodel tools: encode payload: %w", err)
+	}
+	return out, nil
+}
+
+func isBigModelCompatProvider(provider, baseURL string) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	baseURL = strings.ToLower(strings.TrimSpace(baseURL))
+	return strings.Contains(provider, "bigmodel") ||
+		strings.Contains(provider, "zhipu") ||
+		strings.Contains(baseURL, "open.bigmodel.cn")
+}
+
+func isOpenAIWebSearchToolType(toolType string) bool {
+	return toolType == "web_search" || strings.HasPrefix(toolType, "web_search_")
+}
+
+func normalizeBigModelWebSearchTool(tool map[string]any) map[string]any {
+	webSearch := objectValue(tool["web_search"])
+	if webSearch == nil {
+		webSearch = make(map[string]any)
+	}
+	if _, ok := webSearch["enable"]; !ok {
+		webSearch["enable"] = true
+	}
+	if isEmptyJSONString(webSearch["search_engine"]) {
+		webSearch["search_engine"] = "search_pro"
+	}
+	if _, ok := webSearch["content_size"]; !ok {
+		if size := bigModelContentSize(fmt.Sprint(tool["search_context_size"])); size != "" {
+			webSearch["content_size"] = size
+		}
+	}
+	return map[string]any{
+		"type":       "web_search",
+		"web_search": webSearch,
+	}
+}
+
+func normalizeBigModelMCPTool(tool map[string]any) map[string]any {
+	mcp := objectValue(tool["mcp"])
+	if mcp == nil {
+		mcp = make(map[string]any)
+	}
+	for _, field := range []string{"server_label", "server_url", "transport_type", "allowed_tools", "headers"} {
+		if _, ok := mcp[field]; !ok {
+			if value, exists := tool[field]; exists {
+				mcp[field] = value
+			}
+		}
+	}
+	if isEmptyJSONString(mcp["transport_type"]) {
+		mcp["transport_type"] = "streamable-http"
+	}
+	return map[string]any{
+		"type": "mcp",
+		"mcp":  mcp,
+	}
+}
+
+func objectValue(value any) map[string]any {
+	obj, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return obj
+}
+
+func isEmptyJSONString(value any) bool {
+	if value == nil {
+		return true
+	}
+	text, ok := value.(string)
+	return ok && strings.TrimSpace(text) == ""
+}
+
+func bigModelContentSize(searchContextSize string) string {
+	switch strings.ToLower(strings.TrimSpace(searchContextSize)) {
+	case "high":
+		return "high"
+	case "low", "medium":
+		return "medium"
+	default:
+		return ""
+	}
 }
 
 // Refresh is a no-op for API-key based compatibility providers.

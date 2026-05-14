@@ -20,7 +20,6 @@ type compactCaptureExecutor struct {
 	provider     string
 	alt          string
 	sourceFormat string
-	calls        int
 	models       []string
 	failures     map[string]error
 }
@@ -33,7 +32,6 @@ func (e *compactCaptureExecutor) Identifier() string {
 }
 
 func (e *compactCaptureExecutor) Execute(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
-	e.calls++
 	e.alt = opts.Alt
 	e.sourceFormat = opts.SourceFormat.String()
 	e.models = append(e.models, req.Model)
@@ -87,12 +85,9 @@ func TestOpenAIResponsesCompactRejectsStream(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", resp.Code, http.StatusBadRequest)
 	}
-	if executor.calls != 0 {
-		t.Fatalf("executor calls = %d, want 0", executor.calls)
-	}
 }
 
-func TestOpenAIResponsesCompactExecute(t *testing.T) {
+func TestOpenAIResponsesCompactPassthrough(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	executor := &compactCaptureExecutor{provider: "codex"}
 	manager := coreauth.NewManager(nil, nil, nil)
@@ -129,22 +124,18 @@ func TestOpenAIResponsesCompactExecute(t *testing.T) {
 	if strings.TrimSpace(resp.Body.String()) != `{"ok":true}` {
 		t.Fatalf("body = %s", resp.Body.String())
 	}
+	// Passthrough: only the requested model, no fallback attempts
+	if len(executor.models) != 1 || executor.models[0] != "test-model" {
+		t.Fatalf("models = %#v, want exactly [test-model]", executor.models)
+	}
 }
 
-type compactStatusErr struct {
-	code int
-	msg  string
-}
-
-func (e compactStatusErr) Error() string   { return e.msg }
-func (e compactStatusErr) StatusCode() int { return e.code }
-
-func TestOpenAIResponsesCompactFallsBackToSupportedModel(t *testing.T) {
+func TestOpenAIResponsesCompactPassthroughError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	executor := &compactCaptureExecutor{
 		provider: "codex",
 		failures: map[string]error{
-			"test-model": compactStatusErr{code: http.StatusNotFound, msg: `{"error":"compact unsupported"}`},
+			"test-model": statusErr{code: http.StatusNotImplemented, msg: "compact not supported"},
 		},
 	}
 	manager := coreauth.NewManager(nil, nil, nil)
@@ -154,10 +145,7 @@ func TestOpenAIResponsesCompactFallsBackToSupportedModel(t *testing.T) {
 	if _, err := manager.Register(context.Background(), auth); err != nil {
 		t.Fatalf("Register auth: %v", err)
 	}
-	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{
-		{ID: "test-model"},
-		{ID: "gpt-5.5"},
-	})
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
 	t.Cleanup(func() {
 		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
 	})
@@ -172,104 +160,19 @@ func TestOpenAIResponsesCompactFallsBackToSupportedModel(t *testing.T) {
 	resp := httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
 
-	if resp.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.Code, http.StatusOK)
+	// Error returned directly, no fallback
+	if resp.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusNotImplemented)
 	}
-	if len(executor.models) != 2 {
-		t.Fatalf("models = %#v, want 2 attempts", executor.models)
-	}
-	if executor.models[0] != "test-model" {
-		t.Fatalf("first model = %q, want %q", executor.models[0], "test-model")
-	}
-	if executor.models[1] != "gpt-5.5" {
-		t.Fatalf("fallback model = %q, want %q", executor.models[1], "gpt-5.5")
+	if len(executor.models) != 1 {
+		t.Fatalf("models = %#v, want exactly 1 attempt", executor.models)
 	}
 }
 
-func TestOpenAIResponsesCompactFallsBackOnHeaderTimeout(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	executor := &compactCaptureExecutor{
-		provider: "codex",
-		failures: map[string]error{
-			"test-model": compactStatusErr{code: http.StatusGatewayTimeout, msg: `Post "https://chatgpt.com/backend-api/codex/responses/compact": http2: timeout awaiting response headers`},
-		},
-	}
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(executor)
-
-	auth := &coreauth.Auth{ID: "auth-timeout", Provider: executor.Identifier(), Status: coreauth.StatusActive}
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatalf("Register auth: %v", err)
-	}
-	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{
-		{ID: "test-model"},
-		{ID: "gpt-5.5"},
-	})
-	t.Cleanup(func() {
-		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
-	})
-
-	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
-	h := NewOpenAIResponsesAPIHandler(base)
-	router := gin.New()
-	router.POST("/v1/responses/compact", h.Compact)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"test-model","input":"hello"}`))
-	req.Header.Set("Content-Type", "application/json")
-	resp := httptest.NewRecorder()
-	router.ServeHTTP(resp, req)
-
-	if resp.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.Code, http.StatusOK)
-	}
-	if len(executor.models) != 2 {
-		t.Fatalf("models = %#v, want 2 attempts", executor.models)
-	}
-	if executor.models[1] != "gpt-5.5" {
-		t.Fatalf("fallback model = %q, want %q", executor.models[1], "gpt-5.5")
-	}
+type statusErr struct {
+	code int
+	msg  string
 }
 
-func TestOpenAIResponsesCompactFallsBackOnModelNotSupported(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	executor := &compactCaptureExecutor{
-		provider: "codex",
-		failures: map[string]error{
-			"test-model": compactStatusErr{code: http.StatusBadRequest, msg: `{"error":{"message":"Model is not supported for compact","type":"invalid_request_error"}}`},
-		},
-	}
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(executor)
-
-	auth := &coreauth.Auth{ID: "auth-unsupported", Provider: executor.Identifier(), Status: coreauth.StatusActive}
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatalf("Register auth: %v", err)
-	}
-	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{
-		{ID: "test-model"},
-		{ID: "gpt-5.5"},
-	})
-	t.Cleanup(func() {
-		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
-	})
-
-	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
-	h := NewOpenAIResponsesAPIHandler(base)
-	router := gin.New()
-	router.POST("/v1/responses/compact", h.Compact)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"test-model","input":"hello"}`))
-	req.Header.Set("Content-Type", "application/json")
-	resp := httptest.NewRecorder()
-	router.ServeHTTP(resp, req)
-
-	if resp.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.Code, http.StatusOK)
-	}
-	if len(executor.models) != 2 {
-		t.Fatalf("models = %#v, want 2 attempts", executor.models)
-	}
-	if executor.models[1] != "gpt-5.5" {
-		t.Fatalf("fallback model = %q, want %q", executor.models[1], "gpt-5.5")
-	}
-}
+func (e statusErr) Error() string   { return e.msg }
+func (e statusErr) StatusCode() int { return e.code }

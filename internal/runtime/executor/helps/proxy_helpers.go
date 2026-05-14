@@ -77,3 +77,17 @@ func buildProxyTransport(proxyURL string) *http.Transport {
 	}
 	return transport
 }
+
+// NewProxyAwareHTTPClientWithResponseHeaderTimeout creates an HTTP client and sets
+// ResponseHeaderTimeout on the transport when a positive duration is provided.
+// This is used by the compact endpoint to avoid waiting too long for slow upstreams.
+func NewProxyAwareHTTPClientWithResponseHeaderTimeout(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout, responseHeaderTimeout time.Duration) *http.Client {
+	httpClient := NewProxyAwareHTTPClient(ctx, cfg, auth, timeout)
+	if responseHeaderTimeout <= 0 || httpClient == nil {
+		return httpClient
+	}
+	if transport, ok := httpClient.Transport.(*http.Transport); ok && transport != nil {
+		transport.ResponseHeaderTimeout = responseHeaderTimeout
+	}
+	return httpClient
+}

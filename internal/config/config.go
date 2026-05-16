@@ -46,6 +46,11 @@ type Config struct {
 	// AuthDir is the directory where authentication token files are stored.
 	AuthDir string `yaml:"auth-dir" json:"-"`
 
+	// OAuthUserAgent sets the User-Agent header for OAuth HTTP requests.
+	// Some providers may reject the default Go HTTP client User-Agent.
+	// When empty, a browser-like default is used.
+	OAuthUserAgent string `yaml:"oauth-user-agent" json:"oauth-user-agent"`
+
 	// Debug enables or disables debug-level logging and other debug features.
 	Debug bool `yaml:"debug" json:"debug"`
 
@@ -124,6 +129,9 @@ type Config struct {
 
 	// IdentityFingerprint controls provider-specific upstream identity headers.
 	IdentityFingerprint IdentityFingerprintConfig `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
+
+	// ProxyPool stores reusable outbound proxies that can be referenced by providers and auth files.
+	ProxyPool []ProxyPoolEntry `yaml:"proxy-pool,omitempty" json:"proxy-pool,omitempty"`
 
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`

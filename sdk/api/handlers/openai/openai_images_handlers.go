@@ -24,15 +24,6 @@ import (
 )
 
 const (
-<<<<<<< HEAD
-	defaultImagesMainModel = "gpt-5.4-mini"
-	defaultImagesToolModel = "gpt-image-2"
-	imagesGenerationsPath  = "/v1/images/generations"
-	imagesEditsPath        = "/v1/images/edits"
-	openAIImageEditsAlt    = "images/edits"
-	openAIImageMaxUpload   = 20 << 20
-	openAIImageMaxN        = 4
-=======
 	defaultImagesMainModel      = "gpt-5.4-mini"
 	defaultImagesToolModel      = "gpt-image-2"
 	defaultXAIImagesModel       = "grok-imagine-image"
@@ -42,7 +33,9 @@ const (
 	xaiImagesDefaultResolution  = "1k"
 	imagesGenerationsPath       = "/v1/images/generations"
 	imagesEditsPath             = "/v1/images/edits"
->>>>>>> upstream/main
+	openAIImageEditsAlt         = "images/edits"
+	openAIImageMaxUpload        = 20 << 20
+	openAIImageMaxN             = 4
 )
 
 type imageCallResult struct {
@@ -1040,9 +1033,6 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 		return
 	}
 
-<<<<<<< HEAD
-	images := collectImageInputs(rawJSON)
-=======
 	responseFormat := strings.TrimSpace(gjson.GetBytes(rawJSON, "response_format").String())
 	if responseFormat == "" {
 		responseFormat = "b64_json"
@@ -1066,18 +1056,7 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 		return
 	}
 
-	var images []string
-	imagesResult := gjson.GetBytes(rawJSON, "images")
-	if imagesResult.IsArray() {
-		for _, img := range imagesResult.Array() {
-			url := strings.TrimSpace(img.Get("image_url").String())
-			if url == "" {
-				continue
-			}
-			images = append(images, url)
-		}
-	}
->>>>>>> upstream/main
+	images := collectImageInputs(rawJSON)
 	if len(images) == 0 {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{

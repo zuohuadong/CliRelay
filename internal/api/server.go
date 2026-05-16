@@ -756,12 +756,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/gemini-cli-auth-url", s.mgmt.RequestGeminiCLIToken)
 		mgmt.GET("/antigravity-auth-url", s.mgmt.RequestAntigravityToken)
 		mgmt.GET("/kimi-auth-url", s.mgmt.RequestKimiToken)
-<<<<<<< HEAD
 		mgmt.GET("/qwen-auth-url", s.mgmt.RequestUnsupportedOAuthProvider)
 		mgmt.POST("/iflow-auth-url", s.mgmt.RequestUnsupportedOAuthProvider)
-=======
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
->>>>>>> upstream/main
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 

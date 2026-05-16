@@ -36,7 +36,6 @@ tls:
   cert: ""
   key: ""
 
-<<<<<<< HEAD
 # Explicit browser origins allowed to call API routes cross-origin.
 # Leave empty to disable cross-origin browser access by default.
 # Chrome extension origins (`chrome-extension://<extension-id>`) are allowed by default.
@@ -52,7 +51,7 @@ cors-allow-origins: []
 # trusted-proxies:
 #   - "172.18.0.0/16"
 trusted-proxies: []
-=======
+
 # Optional "home" control plane integration over Redis protocol.
 home:
   enabled: false
@@ -72,7 +71,6 @@ home:
     ca-cert: ""
     # Only for testing self-signed endpoints; disables certificate verification.
     insecure-skip-verify: false
->>>>>>> upstream/main
 
 # Management API settings
 remote-management:
@@ -532,11 +530,7 @@ streaming:
 
 # Global OAuth model name aliases (per channel)
 # These aliases rename model IDs for both model listing and request routing.
-<<<<<<< HEAD
-# Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow, kimi.
-=======
-# Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, kimi, xai.
->>>>>>> upstream/main
+# Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow, kimi, xai.
 # NOTE: Aliases do not apply to gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, or ampcode.
 # You can repeat the same name with different aliases to expose multiple client model names.
 # oauth-model-alias:

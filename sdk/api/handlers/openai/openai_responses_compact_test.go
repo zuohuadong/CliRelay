@@ -132,7 +132,6 @@ func TestOpenAIResponsesCompactPassthrough(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 func TestOpenAIResponsesCompactPassthroughError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	executor := &compactCaptureExecutor{
@@ -141,11 +140,6 @@ func TestOpenAIResponsesCompactPassthroughError(t *testing.T) {
 			"test-model": statusErr{code: http.StatusNotImplemented, msg: "compact not supported"},
 		},
 	}
-=======
-func TestOpenAIResponsesCompactDecodesZstdRequestBody(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	executor := &compactCaptureExecutor{}
->>>>>>> upstream/main
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(executor)
 
@@ -163,7 +157,6 @@ func TestOpenAIResponsesCompactDecodesZstdRequestBody(t *testing.T) {
 	router := gin.New()
 	router.POST("/v1/responses/compact", h.Compact)
 
-<<<<<<< HEAD
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"test-model","input":"hello"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
@@ -185,7 +178,27 @@ type statusErr struct {
 
 func (e statusErr) Error() string   { return e.msg }
 func (e statusErr) StatusCode() int { return e.code }
-=======
+
+func TestOpenAIResponsesCompactDecodesZstdRequestBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	executor := &compactCaptureExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth := &coreauth.Auth{ID: "auth4", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.POST("/v1/responses/compact", h.Compact)
+
 	var compressed bytes.Buffer
 	encoder, err := zstd.NewWriter(&compressed)
 	if err != nil {
@@ -207,8 +220,8 @@ func (e statusErr) StatusCode() int { return e.code }
 	if resp.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", resp.Code, http.StatusOK, resp.Body.String())
 	}
-	if executor.calls != 1 {
-		t.Fatalf("executor calls = %d, want 1", executor.calls)
+	if len(executor.models) != 1 {
+		t.Fatalf("models = %#v, want exactly 1 attempt", executor.models)
 	}
 	if executor.alt != "responses/compact" {
 		t.Fatalf("alt = %q, want %q", executor.alt, "responses/compact")
@@ -217,4 +230,3 @@ func (e statusErr) StatusCode() int { return e.code }
 		t.Fatalf("body = %s", resp.Body.String())
 	}
 }
->>>>>>> upstream/main

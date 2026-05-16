@@ -36,6 +36,7 @@ tls:
   cert: ""
   key: ""
 
+<<<<<<< HEAD
 # Explicit browser origins allowed to call API routes cross-origin.
 # Leave empty to disable cross-origin browser access by default.
 # Chrome extension origins (`chrome-extension://<extension-id>`) are allowed by default.
@@ -51,6 +52,27 @@ cors-allow-origins: []
 # trusted-proxies:
 #   - "172.18.0.0/16"
 trusted-proxies: []
+=======
+# Optional "home" control plane integration over Redis protocol.
+home:
+  enabled: false
+  host: "127.0.0.1"
+  port: 6379
+  password: ""
+  # Keep CPA pinned to the configured home address instead of switching to CLUSTER NODES entries.
+  # Useful when Home is behind NAT, Docker networking, or a reverse proxy.
+  disable-cluster-discovery: false
+  # Optional TLS for the outbound Redis connection to the home control plane.
+  # Enable this when connecting through rediss:// or an SSL stream proxy.
+  tls:
+    enable: false
+    # Optional SNI/certificate name override. Leave empty to use the configured home host.
+    server-name: ""
+    # Trust a private CA bundle in addition to system roots.
+    ca-cert: ""
+    # Only for testing self-signed endpoints; disables certificate verification.
+    insecure-skip-verify: false
+>>>>>>> upstream/main
 
 # Management API settings
 remote-management:
@@ -510,7 +532,11 @@ streaming:
 
 # Global OAuth model name aliases (per channel)
 # These aliases rename model IDs for both model listing and request routing.
+<<<<<<< HEAD
 # Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow, kimi.
+=======
+# Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, kimi, xai.
+>>>>>>> upstream/main
 # NOTE: Aliases do not apply to gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, or ampcode.
 # You can repeat the same name with different aliases to expose multiple client model names.
 # oauth-model-alias:
@@ -542,6 +568,9 @@ streaming:
 #   kimi:
 #     - name: "kimi-k2.5"
 #       alias: "k2.5"
+#   xai:
+#     - name: "grok-4.3"
+#       alias: "grok-latest"
 
 # OAuth provider excluded models
 # oauth-excluded-models:
@@ -566,6 +595,8 @@ streaming:
 #     - "tstars2.0"
 #   kimi:
 #     - "kimi-k2-thinking"
+#   xai:
+#     - "grok-3-mini"
 
 # Optional payload configuration
 # payload:

@@ -3,50 +3,84 @@ package management
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type geminiKeyWithAuthIndex struct {
 	config.GeminiKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex      string                         `json:"auth-index,omitempty"`
+	Success        int64                          `json:"success"`
+	Failed         int64                          `json:"failed"`
+	RecentRequests []coreauth.RecentRequestBucket `json:"recent_requests,omitempty"`
 }
 
 type claudeKeyWithAuthIndex struct {
 	config.ClaudeKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex      string                         `json:"auth-index,omitempty"`
+	Success        int64                          `json:"success"`
+	Failed         int64                          `json:"failed"`
+	RecentRequests []coreauth.RecentRequestBucket `json:"recent_requests,omitempty"`
 }
 
 type codexKeyWithAuthIndex struct {
 	config.CodexKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex      string                         `json:"auth-index,omitempty"`
+	Success        int64                          `json:"success"`
+	Failed         int64                          `json:"failed"`
+	RecentRequests []coreauth.RecentRequestBucket `json:"recent_requests,omitempty"`
 }
 
 type vertexCompatKeyWithAuthIndex struct {
 	config.VertexCompatKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex      string                         `json:"auth-index,omitempty"`
+	Success        int64                          `json:"success"`
+	Failed         int64                          `json:"failed"`
+	RecentRequests []coreauth.RecentRequestBucket `json:"recent_requests,omitempty"`
 }
 
 type openAICompatibilityAPIKeyWithAuthIndex struct {
 	config.OpenAICompatibilityAPIKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex      string                         `json:"auth-index,omitempty"`
+	Success        int64                          `json:"success"`
+	Failed         int64                          `json:"failed"`
+	RecentRequests []coreauth.RecentRequestBucket `json:"recent_requests,omitempty"`
 }
 
 type openAICompatibilityWithAuthIndex struct {
-	Name          string                                   `json:"name"`
-	Priority      int                                      `json:"priority,omitempty"`
-	Disabled      bool                                     `json:"disabled"`
-	Prefix        string                                   `json:"prefix,omitempty"`
-	BaseURL       string                                   `json:"base-url"`
-	APIKeyEntries []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
-	Models        []config.OpenAICompatibilityModel        `json:"models,omitempty"`
-	Headers       map[string]string                        `json:"headers,omitempty"`
-	AuthIndex     string                                   `json:"auth-index,omitempty"`
+	Name           string                                   `json:"name"`
+	Priority       int                                      `json:"priority,omitempty"`
+	Disabled       bool                                     `json:"disabled"`
+	Prefix         string                                   `json:"prefix,omitempty"`
+	BaseURL        string                                   `json:"base-url"`
+	APIKeyEntries  []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
+	Models         []config.OpenAICompatibilityModel        `json:"models,omitempty"`
+	Headers        map[string]string                        `json:"headers,omitempty"`
+	AuthIndex      string                                   `json:"auth-index,omitempty"`
+	Success        int64                                    `json:"success"`
+	Failed         int64                                    `json:"failed"`
+	RecentRequests []coreauth.RecentRequestBucket           `json:"recent_requests,omitempty"`
 }
 
-func (h *Handler) liveAuthIndexByID() map[string]string {
-	out := map[string]string{}
+type authUsageSnapshot struct {
+	AuthIndex      string
+	Success        int64
+	Failed         int64
+	RecentRequests []coreauth.RecentRequestBucket
+}
+
+func cloneRecentRequestBuckets(src []coreauth.RecentRequestBucket) []coreauth.RecentRequestBucket {
+	if len(src) == 0 {
+		return nil
+	}
+	return append([]coreauth.RecentRequestBucket(nil), src...)
+}
+
+func (h *Handler) liveAuthUsageByID() map[string]authUsageSnapshot {
+	out := map[string]authUsageSnapshot{}
 	if h == nil {
 		return out
 	}
@@ -56,6 +90,7 @@ func (h *Handler) liveAuthIndexByID() map[string]string {
 	if manager == nil {
 		return out
 	}
+	now := time.Now()
 	// authManager.List() returns clones, so EnsureIndex only affects these copies.
 	for _, auth := range manager.List() {
 		if auth == nil {
@@ -69,10 +104,12 @@ func (h *Handler) liveAuthIndexByID() map[string]string {
 		if idx == "" {
 			idx = auth.EnsureIndex()
 		}
-		if idx == "" {
-			continue
+		out[id] = authUsageSnapshot{
+			AuthIndex:      idx,
+			Success:        auth.Success,
+			Failed:         auth.Failed,
+			RecentRequests: auth.RecentRequestsSnapshot(now),
 		}
-		out[id] = idx
 	}
 	return out
 }
@@ -81,7 +118,7 @@ func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 	if h == nil {
 		return nil
 	}
-	liveIndexByID := h.liveAuthIndexByID()
+	liveUsageByID := h.liveAuthUsageByID()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -93,14 +130,17 @@ func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 	out := make([]geminiKeyWithAuthIndex, len(h.cfg.GeminiKey))
 	for i := range h.cfg.GeminiKey {
 		entry := h.cfg.GeminiKey[i]
-		authIndex := ""
+		usage := authUsageSnapshot{}
 		if key := strings.TrimSpace(entry.APIKey); key != "" {
 			id, _ := idGen.Next("gemini:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
+			usage = liveUsageByID[id]
 		}
 		out[i] = geminiKeyWithAuthIndex{
-			GeminiKey: entry,
-			AuthIndex: authIndex,
+			GeminiKey:      entry,
+			AuthIndex:      usage.AuthIndex,
+			Success:        usage.Success,
+			Failed:         usage.Failed,
+			RecentRequests: cloneRecentRequestBuckets(usage.RecentRequests),
 		}
 	}
 	return out
@@ -110,7 +150,7 @@ func (h *Handler) claudeKeysWithAuthIndex() []claudeKeyWithAuthIndex {
 	if h == nil {
 		return nil
 	}
-	liveIndexByID := h.liveAuthIndexByID()
+	liveUsageByID := h.liveAuthUsageByID()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -122,14 +162,17 @@ func (h *Handler) claudeKeysWithAuthIndex() []claudeKeyWithAuthIndex {
 	out := make([]claudeKeyWithAuthIndex, len(h.cfg.ClaudeKey))
 	for i := range h.cfg.ClaudeKey {
 		entry := h.cfg.ClaudeKey[i]
-		authIndex := ""
+		usage := authUsageSnapshot{}
 		if key := strings.TrimSpace(entry.APIKey); key != "" {
 			id, _ := idGen.Next("claude:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
+			usage = liveUsageByID[id]
 		}
 		out[i] = claudeKeyWithAuthIndex{
-			ClaudeKey: entry,
-			AuthIndex: authIndex,
+			ClaudeKey:      entry,
+			AuthIndex:      usage.AuthIndex,
+			Success:        usage.Success,
+			Failed:         usage.Failed,
+			RecentRequests: cloneRecentRequestBuckets(usage.RecentRequests),
 		}
 	}
 	return out
@@ -139,7 +182,7 @@ func (h *Handler) codexKeysWithAuthIndex() []codexKeyWithAuthIndex {
 	if h == nil {
 		return nil
 	}
-	liveIndexByID := h.liveAuthIndexByID()
+	liveUsageByID := h.liveAuthUsageByID()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -151,14 +194,17 @@ func (h *Handler) codexKeysWithAuthIndex() []codexKeyWithAuthIndex {
 	out := make([]codexKeyWithAuthIndex, len(h.cfg.CodexKey))
 	for i := range h.cfg.CodexKey {
 		entry := h.cfg.CodexKey[i]
-		authIndex := ""
+		usage := authUsageSnapshot{}
 		if key := strings.TrimSpace(entry.APIKey); key != "" {
 			id, _ := idGen.Next("codex:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
+			usage = liveUsageByID[id]
 		}
 		out[i] = codexKeyWithAuthIndex{
-			CodexKey:  entry,
-			AuthIndex: authIndex,
+			CodexKey:       entry,
+			AuthIndex:      usage.AuthIndex,
+			Success:        usage.Success,
+			Failed:         usage.Failed,
+			RecentRequests: cloneRecentRequestBuckets(usage.RecentRequests),
 		}
 	}
 	return out
@@ -168,7 +214,7 @@ func (h *Handler) vertexCompatKeysWithAuthIndex() []vertexCompatKeyWithAuthIndex
 	if h == nil {
 		return nil
 	}
-	liveIndexByID := h.liveAuthIndexByID()
+	liveUsageByID := h.liveAuthUsageByID()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -181,10 +227,13 @@ func (h *Handler) vertexCompatKeysWithAuthIndex() []vertexCompatKeyWithAuthIndex
 	for i := range h.cfg.VertexCompatAPIKey {
 		entry := h.cfg.VertexCompatAPIKey[i]
 		id, _ := idGen.Next("vertex:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL)
-		authIndex := liveIndexByID[id]
+		usage := liveUsageByID[id]
 		out[i] = vertexCompatKeyWithAuthIndex{
 			VertexCompatKey: entry,
-			AuthIndex:       authIndex,
+			AuthIndex:       usage.AuthIndex,
+			Success:         usage.Success,
+			Failed:          usage.Failed,
+			RecentRequests:  cloneRecentRequestBuckets(usage.RecentRequests),
 		}
 	}
 	return out
@@ -194,7 +243,7 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 	if h == nil {
 		return nil
 	}
-	liveIndexByID := h.liveAuthIndexByID()
+	liveUsageByID := h.liveAuthUsageByID()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -225,16 +274,27 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 		}
 		if len(entry.APIKeyEntries) == 0 {
 			id, _ := idGen.Next(idKind, entry.BaseURL)
-			response.AuthIndex = liveIndexByID[id]
+			usage := liveUsageByID[id]
+			response.AuthIndex = usage.AuthIndex
+			response.Success = usage.Success
+			response.Failed = usage.Failed
+			response.RecentRequests = cloneRecentRequestBuckets(usage.RecentRequests)
 		} else {
 			response.APIKeyEntries = make([]openAICompatibilityAPIKeyWithAuthIndex, len(entry.APIKeyEntries))
 			for j := range entry.APIKeyEntries {
 				apiKeyEntry := entry.APIKeyEntries[j]
 				id, _ := idGen.Next(idKind, apiKeyEntry.APIKey, entry.BaseURL, apiKeyEntry.ProxyURL)
+				usage := liveUsageByID[id]
 				response.APIKeyEntries[j] = openAICompatibilityAPIKeyWithAuthIndex{
 					OpenAICompatibilityAPIKey: apiKeyEntry,
-					AuthIndex:                 liveIndexByID[id],
+					AuthIndex:                 usage.AuthIndex,
+					Success:                   usage.Success,
+					Failed:                    usage.Failed,
+					RecentRequests:            cloneRecentRequestBuckets(usage.RecentRequests),
 				}
+				response.Success += usage.Success
+				response.Failed += usage.Failed
+				response.RecentRequests = mergeRecentRequestBuckets(response.RecentRequests, cloneRecentRequestBuckets(usage.RecentRequests))
 			}
 		}
 		out[i] = response

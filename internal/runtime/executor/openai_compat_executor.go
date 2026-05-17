@@ -124,6 +124,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 		requestPath := helps.PayloadRequestPath(opts)
 		translated = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel, requestPath)
+		if prepend, ok := helps.LookupPayloadOverrideParam(e.cfg, baseModel, to.String(), requestedModel, "prepend_instructions"); ok && prepend != "" {
+			translated = helps.PrependSystemMessage(translated, prepend)
+		}
 		if opts.Alt == "responses/compact" {
 			if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
 				translated = updated
@@ -248,6 +251,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel, requestPath)
+	if prepend, ok := helps.LookupPayloadOverrideParam(e.cfg, baseModel, to.String(), requestedModel, "prepend_instructions"); ok && prepend != "" {
+		translated = helps.PrependSystemMessage(translated, prepend)
+	}
 
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.

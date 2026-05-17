@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
 
@@ -229,28 +230,56 @@ func (h *Handler) PutRoutingConfig(c *gin.Context) {
 }
 
 func (h *Handler) GetProxyPool(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"items": []gin.H{}})
+	items := make([]gin.H, 0)
+	if h != nil && h.cfg != nil {
+		for _, entry := range h.cfg.ProxyPool {
+			items = append(items, gin.H{
+				"id":          entry.ID,
+				"name":        entry.Name,
+				"url":         entry.URL,
+				"enabled":     entry.Enabled,
+				"description": entry.Description,
+			})
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
 func (h *Handler) PutProxyPool(c *gin.Context) {
 	var body struct {
-		Items []gin.H `json:"items"`
+		Items []struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			URL         string `json:"url"`
+			Enabled     bool   `json:"enabled"`
+			Description string `json:"description"`
+		} `json:"items"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	if len(body.Items) > 0 {
-		unsupportedPanelWrite(c, "proxy pool is not available in this v7 build")
-		return
+	entries := make([]config.ProxyPoolEntry, 0, len(body.Items))
+	for _, item := range body.Items {
+		entries = append(entries, config.ProxyPoolEntry{
+			ID:          strings.TrimSpace(item.ID),
+			Name:        strings.TrimSpace(item.Name),
+			URL:         strings.TrimSpace(item.URL),
+			Enabled:     item.Enabled,
+			Description: strings.TrimSpace(item.Description),
+		})
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	h.mu.Lock()
+	h.cfg.ProxyPool = config.NormalizeProxyPool(entries)
+	h.mu.Unlock()
+	h.persist(c)
 }
 
 func (h *Handler) CheckProxyPool(c *gin.Context) {
+	hasPool := h != nil && h.cfg != nil && len(h.cfg.ProxyPool) > 0
 	c.JSON(http.StatusOK, gin.H{
-		"ok":      false,
-		"message": "proxy pool is not available in this v7 build",
+		"ok":      hasPool,
+		"message": "",
 	})
 }
 

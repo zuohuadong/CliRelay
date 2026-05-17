@@ -452,3 +452,60 @@ func matchModelPattern(pattern, model string) bool {
 	}
 	return pi == len(pattern)
 }
+
+// PrependSystemMessage inserts a system message at the beginning of the messages
+// array in a chat-completions payload. Used for language-injection overrides
+// applied after Responses-to-Chat-Completions translation.
+func PrependSystemMessage(payload []byte, content string) []byte {
+	if len(payload) == 0 || strings.TrimSpace(content) == "" {
+		return payload
+	}
+	msgs := gjson.GetBytes(payload, "messages")
+	if !msgs.Exists() || !msgs.IsArray() {
+		return payload
+	}
+	sysMsg := map[string]string{"role": "system", "content": content}
+	sysJSON, err := json.Marshal(sysMsg)
+	if err != nil {
+		return payload
+	}
+	// Build new array: [sysMsg, ...original]
+	parts := make([]string, 0, 1+len(msgs.Array()))
+	parts = append(parts, string(sysJSON))
+	for _, m := range msgs.Array() {
+		parts = append(parts, m.Raw)
+	}
+	newArr := "[" + strings.Join(parts, ",") + "]"
+	updated, err := sjson.SetRawBytes(payload, "messages", []byte(newArr))
+	if err != nil {
+		return payload
+	}
+	return updated
+}
+
+// LookupPayloadOverrideParam searches the payload override rules for a matching model
+// and returns the value of the specified param key if found.
+func LookupPayloadOverrideParam(cfg *config.Config, model, protocol, requestedModel, paramKey string) (string, bool) {
+	if cfg == nil || paramKey == "" {
+		return "", false
+	}
+	rules := cfg.Payload.Override
+	rules = append(rules, cfg.Payload.OverrideRaw...)
+	candidates := payloadModelCandidates(model, requestedModel)
+	for i := range rules {
+		rule := &rules[i]
+		if !payloadModelRulesMatch(rule.Models, protocol, candidates) {
+			continue
+		}
+		if v, ok := rule.Params[paramKey]; ok {
+			switch sv := v.(type) {
+			case string:
+				return sv, true
+			default:
+				b, _ := json.Marshal(v)
+				return string(b), true
+			}
+		}
+	}
+	return "", false
+}

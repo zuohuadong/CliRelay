@@ -3,6 +3,7 @@ package management
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -276,11 +277,58 @@ func (h *Handler) PutProxyPool(c *gin.Context) {
 }
 
 func (h *Handler) CheckProxyPool(c *gin.Context) {
-	hasPool := h != nil && h.cfg != nil && len(h.cfg.ProxyPool) > 0
+	var body struct {
+		ID  string `json:"id"`
+		URL string `json:"url"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	proxyURL := strings.TrimSpace(body.URL)
+	if proxyURL == "" && strings.TrimSpace(body.ID) != "" {
+		id := strings.TrimSpace(body.ID)
+		if h != nil && h.cfg != nil {
+			for _, entry := range h.cfg.ProxyPool {
+				if entry.ID == id || entry.Name == id {
+					proxyURL = strings.TrimSpace(entry.URL)
+					break
+				}
+			}
+		}
+	}
+	if proxyURL == "" {
+		c.JSON(http.StatusOK, gin.H{"ok": false, "message": "no proxy url resolved"})
+		return
+	}
+	transport := &http.Transport{
+		Proxy: http.ProxyURL(mustParseURL(proxyURL)),
+	}
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
+	start := time.Now()
+	resp, err := client.Get("https://httpbin.org/ip")
+	latencyMs := time.Since(start).Milliseconds()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"ok":         false,
+			"latency_ms": latencyMs,
+			"message":    err.Error(),
+		})
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	ok := resp.StatusCode >= 200 && resp.StatusCode < 400
 	c.JSON(http.StatusOK, gin.H{
-		"ok":      hasPool,
-		"message": "",
+		"ok":          ok,
+		"latency_ms":  latencyMs,
+		"status_code": resp.StatusCode,
+		"message":     "",
 	})
+}
+
+func mustParseURL(raw string) *url.URL {
+	u, _ := url.Parse(raw)
+	return u
 }
 
 func (h *Handler) GetChannelGroups(c *gin.Context) {

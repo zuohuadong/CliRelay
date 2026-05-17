@@ -1,9 +1,12 @@
 package management
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	_ "modernc.org/sqlite"
 )
 
 type panelAPIKeyEntry struct {
@@ -97,6 +101,10 @@ func (h *Handler) updateState(updaterAvailable bool) gin.H {
 }
 
 func (h *Handler) GetAPIKeyEntries(c *gin.Context) {
+	if entries, ok := h.apiKeyEntriesFromDB(); ok {
+		c.JSON(http.StatusOK, gin.H{"api-key-entries": entries})
+		return
+	}
 	entries := make([]panelAPIKeyEntry, 0)
 	if h != nil && h.cfg != nil {
 		entries = entriesFromKeys(h.cfg.APIKeys)
@@ -113,6 +121,10 @@ func (h *Handler) PutAPIKeyEntries(c *gin.Context) {
 	h.mu.Lock()
 	h.cfg.APIKeys = keys
 	h.mu.Unlock()
+	if err := h.replaceAPIKeyEntriesInDB(entries); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save api keys"})
+		return
+	}
 	h.persist(c)
 }
 
@@ -127,20 +139,22 @@ func (h *Handler) PatchAPIKeyEntries(c *gin.Context) {
 		return
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	entries, dbOK := h.apiKeyEntriesFromDB()
+	if !dbOK && h != nil && h.cfg != nil {
+		entries = entriesFromKeys(h.cfg.APIKeys)
+	}
 	idx := -1
 	if body.Index != nil {
 		idx = *body.Index
 	} else if body.Match != "" {
-		for i, key := range h.cfg.APIKeys {
-			if key == body.Match {
+		for i, entry := range entries {
+			if entry.Key == body.Match {
 				idx = i
 				break
 			}
 		}
 	}
-	if idx < 0 || idx >= len(h.cfg.APIKeys) {
+	if idx < 0 || idx >= len(entries) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid index"})
 		return
 	}
@@ -152,13 +166,26 @@ func (h *Handler) PatchAPIKeyEntries(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing key"})
 		return
 	}
-	h.cfg.APIKeys[idx] = key
-	h.persistLocked(c)
+	body.Value.Key = key
+	entries[idx] = body.Value
+	if entries[idx].CreatedAt == "" {
+		entries[idx].CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	h.updateConfigAPIKeys(keysFromEntries(entries))
+	if dbOK {
+		if err := h.replaceAPIKeyEntriesInDB(entries); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save api keys"})
+			return
+		}
+	}
+	h.persist(c)
 }
 
 func (h *Handler) DeleteAPIKeyEntries(c *gin.Context) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	entries, dbOK := h.apiKeyEntriesFromDB()
+	if !dbOK && h != nil && h.cfg != nil {
+		entries = entriesFromKeys(h.cfg.APIKeys)
+	}
 	idx := -1
 	if raw := strings.TrimSpace(c.Query("index")); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil {
@@ -167,19 +194,26 @@ func (h *Handler) DeleteAPIKeyEntries(c *gin.Context) {
 	}
 	if idx < 0 {
 		key := strings.TrimSpace(c.Query("key"))
-		for i, current := range h.cfg.APIKeys {
-			if current == key {
+		for i, entry := range entries {
+			if entry.Key == key {
 				idx = i
 				break
 			}
 		}
 	}
-	if idx < 0 || idx >= len(h.cfg.APIKeys) {
+	if idx < 0 || idx >= len(entries) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid index"})
 		return
 	}
-	h.cfg.APIKeys = append(h.cfg.APIKeys[:idx], h.cfg.APIKeys[idx+1:]...)
-	h.persistLocked(c)
+	entries = append(entries[:idx], entries[idx+1:]...)
+	h.updateConfigAPIKeys(keysFromEntries(entries))
+	if dbOK {
+		if err := h.replaceAPIKeyEntriesInDB(entries); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save api keys"})
+			return
+		}
+	}
+	h.persist(c)
 }
 
 func (h *Handler) GetAPIKeyPermissionProfiles(c *gin.Context) {
@@ -589,6 +623,238 @@ func (h *Handler) GetUsageLogContent(c *gin.Context) {
 
 func (h *Handler) ReconcileQuota(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (h *Handler) updateConfigAPIKeys(keys []string) {
+	if h == nil || h.cfg == nil {
+		return
+	}
+	h.mu.Lock()
+	h.cfg.APIKeys = keys
+	h.mu.Unlock()
+}
+
+func (h *Handler) apiKeysDBPath() string {
+	if h == nil || strings.TrimSpace(h.configFilePath) == "" {
+		return ""
+	}
+	path := filepath.Join(filepath.Dir(h.configFilePath), "data", "usage.db")
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	return path
+}
+
+func (h *Handler) openAPIKeysDB() (*sql.DB, bool) {
+	path := h.apiKeysDBPath()
+	if path == "" {
+		return nil, false
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, false
+	}
+	return db, true
+}
+
+func (h *Handler) apiKeyEntriesFromDB() ([]panelAPIKeyEntry, bool) {
+	db, ok := h.openAPIKeysDB()
+	if !ok {
+		return nil, false
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec("select 1 from api_keys limit 1"); err != nil {
+		return nil, false
+	}
+	selectPermissionProfile := "''"
+	if apiKeysDBHasColumn(db, "permission_profile_id") {
+		selectPermissionProfile = "permission_profile_id"
+	}
+	rows, err := db.Query(`select key, name, disabled, daily_limit, total_quota, spending_limit, concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, ` + selectPermissionProfile + ` from api_keys order by created_at, key`)
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = rows.Close() }()
+
+	entries := make([]panelAPIKeyEntry, 0)
+	for rows.Next() {
+		var entry panelAPIKeyEntry
+		var disabled int
+		var modelsRaw, channelsRaw, groupsRaw string
+		if errScan := rows.Scan(
+			&entry.Key,
+			&entry.Name,
+			&disabled,
+			&entry.DailyLimit,
+			&entry.TotalQuota,
+			&entry.SpendingLimit,
+			&entry.ConcurrencyLimit,
+			&entry.RPMLimit,
+			&entry.TPMLimit,
+			&modelsRaw,
+			&channelsRaw,
+			&groupsRaw,
+			&entry.SystemPrompt,
+			&entry.CreatedAt,
+			&entry.PermissionProfileID,
+		); errScan != nil {
+			return nil, false
+		}
+		entry.Key = strings.TrimSpace(entry.Key)
+		if entry.Key == "" {
+			continue
+		}
+		entry.Disabled = disabled != 0
+		entry.AllowedModels = stringSliceFromJSON(modelsRaw)
+		entry.AllowedChannels = stringSliceFromJSON(channelsRaw)
+		entry.AllowedChannelGroups = stringSliceFromJSON(groupsRaw)
+		entries = append(entries, entry)
+	}
+	if errRows := rows.Err(); errRows != nil {
+		return nil, false
+	}
+	return entries, true
+}
+
+func (h *Handler) replaceAPIKeyEntriesInDB(entries []panelAPIKeyEntry) error {
+	db, ok := h.openAPIKeysDB()
+	if !ok {
+		return nil
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`create table if not exists api_keys (
+		key text not null primary key,
+		name text not null default '',
+		disabled integer not null default 0,
+		daily_limit integer not null default 0,
+		total_quota integer not null default 0,
+		spending_limit real not null default 0,
+		concurrency_limit integer not null default 0,
+		rpm_limit integer not null default 0,
+		tpm_limit integer not null default 0,
+		allowed_models text not null default '[]',
+		allowed_channels text not null default '[]',
+		allowed_channel_groups text not null default '[]',
+		system_prompt text not null default '',
+		created_at text not null default '',
+		updated_at text not null default '',
+		permission_profile_id text not null default ''
+	)`); err != nil {
+		return err
+	}
+	if !apiKeysDBHasColumn(db, "permission_profile_id") {
+		if _, err := db.Exec(`alter table api_keys add column permission_profile_id text not null default ''`); err != nil {
+			return err
+		}
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.Exec("delete from api_keys"); err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`insert into api_keys (
+		key, name, disabled, daily_limit, total_quota, spending_limit, concurrency_limit, rpm_limit, tpm_limit,
+		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at, permission_profile_id
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
+	now := time.Now().UTC().Format(time.RFC3339)
+	seen := map[string]struct{}{}
+	for _, entry := range entries {
+		key := strings.TrimSpace(entry.Key)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		createdAt := strings.TrimSpace(entry.CreatedAt)
+		if createdAt == "" {
+			createdAt = now
+		}
+		disabled := 0
+		if entry.Disabled {
+			disabled = 1
+		}
+		if _, err = stmt.Exec(
+			key,
+			strings.TrimSpace(entry.Name),
+			disabled,
+			entry.DailyLimit,
+			entry.TotalQuota,
+			entry.SpendingLimit,
+			entry.ConcurrencyLimit,
+			entry.RPMLimit,
+			entry.TPMLimit,
+			stringSliceJSON(entry.AllowedModels),
+			stringSliceJSON(entry.AllowedChannels),
+			stringSliceJSON(entry.AllowedChannelGroups),
+			strings.TrimSpace(entry.SystemPrompt),
+			createdAt,
+			now,
+			strings.TrimSpace(entry.PermissionProfileID),
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func apiKeysDBHasColumn(db *sql.DB, column string) bool {
+	rows, err := db.Query("pragma table_info(api_keys)")
+	if err != nil {
+		return false
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var defaultValue any
+		if errScan := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); errScan != nil {
+			return false
+		}
+		if strings.EqualFold(name, column) {
+			return true
+		}
+	}
+	return false
+}
+
+func stringSliceFromJSON(raw string) []string {
+	var values []string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &values); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func stringSliceJSON(values []string) string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
 }
 
 func readAPIKeyEntries(c *gin.Context) ([]panelAPIKeyEntry, bool) {

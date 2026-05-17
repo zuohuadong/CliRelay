@@ -106,7 +106,7 @@ func ApplyPayloadConfigWithRoot(cfg *config.Config, model, protocol, root string
 				}
 				for path, value := range rule.Params {
 					fullPath := buildPayloadPath(root, path)
-					if fullPath == "" {
+					if fullPath == "" || isPayloadControlParam(path) {
 						continue
 					}
 					updated, errSet := sjson.SetBytes(out, fullPath, value)
@@ -124,7 +124,7 @@ func ApplyPayloadConfigWithRoot(cfg *config.Config, model, protocol, root string
 				}
 				for path, value := range rule.Params {
 					fullPath := buildPayloadPath(root, path)
-					if fullPath == "" {
+					if fullPath == "" || isPayloadControlParam(path) {
 						continue
 					}
 					rawValue, ok := payloadRawValue(value)
@@ -414,6 +414,16 @@ func PayloadRequestPath(opts cliproxyexecutor.Options) string {
 //	"*-5" matches "gpt-5"
 //	"gpt-*" matches "gpt-5" and "gpt-4"
 //	"gemini-*-pro" matches "gemini-2.5-pro" and "gemini-3-pro".
+//
+// isPayloadControlParam returns true for parameter keys that are control directives
+// rather than payload fields. These keys use a "prepend_" prefix convention and are
+// consumed by executor-side helpers (e.g., PrependSystemMessage) rather than forwarded
+// to the upstream provider. This avoids "Unsupported parameter" errors.
+func isPayloadControlParam(path string) bool {
+	p := strings.TrimSpace(path)
+	return strings.HasPrefix(p, "prepend_")
+}
+
 func matchModelPattern(pattern, model string) bool {
 	pattern = strings.TrimSpace(pattern)
 	model = strings.TrimSpace(model)

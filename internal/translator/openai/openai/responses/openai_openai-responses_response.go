@@ -283,6 +283,9 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 
 	if !st.Started {
 		st.ResponseID = root.Get("id").String()
+		if st.ResponseID != "" && !strings.HasPrefix(st.ResponseID, "resp_") {
+			st.ResponseID = "resp_" + st.ResponseID
+		}
 		st.Created = root.Get("created").Int()
 		// reset aggregation state for a new streaming response
 		st.MsgTextBuf = make(map[int]*strings.Builder)
@@ -628,6 +631,9 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 
 	// id: use provider id if present, otherwise synthesize
 	id := root.Get("id").String()
+	if id != "" && !strings.HasPrefix(id, "resp_") {
+		id = "resp_" + id
+	}
 	if id == "" {
 		id = fmt.Sprintf("resp_%x_%d", time.Now().UnixNano(), atomic.AddUint64(&responseIDCounter, 1))
 	}

@@ -111,6 +111,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
 		translated = sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
 
+<<<<<<< HEAD
 		translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
 		if err != nil {
 			return resp, err
@@ -135,6 +136,19 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		translated, err = e.normalizeBigModelTools(translated, baseURL)
 		if err != nil {
 			return resp, err
+=======
+	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	if err != nil {
+		return resp, err
+	}
+
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	requestPath := helps.PayloadRequestPath(opts)
+	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	if opts.Alt == "responses/compact" {
+		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
+			translated = updated
+>>>>>>> upstream/main
 		}
 	}
 
@@ -250,10 +264,14 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	}
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
+<<<<<<< HEAD
 	translated = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel, requestPath)
 	if prepend, ok := helps.LookupPayloadOverrideParam(e.cfg, baseModel, to.String(), requestedModel, "prepend_instructions"); ok && prepend != "" {
 		translated = helps.PrependSystemMessage(translated, prepend)
 	}
+=======
+	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+>>>>>>> upstream/main
 
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.

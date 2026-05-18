@@ -105,7 +105,10 @@ func readUpstreamResponseBody(_ string, r io.Reader) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
-func logWithRequestID(ctx context.Context) interface{ Debugf(string, ...any); Warnf(string, ...any) } {
+func logWithRequestID(ctx context.Context) interface {
+	Debugf(string, ...any)
+	Warnf(string, ...any)
+} {
 	return helps.LogWithRequestID(ctx)
 }
 

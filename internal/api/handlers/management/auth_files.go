@@ -377,12 +377,18 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if name == "" {
 		name = auth.ID
 	}
+	providerName := strings.TrimSpace(auth.Provider)
+	if cn := strings.TrimSpace(auth.Attributes["compat_name"]); cn != "" {
+		providerName = cn
+	}
+
 	entry := gin.H{
 		"id":             auth.ID,
 		"auth_index":     auth.Index,
 		"name":           name,
 		"type":           strings.TrimSpace(auth.Provider),
 		"provider":       strings.TrimSpace(auth.Provider),
+		"provider_name":  providerName,
 		"label":          auth.Label,
 		"status":         auth.Status,
 		"status_message": auth.StatusMessage,
@@ -395,6 +401,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	entry["success"] = auth.Success
 	entry["failed"] = auth.Failed
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
+	if baseURL := strings.TrimSpace(auth.Attributes["base_url"]); baseURL != "" {
+		entry["base_url"] = baseURL
+	}
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email
 	}

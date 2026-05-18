@@ -963,7 +963,7 @@ func LookupPayloadOverrideParam(cfg *config.Config, model, protocol, requestedMo
 	candidates := payloadModelCandidates(model, requestedModel)
 	for i := range rules {
 		rule := &rules[i]
-		if !payloadModelRulesMatch(rule.Models, protocol, candidates) {
+		if !payloadModelRulesMatch(rule.Models, protocol, "", nil, nil, "", candidates) {
 			continue
 		}
 		if v, ok := rule.Params[paramKey]; ok {

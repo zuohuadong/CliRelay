@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X 'main.Version=${VERSION
 
 FROM alpine:3.23
 
-RUN apk add --no-cache tzdata
+RUN apk add --no-cache tini tzdata
 
 RUN mkdir /CLIProxyAPI
 
@@ -31,5 +31,9 @@ EXPOSE 8317
 ENV TZ=Asia/Shanghai
 
 RUN cp /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
+
+STOPSIGNAL SIGTERM
+
+ENTRYPOINT ["/sbin/tini", "--"]
 
 CMD ["./CLIProxyAPI"]

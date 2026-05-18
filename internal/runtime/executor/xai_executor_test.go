@@ -196,8 +196,6 @@ func TestXAIExecutorOmitsUnsupportedReasoningEffort(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
-=======
 func TestXAIExecutorAppliesThinkingSuffix(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -240,7 +238,6 @@ func TestXAIExecutorAppliesThinkingSuffix(t *testing.T) {
 	}
 }
 
->>>>>>> upstream/main
 func TestXAIExecutorExecuteStreamFiltersToolSearchTool(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -169,7 +169,7 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		if provided == "" {
 			provided = c.GetHeader("X-Management-Key")
 		}
-		if provided == "" && strings.EqualFold(c.GetHeader("Upgrade"), "websocket") {
+		if provided == "" {
 			provided = c.Query("token")
 		}
 

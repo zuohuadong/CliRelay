@@ -2205,6 +2205,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								suspendReason = "unauthorized"
 								shouldSuspendModel = true
 							}
+							auth.Disabled = true
 						case 402, 403:
 							if disableCooling {
 								state.NextRetryAfter = time.Time{}
@@ -2669,6 +2670,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		} else {
 			auth.NextRetryAfter = now.Add(30 * time.Minute)
 		}
+		auth.Disabled = true
 	case 402, 403:
 		auth.StatusMessage = "payment_required"
 		if disableCooling {

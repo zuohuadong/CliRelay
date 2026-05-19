@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sync"
 	"testing"
@@ -69,6 +70,39 @@ type requestPolicyStatusError struct {
 
 func (e requestPolicyStatusError) Error() string   { return e.msg }
 func (e requestPolicyStatusError) StatusCode() int { return e.status }
+
+func TestRequestPolicyLimitError_RequestTooLargeUsesContextLengthExceededAnd400(t *testing.T) {
+	err := &requestPolicyLimitError{
+		policy:           "glm-limit",
+		requestedModel:   "gpt-5.3-codex",
+		upstreamProvider: "bigmodel-coding",
+		upstreamModel:    "glm-5.1",
+		requestBytes:     715241,
+		maxRequestBytes:  600000,
+		reason:           "request_bytes 715241 exceeds max-request-bytes 600000",
+		action:           requestPolicyActionReject,
+	}
+
+	if got := err.StatusCode(); got != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", got, http.StatusBadRequest)
+	}
+
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	if unmarshalErr := json.Unmarshal([]byte(err.Error()), &payload); unmarshalErr != nil {
+		t.Fatalf("unmarshal error payload: %v", unmarshalErr)
+	}
+	if payload.Error.Code != "context_length_exceeded" {
+		t.Fatalf("error code = %q, want %q", payload.Error.Code, "context_length_exceeded")
+	}
+	if payload.Error.Type != "invalid_request_error" {
+		t.Fatalf("error type = %q, want %q", payload.Error.Type, "invalid_request_error")
+	}
+}
 
 func TestManagerExecute_RequestPolicySkipChannelFallsBack(t *testing.T) {
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
@@ -301,8 +335,8 @@ func TestManagerExecute_RequestPolicyRejectsWhenNoFallback(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if statusErr, ok := err.(interface{ StatusCode() int }); !ok || statusErr.StatusCode() != http.StatusRequestEntityTooLarge {
-		t.Fatalf("error status = %#v, want 413", err)
+	if statusErr, ok := err.(interface{ StatusCode() int }); !ok || statusErr.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("error status = %#v, want 400", err)
 	}
 	if calls := bigmodel.Calls(); len(calls) != 0 {
 		t.Fatalf("bigmodel calls = %v, want none", calls)

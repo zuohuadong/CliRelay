@@ -619,27 +619,27 @@ func (h *Handler) GetUsageEntityStats(c *gin.Context) {
 	defer func() { _ = db.Close() }()
 
 	sourceStats := make([]gin.H, 0)
-	rows, _ := db.Query("SELECT source, count(*), coalesce(sum(total_tokens),0) FROM request_logs GROUP BY source ORDER BY count(*) DESC LIMIT 20")
+	rows, _ := db.Query("SELECT source, count(*), coalesce(sum(case when failed=0 then 1 else 0 end),0), coalesce(sum(case when failed!=0 then 1 else 0 end),0), coalesce(sum(total_tokens),0) FROM request_logs GROUP BY source ORDER BY count(*) DESC LIMIT 20")
 	if rows != nil {
 		defer rows.Close()
 		for rows.Next() {
 			var source string
-			var cnt, toks int64
-			if rows.Scan(&source, &cnt, &toks) == nil {
-				sourceStats = append(sourceStats, gin.H{"source": source, "requests": cnt, "tokens": toks})
+			var total, successCnt, failCnt, toks int64
+			if rows.Scan(&source, &total, &successCnt, &failCnt, &toks) == nil {
+				sourceStats = append(sourceStats, gin.H{"entity_name": source, "source": source, "requests": total, "failed": failCnt, "tokens": toks})
 			}
 		}
 	}
 
 	authStats := make([]gin.H, 0)
-	rows2, _ := db.Query("SELECT auth_index, count(*), coalesce(sum(total_tokens),0) FROM request_logs GROUP BY auth_index ORDER BY count(*) DESC LIMIT 20")
+	rows2, _ := db.Query("SELECT auth_index, count(*), coalesce(sum(case when failed=0 then 1 else 0 end),0), coalesce(sum(case when failed!=0 then 1 else 0 end),0), coalesce(sum(total_tokens),0) FROM request_logs GROUP BY auth_index ORDER BY count(*) DESC LIMIT 20")
 	if rows2 != nil {
 		defer rows2.Close()
 		for rows2.Next() {
 			var idx string
-			var cnt, toks int64
-			if rows2.Scan(&idx, &cnt, &toks) == nil {
-				authStats = append(authStats, gin.H{"auth_index": idx, "requests": cnt, "tokens": toks})
+			var total, successCnt, failCnt, toks int64
+			if rows2.Scan(&idx, &total, &successCnt, &failCnt, &toks) == nil {
+				authStats = append(authStats, gin.H{"auth_index": idx, "requests": total, "failed": failCnt, "tokens": toks})
 			}
 		}
 	}

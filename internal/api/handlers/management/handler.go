@@ -292,15 +292,25 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	}
 
 	if shareToken := h.shareToken(); shareToken != "" {
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(shareToken)) == 1 {
-			reset()
-			return true, 0, ""
-		}
-		shareHash := sha256.Sum256([]byte(shareToken))
-		shareHashHex := hex.EncodeToString(shareHash[:])
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(shareHashHex)) == 1 {
-			reset()
-			return true, 0, ""
+		if strings.HasPrefix(shareToken, "sha256:") {
+			storedHash := strings.TrimPrefix(shareToken, "sha256:")
+			providedHash := sha256.Sum256([]byte(provided))
+			providedHashHex := hex.EncodeToString(providedHash[:])
+			if subtle.ConstantTimeCompare([]byte(providedHashHex), []byte(storedHash)) == 1 {
+				reset()
+				return true, 0, ""
+			}
+		} else {
+			if subtle.ConstantTimeCompare([]byte(provided), []byte(shareToken)) == 1 {
+				reset()
+				return true, 0, ""
+			}
+			shareHash := sha256.Sum256([]byte(shareToken))
+			shareHashHex := hex.EncodeToString(shareHash[:])
+			if subtle.ConstantTimeCompare([]byte(provided), []byte(shareHashHex)) == 1 {
+				reset()
+				return true, 0, ""
+			}
 		}
 	}
 

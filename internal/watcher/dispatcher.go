@@ -177,10 +177,19 @@ func (w *Watcher) dispatchLoop(ctx context.Context) {
 		}
 		queue := w.getAuthQueue()
 		if queue == nil {
-			if ctx.Err() != nil {
-				return
+			// Put the batch back into pending to avoid silent data loss
+			// when the queue is temporarily unset (e.g., during reconnection).
+			w.requeueBatch(batch)
+			// Wait until the queue is set again or context is cancelled.
+			w.dispatchMu.Lock()
+			for w.getAuthQueueLocked() == nil {
+				if ctx.Err() != nil {
+					w.dispatchMu.Unlock()
+					return
+				}
+				w.dispatchCond.Wait()
 			}
-			time.Sleep(10 * time.Millisecond)
+			w.dispatchMu.Unlock()
 			continue
 		}
 		for _, update := range batch {
@@ -191,6 +200,28 @@ func (w *Watcher) dispatchLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (w *Watcher) requeueBatch(batch []AuthUpdate) {
+	w.dispatchMu.Lock()
+	defer w.dispatchMu.Unlock()
+	if w.pendingUpdates == nil {
+		w.pendingUpdates = make(map[string]AuthUpdate)
+	}
+	baseTS := time.Now().UnixNano()
+	for idx, update := range batch {
+		key := w.authUpdateKey(update, baseTS+int64(idx))
+		if _, exists := w.pendingUpdates[key]; !exists {
+			w.pendingOrder = append(w.pendingOrder, key)
+		}
+		w.pendingUpdates[key] = update
+	}
+}
+
+func (w *Watcher) getAuthQueueLocked() chan<- AuthUpdate {
+	// Caller must hold dispatchMu or clientsMutex.
+	// This is a helper for code paths already under the correct lock.
+	return w.authQueue
 }
 
 func (w *Watcher) nextPendingBatch(ctx context.Context) ([]AuthUpdate, bool) {

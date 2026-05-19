@@ -575,7 +575,7 @@ func TestRedisProtocol_SubscribeUsageBroadcastsAndSkipsQueue(t *testing.T) {
 	}
 }
 
-func TestRedisProtocol_IPBan_MirrorsManagementPolicy(t *testing.T) {
+func TestRedisProtocol_IPBan_SkipsMissingCredentialsLikeManagementPolicy(t *testing.T) {
 	const managementPassword = "test-management-password"
 
 	t.Setenv("MANAGEMENT_PASSWORD", managementPassword)
@@ -618,10 +618,10 @@ func TestRedisProtocol_IPBan_MirrorsManagementPolicy(t *testing.T) {
 	}
 	msg, err := readTestRESPError(reader)
 	if err != nil {
-		t.Fatalf("failed to read LPOP banned error: %v", err)
+		t.Fatalf("failed to read LPOP NOAUTH error: %v", err)
 	}
-	if !strings.HasPrefix(msg, "ERR IP banned due to too many failed attempts. Try again in") {
-		t.Fatalf("unexpected LPOP banned error: %q", msg)
+	if msg != "NOAUTH Authentication required." {
+		t.Fatalf("unexpected LPOP error after missing credentials attempts: %q", msg)
 	}
 }
 

@@ -6,7 +6,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const authFilesPageHTML = `<!DOCTYPE html>
+const authFilesPageHTML = `
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -158,6 +159,14 @@ tr.selected td{background:var(--primary-bg)}
 .confirm-box .confirm-actions{display:flex;gap:8px;justify-content:center}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:768px){.search-box{width:140px}.header h1{font-size:15px}td,th{padding:6px 8px;font-size:12px}.modal{width:95%;padding:16px}.stat-card{min-width:70px}.stat-card .stat-value{font-size:18px}}
+.badge-quota{background:rgba(245,158,11,.15);color:#f59e0b;font-size:11px;padding:1px 6px;border-radius:8px;display:inline-block}
+.badge-quota-ok{background:rgba(34,197,94,.15);color:#22c55e}
+.quota-bar-wrap{display:flex;align-items:center;gap:4px}
+.quota-bar{width:60px;height:6px;background:var(--surface3);border-radius:3px;overflow:hidden;position:relative}
+.quota-bar-fill{height:100%;border-radius:3px;transition:width .3s}
+.quota-bar-fill.high{background:var(--danger)}
+.quota-bar-fill.medium{background:var(--warning)}
+.quota-bar-fill.low{background:var(--success)}
 </style>
 </head>
 <body>
@@ -197,7 +206,7 @@ tr.selected td{background:var(--primary-bg)}
     <table>
       <thead><tr>
         <th><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)"></th>
-        <th>#</th><th>名称</th><th>Provider</th><th>状态</th><th>邮箱/账号</th><th>Plan</th><th>成功</th><th>失败</th><th>最后刷新</th><th>操作</th>
+        <th>#</th><th>名称</th><th>Provider</th><th>状态</th><th>邮箱/账号</th><th>Plan</th><th>额度</th><th>成功</th><th>失败</th><th>最后刷新</th><th>操作</th>
       </tr></thead>
       <tbody id="tbody"></tbody>
     </table>
@@ -310,8 +319,9 @@ function escAttr(s){
   return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
 }
 
-function statusBadge(s,disabled){
+function statusBadge(s,disabled,quota){
   if(disabled)return'<span class="badge badge-dis">已禁用</span>';
+  if(quota&&quota.exceeded)return'<span class="badge badge-warn">额度超限</span>';
   switch(s){
     case'ok':case'active':return'<span class="badge badge-ok">OK</span>';
     case'error':return'<span class="badge badge-err">错误</span>';
@@ -335,8 +345,51 @@ function fmtTimeFull(t){
 }
 
 function getPlan(f){
-  if(f.id_token&&f.id_token.plan_type)return escHtml(f.id_token.plan_type);
-  return'-'
+  if(!f)return'-';
+  var parts=[];
+  if(f.id_token&&f.id_token.plan_type){
+    parts.push(escHtml(f.id_token.plan_type))
+  }
+  if(f.unavailable&&!f.disabled)parts.push('<span style="color:var(--warning);font-size:10px">不可用</span>');
+  return parts.length?parts.join(' '):'-'
+}
+
+function getQuotaHtml(f){
+  if(!f)return '-';
+  var q=f.quota;
+  if(!q)return '-';
+  if(f.disabled)return '<span class="badge badge-dis">已禁用</span>';
+  if(q.exceeded){
+    var recover='';
+    if(q.next_recover_at){
+      var d=new Date(q.next_recover_at);
+      if(!isNaN(d.getTime())){
+        var diff=d-new Date();
+        if(diff>0){
+          var mins=Math.ceil(diff/60000);
+          recover=mins>60?Math.ceil(mins/60)+'h':'~'+mins+'m'
+        }
+      }
+    }
+    return '<span class="badge-quota">额度超限'+(recover?' <span style="font-size:10px">(' +recover+')</span>':'')+'</span>'
+  }
+  var r5h=0;
+  if(f.recent_requests){
+    for(var i=0;i<f.recent_requests.length;i++){
+      r5h+=(f.recent_requests[i].success||0)+(f.recent_requests[i].failed||0)
+    }
+  }
+  if(r5h>0)return '<span class="badge-quota badge-quota-ok">'+r5h+' req</span>';
+  return '<span class="badge-quota badge-quota-ok">OK</span>'
+}
+
+function get5hCount(f){
+  if(!f||!f.recent_requests)return 0;
+  var total=0;
+  for(var i=0;i<f.recent_requests.length;i++){
+    total+=(f.recent_requests[i].success||0)+(f.recent_requests[i].failed||0)
+  }
+  return total
 }
 
 function getProviderName(f){
@@ -443,20 +496,23 @@ function renderToolbar(){
 }
 
 function renderStats(){
-  var ok=0,err=0,dis=0,rl=0;
+  var ok=0,err=0,dis=0,rl=0,qt=0;
   for(var i=0;i<files.length;i++){
     var f=files[i];
     if(f.disabled)dis++;
     else if(f.status==='ok'||f.status==='active')ok++;
     else if(f.status==='error')err++;
-    else if(f.status==='rate_limited')rl++
+    else if(f.status==='rate_limited')rl++;
+    if(f.quota&&f.quota.exceeded)qt++
   }
-  document.getElementById('stats').innerHTML=
+  var statsHtml=
     '<span><span class="dot dot-ok"></span> OK: '+ok+'</span>'+
     '<span><span class="dot dot-err"></span> 错误: '+err+'</span>'+
     '<span><span class="dot dot-warn"></span> 限速: '+rl+'</span>'+
-    '<span><span class="dot dot-dis"></span> 已禁用: '+dis+'</span>'+
-    '<span>总计: '+files.length+'</span>'
+    '<span><span class="dot dot-dis"></span> 已禁用: '+dis+'</span>';
+  if(qt>0)statsHtml+='<span style="color:var(--warning)">&#x26A0; 额度超限: '+qt+'</span>';
+  statsHtml+='<span>总计: '+files.length+'</span>';
+  document.getElementById('stats').innerHTML=statsHtml
 }
 
 function renderTable(list,offset){
@@ -481,9 +537,10 @@ function renderTable(list,offset){
       '<td>'+idx+'</td>'+
       '<td title="'+escAttr(name)+'" style="cursor:pointer;color:var(--primary)" onclick="showDetail(\''+fid+'\')">'+escHtml(name)+labelHtml+'</td>'+
       '<td>'+escHtml(prov)+'</td>'+
-      '<td>'+statusBadge(f.status,f.disabled)+'</td>'+
+      '<td>'+statusBadge(f.status,f.disabled,f.quota)+'</td>'+
       '<td title="'+escAttr(email)+'">'+escHtml(email)+'</td>'+
       '<td>'+getPlan(f)+'</td>'+
+      '<td>'+getQuotaHtml(f)+'</td>'+
       '<td>'+succ+'</td>'+
       '<td>'+fail+'</td>'+
       '<td>'+fmtTime(lr)+'</td>'+
@@ -767,10 +824,45 @@ function renderUsageChart(container,data,f){
     success7d=success7d||(f.success||0);
     fail7d=fail7d||(f.failed||0)
   }
+  if(f){
+    var infoHtml='';
+    if(f.quota&&f.quota.exceeded){
+      infoHtml+='<div style="padding:8px 12px;background:var(--warning-bg);border:1px solid var(--warning);border-radius:6px;margin-bottom:12px;font-size:13px">';
+      infoHtml+='<strong style="color:var(--warning)">额度超限</strong>';
+      if(f.quota.reason)infoHtml+=' <span style="color:var(--text2)">('+escHtml(f.quota.reason)+')</span>';
+      if(f.quota.next_recover_at){
+        var rd=new Date(f.quota.next_recover_at);
+        if(!isNaN(rd.getTime())){
+          var rdiff=rd-new Date();
+          if(rdiff>0)infoHtml+=' <span style="color:var(--text2)">预计恢复: '+fmtTime(f.quota.next_recover_at)+'</span>'
+        }
+      }
+      infoHtml+='</div>'
+    }
+    if(f.id_token){
+      infoHtml+='<div style="padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;margin-bottom:12px;font-size:12px;display:flex;flex-wrap:wrap;gap:12px">';
+      if(f.id_token.plan_type)infoHtml+='<span><strong>Plan:</strong> '+escHtml(f.id_token.plan_type)+'</span>';
+      if(f.id_token.chatgpt_subscription_active_until){
+        var subEnd=f.id_token.chatgpt_subscription_active_until;
+        var subDate=new Date(subEnd);
+        var subStr=isNaN(subDate.getTime())?escHtml(String(subEnd)):subDate.toLocaleDateString();
+        var isExpired=!isNaN(subDate.getTime())&&subDate<new Date();
+        infoHtml+='<span><strong>订阅到期:</strong> '+(isExpired?'<span style="color:var(--danger)">'+subStr+' (已过期)</span>':subStr)+'</span>'
+      }
+      if(f.id_token.chatgpt_account_id)infoHtml+='<span style="color:var(--text2)"><strong>Account:</strong> '+escHtml(f.id_token.chatgpt_account_id)+'</span>';
+      infoHtml+='</div>'
+    }
+    if(f.unavailable&&!f.disabled){
+      infoHtml+='<div style="padding:6px 12px;background:var(--danger-bg);border:1px solid var(--danger);border-radius:6px;margin-bottom:12px;font-size:12px;color:var(--danger)">账号标记为不可用</div>'
+    }
+    if(infoHtml)html+=infoHtml
+  }
   var html='<div class="stat-cards">';
   html+='<div class="stat-card"><div class="stat-value">'+total7d+'</div><div class="stat-label">7日总请求</div></div>';
   html+='<div class="stat-card"><div class="stat-value" style="color:var(--success)">'+success7d+'</div><div class="stat-label">成功</div></div>';
   html+='<div class="stat-card"><div class="stat-value" style="color:var(--danger)">'+fail7d+'</div><div class="stat-label">失败</div></div>';
+  var r5h=get5hCount(f);
+  html+='<div class="stat-card"><div class="stat-value" style="color:var(--info)">'+r5h+'</div><div class="stat-label">近3h请求</div></div>';
   html+='</div>';
   html+='<div class="time-toggle">';
   html+='<button class="tt-btn'+(usageTimeWindow==='5h'?' active':'')+'" onclick="usageTimeWindow=\'5h\';renderUsageChartRefresh()">5小时</button>';
@@ -831,6 +923,10 @@ function renderFields(f){
     {label:'账号类型',value:f.account_type||'-',editable:false},
     {label:'项目 ID',value:f.project_id||'-',editable:false},
     {label:'状态消息',value:f.status_message||'-',editable:false},
+    {label:'禁用',value:f.disabled?'是':'否',editable:false},
+    {label:'不可用',value:f.unavailable?'是':'否',editable:false},
+    {label:'额度超限',value:(f.quota&&f.quota.exceeded)?'是 (backoff: '+(f.quota.backoff_level||0)+')':'否',editable:false},
+    {label:'预计恢复',value:(f.quota&&f.quota.next_recover_at&&String(f.quota.next_recover_at)!=='0001-01-01T00:00:00Z')?fmtTime(f.quota.next_recover_at):'-',editable:false},
     {label:'创建时间',value:fmtTimeFull(f.created_at),editable:false},
     {label:'更新时间',value:fmtTimeFull(f.updated_at),editable:false}
   ];
@@ -1062,9 +1158,59 @@ async function submitImportModels(targetName){
   }catch(e){toast('导入失败: '+e.message,false)}
 }
 
+var codexOAuthState='';
+
+function showCodexOAuthModal(){
+  var m=document.createElement('div');m.className='modal-overlay';m.id='codexOAuthModal';
+  m.onclick=function(e){if(e.target===m)m.remove()};
+  m.innerHTML='<div class="modal"><h3>Codex OAuth</h3>'+
+    '<label>回调地址</label>'+
+    '<textarea id="codexRedirectUrl" placeholder="把浏览器最终跳回的完整 URL 粘贴到这里，比如 http://localhost:1455/auth/callback?code=...&state=..."></textarea>'+
+    '<p style="color:var(--text2);font-size:12px;margin-bottom:12px">先点授权打开登录页，登录后把浏览器地址栏里的完整回调 URL 粘回来再提交。</p>'+
+    '<div class="modal-actions" style="justify-content:space-between">'+
+    '<button class="btn" onclick="closeModal(\'codexOAuthModal\')">取消</button>'+
+    '<div style="display:flex;gap:8px">'+
+    '<button class="btn" onclick="beginCodexOAuth()">打开授权</button>'+
+    '<button class="btn btn-primary" onclick="submitCodexCallback()">提交回调</button>'+
+    '</div></div></div>';
+  document.body.appendChild(m)
+}
+
+async function beginCodexOAuth(){
+  try{
+    var data=await api('GET','/codex-auth-url');
+    if(data.url){
+      codexOAuthState=data.state||'';
+      window.open(data.url,'_blank','width=600,height=700');
+      toast('OAuth 窗口已打开',true)
+    }else{
+      toast('未返回授权 URL',false)
+    }
+  }catch(e){toast('OAuth 失败: '+e.message,false)}
+}
+
+async function submitCodexCallback(){
+  var input=document.getElementById('codexRedirectUrl');
+  var redirectUrl=input?input.value.trim():'';
+  if(!redirectUrl){toast('请粘贴回调 URL',false);return}
+  try{
+    var body={provider:'codex',redirect_url:redirectUrl};
+    if(codexOAuthState)body.state=codexOAuthState;
+    await api('POST','/oauth-callback',body);
+    toast('回调已提交',true);
+    closeModal('codexOAuthModal');
+    var state=codexOAuthState;
+    if(!state){
+      try{state=new URL(redirectUrl).searchParams.get('state')||''}catch(_){}
+    }
+    if(state)pollOAuthStatus(state,'codex');
+    else setTimeout(loadData,1500)
+  }catch(e){toast('回调提交失败: '+e.message,false)}
+}
+
 async function startOAuth(provider){
+  if(provider==='codex'){showCodexOAuthModal();return}
   var urlMap={
-    codex:'/codex-auth-url',
     kimi:'/kimi-auth-url',
     anthropic:'/anthropic-auth-url',
     gemini:'/gemini-cli-auth-url',
@@ -1317,7 +1463,9 @@ async function submitAliasChannel(){
 if(getToken())loadData();
 </script>
 </body>
-</html>`
+</html>
+
+`
 
 func (h *Handler) ServeAuthFilesPage(c *gin.Context) {
 	c.Header("Content-Type", "text/html; charset=utf-8")

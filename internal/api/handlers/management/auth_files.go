@@ -401,6 +401,7 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	entry["success"] = auth.Success
 	entry["failed"] = auth.Failed
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
+	entry["quota"] = gin.H{"exceeded": auth.Quota.Exceeded, "reason": auth.Quota.Reason, "next_recover_at": auth.Quota.NextRecoverAt, "backoff_level": auth.Quota.BackoffLevel}
 	if baseURL := strings.TrimSpace(auth.Attributes["base_url"]); baseURL != "" {
 		entry["base_url"] = baseURL
 	}

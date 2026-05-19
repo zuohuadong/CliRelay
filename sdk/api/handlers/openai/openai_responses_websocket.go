@@ -1096,6 +1096,14 @@ func websocketJSONPayloadsFromChunk(chunk []byte) [][]byte {
 }
 
 func writeResponsesWebsocketError(conn *websocket.Conn, wsTimelineLog *strings.Builder, errMsg *interfaces.ErrorMessage) ([]byte, error) {
+	payload, err := buildResponsesWebsocketErrorPayload(errMsg)
+	if err != nil {
+		return nil, err
+	}
+	return payload, writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now())
+}
+
+func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byte, error) {
 	status := http.StatusInternalServerError
 	errText := http.StatusText(status)
 	if errMsg != nil {
@@ -1108,13 +1116,8 @@ func writeResponsesWebsocketError(conn *websocket.Conn, wsTimelineLog *strings.B
 		}
 	}
 
-	body := handlers.BuildErrorResponseBody(status, errText)
-	payload := []byte(`{}`)
+	payload := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
 	var errSet error
-	payload, errSet = sjson.SetBytes(payload, "type", wsEventTypeError)
-	if errSet != nil {
-		return nil, errSet
-	}
 	payload, errSet = sjson.SetBytes(payload, "status", status)
 	if errSet != nil {
 		return nil, errSet
@@ -1141,31 +1144,7 @@ func writeResponsesWebsocketError(conn *websocket.Conn, wsTimelineLog *strings.B
 			}
 		}
 	}
-
-	if len(body) > 0 && json.Valid(body) {
-		errorNode := gjson.GetBytes(body, "error")
-		if errorNode.Exists() {
-			payload, errSet = sjson.SetRawBytes(payload, "error", []byte(errorNode.Raw))
-		} else {
-			payload, errSet = sjson.SetRawBytes(payload, "error", body)
-		}
-		if errSet != nil {
-			return nil, errSet
-		}
-	}
-
-	if !gjson.GetBytes(payload, "error").Exists() {
-		payload, errSet = sjson.SetBytes(payload, "error.type", "server_error")
-		if errSet != nil {
-			return nil, errSet
-		}
-		payload, errSet = sjson.SetBytes(payload, "error.message", errText)
-		if errSet != nil {
-			return nil, errSet
-		}
-	}
-
-	return payload, writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now())
+	return payload, nil
 }
 
 func appendWebsocketEvent(builder *strings.Builder, eventType string, payload []byte) {

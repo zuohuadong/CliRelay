@@ -290,18 +290,12 @@ type PprofConfig struct {
 
 // RemoteManagement holds management API configuration under 'remote-management'.
 type RemoteManagement struct {
-	// AllowRemote toggles remote (non-localhost) access to management API.
-	AllowRemote bool `yaml:"allow-remote"`
-	// SecretKey is the management key (plaintext or bcrypt hashed). YAML key intentionally 'secret-key'.
-	SecretKey string `yaml:"secret-key"`
-	// DisableControlPanel skips serving and syncing the bundled management UI when true.
-	DisableControlPanel bool `yaml:"disable-control-panel"`
-	// DisableAutoUpdatePanel disables periodic background sync of the management panel asset from GitHub.
-	// When false (the default), the panel asset syncer remains enabled; when true, the panel is only downloaded on first access if missing.
-	DisableAutoUpdatePanel bool `yaml:"disable-auto-update-panel"`
-	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
-	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
-	PanelGitHubRepository string `yaml:"panel-github-repository"`
+	AllowRemote            bool   `yaml:"allow-remote"`
+	SecretKey              string `yaml:"secret-key"`
+	DisableControlPanel    bool   `yaml:"disable-control-panel"`
+	DisableAutoUpdatePanel bool   `yaml:"disable-auto-update-panel"`
+	PanelGitHubRepository  string `yaml:"panel-github-repository"`
+	ShareToken             string `yaml:"share-token"`
 }
 
 // QuotaExceeded defines the behavior when API quota limits are exceeded.

@@ -82,6 +82,13 @@ func (h *Handler) startAttemptCleanup() {
 	}()
 }
 
+func (h *Handler) shareToken() string {
+	if h == nil || h.cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(h.cfg.RemoteManagement.ShareToken)
+}
+
 // purgeStaleAttempts removes IP entries that have been idle beyond attemptMaxIdleTime
 // and whose ban (if any) has expired.
 func (h *Handler) purgeStaleAttempts() {
@@ -279,6 +286,19 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		envHash := sha256.Sum256([]byte(envSecret))
 		envHashHex := hex.EncodeToString(envHash[:])
 		if subtle.ConstantTimeCompare([]byte(provided), []byte(envHashHex)) == 1 {
+			reset()
+			return true, 0, ""
+		}
+	}
+
+	if shareToken := h.shareToken(); shareToken != "" {
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(shareToken)) == 1 {
+			reset()
+			return true, 0, ""
+		}
+		shareHash := sha256.Sum256([]byte(shareToken))
+		shareHashHex := hex.EncodeToString(shareHash[:])
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(shareHashHex)) == 1 {
 			reset()
 			return true, 0, ""
 		}

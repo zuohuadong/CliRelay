@@ -6,9 +6,17 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+<<<<<<< HEAD
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+=======
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/hex"
+>>>>>>> upstream/main
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -26,10 +34,20 @@ import (
 const homeCertificateRequestTimeout = 30 * time.Second
 
 type homeJWTClaims struct {
+<<<<<<< HEAD
 	CertificateID string `json:"certificate_id"`
 	IP            string `json:"ip"`
 	Port          int    `json:"port"`
 	IssuedAt      int64  `json:"iat"`
+=======
+	CertificateID    string `json:"certificate_id"`
+	ClusterID        string `json:"cluster_id"`
+	CAFingerprint    string `json:"ca_fingerprint"`
+	EnrollmentSecret string `json:"enrollment_secret"`
+	IP               string `json:"ip"`
+	Port             int    `json:"port"`
+	IssuedAt         int64  `json:"iat"`
+>>>>>>> upstream/main
 }
 
 type certificateRequestResponse struct {
@@ -88,6 +106,18 @@ func parseHomeJWTClaims(rawJWT string) (homeJWTClaims, error) {
 	if strings.TrimSpace(claims.CertificateID) == "" {
 		return claims, fmt.Errorf("home jwt certificate_id is required")
 	}
+<<<<<<< HEAD
+=======
+	if strings.TrimSpace(claims.ClusterID) == "" {
+		return claims, fmt.Errorf("home jwt cluster_id is required")
+	}
+	if normalizeFingerprint(claims.CAFingerprint) == "" {
+		return claims, fmt.Errorf("home jwt ca_fingerprint is required")
+	}
+	if strings.TrimSpace(claims.EnrollmentSecret) == "" {
+		return claims, fmt.Errorf("home jwt enrollment_secret is required")
+	}
+>>>>>>> upstream/main
 	if strings.TrimSpace(claims.IP) == "" || claims.Port <= 0 {
 		return claims, fmt.Errorf("home jwt target address is invalid")
 	}
@@ -120,6 +150,12 @@ func ensureHomeCertificateFiles(ctx context.Context, claims homeJWTClaims, paths
 		if !fileExists(paths.CACert) {
 			return fmt.Errorf("home ca certificate file is missing")
 		}
+<<<<<<< HEAD
+=======
+		if errVerify := verifyCACertificateFile(paths.CACert, claims.CAFingerprint); errVerify != nil {
+			return errVerify
+		}
+>>>>>>> upstream/main
 		if errChmod := chmodCertificateFiles(paths); errChmod != nil {
 			return errChmod
 		}
@@ -143,6 +179,12 @@ func ensureHomeCertificateFiles(ctx context.Context, claims homeJWTClaims, paths
 	if strings.TrimSpace(response.Certificate) == "" || strings.TrimSpace(response.CA) == "" {
 		return fmt.Errorf("home certificate response is incomplete")
 	}
+<<<<<<< HEAD
+=======
+	if errVerify := verifyCACertificatePEM([]byte(response.CA), claims.CAFingerprint); errVerify != nil {
+		return errVerify
+	}
+>>>>>>> upstream/main
 	if errWrite := writeFile0600(paths.ClientCert, []byte(response.Certificate)); errWrite != nil {
 		return errWrite
 	}
@@ -152,6 +194,52 @@ func ensureHomeCertificateFiles(ctx context.Context, claims homeJWTClaims, paths
 	return nil
 }
 
+<<<<<<< HEAD
+=======
+func verifyCACertificateFile(path string, expectedFingerprint string) error {
+	raw, errRead := os.ReadFile(path)
+	if errRead != nil {
+		return errRead
+	}
+	return verifyCACertificatePEM(raw, expectedFingerprint)
+}
+
+func verifyCACertificatePEM(raw []byte, expectedFingerprint string) error {
+	actual, errFingerprint := certificateFingerprintPEM(raw)
+	if errFingerprint != nil {
+		return errFingerprint
+	}
+	expected := normalizeFingerprint(expectedFingerprint)
+	if expected == "" {
+		return fmt.Errorf("home ca fingerprint is required")
+	}
+	if actual != expected {
+		return fmt.Errorf("home ca fingerprint mismatch")
+	}
+	return nil
+}
+
+func certificateFingerprintPEM(raw []byte) (string, error) {
+	block, _ := pem.Decode(raw)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", fmt.Errorf("home ca certificate pem is invalid")
+	}
+	cert, errParse := x509.ParseCertificate(block.Bytes)
+	if errParse != nil {
+		return "", errParse
+	}
+	sum := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func normalizeFingerprint(fingerprint string) string {
+	fingerprint = strings.TrimSpace(strings.ToLower(fingerprint))
+	fingerprint = strings.ReplaceAll(fingerprint, ":", "")
+	fingerprint = strings.ReplaceAll(fingerprint, " ", "")
+	return fingerprint
+}
+
+>>>>>>> upstream/main
 func loadOrCreateClientKey(path string) (*rsa.PrivateKey, error) {
 	if fileExists(path) {
 		raw, errRead := os.ReadFile(path)
@@ -252,7 +340,11 @@ func requestClientCertificate(ctx context.Context, claims homeJWTClaims, csrPEM 
 	if deadline, ok := dialCtx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
+<<<<<<< HEAD
 	if _, errWrite := conn.Write(encodeRESPArray("CERTIFICATE", "REQUEST", claims.CertificateID, string(csrPEM))); errWrite != nil {
+=======
+	if _, errWrite := conn.Write(encodeRESPArray("CERTIFICATE", "REQUEST", claims.CertificateID, claims.EnrollmentSecret, string(csrPEM))); errWrite != nil {
+>>>>>>> upstream/main
 		return response, errWrite
 	}
 	raw, errRead := readRESPBulk(bufio.NewReader(conn))

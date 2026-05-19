@@ -43,7 +43,7 @@ func (e *requestPolicyLimitError) Error() string {
 	}
 	code := "request_policy_blocked"
 	if e.maxRequestBytes > 0 && e.requestBytes > e.maxRequestBytes {
-		code = "request_too_large"
+		code = "context_length_exceeded"
 	}
 	payload := map[string]any{
 		"error": map[string]any{

@@ -500,6 +500,24 @@ func TestParseCodexWebsocketErrorPreservesWrappedBodyAndHeaders(t *testing.T) {
 	}
 }
 
+func TestParseCodexWebsocketErrorAcceptsTopLevelResponsesErrorShape(t *testing.T) {
+	err, ok := parseCodexWebsocketError([]byte(`{"type":"error","status":400,"code":"context_too_large","message":"request too large"}`))
+	if !ok {
+		t.Fatalf("expected websocket error")
+	}
+
+	parsed := gjson.Parse(err.Error())
+	if got := parsed.Get("status").Int(); got != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; payload=%s", got, err.Error())
+	}
+	if got := parsed.Get("error.code").String(); got != "context_too_large" {
+		t.Fatalf("error.code = %s, want context_too_large; payload=%s", got, err.Error())
+	}
+	if got := parsed.Get("error.message").String(); got != "request too large" {
+		t.Fatalf("error.message = %s, want request too large; payload=%s", got, err.Error())
+	}
+}
+
 func TestApplyCodexHeadersUsesConfigUserAgentForOAuth(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, "https://example.com/responses", nil)
 	if err != nil {

@@ -1107,6 +1107,23 @@ func buildCodexWebsocketErrorPayload(payload []byte, status int) []byte {
 		return out
 	}
 
+	message := strings.TrimSpace(gjson.GetBytes(payload, "message").String())
+	code := strings.TrimSpace(gjson.GetBytes(payload, "code").String())
+	if message != "" || code != "" {
+		if code != "" {
+			out, _ = sjson.SetBytes(out, "error.code", code)
+		}
+		if message != "" {
+			out, _ = sjson.SetBytes(out, "error.message", message)
+		}
+		if status >= http.StatusInternalServerError {
+			out, _ = sjson.SetBytes(out, "error.type", "server_error")
+		} else {
+			out, _ = sjson.SetBytes(out, "error.type", "invalid_request_error")
+		}
+		return out
+	}
+
 	out, _ = sjson.SetBytes(out, "error.type", "server_error")
 	out, _ = sjson.SetBytes(out, "error.message", http.StatusText(status))
 	return out

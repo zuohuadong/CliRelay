@@ -1122,6 +1122,22 @@ func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byt
 	if errSet != nil {
 		return nil, errSet
 	}
+	if code := strings.TrimSpace(gjson.GetBytes(payload, "code").String()); code != "" {
+		payload, errSet = sjson.SetBytes(payload, "error.code", code)
+		if errSet != nil {
+			return nil, errSet
+		}
+		payload, errSet = sjson.SetBytes(payload, "error.type", responsesWebsocketErrorType(status))
+		if errSet != nil {
+			return nil, errSet
+		}
+	}
+	if message := strings.TrimSpace(gjson.GetBytes(payload, "message").String()); message != "" {
+		payload, errSet = sjson.SetBytes(payload, "error.message", message)
+		if errSet != nil {
+			return nil, errSet
+		}
+	}
 
 	if errMsg != nil && errMsg.Addon != nil {
 		headers := []byte(`{}`)
@@ -1145,6 +1161,18 @@ func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byt
 		}
 	}
 	return payload, nil
+}
+
+func responsesWebsocketErrorType(status int) string {
+	switch status {
+	case http.StatusUnauthorized:
+		return "authentication_error"
+	default:
+		if status >= http.StatusInternalServerError {
+			return "server_error"
+		}
+		return "invalid_request_error"
+	}
 }
 
 func appendWebsocketEvent(builder *strings.Builder, eventType string, payload []byte) {

@@ -8,7 +8,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestBuildResponsesWebsocketErrorPayloadUsesTopLevelResponsesShape(t *testing.T) {
+func TestBuildResponsesWebsocketErrorPayloadIncludesNestedErrorForCodexClients(t *testing.T) {
 	errMsg := &interfaces.ErrorMessage{
 		StatusCode: http.StatusRequestEntityTooLarge,
 		Error:      jsonError(`{"error":{"message":"request policy glm-5.1-large-request-guard blocked upstream model glm-5.1 via provider bigmodel-coding: request_bytes 706275 exceeds max-request-bytes 600000","type":"invalid_request_error","code":"context_length_exceeded"}}`),
@@ -25,8 +25,14 @@ func TestBuildResponsesWebsocketErrorPayloadUsesTopLevelResponsesShape(t *testin
 	if got := gjson.GetBytes(payload, "code").String(); got != "context_too_large" {
 		t.Fatalf("code = %q, want context_too_large; payload=%s", got, payload)
 	}
-	if gjson.GetBytes(payload, "error").Exists() {
-		t.Fatalf("did not expect nested error object; payload=%s", payload)
+	if got := gjson.GetBytes(payload, "error.code").String(); got != "context_too_large" {
+		t.Fatalf("error.code = %q, want context_too_large; payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "error.type").String(); got != "invalid_request_error" {
+		t.Fatalf("error.type = %q, want invalid_request_error; payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "error.message").String(); got == "" {
+		t.Fatalf("expected nested error.message, payload=%s", payload)
 	}
 	if got := int(gjson.GetBytes(payload, "status").Int()); got != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want %d; payload=%s", got, http.StatusRequestEntityTooLarge, payload)

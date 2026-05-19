@@ -741,14 +741,12 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/oauth-model-alias", s.mgmt.DeleteOAuthModelAlias)
 
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
-		mgmt.GET("/auth-files/page", s.mgmt.ServeAuthFilesPage)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
 		mgmt.GET("/models", s.mgmt.GetModels)
 		mgmt.GET("/model-configs", s.mgmt.GetModelConfigs)
 		mgmt.GET("/model-owner-presets", s.mgmt.GetModelOwnerPresets)
 		mgmt.GET("/model-path-availability", s.mgmt.GetModelPathAvailability)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
-		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
@@ -814,7 +812,7 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		return
 	}
 
-	c.File(filePath)
+	s.servePanelHTML(c, filePath)
 }
 
 func (s *Server) serveManagementControlPanelAsset(c *gin.Context) {
@@ -824,7 +822,7 @@ func (s *Server) serveManagementControlPanelAsset(c *gin.Context) {
 
 	requestedPath := strings.TrimPrefix(c.Param("filepath"), "/")
 	if requestedPath == "" {
-		c.File(managementasset.FilePath(s.configFilePath))
+		s.servePanelHTML(c, managementasset.FilePath(s.configFilePath))
 		return
 	}
 
@@ -850,7 +848,37 @@ func (s *Server) serveManagementControlPanelAsset(c *gin.Context) {
 		return
 	}
 
-	c.File(managementasset.FilePath(s.configFilePath))
+	s.servePanelHTML(c, managementasset.FilePath(s.configFilePath))
+}
+
+const panelTokenInjectionScript = `<script>(function(){var p=new URLSearchParams(window.location.search);var t=p.get('token');if(t){try{var a={apiBase:window.location.origin,managementKey:t,rememberPassword:true,expiresAt:Date.now()+720*60*60*1000};localStorage.setItem('code-proxy-admin-auth',JSON.stringify(a));p.delete('token');var s=p.toString();history.replaceState({},'',window.location.pathname+(s?'?'+s:'')+window.location.hash)}catch(e){}}})();</script>`
+
+func (s *Server) servePanelHTML(c *gin.Context, filePath string) {
+	token := c.Query("token")
+	if token == "" {
+		c.File(filePath)
+		return
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		log.WithError(err).Error("failed to read management control panel HTML")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	html := string(data)
+	inject := panelTokenInjectionScript
+	idx := strings.Index(html, "</head>")
+	if idx >= 0 {
+		html = html[:idx] + inject + html[idx:]
+	} else {
+		html = inject + html
+	}
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.String(http.StatusOK, html)
 }
 
 func (s *Server) ensureManagementControlPanel(c *gin.Context) bool {

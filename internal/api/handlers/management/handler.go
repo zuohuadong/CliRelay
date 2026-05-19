@@ -3,7 +3,9 @@
 package management
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -271,6 +273,15 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	if envSecret != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(envSecret)) == 1 {
 		reset()
 		return true, 0, ""
+	}
+
+	if envSecret != "" {
+		envHash := sha256.Sum256([]byte(envSecret))
+		envHashHex := hex.EncodeToString(envHash[:])
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(envHashHex)) == 1 {
+			reset()
+			return true, 0, ""
+		}
 	}
 
 	if secretHash == "" || bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {

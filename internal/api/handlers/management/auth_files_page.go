@@ -1158,9 +1158,59 @@ async function submitImportModels(targetName){
   }catch(e){toast('导入失败: '+e.message,false)}
 }
 
+var codexOAuthState='';
+
+function showCodexOAuthModal(){
+  var m=document.createElement('div');m.className='modal-overlay';m.id='codexOAuthModal';
+  m.onclick=function(e){if(e.target===m)m.remove()};
+  m.innerHTML='<div class="modal"><h3>Codex OAuth</h3>'+
+    '<label>回调地址</label>'+
+    '<textarea id="codexRedirectUrl" placeholder="把浏览器最终跳回的完整 URL 粘贴到这里，比如 http://localhost:1455/auth/callback?code=...&state=..."></textarea>'+
+    '<p style="color:var(--text2);font-size:12px;margin-bottom:12px">先点授权打开登录页，登录后把浏览器地址栏里的完整回调 URL 粘回来再提交。</p>'+
+    '<div class="modal-actions" style="justify-content:space-between">'+
+    '<button class="btn" onclick="closeModal(\'codexOAuthModal\')">取消</button>'+
+    '<div style="display:flex;gap:8px">'+
+    '<button class="btn" onclick="beginCodexOAuth()">打开授权</button>'+
+    '<button class="btn btn-primary" onclick="submitCodexCallback()">提交回调</button>'+
+    '</div></div></div>';
+  document.body.appendChild(m)
+}
+
+async function beginCodexOAuth(){
+  try{
+    var data=await api('GET','/codex-auth-url');
+    if(data.url){
+      codexOAuthState=data.state||'';
+      window.open(data.url,'_blank','width=600,height=700');
+      toast('OAuth 窗口已打开',true)
+    }else{
+      toast('未返回授权 URL',false)
+    }
+  }catch(e){toast('OAuth 失败: '+e.message,false)}
+}
+
+async function submitCodexCallback(){
+  var input=document.getElementById('codexRedirectUrl');
+  var redirectUrl=input?input.value.trim():'';
+  if(!redirectUrl){toast('请粘贴回调 URL',false);return}
+  try{
+    var body={provider:'codex',redirect_url:redirectUrl};
+    if(codexOAuthState)body.state=codexOAuthState;
+    await api('POST','/oauth-callback',body);
+    toast('回调已提交',true);
+    closeModal('codexOAuthModal');
+    var state=codexOAuthState;
+    if(!state){
+      try{state=new URL(redirectUrl).searchParams.get('state')||''}catch(_){}
+    }
+    if(state)pollOAuthStatus(state,'codex');
+    else setTimeout(loadData,1500)
+  }catch(e){toast('回调提交失败: '+e.message,false)}
+}
+
 async function startOAuth(provider){
+  if(provider==='codex'){showCodexOAuthModal();return}
   var urlMap={
-    codex:'/codex-auth-url',
     kimi:'/kimi-auth-url',
     anthropic:'/anthropic-auth-url',
     gemini:'/gemini-cli-auth-url',

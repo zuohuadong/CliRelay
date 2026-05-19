@@ -12,6 +12,7 @@ logs/*
 conv/*
 temp/*
 refs/*
+verify-report-*.txt
 
 # Storage backends
 pgstore/*

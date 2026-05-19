@@ -2907,6 +2907,10 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, candidate, opts, model, provider, upstreamModel); blocked {
 			if policyErr != nil {
 				logEntryWithRequestID(ctx).Debugf("request policy skipped auth=%s provider=%s model=%s policy=%s reason=%s", candidate.ID, provider, model, policyErr.policy, policyErr.reason)
+				if policyErr.action == requestPolicyActionReject {
+					m.mu.RUnlock()
+					return nil, nil, policyErr
+				}
 			}
 			continue
 		}
@@ -2993,7 +2997,13 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 			continue
 		}
 		runtimeConfig, _ := m.runtimeConfig.Load().(*internalconfig.Config)
-		if blocked, _ := requestPolicyDecision(runtimeConfig, selected, opts, model, provider, model); blocked {
+		upstreamModel := rewriteModelForAuth(model, selected)
+		upstreamModel = m.applyOAuthModelAlias(selected, upstreamModel)
+		upstreamModel = m.applyAPIKeyModelAlias(selected, upstreamModel)
+		if blocked, policyErr := requestPolicyDecision(runtimeConfig, selected, opts, model, provider, upstreamModel); blocked {
+			if policyErr != nil && policyErr.action == requestPolicyActionReject {
+				return nil, nil, policyErr
+			}
 			if tried == nil {
 				tried = make(map[string]struct{})
 			}

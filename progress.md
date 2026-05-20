@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-21 00:23:13 +0800] [CliRelay] [done] Repaired Redis protocol integration tests after PR #119; full go test and required server build now pass
 [2026-05-20 19:43:05 +0800] [CliRelay] [done] Merged bigmodel-coding glm-5.1 MCP upstream changes to main via PR #115, waited for GHCR build success, updated server to ghcr.io/zuohuadong/clirelay:main-491c98e, and migrated production config to restore gpt-5.3-codex alias plus multimodal adapter settings
 [2026-05-20 19:07:11 +0800] [CliRelay] [done] Added first-class bigmodel-coding upstream handling for glm-5.1 official MCP web/search injection, scoped multimodal adaptation, and redacted upstream request logging
 [2026-05-19 22:52:20 +0800] [CliRelay] [done] Root-caused restart storm to broken container-cli-proxy-api systemd unit; disabled watchdog timer, removed service from runtime path, and verified cli-proxy-api stays up past the prior timeout window

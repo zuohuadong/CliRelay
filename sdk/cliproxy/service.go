@@ -413,6 +413,10 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		if compatProviderKey == "" {
 			compatProviderKey = "openai-compatibility"
 		}
+		if strings.EqualFold(compatProviderKey, "bigmodel-coding") {
+			s.coreManager.RegisterExecutor(executor.NewBigModelCodingExecutor(s.cfg))
+			return
+		}
 		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(compatProviderKey, s.cfg))
 		return
 	}

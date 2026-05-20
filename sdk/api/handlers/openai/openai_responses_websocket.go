@@ -1117,6 +1117,11 @@ func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byt
 	}
 
 	payload := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
+	status = handlers.NormalizeOpenAIResponsesStreamErrorStatus(
+		status,
+		strings.TrimSpace(gjson.GetBytes(payload, "code").String()),
+		strings.TrimSpace(gjson.GetBytes(payload, "message").String()),
+	)
 	var errSet error
 	payload, errSet = sjson.SetBytes(payload, "status", status)
 	if errSet != nil {

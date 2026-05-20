@@ -10,7 +10,7 @@ import (
 
 func TestBuildResponsesWebsocketErrorPayloadIncludesNestedErrorForCodexClients(t *testing.T) {
 	errMsg := &interfaces.ErrorMessage{
-		StatusCode: http.StatusRequestEntityTooLarge,
+		StatusCode: http.StatusBadRequest,
 		Error:      jsonError(`{"error":{"message":"request policy glm-5.1-large-request-guard blocked upstream model glm-5.1 via provider bigmodel-coding: request_bytes 706275 exceeds max-request-bytes 600000","type":"invalid_request_error","code":"context_length_exceeded"}}`),
 	}
 

@@ -60,7 +60,7 @@ func TestBuildOpenAIResponsesStreamErrorChunkNormalizesContextTooLarge(t *testin
 	if payload["type"] != "error" {
 		t.Fatalf("type = %v, want %q", payload["type"], "error")
 	}
-	if payload["code"] != "context_too_large" {
-		t.Fatalf("code = %v, want %q", payload["code"], "context_too_large")
+	if payload["code"] != "context_length_exceeded" {
+		t.Fatalf("code = %v, want %q", payload["code"], "context_length_exceeded")
 	}
 }

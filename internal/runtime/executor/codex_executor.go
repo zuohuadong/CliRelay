@@ -898,7 +898,7 @@ func codexStatusErrorClassification(statusCode int, body []byte) (code string, e
 
 	switch {
 	case statusCode == http.StatusRequestEntityTooLarge || upstreamCode == "context_length_exceeded" || upstreamCode == "context_too_large" || isInvalidRequest && (strings.Contains(errorMessage, "context length") || strings.Contains(errorMessage, "context_length") || strings.Contains(errorMessage, "maximum context") || strings.Contains(errorMessage, "too many tokens")):
-		return "context_too_large", "invalid_request_error", true
+		return "context_length_exceeded", "invalid_request_error", true
 	case strings.Contains(lower, "invalid signature in thinking block") || strings.Contains(lower, "invalid_encrypted_content"):
 		return "thinking_signature_invalid", "invalid_request_error", true
 	case upstreamCode == "previous_response_not_found" || strings.Contains(lower, "previous_response_not_found") || strings.Contains(lower, "previous_response_id") && strings.Contains(lower, "not found"):

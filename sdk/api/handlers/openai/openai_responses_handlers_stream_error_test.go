@@ -68,8 +68,8 @@ func TestWriteResponsesImmediateStreamErrorUsesResponsesErrorChunk(t *testing.T)
 	if strings.Contains(body, `"error":{`) {
 		t.Fatalf("expected responses stream error chunk, got nested HTTP error body: %q", body)
 	}
-	if !strings.Contains(body, `"code":"context_too_large"`) {
-		t.Fatalf("expected normalized context_too_large code, got: %q", body)
+	if !strings.Contains(body, `"code":"context_length_exceeded"`) {
+		t.Fatalf("expected normalized context_length_exceeded code, got: %q", body)
 	}
 	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream" {
 		t.Fatalf("Content-Type = %q, want text/event-stream", got)

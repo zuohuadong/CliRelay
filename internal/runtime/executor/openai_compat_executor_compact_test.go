@@ -77,6 +77,73 @@ func TestOpenAICompatExecutorNormalizesBigModelMCPTool(t *testing.T) {
 	}
 }
 
+func TestBigModelCodingExecutorInjectsOfficialMCPTools(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"glm-5.1","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewBigModelCodingExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/api/coding/paas/v4",
+		"api_key":  "sk-test",
+	}}
+	payload := []byte(`{"model":"glm-5.1","messages":[{"role":"user","content":"read https://example.com and search current docs"}]}`)
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "glm-5.1",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := gjson.GetBytes(gotBody, `tools.#(mcp.server_label=="web-search-prime").mcp.server_url`).String(); got != "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp" {
+		t.Fatalf("web-search-prime MCP url = %q; body=%s", got, string(gotBody))
+	}
+	if got := gjson.GetBytes(gotBody, `tools.#(mcp.server_label=="web-reader").mcp.server_url`).String(); got != "https://open.bigmodel.cn/api/mcp/web_reader/mcp" {
+		t.Fatalf("web-reader MCP url = %q; body=%s", got, string(gotBody))
+	}
+	if got := gjson.GetBytes(gotBody, `tools.#(mcp.server_label=="web-reader").mcp.transport_type`).String(); got != "streamable-http" {
+		t.Fatalf("web-reader transport_type = %q; body=%s", got, string(gotBody))
+	}
+	if got := gjson.GetBytes(gotBody, `tools.#(mcp.server_label=="web-search-prime").mcp.headers.Authorization`).String(); got != "Bearer sk-test" {
+		t.Fatalf("web-search-prime Authorization = %q; body=%s", got, string(gotBody))
+	}
+}
+
+func TestOpenAICompatExecutorDoesNotInjectBigModelCodingMCPToolsByDefault(t *testing.T) {
+	payload := []byte(`{"model":"glm-5.1","messages":[{"role":"user","content":"hello"}]}`)
+
+	out, err := NewBigModelCodingExecutor(&config.Config{}).injectOfficialMCPTools(payload, "glm-4.5", "sk-test")
+	if err != nil {
+		t.Fatalf("injectOfficialMCPTools error: %v", err)
+	}
+	if string(out) != string(payload) {
+		t.Fatalf("non glm-5.1 model should not inject tools: %s", string(out))
+	}
+}
+
+func TestRedactSensitiveJSONForLogMasksNestedMCPHeaders(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"mcp","mcp":{"headers":{"Authorization":"Bearer sk-secret-token"}}}],"api_key":"sk-other-secret"}`)
+
+	out := redactSensitiveJSONForLog(body)
+	if strings.Contains(string(out), "sk-secret-token") || strings.Contains(string(out), "sk-other-secret") {
+		t.Fatalf("sensitive values were not redacted: %s", string(out))
+	}
+	if got := gjson.GetBytes(out, "tools.0.mcp.headers.Authorization").String(); got != "Bearer sk-s...oken" {
+		t.Fatalf("Authorization redaction = %q; body=%s", got, string(out))
+	}
+}
+
 func TestOpenAICompatExecutorLeavesOtherProviderWebSearchToolUnchanged(t *testing.T) {
 	executor := NewOpenAICompatExecutor("openrouter", &config.Config{})
 	payload := []byte(`{"model":"gpt-5","tools":[{"type":"web_search","search_context_size":"high"}]}`)

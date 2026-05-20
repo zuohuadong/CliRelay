@@ -517,6 +517,9 @@ type ClaudeModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// Priority preserves management-panel model ordering metadata.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 }
 
 func (m ClaudeModel) GetName() string  { return m.Name }
@@ -568,6 +571,9 @@ type CodexModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// Priority preserves management-panel model ordering metadata.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 }
 
 func (m CodexModel) GetName() string  { return m.Name }
@@ -615,6 +621,9 @@ type GeminiModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// Priority preserves management-panel model ordering metadata.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 }
 
 func (m GeminiModel) GetName() string  { return m.Name }
@@ -645,6 +654,9 @@ type OpenAICompatibility struct {
 	// Models defines the model configurations including aliases for routing.
 	Models []OpenAICompatibilityModel `yaml:"models" json:"models"`
 
+	// TestModel stores the model used by the management panel for provider checks.
+	TestModel string `yaml:"test-model,omitempty" json:"test-model,omitempty"`
+
 	// Headers optionally adds extra HTTP headers for requests sent to this provider.
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 
@@ -673,6 +685,12 @@ type OpenAICompatibilityModel struct {
 
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// Priority preserves management-panel model ordering metadata.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// TestModel stores the model used by the management panel for model checks.
+	TestModel string `yaml:"test-model,omitempty" json:"test-model,omitempty"`
 
 	// Thinking configures the thinking/reasoning capability for this model.
 	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
@@ -1267,6 +1285,7 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		e.Name = strings.TrimSpace(e.Name)
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		e.TestModel = strings.TrimSpace(e.TestModel)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.IdentityFingerprint = strings.ToLower(strings.TrimSpace(e.IdentityFingerprint))
 		if e.BaseURL == "" {

@@ -50,6 +50,9 @@ type VertexCompatModel struct {
 
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// Priority preserves management-panel model ordering metadata.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 }
 
 func (m VertexCompatModel) GetName() string  { return m.Name }

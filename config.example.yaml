@@ -72,6 +72,7 @@ home:
     # Only for testing self-signed endpoints; disables certificate verification.
     insecure-skip-verify: false
 
+
 # Management API settings
 remote-management:
   # Whether to allow remote (non-localhost) management access.
@@ -377,13 +378,6 @@ routing:
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: true
-<<<<<<< HEAD
-=======
-
-# When true, enable Gemini CLI internal endpoints (/v1internal:*).
-# Default is false for safety.
-enable-gemini-cli-endpoint: false
->>>>>>> upstream/main
 
 # When > 0, emit blank lines every N seconds for non-streaming responses to prevent idle timeouts.
 nonstream-keepalive-interval: 0

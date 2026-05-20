@@ -1,6 +1,6 @@
 package config
 
-// HomeConfig configures the optional "home" control plane integration over Redis protocol.
+// HomeConfig stores runtime-only Home control plane settings from -home-jwt.
 type HomeConfig struct {
 	Enabled                 bool          `yaml:"enabled" json:"enabled"`
 	Host                    string        `yaml:"host" json:"-"`

@@ -338,7 +338,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
 		if errRead != nil {
 			helps.RecordAPIWebsocketError(ctx, e.cfg, "read", errRead)
-			return resp, errRead
+			return resp, classifyWebsocketReadError(errRead)
 		}
 		if msgType != websocket.TextMessage {
 			if msgType == websocket.BinaryMessage {
@@ -580,10 +580,11 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					return
 				}
 				terminateReason = "read_error"
-				terminateErr = errRead
+				streamErr := classifyWebsocketReadError(errRead)
+				terminateErr = streamErr
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "read", errRead)
-				reporter.PublishFailure(ctx, errRead)
-				_ = send(cliproxyexecutor.StreamChunk{Err: errRead})
+				reporter.PublishFailure(ctx, streamErr)
+				_ = send(cliproxyexecutor.StreamChunk{Err: streamErr})
 				return
 			}
 			if msgType != websocket.TextMessage {
@@ -644,6 +645,44 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}()
 
 	return &cliproxyexecutor.StreamResult{Headers: upstreamHeaders, Chunks: out}, nil
+}
+
+func classifyWebsocketReadError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if se, ok := err.(statusErr); ok {
+		return se
+	}
+	if he, ok := err.(statusErrWithHeaders); ok {
+		return he
+	}
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "close 1006") ||
+		strings.Contains(errMsg, "abnormal closure") ||
+		strings.Contains(errMsg, "unexpected EOF") ||
+		strings.Contains(errMsg, "connection reset") ||
+		strings.Contains(errMsg, "broken pipe") ||
+		strings.Contains(errMsg, "i/o timeout") {
+		return statusErr{code: http.StatusRequestTimeout, msg: "stream error: stream disconnected before completion: " + errMsg}
+	}
+	if strings.Contains(errMsg, "close 1008") ||
+		strings.Contains(errMsg, "policy violation") {
+		return statusErr{code: http.StatusBadGateway, msg: "stream error: upstream policy violation: " + errMsg}
+	}
+	if strings.Contains(errMsg, "close 1009") ||
+		strings.Contains(errMsg, "message too large") {
+		return statusErr{code: http.StatusRequestEntityTooLarge, msg: "stream error: message too large: " + errMsg}
+	}
+	if strings.Contains(errMsg, "close 1011") ||
+		strings.Contains(errMsg, "internal error") {
+		return statusErr{code: http.StatusBadGateway, msg: "stream error: upstream internal error: " + errMsg}
+	}
+	if strings.Contains(errMsg, "close 1013") ||
+		strings.Contains(errMsg, "try again later") {
+		return statusErr{code: http.StatusTooManyRequests, msg: "stream error: upstream overloaded: " + errMsg}
+	}
+	return statusErr{code: http.StatusBadGateway, msg: "stream error: " + errMsg}
 }
 
 func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *cliproxyauth.Auth, wsURL string, headers http.Header) (*websocket.Conn, *http.Response, error) {

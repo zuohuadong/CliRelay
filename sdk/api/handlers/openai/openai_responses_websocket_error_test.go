@@ -39,6 +39,34 @@ func TestBuildResponsesWebsocketErrorPayloadIncludesNestedErrorForCodexClients(t
 	}
 }
 
+func TestBuildResponsesWebsocketErrorCompletionPayloadCarriesNestedError(t *testing.T) {
+	errMsg := &interfaces.ErrorMessage{
+		StatusCode: http.StatusBadRequest,
+		Error:      jsonError(`{"error":{"message":"request policy glm-5.1-large-request-guard blocked upstream model glm-5.1 via provider bigmodel-coding: request_bytes 706275 exceeds max-request-bytes 600000","type":"invalid_request_error","code":"context_length_exceeded"}}`),
+	}
+
+	payload, err := buildResponsesWebsocketErrorCompletionPayload(errMsg)
+	if err != nil {
+		t.Fatalf("buildResponsesWebsocketErrorCompletionPayload error: %v", err)
+	}
+
+	if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+		t.Fatalf("type = %q, want %s; payload=%s", got, wsEventTypeCompleted, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.status").String(); got != "failed" {
+		t.Fatalf("response.status = %q, want failed; payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.error.code").String(); got != "context_length_exceeded" {
+		t.Fatalf("response.error.code = %q, want context_length_exceeded; payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.error.type").String(); got != "invalid_request_error" {
+		t.Fatalf("response.error.type = %q, want invalid_request_error; payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.error.message").String(); got == "" {
+		t.Fatalf("expected response.error.message, payload=%s", payload)
+	}
+}
+
 func jsonError(raw string) error {
 	return &websocketErrorString{raw: raw}
 }

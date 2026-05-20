@@ -22,11 +22,11 @@ func TestBuildResponsesWebsocketErrorPayloadIncludesNestedErrorForCodexClients(t
 	if got := gjson.GetBytes(payload, "type").String(); got != "error" {
 		t.Fatalf("type = %q, want error; payload=%s", got, payload)
 	}
-	if got := gjson.GetBytes(payload, "code").String(); got != "context_too_large" {
-		t.Fatalf("code = %q, want context_too_large; payload=%s", got, payload)
+	if got := gjson.GetBytes(payload, "code").String(); got != "context_length_exceeded" {
+		t.Fatalf("code = %q, want context_length_exceeded; payload=%s", got, payload)
 	}
-	if got := gjson.GetBytes(payload, "error.code").String(); got != "context_too_large" {
-		t.Fatalf("error.code = %q, want context_too_large; payload=%s", got, payload)
+	if got := gjson.GetBytes(payload, "error.code").String(); got != "context_length_exceeded" {
+		t.Fatalf("error.code = %q, want context_length_exceeded; payload=%s", got, payload)
 	}
 	if got := gjson.GetBytes(payload, "error.type").String(); got != "invalid_request_error" {
 		t.Fatalf("error.type = %q, want invalid_request_error; payload=%s", got, payload)

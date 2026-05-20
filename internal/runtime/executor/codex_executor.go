@@ -262,8 +262,12 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			continue
 		}
 
-		if eventType != "response.completed" {
+		if eventType != "response.completed" && eventType != "response.done" {
 			continue
+		}
+
+		if eventType == "response.done" {
+			eventData, _ = sjson.SetRawBytes(eventData, "type", []byte(`"response.completed"`))
 		}
 
 		if detail, ok := helps.ParseCodexUsage(eventData); ok {
@@ -502,10 +506,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 			if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
-				switch gjson.GetBytes(data, "type").String() {
+				eventType := gjson.GetBytes(data, "type").String()
+				switch eventType {
 				case "response.output_item.done":
 					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
-				case "response.completed":
+				case "response.completed", "response.done":
+					if eventType == "response.done" {
+						data, _ = sjson.SetRawBytes(data, "type", []byte(`"response.completed"`))
+					}
 					if detail, ok := helps.ParseCodexUsage(data); ok {
 						reporter.Publish(ctx, detail)
 					}

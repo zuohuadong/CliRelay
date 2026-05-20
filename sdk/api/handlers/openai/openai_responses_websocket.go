@@ -928,9 +928,33 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 		case chunk, ok := <-data:
 			if !ok {
 				if !completed {
-					errMsg := &interfaces.ErrorMessage{
-						StatusCode: http.StatusRequestTimeout,
-						Error:      fmt.Errorf("stream closed before response.completed"),
+					var errMsg *interfaces.ErrorMessage
+					if errs != nil {
+					drainErrs:
+						for {
+							select {
+							case e, eok := <-errs:
+								if !eok {
+									errs = nil
+									break drainErrs
+								}
+								if e != nil {
+									errMsg = e
+								}
+							default:
+								break drainErrs
+							}
+						}
+					}
+					if errMsg == nil {
+						errMsg = &interfaces.ErrorMessage{
+							StatusCode: http.StatusRequestTimeout,
+							Error:      fmt.Errorf("stream closed before response.completed"),
+						}
+					}
+					if suppressReplayableErrors && shouldReplayResponsesWebsocketTranscript(errMsg) {
+						cancel(errMsg.Error)
+						return completedOutput, errMsg, nil
 					}
 					h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
 					markAPIResponseTimestamp(c)

@@ -52,10 +52,14 @@ func TestConfigListEndpointsIncludeUsageStats(t *testing.T) {
 	h := NewHandlerWithoutConfigFilePath(&config.Config{
 		OpenAICompatibility: []config.OpenAICompatibility{
 			{
-				Name:    "bohe",
-				BaseURL: "https://compat.example.com",
+				Name:      "bohe",
+				BaseURL:   "https://compat.example.com",
+				TestModel: "gpt-4.1-mini",
 				APIKeyEntries: []config.OpenAICompatibilityAPIKey{
 					{APIKey: "compat-key"},
+				},
+				Models: []config.OpenAICompatibilityModel{
+					{Name: "gpt-4.1", Alias: "gpt-4.1-alias", Priority: 7, TestModel: "gpt-4.1-mini"},
 				},
 			},
 		},
@@ -91,11 +95,23 @@ func TestConfigListEndpointsIncludeUsageStats(t *testing.T) {
 		if entry.Success != 2 || entry.Failed != 1 {
 			t.Fatalf("provider totals = %d/%d, want 2/1", entry.Success, entry.Failed)
 		}
+		if entry.TestModel != "gpt-4.1-mini" {
+			t.Fatalf("provider test-model = %q, want %q", entry.TestModel, "gpt-4.1-mini")
+		}
 		if len(entry.RecentRequests) != 20 {
 			t.Fatalf("provider recent bucket len = %d, want 20", len(entry.RecentRequests))
 		}
 		if len(entry.APIKeyEntries) != 1 {
 			t.Fatalf("api key entries len = %d, want 1", len(entry.APIKeyEntries))
+		}
+		if len(entry.Models) != 1 {
+			t.Fatalf("models len = %d, want 1", len(entry.Models))
+		}
+		if entry.Models[0].Priority != 7 {
+			t.Fatalf("model priority = %d, want 7", entry.Models[0].Priority)
+		}
+		if entry.Models[0].TestModel != "gpt-4.1-mini" {
+			t.Fatalf("model test-model = %q, want %q", entry.Models[0].TestModel, "gpt-4.1-mini")
 		}
 		if entry.APIKeyEntries[0].Success != 2 || entry.APIKeyEntries[0].Failed != 1 {
 			t.Fatalf("api key totals = %d/%d, want 2/1", entry.APIKeyEntries[0].Success, entry.APIKeyEntries[0].Failed)

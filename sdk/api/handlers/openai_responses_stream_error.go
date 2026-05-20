@@ -67,6 +67,16 @@ func normalizeOpenAIResponsesStreamErrorCode(status int, code string, message st
 	}
 }
 
+func NormalizeOpenAIResponsesStreamErrorStatus(status int, code string, message string) int {
+	if status <= 0 {
+		return http.StatusInternalServerError
+	}
+	if normalizeOpenAIResponsesStreamErrorCode(status, code, message) == "context_too_large" && status == http.StatusBadRequest {
+		return http.StatusRequestEntityTooLarge
+	}
+	return status
+}
+
 // BuildOpenAIResponsesStreamErrorChunk builds an OpenAI Responses streaming error chunk.
 //
 // Important: OpenAI's HTTP error bodies are shaped like {"error":{...}}; those are valid for

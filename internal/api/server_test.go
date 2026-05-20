@@ -175,6 +175,44 @@ func TestManagementLocalPasswordRejectsSpoofedForwardedFor(t *testing.T) {
 	}
 }
 
+func TestManagementIPBanUsesRealClientIPBehindLoopbackProxy(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		req.Header.Set("X-Real-IP", "203.0.113.10")
+		req.Header.Set("Authorization", "Bearer wrong-key")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status = %d, want %d body=%s", i+1, rr.Code, http.StatusUnauthorized, rr.Body.String())
+		}
+	}
+
+	bannedReq := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
+	bannedReq.RemoteAddr = "127.0.0.1:12345"
+	bannedReq.Header.Set("X-Real-IP", "203.0.113.10")
+	bannedReq.Header.Set("Authorization", "Bearer test-management-key")
+	bannedRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(bannedRR, bannedReq)
+	if bannedRR.Code != http.StatusForbidden {
+		t.Fatalf("banned status = %d, want %d body=%s", bannedRR.Code, http.StatusForbidden, bannedRR.Body.String())
+	}
+
+	otherReq := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
+	otherReq.RemoteAddr = "127.0.0.1:12345"
+	otherReq.Header.Set("X-Real-IP", "203.0.113.11")
+	otherReq.Header.Set("Authorization", "Bearer test-management-key")
+	otherRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(otherRR, otherReq)
+	if otherRR.Code != http.StatusOK {
+		t.Fatalf("other client status = %d, want %d body=%s", otherRR.Code, http.StatusOK, otherRR.Body.String())
+	}
+}
+
 func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 

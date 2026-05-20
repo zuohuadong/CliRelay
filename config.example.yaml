@@ -203,7 +203,7 @@ request-log-storage:
 #       upstream-providers: ["bigmodel-coding"]
 #       upstream-models: ["glm-5.1"]
 #     limits:
-#       max-request-bytes: 2000000
+#       max-request-bytes: 600000
 #     over-limit:
 #       action: "skip-channel"
 #   - name: "glm-5.1-tool-heavy-skip"

@@ -15,6 +15,84 @@ import (
 
 const requestScopedNotFoundMessage = "Item with id 'rs_0b5f3eb6f51f175c0169ca74e4a85881998539920821603a74' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input."
 
+type websocketBootstrapWaitExecutor struct {
+	release chan struct{}
+}
+
+func (e *websocketBootstrapWaitExecutor) Identifier() string { return "codex" }
+
+func (e *websocketBootstrapWaitExecutor) Execute(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, &Error{Code: "not_implemented", Message: "Execute not implemented"}
+}
+
+func (e *websocketBootstrapWaitExecutor) ExecuteStream(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	chunks := make(chan cliproxyexecutor.StreamChunk)
+	go func() {
+		if e.release != nil {
+			<-e.release
+		}
+		close(chunks)
+	}()
+	return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *websocketBootstrapWaitExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
+	return auth, nil
+}
+
+func (e *websocketBootstrapWaitExecutor) CountTokens(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, &Error{Code: "not_implemented", Message: "CountTokens not implemented"}
+}
+
+func (e *websocketBootstrapWaitExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
+	return nil, &Error{Code: "not_implemented", Message: "HttpRequest not implemented", HTTPStatus: http.StatusNotImplemented}
+}
+
+func TestManagerExecuteStream_DownstreamWebsocketDoesNotWaitForFirstPayload(t *testing.T) {
+	model := "test-model"
+	executor := &websocketBootstrapWaitExecutor{release: make(chan struct{})}
+	m := NewManager(nil, nil, nil)
+	m.RegisterExecutor(executor)
+
+	auth := &Auth{
+		ID:       "ws-auth",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{"email": "ws@example.com"},
+	}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+		close(executor.release)
+	})
+
+	type streamOutcome struct {
+		result *cliproxyexecutor.StreamResult
+		err    error
+	}
+	done := make(chan streamOutcome, 1)
+	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
+	go func() {
+		result, errExecute := m.ExecuteStream(ctx, []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+		done <- streamOutcome{result: result, err: errExecute}
+	}()
+
+	select {
+	case outcome := <-done:
+		if outcome.err != nil {
+			t.Fatalf("execute stream: %v", outcome.err)
+		}
+		if outcome.result == nil || outcome.result.Chunks == nil {
+			t.Fatalf("expected stream result with chunks")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("downstream websocket stream waited for upstream first payload")
+	}
+}
+
 func TestManager_ShouldRetryAfterError_RespectsAuthRequestRetryOverride(t *testing.T) {
 	m := NewManager(nil, nil, nil)
 	m.SetRetryConfig(3, 30*time.Second, 0)

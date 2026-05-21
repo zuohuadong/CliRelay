@@ -892,6 +892,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			lastErr = errStream
 			continue
 		}
+		if cliproxyexecutor.DownstreamWebsocket(ctx) {
+			return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, nil, streamResult.Chunks), nil
+		}
 
 		buffered, closed, bootstrapErr := readStreamBootstrap(ctx, streamResult.Chunks)
 		if bootstrapErr != nil {

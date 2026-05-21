@@ -724,7 +724,7 @@ func normalizeBigModelMCPTool(tool map[string]any) map[string]any {
 			}
 		}
 	}
-	if isEmptyJSONString(mcp["transport_type"]) {
+	if !isEmptyJSONString(mcp["server_url"]) && isEmptyJSONString(mcp["transport_type"]) {
 		mcp["transport_type"] = "streamable-http"
 	}
 	return map[string]any{

@@ -186,13 +186,15 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
 				markAPIResponseTimestamp(c)
 				errorPayload, completedPayload, errWrite := writeResponsesWebsocketErrorWithTerminalCompleted(conn, &wsTimelineLog, errMsg, true)
-				log.Infof(
-					"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-					passthroughSessionID,
-					websocket.TextMessage,
-					websocketPayloadEventType(errorPayload),
-					websocketPayloadPreview(errorPayload),
-				)
+				if len(errorPayload) > 0 {
+					log.Infof(
+						"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
+						passthroughSessionID,
+						websocket.TextMessage,
+						websocketPayloadEventType(errorPayload),
+						websocketPayloadPreview(errorPayload),
+					)
+				}
 				if len(completedPayload) > 0 {
 					log.Infof(
 						"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
@@ -934,13 +936,15 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
 				markAPIResponseTimestamp(c)
 				errorPayload, completedPayload, errWrite := writeResponsesWebsocketErrorWithTerminalCompleted(conn, wsTimelineLog, errMsg, !completed)
-				log.Infof(
-					"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-					sessionID,
-					websocket.TextMessage,
-					websocketPayloadEventType(errorPayload),
-					websocketPayloadPreview(errorPayload),
-				)
+				if len(errorPayload) > 0 {
+					log.Infof(
+						"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
+						sessionID,
+						websocket.TextMessage,
+						websocketPayloadEventType(errorPayload),
+						websocketPayloadPreview(errorPayload),
+					)
+				}
 				if len(completedPayload) > 0 {
 					log.Infof(
 						"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
@@ -1001,13 +1005,15 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
 					markAPIResponseTimestamp(c)
 					errorPayload, completedPayload, errWrite := writeResponsesWebsocketErrorWithTerminalCompleted(conn, wsTimelineLog, errMsg, true)
-					log.Infof(
-						"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-						sessionID,
-						websocket.TextMessage,
-						websocketPayloadEventType(errorPayload),
-						websocketPayloadPreview(errorPayload),
-					)
+					if len(errorPayload) > 0 {
+						log.Infof(
+							"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
+							sessionID,
+							websocket.TextMessage,
+							websocketPayloadEventType(errorPayload),
+							websocketPayloadPreview(errorPayload),
+						)
+					}
 					if len(completedPayload) > 0 {
 						log.Infof(
 							"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
@@ -1184,16 +1190,16 @@ func writeResponsesWebsocketErrorWithTerminalCompleted(conn *websocket.Conn, wsT
 		return nil, nil, err
 	}
 	if !includeCompleted {
-		return errorPayload, nil, nil
+		return nil, nil, nil
 	}
 	completedPayload, errBuild := buildResponsesWebsocketTerminalCompletedPayload(errorPayload)
 	if errBuild != nil {
-		return errorPayload, nil, errBuild
+		return nil, nil, errBuild
 	}
 	if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, completedPayload, time.Now()); errWrite != nil {
-		return errorPayload, completedPayload, errWrite
+		return nil, completedPayload, errWrite
 	}
-	return errorPayload, completedPayload, nil
+	return nil, completedPayload, nil
 }
 
 func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byte, error) {

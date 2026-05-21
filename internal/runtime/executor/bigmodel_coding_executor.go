@@ -97,7 +97,7 @@ func (e *BigModelCodingExecutor) Execute(ctx context.Context, auth *cliproxyauth
 			}
 		}
 		if opts.Alt == "" {
-			translated, err = e.injectOfficialMCPTools(translated, baseModel, apiKey)
+			translated, err = e.injectOfficialMCPTools(translated, baseModel)
 			if err != nil {
 				return resp, err
 			}
@@ -229,7 +229,7 @@ func (e *BigModelCodingExecutor) ExecuteStream(ctx context.Context, auth *clipro
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
-	translated, err = e.injectOfficialMCPTools(translated, baseModel, apiKey)
+	translated, err = e.injectOfficialMCPTools(translated, baseModel)
 	if err != nil {
 		return nil, err
 	}
@@ -375,8 +375,8 @@ func (e *BigModelCodingExecutor) applyMultimodalAdapter(ctx context.Context, pay
 	return out, nil
 }
 
-func (e *BigModelCodingExecutor) injectOfficialMCPTools(payload []byte, model, apiKey string) ([]byte, error) {
-	if !e.isGLM51(model) || strings.TrimSpace(apiKey) == "" {
+func (e *BigModelCodingExecutor) injectOfficialMCPTools(payload []byte, model string) ([]byte, error) {
+	if !e.isGLM51(model) {
 		return payload, nil
 	}
 	var root map[string]any
@@ -384,31 +384,18 @@ func (e *BigModelCodingExecutor) injectOfficialMCPTools(payload []byte, model, a
 		return nil, fmt.Errorf("inject bigmodel coding MCP tools: invalid payload: %w", err)
 	}
 	tools, _ := root["tools"].([]any)
-	added := false
-	for _, spec := range []struct {
-		label string
-		url   string
-	}{
-		{label: "web-search-prime", url: "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp"},
-		{label: "web-reader", url: "https://open.bigmodel.cn/api/mcp/web_reader/mcp"},
-	} {
-		if hasMCPServerTool(tools, spec.label, spec.url) {
-			continue
-		}
-		tools = append(tools, map[string]any{
-			"type":           "mcp",
-			"server_label":   spec.label,
-			"server_url":     spec.url,
-			"transport_type": "streamable-http",
-			"headers": map[string]any{
-				"Authorization": "Bearer " + strings.TrimSpace(apiKey),
-			},
-		})
-		added = true
-	}
-	if !added {
+	if hasMCPServerTool(tools, "mcp code", "") {
 		return payload, nil
 	}
+	tools = append(tools, map[string]any{
+		"type":         "mcp",
+		"server_label": "mcp code",
+		"allowed_tools": []string{
+			"webSearchPrime",
+			"image_analysis",
+			"video_analysis",
+		},
+	})
 	root["tools"] = tools
 	out, err := json.Marshal(root)
 	if err != nil {
@@ -540,7 +527,7 @@ func hasMCPServerTool(tools []any, label, serverURL string) bool {
 		}
 		gotLabel := strings.ToLower(strings.TrimSpace(fmt.Sprint(mcp["server_label"])))
 		gotURL := strings.TrimSpace(fmt.Sprint(mcp["server_url"]))
-		if gotLabel == label || gotURL == serverURL {
+		if gotLabel == label || (serverURL != "" && gotURL == serverURL) {
 			return true
 		}
 	}

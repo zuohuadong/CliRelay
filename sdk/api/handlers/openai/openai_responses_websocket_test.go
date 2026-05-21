@@ -1010,6 +1010,90 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 	}
 }
 
+func TestForwardResponsesWebsocketWritesCompletedAfterError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	serverErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		defer func() {
+			if errClose := conn.Close(); errClose != nil {
+				serverErrCh <- errClose
+			}
+		}()
+
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = r
+
+		data := make(chan []byte)
+		errCh := make(chan *interfaces.ErrorMessage, 1)
+		errCh <- &interfaces.ErrorMessage{
+			StatusCode: http.StatusTooManyRequests,
+			Error:      errors.New("usage limit reached"),
+		}
+
+		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+		h := NewOpenAIResponsesAPIHandler(base)
+		var timelineLog strings.Builder
+		_, errMsg, err := h.forwardResponsesWebsocket(
+			ctx,
+			conn,
+			func(...interface{}) {},
+			data,
+			errCh,
+			&timelineLog,
+			"session-1",
+			false,
+		)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		if errMsg == nil {
+			serverErrCh <- errors.New("expected websocket error message")
+			return
+		}
+		if !strings.Contains(timelineLog.String(), "\"type\":\"response.completed\"") {
+			serverErrCh <- errors.New("websocket timeline did not capture terminal completed")
+			return
+		}
+		serverErrCh <- nil
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	if errDeadline := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); errDeadline != nil {
+		t.Fatalf("set read deadline: %v", errDeadline)
+	}
+	_, completedPayload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read websocket completed payload: %v", err)
+	}
+
+	if got := gjson.GetBytes(completedPayload, "type").String(); got != wsEventTypeCompleted {
+		t.Fatalf("payload type = %q, want %s; payload=%s", got, wsEventTypeCompleted, completedPayload)
+	}
+	if got := gjson.GetBytes(completedPayload, "response.error.code").String(); got != "rate_limit_exceeded" {
+		t.Fatalf("completed error code = %q, want rate_limit_exceeded; payload=%s", got, completedPayload)
+	}
+
+	if errServer := <-serverErrCh; errServer != nil {
+		t.Fatalf("server error: %v", errServer)
+	}
+}
+
 func TestForwardResponsesWebsocketLogsAttemptedResponseOnWriteFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1485,7 +1569,7 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterQuotaError(t *testing.T) {
 		`{"type":"response.create","previous_response_id":"resp_auth_a_1","input":[{"type":"message","id":"msg-2"}]}`,
 		`{"type":"response.create","previous_response_id":"resp_auth_a_1","input":[{"type":"message","id":"msg-3"}]}`,
 	}
-	wantTypes := []string{wsEventTypeCompleted, wsEventTypeError, wsEventTypeCompleted}
+	wantTypes := []string{wsEventTypeCompleted, wsEventTypeCompleted, wsEventTypeCompleted}
 	for i := range requests {
 		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(requests[i])); errWrite != nil {
 			t.Fatalf("write websocket message %d: %v", i+1, errWrite)
@@ -1499,6 +1583,9 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterQuotaError(t *testing.T) {
 		}
 		if i == 1 && int(gjson.GetBytes(payload, "status").Int()) != http.StatusTooManyRequests {
 			t.Fatalf("quota payload status = %d, want %d: %s", gjson.GetBytes(payload, "status").Int(), http.StatusTooManyRequests, payload)
+		}
+		if i == 1 && gjson.GetBytes(payload, "response.error.code").String() != "rate_limit_exceeded" {
+			t.Fatalf("quota payload error code = %s, want rate_limit_exceeded: %s", gjson.GetBytes(payload, "response.error.code").String(), payload)
 		}
 	}
 

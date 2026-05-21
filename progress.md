@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-21 10:06:48 +0800] [CliRelay] [done] Fixed Responses WebSocket error termination to send a terminal response.completed with nested error metadata so Codex clients do not report stream closed before response.completed
 [2026-05-21 09:27:13 +0800] [CliRelay] [done] Added a targeted bigmodel-coding management-panel entry that maps to openai-compatibility with Codex identity fingerprint and glm-5.1 -> gpt-5.3-codex alias defaults
 [2026-05-21 08:59:25 +0800] [CliRelay] [done] Fixed Codex executor terminal event handling so glm-5.1/Codex-style streams stop treating response.failed and response.incomplete as disconnected-before-completion
 [2026-05-21 08:51:24 +0800] [CliRelay] [done] Fixed Codex-compatible Responses streaming error chunks so context_too_large carries nested error/status metadata for auto-compaction

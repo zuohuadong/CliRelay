@@ -829,7 +829,13 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 		Headers:         headersFromContext(ctx),
 	}
 	opts.Metadata = reqMeta
+	maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
+	bootstrapRetries := 0
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+	for err != nil && bootstrapRetries < maxBootstrapRetries && streamBootstrapRetryEligible(err) {
+		bootstrapRetries++
+		streamResult, err = h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+	}
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
@@ -866,8 +872,6 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 		defer close(dataChan)
 		defer close(errChan)
 		sentPayload := false
-		bootstrapRetries := 0
-		maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
 
 		sendErr := func(msg *interfaces.ErrorMessage) bool {
 			if ctx == nil {
@@ -895,20 +899,6 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 			}
 		}
 
-		bootstrapEligible := func(err error) bool {
-			status := statusFromError(err)
-			if status == 0 {
-				return true
-			}
-			switch status {
-			case http.StatusUnauthorized, http.StatusForbidden, http.StatusPaymentRequired,
-				http.StatusRequestTimeout, http.StatusTooManyRequests:
-				return true
-			default:
-				return status >= http.StatusInternalServerError
-			}
-		}
-
 	outer:
 		for {
 			for {
@@ -931,7 +921,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 					// Safe bootstrap recovery: if the upstream fails before any payload bytes are sent,
 					// retry a few times (to allow auth rotation / transient recovery) and then attempt model fallback.
 					if !sentPayload {
-						if bootstrapRetries < maxBootstrapRetries && bootstrapEligible(streamErr) {
+						if bootstrapRetries < maxBootstrapRetries && streamBootstrapRetryEligible(streamErr) {
 							bootstrapRetries++
 							retryResult, retryErr := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 							if retryErr == nil {
@@ -1017,6 +1007,20 @@ func statusFromError(err error) int {
 		}
 	}
 	return 0
+}
+
+func streamBootstrapRetryEligible(err error) bool {
+	status := statusFromError(err)
+	if status == 0 {
+		return true
+	}
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusPaymentRequired,
+		http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	default:
+		return status >= http.StatusInternalServerError
+	}
 }
 
 func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {

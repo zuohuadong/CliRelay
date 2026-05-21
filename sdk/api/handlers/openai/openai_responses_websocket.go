@@ -166,25 +166,14 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			if errMsg != nil {
 				h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
 				markAPIResponseTimestamp(c)
-				errorPayload, completedPayload, errWrite := writeResponsesWebsocketErrorWithTerminalCompleted(conn, &wsTimelineLog, errMsg, true)
-				if len(errorPayload) > 0 {
-					log.Infof(
-						"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-						passthroughSessionID,
-						websocket.TextMessage,
-						websocketPayloadEventType(errorPayload),
-						websocketPayloadPreview(errorPayload),
-					)
-				}
-				if len(completedPayload) > 0 {
-					log.Infof(
-						"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-						passthroughSessionID,
-						websocket.TextMessage,
-						websocketPayloadEventType(completedPayload),
-						websocketPayloadPreview(completedPayload),
-					)
-				}
+				errorPayload, errWrite := writeResponsesWebsocketError(conn, &wsTimelineLog, errMsg)
+				log.Infof(
+					"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
+					passthroughSessionID,
+					websocket.TextMessage,
+					websocketPayloadEventType(errorPayload),
+					websocketPayloadPreview(errorPayload),
+				)
 				if errWrite != nil {
 					log.Warnf(
 						"responses websocket: downstream_out write failed id=%s event=%s error=%v",
@@ -916,25 +905,14 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				}
 				h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
 				markAPIResponseTimestamp(c)
-				errorPayload, completedPayload, errWrite := writeResponsesWebsocketErrorWithTerminalCompleted(conn, wsTimelineLog, errMsg, !completed)
-				if len(errorPayload) > 0 {
-					log.Infof(
-						"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-						sessionID,
-						websocket.TextMessage,
-						websocketPayloadEventType(errorPayload),
-						websocketPayloadPreview(errorPayload),
-					)
-				}
-				if len(completedPayload) > 0 {
-					log.Infof(
-						"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-						sessionID,
-						websocket.TextMessage,
-						websocketPayloadEventType(completedPayload),
-						websocketPayloadPreview(completedPayload),
-					)
-				}
+				errorPayload, errWrite := writeResponsesWebsocketError(conn, wsTimelineLog, errMsg)
+				log.Infof(
+					"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
+					sessionID,
+					websocket.TextMessage,
+					websocketPayloadEventType(errorPayload),
+					websocketPayloadPreview(errorPayload),
+				)
 				if errWrite != nil {
 					// log.Warnf(
 					// 	"responses websocket: downstream_out write failed id=%s event=%s error=%v",
@@ -985,25 +963,14 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					}
 					h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
 					markAPIResponseTimestamp(c)
-					errorPayload, completedPayload, errWrite := writeResponsesWebsocketErrorWithTerminalCompleted(conn, wsTimelineLog, errMsg, true)
-					if len(errorPayload) > 0 {
-						log.Infof(
-							"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-							sessionID,
-							websocket.TextMessage,
-							websocketPayloadEventType(errorPayload),
-							websocketPayloadPreview(errorPayload),
-						)
-					}
-					if len(completedPayload) > 0 {
-						log.Infof(
-							"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-							sessionID,
-							websocket.TextMessage,
-							websocketPayloadEventType(completedPayload),
-							websocketPayloadPreview(completedPayload),
-						)
-					}
+					errorPayload, errWrite := writeResponsesWebsocketError(conn, wsTimelineLog, errMsg)
+					log.Infof(
+						"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
+						sessionID,
+						websocket.TextMessage,
+						websocketPayloadEventType(errorPayload),
+						websocketPayloadPreview(errorPayload),
+					)
 					if errWrite != nil {
 						log.Warnf(
 							"responses websocket: downstream_out write failed id=%s event=%s error=%v",
@@ -1158,46 +1125,6 @@ func websocketJSONPayloadsFromChunk(chunk []byte) [][]byte {
 }
 
 func writeResponsesWebsocketError(conn *websocket.Conn, wsTimelineLog *strings.Builder, errMsg *interfaces.ErrorMessage) ([]byte, error) {
-	payload, err := buildResponsesWebsocketErrorPayload(errMsg)
-	if err != nil {
-		return nil, err
-	}
-	return payload, writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now())
-}
-
-func writeResponsesWebsocketErrorWithTerminalCompleted(conn *websocket.Conn, wsTimelineLog *strings.Builder, errMsg *interfaces.ErrorMessage, includeCompleted bool) ([]byte, []byte, error) {
-	errorPayload, err := buildResponsesWebsocketErrorPayload(errMsg)
-	if err != nil {
-		return nil, nil, err
-	}
-	if responsesWebsocketErrorPayloadIsContextTooLarge(errorPayload) {
-		failedPayload, errBuild := buildResponsesWebsocketTerminalFailedPayload(errorPayload)
-		if errBuild != nil {
-			return nil, nil, errBuild
-		}
-		if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, failedPayload, time.Now()); errWrite != nil {
-			return failedPayload, nil, errWrite
-		}
-		return failedPayload, nil, nil
-	}
-	if !includeCompleted {
-		return errorPayload, nil, nil
-	}
-	if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, errorPayload, time.Now()); errWrite != nil {
-		return errorPayload, nil, errWrite
-	}
-	return errorPayload, nil, nil
-}
-
-func responsesWebsocketErrorPayloadIsContextTooLarge(errorPayload []byte) bool {
-	code := strings.TrimSpace(gjson.GetBytes(errorPayload, "code").String())
-	if code == "" {
-		code = strings.TrimSpace(gjson.GetBytes(errorPayload, "error.code").String())
-	}
-	return code == "context_too_large"
-}
-
-func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byte, error) {
 	status := http.StatusInternalServerError
 	errText := http.StatusText(status)
 	if errMsg != nil {
@@ -1210,32 +1137,16 @@ func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byt
 		}
 	}
 
-	payload := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
-	status = handlers.NormalizeOpenAIResponsesStreamErrorStatus(
-		status,
-		strings.TrimSpace(gjson.GetBytes(payload, "code").String()),
-		strings.TrimSpace(gjson.GetBytes(payload, "message").String()),
-	)
+	body := handlers.BuildErrorResponseBody(status, errText)
+	payload := []byte(`{}`)
 	var errSet error
-	payload, errSet = sjson.SetBytes(payload, "status", status)
+	payload, errSet = sjson.SetBytes(payload, "type", wsEventTypeError)
 	if errSet != nil {
 		return nil, errSet
 	}
-	if code := strings.TrimSpace(gjson.GetBytes(payload, "code").String()); code != "" {
-		payload, errSet = sjson.SetBytes(payload, "error.code", code)
-		if errSet != nil {
-			return nil, errSet
-		}
-		payload, errSet = sjson.SetBytes(payload, "error.type", responsesWebsocketErrorType(status))
-		if errSet != nil {
-			return nil, errSet
-		}
-	}
-	if message := strings.TrimSpace(gjson.GetBytes(payload, "message").String()); message != "" {
-		payload, errSet = sjson.SetBytes(payload, "error.message", message)
-		if errSet != nil {
-			return nil, errSet
-		}
+	payload, errSet = sjson.SetBytes(payload, "status", status)
+	if errSet != nil {
+		return nil, errSet
 	}
 
 	if errMsg != nil && errMsg.Addon != nil {
@@ -1259,62 +1170,31 @@ func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byt
 			}
 		}
 	}
-	return payload, nil
-}
 
-func buildResponsesWebsocketTerminalFailedPayload(errorPayload []byte) ([]byte, error) {
-	responseID := "resp_error_" + uuid.NewString()
-	createdAt := time.Now().Unix()
-	sequenceNumber := int64(0)
-	if got := gjson.GetBytes(errorPayload, "sequence_number"); got.Exists() {
-		sequenceNumber = got.Int()
-	}
-
-	payload := []byte(`{"type":"response.failed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"failed","background":false,"error":null,"output":[],"usage":null,"metadata":{}}}`)
-	var errSet error
-	payload, errSet = sjson.SetBytes(payload, "sequence_number", sequenceNumber)
-	if errSet != nil {
-		return nil, errSet
-	}
-	payload, errSet = sjson.SetBytes(payload, "response.id", responseID)
-	if errSet != nil {
-		return nil, errSet
-	}
-	payload, errSet = sjson.SetBytes(payload, "response.created_at", createdAt)
-	if errSet != nil {
-		return nil, errSet
-	}
-	if status := gjson.GetBytes(errorPayload, "status"); status.Exists() {
-		payload, errSet = sjson.SetBytes(payload, "status", status.Int())
+	if len(body) > 0 && json.Valid(body) {
+		errorNode := gjson.GetBytes(body, "error")
+		if errorNode.Exists() {
+			payload, errSet = sjson.SetRawBytes(payload, "error", []byte(errorNode.Raw))
+		} else {
+			payload, errSet = sjson.SetRawBytes(payload, "error", body)
+		}
 		if errSet != nil {
 			return nil, errSet
 		}
 	}
-	if errorObj := gjson.GetBytes(errorPayload, "error"); errorObj.Exists() && errorObj.IsObject() {
-		payload, errSet = sjson.SetRawBytes(payload, "response.error", []byte(errorObj.Raw))
-		if errSet != nil {
-			return nil, errSet
-		}
-	}
-	if responsesWebsocketErrorPayloadIsContextTooLarge(errorPayload) {
-		payload, errSet = sjson.SetBytes(payload, "response.error.code", "context_length_exceeded")
-		if errSet != nil {
-			return nil, errSet
-		}
-	}
-	return payload, nil
-}
 
-func responsesWebsocketErrorType(status int) string {
-	switch status {
-	case http.StatusUnauthorized:
-		return "authentication_error"
-	default:
-		if status >= http.StatusInternalServerError {
-			return "server_error"
+	if !gjson.GetBytes(payload, "error").Exists() {
+		payload, errSet = sjson.SetBytes(payload, "error.type", "server_error")
+		if errSet != nil {
+			return nil, errSet
 		}
-		return "invalid_request_error"
+		payload, errSet = sjson.SetBytes(payload, "error.message", errText)
+		if errSet != nil {
+			return nil, errSet
+		}
 	}
+
+	return payload, writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now())
 }
 
 func appendWebsocketEvent(builder *strings.Builder, eventType string, payload []byte) {

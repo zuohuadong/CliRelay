@@ -507,10 +507,8 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 				errChan = nil
 				continue
 			}
-			// Upstream failed before the first chunk. Keep Responses streaming shape
-			// so clients like Codex can classify the error and react (for example,
-			// triggering request compaction on context_too_large).
-			writeResponsesImmediateStreamError(c, flusher, upstreamHeaders, errMsg)
+			// Upstream failed immediately. Return proper error status and JSON.
+			h.WriteErrorResponse(c, errMsg)
 			if errMsg != nil {
 				cliCancel(errMsg.Error)
 			} else {
@@ -541,33 +539,6 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			return
 		}
 	}
-}
-
-func writeResponsesImmediateStreamError(c *gin.Context, flusher http.Flusher, upstreamHeaders http.Header, errMsg *interfaces.ErrorMessage) {
-	if c == nil || flusher == nil {
-		return
-	}
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("Access-Control-Allow-Origin", "*")
-	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
-	if errMsg != nil && errMsg.Addon != nil {
-		handlers.WriteUpstreamHeaders(c.Writer.Header(), errMsg.Addon)
-	}
-
-	status := http.StatusInternalServerError
-	if errMsg != nil && errMsg.StatusCode > 0 {
-		status = errMsg.StatusCode
-	}
-	errText := http.StatusText(status)
-	if errMsg != nil && errMsg.Error != nil && errMsg.Error.Error() != "" {
-		errText = errMsg.Error.Error()
-	}
-
-	chunk := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
-	_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", string(chunk))
-	flusher.Flush()
 }
 
 func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage, framer *responsesSSEFramer) {

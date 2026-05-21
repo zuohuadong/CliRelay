@@ -12,6 +12,13 @@ type openAIResponsesStreamErrorChunk struct {
 	Code           string `json:"code"`
 	Message        string `json:"message"`
 	SequenceNumber int    `json:"sequence_number"`
+	Status         int    `json:"status"`
+	Error          struct {
+		Code    string `json:"code"`
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
+	Headers map[string]string `json:"headers"`
 }
 
 func openAIResponsesStreamErrorCode(status int) string {
@@ -77,11 +84,25 @@ func NormalizeOpenAIResponsesStreamErrorStatus(status int, code string, message 
 	return status
 }
 
+func openAIResponsesStreamErrorType(status int, code string) string {
+	switch {
+	case status == http.StatusUnauthorized || code == "invalid_api_key" || code == "auth_unavailable":
+		return "authentication_error"
+	case status == http.StatusTooManyRequests || code == "rate_limit_exceeded":
+		return "rate_limit_error"
+	case status >= http.StatusInternalServerError:
+		return "server_error"
+	default:
+		return "invalid_request_error"
+	}
+}
+
 // BuildOpenAIResponsesStreamErrorChunk builds an OpenAI Responses streaming error chunk.
 //
 // Important: OpenAI's HTTP error bodies are shaped like {"error":{...}}; those are valid for
 // non-streaming responses, but streaming clients validate SSE `data:` payloads against a union
-// of chunks that requires a top-level `type` field.
+// of chunks that requires a top-level `type` field. Codex clients also key off the nested
+// error object and status when deciding whether to trigger automatic context compaction.
 func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNumber int) []byte {
 	if status <= 0 {
 		status = http.StatusInternalServerError
@@ -96,6 +117,7 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 	}
 
 	code := openAIResponsesStreamErrorCode(status)
+	errType := openAIResponsesStreamErrorType(status, code)
 
 	trimmed := strings.TrimSpace(errText)
 	if trimmed != "" && json.Valid([]byte(trimmed)) {
@@ -115,6 +137,9 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 				if v, ok := payload["sequence_number"].(float64); ok && sequenceNumber == 0 {
 					sequenceNumber = int(v)
 				}
+				if v, ok := payload["status"].(float64); ok && v > 0 {
+					status = int(v)
+				}
 			}
 			if e, ok := payload["error"].(map[string]any); ok {
 				if m, ok := e["message"].(string); ok && strings.TrimSpace(m) != "" {
@@ -127,6 +152,13 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 						code = strings.TrimSpace(fmt.Sprint(v))
 					}
 				}
+				if v, ok := e["type"]; ok && v != nil {
+					if t, ok := v.(string); ok && strings.TrimSpace(t) != "" {
+						errType = strings.TrimSpace(t)
+					} else {
+						errType = strings.TrimSpace(fmt.Sprint(v))
+					}
+				}
 			}
 		}
 	}
@@ -135,26 +167,47 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 		code = "unknown_error"
 	}
 	code = normalizeOpenAIResponsesStreamErrorCode(status, code, message)
+	status = NormalizeOpenAIResponsesStreamErrorStatus(status, code, message)
+	if strings.TrimSpace(errType) == "" || code == "context_too_large" {
+		errType = openAIResponsesStreamErrorType(status, code)
+	}
 
-	data, err := json.Marshal(openAIResponsesStreamErrorChunk{
+	chunk := openAIResponsesStreamErrorChunk{
 		Type:           "error",
 		Code:           code,
 		Message:        message,
 		SequenceNumber: sequenceNumber,
-	})
+		Status:         status,
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+		},
+	}
+	chunk.Error.Code = code
+	chunk.Error.Type = errType
+	chunk.Error.Message = message
+
+	data, err := json.Marshal(chunk)
 	if err == nil {
 		return data
 	}
 
 	// Extremely defensive fallback.
-	data, _ = json.Marshal(openAIResponsesStreamErrorChunk{
+	fallback := openAIResponsesStreamErrorChunk{
 		Type:           "error",
 		Code:           "internal_server_error",
 		Message:        message,
 		SequenceNumber: sequenceNumber,
-	})
+		Status:         http.StatusInternalServerError,
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+		},
+	}
+	fallback.Error.Code = "internal_server_error"
+	fallback.Error.Type = "server_error"
+	fallback.Error.Message = message
+	data, _ = json.Marshal(fallback)
 	if len(data) > 0 {
 		return data
 	}
-	return []byte(`{"type":"error","code":"internal_server_error","message":"internal error","sequence_number":0}`)
+	return []byte(`{"type":"error","code":"internal_server_error","message":"internal error","sequence_number":0,"status":500,"error":{"code":"internal_server_error","type":"server_error","message":"internal error"},"headers":{"Content-Type":"application/json"}}`)
 }

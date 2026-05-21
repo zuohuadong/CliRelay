@@ -24,6 +24,26 @@ func TestBuildOpenAIResponsesStreamErrorChunk(t *testing.T) {
 	if payload["sequence_number"] != float64(0) {
 		t.Fatalf("sequence_number = %v, want %v", payload["sequence_number"], 0)
 	}
+	if payload["status"] != float64(http.StatusInternalServerError) {
+		t.Fatalf("status = %v, want %v", payload["status"], http.StatusInternalServerError)
+	}
+	errorPayload, ok := payload["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing nested error object: %#v", payload["error"])
+	}
+	if errorPayload["code"] != "internal_server_error" {
+		t.Fatalf("error.code = %v, want %q", errorPayload["code"], "internal_server_error")
+	}
+	if errorPayload["type"] != "server_error" {
+		t.Fatalf("error.type = %v, want %q", errorPayload["type"], "server_error")
+	}
+	if errorPayload["message"] != "unexpected EOF" {
+		t.Fatalf("error.message = %v, want %q", errorPayload["message"], "unexpected EOF")
+	}
+	headers, ok := payload["headers"].(map[string]any)
+	if !ok || headers["Content-Type"] != "application/json" {
+		t.Fatalf("headers = %#v, want Content-Type application/json", payload["headers"])
+	}
 }
 
 func TestBuildOpenAIResponsesStreamErrorChunkExtractsHTTPErrorBody(t *testing.T) {
@@ -45,6 +65,13 @@ func TestBuildOpenAIResponsesStreamErrorChunkExtractsHTTPErrorBody(t *testing.T)
 	if payload["message"] != "oops" {
 		t.Fatalf("message = %v, want %q", payload["message"], "oops")
 	}
+	errorPayload, ok := payload["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing nested error object: %#v", payload["error"])
+	}
+	if errorPayload["type"] != "server_error" {
+		t.Fatalf("error.type = %v, want %q", errorPayload["type"], "server_error")
+	}
 }
 
 func TestBuildOpenAIResponsesStreamErrorChunkNormalizesContextTooLarge(t *testing.T) {
@@ -62,5 +89,18 @@ func TestBuildOpenAIResponsesStreamErrorChunkNormalizesContextTooLarge(t *testin
 	}
 	if payload["code"] != "context_too_large" {
 		t.Fatalf("code = %v, want %q", payload["code"], "context_too_large")
+	}
+	if payload["status"] != float64(http.StatusRequestEntityTooLarge) {
+		t.Fatalf("status = %v, want %v", payload["status"], http.StatusRequestEntityTooLarge)
+	}
+	errorPayload, ok := payload["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing nested error object: %#v", payload["error"])
+	}
+	if errorPayload["code"] != "context_too_large" {
+		t.Fatalf("error.code = %v, want %q", errorPayload["code"], "context_too_large")
+	}
+	if errorPayload["type"] != "invalid_request_error" {
+		t.Fatalf("error.type = %v, want %q", errorPayload["type"], "invalid_request_error")
 	}
 }

@@ -37,8 +37,11 @@ func TestForwardResponsesStreamTerminalErrorUsesResponsesErrorChunk(t *testing.T
 	if !strings.Contains(body, `"type":"error"`) {
 		t.Fatalf("expected responses error chunk, got: %q", body)
 	}
-	if strings.Contains(body, `"error":{`) {
-		t.Fatalf("expected streaming error chunk (top-level type), got HTTP error body: %q", body)
+	if !strings.Contains(body, `"error":{`) {
+		t.Fatalf("expected nested Codex error object, got: %q", body)
+	}
+	if !strings.Contains(body, `"status":500`) {
+		t.Fatalf("expected status in streaming error chunk, got: %q", body)
 	}
 }
 
@@ -65,11 +68,14 @@ func TestWriteResponsesImmediateStreamErrorUsesResponsesErrorChunk(t *testing.T)
 	if !strings.Contains(body, "event: error") {
 		t.Fatalf("expected SSE error event, got: %q", body)
 	}
-	if strings.Contains(body, `"error":{`) {
-		t.Fatalf("expected responses stream error chunk, got nested HTTP error body: %q", body)
+	if !strings.Contains(body, `"error":{`) {
+		t.Fatalf("expected nested Codex error object, got: %q", body)
 	}
 	if !strings.Contains(body, `"code":"context_too_large"`) {
 		t.Fatalf("expected normalized context_too_large code, got: %q", body)
+	}
+	if !strings.Contains(body, `"status":413`) {
+		t.Fatalf("expected normalized context-too-large status, got: %q", body)
 	}
 	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream" {
 		t.Fatalf("Content-Type = %q, want text/event-stream", got)

@@ -1097,6 +1097,101 @@ func TestForwardResponsesWebsocketWritesResponseFailedForErrors(t *testing.T) {
 	}
 }
 
+func TestForwardResponsesWebsocketSynthesizesCompletedOnEOFWithoutError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	serverErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		defer func() {
+			if errClose := conn.Close(); errClose != nil {
+				serverErrCh <- errClose
+			}
+		}()
+
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = r
+
+		data := make(chan []byte, 1)
+		data <- []byte(`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc-1","call_id":"call-1","name":"shell","arguments":"{}"}}`)
+		close(data)
+		errCh := make(chan *interfaces.ErrorMessage)
+
+		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+		h := NewOpenAIResponsesAPIHandler(base)
+		var timelineLog strings.Builder
+		completedOutput, errMsg, err := h.forwardResponsesWebsocket(
+			ctx,
+			conn,
+			func(...interface{}) {},
+			data,
+			errCh,
+			&timelineLog,
+			"session-1",
+			false,
+		)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		if errMsg != nil {
+			serverErrCh <- errors.New("unexpected websocket error message")
+			return
+		}
+		if !strings.Contains(timelineLog.String(), "\"type\":\"response.completed\"") {
+			serverErrCh <- errors.New("websocket timeline did not capture synthesized completed")
+			return
+		}
+		if !strings.Contains(string(completedOutput), `"id":"fc-1"`) {
+			serverErrCh <- fmt.Errorf("completed output missing output item: %s", completedOutput)
+			return
+		}
+		serverErrCh <- nil
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	if errDeadline := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); errDeadline != nil {
+		t.Fatalf("set read deadline: %v", errDeadline)
+	}
+	_, itemPayload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read websocket output item payload: %v", err)
+	}
+	if got := gjson.GetBytes(itemPayload, "type").String(); got != "response.output_item.done" {
+		t.Fatalf("first payload type = %q, want response.output_item.done; payload=%s", got, itemPayload)
+	}
+	_, completedPayload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read websocket completed payload: %v", err)
+	}
+	if got := gjson.GetBytes(completedPayload, "type").String(); got != wsEventTypeCompleted {
+		t.Fatalf("completed payload type = %q, want %s; payload=%s", got, wsEventTypeCompleted, completedPayload)
+	}
+	if got := gjson.GetBytes(completedPayload, "response.output.0.id").String(); got != "fc-1" {
+		t.Fatalf("completed output item id = %q, want fc-1; payload=%s", got, completedPayload)
+	}
+	if got := gjson.GetBytes(completedPayload, "response.id").String(); got != "" {
+		t.Fatalf("synthesized EOF completion must not create reusable response id, got %q: %s", got, completedPayload)
+	}
+
+	if errServer := <-serverErrCh; errServer != nil {
+		t.Fatalf("server error: %v", errServer)
+	}
+}
+
 func TestForwardResponsesWebsocketLogsAttemptedResponseOnWriteFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

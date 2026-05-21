@@ -924,10 +924,29 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						}
 					}
 					if errMsg == nil {
-						errMsg = &interfaces.ErrorMessage{
-							StatusCode: http.StatusRequestTimeout,
-							Error:      fmt.Errorf("stream closed before response.completed"),
+						completedPayload, errBuild := buildResponsesWebsocketEOFCompletedPayload(completedOutput)
+						if errBuild != nil {
+							cancel(errBuild)
+							return completedOutput, nil, errBuild
 						}
+						markAPIResponseTimestamp(c)
+						if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, completedPayload, time.Now()); errWrite != nil {
+							log.Warnf(
+								"responses websocket: downstream_out write failed id=%s event=%s error=%v",
+								sessionID,
+								websocketPayloadEventType(completedPayload),
+								errWrite,
+							)
+							cancel(errWrite)
+							return completedOutput, nil, errWrite
+						}
+						log.Infof(
+							"responses websocket: synthesized terminal completed after upstream EOF id=%s output_items=%d",
+							sessionID,
+							responsesWebsocketOutputItemCount(completedOutput),
+						)
+						cancel(nil)
+						return completedOutput, nil, nil
 					}
 					if suppressReplayableErrors && shouldReplayResponsesWebsocketTranscript(errMsg) {
 						cancel(errMsg.Error)
@@ -967,6 +986,8 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				if eventType == wsEventTypeCompleted {
 					completed = true
 					completedOutput = responseCompletedOutputFromPayload(payloads[i])
+				} else if eventType == "response.output_item.done" {
+					completedOutput = appendResponseOutputItemDone(completedOutput, payloads[i])
 				}
 				markAPIResponseTimestamp(c)
 				// log.Infof(
@@ -1015,6 +1036,43 @@ func responseCompletedOutputFromPayload(payload []byte) []byte {
 		return bytes.Clone([]byte(output.Raw))
 	}
 	return []byte("[]")
+}
+
+func appendResponseOutputItemDone(output []byte, payload []byte) []byte {
+	item := gjson.GetBytes(payload, "item")
+	if !item.Exists() || !item.IsObject() {
+		return output
+	}
+	merged, errMerge := mergeJSONArrayRaw(string(output), "["+item.Raw+"]")
+	if errMerge != nil {
+		return output
+	}
+	return []byte(merged)
+}
+
+func responsesWebsocketOutputItemCount(output []byte) int {
+	result := gjson.ParseBytes(output)
+	if !result.IsArray() {
+		return 0
+	}
+	return len(result.Array())
+}
+
+func buildResponsesWebsocketEOFCompletedPayload(output []byte) ([]byte, error) {
+	if !gjson.ParseBytes(output).IsArray() {
+		output = []byte("[]")
+	}
+	payload := []byte(`{"type":"response.completed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
+	var errSet error
+	payload, errSet = sjson.SetBytes(payload, "response.created_at", time.Now().Unix())
+	if errSet != nil {
+		return nil, errSet
+	}
+	payload, errSet = sjson.SetRawBytes(payload, "response.output", output)
+	if errSet != nil {
+		return nil, errSet
+	}
+	return payload, nil
 }
 
 func websocketJSONPayloadsFromChunk(chunk []byte) [][]byte {

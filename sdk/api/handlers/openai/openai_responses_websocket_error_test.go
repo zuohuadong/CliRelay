@@ -60,7 +60,7 @@ func TestBuildResponsesWebsocketErrorPayloadUsesResponseFailedForContextWindow(t
 	}
 }
 
-func TestWriteResponsesWebsocketErrorSendsTopLevelErrorForRateLimit(t *testing.T) {
+func TestWriteResponsesWebsocketErrorSendsResponseFailedForRateLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -97,12 +97,14 @@ func TestWriteResponsesWebsocketErrorSendsTopLevelErrorForRateLimit(t *testing.T
 
 	if _, payload, errRead := conn.ReadMessage(); errRead != nil {
 		t.Fatalf("read websocket error payload: %v", errRead)
-	} else if got := gjson.GetBytes(payload, "type").String(); got != "error" {
-		t.Fatalf("payload type = %q, want error; payload=%s", got, payload)
-	} else if gjson.GetBytes(payload, "response.id").Exists() {
-		t.Fatalf("top-level error must not create a synthetic response id; payload=%s", payload)
-	} else if got := gjson.GetBytes(payload, "error.code").String(); got != "rate_limit_exceeded" {
-		t.Fatalf("error.code = %q, want rate_limit_exceeded; payload=%s", got, payload)
+	} else if got := gjson.GetBytes(payload, "type").String(); got != "response.failed" {
+		t.Fatalf("payload type = %q, want response.failed; payload=%s", got, payload)
+	} else if got := gjson.GetBytes(payload, "response.error.code").String(); got != "rate_limit_exceeded" {
+		t.Fatalf("response.error.code = %q, want rate_limit_exceeded; payload=%s", got, payload)
+	} else if got := gjson.GetBytes(payload, "response.status").String(); got != "failed" {
+		t.Fatalf("response.status = %q, want failed; payload=%s", got, payload)
+	} else if !strings.HasPrefix(gjson.GetBytes(payload, "response.id").String(), "resp_") {
+		t.Fatalf("response.id must use resp_ prefix; payload=%s", payload)
 	}
 }
 

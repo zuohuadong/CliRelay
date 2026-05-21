@@ -280,11 +280,6 @@ request-log-storage:
 #       tool-name: "image_analysis"
 #       timeout-seconds: 60
 
-# How long (in seconds) usage queue items are retained in memory for the Management API.
-# The local Redis RESP usage output is disabled.
-# Default: 60. Max: 3600.
-redis-usage-queue-retention-seconds: 60
-
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 proxy-url: ""
 
@@ -382,10 +377,13 @@ routing:
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: true
+<<<<<<< HEAD
+=======
 
 # When true, enable Gemini CLI internal endpoints (/v1internal:*).
 # Default is false for safety.
 enable-gemini-cli-endpoint: false
+>>>>>>> upstream/main
 
 # When > 0, emit blank lines every N seconds for non-streaming responses to prevent idle timeouts.
 nonstream-keepalive-interval: 0

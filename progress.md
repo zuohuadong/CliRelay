@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-21 14:26:37 +0800] [CliRelay] [done] Restored official CLIProxyAPI-style websocket error event for context_too_large while preserving terminal response.completed so Codex can trigger compaction
 [2026-05-21 14:08:56 +0800] [CliRelay] [done] Fixed bigmodel-coding GLM-5.1 MCP routing to use Z.AI MCP server URLs with upstream Authorization after logs showed 1210/400 parameter errors and server_url=null MCP connection failures
 [2026-05-21 12:50:06 +0800] [CliRelay] [done] Upgraded Docker publish workflow actions to current releases and enabled Node 24 action runtime after deployment tag mismatch recovery
 [2026-05-21 12:40:08 +0800] [CliRelay] [done] Fixed bigmodel-coding GLM-5.1 official MCP injection to use the built-in mcp code server shape and corrected Responses WebSocket downstream logging to only report written terminal events

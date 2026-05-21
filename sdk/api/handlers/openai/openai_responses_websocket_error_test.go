@@ -2,8 +2,12 @@ package openai
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/tidwall/gjson"
 )
@@ -70,6 +74,54 @@ func TestBuildResponsesWebsocketTerminalCompletedPayloadCarriesNestedError(t *te
 	}
 	if got := gjson.GetBytes(payload, "response.id").String(); got == "" {
 		t.Fatalf("expected response.id, payload=%s", payload)
+	}
+}
+
+func TestWriteResponsesWebsocketErrorWithTerminalCompletedSendsErrorForContextTooLarge(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer func() {
+			_ = conn.Close()
+		}()
+
+		errMsg := &interfaces.ErrorMessage{
+			StatusCode: http.StatusRequestEntityTooLarge,
+			Error:      jsonError(`{"error":{"message":"request policy glm-5.1-large-request-guard blocked upstream model glm-5.1 via provider bigmodel-coding: request_bytes 600749 exceeds max-request-bytes 600000","type":"invalid_request_error","code":"context_length_exceeded"}}`),
+		}
+		errorPayload, completedPayload, errWrite := writeResponsesWebsocketErrorWithTerminalCompleted(conn, nil, errMsg, true)
+		if errWrite != nil {
+			t.Fatalf("write websocket error: %v", errWrite)
+		}
+		if len(errorPayload) == 0 || len(completedPayload) == 0 {
+			t.Fatalf("expected both error and completed payloads, got error=%d completed=%d", len(errorPayload), len(completedPayload))
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	if _, payload, errRead := conn.ReadMessage(); errRead != nil {
+		t.Fatalf("read websocket error payload: %v", errRead)
+	} else if got := gjson.GetBytes(payload, "type").String(); got != "error" {
+		t.Fatalf("first payload type = %q, want error; payload=%s", got, payload)
+	}
+
+	if _, payload, errRead := conn.ReadMessage(); errRead != nil {
+		t.Fatalf("read websocket completed payload: %v", errRead)
+	} else if got := gjson.GetBytes(payload, "type").String(); got != "response.completed" {
+		t.Fatalf("second payload type = %q, want response.completed; payload=%s", got, payload)
 	}
 }
 

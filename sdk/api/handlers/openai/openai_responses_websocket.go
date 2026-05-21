@@ -1191,8 +1191,13 @@ func writeResponsesWebsocketErrorWithTerminalCompleted(conn *websocket.Conn, wsT
 	if err != nil {
 		return nil, nil, err
 	}
+	if responsesWebsocketErrorPayloadRequiresErrorEvent(errorPayload) {
+		if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, errorPayload, time.Now()); errWrite != nil {
+			return errorPayload, nil, errWrite
+		}
+	}
 	if !includeCompleted {
-		return nil, nil, nil
+		return errorPayload, nil, nil
 	}
 	completedPayload, errBuild := buildResponsesWebsocketTerminalCompletedPayload(errorPayload)
 	if errBuild != nil {
@@ -1201,7 +1206,18 @@ func writeResponsesWebsocketErrorWithTerminalCompleted(conn *websocket.Conn, wsT
 	if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, completedPayload, time.Now()); errWrite != nil {
 		return nil, completedPayload, errWrite
 	}
+	if responsesWebsocketErrorPayloadRequiresErrorEvent(errorPayload) {
+		return errorPayload, completedPayload, nil
+	}
 	return nil, completedPayload, nil
+}
+
+func responsesWebsocketErrorPayloadRequiresErrorEvent(errorPayload []byte) bool {
+	code := strings.TrimSpace(gjson.GetBytes(errorPayload, "code").String())
+	if code == "" {
+		code = strings.TrimSpace(gjson.GetBytes(errorPayload, "error.code").String())
+	}
+	return code == "context_too_large"
 }
 
 func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byte, error) {

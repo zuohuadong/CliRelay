@@ -1191,10 +1191,15 @@ func writeResponsesWebsocketErrorWithTerminalCompleted(conn *websocket.Conn, wsT
 	if err != nil {
 		return nil, nil, err
 	}
-	if responsesWebsocketErrorPayloadRequiresErrorEvent(errorPayload) {
-		if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, errorPayload, time.Now()); errWrite != nil {
-			return errorPayload, nil, errWrite
+	if responsesWebsocketErrorPayloadIsContextTooLarge(errorPayload) {
+		failedPayload, errBuild := buildResponsesWebsocketTerminalFailedPayload(errorPayload)
+		if errBuild != nil {
+			return nil, nil, errBuild
 		}
+		if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, failedPayload, time.Now()); errWrite != nil {
+			return failedPayload, nil, errWrite
+		}
+		return failedPayload, nil, nil
 	}
 	if !includeCompleted {
 		return errorPayload, nil, nil
@@ -1206,13 +1211,10 @@ func writeResponsesWebsocketErrorWithTerminalCompleted(conn *websocket.Conn, wsT
 	if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, completedPayload, time.Now()); errWrite != nil {
 		return nil, completedPayload, errWrite
 	}
-	if responsesWebsocketErrorPayloadRequiresErrorEvent(errorPayload) {
-		return errorPayload, completedPayload, nil
-	}
 	return nil, completedPayload, nil
 }
 
-func responsesWebsocketErrorPayloadRequiresErrorEvent(errorPayload []byte) bool {
+func responsesWebsocketErrorPayloadIsContextTooLarge(errorPayload []byte) bool {
 	code := strings.TrimSpace(gjson.GetBytes(errorPayload, "code").String())
 	if code == "" {
 		code = strings.TrimSpace(gjson.GetBytes(errorPayload, "error.code").String())
@@ -1315,6 +1317,49 @@ func buildResponsesWebsocketTerminalCompletedPayload(errorPayload []byte) ([]byt
 	}
 	if errorObj := gjson.GetBytes(errorPayload, "error"); errorObj.Exists() && errorObj.IsObject() {
 		payload, errSet = sjson.SetRawBytes(payload, "response.error", []byte(errorObj.Raw))
+		if errSet != nil {
+			return nil, errSet
+		}
+	}
+	return payload, nil
+}
+
+func buildResponsesWebsocketTerminalFailedPayload(errorPayload []byte) ([]byte, error) {
+	responseID := "resp_error_" + uuid.NewString()
+	createdAt := time.Now().Unix()
+	sequenceNumber := int64(0)
+	if got := gjson.GetBytes(errorPayload, "sequence_number"); got.Exists() {
+		sequenceNumber = got.Int()
+	}
+
+	payload := []byte(`{"type":"response.failed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"failed","background":false,"error":null,"output":[],"usage":null,"metadata":{}}}`)
+	var errSet error
+	payload, errSet = sjson.SetBytes(payload, "sequence_number", sequenceNumber)
+	if errSet != nil {
+		return nil, errSet
+	}
+	payload, errSet = sjson.SetBytes(payload, "response.id", responseID)
+	if errSet != nil {
+		return nil, errSet
+	}
+	payload, errSet = sjson.SetBytes(payload, "response.created_at", createdAt)
+	if errSet != nil {
+		return nil, errSet
+	}
+	if status := gjson.GetBytes(errorPayload, "status"); status.Exists() {
+		payload, errSet = sjson.SetBytes(payload, "status", status.Int())
+		if errSet != nil {
+			return nil, errSet
+		}
+	}
+	if errorObj := gjson.GetBytes(errorPayload, "error"); errorObj.Exists() && errorObj.IsObject() {
+		payload, errSet = sjson.SetRawBytes(payload, "response.error", []byte(errorObj.Raw))
+		if errSet != nil {
+			return nil, errSet
+		}
+	}
+	if responsesWebsocketErrorPayloadIsContextTooLarge(errorPayload) {
+		payload, errSet = sjson.SetBytes(payload, "response.error.code", "context_length_exceeded")
 		if errSet != nil {
 			return nil, errSet
 		}

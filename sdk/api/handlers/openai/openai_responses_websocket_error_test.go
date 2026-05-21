@@ -77,7 +77,35 @@ func TestBuildResponsesWebsocketTerminalCompletedPayloadCarriesNestedError(t *te
 	}
 }
 
-func TestWriteResponsesWebsocketErrorWithTerminalCompletedSendsErrorForContextTooLarge(t *testing.T) {
+func TestBuildResponsesWebsocketTerminalFailedPayloadUsesCodexContextCode(t *testing.T) {
+	errorPayload, err := buildResponsesWebsocketErrorPayload(&interfaces.ErrorMessage{
+		StatusCode: http.StatusRequestEntityTooLarge,
+		Error:      jsonError(`{"error":{"message":"request policy glm-5.1-large-request-guard blocked upstream model glm-5.1 via provider bigmodel-coding: request_bytes 600749 exceeds max-request-bytes 600000","type":"invalid_request_error","code":"context_length_exceeded"}}`),
+	})
+	if err != nil {
+		t.Fatalf("buildResponsesWebsocketErrorPayload error: %v", err)
+	}
+
+	payload, err := buildResponsesWebsocketTerminalFailedPayload(errorPayload)
+	if err != nil {
+		t.Fatalf("buildResponsesWebsocketTerminalFailedPayload error: %v", err)
+	}
+
+	if got := gjson.GetBytes(payload, "type").String(); got != "response.failed" {
+		t.Fatalf("type = %q, want response.failed; payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.status").String(); got != "failed" {
+		t.Fatalf("response.status = %q, want failed; payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.error.code").String(); got != "context_length_exceeded" {
+		t.Fatalf("response.error.code = %q, want context_length_exceeded; payload=%s", got, payload)
+	}
+	if got := int(gjson.GetBytes(payload, "status").Int()); got != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d; payload=%s", got, http.StatusRequestEntityTooLarge, payload)
+	}
+}
+
+func TestWriteResponsesWebsocketErrorWithTerminalCompletedSendsResponseFailedForContextTooLarge(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -97,8 +125,8 @@ func TestWriteResponsesWebsocketErrorWithTerminalCompletedSendsErrorForContextTo
 		if errWrite != nil {
 			t.Fatalf("write websocket error: %v", errWrite)
 		}
-		if len(errorPayload) == 0 || len(completedPayload) == 0 {
-			t.Fatalf("expected both error and completed payloads, got error=%d completed=%d", len(errorPayload), len(completedPayload))
+		if len(errorPayload) == 0 || len(completedPayload) != 0 {
+			t.Fatalf("expected response.failed payload only, got error=%d completed=%d", len(errorPayload), len(completedPayload))
 		}
 	}))
 	defer server.Close()
@@ -113,15 +141,11 @@ func TestWriteResponsesWebsocketErrorWithTerminalCompletedSendsErrorForContextTo
 	}()
 
 	if _, payload, errRead := conn.ReadMessage(); errRead != nil {
-		t.Fatalf("read websocket error payload: %v", errRead)
-	} else if got := gjson.GetBytes(payload, "type").String(); got != "error" {
-		t.Fatalf("first payload type = %q, want error; payload=%s", got, payload)
-	}
-
-	if _, payload, errRead := conn.ReadMessage(); errRead != nil {
-		t.Fatalf("read websocket completed payload: %v", errRead)
-	} else if got := gjson.GetBytes(payload, "type").String(); got != "response.completed" {
-		t.Fatalf("second payload type = %q, want response.completed; payload=%s", got, payload)
+		t.Fatalf("read websocket failed payload: %v", errRead)
+	} else if got := gjson.GetBytes(payload, "type").String(); got != "response.failed" {
+		t.Fatalf("payload type = %q, want response.failed; payload=%s", got, payload)
+	} else if got := gjson.GetBytes(payload, "response.error.code").String(); got != "context_length_exceeded" {
+		t.Fatalf("response.error.code = %q, want context_length_exceeded; payload=%s", got, payload)
 	}
 }
 

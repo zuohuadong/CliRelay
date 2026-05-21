@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-21 14:08:56 +0800] [CliRelay] [done] Fixed bigmodel-coding GLM-5.1 MCP routing to use Z.AI MCP server URLs with upstream Authorization after logs showed 1210/400 parameter errors and server_url=null MCP connection failures
 [2026-05-21 12:50:06 +0800] [CliRelay] [done] Upgraded Docker publish workflow actions to current releases and enabled Node 24 action runtime after deployment tag mismatch recovery
 [2026-05-21 12:40:08 +0800] [CliRelay] [done] Fixed bigmodel-coding GLM-5.1 official MCP injection to use the built-in mcp code server shape and corrected Responses WebSocket downstream logging to only report written terminal events
 [2026-05-21 10:29:22 +0800] [CliRelay] [done] Aligned bigmodel-coding GLM-5.1 payload shaping with Coding Plan conventions by normalizing thinking into enable_thinking/thinking_budget and enabling parallel_tool_calls for tool requests

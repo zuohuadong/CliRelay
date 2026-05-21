@@ -106,34 +106,24 @@ func TestBigModelCodingExecutorInjectsOfficialMCPTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)
 	}
-	official := gjson.GetBytes(gotBody, `tools.#(mcp.server_label=="mcp code").mcp`)
-	if !official.Exists() {
-		t.Fatalf("missing official BigModel MCP tool: %s", string(gotBody))
+	if got := gjson.GetBytes(gotBody, `tools.#(mcp.server_label=="web-search-prime").mcp.server_url`).String(); got != "https://api.z.ai/api/mcp/web_search_prime/mcp" {
+		t.Fatalf("web-search-prime MCP url = %q; body=%s", got, string(gotBody))
 	}
-	if gjson.Get(official.Raw, "server_url").Exists() {
-		t.Fatalf("official BigModel MCP should not include server_url: %s", string(gotBody))
+	if got := gjson.GetBytes(gotBody, `tools.#(mcp.server_label=="web-reader").mcp.server_url`).String(); got != "https://api.z.ai/api/mcp/web_reader/mcp" {
+		t.Fatalf("web-reader MCP url = %q; body=%s", got, string(gotBody))
 	}
-	if gjson.Get(official.Raw, "headers.Authorization").Exists() {
-		t.Fatalf("official BigModel MCP should not include Authorization header: %s", string(gotBody))
+	if got := gjson.GetBytes(gotBody, `tools.#(mcp.server_label=="web-reader").mcp.transport_type`).String(); got != "streamable-http" {
+		t.Fatalf("web-reader transport_type = %q; body=%s", got, string(gotBody))
 	}
-	if gjson.Get(official.Raw, "transport_type").Exists() {
-		t.Fatalf("official BigModel MCP should not include transport_type without server_url: %s", string(gotBody))
-	}
-	allowedTools := map[string]bool{}
-	for _, tool := range gjson.Get(official.Raw, "allowed_tools").Array() {
-		allowedTools[tool.String()] = true
-	}
-	for _, toolName := range []string{"webSearchPrime", "image_analysis", "video_analysis"} {
-		if !allowedTools[toolName] {
-			t.Fatalf("official BigModel MCP missing allowed tool %q: %s", toolName, string(gotBody))
-		}
+	if got := gjson.GetBytes(gotBody, `tools.#(mcp.server_label=="web-search-prime").mcp.headers.Authorization`).String(); got != "Bearer sk-test" {
+		t.Fatalf("web-search-prime Authorization = %q; body=%s", got, string(gotBody))
 	}
 }
 
 func TestOpenAICompatExecutorDoesNotInjectBigModelCodingMCPToolsByDefault(t *testing.T) {
 	payload := []byte(`{"model":"glm-5.1","messages":[{"role":"user","content":"hello"}]}`)
 
-	out, err := NewBigModelCodingExecutor(&config.Config{}).injectOfficialMCPTools(payload, "glm-4.5")
+	out, err := NewBigModelCodingExecutor(&config.Config{}).injectOfficialMCPTools(payload, "glm-4.5", "sk-test")
 	if err != nil {
 		t.Fatalf("injectOfficialMCPTools error: %v", err)
 	}

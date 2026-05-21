@@ -365,10 +365,17 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", wsErr)
 			return resp, wsErr
 		}
+		if terminalErr, ok := codexTerminalStreamErr(payload); ok {
+			if sess != nil {
+				e.invalidateUpstreamConn(sess, conn, "upstream_error", terminalErr)
+			}
+			helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", terminalErr)
+			return resp, terminalErr
+		}
 
 		payload = normalizeCodexWebsocketCompletion(payload)
 		eventType := gjson.GetBytes(payload, "type").String()
-		if eventType == "response.completed" {
+		if codexWebsocketTerminalResponseEvent(eventType) {
 			if detail, ok := helps.ParseCodexUsage(payload); ok {
 				reporter.Publish(ctx, detail)
 			}
@@ -619,10 +626,21 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				_ = send(cliproxyexecutor.StreamChunk{Err: wsErr})
 				return
 			}
+			if terminalErr, ok := codexTerminalStreamErr(payload); ok {
+				terminateReason = "upstream_error"
+				terminateErr = terminalErr
+				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", terminalErr)
+				reporter.PublishFailure(ctx, terminalErr)
+				if sess != nil {
+					e.invalidateUpstreamConn(sess, conn, "upstream_error", terminalErr)
+				}
+				_ = send(cliproxyexecutor.StreamChunk{Err: terminalErr})
+				return
+			}
 
 			payload = normalizeCodexWebsocketCompletion(payload)
 			eventType := gjson.GetBytes(payload, "type").String()
-			if eventType == "response.completed" || eventType == "response.done" {
+			if codexWebsocketTerminalResponseEvent(eventType) {
 				if detail, ok := helps.ParseCodexUsage(payload); ok {
 					reporter.Publish(ctx, detail)
 				}
@@ -637,7 +655,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					return
 				}
 			}
-			if eventType == "response.completed" || eventType == "response.done" {
+			if codexWebsocketTerminalResponseEvent(eventType) {
 				return
 			}
 		}
@@ -1190,6 +1208,15 @@ func normalizeCodexWebsocketCompletion(payload []byte) []byte {
 		}
 	}
 	return payload
+}
+
+func codexWebsocketTerminalResponseEvent(eventType string) bool {
+	switch eventType {
+	case "response.completed", "response.done", "response.incomplete":
+		return true
+	default:
+		return false
+	}
 }
 
 func encodeCodexWebsocketAsSSE(payload []byte) []byte {

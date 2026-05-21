@@ -234,6 +234,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	return meta
 }
 
+<<<<<<< HEAD
 func enrichRequestExecutionMetadata(meta map[string]any, rawJSON []byte) {
 	if meta == nil || len(rawJSON) == 0 {
 		return
@@ -365,6 +366,8 @@ func (h *BaseAPIHandler) applyContextRetrieval(ctx context.Context, modelName st
 	return rawJSON
 }
 
+=======
+>>>>>>> upstream/main
 func setReasoningEffortMetadata(meta map[string]any, handlerType, model string, rawJSON []byte) {
 	if meta == nil {
 		return
@@ -695,8 +698,11 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
+<<<<<<< HEAD
 	enrichRequestExecutionMetadata(reqMeta, rawJSON)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
+=======
+>>>>>>> upstream/main
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
@@ -746,8 +752,11 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
+<<<<<<< HEAD
 	enrichRequestExecutionMetadata(reqMeta, rawJSON)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
+=======
+>>>>>>> upstream/main
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
@@ -810,8 +819,11 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
+<<<<<<< HEAD
 	enrichRequestExecutionMetadata(reqMeta, rawJSON)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
+=======
+>>>>>>> upstream/main
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {

@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-21 22:10:07 +0800] [CliRelay] [done] Changed Responses WebSocket upstream errors to terminal response.failed events after logs showed Codex clients converting top-level error frames into stream closed before response.completed
 [2026-05-21 20:38:11 +0800] [CliRelay] [done] Completed pending Responses stream items on terminal DONE for gpt-5.3-codex -> bigmodel-coding/glm-5.1 tool-call streams without finish_reason
 [2026-05-21 16:03:56 +0800] [CliRelay] [done] Fixed Codex OAuth websocket executor to treat upstream response.failed and response.incomplete as terminal so real upstream errors are not masked as stream closed before response.completed
 [2026-05-21 15:39:06 +0800] [CliRelay] [done] Rechecked current Codex CLI source and restored response.failed/context_length_exceeded for Responses streaming and websocket context-window errors so Codex can mark context full and compact on the next turn

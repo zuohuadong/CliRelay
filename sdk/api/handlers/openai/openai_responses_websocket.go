@@ -1063,67 +1063,7 @@ func writeResponsesWebsocketError(conn *websocket.Conn, wsTimelineLog *strings.B
 		}
 	}
 
-	body := handlers.BuildErrorResponseBody(status, errText)
-	if handlers.IsOpenAIResponsesContextWindowError(status, errText) {
-		payload := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
-		return payload, writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now())
-	}
-	payload := []byte(`{}`)
-	var errSet error
-	payload, errSet = sjson.SetBytes(payload, "type", wsEventTypeError)
-	if errSet != nil {
-		return nil, errSet
-	}
-	payload, errSet = sjson.SetBytes(payload, "status", status)
-	if errSet != nil {
-		return nil, errSet
-	}
-
-	if errMsg != nil && errMsg.Addon != nil {
-		headers := []byte(`{}`)
-		hasHeaders := false
-		for key, values := range errMsg.Addon {
-			if len(values) == 0 {
-				continue
-			}
-			headerPath := strings.ReplaceAll(strings.ReplaceAll(key, `\\`, `\\\\`), ".", `\\.`)
-			headers, errSet = sjson.SetBytes(headers, headerPath, values[0])
-			if errSet != nil {
-				return nil, errSet
-			}
-			hasHeaders = true
-		}
-		if hasHeaders {
-			payload, errSet = sjson.SetRawBytes(payload, "headers", headers)
-			if errSet != nil {
-				return nil, errSet
-			}
-		}
-	}
-
-	if len(body) > 0 && json.Valid(body) {
-		errorNode := gjson.GetBytes(body, "error")
-		if errorNode.Exists() {
-			payload, errSet = sjson.SetRawBytes(payload, "error", []byte(errorNode.Raw))
-		} else {
-			payload, errSet = sjson.SetRawBytes(payload, "error", body)
-		}
-		if errSet != nil {
-			return nil, errSet
-		}
-	}
-
-	if !gjson.GetBytes(payload, "error").Exists() {
-		payload, errSet = sjson.SetBytes(payload, "error.type", "server_error")
-		if errSet != nil {
-			return nil, errSet
-		}
-		payload, errSet = sjson.SetBytes(payload, "error.message", errText)
-		if errSet != nil {
-			return nil, errSet
-		}
-	}
-
+	payload := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
 	return payload, writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now())
 }
 

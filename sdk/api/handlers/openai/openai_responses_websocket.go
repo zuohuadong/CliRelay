@@ -1183,14 +1183,10 @@ func writeResponsesWebsocketErrorWithTerminalCompleted(conn *websocket.Conn, wsT
 	if !includeCompleted {
 		return errorPayload, nil, nil
 	}
-	completedPayload, errBuild := buildResponsesWebsocketTerminalCompletedPayload(errorPayload)
-	if errBuild != nil {
-		return nil, nil, errBuild
+	if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, errorPayload, time.Now()); errWrite != nil {
+		return errorPayload, nil, errWrite
 	}
-	if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, completedPayload, time.Now()); errWrite != nil {
-		return nil, completedPayload, errWrite
-	}
-	return nil, completedPayload, nil
+	return errorPayload, nil, nil
 }
 
 func responsesWebsocketErrorPayloadIsContextTooLarge(errorPayload []byte) bool {
@@ -1261,43 +1257,6 @@ func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byt
 			if errSet != nil {
 				return nil, errSet
 			}
-		}
-	}
-	return payload, nil
-}
-
-func buildResponsesWebsocketTerminalCompletedPayload(errorPayload []byte) ([]byte, error) {
-	responseID := "resp_error_" + uuid.NewString()
-	createdAt := time.Now().Unix()
-	sequenceNumber := int64(1)
-	if got := gjson.GetBytes(errorPayload, "sequence_number"); got.Exists() {
-		sequenceNumber = got.Int() + 1
-	}
-
-	payload := []byte(`{"type":"response.completed","sequence_number":1,"response":{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
-	var errSet error
-	payload, errSet = sjson.SetBytes(payload, "sequence_number", sequenceNumber)
-	if errSet != nil {
-		return nil, errSet
-	}
-	payload, errSet = sjson.SetBytes(payload, "response.id", responseID)
-	if errSet != nil {
-		return nil, errSet
-	}
-	payload, errSet = sjson.SetBytes(payload, "response.created_at", createdAt)
-	if errSet != nil {
-		return nil, errSet
-	}
-	if status := gjson.GetBytes(errorPayload, "status"); status.Exists() {
-		payload, errSet = sjson.SetBytes(payload, "status", status.Int())
-		if errSet != nil {
-			return nil, errSet
-		}
-	}
-	if errorObj := gjson.GetBytes(errorPayload, "error"); errorObj.Exists() && errorObj.IsObject() {
-		payload, errSet = sjson.SetRawBytes(payload, "response.error", []byte(errorObj.Raw))
-		if errSet != nil {
-			return nil, errSet
 		}
 	}
 	return payload, nil

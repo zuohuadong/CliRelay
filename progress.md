@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-21 15:08:14 +0800] [CliRelay] [done] Restored CLIProxyAPI-style websocket top-level error events for non-context failures to avoid synthetic resp_error completed IDs causing previous_response_not_found loops
 [2026-05-21 14:57:07 +0800] [CliRelay] [done] Removed downstream raw-close subscription on Codex upstream websocket disconnect so response.failed/response.completed can be delivered instead of resetting the client connection
 [2026-05-21 14:46:57 +0800] [CliRelay] [done] Matched Codex CLI source handling by emitting websocket response.failed/context_length_exceeded for context-too-large so the client can mark context full and pre-turn compact
 [2026-05-21 14:26:37 +0800] [CliRelay] [done] Restored official CLIProxyAPI-style websocket error event for context_too_large while preserving terminal response.completed so Codex can trigger compaction

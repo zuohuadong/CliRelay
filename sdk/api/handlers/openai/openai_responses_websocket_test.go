@@ -1057,8 +1057,8 @@ func TestForwardResponsesWebsocketWritesCompletedAfterError(t *testing.T) {
 			serverErrCh <- errors.New("expected websocket error message")
 			return
 		}
-		if !strings.Contains(timelineLog.String(), "\"type\":\"response.completed\"") {
-			serverErrCh <- errors.New("websocket timeline did not capture terminal completed")
+		if !strings.Contains(timelineLog.String(), "\"type\":\"error\"") {
+			serverErrCh <- errors.New("websocket timeline did not capture top-level error")
 			return
 		}
 		serverErrCh <- nil
@@ -1077,16 +1077,19 @@ func TestForwardResponsesWebsocketWritesCompletedAfterError(t *testing.T) {
 	if errDeadline := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); errDeadline != nil {
 		t.Fatalf("set read deadline: %v", errDeadline)
 	}
-	_, completedPayload, err := conn.ReadMessage()
+	_, errorPayload, err := conn.ReadMessage()
 	if err != nil {
-		t.Fatalf("read websocket completed payload: %v", err)
+		t.Fatalf("read websocket error payload: %v", err)
 	}
 
-	if got := gjson.GetBytes(completedPayload, "type").String(); got != wsEventTypeCompleted {
-		t.Fatalf("payload type = %q, want %s; payload=%s", got, wsEventTypeCompleted, completedPayload)
+	if got := gjson.GetBytes(errorPayload, "type").String(); got != wsEventTypeError {
+		t.Fatalf("payload type = %q, want %s; payload=%s", got, wsEventTypeError, errorPayload)
 	}
-	if got := gjson.GetBytes(completedPayload, "response.error.code").String(); got != "rate_limit_exceeded" {
-		t.Fatalf("completed error code = %q, want rate_limit_exceeded; payload=%s", got, completedPayload)
+	if got := gjson.GetBytes(errorPayload, "error.code").String(); got != "rate_limit_exceeded" {
+		t.Fatalf("error code = %q, want rate_limit_exceeded; payload=%s", got, errorPayload)
+	}
+	if gjson.GetBytes(errorPayload, "response.id").Exists() {
+		t.Fatalf("top-level error must not create a synthetic response id: %s", errorPayload)
 	}
 
 	if errServer := <-serverErrCh; errServer != nil {
@@ -1560,7 +1563,7 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterQuotaError(t *testing.T) {
 		`{"type":"response.create","previous_response_id":"resp_auth_a_1","input":[{"type":"message","id":"msg-2"}]}`,
 		`{"type":"response.create","previous_response_id":"resp_auth_a_1","input":[{"type":"message","id":"msg-3"}]}`,
 	}
-	wantTypes := []string{wsEventTypeCompleted, wsEventTypeCompleted, wsEventTypeCompleted}
+	wantTypes := []string{wsEventTypeCompleted, wsEventTypeError, wsEventTypeCompleted}
 	for i := range requests {
 		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(requests[i])); errWrite != nil {
 			t.Fatalf("write websocket message %d: %v", i+1, errWrite)
@@ -1575,8 +1578,11 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterQuotaError(t *testing.T) {
 		if i == 1 && int(gjson.GetBytes(payload, "status").Int()) != http.StatusTooManyRequests {
 			t.Fatalf("quota payload status = %d, want %d: %s", gjson.GetBytes(payload, "status").Int(), http.StatusTooManyRequests, payload)
 		}
-		if i == 1 && gjson.GetBytes(payload, "response.error.code").String() != "rate_limit_exceeded" {
-			t.Fatalf("quota payload error code = %s, want rate_limit_exceeded: %s", gjson.GetBytes(payload, "response.error.code").String(), payload)
+		if i == 1 && gjson.GetBytes(payload, "error.code").String() != "rate_limit_exceeded" {
+			t.Fatalf("quota payload error code = %s, want rate_limit_exceeded: %s", gjson.GetBytes(payload, "error.code").String(), payload)
+		}
+		if i == 1 && gjson.GetBytes(payload, "response.id").Exists() {
+			t.Fatalf("quota payload must not create a synthetic response id: %s", payload)
 		}
 	}
 

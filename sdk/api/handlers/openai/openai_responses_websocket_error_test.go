@@ -43,40 +43,6 @@ func TestBuildResponsesWebsocketErrorPayloadIncludesNestedErrorForCodexClients(t
 	}
 }
 
-func TestBuildResponsesWebsocketTerminalCompletedPayloadCarriesNestedError(t *testing.T) {
-	errorPayload, err := buildResponsesWebsocketErrorPayload(&interfaces.ErrorMessage{
-		StatusCode: http.StatusTooManyRequests,
-		Error:      jsonError(`{"error":{"message":"usage limit reached","type":"rate_limit_error","code":"rate_limit_exceeded"}}`),
-	})
-	if err != nil {
-		t.Fatalf("buildResponsesWebsocketErrorPayload error: %v", err)
-	}
-
-	payload, err := buildResponsesWebsocketTerminalCompletedPayload(errorPayload)
-	if err != nil {
-		t.Fatalf("buildResponsesWebsocketTerminalCompletedPayload error: %v", err)
-	}
-
-	if got := gjson.GetBytes(payload, "type").String(); got != "response.completed" {
-		t.Fatalf("type = %q, want response.completed; payload=%s", got, payload)
-	}
-	if got := gjson.GetBytes(payload, "response.status").String(); got != "completed" {
-		t.Fatalf("response.status = %q, want completed; payload=%s", got, payload)
-	}
-	if got := gjson.GetBytes(payload, "response.error.code").String(); got != "rate_limit_exceeded" {
-		t.Fatalf("response.error.code = %q, want rate_limit_exceeded; payload=%s", got, payload)
-	}
-	if got := int(gjson.GetBytes(payload, "status").Int()); got != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want %d; payload=%s", got, http.StatusTooManyRequests, payload)
-	}
-	if got := gjson.GetBytes(payload, "response.error.type").String(); got != "invalid_request_error" {
-		t.Fatalf("response.error.type = %q, want invalid_request_error; payload=%s", got, payload)
-	}
-	if got := gjson.GetBytes(payload, "response.id").String(); got == "" {
-		t.Fatalf("expected response.id, payload=%s", payload)
-	}
-}
-
 func TestBuildResponsesWebsocketTerminalFailedPayloadUsesCodexContextCode(t *testing.T) {
 	errorPayload, err := buildResponsesWebsocketErrorPayload(&interfaces.ErrorMessage{
 		StatusCode: http.StatusRequestEntityTooLarge,
@@ -146,6 +112,52 @@ func TestWriteResponsesWebsocketErrorWithTerminalCompletedSendsResponseFailedFor
 		t.Fatalf("payload type = %q, want response.failed; payload=%s", got, payload)
 	} else if got := gjson.GetBytes(payload, "response.error.code").String(); got != "context_length_exceeded" {
 		t.Fatalf("response.error.code = %q, want context_length_exceeded; payload=%s", got, payload)
+	}
+}
+
+func TestWriteResponsesWebsocketErrorWithTerminalCompletedSendsTopLevelErrorForRateLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer func() {
+			_ = conn.Close()
+		}()
+
+		errMsg := &interfaces.ErrorMessage{
+			StatusCode: http.StatusTooManyRequests,
+			Error:      jsonError(`{"error":{"message":"usage limit reached","type":"rate_limit_error","code":"rate_limit_exceeded"}}`),
+		}
+		errorPayload, completedPayload, errWrite := writeResponsesWebsocketErrorWithTerminalCompleted(conn, nil, errMsg, true)
+		if errWrite != nil {
+			t.Fatalf("write websocket error: %v", errWrite)
+		}
+		if len(errorPayload) == 0 || len(completedPayload) != 0 {
+			t.Fatalf("expected top-level error payload only, got error=%d completed=%d", len(errorPayload), len(completedPayload))
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	if _, payload, errRead := conn.ReadMessage(); errRead != nil {
+		t.Fatalf("read websocket error payload: %v", errRead)
+	} else if got := gjson.GetBytes(payload, "type").String(); got != "error" {
+		t.Fatalf("payload type = %q, want error; payload=%s", got, payload)
+	} else if gjson.GetBytes(payload, "response.id").Exists() {
+		t.Fatalf("top-level error must not create a synthetic response id; payload=%s", payload)
+	} else if got := gjson.GetBytes(payload, "error.code").String(); got != "rate_limit_exceeded" {
+		t.Fatalf("error.code = %q, want rate_limit_exceeded; payload=%s", got, payload)
 	}
 }
 

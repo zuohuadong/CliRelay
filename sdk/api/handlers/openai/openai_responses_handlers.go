@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -106,6 +107,13 @@ func (f *responsesSSEFramer) WriteDone(w io.Writer) {
 	}
 	payload := buildResponsesTerminalCompletedPayload(f.completedOutputPayload())
 	writeResponsesSSEChunk(w, responsesSSEFrameWithData(nil, payload))
+}
+
+func (f *responsesSSEFramer) WriteTerminalError(w io.Writer, status int, errText string) {
+	f.Flush(w)
+	itemPayload, completedPayload := buildResponsesTerminalErrorPayloads(status, errText)
+	writeResponsesSSEChunk(w, responsesSSEFrameWithData([]byte("event: response.output_item.done\n"), itemPayload))
+	writeResponsesSSEChunk(w, responsesSSEFrameWithData([]byte("event: response.completed\n"), completedPayload))
 }
 
 func (f *responsesSSEFramer) writeFrame(w io.Writer, frame []byte) {
@@ -254,6 +262,71 @@ func buildResponsesTerminalCompletedPayload(output []byte) []byte {
 		return []byte(`{"type":"response.completed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
 	}
 	return payload
+}
+
+func buildResponsesTerminalErrorPayloads(status int, errText string) ([]byte, []byte) {
+	failedPayload := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
+	code := strings.TrimSpace(gjson.GetBytes(failedPayload, "response.error.code").String())
+	errType := strings.TrimSpace(gjson.GetBytes(failedPayload, "response.error.type").String())
+	message := strings.TrimSpace(gjson.GetBytes(failedPayload, "response.error.message").String())
+	if message == "" {
+		message = strings.TrimSpace(errText)
+	}
+	if message == "" {
+		message = http.StatusText(status)
+	}
+
+	displayText := message
+	if code != "" {
+		displayText = fmt.Sprintf("Upstream request failed (%s): %s", code, message)
+	}
+	itemID := fmt.Sprintf("msg_error_%d", time.Now().UnixNano())
+	item := map[string]any{
+		"type":  "message",
+		"id":    itemID,
+		"role":  "assistant",
+		"phase": "final_answer",
+		"content": []map[string]string{
+			{
+				"type": "output_text",
+				"text": displayText,
+			},
+		},
+	}
+	itemPayload := map[string]any{
+		"type":            "response.output_item.done",
+		"sequence_number": 0,
+		"output_index":    0,
+		"item":            item,
+	}
+	output := []any{item}
+	if code != "" || errType != "" {
+		itemPayload["metadata"] = map[string]string{
+			"error_code": code,
+			"error_type": errType,
+		}
+	}
+
+	itemPayloadJSON, err := json.Marshal(itemPayload)
+	if err != nil || len(itemPayloadJSON) == 0 {
+		itemPayloadJSON = []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Upstream request failed."}],"phase":"final_answer"}}`)
+	}
+	outputJSON, err := json.Marshal(output)
+	if err != nil || len(outputJSON) == 0 {
+		outputJSON = []byte(`[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Upstream request failed."}],"phase":"final_answer"}]`)
+	}
+	completedPayload := buildResponsesTerminalCompletedPayload(outputJSON)
+	if code != "" {
+		if updated, errSet := sjson.SetBytes(completedPayload, "response.metadata.error_code", code); errSet == nil {
+			completedPayload = updated
+		}
+	}
+	if errType != "" {
+		if updated, errSet := sjson.SetBytes(completedPayload, "response.metadata.error_type", errType); errSet == nil {
+			completedPayload = updated
+		}
+	}
+	return itemPayloadJSON, completedPayload
 }
 
 func responsesSSEFrameLen(chunk []byte) int {
@@ -544,20 +617,6 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 				errChan = nil
 				continue
 			}
-			status, errText := responsesErrorStatusAndText(errMsg)
-			if handlers.IsOpenAIResponsesContextWindowError(status, errText) {
-				setSSEHeaders()
-				handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
-				chunk := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
-				_, _ = fmt.Fprintf(c.Writer, "event: response.failed\ndata: %s\n\n", string(chunk))
-				flusher.Flush()
-				if errMsg != nil {
-					cliCancel(errMsg.Error)
-				} else {
-					cliCancel(nil)
-				}
-				return
-			}
 			// Upstream failed immediately. Return proper error status and JSON.
 			h.WriteErrorResponse(c, errMsg)
 			if errMsg != nil {
@@ -606,13 +665,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 				return
 			}
 			status, errText := responsesErrorStatusAndText(errMsg)
-			if handlers.IsOpenAIResponsesContextWindowError(status, errText) {
-				chunk := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
-				_, _ = fmt.Fprintf(c.Writer, "\nevent: response.failed\ndata: %s\n\n", string(chunk))
-				return
-			}
-			chunk := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
-			_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", string(chunk))
+			framer.WriteTerminalError(c.Writer, status, errText)
 		},
 		WriteDone: func() {
 			framer.WriteDone(c.Writer)

@@ -13,7 +13,7 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
-func TestForwardResponsesStreamTerminalErrorUsesResponsesErrorChunk(t *testing.T) {
+func TestForwardResponsesStreamTerminalErrorSynthesizesAssistantMessageAndCompleted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 	h := NewOpenAIResponsesAPIHandler(base)
@@ -34,18 +34,24 @@ func TestForwardResponsesStreamTerminalErrorUsesResponsesErrorChunk(t *testing.T
 
 	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
 	body := recorder.Body.String()
-	if !strings.Contains(body, `"type":"error"`) {
-		t.Fatalf("expected responses error chunk, got: %q", body)
+	if !strings.Contains(body, "event: response.output_item.done") {
+		t.Fatalf("expected output_item.done event, got: %q", body)
 	}
-	if !strings.Contains(body, `"error":{`) {
-		t.Fatalf("expected nested Codex error object, got: %q", body)
+	if !strings.Contains(body, "event: response.completed") {
+		t.Fatalf("expected response.completed event, got: %q", body)
 	}
-	if !strings.Contains(body, `"status":500`) {
-		t.Fatalf("expected status in streaming error chunk, got: %q", body)
+	if !strings.Contains(body, `"type":"response.completed"`) {
+		t.Fatalf("expected response.completed payload, got: %q", body)
+	}
+	if !strings.Contains(body, `"type":"message"`) {
+		t.Fatalf("expected assistant message payload, got: %q", body)
+	}
+	if !strings.Contains(body, `Upstream request failed`) {
+		t.Fatalf("expected fallback error text, got: %q", body)
 	}
 }
 
-func TestForwardResponsesStreamTerminalContextErrorUsesResponseFailed(t *testing.T) {
+func TestForwardResponsesStreamTerminalContextErrorSynthesizesCompleted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 	h := NewOpenAIResponsesAPIHandler(base)
@@ -69,16 +75,19 @@ func TestForwardResponsesStreamTerminalContextErrorUsesResponseFailed(t *testing
 
 	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
 	body := recorder.Body.String()
-	if !strings.Contains(body, "event: response.failed") {
-		t.Fatalf("expected response.failed event, got: %q", body)
+	if !strings.Contains(body, "event: response.output_item.done") {
+		t.Fatalf("expected output_item.done event, got: %q", body)
 	}
-	if !strings.Contains(body, `"type":"response.failed"`) {
-		t.Fatalf("expected response.failed payload, got: %q", body)
+	if !strings.Contains(body, "event: response.completed") {
+		t.Fatalf("expected response.completed event, got: %q", body)
 	}
-	if !strings.Contains(body, `"code":"context_length_exceeded"`) {
-		t.Fatalf("expected Codex context_length_exceeded code, got: %q", body)
+	if !strings.Contains(body, `"type":"response.completed"`) {
+		t.Fatalf("expected response.completed payload, got: %q", body)
 	}
 	if strings.Contains(body, "event: error") {
 		t.Fatalf("context window terminal error must not use top-level error event, got: %q", body)
+	}
+	if !strings.Contains(body, `context_length_exceeded`) {
+		t.Fatalf("expected context_length_exceeded marker in synthesized message, got: %q", body)
 	}
 }

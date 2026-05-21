@@ -12,7 +12,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestBuildResponsesWebsocketErrorPayloadUsesResponseFailedForContextWindow(t *testing.T) {
+func TestBuildResponsesWebsocketErrorPayloadSynthesizesCompletedForContextWindow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -47,20 +47,25 @@ func TestBuildResponsesWebsocketErrorPayloadUsesResponseFailedForContextWindow(t
 		_ = conn.Close()
 	}()
 
-	if _, payload, errRead := conn.ReadMessage(); errRead != nil {
-		t.Fatalf("read websocket error payload: %v", errRead)
-	} else if got := gjson.GetBytes(payload, "type").String(); got != "response.failed" {
-		t.Fatalf("payload type = %q, want response.failed; payload=%s", got, payload)
-	} else if got := gjson.GetBytes(payload, "response.error.code").String(); got != "context_length_exceeded" {
-		t.Fatalf("response.error.code = %q, want context_length_exceeded; payload=%s", got, payload)
-	} else if got := gjson.GetBytes(payload, "response.status").String(); got != "failed" {
-		t.Fatalf("response.status = %q, want failed; payload=%s", got, payload)
-	} else if !strings.HasPrefix(gjson.GetBytes(payload, "response.id").String(), "resp_") {
-		t.Fatalf("response.id must use resp_ prefix; payload=%s", payload)
+	if _, itemPayload, errRead := conn.ReadMessage(); errRead != nil {
+		t.Fatalf("read websocket output item payload: %v", errRead)
+	} else if got := gjson.GetBytes(itemPayload, "type").String(); got != "response.output_item.done" {
+		t.Fatalf("first payload type = %q, want response.output_item.done; payload=%s", got, itemPayload)
+	} else if !strings.Contains(gjson.GetBytes(itemPayload, "item.content.0.text").String(), "context_length_exceeded") {
+		t.Fatalf("output item must mention context_length_exceeded; payload=%s", itemPayload)
+	}
+	if _, completedPayload, errRead := conn.ReadMessage(); errRead != nil {
+		t.Fatalf("read websocket completed payload: %v", errRead)
+	} else if got := gjson.GetBytes(completedPayload, "type").String(); got != "response.completed" {
+		t.Fatalf("second payload type = %q, want response.completed; payload=%s", got, completedPayload)
+	} else if got := gjson.GetBytes(completedPayload, "response.status").String(); got != "completed" {
+		t.Fatalf("response.status = %q, want completed; payload=%s", got, completedPayload)
+	} else if got := gjson.GetBytes(completedPayload, "response.id").String(); got != "" {
+		t.Fatalf("synthetic error completion must not provide reusable response id, got %q; payload=%s", got, completedPayload)
 	}
 }
 
-func TestWriteResponsesWebsocketErrorSendsResponseFailedForRateLimit(t *testing.T) {
+func TestWriteResponsesWebsocketErrorSynthesizesCompletedForRateLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -95,16 +100,21 @@ func TestWriteResponsesWebsocketErrorSendsResponseFailedForRateLimit(t *testing.
 		_ = conn.Close()
 	}()
 
-	if _, payload, errRead := conn.ReadMessage(); errRead != nil {
-		t.Fatalf("read websocket error payload: %v", errRead)
-	} else if got := gjson.GetBytes(payload, "type").String(); got != "response.failed" {
-		t.Fatalf("payload type = %q, want response.failed; payload=%s", got, payload)
-	} else if got := gjson.GetBytes(payload, "response.error.code").String(); got != "rate_limit_exceeded" {
-		t.Fatalf("response.error.code = %q, want rate_limit_exceeded; payload=%s", got, payload)
-	} else if got := gjson.GetBytes(payload, "response.status").String(); got != "failed" {
-		t.Fatalf("response.status = %q, want failed; payload=%s", got, payload)
-	} else if !strings.HasPrefix(gjson.GetBytes(payload, "response.id").String(), "resp_") {
-		t.Fatalf("response.id must use resp_ prefix; payload=%s", payload)
+	if _, itemPayload, errRead := conn.ReadMessage(); errRead != nil {
+		t.Fatalf("read websocket output item payload: %v", errRead)
+	} else if got := gjson.GetBytes(itemPayload, "type").String(); got != "response.output_item.done" {
+		t.Fatalf("first payload type = %q, want response.output_item.done; payload=%s", got, itemPayload)
+	} else if !strings.Contains(gjson.GetBytes(itemPayload, "item.content.0.text").String(), "rate_limit_exceeded") {
+		t.Fatalf("output item must mention rate_limit_exceeded; payload=%s", itemPayload)
+	}
+	if _, completedPayload, errRead := conn.ReadMessage(); errRead != nil {
+		t.Fatalf("read websocket completed payload: %v", errRead)
+	} else if got := gjson.GetBytes(completedPayload, "type").String(); got != "response.completed" {
+		t.Fatalf("second payload type = %q, want response.completed; payload=%s", got, completedPayload)
+	} else if got := gjson.GetBytes(completedPayload, "response.status").String(); got != "completed" {
+		t.Fatalf("response.status = %q, want completed; payload=%s", got, completedPayload)
+	} else if got := gjson.GetBytes(completedPayload, "response.id").String(); got != "" {
+		t.Fatalf("synthetic error completion must not provide reusable response id, got %q; payload=%s", got, completedPayload)
 	}
 }
 

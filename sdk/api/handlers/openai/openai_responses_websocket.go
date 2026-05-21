@@ -239,6 +239,12 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				log.Warnf("responses websocket: forward failed id=%s error=%v", passthroughSessionID, errForward)
 				return
 			}
+			if replayAttempt == 0 && shouldReplayResponsesWebsocketTranscript(forwardErrMsg) {
+				forceTranscriptReplayNextRequest = true
+				lastRequest = previousLastRequest
+				lastResponseOutput = previousLastResponseOutput
+				continue
+			}
 			if shouldReleaseResponsesWebsocketPinnedAuth(forwardErrMsg) {
 				pinnedAuthID = ""
 				forceTranscriptReplayNextRequest = true
@@ -1121,8 +1127,11 @@ func writeResponsesWebsocketError(conn *websocket.Conn, wsTimelineLog *strings.B
 		}
 	}
 
-	payload := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
-	return payload, writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now())
+	itemPayload, completedPayload := buildResponsesTerminalErrorPayloads(status, errText)
+	if err := writeResponsesWebsocketPayload(conn, wsTimelineLog, itemPayload, time.Now()); err != nil {
+		return itemPayload, err
+	}
+	return completedPayload, writeResponsesWebsocketPayload(conn, wsTimelineLog, completedPayload, time.Now())
 }
 
 func appendWebsocketEvent(builder *strings.Builder, eventType string, payload []byte) {

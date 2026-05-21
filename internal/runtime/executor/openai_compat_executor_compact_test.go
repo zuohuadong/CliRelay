@@ -136,6 +136,7 @@ func TestBigModelCodingExecutorNormalizesThinkingAndToolParallelism(t *testing.T
 	executor := NewBigModelCodingExecutor(&config.Config{})
 	payload := []byte(`{
 		"model":"glm-5.1",
+		"stream":true,
 		"messages":[{"role":"user","content":"hi"}],
 		"reasoning":{"effort":"high"},
 		"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]
@@ -154,8 +155,31 @@ func TestBigModelCodingExecutorNormalizesThinkingAndToolParallelism(t *testing.T
 	if got := gjson.GetBytes(out, "parallel_tool_calls").Bool(); !got {
 		t.Fatalf("parallel_tool_calls = false, want true: %s", out)
 	}
+	if got := gjson.GetBytes(out, "tool_stream").Bool(); !got {
+		t.Fatalf("tool_stream = false, want true for streaming tool calls: %s", out)
+	}
 	if gjson.GetBytes(out, "reasoning").Exists() || gjson.GetBytes(out, "reasoning_effort").Exists() {
 		t.Fatalf("OpenAI/Codex thinking fields should be removed: %s", out)
+	}
+}
+
+func TestBigModelCodingExecutorDoesNotSetToolStreamForNonStreamingTools(t *testing.T) {
+	executor := NewBigModelCodingExecutor(&config.Config{})
+	payload := []byte(`{
+		"model":"glm-5.1",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]
+	}`)
+
+	out, err := executor.normalizeBigModelCodingPayload(payload, "glm-5.1")
+	if err != nil {
+		t.Fatalf("normalizeBigModelCodingPayload error: %v", err)
+	}
+	if got := gjson.GetBytes(out, "parallel_tool_calls").Bool(); !got {
+		t.Fatalf("parallel_tool_calls = false, want true: %s", out)
+	}
+	if gjson.GetBytes(out, "tool_stream").Exists() {
+		t.Fatalf("tool_stream should only be set for streaming tool calls: %s", out)
 	}
 }
 

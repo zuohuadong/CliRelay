@@ -516,6 +516,9 @@ func (e *BigModelCodingExecutor) normalizeBigModelToolParallelism(payload []byte
 	tools := gjson.GetBytes(payload, "tools")
 	if tools.IsArray() && len(tools.Array()) > 0 {
 		payload, _ = sjson.SetBytes(payload, "parallel_tool_calls", true)
+		if gjson.GetBytes(payload, "stream").Bool() {
+			payload, _ = sjson.SetBytes(payload, "tool_stream", true)
+		}
 	}
 	return payload
 }

@@ -918,18 +918,6 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					cancel(errMsg.Error)
 					return completedOutput, errMsg, errWrite
 				}
-				completedPayload, errWrite := writeResponsesWebsocketErrorCompletion(conn, wsTimelineLog, errMsg)
-				log.Infof(
-					"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-					sessionID,
-					websocket.TextMessage,
-					websocketPayloadEventType(completedPayload),
-					websocketPayloadPreview(completedPayload),
-				)
-				if errWrite != nil {
-					cancel(errMsg.Error)
-					return completedOutput, errMsg, errWrite
-				}
 			}
 			if errMsg != nil {
 				cancel(errMsg.Error)
@@ -983,24 +971,6 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 							"responses websocket: downstream_out write failed id=%s event=%s error=%v",
 							sessionID,
 							websocketPayloadEventType(errorPayload),
-							errWrite,
-						)
-						cancel(errMsg.Error)
-						return completedOutput, errMsg, errWrite
-					}
-					completedPayload, errWrite := writeResponsesWebsocketErrorCompletion(conn, wsTimelineLog, errMsg)
-					log.Infof(
-						"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-						sessionID,
-						websocket.TextMessage,
-						websocketPayloadEventType(completedPayload),
-						websocketPayloadPreview(completedPayload),
-					)
-					if errWrite != nil {
-						log.Warnf(
-							"responses websocket: downstream_out write failed id=%s event=%s error=%v",
-							sessionID,
-							websocketPayloadEventType(completedPayload),
 							errWrite,
 						)
 						cancel(errMsg.Error)
@@ -1157,14 +1127,6 @@ func writeResponsesWebsocketError(conn *websocket.Conn, wsTimelineLog *strings.B
 	return payload, writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now())
 }
 
-func writeResponsesWebsocketErrorCompletion(conn *websocket.Conn, wsTimelineLog *strings.Builder, errMsg *interfaces.ErrorMessage) ([]byte, error) {
-	payload, err := buildResponsesWebsocketErrorCompletionPayload(errMsg)
-	if err != nil {
-		return nil, err
-	}
-	return payload, writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now())
-}
-
 func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byte, error) {
 	status := http.StatusInternalServerError
 	errText := http.StatusText(status)
@@ -1226,19 +1188,6 @@ func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byt
 				return nil, errSet
 			}
 		}
-	}
-	return payload, nil
-}
-
-func buildResponsesWebsocketErrorCompletionPayload(errMsg *interfaces.ErrorMessage) ([]byte, error) {
-	errorPayload, err := buildResponsesWebsocketErrorPayload(errMsg)
-	if err != nil {
-		return nil, err
-	}
-	payload := []byte(`{"type":"response.completed","sequence_number":1,"response":{"id":"","object":"response","created_at":0,"status":"failed","background":false,"error":null,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
-	errorNode := gjson.GetBytes(errorPayload, "error")
-	if errorNode.Exists() && strings.TrimSpace(errorNode.Raw) != "" {
-		return sjson.SetRawBytes(payload, "response.error", []byte(errorNode.Raw))
 	}
 	return payload, nil
 }

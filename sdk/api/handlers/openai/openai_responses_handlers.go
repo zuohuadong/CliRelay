@@ -509,7 +509,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			}
 			// Upstream failed before the first chunk. Keep Responses streaming shape
 			// so clients like Codex can classify the error and react (for example,
-			// triggering request compaction on context_length_exceeded).
+			// triggering request compaction on context_too_large).
 			writeResponsesImmediateStreamError(c, flusher, upstreamHeaders, errMsg)
 			if errMsg != nil {
 				cliCancel(errMsg.Error)

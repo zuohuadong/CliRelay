@@ -22,11 +22,11 @@ func TestBuildResponsesWebsocketErrorPayloadIncludesNestedErrorForCodexClients(t
 	if got := gjson.GetBytes(payload, "type").String(); got != "error" {
 		t.Fatalf("type = %q, want error; payload=%s", got, payload)
 	}
-	if got := gjson.GetBytes(payload, "code").String(); got != "context_length_exceeded" {
-		t.Fatalf("code = %q, want context_length_exceeded; payload=%s", got, payload)
+	if got := gjson.GetBytes(payload, "code").String(); got != "context_too_large" {
+		t.Fatalf("code = %q, want context_too_large; payload=%s", got, payload)
 	}
-	if got := gjson.GetBytes(payload, "error.code").String(); got != "context_length_exceeded" {
-		t.Fatalf("error.code = %q, want context_length_exceeded; payload=%s", got, payload)
+	if got := gjson.GetBytes(payload, "error.code").String(); got != "context_too_large" {
+		t.Fatalf("error.code = %q, want context_too_large; payload=%s", got, payload)
 	}
 	if got := gjson.GetBytes(payload, "error.type").String(); got != "invalid_request_error" {
 		t.Fatalf("error.type = %q, want invalid_request_error; payload=%s", got, payload)
@@ -36,34 +36,6 @@ func TestBuildResponsesWebsocketErrorPayloadIncludesNestedErrorForCodexClients(t
 	}
 	if got := int(gjson.GetBytes(payload, "status").Int()); got != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want %d; payload=%s", got, http.StatusRequestEntityTooLarge, payload)
-	}
-}
-
-func TestBuildResponsesWebsocketErrorCompletionPayloadCarriesNestedError(t *testing.T) {
-	errMsg := &interfaces.ErrorMessage{
-		StatusCode: http.StatusBadRequest,
-		Error:      jsonError(`{"error":{"message":"request policy glm-5.1-large-request-guard blocked upstream model glm-5.1 via provider bigmodel-coding: request_bytes 706275 exceeds max-request-bytes 600000","type":"invalid_request_error","code":"context_length_exceeded"}}`),
-	}
-
-	payload, err := buildResponsesWebsocketErrorCompletionPayload(errMsg)
-	if err != nil {
-		t.Fatalf("buildResponsesWebsocketErrorCompletionPayload error: %v", err)
-	}
-
-	if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
-		t.Fatalf("type = %q, want %s; payload=%s", got, wsEventTypeCompleted, payload)
-	}
-	if got := gjson.GetBytes(payload, "response.status").String(); got != "failed" {
-		t.Fatalf("response.status = %q, want failed; payload=%s", got, payload)
-	}
-	if got := gjson.GetBytes(payload, "response.error.code").String(); got != "context_length_exceeded" {
-		t.Fatalf("response.error.code = %q, want context_length_exceeded; payload=%s", got, payload)
-	}
-	if got := gjson.GetBytes(payload, "response.error.type").String(); got != "invalid_request_error" {
-		t.Fatalf("response.error.type = %q, want invalid_request_error; payload=%s", got, payload)
-	}
-	if got := gjson.GetBytes(payload, "response.error.message").String(); got == "" {
-		t.Fatalf("expected response.error.message, payload=%s", payload)
 	}
 }
 

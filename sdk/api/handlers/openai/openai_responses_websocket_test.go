@@ -1010,103 +1010,6 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 	}
 }
 
-func TestForwardResponsesWebsocketEmitsCompletedEventAfterError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	serverErrCh := make(chan error, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
-		if err != nil {
-			serverErrCh <- err
-			return
-		}
-		defer func() {
-			errClose := conn.Close()
-			if errClose != nil {
-				serverErrCh <- errClose
-			}
-		}()
-
-		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-		ctx.Request = r
-
-		data := make(chan []byte)
-		errCh := make(chan *interfaces.ErrorMessage, 1)
-		errCh <- &interfaces.ErrorMessage{
-			StatusCode: http.StatusRequestEntityTooLarge,
-			Error:      errors.New(`{"error":{"message":"request policy glm-5.1-large-request-guard blocked upstream model glm-5.1 via provider bigmodel-coding: request_bytes 962646 exceeds max-request-bytes 600000","type":"invalid_request_error","code":"context_length_exceeded"}}`),
-		}
-		close(errCh)
-		close(data)
-
-		var timelineLog strings.Builder
-		h := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil))
-		completedOutput, errMsg, err := h.forwardResponsesWebsocket(
-			ctx,
-			conn,
-			func(...interface{}) {},
-			data,
-			errCh,
-			&timelineLog,
-			"session-err",
-			false,
-		)
-		if err != nil {
-			serverErrCh <- err
-			return
-		}
-		if errMsg == nil {
-			serverErrCh <- errors.New("expected websocket error message")
-			return
-		}
-		if got := string(completedOutput); got != "[]" {
-			serverErrCh <- fmt.Errorf("completed output = %s, want empty []", got)
-			return
-		}
-		if !strings.Contains(timelineLog.String(), "Event: websocket.response") {
-			serverErrCh <- errors.New("websocket timeline did not capture downstream response")
-			return
-		}
-		serverErrCh <- nil
-	}))
-	defer server.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial websocket: %v", err)
-	}
-	defer func() {
-		errClose := conn.Close()
-		if errClose != nil {
-			t.Fatalf("close websocket: %v", errClose)
-		}
-	}()
-
-	_, payload, errReadMessage := conn.ReadMessage()
-	if errReadMessage != nil {
-		t.Fatalf("read error websocket message: %v", errReadMessage)
-	}
-	if gjson.GetBytes(payload, "type").String() != wsEventTypeError {
-		t.Fatalf("first payload type = %s, want %s", gjson.GetBytes(payload, "type").String(), wsEventTypeError)
-	}
-
-	_, payload, errReadMessage = conn.ReadMessage()
-	if errReadMessage != nil {
-		t.Fatalf("read completion websocket message: %v", errReadMessage)
-	}
-	if gjson.GetBytes(payload, "type").String() != wsEventTypeCompleted {
-		t.Fatalf("second payload type = %s, want %s", gjson.GetBytes(payload, "type").String(), wsEventTypeCompleted)
-	}
-	if gjson.GetBytes(payload, "response.error.code").String() != "context_length_exceeded" {
-		t.Fatalf("second payload missing error code: %s", payload)
-	}
-
-	if errServer := <-serverErrCh; errServer != nil {
-		t.Fatalf("server error: %v", errServer)
-	}
-}
-
 func TestForwardResponsesWebsocketLogsAttemptedResponseOnWriteFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1596,15 +1499,6 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterQuotaError(t *testing.T) {
 		}
 		if i == 1 && int(gjson.GetBytes(payload, "status").Int()) != http.StatusTooManyRequests {
 			t.Fatalf("quota payload status = %d, want %d: %s", gjson.GetBytes(payload, "status").Int(), http.StatusTooManyRequests, payload)
-		}
-		if i == 1 {
-			_, completedPayload, errReadCompleted := conn.ReadMessage()
-			if errReadCompleted != nil {
-				t.Fatalf("read websocket completion after quota error: %v", errReadCompleted)
-			}
-			if got := gjson.GetBytes(completedPayload, "type").String(); got != wsEventTypeCompleted {
-				t.Fatalf("quota completion payload type = %s, want %s: %s", got, wsEventTypeCompleted, completedPayload)
-			}
 		}
 	}
 

@@ -45,6 +45,14 @@ var (
 	DefaultConfigPath = ""
 )
 
+// init initializes the shared logger setup.
+func init() {
+	logging.SetupBaseLogger()
+	buildinfo.Version = Version
+	buildinfo.Commit = Commit
+	buildinfo.BuildDate = BuildDate
+}
+
 func parseHomeFlagConfig(rawAddr string, password string) (config.HomeConfig, error) {
 	rawAddr = strings.TrimSpace(rawAddr)
 	if rawAddr == "" {
@@ -71,10 +79,9 @@ func parseHomeFlagConfig(rawAddr string, password string) (config.HomeConfig, er
 	}
 
 	return config.HomeConfig{
-		Enabled:  true,
-		Host:     host,
-		Port:     port,
-		Password: password,
+		Enabled: true,
+		Host:    host,
+		Port:    port,
 	}, nil
 }
 
@@ -106,10 +113,9 @@ func parseHomeURLConfig(rawAddr string, password string) (config.HomeConfig, err
 	}
 
 	homeCfg := config.HomeConfig{
-		Enabled:  true,
-		Host:     host,
-		Port:     port,
-		Password: password,
+		Enabled: true,
+		Host:    host,
+		Port:    port,
 	}
 	query := parsed.Query()
 	homeCfg.DisableClusterDiscovery = parseHomeBoolQuery(query, "disable-cluster-discovery", "disable_cluster_discovery")
@@ -157,14 +163,6 @@ func parseHomeBoolQuery(values url.Values, keys ...string) bool {
 		return errParse == nil && parsed
 	}
 	return false
-}
-
-// init initializes the shared logger setup.
-func init() {
-	logging.SetupBaseLogger()
-	buildinfo.Version = Version
-	buildinfo.Commit = Commit
-	buildinfo.BuildDate = BuildDate
 }
 
 // main is the entry point of the application.
@@ -302,6 +300,7 @@ func main() {
 	}
 	writableBase := util.WritablePath()
 
+	// Allow env var fallback for home flags so they can be configured without command args.
 	if strings.TrimSpace(homeAddr) == "" {
 		if v, ok := lookupEnv("HOME_ADDR", "home_addr"); ok {
 			homeAddr = v
@@ -413,16 +412,19 @@ func main() {
 			parsed = &config.Config{}
 		}
 		parsed.Home = homeCfg
-		parsed.Port = 8317
+		parsed.Port = 8317 // Default to 8317 for home mode, can be overridden by home config
 		parsed.UsageStatisticsEnabled = true
 		cfg = parsed
 
+		// Keep a non-empty config path for downstream components (log paths, management assets, etc),
+		// but do not require the file to exist when loading config from home.
 		if strings.TrimSpace(configPath) != "" {
 			configFilePath = configPath
 		} else {
 			configFilePath = filepath.Join(wd, "config.yaml")
 		}
 
+		// Local stores are intentionally disabled when config is loaded from home.
 		usePostgresStore = false
 		useObjectStore = false
 		useGitStore = false
@@ -457,16 +459,19 @@ func main() {
 			parsed = &config.Config{}
 		}
 		parsed.Home = homeCfg
-		parsed.Port = 8317
+		parsed.Port = 8317 // Default to 8317 for home mode, can be overridden by home config
 		parsed.UsageStatisticsEnabled = true
 		cfg = parsed
 
+		// Keep a non-empty config path for downstream components (log paths, management assets, etc),
+		// but do not require the file to exist when loading config from home.
 		if strings.TrimSpace(configPath) != "" {
 			configFilePath = configPath
 		} else {
 			configFilePath = filepath.Join(wd, "config.yaml")
 		}
 
+		// Local stores are intentionally disabled when config is loaded from home.
 		usePostgresStore = false
 		useObjectStore = false
 		useGitStore = false

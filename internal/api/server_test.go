@@ -21,10 +21,6 @@ import (
 )
 
 func newTestServer(t *testing.T) *Server {
-	return newTestServerWithOptions(t)
-}
-
-func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
@@ -50,7 +46,7 @@ func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
 	accessManager := sdkaccess.NewManager()
 
 	configPath := filepath.Join(tmpDir, "config.yaml")
-	return NewServer(cfg, authManager, accessManager, configPath, opts...)
+	return NewServer(cfg, authManager, accessManager, configPath)
 }
 
 func TestHealthz(t *testing.T) {
@@ -117,10 +113,7 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 	legacyRR := httptest.NewRecorder()
 	server.engine.ServeHTTP(legacyRR, legacyReq)
 	if legacyRR.Code != http.StatusOK {
-		t.Fatalf("usage summary status = %d, want %d body=%s", legacyRR.Code, http.StatusOK, legacyRR.Body.String())
-	}
-	if !strings.Contains(legacyRR.Body.String(), `"usage"`) {
-		t.Fatalf("usage summary body missing usage payload: %s", legacyRR.Body.String())
+		t.Fatalf("legacy usage status = %d, want %d body=%s", legacyRR.Code, http.StatusOK, legacyRR.Body.String())
 	}
 
 	authReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=2", nil)
@@ -155,64 +148,6 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 	}
 }
 
-func TestManagementLocalPasswordRejectsSpoofedForwardedFor(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "")
-
-	server := newTestServerWithOptions(t, WithLocalManagementPassword("test-local-key"))
-
-	req := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
-	req.RemoteAddr = "203.0.113.10:45678"
-	req.Header.Set("X-Forwarded-For", "127.0.0.1")
-	req.Header.Set("Authorization", "Bearer test-local-key")
-
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
-	}
-	if body := rr.Body.String(); !strings.Contains(body, "remote management disabled") {
-		t.Fatalf("body = %q, want remote management disabled", body)
-	}
-}
-
-func TestManagementIPBanUsesRealClientIPBehindLoopbackProxy(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-
-	server := newTestServer(t)
-
-	for i := 0; i < 5; i++ {
-		req := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
-		req.RemoteAddr = "127.0.0.1:12345"
-		req.Header.Set("X-Real-IP", "203.0.113.10")
-		req.Header.Set("Authorization", "Bearer wrong-key")
-		rr := httptest.NewRecorder()
-		server.engine.ServeHTTP(rr, req)
-		if rr.Code != http.StatusUnauthorized {
-			t.Fatalf("attempt %d status = %d, want %d body=%s", i+1, rr.Code, http.StatusUnauthorized, rr.Body.String())
-		}
-	}
-
-	bannedReq := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
-	bannedReq.RemoteAddr = "127.0.0.1:12345"
-	bannedReq.Header.Set("X-Real-IP", "203.0.113.10")
-	bannedReq.Header.Set("Authorization", "Bearer test-management-key")
-	bannedRR := httptest.NewRecorder()
-	server.engine.ServeHTTP(bannedRR, bannedReq)
-	if bannedRR.Code != http.StatusForbidden {
-		t.Fatalf("banned status = %d, want %d body=%s", bannedRR.Code, http.StatusForbidden, bannedRR.Body.String())
-	}
-
-	otherReq := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
-	otherReq.RemoteAddr = "127.0.0.1:12345"
-	otherReq.Header.Set("X-Real-IP", "203.0.113.11")
-	otherReq.Header.Set("Authorization", "Bearer test-management-key")
-	otherRR := httptest.NewRecorder()
-	server.engine.ServeHTTP(otherRR, otherReq)
-	if otherRR.Code != http.StatusOK {
-		t.Fatalf("other client status = %d, want %d body=%s", otherRR.Code, http.StatusOK, otherRR.Body.String())
-	}
-}
-
 func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 
@@ -237,42 +172,6 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
 		}
 	})
-}
-
-func TestManageRouteServesSPAPanel(t *testing.T) {
-	panelDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(panelDir, "assets"), 0o755); err != nil {
-		t.Fatalf("create assets dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(panelDir, "manage.html"), []byte("<html><body>panel-root</body></html>"), 0o644); err != nil {
-		t.Fatalf("write manage.html: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(panelDir, "assets", "app-abcdef12.js"), []byte("console.log('panel')"), 0o644); err != nil {
-		t.Fatalf("write asset: %v", err)
-	}
-	t.Setenv("MANAGEMENT_STATIC_PATH", panelDir)
-
-	server := newTestServer(t)
-
-	htmlReq := httptest.NewRequest(http.MethodGet, "/manage/dashboard", nil)
-	htmlRR := httptest.NewRecorder()
-	server.engine.ServeHTTP(htmlRR, htmlReq)
-	if htmlRR.Code != http.StatusOK {
-		t.Fatalf("html status = %d, want %d body=%s", htmlRR.Code, http.StatusOK, htmlRR.Body.String())
-	}
-	if !strings.Contains(htmlRR.Body.String(), "panel-root") {
-		t.Fatalf("html body missing panel content: %s", htmlRR.Body.String())
-	}
-
-	assetReq := httptest.NewRequest(http.MethodGet, "/manage/assets/app-abcdef12.js", nil)
-	assetRR := httptest.NewRecorder()
-	server.engine.ServeHTTP(assetRR, assetReq)
-	if assetRR.Code != http.StatusOK {
-		t.Fatalf("asset status = %d, want %d body=%s", assetRR.Code, http.StatusOK, assetRR.Body.String())
-	}
-	if !strings.Contains(assetRR.Body.String(), "panel") {
-		t.Fatalf("asset body missing content: %s", assetRR.Body.String())
-	}
 }
 
 func TestAmpProviderModelRoutes(t *testing.T) {
@@ -364,7 +263,7 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 			DisplayName:   "Custom Codex Model",
 			Description:   "Custom model from registry",
 			ContextLength: 123456,
-			Thinking:      &registry.ThinkingSupport{Levels: []string{"low", "medium"}},
+			Thinking:      &registry.ThinkingSupport{Levels: []string{"none", "minimal", "low", "medium", "unsupported", "high", "xhigh"}},
 		},
 		{ID: "grok-imagine-image-quality", Object: "model", OwnedBy: "xai", Type: "openai"},
 		{ID: "gpt-image-2", Object: "model", OwnedBy: "openai", Type: "openai"},
@@ -435,6 +334,7 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got, _ := custom["context_window"].(float64); got != 123456 {
 		t.Fatalf("custom context_window = %v, want 123456", custom["context_window"])
 	}
+	assertCodexSupportedReasoningLevels(t, custom, []string{"none", "low", "medium", "high", "xhigh"})
 	if custom["base_instructions"] != gpt55["base_instructions"] {
 		t.Fatal("expected custom model to use gpt-5.5 base_instructions fallback")
 	}
@@ -473,6 +373,27 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	for slug, found := range hiddenModels {
 		if !found {
 			t.Fatalf("expected hidden model %s in codex catalog", slug)
+		}
+	}
+}
+
+func assertCodexSupportedReasoningLevels(t *testing.T, model map[string]any, want []string) {
+	t.Helper()
+
+	rawLevels, ok := model["supported_reasoning_levels"].([]any)
+	if !ok {
+		t.Fatalf("expected supported_reasoning_levels, got %#v", model["supported_reasoning_levels"])
+	}
+	if len(rawLevels) != len(want) {
+		t.Fatalf("supported_reasoning_levels length = %d, want %d: %#v", len(rawLevels), len(want), rawLevels)
+	}
+	for index, rawLevel := range rawLevels {
+		levelEntry, ok := rawLevel.(map[string]any)
+		if !ok {
+			t.Fatalf("supported_reasoning_levels[%d] = %#v, want object", index, rawLevel)
+		}
+		if got, _ := levelEntry["effort"].(string); got != want[index] {
+			t.Fatalf("supported_reasoning_levels[%d].effort = %q, want %q", index, got, want[index])
 		}
 	}
 }

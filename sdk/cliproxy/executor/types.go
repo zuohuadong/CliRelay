@@ -44,6 +44,9 @@ const RouteFallbackMetadataKey = "route_fallback"
 // DisableCooldownWaitMetadataKey skips manager-level cooldown waiting for latency-sensitive requests.
 const DisableCooldownWaitMetadataKey = "disable_cooldown_wait"
 
+// ReasoningEffortMetadataKey stores the client-requested reasoning effort for usage logs.
+const ReasoningEffortMetadataKey = "reasoning_effort"
+
 const (
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"

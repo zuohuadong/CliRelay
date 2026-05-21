@@ -280,6 +280,11 @@ request-log-storage:
 #       tool-name: "image_analysis"
 #       timeout-seconds: 60
 
+# How long (in seconds) usage queue items are retained in memory for the Management API.
+# The local Redis RESP usage output is disabled.
+# Default: 60. Max: 3600.
+redis-usage-queue-retention-seconds: 60
+
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 proxy-url: ""
 
@@ -483,16 +488,6 @@ streaming:
 #     models: # The models supported by the provider.
 #       - name: "moonshotai/kimi-k2:free" # The actual model name.
 #         alias: "kimi-k2" # The alias used in the API.
-#   - name: "bigmodel-coding"
-#     base-url: "https://open.bigmodel.cn/api/coding/paas/v4"
-#     identity-fingerprint: "codex"
-#     headers:
-#       Originator: "codex-tui"
-#       User-Agent: "codex-tui/0.124.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"
-#       Version: "0.124.0"
-#     models:
-#       - name: "glm-5.1"
-#         alias: "gpt-5.3-codex"
 
 # Vertex API keys (Vertex-compatible endpoints, use API key + base URL)
 # vertex-api-key:

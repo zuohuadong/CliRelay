@@ -50,7 +50,7 @@ func normalizeOpenAIResponsesStreamErrorCode(status int, code string, message st
 		strings.Contains(lowerMessage, "context_length") ||
 		strings.Contains(lowerMessage, "maximum context") ||
 		strings.Contains(lowerMessage, "too many tokens"):
-		return "context_length_exceeded"
+		return "context_too_large"
 	case strings.Contains(lowerMessage, "invalid signature in thinking block"):
 		return "thinking_signature_invalid"
 	case strings.Contains(lowerCode, "previous_response_not_found") ||
@@ -71,7 +71,7 @@ func NormalizeOpenAIResponsesStreamErrorStatus(status int, code string, message 
 	if status <= 0 {
 		return http.StatusInternalServerError
 	}
-	if normalizeOpenAIResponsesStreamErrorCode(status, code, message) == "context_length_exceeded" && status == http.StatusBadRequest {
+	if normalizeOpenAIResponsesStreamErrorCode(status, code, message) == "context_too_large" && status == http.StatusBadRequest {
 		return http.StatusRequestEntityTooLarge
 	}
 	return status

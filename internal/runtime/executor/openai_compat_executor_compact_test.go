@@ -132,6 +132,70 @@ func TestOpenAICompatExecutorDoesNotInjectBigModelCodingMCPToolsByDefault(t *tes
 	}
 }
 
+func TestBigModelCodingExecutorNormalizesThinkingAndToolParallelism(t *testing.T) {
+	executor := NewBigModelCodingExecutor(&config.Config{})
+	payload := []byte(`{
+		"model":"glm-5.1",
+		"messages":[{"role":"user","content":"hi"}],
+		"reasoning":{"effort":"high"},
+		"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]
+	}`)
+
+	out, err := executor.normalizeBigModelCodingPayload(payload, "glm-5.1")
+	if err != nil {
+		t.Fatalf("normalizeBigModelCodingPayload error: %v", err)
+	}
+	if got := gjson.GetBytes(out, "enable_thinking").Bool(); !got {
+		t.Fatalf("enable_thinking = false, want true: %s", out)
+	}
+	if got := int(gjson.GetBytes(out, "thinking_budget").Int()); got != 24576 {
+		t.Fatalf("thinking_budget = %d, want 24576: %s", got, out)
+	}
+	if got := gjson.GetBytes(out, "parallel_tool_calls").Bool(); !got {
+		t.Fatalf("parallel_tool_calls = false, want true: %s", out)
+	}
+	if gjson.GetBytes(out, "reasoning").Exists() || gjson.GetBytes(out, "reasoning_effort").Exists() {
+		t.Fatalf("OpenAI/Codex thinking fields should be removed: %s", out)
+	}
+}
+
+func TestBigModelCodingExecutorDisablesThinkingFromCodexNone(t *testing.T) {
+	executor := NewBigModelCodingExecutor(&config.Config{})
+	payload := []byte(`{
+		"model":"glm-5.1",
+		"messages":[{"role":"user","content":"hi"}],
+		"thinking":{"type":"disabled","budget_tokens":8192},
+		"reasoning_effort":"high"
+	}`)
+
+	out, err := executor.normalizeBigModelCodingPayload(payload, "glm-5.1")
+	if err != nil {
+		t.Fatalf("normalizeBigModelCodingPayload error: %v", err)
+	}
+	if got := gjson.GetBytes(out, "enable_thinking").Bool(); got {
+		t.Fatalf("enable_thinking = true, want false: %s", out)
+	}
+	if gjson.GetBytes(out, "thinking").Exists() || gjson.GetBytes(out, "reasoning_effort").Exists() {
+		t.Fatalf("source thinking fields should be removed: %s", out)
+	}
+	if gjson.GetBytes(out, "thinking_budget").Exists() {
+		t.Fatalf("thinking_budget should not be set when thinking is disabled: %s", out)
+	}
+}
+
+func TestBigModelCodingExecutorLeavesThinkingDefaultWhenUnset(t *testing.T) {
+	executor := NewBigModelCodingExecutor(&config.Config{})
+	payload := []byte(`{"model":"glm-5.1","messages":[{"role":"user","content":"hi"}]}`)
+
+	out, err := executor.normalizeBigModelCodingPayload(payload, "glm-5.1")
+	if err != nil {
+		t.Fatalf("normalizeBigModelCodingPayload error: %v", err)
+	}
+	if gjson.GetBytes(out, "enable_thinking").Exists() {
+		t.Fatalf("enable_thinking should not be forced when unset: %s", out)
+	}
+}
+
 func TestRedactSensitiveJSONForLogMasksNestedMCPHeaders(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"mcp","mcp":{"headers":{"Authorization":"Bearer sk-secret-token"}}}],"api_key":"sk-other-secret"}`)
 

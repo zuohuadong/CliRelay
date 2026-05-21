@@ -19,6 +19,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -102,6 +103,10 @@ func (e *BigModelCodingExecutor) Execute(ctx context.Context, auth *cliproxyauth
 			}
 		}
 		translated, err = e.normalizeBigModelTools(translated, baseURL)
+		if err != nil {
+			return resp, err
+		}
+		translated, err = e.normalizeBigModelCodingPayload(translated, baseModel)
 		if err != nil {
 			return resp, err
 		}
@@ -229,6 +234,10 @@ func (e *BigModelCodingExecutor) ExecuteStream(ctx context.Context, auth *clipro
 		return nil, err
 	}
 	translated, err = e.normalizeBigModelTools(translated, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	translated, err = e.normalizeBigModelCodingPayload(translated, baseModel)
 	if err != nil {
 		return nil, err
 	}
@@ -411,6 +420,104 @@ func (e *BigModelCodingExecutor) injectOfficialMCPTools(payload []byte, model, a
 func (e *BigModelCodingExecutor) isGLM51(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
 	return model == "glm-5.1"
+}
+
+func (e *BigModelCodingExecutor) normalizeBigModelCodingPayload(payload []byte, model string) ([]byte, error) {
+	if !e.isGLM51(model) {
+		return payload, nil
+	}
+	if len(payload) == 0 || !json.Valid(payload) {
+		return payload, nil
+	}
+
+	detected := false
+	enabled := false
+	if v := gjson.GetBytes(payload, "enable_thinking"); v.Exists() {
+		detected = true
+		enabled = v.Bool()
+	}
+	if v := gjson.GetBytes(payload, "thinking.type"); v.Exists() {
+		detected = true
+		if strings.EqualFold(strings.TrimSpace(v.String()), "disabled") {
+			payload, _ = sjson.SetBytes(payload, "enable_thinking", false)
+			payload, _ = sjson.DeleteBytes(payload, "thinking")
+			payload, _ = sjson.DeleteBytes(payload, "reasoning")
+			payload, _ = sjson.DeleteBytes(payload, "reasoning_effort")
+			return e.normalizeBigModelToolParallelism(payload), nil
+		}
+		if strings.EqualFold(strings.TrimSpace(v.String()), "enabled") {
+			enabled = true
+		}
+	}
+
+	if reasoningEffort := gjson.GetBytes(payload, "reasoning_effort"); reasoningEffort.Exists() {
+		detected = true
+		level := strings.ToLower(strings.TrimSpace(reasoningEffort.String()))
+		switch level {
+		case "", "none":
+			payload, _ = sjson.SetBytes(payload, "enable_thinking", false)
+			payload, _ = sjson.DeleteBytes(payload, "thinking")
+			payload, _ = sjson.DeleteBytes(payload, "reasoning")
+			payload, _ = sjson.DeleteBytes(payload, "reasoning_effort")
+			return e.normalizeBigModelToolParallelism(payload), nil
+		default:
+			enabled = true
+			if budget, ok := thinking.ConvertLevelToBudget(level); ok && budget > 0 {
+				payload, _ = sjson.SetBytes(payload, "thinking_budget", budget)
+			}
+		}
+	}
+
+	if reasoningEffort := gjson.GetBytes(payload, "reasoning.effort"); reasoningEffort.Exists() {
+		detected = true
+		level := strings.ToLower(strings.TrimSpace(reasoningEffort.String()))
+		switch level {
+		case "", "none":
+			payload, _ = sjson.SetBytes(payload, "enable_thinking", false)
+			payload, _ = sjson.DeleteBytes(payload, "thinking")
+			payload, _ = sjson.DeleteBytes(payload, "reasoning")
+			payload, _ = sjson.DeleteBytes(payload, "reasoning_effort")
+			return e.normalizeBigModelToolParallelism(payload), nil
+		default:
+			enabled = true
+			if budget, ok := thinking.ConvertLevelToBudget(level); ok && budget > 0 {
+				payload, _ = sjson.SetBytes(payload, "thinking_budget", budget)
+			}
+		}
+	}
+
+	if thinkingType := gjson.GetBytes(payload, "thinking.type"); thinkingType.Exists() {
+		detected = true
+		if strings.EqualFold(strings.TrimSpace(thinkingType.String()), "enabled") {
+			enabled = true
+		}
+		if budget := gjson.GetBytes(payload, "thinking.budget_tokens"); budget.Exists() {
+			detected = true
+			budgetValue := int(budget.Int())
+			if budgetValue > 0 {
+				enabled = true
+				payload, _ = sjson.SetBytes(payload, "thinking_budget", budgetValue)
+			}
+		}
+	}
+
+	if !detected {
+		return e.normalizeBigModelToolParallelism(payload), nil
+	}
+
+	payload, _ = sjson.SetBytes(payload, "enable_thinking", enabled)
+	payload, _ = sjson.DeleteBytes(payload, "thinking")
+	payload, _ = sjson.DeleteBytes(payload, "reasoning")
+	payload, _ = sjson.DeleteBytes(payload, "reasoning_effort")
+	return e.normalizeBigModelToolParallelism(payload), nil
+}
+
+func (e *BigModelCodingExecutor) normalizeBigModelToolParallelism(payload []byte) []byte {
+	tools := gjson.GetBytes(payload, "tools")
+	if tools.IsArray() && len(tools.Array()) > 0 {
+		payload, _ = sjson.SetBytes(payload, "parallel_tool_calls", true)
+	}
+	return payload
 }
 
 func hasMCPServerTool(tools []any, label, serverURL string) bool {

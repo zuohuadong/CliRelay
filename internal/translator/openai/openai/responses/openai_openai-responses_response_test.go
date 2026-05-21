@@ -138,6 +138,43 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ResponseCompleted
 	}
 }
 
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_CompletedOnDoneWithoutFinishReason(t *testing.T) {
+	t.Parallel()
+
+	request := []byte(`{"model":"gpt-5.3-codex"}`)
+	in := []string{
+		`data: {"id":"chatcmpl_no_finish","object":"chat.completion.chunk","created":1773896263,"model":"glm-5.1","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_no_finish","object":"chat.completion.chunk","created":1773896263,"model":"glm-5.1","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+		`data: [DONE]`,
+	}
+
+	var param any
+	var completedData gjson.Result
+	completedCount := 0
+	for i, line := range in {
+		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "glm-5.1", request, request, []byte(line), &param) {
+			event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+			if event != "response.completed" {
+				continue
+			}
+			if i != 2 {
+				t.Fatalf("response.completed emitted before terminal [DONE] at input index %d", i)
+			}
+			completedCount++
+			completedData = data
+		}
+	}
+	if completedCount != 1 {
+		t.Fatalf("expected exactly 1 response.completed event, got %d", completedCount)
+	}
+	if got := completedData.Get("response.output.0.content.0.text").String(); got != "hello" {
+		t.Fatalf("completed output text = %q, want hello; payload=%s", got, completedData.Raw)
+	}
+	if got := completedData.Get("response.usage.total_tokens").Int(); got != 5 {
+		t.Fatalf("completed total_tokens = %d, want 5; payload=%s", got, completedData.Raw)
+	}
+}
+
 func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_MultipleToolCallsRemainSeparate(t *testing.T) {
 	in := []string{
 		`data: {"id":"resp_test","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"read","arguments":""}}]},"finish_reason":null}]}`,

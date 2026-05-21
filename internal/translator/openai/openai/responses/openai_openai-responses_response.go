@@ -227,7 +227,10 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		return [][]byte{}
 	}
 	if bytes.Equal(rawJSON, []byte("[DONE]")) {
-		if st.CompletionPending && !st.CompletedEmitted {
+		// Some OpenAI-compatible providers close with a usage-only chunk or a
+		// bare [DONE] marker and never send finish_reason. The downstream
+		// Responses/WebSocket protocol still requires response.completed.
+		if (st.CompletionPending || st.Started) && !st.CompletedEmitted {
 			st.CompletedEmitted = true
 			return [][]byte{buildResponsesCompletedEvent(st, requestRawJSON, func() int { st.Seq++; return st.Seq })}
 		}

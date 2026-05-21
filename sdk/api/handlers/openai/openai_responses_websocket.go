@@ -1137,6 +1137,11 @@ func writeResponsesWebsocketError(conn *websocket.Conn, wsTimelineLog *strings.B
 		}
 	}
 
+	if handlers.IsOpenAIResponsesContextWindowError(status, errText) {
+		payload := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
+		return payload, writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now())
+	}
+
 	body := handlers.BuildErrorResponseBody(status, errText)
 	payload := []byte(`{}`)
 	var errSet error

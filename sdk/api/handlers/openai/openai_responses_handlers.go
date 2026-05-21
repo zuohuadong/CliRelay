@@ -507,6 +507,20 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 				errChan = nil
 				continue
 			}
+			status, errText := responsesErrorStatusAndText(errMsg)
+			if handlers.IsOpenAIResponsesContextWindowError(status, errText) {
+				setSSEHeaders()
+				handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+				chunk := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
+				_, _ = fmt.Fprintf(c.Writer, "event: response.failed\ndata: %s\n\n", string(chunk))
+				flusher.Flush()
+				if errMsg != nil {
+					cliCancel(errMsg.Error)
+				} else {
+					cliCancel(nil)
+				}
+				return
+			}
 			// Upstream failed immediately. Return proper error status and JSON.
 			h.WriteErrorResponse(c, errMsg)
 			if errMsg != nil {
@@ -554,13 +568,11 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			if errMsg == nil {
 				return
 			}
-			status := http.StatusInternalServerError
-			if errMsg.StatusCode > 0 {
-				status = errMsg.StatusCode
-			}
-			errText := http.StatusText(status)
-			if errMsg.Error != nil && errMsg.Error.Error() != "" {
-				errText = errMsg.Error.Error()
+			status, errText := responsesErrorStatusAndText(errMsg)
+			if handlers.IsOpenAIResponsesContextWindowError(status, errText) {
+				chunk := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
+				_, _ = fmt.Fprintf(c.Writer, "\nevent: response.failed\ndata: %s\n\n", string(chunk))
+				return
 			}
 			chunk := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
 			_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", string(chunk))
@@ -570,4 +582,16 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			_, _ = c.Writer.Write([]byte("\n"))
 		},
 	})
+}
+
+func responsesErrorStatusAndText(errMsg *interfaces.ErrorMessage) (int, string) {
+	status := http.StatusInternalServerError
+	if errMsg != nil && errMsg.StatusCode > 0 {
+		status = errMsg.StatusCode
+	}
+	errText := http.StatusText(status)
+	if errMsg != nil && errMsg.Error != nil && errMsg.Error.Error() != "" {
+		errText = errMsg.Error.Error()
+	}
+	return status, errText
 }

@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-21 15:39:06 +0800] [CliRelay] [done] Rechecked current Codex CLI source and restored response.failed/context_length_exceeded for Responses streaming and websocket context-window errors so Codex can mark context full and compact on the next turn
 [2026-05-21 15:20:55 +0800] [CliRelay] [done] Re-aligned Responses HTTP immediate stream errors and websocket error payloads with latest CLIProxyAPI upstream shapes for OpenAI-compatible clients
 [2026-05-21 15:08:14 +0800] [CliRelay] [done] Restored CLIProxyAPI-style websocket top-level error events for non-context failures to avoid synthetic resp_error completed IDs causing previous_response_not_found loops
 [2026-05-21 14:57:07 +0800] [CliRelay] [done] Removed downstream raw-close subscription on Codex upstream websocket disconnect so response.failed/response.completed can be delivered instead of resetting the client connection

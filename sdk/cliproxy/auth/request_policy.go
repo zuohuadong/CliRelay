@@ -69,8 +69,7 @@ func (e *requestPolicyLimitError) Error() string {
 
 func (e *requestPolicyLimitError) StatusCode() int {
 	if e != nil && e.maxRequestBytes > 0 && e.requestBytes > e.maxRequestBytes {
-		// Codex clients key off context_length_exceeded as a 400-class invalid request.
-		return http.StatusBadRequest
+		return http.StatusRequestEntityTooLarge
 	}
 	return http.StatusRequestEntityTooLarge
 }

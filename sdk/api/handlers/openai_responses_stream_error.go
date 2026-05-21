@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type openAIResponsesStreamErrorChunk struct {
@@ -19,6 +20,13 @@ type openAIResponsesStreamErrorChunk struct {
 		Message string `json:"message"`
 	} `json:"error"`
 	Headers map[string]string `json:"headers"`
+}
+
+type openAIResponsesParsedStreamError struct {
+	status  int
+	code    string
+	errType string
+	message string
 }
 
 func openAIResponsesStreamErrorCode(status int) string {
@@ -97,18 +105,9 @@ func openAIResponsesStreamErrorType(status int, code string) string {
 	}
 }
 
-// BuildOpenAIResponsesStreamErrorChunk builds an OpenAI Responses streaming error chunk.
-//
-// Important: OpenAI's HTTP error bodies are shaped like {"error":{...}}; those are valid for
-// non-streaming responses, but streaming clients validate SSE `data:` payloads against a union
-// of chunks that requires a top-level `type` field. Codex clients also key off the nested
-// error object and status when deciding whether to trigger automatic context compaction.
-func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNumber int) []byte {
+func parseOpenAIResponsesStreamError(status int, errText string) openAIResponsesParsedStreamError {
 	if status <= 0 {
 		status = http.StatusInternalServerError
-	}
-	if sequenceNumber < 0 {
-		sequenceNumber = 0
 	}
 
 	message := strings.TrimSpace(errText)
@@ -133,9 +132,6 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 					} else {
 						code = strings.TrimSpace(fmt.Sprint(v))
 					}
-				}
-				if v, ok := payload["sequence_number"].(float64); ok && sequenceNumber == 0 {
-					sequenceNumber = int(v)
 				}
 				if v, ok := payload["status"].(float64); ok && v > 0 {
 					status = int(v)
@@ -172,19 +168,94 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 		errType = openAIResponsesStreamErrorType(status, code)
 	}
 
+	return openAIResponsesParsedStreamError{
+		status:  status,
+		code:    code,
+		errType: errType,
+		message: message,
+	}
+}
+
+func IsOpenAIResponsesContextWindowError(status int, errText string) bool {
+	return parseOpenAIResponsesStreamError(status, errText).code == "context_too_large"
+}
+
+// BuildOpenAIResponsesResponseFailedChunk builds an official Responses API
+// response.failed event payload. Current Codex CLI only treats a nested
+// response.error.code of context_length_exceeded as a context-window failure.
+func BuildOpenAIResponsesResponseFailedChunk(status int, errText string, sequenceNumber int) []byte {
+	if sequenceNumber < 0 {
+		sequenceNumber = 0
+	}
+	parsed := parseOpenAIResponsesStreamError(status, errText)
+	code := parsed.code
+	if code == "context_too_large" {
+		code = "context_length_exceeded"
+	}
+	if strings.TrimSpace(code) == "" {
+		code = "unknown_error"
+	}
+	errType := parsed.errType
+	if strings.TrimSpace(errType) == "" {
+		errType = openAIResponsesStreamErrorType(parsed.status, code)
+	}
+	message := strings.TrimSpace(parsed.message)
+	if message == "" {
+		message = http.StatusText(parsed.status)
+	}
+
+	payload := map[string]any{
+		"type":            "response.failed",
+		"sequence_number": sequenceNumber,
+		"response": map[string]any{
+			"id":         fmt.Sprintf("resp_failed_%d", time.Now().UnixNano()),
+			"object":     "response",
+			"created_at": time.Now().Unix(),
+			"status":     "failed",
+			"background": false,
+			"error": map[string]any{
+				"code":    code,
+				"type":    errType,
+				"message": message,
+			},
+			"usage":    nil,
+			"user":     nil,
+			"metadata": map[string]any{},
+		},
+	}
+	data, err := json.Marshal(payload)
+	if err == nil && len(data) > 0 {
+		return data
+	}
+	return []byte(`{"type":"response.failed","sequence_number":0,"response":{"id":"resp_failed","object":"response","status":"failed","background":false,"error":{"code":"context_length_exceeded","type":"invalid_request_error","message":"context window exceeded"},"usage":null,"user":null,"metadata":{}}}`)
+}
+
+// BuildOpenAIResponsesStreamErrorChunk builds an OpenAI Responses streaming error chunk.
+//
+// Important: OpenAI's HTTP error bodies are shaped like {"error":{...}}; those are valid for
+// non-streaming responses, but streaming clients validate SSE `data:` payloads against a union
+// of chunks that requires a top-level `type` field. Use response.failed with
+// context_length_exceeded for Codex context-window compaction.
+func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNumber int) []byte {
+	if sequenceNumber < 0 {
+		sequenceNumber = 0
+	}
+
+	parsed := parseOpenAIResponsesStreamError(status, errText)
+
 	chunk := openAIResponsesStreamErrorChunk{
 		Type:           "error",
-		Code:           code,
-		Message:        message,
+		Code:           parsed.code,
+		Message:        parsed.message,
 		SequenceNumber: sequenceNumber,
-		Status:         status,
+		Status:         parsed.status,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},
 	}
-	chunk.Error.Code = code
-	chunk.Error.Type = errType
-	chunk.Error.Message = message
+	chunk.Error.Code = parsed.code
+	chunk.Error.Type = parsed.errType
+	chunk.Error.Message = parsed.message
 
 	data, err := json.Marshal(chunk)
 	if err == nil {
@@ -195,7 +266,7 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 	fallback := openAIResponsesStreamErrorChunk{
 		Type:           "error",
 		Code:           "internal_server_error",
-		Message:        message,
+		Message:        parsed.message,
 		SequenceNumber: sequenceNumber,
 		Status:         http.StatusInternalServerError,
 		Headers: map[string]string{
@@ -204,7 +275,7 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 	}
 	fallback.Error.Code = "internal_server_error"
 	fallback.Error.Type = "server_error"
-	fallback.Error.Message = message
+	fallback.Error.Message = parsed.message
 	data, _ = json.Marshal(fallback)
 	if len(data) > 0 {
 		return data

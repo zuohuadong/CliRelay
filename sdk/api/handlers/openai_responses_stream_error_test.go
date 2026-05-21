@@ -104,3 +104,35 @@ func TestBuildOpenAIResponsesStreamErrorChunkNormalizesContextTooLarge(t *testin
 		t.Fatalf("error.type = %v, want %q", errorPayload["type"], "invalid_request_error")
 	}
 }
+
+func TestBuildOpenAIResponsesResponseFailedChunkUsesCodexContextCode(t *testing.T) {
+	chunk := BuildOpenAIResponsesResponseFailedChunk(
+		http.StatusRequestEntityTooLarge,
+		`{"error":{"message":"request policy glm-5.1-large-request-guard blocked upstream model glm-5.1 via provider bigmodel-coding: request_bytes 706275 exceeds max-request-bytes 600000","type":"invalid_request_error","code":"context_length_exceeded"}}`,
+		0,
+	)
+	var payload map[string]any
+	if err := json.Unmarshal(chunk, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload["type"] != "response.failed" {
+		t.Fatalf("type = %v, want %q", payload["type"], "response.failed")
+	}
+	response, ok := payload["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing response object: %#v", payload["response"])
+	}
+	if response["status"] != "failed" {
+		t.Fatalf("response.status = %v, want failed", response["status"])
+	}
+	errorPayload, ok := response["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing response.error object: %#v", response["error"])
+	}
+	if errorPayload["code"] != "context_length_exceeded" {
+		t.Fatalf("response.error.code = %v, want context_length_exceeded", errorPayload["code"])
+	}
+	if errorPayload["type"] != "invalid_request_error" {
+		t.Fatalf("response.error.type = %v, want invalid_request_error", errorPayload["type"])
+	}
+}

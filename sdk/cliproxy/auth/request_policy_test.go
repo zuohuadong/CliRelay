@@ -71,7 +71,7 @@ type requestPolicyStatusError struct {
 func (e requestPolicyStatusError) Error() string   { return e.msg }
 func (e requestPolicyStatusError) StatusCode() int { return e.status }
 
-func TestRequestPolicyLimitError_RequestTooLargeUsesContextLengthExceededAnd400(t *testing.T) {
+func TestRequestPolicyLimitError_RequestTooLargeUsesContextLengthExceededAnd413(t *testing.T) {
 	err := &requestPolicyLimitError{
 		policy:           "glm-limit",
 		requestedModel:   "gpt-5.3-codex",
@@ -83,8 +83,8 @@ func TestRequestPolicyLimitError_RequestTooLargeUsesContextLengthExceededAnd400(
 		action:           requestPolicyActionReject,
 	}
 
-	if got := err.StatusCode(); got != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", got, http.StatusBadRequest)
+	if got := err.StatusCode(); got != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", got, http.StatusRequestEntityTooLarge)
 	}
 
 	var payload struct {
@@ -335,8 +335,8 @@ func TestManagerExecute_RequestPolicyRejectsWhenNoFallback(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if statusErr, ok := err.(interface{ StatusCode() int }); !ok || statusErr.StatusCode() != http.StatusBadRequest {
-		t.Fatalf("error status = %#v, want 400", err)
+	if statusErr, ok := err.(interface{ StatusCode() int }); !ok || statusErr.StatusCode() != http.StatusRequestEntityTooLarge {
+		t.Fatalf("error status = %#v, want 413", err)
 	}
 	if calls := bigmodel.Calls(); len(calls) != 0 {
 		t.Fatalf("bigmodel calls = %v, want none", calls)

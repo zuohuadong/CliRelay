@@ -127,6 +127,76 @@ func TestCodexExecutorExecuteStreamSurfacesTerminalStreamError(t *testing.T) {
 	assertCodexErrorCode(t, streamErr.Error(), "invalid_request_error", "context_too_large")
 }
 
+func TestCodexExecutorExecuteSurfacesResponseFailedRateLimitError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.5"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.failed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"Rate limit reached."}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err == nil {
+		t.Fatal("expected terminal stream error, got nil")
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusTooManyRequests {
+		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusTooManyRequests, err)
+	}
+	assertCodexErrorCode(t, err.Error(), "rate_limit_error", "rate_limit_exceeded")
+	if !strings.Contains(err.Error(), "Rate limit reached") {
+		t.Fatalf("error message missing upstream rate limit text: %v", err)
+	}
+}
+
+func TestCodexExecutorExecuteTreatsResponseIncompleteAsTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.5"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.incomplete\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.incomplete","response":{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got := gjson.GetBytes(resp.Payload, "status").String(); got != "incomplete" {
+		t.Fatalf("status = %q, want incomplete; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "incomplete_details.reason").String(); got != "max_output_tokens" {
+		t.Fatalf("incomplete_details.reason = %q, want max_output_tokens; payload=%s", got, resp.Payload)
+	}
+}
+
 func TestCodexTerminalStreamContextLengthErrFromResponseFailed(t *testing.T) {
 	err, ok := codexTerminalStreamContextLengthErr([]byte(`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again."}}}`))
 	if !ok {

@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-21 08:59:25 +0800] [CliRelay] [done] Fixed Codex executor terminal event handling so glm-5.1/Codex-style streams stop treating response.failed and response.incomplete as disconnected-before-completion
 [2026-05-21 08:51:24 +0800] [CliRelay] [done] Fixed Codex-compatible Responses streaming error chunks so context_too_large carries nested error/status metadata for auto-compaction
 [2026-05-21 07:55:20 +0800] [CliRelay] [done] Fixed Responses WebSocket error termination for gpt-5.3-codex -> bigmodel-coding/glm-5.1 and enabled codex identity fingerprint in bigmodel-coding config
 [2026-05-21 00:23:13 +0800] [CliRelay] [done] Repaired Redis protocol integration tests after PR #119; full go test and required server build now pass

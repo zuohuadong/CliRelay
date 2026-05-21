@@ -149,3 +149,34 @@ func TestConvertCodexResponseToOpenAI_NonStreamImageGenerationCallAddsMessageIma
 		t.Fatalf("expected image url %q, got %q; chunk=%s", "data:image/png;base64,aGVsbG8=", gotURL, string(out))
 	}
 }
+
+func TestConvertCodexResponseToOpenAI_StreamIncompleteMapsToLengthFinishReason(t *testing.T) {
+	ctx := context.Background()
+	var param any
+
+	out := ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}`), &param)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(out))
+	}
+
+	if got := gjson.GetBytes(out[0], "choices.0.finish_reason").String(); got != "length" {
+		t.Fatalf("finish_reason = %q, want length; chunk=%s", got, string(out[0]))
+	}
+	if got := gjson.GetBytes(out[0], "choices.0.native_finish_reason").String(); got != "max_output_tokens" {
+		t.Fatalf("native_finish_reason = %q, want max_output_tokens; chunk=%s", got, string(out[0]))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_NonStreamIncompleteMapsToLengthFinishReason(t *testing.T) {
+	ctx := context.Background()
+
+	raw := []byte(`{"type":"response.incomplete","response":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.4","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}]}}`)
+	out := ConvertCodexResponseToOpenAINonStream(ctx, "gpt-5.4", nil, nil, raw, nil)
+
+	if got := gjson.GetBytes(out, "choices.0.finish_reason").String(); got != "length" {
+		t.Fatalf("finish_reason = %q, want length; payload=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "choices.0.native_finish_reason").String(); got != "max_output_tokens" {
+		t.Fatalf("native_finish_reason = %q, want max_output_tokens; payload=%s", got, string(out))
+	}
+}

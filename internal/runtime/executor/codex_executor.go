@@ -127,6 +127,33 @@ func codexTerminalStreamContextLengthErr(eventData []byte) (statusErr, bool) {
 	return newCodexStatusErr(http.StatusBadRequest, body), true
 }
 
+func codexTerminalStreamErr(eventData []byte) (statusErr, bool) {
+	if err, ok := codexTerminalStreamContextLengthErr(eventData); ok {
+		return err, true
+	}
+
+	eventType := gjson.GetBytes(eventData, "type").String()
+	var body []byte
+	switch eventType {
+	case "error":
+		body = codexTerminalErrorBody(eventData, "error")
+		if len(body) == 0 {
+			body = codexTerminalTopLevelErrorBody(eventData)
+		}
+	case "response.failed":
+		body = codexTerminalErrorBody(eventData, "response.error")
+		if len(body) == 0 {
+			body = codexTerminalErrorBody(eventData, "error")
+		}
+	default:
+		return statusErr{}, false
+	}
+	if len(body) == 0 {
+		return statusErr{}, false
+	}
+	return newCodexStatusErr(codexTerminalErrorStatus(eventData, body), body), true
+}
+
 func codexTerminalErrorBody(eventData []byte, path string) []byte {
 	errorResult := gjson.GetBytes(eventData, path)
 	if !errorResult.Exists() {
@@ -154,6 +181,29 @@ func codexTerminalErrorBody(eventData []byte, path string) []byte {
 		}
 	}
 	return body
+}
+
+func codexTerminalErrorStatus(eventData []byte, body []byte) int {
+	if status := int(gjson.GetBytes(eventData, "status").Int()); status > 0 {
+		return status
+	}
+
+	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
+	errorCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
+	errorMessage := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
+
+	switch {
+	case errorType == "authentication_error" || errorCode == "invalid_api_key" ||
+		strings.Contains(errorMessage, "invalid or expired token") || strings.Contains(errorMessage, "refresh_token_reused"):
+		return http.StatusUnauthorized
+	case errorType == "rate_limit_error" || errorType == "usage_limit_reached" ||
+		errorCode == "rate_limit_exceeded" || errorCode == "usage_limit_reached":
+		return http.StatusTooManyRequests
+	case errorType == "server_error":
+		return http.StatusBadGateway
+	default:
+		return http.StatusBadRequest
+	}
 }
 
 func codexTerminalTopLevelErrorBody(eventData []byte) []byte {
@@ -348,7 +398,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		eventData := bytes.TrimSpace(line[5:])
 		eventType := gjson.GetBytes(eventData, "type").String()
 
-		if streamErr, ok := codexTerminalStreamContextLengthErr(eventData); ok {
+		if streamErr, ok := codexTerminalStreamErr(eventData); ok {
 			err = streamErr
 			return resp, err
 		}
@@ -367,7 +417,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			continue
 		}
 
-		if eventType != "response.completed" && eventType != "response.done" {
+		if eventType != "response.completed" && eventType != "response.done" && eventType != "response.incomplete" {
 			continue
 		}
 
@@ -614,7 +664,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 			if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
-				if streamErr, ok := codexTerminalStreamContextLengthErr(data); ok {
+				if streamErr, ok := codexTerminalStreamErr(data); ok {
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
 					select {
@@ -627,7 +677,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				switch eventType {
 				case "response.output_item.done":
 					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
-				case "response.completed", "response.done":
+				case "response.completed", "response.done", "response.incomplete":
 					if eventType == "response.done" {
 						data, _ = sjson.SetRawBytes(data, "type", []byte(`"response.completed"`))
 					}

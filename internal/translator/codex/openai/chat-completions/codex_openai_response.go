@@ -160,13 +160,10 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 
 		template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.images.-1", imagePayload)
-	} else if dataType == "response.completed" {
-		finishReason := "stop"
-		if (*param).(*ConvertCliToOpenAIParams).FunctionCallIndex != -1 {
-			finishReason = "tool_calls"
-		}
+	} else if dataType == "response.completed" || dataType == "response.incomplete" {
+		finishReason, nativeFinishReason := codexOpenAIFinishReason(rootResult.Get("response"), (*param).(*ConvertCliToOpenAIParams).FunctionCallIndex != -1)
 		template, _ = sjson.SetBytes(template, "choices.0.finish_reason", finishReason)
-		template, _ = sjson.SetBytes(template, "choices.0.native_finish_reason", finishReason)
+		template, _ = sjson.SetBytes(template, "choices.0.native_finish_reason", nativeFinishReason)
 	} else if dataType == "response.output_item.added" {
 		itemResult := rootResult.Get("item")
 		if !itemResult.Exists() || itemResult.Get("type").String() != "function_call" {
@@ -315,8 +312,9 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 //   - []byte: An OpenAI-compatible JSON response containing all message content and metadata
 func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
 	rootResult := gjson.ParseBytes(rawJSON)
-	// Verify this is a response.completed event
-	if rootResult.Get("type").String() != "response.completed" {
+	// Verify this is a terminal response event.
+	typeStr := rootResult.Get("type").String()
+	if typeStr != "response.completed" && typeStr != "response.incomplete" {
 		return []byte{}
 	}
 
@@ -468,17 +466,40 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 	// Extract and set the finish reason based on status
 	if statusResult := responseResult.Get("status"); statusResult.Exists() {
 		status := statusResult.String()
-		if status == "completed" {
-			finishReason := "stop"
-			if len(toolCalls) > 0 {
-				finishReason = "tool_calls"
-			}
+		if status == "completed" || status == "incomplete" {
+			finishReason, nativeFinishReason := codexOpenAIFinishReason(responseResult, len(toolCalls) > 0)
 			template, _ = sjson.SetBytes(template, "choices.0.finish_reason", finishReason)
-			template, _ = sjson.SetBytes(template, "choices.0.native_finish_reason", finishReason)
+			template, _ = sjson.SetBytes(template, "choices.0.native_finish_reason", nativeFinishReason)
 		}
 	}
 
 	return template
+}
+
+func codexOpenAIFinishReason(responseResult gjson.Result, hasToolCalls bool) (string, string) {
+	if hasToolCalls {
+		return "tool_calls", "tool_calls"
+	}
+
+	reason := strings.TrimSpace(responseResult.Get("stop_reason").String())
+	if reason == "" {
+		reason = strings.TrimSpace(responseResult.Get("incomplete_details.reason").String())
+	}
+
+	switch reason {
+	case "", "stop", "completed", "end_turn":
+		return "stop", "stop"
+	case "max_tokens", "max_output_tokens":
+		return "length", reason
+	case "content_filter", "refusal":
+		return "content_filter", reason
+	case "tool_use", "tool_calls", "function_call":
+		return "tool_calls", reason
+	case "stop_sequence":
+		return "stop", reason
+	default:
+		return "stop", reason
+	}
 }
 
 // buildReverseMapFromOriginalOpenAI builds a map of shortened tool name -> original tool name

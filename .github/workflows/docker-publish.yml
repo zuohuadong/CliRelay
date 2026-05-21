@@ -12,11 +12,15 @@ env:
   IMAGE_NAME: zuohuadong/clirelay
 
 jobs:
-  build-and-push:
+  prepare:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+    outputs:
+      backend_short: ${{ steps.build_meta.outputs.backend_short }}
+      build_date: ${{ steps.build_date.outputs.date }}
+      date_tag: ${{ steps.build_date.outputs.date_tag }}
+      version: ${{ steps.build_meta.outputs.version }}
 
     steps:
       - name: Checkout backend
@@ -25,22 +29,36 @@ jobs:
       - name: Reject vendored panel assets
         run: ./scripts/ensure-no-vendored-panel-assets.sh
 
-      - name: Refresh models catalog
-        run: |
-          git fetch --depth 1 https://github.com/router-for-me/models.git main
-          git show FETCH_HEAD:models.json > internal/registry/models/models.json
-
       - name: Compute build metadata
         id: build_meta
         run: |
           set -euo pipefail
           ref_name="${GITHUB_REF_NAME:-main}"
           backend_short="$(git rev-parse --short HEAD)"
-          echo "VERSION=${ref_name}-${backend_short}" >> "$GITHUB_ENV"
+          echo "version=${ref_name}-${backend_short}" >> "$GITHUB_OUTPUT"
           echo "backend_short=${backend_short}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Get build date
+        id: build_date
+        run: |
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "date_tag=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+  build-amd64:
+    runs-on: ubuntu-latest
+    needs: prepare
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout backend
+        uses: actions/checkout@v4
+
+      - name: Refresh models catalog
+        run: |
+          git fetch --depth 1 https://github.com/router-for-me/models.git main
+          git show FETCH_HEAD:models.json > internal/registry/models/models.json
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -52,34 +70,105 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == 'main' }}
-            type=raw,value=main,enable=${{ github.ref_name == 'main' }}
-            type=raw,value=dev,enable=${{ github.ref_name == 'dev' }}
-            type=raw,value=${{ github.ref_name }}-${{ steps.build_meta.outputs.backend_short }}
-            type=sha,prefix=
-            type=raw,value={{date 'YYYYMMDD'}}
-
-      - name: Get build date
-        id: build_date
-        run: echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push
+      - name: Build and push amd64
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-${{ github.run_id }}-${{ github.run_attempt }}-amd64
           build-args: |
-            VERSION=${{ env.VERSION }}
+            VERSION=${{ needs.prepare.outputs.version }}
             COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ steps.build_date.outputs.date }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            BUILD_DATE=${{ needs.prepare.outputs.build_date }}
+          cache-from: type=gha,scope=amd64
+          cache-to: type=gha,mode=max,scope=amd64
+
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    needs: prepare
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout backend
+        uses: actions/checkout@v4
+
+      - name: Refresh models catalog
+        run: |
+          git fetch --depth 1 https://github.com/router-for-me/models.git main
+          git show FETCH_HEAD:models.json > internal/registry/models/models.json
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-${{ github.run_id }}-${{ github.run_attempt }}-arm64
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ needs.prepare.outputs.build_date }}
+          cache-from: type=gha,scope=arm64
+          cache-to: type=gha,mode=max,scope=arm64
+
+  publish-manifest:
+    runs-on: ubuntu-latest
+    needs:
+      - prepare
+      - build-amd64
+      - build-arm64
+    permissions:
+      packages: write
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-arch manifest
+        env:
+          BACKEND_SHORT: ${{ needs.prepare.outputs.backend_short }}
+          DATE_TAG: ${{ needs.prepare.outputs.date_tag }}
+        run: |
+          set -euo pipefail
+          image="${REGISTRY}/${IMAGE_NAME}"
+          source_amd64="${image}:build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-amd64"
+          source_arm64="${image}:build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-arm64"
+
+          tags=()
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            tags+=("${image}:latest" "${image}:main")
+          elif [ "${GITHUB_REF_NAME}" = "dev" ]; then
+            tags+=("${image}:dev")
+          fi
+          tags+=(
+            "${image}:${GITHUB_REF_NAME}-${BACKEND_SHORT}"
+            "${image}:${BACKEND_SHORT}"
+            "${image}:${DATE_TAG}"
+          )
+
+          args=()
+          for tag in "${tags[@]}"; do
+            args+=(--tag "${tag}")
+          done
+
+          docker buildx imagetools create "${args[@]}" "${source_amd64}" "${source_arm64}"

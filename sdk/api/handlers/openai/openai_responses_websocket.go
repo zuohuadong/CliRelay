@@ -60,13 +60,33 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	log.Infof("responses websocket: client connected id=%s remote=%s", passthroughSessionID, clientIP)
 
 	wsDone := make(chan struct{})
-
+	defer close(wsDone)
 	go keepResponsesWebsocketAlive(conn, wsDone, passthroughSessionID)
+
+	if h != nil && h.AuthManager != nil {
+		if exec, ok := h.AuthManager.Executor("codex"); ok && exec != nil {
+			type upstreamDisconnectSubscriber interface {
+				UpstreamDisconnectChan(sessionID string) <-chan error
+			}
+			if subscriber, ok := exec.(upstreamDisconnectSubscriber); ok && subscriber != nil {
+				disconnectCh := subscriber.UpstreamDisconnectChan(passthroughSessionID)
+				if disconnectCh != nil {
+					go func() {
+						select {
+						case <-wsDone:
+							return
+						case <-disconnectCh:
+							_ = conn.Close()
+						}
+					}()
+				}
+			}
+		}
+	}
 
 	var wsTerminateErr error
 	var wsTimelineLog strings.Builder
 	defer func() {
-		close(wsDone)
 		releaseResponsesWebsocketToolCaches(downstreamSessionKey)
 		if wsTerminateErr != nil {
 			appendWebsocketTimelineDisconnect(&wsTimelineLog, wsTerminateErr, time.Now())
@@ -240,13 +260,6 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				log.Warnf("responses websocket: forward failed id=%s error=%v", passthroughSessionID, errForward)
 				return
 			}
-			if shouldReplayResponsesWebsocketTranscript(forwardErrMsg) && replayAttempt == 0 {
-				log.Infof("responses websocket: retrying with full transcript id=%s reason=%s", passthroughSessionID, responsesWebsocketErrorCode(forwardErrMsg))
-				forceTranscriptReplayNextRequest = true
-				lastRequest = previousLastRequest
-				lastResponseOutput = previousLastResponseOutput
-				continue
-			}
 			if shouldReleaseResponsesWebsocketPinnedAuth(forwardErrMsg) {
 				pinnedAuthID = ""
 				forceTranscriptReplayNextRequest = true
@@ -256,26 +269,6 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			lastResponseOutput = completedOutput
 			break
-		}
-	}
-}
-
-func keepResponsesWebsocketAlive(conn *websocket.Conn, done <-chan struct{}, sessionID string) {
-	if conn == nil {
-		return
-	}
-	ticker := time.NewTicker(wsPingInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-done:
-			return
-		case <-ticker.C:
-			deadline := time.Now().Add(wsPingWriteTimeout)
-			if err := conn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
-				log.Debugf("responses websocket: keepalive ping failed id=%s error=%v", sessionID, err)
-				return
-			}
 		}
 	}
 }
@@ -1037,52 +1030,6 @@ func shouldReleaseResponsesWebsocketPinnedAuth(errMsg *interfaces.ErrorMessage) 
 	}
 }
 
-func shouldReplayResponsesWebsocketTranscript(errMsg *interfaces.ErrorMessage) bool {
-	if errMsg == nil {
-		return false
-	}
-	status := errMsg.StatusCode
-	if status <= 0 && errMsg.Error != nil {
-		if se, ok := errMsg.Error.(interface{ StatusCode() int }); ok && se != nil {
-			status = se.StatusCode()
-		}
-	}
-	if status != http.StatusBadRequest {
-		return false
-	}
-
-	text := responsesWebsocketErrorText(errMsg)
-	if !strings.Contains(text, "previous_response_id") {
-		return false
-	}
-	return strings.Contains(text, "previous_response_not_found") ||
-		strings.Contains(text, "not found") ||
-		strings.Contains(text, "invalid_id_prefix") ||
-		strings.Contains(text, "expected an id that begins with 'resp'")
-}
-
-func responsesWebsocketErrorCode(errMsg *interfaces.ErrorMessage) string {
-	if errMsg == nil {
-		return ""
-	}
-	text := responsesWebsocketErrorText(errMsg)
-	switch {
-	case strings.Contains(text, "previous_response_not_found"), strings.Contains(text, "not found"):
-		return "previous_response_not_found"
-	case strings.Contains(text, "invalid_id_prefix"):
-		return "invalid_id_prefix"
-	default:
-		return "previous_response_id"
-	}
-}
-
-func responsesWebsocketErrorText(errMsg *interfaces.ErrorMessage) string {
-	if errMsg == nil || errMsg.Error == nil {
-		return ""
-	}
-	return strings.ToLower(strings.TrimSpace(errMsg.Error.Error()))
-}
-
 func responseCompletedOutputFromPayload(payload []byte) []byte {
 	output := gjson.GetBytes(payload, "response.output")
 	if output.Exists() && output.IsArray() {
@@ -1137,12 +1084,11 @@ func writeResponsesWebsocketError(conn *websocket.Conn, wsTimelineLog *strings.B
 		}
 	}
 
+	body := handlers.BuildErrorResponseBody(status, errText)
 	if handlers.IsOpenAIResponsesContextWindowError(status, errText) {
 		payload := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
 		return payload, writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now())
 	}
-
-	body := handlers.BuildErrorResponseBody(status, errText)
 	payload := []byte(`{}`)
 	var errSet error
 	payload, errSet = sjson.SetBytes(payload, "type", wsEventTypeError)
@@ -1294,4 +1240,70 @@ func markAPIResponseTimestamp(c *gin.Context) {
 		return
 	}
 	c.Set("API_RESPONSE_TIMESTAMP", time.Now())
+}
+
+func keepResponsesWebsocketAlive(conn *websocket.Conn, done <-chan struct{}, sessionID string) {
+	if conn == nil {
+		return
+	}
+	ticker := time.NewTicker(wsPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			deadline := time.Now().Add(wsPingWriteTimeout)
+			if err := conn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
+				log.Debugf("responses websocket: keepalive ping failed id=%s error=%v", sessionID, err)
+				return
+			}
+		}
+	}
+}
+
+func shouldReplayResponsesWebsocketTranscript(errMsg *interfaces.ErrorMessage) bool {
+	if errMsg == nil {
+		return false
+	}
+	status := errMsg.StatusCode
+	if status <= 0 && errMsg.Error != nil {
+		if se, ok := errMsg.Error.(interface{ StatusCode() int }); ok && se != nil {
+			status = se.StatusCode()
+		}
+	}
+	if status != http.StatusBadRequest {
+		return false
+	}
+
+	text := responsesWebsocketErrorText(errMsg)
+	if !strings.Contains(text, "previous_response_id") {
+		return false
+	}
+	return strings.Contains(text, "previous_response_not_found") ||
+		strings.Contains(text, "not found") ||
+		strings.Contains(text, "invalid_id_prefix") ||
+		strings.Contains(text, "expected an id that begins with 'resp'")
+}
+
+func responsesWebsocketErrorCode(errMsg *interfaces.ErrorMessage) string {
+	if errMsg == nil {
+		return ""
+	}
+	text := responsesWebsocketErrorText(errMsg)
+	switch {
+	case strings.Contains(text, "previous_response_not_found"), strings.Contains(text, "not found"):
+		return "previous_response_not_found"
+	case strings.Contains(text, "invalid_id_prefix"):
+		return "invalid_id_prefix"
+	default:
+		return "previous_response_id"
+	}
+}
+
+func responsesWebsocketErrorText(errMsg *interfaces.ErrorMessage) string {
+	if errMsg == nil || errMsg.Error == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(errMsg.Error.Error()))
 }

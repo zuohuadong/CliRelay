@@ -154,6 +154,29 @@ func codexTerminalStreamErr(eventData []byte) (statusErr, bool) {
 	return newCodexStatusErr(codexTerminalErrorStatus(eventData, body), body), true
 }
 
+func codexTerminalErrorStatus(eventData []byte, body []byte) int {
+	if status := int(gjson.GetBytes(eventData, "status").Int()); status > 0 {
+		return status
+	}
+
+	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
+	errorCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
+	errorMessage := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
+
+	switch {
+	case errorType == "authentication_error" || errorCode == "invalid_api_key" ||
+		strings.Contains(errorMessage, "invalid or expired token") || strings.Contains(errorMessage, "refresh_token_reused"):
+		return http.StatusUnauthorized
+	case errorType == "rate_limit_error" || errorType == "usage_limit_reached" ||
+		errorCode == "rate_limit_exceeded" || errorCode == "usage_limit_reached":
+		return http.StatusTooManyRequests
+	case errorType == "server_error":
+		return http.StatusBadGateway
+	default:
+		return http.StatusBadRequest
+	}
+}
+
 func codexTerminalErrorBody(eventData []byte, path string) []byte {
 	errorResult := gjson.GetBytes(eventData, path)
 	if !errorResult.Exists() {
@@ -181,29 +204,6 @@ func codexTerminalErrorBody(eventData []byte, path string) []byte {
 		}
 	}
 	return body
-}
-
-func codexTerminalErrorStatus(eventData []byte, body []byte) int {
-	if status := int(gjson.GetBytes(eventData, "status").Int()); status > 0 {
-		return status
-	}
-
-	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
-	errorCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
-	errorMessage := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
-
-	switch {
-	case errorType == "authentication_error" || errorCode == "invalid_api_key" ||
-		strings.Contains(errorMessage, "invalid or expired token") || strings.Contains(errorMessage, "refresh_token_reused"):
-		return http.StatusUnauthorized
-	case errorType == "rate_limit_error" || errorType == "usage_limit_reached" ||
-		errorCode == "rate_limit_exceeded" || errorCode == "usage_limit_reached":
-		return http.StatusTooManyRequests
-	case errorType == "server_error":
-		return http.StatusBadGateway
-	default:
-		return http.StatusBadRequest
-	}
 }
 
 func codexTerminalTopLevelErrorBody(eventData []byte) []byte {
@@ -673,12 +673,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					}
 					return
 				}
-				eventType := gjson.GetBytes(data, "type").String()
-				switch eventType {
+				switch gjson.GetBytes(data, "type").String() {
 				case "response.output_item.done":
 					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
 				case "response.completed", "response.done", "response.incomplete":
-					if eventType == "response.done" {
+					if gjson.GetBytes(data, "type").String() == "response.done" {
 						data, _ = sjson.SetRawBytes(data, "type", []byte(`"response.completed"`))
 					}
 					if detail, ok := helps.ParseCodexUsage(data); ok {
@@ -961,10 +960,10 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 	if ginHeaders.Get("X-Codex-Beta-Features") != "" {
 		r.Header.Set("X-Codex-Beta-Features", ginHeaders.Get("X-Codex-Beta-Features"))
 	}
-	fp, fingerprintEnabled := codexIdentityFingerprint(cfg)
 	misc.EnsureHeader(r.Header, ginHeaders, "Version", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-Metadata", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Client-Request-Id", "")
+	fp, fingerprintEnabled := codexIdentityFingerprint(cfg)
 	cfgUserAgent, _ := codexHeaderDefaults(cfg, auth)
 	if fingerprintEnabled {
 		applyCodexIdentityFingerprintHeaders(r.Header, fp, false)

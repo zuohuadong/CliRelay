@@ -116,12 +116,13 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
 	}
+	var originalTranslated []byte
 	var translated []byte
 	if imagePassthrough {
 		translated = e.overrideModel(req.Payload, baseModel)
 	} else {
 		originalPayload := originalPayloadSource
-		originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
+		originalTranslated = sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
 		translated = sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
 
 		translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
@@ -134,21 +135,21 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 				return resp, err
 			}
 		}
-		requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-		requestPath := helps.PayloadRequestPath(opts)
-		translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
-		if opts.Alt == "responses/compact" {
-			if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
-				translated = updated
-			}
-		}
-		translated, err = e.normalizeBigModelTools(translated, baseURL)
-		if err != nil {
-			return resp, err
-		}
 	}
 
-	url := strings.TrimSuffix(baseURL, "/") + endpoint
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	requestPath := helps.PayloadRequestPath(opts)
+	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	if opts.Alt == "responses/compact" {
+		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
+			translated = updated
+		}
+	}
+	translated, err = e.normalizeBigModelTools(translated, baseURL)
+	if err != nil {
+		return resp, err
+	}
+
 	requestBody := translated
 	contentType := "application/json"
 	if opts.Alt == "images/edits" && imageEditPayloadHasUploads(translated) {
@@ -159,6 +160,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		}
 		contentType = multipartType
 	}
+	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(requestBody))
 	if err != nil {
 		return resp, err
@@ -179,7 +181,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		URL:       url,
 		Method:    http.MethodPost,
 		Headers:   httpReq.Header.Clone(),
-		Body:      requestBody,
+		Body:      translated,
 		Provider:  e.Identifier(),
 		AuthID:    authID,
 		AuthLabel: authLabel,
@@ -349,6 +351,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			return nil, err
 		}
 	}
+
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
@@ -629,6 +632,13 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 	return cliproxyexecutor.Response{Payload: translatedUsage}, nil
 }
 
+func shouldNormalizeKimiCompatPayload(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
+	return strings.HasPrefix(model, "kimi-") ||
+		strings.Contains(model, "/kimi-") ||
+		strings.Contains(model, "moonshot")
+}
+
 func (e *OpenAICompatExecutor) normalizeBigModelTools(payload []byte, baseURL string) ([]byte, error) {
 	if !isBigModelCompatProvider(e.Identifier(), baseURL) || !gjson.GetBytes(payload, "tools").Exists() {
 		return payload, nil
@@ -760,11 +770,169 @@ func bigModelContentSize(searchContextSize string) string {
 	}
 }
 
-func shouldNormalizeKimiCompatPayload(model string) bool {
-	model = strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
-	return strings.HasPrefix(model, "kimi-") ||
-		strings.Contains(model, "/kimi-") ||
-		strings.Contains(model, "moonshot")
+func imageEditPayloadHasUploads(payload []byte) bool {
+	return gjson.GetBytes(payload, "image_files").Exists() || gjson.GetBytes(payload, "mask_file").Exists()
+}
+
+func buildImageEditsMultipartBody(payload []byte) ([]byte, string, error) {
+	var root map[string]any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return nil, "", fmt.Errorf("invalid image edits payload: %w", err)
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range root {
+		switch key {
+		case "image_files", "mask_file":
+			continue
+		}
+		if value == nil {
+			continue
+		}
+		fieldValue, err := stringifyMultipartField(value)
+		if err != nil {
+			return nil, "", fmt.Errorf("encode image edits field %s: %w", key, err)
+		}
+		if fieldValue == "" {
+			continue
+		}
+		if err := writer.WriteField(key, fieldValue); err != nil {
+			return nil, "", fmt.Errorf("write image edits field %s: %w", key, err)
+		}
+	}
+	if err := writeImageEditFiles(writer, "image", root["image_files"]); err != nil {
+		return nil, "", err
+	}
+	if err := writeImageEditFile(writer, "mask", root["mask_file"]); err != nil {
+		return nil, "", err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", fmt.Errorf("finalize image edits multipart body: %w", err)
+	}
+	return body.Bytes(), writer.FormDataContentType(), nil
+}
+
+func stringifyMultipartField(value any) (string, error) {
+	switch typed := value.(type) {
+	case string:
+		return typed, nil
+	case bool:
+		return fmt.Sprint(typed), nil
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64), nil
+	case json.Number:
+		return typed.String(), nil
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return "", err
+		}
+		return string(encoded), nil
+	}
+}
+
+func writeImageEditFiles(writer *multipart.Writer, fieldName string, value any) error {
+	if value == nil {
+		return nil
+	}
+	files, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("image edits %s must be an array", fieldName)
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("image edits %s is required", fieldName)
+	}
+	for _, file := range files {
+		if err := writeImageEditFile(writer, fieldName, file); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeImageEditFile(writer *multipart.Writer, fieldName string, value any) error {
+	if value == nil {
+		return nil
+	}
+	file, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("image edits %s file must be an object", fieldName)
+	}
+	fileName := strings.TrimSpace(fmt.Sprint(file["file_name"]))
+	if fileName == "" || fileName == "<nil>" {
+		fileName = fieldName + ".png"
+	}
+	contentType := strings.TrimSpace(fmt.Sprint(file["content_type"]))
+	if contentType == "" || contentType == "<nil>" {
+		contentType = "application/octet-stream"
+	}
+	dataBase64 := strings.TrimSpace(fmt.Sprint(file["data_base64"]))
+	if dataBase64 == "" || dataBase64 == "<nil>" {
+		return fmt.Errorf("image edits %s file is missing data_base64", fieldName)
+	}
+	data, err := decodeImageEditBase64(dataBase64)
+	if err != nil {
+		return fmt.Errorf("decode image edits %s file: %w", fieldName, err)
+	}
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, escapeMultipartQuote(fieldName), escapeMultipartQuote(fileName)))
+	header.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return fmt.Errorf("create image edits %s part: %w", fieldName, err)
+	}
+	if _, err := part.Write(data); err != nil {
+		return fmt.Errorf("write image edits %s file: %w", fieldName, err)
+	}
+	return nil
+}
+
+func decodeImageEditBase64(value string) ([]byte, error) {
+	if comma := strings.Index(value, ","); comma >= 0 {
+		prefix := strings.ToLower(strings.TrimSpace(value[:comma]))
+		if !strings.HasPrefix(prefix, "data:") || !strings.Contains(prefix, ";base64") {
+			return nil, fmt.Errorf("invalid data URI prefix in base64 content")
+		}
+		value = value[comma+1:]
+	}
+	return base64.StdEncoding.DecodeString(value)
+}
+
+func escapeMultipartQuote(s string) string {
+	return strings.ReplaceAll(s, `"`, `\"`)
+}
+
+func (e *OpenAICompatExecutor) applyCustomHeadersAndIdentityFingerprint(req *http.Request, auth *cliproxyauth.Auth, websocket bool) {
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	util.ApplyCustomHeadersFromAttrs(req, attrs)
+	e.applyIdentityFingerprint(req, auth, websocket)
+}
+
+func (e *OpenAICompatExecutor) applyIdentityFingerprint(req *http.Request, auth *cliproxyauth.Auth, websocket bool) {
+	if req == nil {
+		return
+	}
+	fingerprint := ""
+	if auth != nil && auth.Attributes != nil {
+		fingerprint = strings.TrimSpace(strings.ToLower(auth.Attributes["identity_fingerprint"]))
+	}
+	if fingerprint == "" {
+		if compat := e.resolveCompatConfig(auth); compat != nil {
+			fingerprint = strings.TrimSpace(strings.ToLower(compat.IdentityFingerprint))
+		}
+	}
+	switch fingerprint {
+	case "codex":
+		if fp, ok := codexIdentityFingerprint(e.cfg); ok {
+			applyCodexIdentityFingerprintHeaders(req.Header, fp, websocket)
+			if strings.TrimSpace(fp.Originator) != "" {
+				req.Header.Set("Originator", fp.Originator)
+			}
+		}
+	}
 }
 
 // Refresh is a no-op for API-key based compatibility providers.
@@ -933,171 +1101,6 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 		}
 	}
 	return nil
-}
-
-func (e *OpenAICompatExecutor) applyCustomHeadersAndIdentityFingerprint(req *http.Request, auth *cliproxyauth.Auth, websocket bool) {
-	var attrs map[string]string
-	if auth != nil {
-		attrs = auth.Attributes
-	}
-	util.ApplyCustomHeadersFromAttrs(req, attrs)
-	e.applyIdentityFingerprint(req, auth, websocket)
-}
-
-func (e *OpenAICompatExecutor) applyIdentityFingerprint(req *http.Request, auth *cliproxyauth.Auth, websocket bool) {
-	if req == nil {
-		return
-	}
-	fingerprint := ""
-	if auth != nil && auth.Attributes != nil {
-		fingerprint = strings.TrimSpace(strings.ToLower(auth.Attributes["identity_fingerprint"]))
-	}
-	if fingerprint == "" {
-		if compat := e.resolveCompatConfig(auth); compat != nil {
-			fingerprint = strings.TrimSpace(strings.ToLower(compat.IdentityFingerprint))
-		}
-	}
-	switch fingerprint {
-	case "codex":
-		if fp, ok := codexIdentityFingerprint(e.cfg); ok {
-			applyCodexIdentityFingerprintHeaders(req.Header, fp, websocket)
-			if strings.TrimSpace(fp.Originator) != "" {
-				req.Header.Set("Originator", fp.Originator)
-			}
-		}
-	}
-}
-
-func imageEditPayloadHasUploads(payload []byte) bool {
-	return gjson.GetBytes(payload, "image_files").Exists() || gjson.GetBytes(payload, "mask_file").Exists()
-}
-
-func buildImageEditsMultipartBody(payload []byte) ([]byte, string, error) {
-	var root map[string]any
-	if err := json.Unmarshal(payload, &root); err != nil {
-		return nil, "", fmt.Errorf("invalid image edits payload: %w", err)
-	}
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	for key, value := range root {
-		switch key {
-		case "image_files", "mask_file":
-			continue
-		}
-		if value == nil {
-			continue
-		}
-		fieldValue, err := stringifyMultipartField(value)
-		if err != nil {
-			return nil, "", fmt.Errorf("encode image edits field %s: %w", key, err)
-		}
-		if fieldValue == "" {
-			continue
-		}
-		if err := writer.WriteField(key, fieldValue); err != nil {
-			return nil, "", fmt.Errorf("write image edits field %s: %w", key, err)
-		}
-	}
-	if err := writeImageEditFiles(writer, "image", root["image_files"]); err != nil {
-		return nil, "", err
-	}
-	if err := writeImageEditFile(writer, "mask", root["mask_file"]); err != nil {
-		return nil, "", err
-	}
-	if err := writer.Close(); err != nil {
-		return nil, "", fmt.Errorf("finalize image edits multipart body: %w", err)
-	}
-	return body.Bytes(), writer.FormDataContentType(), nil
-}
-
-func stringifyMultipartField(value any) (string, error) {
-	switch typed := value.(type) {
-	case string:
-		return typed, nil
-	case bool:
-		return fmt.Sprint(typed), nil
-	case float64:
-		return strconv.FormatFloat(typed, 'f', -1, 64), nil
-	case json.Number:
-		return typed.String(), nil
-	default:
-		encoded, err := json.Marshal(typed)
-		if err != nil {
-			return "", err
-		}
-		return string(encoded), nil
-	}
-}
-
-func writeImageEditFiles(writer *multipart.Writer, fieldName string, value any) error {
-	if value == nil {
-		return nil
-	}
-	files, ok := value.([]any)
-	if !ok {
-		return fmt.Errorf("image edits %s must be an array", fieldName)
-	}
-	if len(files) == 0 {
-		return fmt.Errorf("image edits %s is required", fieldName)
-	}
-	for _, file := range files {
-		if err := writeImageEditFile(writer, fieldName, file); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func writeImageEditFile(writer *multipart.Writer, fieldName string, value any) error {
-	if value == nil {
-		return nil
-	}
-	file, ok := value.(map[string]any)
-	if !ok {
-		return fmt.Errorf("image edits %s file must be an object", fieldName)
-	}
-	fileName := strings.TrimSpace(fmt.Sprint(file["file_name"]))
-	if fileName == "" || fileName == "<nil>" {
-		fileName = fieldName + ".png"
-	}
-	contentType := strings.TrimSpace(fmt.Sprint(file["content_type"]))
-	if contentType == "" || contentType == "<nil>" {
-		contentType = "application/octet-stream"
-	}
-	dataBase64 := strings.TrimSpace(fmt.Sprint(file["data_base64"]))
-	if dataBase64 == "" || dataBase64 == "<nil>" {
-		return fmt.Errorf("image edits %s file is missing data_base64", fieldName)
-	}
-	data, err := decodeImageEditBase64(dataBase64)
-	if err != nil {
-		return fmt.Errorf("decode image edits %s file: %w", fieldName, err)
-	}
-	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, escapeMultipartQuote(fieldName), escapeMultipartQuote(fileName)))
-	header.Set("Content-Type", contentType)
-	part, err := writer.CreatePart(header)
-	if err != nil {
-		return fmt.Errorf("create image edits %s part: %w", fieldName, err)
-	}
-	if _, err := part.Write(data); err != nil {
-		return fmt.Errorf("write image edits %s file: %w", fieldName, err)
-	}
-	return nil
-}
-
-func decodeImageEditBase64(value string) ([]byte, error) {
-	if comma := strings.Index(value, ","); comma >= 0 {
-		prefix := strings.ToLower(strings.TrimSpace(value[:comma]))
-		if strings.HasPrefix(prefix, "data:") {
-			value = value[comma+1:]
-		}
-	}
-	return base64.StdEncoding.DecodeString(value)
-}
-
-func escapeMultipartQuote(value string) string {
-	value = strings.ReplaceAll(value, "\\", "\\\\")
-	return strings.ReplaceAll(value, `"`, "\\\"")
 }
 
 func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {

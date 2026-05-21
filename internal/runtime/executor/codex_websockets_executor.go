@@ -365,6 +365,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", wsErr)
 			return resp, wsErr
 		}
+
 		if terminalErr, ok := codexTerminalStreamErr(payload); ok {
 			if sess != nil {
 				e.invalidateUpstreamConn(sess, conn, "upstream_error", terminalErr)
@@ -626,6 +627,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				_ = send(cliproxyexecutor.StreamChunk{Err: wsErr})
 				return
 			}
+
 			if terminalErr, ok := codexTerminalStreamErr(payload); ok {
 				terminateReason = "upstream_error"
 				terminateErr = terminalErr
@@ -929,6 +931,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: headers}, attrs)
+
 	if fingerprintEnabled && !isAPIKey {
 		applyCodexIdentityFingerprintHeaders(headers, fp, true)
 		if strings.TrimSpace(ginHeaders.Get("Originator")) == "" {

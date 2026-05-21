@@ -133,6 +133,16 @@ type Config struct {
 	// ProxyPool stores reusable outbound proxies that can be referenced by providers and auth files.
 	ProxyPool []ProxyPoolEntry `yaml:"proxy-pool,omitempty" json:"proxy-pool,omitempty"`
 
+	// BigModelCodingAPIKey defines Zhipu Coding Plan API key configurations.
+	// It uses OpenAI Chat Completions over HTTP, but is kept separate from the
+	// generic OpenAI-compatibility pool because it has provider-specific payload,
+	// MCP, multimodal, and identity handling.
+	BigModelCodingAPIKey []OpenAICompatibility `yaml:"bigmodel-coding,omitempty" json:"bigmodel-coding,omitempty"`
+
+	// BigModelCodingAPIKeyLegacy accepts the older top-level key name. It is
+	// folded into BigModelCodingAPIKey during sanitization and never emitted.
+	BigModelCodingAPIKeyLegacy []OpenAICompatibility `yaml:"bigmodel-coding-api-key,omitempty" json:"bigmodel-coding-api-key,omitempty"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
@@ -703,6 +713,13 @@ type OpenAICompatibilityModel struct {
 func (m OpenAICompatibilityModel) GetName() string  { return m.Name }
 func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
 
+const (
+	DefaultBigModelCodingProviderName = "bigmodel-coding"
+	DefaultBigModelCodingBaseURL      = "https://open.bigmodel.cn/api/coding/paas/v4"
+	DefaultBigModelCodingModel        = "glm-5.1"
+	DefaultBigModelCodingAlias        = "gpt-5.3-codex"
+)
+
 // RequestPolicy defines a generic pre-execution policy for matching requests and channels.
 type RequestPolicy struct {
 	Name      string                 `yaml:"name,omitempty" json:"name,omitempty"`
@@ -884,6 +901,12 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Normalize provider identity fingerprints.
 	cfg.SanitizeIdentityFingerprint()
+
+	// Move legacy bigmodel-coding entries out of the generic OpenAI compatibility pool.
+	cfg.MigrateBigModelCodingFromOpenAICompatibility()
+
+	// Sanitize BigModel Coding providers.
+	cfg.SanitizeBigModelCoding()
 
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
@@ -1300,6 +1323,73 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 	cfg.OpenAICompatibility = out
 }
 
+// MigrateBigModelCodingFromOpenAICompatibility moves legacy
+// openai-compatibility entries named "bigmodel-coding" into the dedicated
+// bigmodel-coding section.
+func (cfg *Config) MigrateBigModelCodingFromOpenAICompatibility() {
+	if cfg == nil || len(cfg.OpenAICompatibility) == 0 {
+		return
+	}
+	nextCompat := make([]OpenAICompatibility, 0, len(cfg.OpenAICompatibility))
+	for i := range cfg.OpenAICompatibility {
+		entry := cfg.OpenAICompatibility[i]
+		if strings.EqualFold(strings.TrimSpace(entry.Name), DefaultBigModelCodingProviderName) {
+			cfg.BigModelCodingAPIKey = append(cfg.BigModelCodingAPIKey, entry)
+			continue
+		}
+		nextCompat = append(nextCompat, entry)
+	}
+	cfg.OpenAICompatibility = nextCompat
+}
+
+// SanitizeBigModelCoding normalizes dedicated Zhipu Coding Plan entries and
+// ensures the default gpt-5.3-codex -> glm-5.1 alias remains present.
+func (cfg *Config) SanitizeBigModelCoding() {
+	if cfg == nil {
+		return
+	}
+	if len(cfg.BigModelCodingAPIKeyLegacy) > 0 {
+		cfg.BigModelCodingAPIKey = append(cfg.BigModelCodingAPIKey, cfg.BigModelCodingAPIKeyLegacy...)
+		cfg.BigModelCodingAPIKeyLegacy = nil
+	}
+	if len(cfg.BigModelCodingAPIKey) == 0 {
+		return
+	}
+	out := make([]OpenAICompatibility, 0, len(cfg.BigModelCodingAPIKey))
+	for i := range cfg.BigModelCodingAPIKey {
+		e := cfg.BigModelCodingAPIKey[i]
+		e.Name = DefaultBigModelCodingProviderName
+		e.Prefix = normalizeModelPrefix(e.Prefix)
+		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		if e.BaseURL == "" {
+			e.BaseURL = DefaultBigModelCodingBaseURL
+		}
+		e.TestModel = strings.TrimSpace(e.TestModel)
+		if e.TestModel == "" {
+			e.TestModel = DefaultBigModelCodingModel
+		}
+		e.Headers = NormalizeHeaders(e.Headers)
+		e.IdentityFingerprint = "codex"
+		e.Models = ensureBigModelCodingModels(e.Models)
+		out = append(out, e)
+	}
+	cfg.BigModelCodingAPIKey = out
+}
+
+func ensureBigModelCodingModels(models []OpenAICompatibilityModel) []OpenAICompatibilityModel {
+	for i := range models {
+		models[i].Name = strings.TrimSpace(models[i].Name)
+		models[i].Alias = strings.TrimSpace(models[i].Alias)
+		if models[i].Name == DefaultBigModelCodingModel && models[i].Alias == DefaultBigModelCodingAlias {
+			return models
+		}
+	}
+	return append(models, OpenAICompatibilityModel{
+		Name:  DefaultBigModelCodingModel,
+		Alias: DefaultBigModelCodingAlias,
+	})
+}
+
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.
 // It trims whitespace and preserves order for remaining entries.
 func (cfg *Config) SanitizeCodexKeys() {
@@ -1500,6 +1590,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	// Remove deprecated sections before merging back the sanitized config.
 	removeLegacyAuthBlock(original.Content[0])
 	removeLegacyOpenAICompatAPIKeys(original.Content[0])
+	removeLegacyBigModelCodingAPIKey(original.Content[0])
 	removeLegacyAmpKeys(original.Content[0])
 	removeLegacyGenerativeLanguageKeys(original.Content[0])
 
@@ -2339,6 +2430,13 @@ func removeLegacyOpenAICompatAPIKeys(root *yaml.Node) {
 			removeMapKey(seq.Content[i], "api-keys")
 		}
 	}
+}
+
+func removeLegacyBigModelCodingAPIKey(root *yaml.Node) {
+	if root == nil || root.Kind != yaml.MappingNode {
+		return
+	}
+	removeMapKey(root, "bigmodel-coding-api-key")
 }
 
 func removeLegacyAmpKeys(root *yaml.Node) {

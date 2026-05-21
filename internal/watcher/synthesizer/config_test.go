@@ -400,6 +400,45 @@ func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 	}
 }
 
+func TestConfigSynthesizer_BigModelCoding(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			BigModelCodingAPIKey: []config.OpenAICompatibility{
+				{
+					BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4",
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "bigmodel-key"},
+					},
+					Models: []config.OpenAICompatibilityModel{
+						{Name: "glm-5.1", Alias: "gpt-5.3-codex"},
+					},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	auth := auths[0]
+	if auth.Provider != "bigmodel-coding" {
+		t.Fatalf("provider = %q, want bigmodel-coding", auth.Provider)
+	}
+	if auth.Attributes["provider_key"] != "bigmodel-coding" || auth.Attributes["compat_name"] != "bigmodel-coding" {
+		t.Fatalf("unexpected attrs: %#v", auth.Attributes)
+	}
+	if auth.Attributes["base_url"] != "https://open.bigmodel.cn/api/coding/paas/v4" {
+		t.Fatalf("base_url = %q", auth.Attributes["base_url"])
+	}
+}
+
 func TestConfigSynthesizer_VertexCompat(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	ctx := &SynthesisContext{
@@ -618,6 +657,9 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 			OpenAICompatibility: []config.OpenAICompatibility{
 				{Name: "compat", BaseURL: "https://compat.api"},
 			},
+			BigModelCodingAPIKey: []config.OpenAICompatibility{
+				{Name: "bigmodel-coding", BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"},
+			},
 			VertexCompatAPIKey: []config.VertexCompatKey{
 				{APIKey: "vertex-key", BaseURL: "https://vertex.api"},
 			},
@@ -630,8 +672,8 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(auths) != 5 {
-		t.Fatalf("expected 5 auths, got %d", len(auths))
+	if len(auths) != 6 {
+		t.Fatalf("expected 6 auths, got %d", len(auths))
 	}
 
 	providers := make(map[string]bool)
@@ -639,7 +681,7 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 		providers[a.Provider] = true
 	}
 
-	expected := []string{"gemini", "claude", "codex", "compat", "vertex"}
+	expected := []string{"gemini", "claude", "codex", "bigmodel-coding", "compat", "vertex"}
 	for _, p := range expected {
 		if !providers[p] {
 			t.Errorf("expected provider %s not found", p)

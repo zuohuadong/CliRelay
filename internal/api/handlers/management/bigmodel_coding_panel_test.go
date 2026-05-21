@@ -13,7 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
-func TestPutBigModelCodingKeysCreatesTargetedOpenAICompatEntry(t *testing.T) {
+func TestPutBigModelCodingKeysCreatesDedicatedEntry(t *testing.T) {
 	cfg := &config.Config{
 		OpenAICompatibility: []config.OpenAICompatibility{
 			{
@@ -29,10 +29,13 @@ func TestPutBigModelCodingKeysCreatesTargetedOpenAICompatEntry(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if len(cfg.OpenAICompatibility) != 2 {
-		t.Fatalf("openai compatibility len = %d, want 2", len(cfg.OpenAICompatibility))
+	if len(cfg.OpenAICompatibility) != 1 {
+		t.Fatalf("openai compatibility len = %d, want unchanged 1", len(cfg.OpenAICompatibility))
 	}
-	entry := cfg.OpenAICompatibility[1]
+	if len(cfg.BigModelCodingAPIKey) != 1 {
+		t.Fatalf("bigmodel coding len = %d, want 1", len(cfg.BigModelCodingAPIKey))
+	}
+	entry := cfg.BigModelCodingAPIKey[0]
 	if entry.Name != bigModelCodingProviderName {
 		t.Fatalf("name = %q, want %q", entry.Name, bigModelCodingProviderName)
 	}
@@ -57,10 +60,10 @@ func TestPatchBigModelCodingKeyPreservesTargetedDefaults(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if len(cfg.OpenAICompatibility) != 1 {
-		t.Fatalf("openai compatibility len = %d, want 1", len(cfg.OpenAICompatibility))
+	if len(cfg.BigModelCodingAPIKey) != 1 {
+		t.Fatalf("bigmodel coding len = %d, want 1", len(cfg.BigModelCodingAPIKey))
 	}
-	entry := cfg.OpenAICompatibility[0]
+	entry := cfg.BigModelCodingAPIKey[0]
 	if !entry.Disabled {
 		t.Fatal("expected disabled flag to be preserved")
 	}
@@ -72,9 +75,11 @@ func TestPatchBigModelCodingKeyPreservesTargetedDefaults(t *testing.T) {
 
 func TestGetBigModelCodingKeysFiltersOpenAICompatEntries(t *testing.T) {
 	cfg := &config.Config{
+		BigModelCodingAPIKey: []config.OpenAICompatibility{
+			{Name: "bigmodel-coding", BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4", IdentityFingerprint: "codex"},
+		},
 		OpenAICompatibility: []config.OpenAICompatibility{
 			{Name: "qwen", BaseURL: "https://qwen.example.com/v1"},
-			{Name: "bigmodel-coding", BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4", IdentityFingerprint: "codex"},
 		},
 	}
 	h := newBigModelCodingPanelTestHandler(t, cfg)
@@ -87,7 +92,7 @@ func TestGetBigModelCodingKeysFiltersOpenAICompatEntries(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	items := payload["bigmodel-coding-api-key"]
+	items := payload["bigmodel-coding"]
 	if len(items) != 1 {
 		t.Fatalf("items len = %d, want 1", len(items))
 	}

@@ -450,6 +450,9 @@ func isOpenAICompatAPIKeyAuth(auth *Auth) bool {
 	if strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") {
 		return true
 	}
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), internalconfig.DefaultBigModelCodingProviderName) {
+		return true
+	}
 	if auth.Attributes == nil {
 		return false
 	}
@@ -1022,7 +1025,9 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 				providerKey = strings.TrimSpace(auth.Attributes["provider_key"])
 				compatName = strings.TrimSpace(auth.Attributes["compat_name"])
 			}
-			if compatName != "" || strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") {
+			if compatName != "" ||
+				strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") ||
+				strings.EqualFold(strings.TrimSpace(auth.Provider), internalconfig.DefaultBigModelCodingProviderName) {
 				if entry := resolveOpenAICompatConfig(cfg, providerKey, compatName, auth.Provider); entry != nil {
 					compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 				}
@@ -2023,7 +2028,9 @@ func resolveUpstreamModelForOpenAICompatAPIKey(cfg *internalconfig.Config, auth 
 		providerKey = strings.TrimSpace(auth.Attributes["provider_key"])
 		compatName = strings.TrimSpace(auth.Attributes["compat_name"])
 	}
-	if compatName == "" && !strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") {
+	if compatName == "" &&
+		!strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") &&
+		!strings.EqualFold(strings.TrimSpace(auth.Provider), internalconfig.DefaultBigModelCodingProviderName) {
 		return ""
 	}
 	entry := resolveOpenAICompatConfig(cfg, providerKey, compatName, auth.Provider)
@@ -2049,6 +2056,14 @@ func resolveOpenAICompatConfig(cfg *internalconfig.Config, providerKey, compatNa
 	if v := strings.TrimSpace(authProvider); v != "" {
 		candidates = append(candidates, v)
 	}
+	for _, candidate := range candidates {
+		if strings.EqualFold(strings.TrimSpace(candidate), internalconfig.DefaultBigModelCodingProviderName) {
+			if entry := resolveBigModelCodingConfig(cfg); entry != nil {
+				return entry
+			}
+			break
+		}
+	}
 	for i := range cfg.OpenAICompatibility {
 		compat := &cfg.OpenAICompatibility[i]
 		if compat.Disabled {
@@ -2058,6 +2073,19 @@ func resolveOpenAICompatConfig(cfg *internalconfig.Config, providerKey, compatNa
 			if candidate != "" && strings.EqualFold(strings.TrimSpace(candidate), compat.Name) {
 				return compat
 			}
+		}
+	}
+	return nil
+}
+
+func resolveBigModelCodingConfig(cfg *internalconfig.Config) *internalconfig.OpenAICompatibility {
+	if cfg == nil {
+		return nil
+	}
+	for i := range cfg.BigModelCodingAPIKey {
+		entry := &cfg.BigModelCodingAPIKey[i]
+		if !entry.Disabled {
+			return entry
 		}
 	}
 	return nil

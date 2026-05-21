@@ -243,6 +243,10 @@ func (h *Handler) vertexCompatKeysWithAuthIndex() []vertexCompatKeyWithAuthIndex
 }
 
 func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAuthIndex {
+	return h.openAICompatibilityEntriesWithAuthIndex(h.openAICompatibilityEntriesLocked, "openai-compatibility")
+}
+
+func (h *Handler) openAICompatibilityEntriesWithAuthIndex(entriesFn func() []config.OpenAICompatibility, idPrefix string) []openAICompatibilityWithAuthIndex {
 	if h == nil {
 		return nil
 	}
@@ -254,16 +258,27 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 		return nil
 	}
 
-	normalized := normalizedOpenAICompatibilityEntries(h.cfg.OpenAICompatibility)
+	entries := []config.OpenAICompatibility(nil)
+	if entriesFn != nil {
+		entries = entriesFn()
+	}
+	normalized := normalizedOpenAICompatibilityEntries(entries)
 	out := make([]openAICompatibilityWithAuthIndex, len(normalized))
 	idGen := synthesizer.NewStableIDGenerator()
 	for i := range normalized {
 		entry := normalized[i]
 		providerName := strings.ToLower(strings.TrimSpace(entry.Name))
 		if providerName == "" {
+			providerName = strings.TrimSpace(idPrefix)
+		}
+		if providerName == "" {
 			providerName = "openai-compatibility"
 		}
-		idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
+		idKindPrefix := strings.TrimSpace(idPrefix)
+		if idKindPrefix == "" {
+			idKindPrefix = "openai-compatibility"
+		}
+		idKind := fmt.Sprintf("%s:%s", idKindPrefix, providerName)
 
 		response := openAICompatibilityWithAuthIndex{
 			Name:                entry.Name,
@@ -306,4 +321,20 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 		out[i] = response
 	}
 	return out
+}
+
+func (h *Handler) openAICompatibilityEntriesLocked() []config.OpenAICompatibility {
+	if h == nil || h.cfg == nil {
+		return nil
+	}
+	return append([]config.OpenAICompatibility(nil), h.cfg.OpenAICompatibility...)
+}
+
+func (h *Handler) bigModelCodingEntriesLocked() []config.OpenAICompatibility {
+	if h == nil || h.cfg == nil {
+		return nil
+	}
+	h.cfg.MigrateBigModelCodingFromOpenAICompatibility()
+	h.cfg.SanitizeBigModelCoding()
+	return append([]config.OpenAICompatibility(nil), h.cfg.BigModelCodingAPIKey...)
 }

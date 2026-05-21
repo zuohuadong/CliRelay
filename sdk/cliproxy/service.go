@@ -376,6 +376,9 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 	if strings.EqualFold(strings.TrimSpace(a.Provider), "openai-compatibility") {
 		return "openai-compatibility", strings.TrimSpace(a.Label), true
 	}
+	if strings.EqualFold(strings.TrimSpace(a.Provider), "bigmodel-coding") {
+		return "bigmodel-coding", "bigmodel-coding", true
+	}
 	return "", "", false
 }
 
@@ -596,6 +599,7 @@ func (s *Service) registerHomeExecutors() {
 	s.coreManager.RegisterExecutor(executor.NewAIStudioExecutor(s.cfg, "", s.wsGateway))
 	s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
 	s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewBigModelCodingExecutor(s.cfg))
 	s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor("openai-compatibility", s.cfg))
 }
 
@@ -1079,7 +1083,11 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	provider := strings.ToLower(strings.TrimSpace(a.Provider))
 	compatProviderKey, compatDisplayName, compatDetected := openAICompatInfoFromAuth(a)
 	if compatDetected {
-		provider = "openai-compatibility"
+		if strings.EqualFold(strings.TrimSpace(compatProviderKey), "bigmodel-coding") {
+			provider = "bigmodel-coding"
+		} else {
+			provider = "openai-compatibility"
+		}
 	}
 	excluded := s.oauthExcludedModels(provider, authKind)
 	// The synthesizer pre-merges per-account and global exclusions into the "excluded_models" attribute.
@@ -1166,6 +1174,22 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	case "xai":
 		models = registry.GetXAIModels()
 		models = applyExcludedModels(models, excluded)
+	case "bigmodel-coding":
+		for i := range s.cfg.BigModelCodingAPIKey {
+			entry := &s.cfg.BigModelCodingAPIKey[i]
+			if entry.Disabled {
+				continue
+			}
+			ms := buildOpenAICompatibilityConfigModels(entry)
+			if len(ms) > 0 {
+				s.registerResolvedModelsForAuth(a, "bigmodel-coding", applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
+			} else {
+				GlobalModelRegistry().UnregisterClient(a.ID)
+			}
+			return
+		}
+		GlobalModelRegistry().UnregisterClient(a.ID)
+		return
 	default:
 		// Handle OpenAI-compatibility providers by name using config
 		if s.cfg != nil {

@@ -80,10 +80,19 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeCodexHeaderDefaults()
 	cfg.SanitizeClaudeHeaderDefaults()
 	cfg.SanitizeClaudeKeys()
+	cfg.SanitizeIdentityFingerprint()
+	cfg.MigrateBigModelCodingFromOpenAICompatibility()
+	cfg.SanitizeBigModelCoding()
 	cfg.SanitizeOpenAICompatibility()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()
+	cfg.SanitizeRequestPolicies()
+	cfg.SanitizeProviderPreferences()
+	cfg.SanitizeContextRetrieval()
+	cfg.SanitizeMultimodalAdapters()
 	cfg.SanitizePayloadRules()
+	cfg.SanitizeRouting()
+	cfg.SanitizeAPIKeyEntries()
 
 	return &cfg, nil
 }

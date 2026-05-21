@@ -724,7 +724,9 @@ func proxyURLFromAPIKeyConfig(cfg *config.Config, auth *coreauth.Auth) string {
 		compatName = strings.TrimSpace(attrs["compat_name"])
 		providerKey = strings.TrimSpace(attrs["provider_key"])
 	}
-	if compatName != "" || strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") {
+	if compatName != "" ||
+		strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") ||
+		strings.EqualFold(strings.TrimSpace(auth.Provider), config.DefaultBigModelCodingProviderName) {
 		return resolveOpenAICompatAPIKeyProxyURL(cfg, auth, strings.TrimSpace(authAccount), providerKey, compatName)
 	}
 
@@ -764,6 +766,14 @@ func resolveOpenAICompatAPIKeyProxyURL(cfg *config.Config, auth *coreauth.Auth, 
 		candidates = append(candidates, v)
 	}
 
+	for _, candidate := range candidates {
+		if strings.EqualFold(strings.TrimSpace(candidate), config.DefaultBigModelCodingProviderName) {
+			if proxyURL := resolveOpenAICompatProxyURLFromEntries(cfg.BigModelCodingAPIKey, apiKey); proxyURL != "" {
+				return proxyURL
+			}
+			break
+		}
+	}
 	for i := range cfg.OpenAICompatibility {
 		compat := &cfg.OpenAICompatibility[i]
 		if compat.Disabled {
@@ -778,6 +788,22 @@ func resolveOpenAICompatAPIKeyProxyURL(cfg *config.Config, auth *coreauth.Auth, 
 					}
 				}
 				return ""
+			}
+		}
+	}
+	return ""
+}
+
+func resolveOpenAICompatProxyURLFromEntries(entries []config.OpenAICompatibility, apiKey string) string {
+	for i := range entries {
+		compat := &entries[i]
+		if compat.Disabled {
+			continue
+		}
+		for j := range compat.APIKeyEntries {
+			entry := &compat.APIKeyEntries[j]
+			if strings.EqualFold(strings.TrimSpace(entry.APIKey), apiKey) {
+				return strings.TrimSpace(entry.ProxyURL)
 			}
 		}
 	}

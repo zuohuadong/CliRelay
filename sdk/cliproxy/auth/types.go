@@ -371,6 +371,8 @@ func (a *Auth) indexSeed() string {
 	apiPrefix := ""
 	if apiKey != "" {
 		switch {
+		case strings.EqualFold(provider, "bigmodel-coding"):
+			apiPrefix = "bigmodel-coding"
 		case compatName != "" || strings.EqualFold(provider, "openai-compatibility"):
 			apiPrefix = "openai-compatibility"
 		case strings.EqualFold(provider, "gemini"):

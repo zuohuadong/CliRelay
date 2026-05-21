@@ -10,14 +10,18 @@ import (
 )
 
 const (
-	bigModelCodingProviderName = "bigmodel-coding"
-	bigModelCodingBaseURL      = "https://open.bigmodel.cn/api/coding/paas/v4"
-	bigModelCodingModel        = "glm-5.1"
-	bigModelCodingAlias        = "gpt-5.3-codex"
+	bigModelCodingProviderName = config.DefaultBigModelCodingProviderName
+	bigModelCodingBaseURL      = config.DefaultBigModelCodingBaseURL
+	bigModelCodingModel        = config.DefaultBigModelCodingModel
+	bigModelCodingAlias        = config.DefaultBigModelCodingAlias
 )
 
 func (h *Handler) GetBigModelCodingKeys(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"bigmodel-coding-api-key": h.bigModelCodingWithAuthIndex()})
+	items := h.bigModelCodingWithAuthIndex()
+	c.JSON(http.StatusOK, gin.H{
+		"bigmodel-coding":         items,
+		"bigmodel-coding-api-key": items,
+	})
 }
 
 func (h *Handler) PutBigModelCodingKeys(c *gin.Context) {
@@ -37,15 +41,9 @@ func (h *Handler) PutBigModelCodingKeys(c *gin.Context) {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	next := make([]config.OpenAICompatibility, 0, len(h.cfg.OpenAICompatibility)+len(entries))
-	for _, entry := range h.cfg.OpenAICompatibility {
-		if !isBigModelCodingEntry(entry) {
-			next = append(next, entry)
-		}
-	}
-	next = append(next, entries...)
-	h.cfg.OpenAICompatibility = next
-	h.cfg.SanitizeOpenAICompatibility()
+	h.cfg.MigrateBigModelCodingFromOpenAICompatibility()
+	h.cfg.BigModelCodingAPIKey = append([]config.OpenAICompatibility(nil), entries...)
+	h.cfg.SanitizeBigModelCoding()
 	h.persistLocked(c)
 }
 
@@ -84,10 +82,12 @@ func (h *Handler) PatchBigModelCodingKey(c *gin.Context) {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.cfg.MigrateBigModelCodingFromOpenAICompatibility()
+	h.cfg.SanitizeBigModelCoding()
 	targetIndex := h.bigModelCodingIndexLocked()
 	entry := defaultBigModelCodingEntry()
 	if targetIndex >= 0 {
-		entry = h.cfg.OpenAICompatibility[targetIndex]
+		entry = h.cfg.BigModelCodingAPIKey[targetIndex]
 	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
@@ -121,11 +121,12 @@ func (h *Handler) PatchBigModelCodingKey(c *gin.Context) {
 	}
 	normalizeBigModelCodingEntry(&entry)
 	if targetIndex >= 0 {
-		h.cfg.OpenAICompatibility[targetIndex] = entry
+		h.cfg.BigModelCodingAPIKey[targetIndex] = entry
 	} else {
-		h.cfg.OpenAICompatibility = append(h.cfg.OpenAICompatibility, entry)
+		h.cfg.BigModelCodingAPIKey = append(h.cfg.BigModelCodingAPIKey, entry)
 	}
-	h.cfg.SanitizeOpenAICompatibility()
+	h.cfg.MigrateBigModelCodingFromOpenAICompatibility()
+	h.cfg.SanitizeBigModelCoding()
 	h.persistLocked(c)
 }
 
@@ -134,13 +135,15 @@ func (h *Handler) DeleteBigModelCodingKey(c *gin.Context) {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.cfg.MigrateBigModelCodingFromOpenAICompatibility()
+	h.cfg.SanitizeBigModelCoding()
 	if apiKey != "" {
 		targetIndex := h.bigModelCodingIndexLocked()
 		if targetIndex < 0 {
 			c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
 			return
 		}
-		entry := h.cfg.OpenAICompatibility[targetIndex]
+		entry := h.cfg.BigModelCodingAPIKey[targetIndex]
 		nextKeys := make([]config.OpenAICompatibilityAPIKey, 0, len(entry.APIKeyEntries))
 		for _, keyEntry := range entry.APIKeyEntries {
 			if strings.TrimSpace(keyEntry.APIKey) != apiKey {
@@ -153,40 +156,28 @@ func (h *Handler) DeleteBigModelCodingKey(c *gin.Context) {
 		}
 		entry.APIKeyEntries = nextKeys
 		normalizeBigModelCodingEntry(&entry)
-		h.cfg.OpenAICompatibility[targetIndex] = entry
-		h.cfg.SanitizeOpenAICompatibility()
+		h.cfg.BigModelCodingAPIKey[targetIndex] = entry
+		h.cfg.SanitizeBigModelCoding()
 		h.persistLocked(c)
 		return
 	}
 
-	next := make([]config.OpenAICompatibility, 0, len(h.cfg.OpenAICompatibility))
-	for _, entry := range h.cfg.OpenAICompatibility {
-		if !isBigModelCodingEntry(entry) {
-			next = append(next, entry)
-		}
-	}
-	h.cfg.OpenAICompatibility = next
-	h.cfg.SanitizeOpenAICompatibility()
+	h.cfg.BigModelCodingAPIKey = nil
 	h.persistLocked(c)
 }
 
 func (h *Handler) bigModelCodingWithAuthIndex() []openAICompatibilityWithAuthIndex {
-	all := h.openAICompatibilityWithAuthIndex()
-	out := make([]openAICompatibilityWithAuthIndex, 0, len(all))
-	for _, entry := range all {
-		if strings.EqualFold(strings.TrimSpace(entry.Name), bigModelCodingProviderName) {
-			out = append(out, entry)
-		}
-	}
-	return out
+	return h.openAICompatibilityEntriesWithAuthIndex(h.bigModelCodingEntriesLocked, "bigmodel-coding")
 }
 
 func (h *Handler) bigModelCodingIndexLocked() int {
 	if h == nil || h.cfg == nil {
 		return -1
 	}
-	for i := range h.cfg.OpenAICompatibility {
-		if isBigModelCodingEntry(h.cfg.OpenAICompatibility[i]) {
+	h.cfg.MigrateBigModelCodingFromOpenAICompatibility()
+	h.cfg.SanitizeBigModelCoding()
+	for i := range h.cfg.BigModelCodingAPIKey {
+		if isBigModelCodingEntry(h.cfg.BigModelCodingAPIKey[i]) {
 			return i
 		}
 	}
@@ -200,18 +191,19 @@ func decodeBigModelCodingPayload(data []byte) ([]config.OpenAICompatibility, boo
 	}
 
 	var wrapped struct {
-		BigModelCoding []config.OpenAICompatibility       `json:"bigmodel-coding-api-key"`
-		Items          []config.OpenAICompatibility       `json:"items"`
-		APIKeyEntries  []config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
-		APIKey         string                             `json:"api-key"`
-		BaseURL        string                             `json:"base-url"`
-		Models         []config.OpenAICompatibilityModel  `json:"models"`
-		Headers        map[string]string                  `json:"headers"`
-		Disabled       bool                               `json:"disabled"`
-		Priority       int                                `json:"priority"`
-		Prefix         string                             `json:"prefix"`
-		TestModel      string                             `json:"test-model"`
-		DisableCooling bool                               `json:"disable-cooling"`
+		BigModelCoding       []config.OpenAICompatibility       `json:"bigmodel-coding"`
+		BigModelCodingLegacy []config.OpenAICompatibility       `json:"bigmodel-coding-api-key"`
+		Items                []config.OpenAICompatibility       `json:"items"`
+		APIKeyEntries        []config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
+		APIKey               string                             `json:"api-key"`
+		BaseURL              string                             `json:"base-url"`
+		Models               []config.OpenAICompatibilityModel  `json:"models"`
+		Headers              map[string]string                  `json:"headers"`
+		Disabled             bool                               `json:"disabled"`
+		Priority             int                                `json:"priority"`
+		Prefix               string                             `json:"prefix"`
+		TestModel            string                             `json:"test-model"`
+		DisableCooling       bool                               `json:"disable-cooling"`
 	}
 	if err := json.Unmarshal(data, &wrapped); err != nil {
 		return nil, false
@@ -219,6 +211,8 @@ func decodeBigModelCodingPayload(data []byte) ([]config.OpenAICompatibility, boo
 	switch {
 	case wrapped.BigModelCoding != nil:
 		return wrapped.BigModelCoding, true
+	case wrapped.BigModelCodingLegacy != nil:
+		return wrapped.BigModelCodingLegacy, true
 	case wrapped.Items != nil:
 		return wrapped.Items, true
 	default:
@@ -262,8 +256,11 @@ func normalizeBigModelCodingEntry(entry *config.OpenAICompatibility) {
 	if strings.TrimSpace(entry.TestModel) == "" {
 		entry.TestModel = bigModelCodingModel
 	}
+	entry.Prefix = strings.TrimSpace(entry.Prefix)
+	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+	entry.TestModel = strings.TrimSpace(entry.TestModel)
+	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.IdentityFingerprint = "codex"
-	normalizeOpenAICompatibilityEntry(entry)
 	ensureBigModelCodingAlias(entry)
 }
 

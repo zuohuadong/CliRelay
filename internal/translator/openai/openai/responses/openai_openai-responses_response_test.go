@@ -175,6 +175,86 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_CompletedOnDoneWi
 	}
 }
 
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ToolCallCompletesOnDoneWithoutFinishReason(t *testing.T) {
+	t.Parallel()
+
+	request := []byte(`{"model":"gpt-5.3-codex","tool_choice":"auto","parallel_tool_calls":true}`)
+	in := []string{
+		`data: {"id":"chatcmpl_tool_no_finish","object":"chat.completion.chunk","created":1773896263,"model":"glm-5.1","choices":[{"index":0,"delta":{"role":"assistant","content":"好的，我们开始吧！"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_tool_no_finish","object":"chat.completion.chunk","created":1773896263,"model":"glm-5.1","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_vm_precheck","type":"function","function":{"name":"shell","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_tool_no_finish","object":"chat.completion.chunk","created":1773896263,"model":"glm-5.1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\":\"vm precheck\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_tool_no_finish","object":"chat.completion.chunk","created":1773896263,"model":"glm-5.1","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}`,
+		`data: [DONE]`,
+	}
+
+	var param any
+	var completedData gjson.Result
+	messageDone := false
+	argumentsDone := false
+	outputItemDone := false
+	completedCount := 0
+	completedInputIndex := -1
+
+	for i, line := range in {
+		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "glm-5.1", request, request, []byte(line), &param) {
+			event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+			switch event {
+			case "response.output_item.done":
+				switch data.Get("item.type").String() {
+				case "message":
+					if data.Get("item.content.0.text").String() == "好的，我们开始吧！" {
+						messageDone = true
+					}
+				case "function_call":
+					if data.Get("item.call_id").String() == "call_vm_precheck" &&
+						data.Get("item.name").String() == "shell" &&
+						data.Get("item.arguments").String() == `{"cmd":"vm precheck"}` {
+						outputItemDone = true
+					}
+				}
+			case "response.function_call_arguments.done":
+				if data.Get("item_id").String() == "fc_call_vm_precheck" &&
+					data.Get("arguments").String() == `{"cmd":"vm precheck"}` {
+					argumentsDone = true
+				}
+			case "response.completed":
+				completedCount++
+				completedInputIndex = i
+				completedData = data
+			}
+		}
+	}
+
+	if !messageDone {
+		t.Fatal("expected message output_item.done before response.completed")
+	}
+	if !argumentsDone {
+		t.Fatal("expected function_call_arguments.done before response.completed")
+	}
+	if !outputItemDone {
+		t.Fatal("expected function_call output_item.done before response.completed")
+	}
+	if completedCount != 1 {
+		t.Fatalf("expected exactly 1 response.completed event, got %d", completedCount)
+	}
+	if completedInputIndex != len(in)-1 {
+		t.Fatalf("expected response.completed on terminal [DONE], got input index %d", completedInputIndex)
+	}
+	if got := completedData.Get("response.output.0.content.0.text").String(); got != "好的，我们开始吧！" {
+		t.Fatalf("completed message text = %q; payload=%s", got, completedData.Raw)
+	}
+	tool := completedData.Get("response.output.1")
+	if tool.Get("type").String() != "function_call" ||
+		tool.Get("call_id").String() != "call_vm_precheck" ||
+		tool.Get("name").String() != "shell" ||
+		tool.Get("arguments").String() != `{"cmd":"vm precheck"}` {
+		t.Fatalf("unexpected completed tool call: %s", tool.Raw)
+	}
+	if got := completedData.Get("response.usage.total_tokens").Int(); got != 18 {
+		t.Fatalf("completed total_tokens = %d, want 18; payload=%s", got, completedData.Raw)
+	}
+}
+
 func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_MultipleToolCallsRemainSeparate(t *testing.T) {
 	in := []string{
 		`data: {"id":"resp_test","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"read","arguments":""}}]},"finish_reason":null}]}`,

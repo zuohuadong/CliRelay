@@ -397,7 +397,12 @@ function getProviderName(f){
 }
 
 function getProviderKey(f){
-  return (f.provider||f.type||'unknown').toLowerCase()
+  var provider=(f.provider||f.type||'unknown').toLowerCase();
+  if(provider==='openai-compatibility'){
+    var providerName=(f.provider_name||f.label||'').toLowerCase();
+    if(providerName==='bigmodel-coding')return 'bigmodel-coding'
+  }
+  return provider
 }
 
 function getFilteredFiles(){
@@ -461,7 +466,7 @@ function renderToolbar(){
   }
   var html='';
   html+='<button class="filter-chip'+(filter==='all'?' active':'')+'" onclick="filter=\'all\';currentPage=1;render()">全部 <span class="chip-count">'+files.length+'</span></button>';
-  var providerOrder=['codex','anthropic','gemini','openai','xai','kimi','openai-compatibility'];
+  var providerOrder=['codex','anthropic','gemini','openai','xai','kimi','bigmodel-coding','openai-compatibility'];
   var keys=Object.keys(providerCounts).sort(function(a,b){
     var ai=providerOrder.indexOf(a),bi=providerOrder.indexOf(b);
     if(ai===-1)ai=999;if(bi===-1)bi=999;
@@ -471,7 +476,8 @@ function renderToolbar(){
   for(var i=0;i<keys.length;i++){
     var k=keys[i];
     var label=k;
-    if(k==='openai-compatibility')label='OpenAI 兼容';
+    if(k==='bigmodel-coding')label='BigModel Coding';
+    else if(k==='openai-compatibility')label='OpenAI 兼容';
     else label=k.charAt(0).toUpperCase()+k.slice(1);
     html+='<button class="filter-chip'+(filter===k?' active':'')+'" onclick="filter=\''+escAttr(k)+'\';currentPage=1;render()">'+escHtml(label)+' <span class="chip-count">'+providerCounts[k]+'</span></button>'
   }
@@ -672,6 +678,7 @@ function showAddModal(){
     '<option value="codex">Codex</option>'+
     '<option value="xai">xAI (Grok)</option>'+
     '<option value="kimi">Kimi</option>'+
+    '<option value="bigmodel-coding">BigModel Coding</option>'+
     '<option value="openai-compatibility">OpenAI 兼容</option>'+
     '</select>'+
     '<div id="addFields"></div>'+
@@ -688,7 +695,13 @@ function updateAddFields(){
   var type=document.getElementById('addType').value;
   var f=document.getElementById('addFields');
   var cf=document.getElementById('addCompatFields');
-  if(type==='openai-compatibility'){
+  if(type==='bigmodel-coding'){
+    f.innerHTML='';
+    cf.style.display='';
+    cf.innerHTML=
+      '<label>Base URL</label><input id="addBaseUrl" placeholder="https://open.bigmodel.cn/api/coding/paas/v4" value="https://open.bigmodel.cn/api/coding/paas/v4">'+
+      '<label>API Key</label><textarea id="addApiKey" placeholder="sk-..."></textarea>'
+  }else if(type==='openai-compatibility'){
     f.innerHTML='';
     cf.style.display='';
     cf.innerHTML=
@@ -711,7 +724,15 @@ function closeModal(id){var m=document.getElementById(id);if(m)m.remove()}
 
 async function submitAdd(){
   var type=document.getElementById('addType').value;
-  if(type==='openai-compatibility'){
+  if(type==='bigmodel-coding'){
+    var base=document.getElementById('addBaseUrl').value.trim()||'https://open.bigmodel.cn/api/coding/paas/v4';
+    var key=document.getElementById('addApiKey').value.trim();
+    if(!key){toast('Key 必填',false);return}
+    var content=JSON.stringify({provider:"openai-compatibility",compat_name:"bigmodel-coding",base_url:base,api_key:key,identity_fingerprint:"codex"});
+    var blob=new Blob([content],{type:'application/json'});
+    var fd=new FormData();fd.append('file',blob,'bigmodel-coding.json');
+    try{await apiUpload(fd);toast('添加成功',true);closeModal('addModal');loadData()}catch(e){toast('添加失败: '+e.message,false)}
+  }else if(type==='openai-compatibility'){
     var name=document.getElementById('addCompatName').value.trim();
     var base=document.getElementById('addBaseUrl').value.trim();
     var key=document.getElementById('addApiKey').value.trim();

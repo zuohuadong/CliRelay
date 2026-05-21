@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
@@ -50,6 +51,7 @@ type responsesSSEFramer struct {
 	outputItems          map[int][]byte
 	outputOrder          []int
 	unindexedOutputItems [][]byte
+	completed            bool
 }
 
 func (f *responsesSSEFramer) WriteChunk(w io.Writer, chunk []byte) {
@@ -96,6 +98,16 @@ func (f *responsesSSEFramer) Flush(w io.Writer) {
 	f.pending = f.pending[:0]
 }
 
+func (f *responsesSSEFramer) WriteDone(w io.Writer) {
+	f.Flush(w)
+	if f.completed {
+		_, _ = w.Write([]byte("\n"))
+		return
+	}
+	payload := buildResponsesTerminalCompletedPayload(f.completedOutputPayload())
+	writeResponsesSSEChunk(w, responsesSSEFrameWithData(nil, payload))
+}
+
 func (f *responsesSSEFramer) writeFrame(w io.Writer, frame []byte) {
 	writeResponsesSSEChunk(w, f.repairFrame(frame))
 }
@@ -110,6 +122,7 @@ func (f *responsesSSEFramer) repairFrame(frame []byte) []byte {
 	case "response.output_item.done":
 		f.recordOutputItem(payload)
 	case "response.completed":
+		f.completed = true
 		repaired := f.repairCompletedPayload(payload)
 		if !bytes.Equal(repaired, payload) {
 			return responsesSSEFrameWithData(frame, repaired)
@@ -187,6 +200,18 @@ func (f *responsesSSEFramer) repairCompletedPayload(payload []byte) []byte {
 		return payload
 	}
 
+	outputJSON := f.completedOutputPayload()
+	repaired, err := sjson.SetRawBytes(payload, "response.output", outputJSON)
+	if err != nil {
+		return payload
+	}
+	return repaired
+}
+
+func (f *responsesSSEFramer) completedOutputPayload() []byte {
+	if f == nil || (len(f.outputOrder) == 0 && len(f.unindexedOutputItems) == 0) {
+		return []byte("[]")
+	}
 	var outputJSON bytes.Buffer
 	outputJSON.WriteByte('[')
 	indexes := append([]int(nil), f.outputOrder...)
@@ -211,12 +236,24 @@ func (f *responsesSSEFramer) repairCompletedPayload(payload []byte) []byte {
 		written++
 	}
 	outputJSON.WriteByte(']')
+	return outputJSON.Bytes()
+}
 
-	repaired, err := sjson.SetRawBytes(payload, "response.output", outputJSON.Bytes())
-	if err != nil {
-		return payload
+func buildResponsesTerminalCompletedPayload(output []byte) []byte {
+	if !gjson.ParseBytes(output).IsArray() {
+		output = []byte("[]")
 	}
-	return repaired
+	payload := []byte(`{"type":"response.completed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
+	var errSet error
+	payload, errSet = sjson.SetBytes(payload, "response.created_at", time.Now().Unix())
+	if errSet != nil {
+		return []byte(`{"type":"response.completed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
+	}
+	payload, errSet = sjson.SetRawBytes(payload, "response.output", output)
+	if errSet != nil {
+		return []byte(`{"type":"response.completed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
+	}
+	return payload
 }
 
 func responsesSSEFrameLen(chunk []byte) int {
@@ -534,7 +571,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 				// Stream closed without data? Send headers and done.
 				setSSEHeaders()
 				handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
-				_, _ = c.Writer.Write([]byte("\n"))
+				framer.WriteDone(c.Writer)
 				flusher.Flush()
 				cliCancel(nil)
 				return
@@ -578,8 +615,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", string(chunk))
 		},
 		WriteDone: func() {
-			framer.Flush(c.Writer)
-			_, _ = c.Writer.Write([]byte("\n"))
+			framer.WriteDone(c.Writer)
 		},
 	})
 }

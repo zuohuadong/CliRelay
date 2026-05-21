@@ -122,6 +122,33 @@ func TestForwardResponsesStreamRepairsMixedIndexedAndUnindexedDoneItems(t *testi
 	}
 }
 
+func TestForwardResponsesStreamSynthesizesCompletedOnCleanEOF(t *testing.T) {
+	h, recorder, c, flusher := newResponsesStreamTestHandler(t)
+
+	data := make(chan []byte, 1)
+	errs := make(chan *interfaces.ErrorMessage)
+	data <- []byte(`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc-1","call_id":"call-1","name":"shell","arguments":"{}","status":"completed"}}`)
+	close(data)
+	close(errs)
+
+	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
+
+	parts := strings.Split(strings.TrimSpace(recorder.Body.String()), "\n\n")
+	if len(parts) != 2 {
+		t.Fatalf("expected output item plus synthesized completed, got %d. Body: %q", len(parts), recorder.Body.String())
+	}
+	payload := strings.TrimPrefix(parts[1], "data: ")
+	if got := gjson.Get(payload, "type").String(); got != "response.completed" {
+		t.Fatalf("synthesized event type = %q, want response.completed: %s", got, payload)
+	}
+	if got := gjson.Get(payload, "response.output.0.id").String(); got != "fc-1" {
+		t.Fatalf("synthesized completed output id = %q, want fc-1: %s", got, payload)
+	}
+	if got := gjson.Get(payload, "response.id").String(); got != "" {
+		t.Fatalf("synthesized completed must not create reusable response id, got %q: %s", got, payload)
+	}
+}
+
 func TestForwardResponsesStreamRepairsMultilineCompletedOutputAsSSEDataLines(t *testing.T) {
 	h, recorder, c, flusher := newResponsesStreamTestHandler(t)
 
@@ -169,10 +196,16 @@ func TestForwardResponsesStreamReassemblesSplitSSEEventChunks(t *testing.T) {
 
 	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
 
-	got := strings.TrimSuffix(recorder.Body.String(), "\n")
-	want := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n"
-	if got != want {
-		t.Fatalf("unexpected split-event framing.\nGot:  %q\nWant: %q", got, want)
+	parts := strings.Split(strings.TrimSpace(recorder.Body.String()), "\n\n")
+	if len(parts) != 2 {
+		t.Fatalf("expected created plus synthesized completed events, got %d. Body: %q", len(parts), recorder.Body.String())
+	}
+	wantFirst := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}"
+	if parts[0] != wantFirst {
+		t.Fatalf("unexpected split-event framing.\nGot:  %q\nWant: %q", parts[0], wantFirst)
+	}
+	if got := gjson.Get(strings.TrimPrefix(parts[1], "data: "), "type").String(); got != "response.completed" {
+		t.Fatalf("second event type = %q, want response.completed. Body: %q", got, recorder.Body.String())
 	}
 }
 
@@ -188,9 +221,15 @@ func TestForwardResponsesStreamPreservesValidFullSSEEventChunks(t *testing.T) {
 
 	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
 
-	got := strings.TrimSuffix(recorder.Body.String(), "\n")
-	if got != string(chunk) {
-		t.Fatalf("unexpected full-event framing.\nGot:  %q\nWant: %q", got, string(chunk))
+	parts := strings.Split(strings.TrimSpace(recorder.Body.String()), "\n\n")
+	if len(parts) != 2 {
+		t.Fatalf("expected original event plus synthesized completed, got %d. Body: %q", len(parts), recorder.Body.String())
+	}
+	if parts[0] != strings.TrimSpace(string(chunk)) {
+		t.Fatalf("unexpected full-event framing.\nGot:  %q\nWant: %q", parts[0], strings.TrimSpace(string(chunk)))
+	}
+	if got := gjson.Get(strings.TrimPrefix(parts[1], "data: "), "type").String(); got != "response.completed" {
+		t.Fatalf("second event type = %q, want response.completed. Body: %q", got, recorder.Body.String())
 	}
 }
 
@@ -206,10 +245,16 @@ func TestForwardResponsesStreamBuffersSplitDataPayloadChunks(t *testing.T) {
 
 	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
 
-	got := recorder.Body.String()
-	want := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n\n"
-	if got != want {
-		t.Fatalf("unexpected split-data framing.\nGot:  %q\nWant: %q", got, want)
+	parts := strings.Split(strings.TrimSpace(recorder.Body.String()), "\n\n")
+	if len(parts) != 2 {
+		t.Fatalf("expected created plus synthesized completed events, got %d. Body: %q", len(parts), recorder.Body.String())
+	}
+	wantFirst := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}"
+	if parts[0] != wantFirst {
+		t.Fatalf("unexpected split-data framing.\nGot:  %q\nWant: %q", parts[0], wantFirst)
+	}
+	if got := gjson.Get(strings.TrimPrefix(parts[1], "data: "), "type").String(); got != "response.completed" {
+		t.Fatalf("second event type = %q, want response.completed. Body: %q", got, recorder.Body.String())
 	}
 }
 
@@ -233,7 +278,11 @@ func TestForwardResponsesStreamDropsIncompleteTrailingDataChunkOnFlush(t *testin
 
 	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
 
-	if got := recorder.Body.String(); got != "\n" {
-		t.Fatalf("expected incomplete trailing data to be dropped on flush.\nGot: %q", got)
+	parts := strings.Split(strings.TrimSpace(recorder.Body.String()), "\n\n")
+	if len(parts) != 1 {
+		t.Fatalf("expected only synthesized completed event after incomplete trailing data is dropped, got %d. Body: %q", len(parts), recorder.Body.String())
+	}
+	if got := gjson.Get(strings.TrimPrefix(parts[0], "data: "), "type").String(); got != "response.completed" {
+		t.Fatalf("event type = %q, want response.completed. Body: %q", got, recorder.Body.String())
 	}
 }

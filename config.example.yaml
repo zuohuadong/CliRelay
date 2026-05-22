@@ -255,7 +255,7 @@ request-log-storage:
 #       requested-models: ["gpt-5.3-codex", "glm-5.1"]
 #       upstream-providers: ["astron-code"]
 #       upstream-models: ["astron-code-latest"]
-#     priority: 120
+#     priority: 300
 #   - name: "prefer-bigmodel-coding-for-glm-5.1"
 #     match:
 #       upstream-providers: ["bigmodel-coding"]
@@ -505,6 +505,7 @@ streaming:
 #   - name: "astron-code"
 #     base-url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
 #     identity-fingerprint: "codex"
+#     priority: 300
 #     api-key-entries:
 #       - api-key: "${ASTRON_CODE_API_KEY}"
 #     test-model: "astron-code-latest"

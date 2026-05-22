@@ -17,6 +17,7 @@ const RequestPathMetadataKey = "request_path"
 // DisallowFreeAuthMetadataKey instructs auth selection to skip known free-tier credentials.
 const DisallowFreeAuthMetadataKey = "disallow_free_auth"
 
+<<<<<<< HEAD
 // RequestBytesMetadataKey stores the inbound request body size in bytes.
 const RequestBytesMetadataKey = "request_bytes"
 
@@ -44,6 +45,8 @@ const RouteFallbackMetadataKey = "route_fallback"
 // DisableCooldownWaitMetadataKey skips manager-level cooldown waiting for latency-sensitive requests.
 const DisableCooldownWaitMetadataKey = "disable_cooldown_wait"
 
+=======
+>>>>>>> upstream/main
 // ReasoningEffortMetadataKey stores the client-requested reasoning effort for usage logs.
 const ReasoningEffortMetadataKey = "reasoning_effort"
 

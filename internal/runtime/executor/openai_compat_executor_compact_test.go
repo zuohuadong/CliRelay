@@ -183,6 +183,51 @@ func TestBigModelCodingExecutorDoesNotSetToolStreamForNonStreamingTools(t *testi
 	}
 }
 
+func TestBigModelCodingExecutorTreatsPostDataRawJSONErrorAsTerminalDone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_tool_tail_error","object":"chat.completion.chunk","created":1779410449,"model":"glm-5.1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"exec_command","arguments":"{\"cmd\":\"gh pr list\"}"}}]},"finish_reason":null}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`{"error":{"code":"500","message":"内部错误"}}` + "\n"))
+	}))
+	defer server.Close()
+
+	executor := NewBigModelCodingExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/api/coding/paas/v4",
+		"api_key":  "sk-test",
+	}}
+	payload := []byte(`{"model":"glm-5.1","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"list PRs"}]}],"tools":[{"type":"function","name":"exec_command","parameters":{"type":"object"}}],"stream":true}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "glm-5.1",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		OriginalRequest: payload,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var joined strings.Builder
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream error: %v", chunk.Err)
+		}
+		joined.Write(chunk.Payload)
+	}
+	out := joined.String()
+	if !strings.Contains(out, "response.function_call_arguments.done") {
+		t.Fatalf("missing function_call_arguments.done: %s", out)
+	}
+	if !strings.Contains(out, "response.completed") {
+		t.Fatalf("missing response.completed: %s", out)
+	}
+	if strings.Contains(out, "Upstream request failed") {
+		t.Fatalf("unexpected upstream error surfaced: %s", out)
+	}
+}
+
 func TestBigModelCodingExecutorDisablesThinkingFromCodexNone(t *testing.T) {
 	executor := NewBigModelCodingExecutor(&config.Config{})
 	payload := []byte(`{

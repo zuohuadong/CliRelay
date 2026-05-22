@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-22 08:43:23 +0800] [CliRelay] [done] Fixed bigmodel-coding glm-5.1 streaming tool calls that end with raw JSON 500 by synthesizing terminal DONE after prior SSE data instead of surfacing Upstream request failed
 [2026-05-22 08:33:00 +0800] [CliRelay] [done] Replayed missing Responses tool fields when falling back from previous_response_id so mixed codex/bigmodel websocket turns keep tool context on glm-5.1
 [2026-05-22 08:20:49 +0800] [CliRelay] [done] Fixed mixed Codex websocket and bigmodel-coding routing so gpt-5.3-codex replays the full transcript to glm-5.1 instead of forwarding previous_response_id-only tool outputs
 [2026-05-22 08:01:40 +0800] [CliRelay] [done] Fixed Responses WebSocket second-turn transcript merge when the initial Codex input is a string and the next request returns function_call_output

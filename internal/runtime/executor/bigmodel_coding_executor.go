@@ -301,6 +301,18 @@ func (e *BigModelCodingExecutor) ExecuteStream(ctx context.Context, auth *clipro
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, 52_428_800)
 		var param any
+		sawSSEData := false
+		emitDone := func() bool {
+			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param)
+			for i := range chunks {
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+				case <-ctx.Done():
+					return false
+				}
+			}
+			return true
+		}
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -317,6 +329,13 @@ func (e *BigModelCodingExecutor) ExecuteStream(ctx context.Context, auth *clipro
 					continue
 				}
 				if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
+					if sawSSEData {
+						helps.LogWithRequestID(ctx).Debugf("bigmodel coding stream ended with non-SSE payload after data: %s", helps.SummarizeErrorBody("application/json", trimmedLine))
+						if emitDone() {
+							reporter.EnsurePublished(ctx)
+						}
+						return
+					}
 					streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
@@ -328,6 +347,7 @@ func (e *BigModelCodingExecutor) ExecuteStream(ctx context.Context, auth *clipro
 				}
 				continue
 			}
+			sawSSEData = true
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param)
 			for i := range chunks {
 				select {
@@ -345,14 +365,7 @@ func (e *BigModelCodingExecutor) ExecuteStream(ctx context.Context, auth *clipro
 			case <-ctx.Done():
 			}
 		} else {
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return
-				}
-			}
+			emitDone()
 		}
 		reporter.EnsurePublished(ctx)
 	}()

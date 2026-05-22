@@ -789,6 +789,22 @@ func TestRepairResponsesWebsocketToolCallsDropsOrphanFunctionCall(t *testing.T) 
 	}
 }
 
+func TestRepairResponsesWebsocketToolCallsDropsFunctionCallWithEmptyName(t *testing.T) {
+	cache := newWebsocketToolOutputCache(time.Minute, 10)
+	sessionKey := "session-1"
+
+	raw := []byte(`{"input":[{"type":"function_call","call_id":"call-1","name":""},{"type":"message","id":"msg-1"}]}`)
+	repaired := repairResponsesWebsocketToolCallsWithCache(cache, sessionKey, raw)
+
+	input := gjson.GetBytes(repaired, "input").Array()
+	if len(input) != 1 {
+		t.Fatalf("repaired input len = %d, want 1", len(input))
+	}
+	if input[0].Get("type").String() != "message" || input[0].Get("id").String() != "msg-1" {
+		t.Fatalf("unexpected remaining item: %s", input[0].Raw)
+	}
+}
+
 func TestRepairResponsesWebsocketToolCallsInsertsCachedCallForOrphanOutput(t *testing.T) {
 	outputCache := newWebsocketToolOutputCache(time.Minute, 10)
 	callCache := newWebsocketToolOutputCache(time.Minute, 10)
@@ -958,6 +974,18 @@ func TestRecordResponsesWebsocketToolCallsFromPayloadWithCache(t *testing.T) {
 	}
 	if gjson.GetBytes(cached, "type").String() != "function_call" || gjson.GetBytes(cached, "call_id").String() != "call-1" {
 		t.Fatalf("unexpected cached tool call: %s", cached)
+	}
+}
+
+func TestRecordResponsesWebsocketToolCallsFromPayloadWithCacheSkipsEmptyName(t *testing.T) {
+	cache := newWebsocketToolOutputCache(time.Minute, 10)
+	sessionKey := "session-1"
+
+	payload := []byte(`{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"function_call","id":"fc-1","call_id":"call-1","name":"","arguments":"{}"}]}}`)
+	recordResponsesWebsocketToolCallsFromPayloadWithCache(cache, sessionKey, payload)
+
+	if _, ok := cache.get(sessionKey, "call-1"); ok {
+		t.Fatalf("expected empty-name tool call to be skipped")
 	}
 }
 

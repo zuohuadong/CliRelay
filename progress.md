@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-22 14:35:30 +0800] [CliRelay] [done] Surface context_length_exceeded as response.failed so Codex can compact on real context errors; deployed main-e96dde8 and verified server health
 [2026-05-22 12:20:12 +0800] [CliRelay] [done] Verified production astron-code smart routing and raised astron priority above bigmodel-coding so small gpt-5.3-codex requests route to astron-code-latest while MCP and oversized requests fall back to bigmodel-coding
 [2026-05-22 11:53:00 +0800] [CliRelay] [done] Added astron-code small-window routing guidance and MCP feature detection so gpt-5.3-codex can prefer astron-code-latest under 200k and fall back to bigmodel-coding for MCP or oversized requests
 [2026-05-22 09:16:57 +0800] [CliRelay] [done] Added bigmodel-coding GLM-5.1 request_user_input guidance plus request/response passthrough tests so Codex choice UI stays structural instead of plain text

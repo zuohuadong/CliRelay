@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-22 08:20:49 +0800] [CliRelay] [done] Fixed mixed Codex websocket and bigmodel-coding routing so gpt-5.3-codex replays the full transcript to glm-5.1 instead of forwarding previous_response_id-only tool outputs
 [2026-05-22 08:01:40 +0800] [CliRelay] [done] Fixed Responses WebSocket second-turn transcript merge when the initial Codex input is a string and the next request returns function_call_output
 [2026-05-22 07:27:11 +0800] [CliRelay] [done] Verified gpt-5.3-codex manually routes to bigmodel-coding/glm-5.1 over HTTP and WebSocket, then added bootstrap retry coverage for pre-stream upstream 500 failures
 [2026-05-21 23:16:26 +0800] [CliRelay] [done] Reworked Codex Responses terminal error handling to emit assistant output_item.done plus empty-id response.completed, and fixed websocket transcript replay continuation for previous_response_not_found

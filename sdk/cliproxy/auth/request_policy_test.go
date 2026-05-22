@@ -39,8 +39,24 @@ func (e *requestPolicyTestExecutor) Execute(ctx context.Context, auth *Auth, req
 	return cliproxyexecutor.Response{Payload: []byte(`{"ok":true}`)}, nil
 }
 
-func (e *requestPolicyTestExecutor) ExecuteStream(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	return nil, &Error{Code: "not_implemented", Message: "ExecuteStream not implemented"}
+func (e *requestPolicyTestExecutor) ExecuteStream(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	_ = ctx
+	_ = req
+	_ = opts
+	authID := ""
+	if auth != nil {
+		authID = auth.ID
+	}
+	e.mu.Lock()
+	e.calls = append(e.calls, authID)
+	e.mu.Unlock()
+	if e.err != nil {
+		return nil, e.err
+	}
+	chunks := make(chan cliproxyexecutor.StreamChunk, 1)
+	chunks <- cliproxyexecutor.StreamChunk{Payload: []byte(`{"ok":true}`)}
+	close(chunks)
+	return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
 }
 
 func (e *requestPolicyTestExecutor) Refresh(ctx context.Context, auth *Auth) (*Auth, error) {
@@ -298,6 +314,89 @@ func TestManagerExecute_AstronCodePrefersSmallRequestsAndSkipsMCP(t *testing.T) 
 	}
 	if calls := bigmodel.Calls(); len(calls) != 1 || calls[0] != "bigmodel-auth" {
 		t.Fatalf("bigmodel calls after mcp request = %v, want [bigmodel-auth]", calls)
+	}
+}
+
+func TestManagerExecuteStream_AstronCodeTransientErrorDoesNotFallBackToBigmodel(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	astronErr := requestPolicyStatusError{status: http.StatusBadGateway, msg: "astron upstream closed before first payload"}
+	astron := &requestPolicyTestExecutor{id: "astron-code", err: astronErr}
+	bigmodel := &requestPolicyTestExecutor{id: "bigmodel-coding"}
+	manager.RegisterExecutor(astron)
+	manager.RegisterExecutor(bigmodel)
+	manager.SetConfig(&internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{
+			{
+				Name: "astron-code",
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "astron-code-latest", Alias: "gpt-5.3-codex"},
+				},
+			},
+		},
+		BigModelCodingAPIKey: []internalconfig.OpenAICompatibility{
+			{
+				Name: "bigmodel-coding",
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "glm-5.1", Alias: "gpt-5.3-codex"},
+				},
+			},
+		},
+		ProviderPreferences: []internalconfig.ProviderPreference{
+			{
+				Name: "prefer-astron-code",
+				Match: internalconfig.ProviderPreferenceMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"astron-code"},
+					UpstreamModels:    []string{"astron-code-latest"},
+				},
+				Priority: 100,
+			},
+		},
+	})
+
+	for _, auth := range []*Auth{
+		{
+			ID:       "astron-auth",
+			Provider: "astron-code",
+			Status:   StatusActive,
+			Attributes: map[string]string{
+				"api_key":      "astron-key",
+				"provider_key": "astron-code",
+				"compat_name":  "astron-code",
+			},
+		},
+		{
+			ID:       "bigmodel-auth",
+			Provider: "bigmodel-coding",
+			Status:   StatusActive,
+			Attributes: map[string]string{
+				"api_key":      "bigmodel-key",
+				"provider_key": "bigmodel-coding",
+				"compat_name":  "bigmodel-coding",
+			},
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.3-codex", Name: "gpt-5.3-codex"}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	}
+
+	_, err := manager.ExecuteStream(context.Background(), []string{"astron-code", "bigmodel-coding"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex","input":"small"}`),
+	}, cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: 120000},
+	})
+	if err == nil || err.Error() != astronErr.Error() {
+		t.Fatalf("ExecuteStream error = %v, want %v", err, astronErr)
+	}
+	if calls := astron.Calls(); len(calls) != 1 || calls[0] != "astron-auth" {
+		t.Fatalf("astron calls = %v, want [astron-auth]", calls)
+	}
+	if calls := bigmodel.Calls(); len(calls) != 0 {
+		t.Fatalf("bigmodel calls after astron transient error = %v, want none", calls)
 	}
 }
 

@@ -1425,6 +1425,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
 			}
+			if shouldStopMixedProviderFallback(provider, routeModel, authErr) {
+				logEntryWithRequestID(ctx).Debugf("stopping mixed provider fallback after provider failure provider=%s model=%s error=%s", provider, routeModel, authErr.Error())
+				return cliproxyexecutor.Response{}, authErr
+			}
 			lastErr = authErr
 			if homeMode {
 				homeAuthCount++
@@ -1524,6 +1528,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
 			}
+			if shouldStopMixedProviderFallback(provider, routeModel, authErr) {
+				logEntryWithRequestID(ctx).Debugf("stopping mixed provider fallback after provider failure provider=%s model=%s error=%s", provider, routeModel, authErr.Error())
+				return cliproxyexecutor.Response{}, authErr
+			}
 			lastErr = authErr
 			if homeMode {
 				homeAuthCount++
@@ -1597,6 +1605,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
 			}
+			if shouldStopMixedProviderFallback(provider, routeModel, errStream) {
+				logEntryWithRequestID(ctx).Debugf("stopping mixed provider fallback after provider failure provider=%s model=%s error=%s", provider, routeModel, errStream.Error())
+				return nil, errStream
+			}
 			lastErr = errStream
 			if homeMode {
 				homeAuthCount++
@@ -1626,6 +1638,31 @@ func ensureRequestedModelMetadata(opts cliproxyexecutor.Options, requestedModel 
 	meta[cliproxyexecutor.RequestedModelMetadataKey] = requestedModel
 	opts.Metadata = meta
 	return opts
+}
+
+func shouldStopMixedProviderFallback(provider, routeModel string, err error) bool {
+	if err == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(provider), "astron-code") {
+		return false
+	}
+	model := strings.TrimSpace(routeModel)
+	if parsed := thinking.ParseSuffix(model); parsed.ModelName != "" {
+		model = strings.TrimSpace(parsed.ModelName)
+	}
+	if !strings.EqualFold(model, "gpt-5.3-codex") && !strings.EqualFold(model, "glm-5.1") {
+		return false
+	}
+	if isModelSupportError(err) || isRequestInvalidError(err) {
+		return false
+	}
+	switch statusCodeFromError(err) {
+	case 0, http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func withHomeAuthCount(opts cliproxyexecutor.Options, count int) cliproxyexecutor.Options {

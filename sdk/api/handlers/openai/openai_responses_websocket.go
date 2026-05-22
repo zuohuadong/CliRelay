@@ -311,6 +311,8 @@ func normalizeResponseCreateRequest(rawJSON []byte) ([]byte, []byte, *interfaces
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
 	if !gjson.GetBytes(normalized, "input").Exists() {
 		normalized, _ = sjson.SetRawBytes(normalized, "input", []byte("[]"))
+	} else if input := gjson.GetBytes(normalized, "input"); input.Type == gjson.String {
+		normalized, _ = sjson.SetRawBytes(normalized, "input", []byte(responsesStringInputArrayRaw(input.String())))
 	}
 
 	modelName := strings.TrimSpace(gjson.GetBytes(normalized, "model").String())
@@ -393,11 +395,11 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 
 		existingInput := gjson.GetBytes(lastRequest, "input")
 		var errMerge error
-		mergedInput, errMerge = mergeJSONArrayRaw(existingInput.Raw, normalizeJSONArrayRaw(lastResponseOutput))
+		mergedInput, errMerge = mergeJSONArrayRaw(responsesInputArrayRaw(existingInput), normalizeJSONArrayRaw(lastResponseOutput))
 		if errMerge != nil {
 			return nil, lastRequest, &interfaces.ErrorMessage{
 				StatusCode: http.StatusBadRequest,
-				Error:      fmt.Errorf("invalid previous response output: %w", errMerge),
+				Error:      fmt.Errorf("invalid previous request input: %w", errMerge),
 			}
 		}
 
@@ -799,6 +801,34 @@ func mergeJSONArrayRaw(existingRaw, appendRaw string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
+}
+
+func responsesInputArrayRaw(input gjson.Result) string {
+	if !input.Exists() {
+		return "[]"
+	}
+	if input.IsArray() {
+		return input.Raw
+	}
+	if input.Type == gjson.String {
+		return responsesStringInputArrayRaw(input.String())
+	}
+	return "[]"
+}
+
+func responsesStringInputArrayRaw(text string) string {
+	raw, err := json.Marshal([]map[string]any{{
+		"type": "message",
+		"role": "user",
+		"content": []map[string]any{{
+			"type": "input_text",
+			"text": text,
+		}},
+	}})
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
 }
 
 // inputContainsFullTranscript returns true when the input array carries compact

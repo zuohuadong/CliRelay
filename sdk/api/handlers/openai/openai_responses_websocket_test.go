@@ -415,6 +415,31 @@ func TestNormalizeResponsesWebsocketRequestCreate(t *testing.T) {
 	}
 }
 
+func TestNormalizeResponsesWebsocketRequestCreateCanonicalizesStringInput(t *testing.T) {
+	raw := []byte(`{"type":"response.create","model":"test-model","stream":false,"input":"hello"}`)
+
+	normalized, last, errMsg := normalizeResponsesWebsocketRequest(raw, nil, nil)
+	if errMsg != nil {
+		t.Fatalf("unexpected error: %v", errMsg.Error)
+	}
+	input := gjson.GetBytes(normalized, "input")
+	if !input.IsArray() {
+		t.Fatalf("input must be normalized to array: %s", normalized)
+	}
+	if got := input.Get("0.type").String(); got != "message" {
+		t.Fatalf("input.0.type = %q, want message", got)
+	}
+	if got := input.Get("0.role").String(); got != "user" {
+		t.Fatalf("input.0.role = %q, want user", got)
+	}
+	if got := input.Get("0.content.0.text").String(); got != "hello" {
+		t.Fatalf("input.0.content.0.text = %q, want hello", got)
+	}
+	if !bytes.Equal(last, normalized) {
+		t.Fatalf("last request snapshot should match normalized request")
+	}
+}
+
 func TestNormalizeResponsesWebsocketRequestCreateWithHistory(t *testing.T) {
 	lastRequest := []byte(`{"model":"test-model","stream":true,"input":[{"type":"message","id":"msg-1"}]}`)
 	lastResponseOutput := []byte(`[
@@ -446,6 +471,29 @@ func TestNormalizeResponsesWebsocketRequestCreateWithHistory(t *testing.T) {
 	}
 	if !bytes.Equal(next, normalized) {
 		t.Fatalf("next request snapshot should match normalized request")
+	}
+}
+
+func TestNormalizeResponsesWebsocketRequestWithStringHistoryMergesToolOutput(t *testing.T) {
+	lastRequest := []byte(`{"model":"test-model","stream":true,"input":"run tool"}`)
+	lastResponseOutput := []byte(`[
+		{"type":"function_call","id":"fc-1","call_id":"call-1"}
+	]`)
+	raw := []byte(`{"type":"response.create","previous_response_id":"resp-1","input":[{"type":"function_call_output","call_id":"call-1","id":"tool-out-1","output":"ok"}]}`)
+
+	normalized, _, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, false, false)
+	if errMsg != nil {
+		t.Fatalf("unexpected error: %v", errMsg.Error)
+	}
+	input := gjson.GetBytes(normalized, "input").Array()
+	if len(input) != 3 {
+		t.Fatalf("merged input len = %d, want 3: %s", len(input), normalized)
+	}
+	if got := input[0].Get("content.0.text").String(); got != "run tool" {
+		t.Fatalf("first input text = %q, want run tool", got)
+	}
+	if input[1].Get("call_id").String() != "call-1" || input[2].Get("id").String() != "tool-out-1" {
+		t.Fatalf("unexpected merged tool items: %s", normalized)
 	}
 }
 

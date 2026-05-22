@@ -563,6 +563,26 @@ func TestNormalizeResponsesWebsocketRequestWithPreviousResponseIDMergedWhenIncre
 	}
 }
 
+func TestNormalizeResponsesWebsocketRequestCopiesToolFieldsWhenIncrementalDisabled(t *testing.T) {
+	lastRequest := []byte(`{"model":"test-model","stream":true,"tools":[{"type":"function","name":"exec_command","description":"Run a shell command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]}}],"tool_choice":"required","parallel_tool_calls":true,"input":[{"type":"message","id":"msg-1"}]}`)
+	lastResponseOutput := []byte(`[]`)
+	raw := []byte(`{"type":"response.create","previous_response_id":"resp_1","input":[{"type":"function_call_output","call_id":"call-1","output":"ok"}]}`)
+
+	normalized, _, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, false, false)
+	if errMsg != nil {
+		t.Fatalf("unexpected error: %v", errMsg.Error)
+	}
+	if got := gjson.GetBytes(normalized, "tool_choice").String(); got != "required" {
+		t.Fatalf("tool_choice = %q, want required", got)
+	}
+	if !gjson.GetBytes(normalized, "parallel_tool_calls").Bool() {
+		t.Fatalf("parallel_tool_calls must be copied from last request")
+	}
+	if got := gjson.GetBytes(normalized, "tools.0.name").String(); got != "exec_command" {
+		t.Fatalf("tools.0.name = %q, want exec_command", got)
+	}
+}
+
 func TestNormalizeResponsesWebsocketRequestMergesInvalidPreviousResponseID(t *testing.T) {
 	lastRequest := []byte(`{"model":"test-model","stream":true,"input":[{"type":"message","id":"msg-1"}]}`)
 	lastResponseOutput := []byte(`[

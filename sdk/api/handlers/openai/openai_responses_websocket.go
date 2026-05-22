@@ -435,12 +435,7 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 			normalized, _ = sjson.SetBytes(normalized, "model", modelName)
 		}
 	}
-	if !gjson.GetBytes(normalized, "instructions").Exists() {
-		instructions := gjson.GetBytes(lastRequest, "instructions")
-		if instructions.Exists() {
-			normalized, _ = sjson.SetRawBytes(normalized, "instructions", []byte(instructions.Raw))
-		}
-	}
+	normalized = copyMissingResponsesRequestFields(normalized, lastRequest)
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
 	return normalized, bytes.Clone(normalized), nil
 }
@@ -478,20 +473,37 @@ func normalizeResponseTranscriptReplacement(rawJSON []byte, lastRequest []byte) 
 		normalized = bytes.Clone(rawJSON)
 	}
 	normalized, _ = sjson.DeleteBytes(normalized, "previous_response_id")
-	if !gjson.GetBytes(normalized, "model").Exists() {
-		modelName := strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
-		if modelName != "" {
-			normalized, _ = sjson.SetBytes(normalized, "model", modelName)
-		}
-	}
-	if !gjson.GetBytes(normalized, "instructions").Exists() {
-		instructions := gjson.GetBytes(lastRequest, "instructions")
-		if instructions.Exists() {
-			normalized, _ = sjson.SetRawBytes(normalized, "instructions", []byte(instructions.Raw))
-		}
-	}
+	normalized = copyMissingResponsesRequestFields(normalized, lastRequest)
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
 	return bytes.Clone(normalized)
+}
+
+func copyMissingResponsesRequestFields(normalized []byte, lastRequest []byte) []byte {
+	for _, path := range []string{
+		"model",
+		"instructions",
+		"tools",
+		"tool_choice",
+		"parallel_tool_calls",
+		"max_tool_calls",
+		"reasoning",
+		"text",
+		"max_output_tokens",
+		"temperature",
+		"top_p",
+	} {
+		if gjson.GetBytes(normalized, path).Exists() {
+			continue
+		}
+		value := gjson.GetBytes(lastRequest, path)
+		if !value.Exists() {
+			continue
+		}
+		if updated, errSet := sjson.SetRawBytes(normalized, path, []byte(value.Raw)); errSet == nil {
+			normalized = updated
+		}
+	}
+	return normalized
 }
 
 func dedupeFunctionCallsByCallID(rawArray string) (string, error) {

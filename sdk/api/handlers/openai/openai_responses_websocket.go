@@ -975,29 +975,43 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						}
 					}
 					if errMsg == nil {
-						completedPayload, errBuild := buildResponsesWebsocketEOFCompletedPayload(completedOutput)
-						if errBuild != nil {
-							cancel(errBuild)
-							return completedOutput, nil, errBuild
-						}
-						markAPIResponseTimestamp(c)
-						if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, completedPayload, time.Now()); errWrite != nil {
+						outputItemCount := responsesWebsocketOutputItemCount(completedOutput)
+						if outputItemCount == 0 {
+							// Upstream closed with zero output; treat it as a server error so the
+							// Codex client sees a visible failure instead of a silent empty completed.
+							errMsg = &interfaces.ErrorMessage{
+								StatusCode: http.StatusBadGateway,
+								Error:      fmt.Errorf("upstream closed connection without sending any response data"),
+							}
 							log.Warnf(
-								"responses websocket: downstream_out write failed id=%s event=%s error=%v",
+								"responses websocket: upstream EOF with zero output, emitting error id=%s",
 								sessionID,
-								websocketPayloadEventType(completedPayload),
-								errWrite,
 							)
-							cancel(errWrite)
-							return completedOutput, nil, errWrite
+						} else {
+							completedPayload, errBuild := buildResponsesWebsocketEOFCompletedPayload(completedOutput)
+							if errBuild != nil {
+								cancel(errBuild)
+								return completedOutput, nil, errBuild
+							}
+							markAPIResponseTimestamp(c)
+							if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, completedPayload, time.Now()); errWrite != nil {
+								log.Warnf(
+									"responses websocket: downstream_out write failed id=%s event=%s error=%v",
+									sessionID,
+									websocketPayloadEventType(completedPayload),
+									errWrite,
+								)
+								cancel(errWrite)
+								return completedOutput, nil, errWrite
+							}
+							log.Infof(
+								"responses websocket: synthesized terminal completed after upstream EOF id=%s output_items=%d",
+								sessionID,
+								outputItemCount,
+							)
+							cancel(nil)
+							return completedOutput, nil, nil
 						}
-						log.Infof(
-							"responses websocket: synthesized terminal completed after upstream EOF id=%s output_items=%d",
-							sessionID,
-							responsesWebsocketOutputItemCount(completedOutput),
-						)
-						cancel(nil)
-						return completedOutput, nil, nil
 					}
 					if suppressReplayableErrors && shouldReplayResponsesWebsocketTranscript(errMsg) {
 						cancel(errMsg.Error)

@@ -1299,6 +1299,100 @@ func TestForwardResponsesWebsocketSynthesizesCompletedOnEOFWithoutError(t *testi
 	}
 }
 
+func TestForwardResponsesWebsocketEmitsErrorOnEOFWithZeroOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	serverErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		defer func() {
+			if errClose := conn.Close(); errClose != nil {
+				serverErrCh <- errClose
+			}
+		}()
+
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = r
+
+		data := make(chan []byte)
+		close(data)
+		errCh := make(chan *interfaces.ErrorMessage)
+
+		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+		h := NewOpenAIResponsesAPIHandler(base)
+		var timelineLog strings.Builder
+		completedOutput, errMsg, err := h.forwardResponsesWebsocket(
+			ctx,
+			conn,
+			func(...interface{}) {},
+			data,
+			errCh,
+			&timelineLog,
+			"session-1",
+			false,
+		)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		if errMsg == nil {
+			serverErrCh <- errors.New("expected websocket error message")
+			return
+		}
+		if responsesWebsocketOutputItemCount(completedOutput) != 0 {
+			serverErrCh <- fmt.Errorf("completed output should be empty: %s", completedOutput)
+			return
+		}
+		if !strings.Contains(timelineLog.String(), "upstream closed connection without sending any response data") {
+			serverErrCh <- errors.New("websocket timeline did not capture zero-output EOF error")
+			return
+		}
+		serverErrCh <- nil
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	if errDeadline := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); errDeadline != nil {
+		t.Fatalf("set read deadline: %v", errDeadline)
+	}
+	_, itemPayload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read websocket output item payload: %v", err)
+	}
+	if got := gjson.GetBytes(itemPayload, "type").String(); got != "response.output_item.done" {
+		t.Fatalf("first payload type = %q, want response.output_item.done; payload=%s", got, itemPayload)
+	}
+	if got := gjson.GetBytes(itemPayload, "item.content.0.text").String(); !strings.Contains(got, "upstream closed connection without sending any response data") {
+		t.Fatalf("error item text = %q, want upstream EOF message; payload=%s", got, itemPayload)
+	}
+	_, completedPayload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read websocket completed payload: %v", err)
+	}
+	if got := gjson.GetBytes(completedPayload, "type").String(); got != wsEventTypeCompleted {
+		t.Fatalf("completed payload type = %q, want %s; payload=%s", got, wsEventTypeCompleted, completedPayload)
+	}
+	if got := gjson.GetBytes(completedPayload, "response.metadata.error_type").String(); got != "server_error" {
+		t.Fatalf("completed error type = %q, want server_error; payload=%s", got, completedPayload)
+	}
+
+	if errServer := <-serverErrCh; errServer != nil {
+		t.Fatalf("server error: %v", errServer)
+	}
+}
+
 func TestForwardResponsesWebsocketLogsAttemptedResponseOnWriteFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

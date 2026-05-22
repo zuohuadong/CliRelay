@@ -30,6 +30,8 @@ type BigModelCodingExecutor struct {
 	*OpenAICompatExecutor
 }
 
+const bigModelCodingUserInputGuidanceMarker = "Codex interaction guidance:"
+
 func NewBigModelCodingExecutor(cfg *config.Config) *BigModelCodingExecutor {
 	return &BigModelCodingExecutor{OpenAICompatExecutor: NewOpenAICompatExecutor("bigmodel-coding", cfg)}
 }
@@ -443,6 +445,9 @@ func (e *BigModelCodingExecutor) normalizeBigModelCodingPayload(payload []byte, 
 	if len(payload) == 0 || !json.Valid(payload) {
 		return payload, nil
 	}
+	finish := func(payload []byte) ([]byte, error) {
+		return normalizeBigModelCodingUserInputGuidance(e.normalizeBigModelToolParallelism(payload)), nil
+	}
 
 	detected := false
 	enabled := false
@@ -457,7 +462,7 @@ func (e *BigModelCodingExecutor) normalizeBigModelCodingPayload(payload []byte, 
 			payload, _ = sjson.DeleteBytes(payload, "thinking")
 			payload, _ = sjson.DeleteBytes(payload, "reasoning")
 			payload, _ = sjson.DeleteBytes(payload, "reasoning_effort")
-			return e.normalizeBigModelToolParallelism(payload), nil
+			return finish(payload)
 		}
 		if strings.EqualFold(strings.TrimSpace(v.String()), "enabled") {
 			enabled = true
@@ -473,7 +478,7 @@ func (e *BigModelCodingExecutor) normalizeBigModelCodingPayload(payload []byte, 
 			payload, _ = sjson.DeleteBytes(payload, "thinking")
 			payload, _ = sjson.DeleteBytes(payload, "reasoning")
 			payload, _ = sjson.DeleteBytes(payload, "reasoning_effort")
-			return e.normalizeBigModelToolParallelism(payload), nil
+			return finish(payload)
 		default:
 			enabled = true
 			if budget, ok := thinking.ConvertLevelToBudget(level); ok && budget > 0 {
@@ -491,7 +496,7 @@ func (e *BigModelCodingExecutor) normalizeBigModelCodingPayload(payload []byte, 
 			payload, _ = sjson.DeleteBytes(payload, "thinking")
 			payload, _ = sjson.DeleteBytes(payload, "reasoning")
 			payload, _ = sjson.DeleteBytes(payload, "reasoning_effort")
-			return e.normalizeBigModelToolParallelism(payload), nil
+			return finish(payload)
 		default:
 			enabled = true
 			if budget, ok := thinking.ConvertLevelToBudget(level); ok && budget > 0 {
@@ -516,14 +521,14 @@ func (e *BigModelCodingExecutor) normalizeBigModelCodingPayload(payload []byte, 
 	}
 
 	if !detected {
-		return e.normalizeBigModelToolParallelism(payload), nil
+		return finish(payload)
 	}
 
 	payload, _ = sjson.SetBytes(payload, "enable_thinking", enabled)
 	payload, _ = sjson.DeleteBytes(payload, "thinking")
 	payload, _ = sjson.DeleteBytes(payload, "reasoning")
 	payload, _ = sjson.DeleteBytes(payload, "reasoning_effort")
-	return e.normalizeBigModelToolParallelism(payload), nil
+	return finish(payload)
 }
 
 func (e *BigModelCodingExecutor) normalizeBigModelToolParallelism(payload []byte) []byte {
@@ -535,6 +540,48 @@ func (e *BigModelCodingExecutor) normalizeBigModelToolParallelism(payload []byte
 		}
 	}
 	return payload
+}
+
+func normalizeBigModelCodingUserInputGuidance(payload []byte) []byte {
+	tools := gjson.GetBytes(payload, "tools")
+	if !tools.IsArray() || len(tools.Array()) == 0 {
+		return payload
+	}
+	if strings.Contains(string(payload), bigModelCodingUserInputGuidanceMarker) {
+		return payload
+	}
+
+	guidance := bigModelCodingUserInputGuidanceMarker + " When you need the user to choose or confirm, call the request_user_input tool if it is available in the tools list. If request_user_input is not available, do not fake a selection UI in normal text; either make a reasonable assumption or ask one concise plain-text question."
+	var root map[string]any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return payload
+	}
+	messages, ok := root["messages"].([]any)
+	if !ok {
+		return payload
+	}
+	if len(messages) > 0 {
+		if first, ok := messages[0].(map[string]any); ok && strings.EqualFold(strings.TrimSpace(fmt.Sprint(first["role"])), "system") {
+			if content, ok := first["content"].(string); ok {
+				first["content"] = strings.TrimSpace(content) + "\n\n" + guidance
+				out, errMarshal := json.Marshal(root)
+				if errMarshal != nil {
+					return payload
+				}
+				return out
+			}
+		}
+	}
+	systemMessage := map[string]any{
+		"role":    "system",
+		"content": guidance,
+	}
+	root["messages"] = append([]any{systemMessage}, messages...)
+	out, err := json.Marshal(root)
+	if err != nil {
+		return payload
+	}
+	return out
 }
 
 func hasMCPServerTool(tools []any, label, serverURL string) bool {

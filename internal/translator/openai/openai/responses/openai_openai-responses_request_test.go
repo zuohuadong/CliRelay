@@ -122,3 +122,19 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DefersMessageUntil
 		t.Fatalf("messages.3.content = %q, want %q", got, "next")
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesRequestUserInputTool(t *testing.T) {
+	raw := []byte(`{
+		"tools": [
+			{"type":"function","name":"request_user_input","description":"Ask the user to choose","parameters":{"type":"object","properties":{"questions":{"type":"array"}}}}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("glm-5.1", raw, true)
+	if got := gjson.GetBytes(out, "tools.0.function.name").String(); got != "request_user_input" {
+		t.Fatalf("tools.0.function.name = %q, want request_user_input", got)
+	}
+	if got := gjson.GetBytes(out, "tools.0.function.parameters.type").String(); got != "object" {
+		t.Fatalf("tools.0.function.parameters.type = %q, want object", got)
+	}
+}

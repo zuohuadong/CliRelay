@@ -255,6 +255,36 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ToolCallCompletes
 	}
 }
 
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_PreservesRequestUserInputToolCall(t *testing.T) {
+	request := []byte(`{"model":"glm-5.1","tools":[{"type":"function","function":{"name":"request_user_input","parameters":{"type":"object"}}}]}`)
+	in := []string{
+		`data: {"id":"chatcmpl_request_user_input","object":"chat.completion.chunk","created":1773896263,"model":"glm-5.1","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_request_user_input","type":"function","function":{"name":"request_user_input","arguments":"{\"questions\":[{\"id\":\"confirm_path\",\"header\":\"Confirm\",\"question\":\"Proceed?\",\"options\":[{\"label\":\"Yes\",\"description\":\"Continue\"},{\"label\":\"No\",\"description\":\"Stop\"}]}]}"}}]},"finish_reason":null}]}`,
+		`data: [DONE]`,
+	}
+
+	var param any
+	var completedData gjson.Result
+	for _, line := range in {
+		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "glm-5.1", request, request, []byte(line), &param) {
+			event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+			if event == "response.completed" {
+				completedData = data
+			}
+		}
+	}
+
+	tool := completedData.Get("response.output.0")
+	if tool.Get("type").String() != "function_call" {
+		t.Fatalf("response.output.0.type = %q, want function_call; payload=%s", tool.Get("type").String(), completedData.Raw)
+	}
+	if tool.Get("name").String() != "request_user_input" {
+		t.Fatalf("response.output.0.name = %q, want request_user_input; payload=%s", tool.Get("name").String(), completedData.Raw)
+	}
+	if tool.Get("arguments").String() == "" {
+		t.Fatalf("response.output.0.arguments should not be empty; payload=%s", completedData.Raw)
+	}
+}
+
 func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_MultipleToolCallsRemainSeparate(t *testing.T) {
 	in := []string{
 		`data: {"id":"resp_test","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"read","arguments":""}}]},"finish_reason":null}]}`,

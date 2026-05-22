@@ -183,6 +183,46 @@ func TestBigModelCodingExecutorDoesNotSetToolStreamForNonStreamingTools(t *testi
 	}
 }
 
+func TestBigModelCodingExecutorAddsRequestUserInputGuidanceForToolPayloads(t *testing.T) {
+	executor := NewBigModelCodingExecutor(&config.Config{})
+	payload := []byte(`{
+		"model":"glm-5.1",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"function","function":{"name":"request_user_input","parameters":{"type":"object"}}}]
+	}`)
+
+	out, err := executor.normalizeBigModelCodingPayload(payload, "glm-5.1")
+	if err != nil {
+		t.Fatalf("normalizeBigModelCodingPayload error: %v", err)
+	}
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "system" {
+		t.Fatalf("messages.0.role = %q, want system: %s", got, out)
+	}
+	guidance := gjson.GetBytes(out, "messages.0.content").String()
+	if !strings.Contains(guidance, "request_user_input tool") {
+		t.Fatalf("missing request_user_input guidance: %s", out)
+	}
+	if got := gjson.GetBytes(out, "messages.1.role").String(); got != "user" {
+		t.Fatalf("messages.1.role = %q, want user: %s", got, out)
+	}
+}
+
+func TestBigModelCodingExecutorDoesNotAddRequestUserInputGuidanceWithoutTools(t *testing.T) {
+	executor := NewBigModelCodingExecutor(&config.Config{})
+	payload := []byte(`{"model":"glm-5.1","messages":[{"role":"user","content":"hi"}]}`)
+
+	out, err := executor.normalizeBigModelCodingPayload(payload, "glm-5.1")
+	if err != nil {
+		t.Fatalf("normalizeBigModelCodingPayload error: %v", err)
+	}
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "user" {
+		t.Fatalf("messages.0.role = %q, want user: %s", got, out)
+	}
+	if strings.Contains(string(out), bigModelCodingUserInputGuidanceMarker) {
+		t.Fatalf("guidance should not be added without tools: %s", out)
+	}
+}
+
 func TestBigModelCodingExecutorTreatsPostDataRawJSONErrorAsTerminalDone(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

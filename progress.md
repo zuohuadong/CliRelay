@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-22 15:06:30 +0800] [CliRelay] [done] Added production astron-code tools skip policy so Codex/glm-5.1 tool turns route to bigmodel-coding instead of surfacing zero-output EOF errors
 [2026-05-22 14:48:30 +0800] [CliRelay] [done] Fixed Responses WebSocket EOF-with-zero-output path to emit a visible error instead of a silent empty completed, and added regression coverage
 [2026-05-22 14:35:30 +0800] [CliRelay] [done] Surface context_length_exceeded as response.failed so Codex can compact on real context errors; deployed main-e96dde8 and verified server health
 [2026-05-22 12:20:12 +0800] [CliRelay] [done] Verified production astron-code smart routing and raised astron priority above bigmodel-coding so small gpt-5.3-codex requests route to astron-code-latest while MCP and oversized requests fall back to bigmodel-coding

@@ -696,12 +696,15 @@ type OpenAICompatibilityModel struct {
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
 
+<<<<<<< HEAD
 	// Priority preserves management-panel model ordering metadata.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
 	// TestModel stores the model used by the management panel for model checks.
 	TestModel string `yaml:"test-model,omitempty" json:"test-model,omitempty"`
 
+=======
+>>>>>>> upstream/main
 	// Image marks this model as callable through /v1/images/generations and /v1/images/edits.
 	Image bool `yaml:"image,omitempty" json:"image,omitempty"`
 

@@ -12,7 +12,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestBuildResponsesWebsocketErrorPayloadSynthesizesCompletedForContextWindow(t *testing.T) {
+func TestBuildResponsesWebsocketErrorPayloadWritesFailedForContextWindow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -47,21 +47,14 @@ func TestBuildResponsesWebsocketErrorPayloadSynthesizesCompletedForContextWindow
 		_ = conn.Close()
 	}()
 
-	if _, itemPayload, errRead := conn.ReadMessage(); errRead != nil {
-		t.Fatalf("read websocket output item payload: %v", errRead)
-	} else if got := gjson.GetBytes(itemPayload, "type").String(); got != "response.output_item.done" {
-		t.Fatalf("first payload type = %q, want response.output_item.done; payload=%s", got, itemPayload)
-	} else if !strings.Contains(gjson.GetBytes(itemPayload, "item.content.0.text").String(), "context_length_exceeded") {
-		t.Fatalf("output item must mention context_length_exceeded; payload=%s", itemPayload)
-	}
-	if _, completedPayload, errRead := conn.ReadMessage(); errRead != nil {
-		t.Fatalf("read websocket completed payload: %v", errRead)
-	} else if got := gjson.GetBytes(completedPayload, "type").String(); got != "response.completed" {
-		t.Fatalf("second payload type = %q, want response.completed; payload=%s", got, completedPayload)
-	} else if got := gjson.GetBytes(completedPayload, "response.status").String(); got != "completed" {
-		t.Fatalf("response.status = %q, want completed; payload=%s", got, completedPayload)
-	} else if got := gjson.GetBytes(completedPayload, "response.id").String(); got != "" {
-		t.Fatalf("synthetic error completion must not provide reusable response id, got %q; payload=%s", got, completedPayload)
+	if _, failedPayload, errRead := conn.ReadMessage(); errRead != nil {
+		t.Fatalf("read websocket failed payload: %v", errRead)
+	} else if got := gjson.GetBytes(failedPayload, "type").String(); got != "response.failed" {
+		t.Fatalf("payload type = %q, want response.failed; payload=%s", got, failedPayload)
+	} else if got := gjson.GetBytes(failedPayload, "response.status").String(); got != "failed" {
+		t.Fatalf("response.status = %q, want failed; payload=%s", got, failedPayload)
+	} else if got := gjson.GetBytes(failedPayload, "response.error.code").String(); got != "context_length_exceeded" {
+		t.Fatalf("response.error.code = %q, want context_length_exceeded; payload=%s", got, failedPayload)
 	}
 }
 

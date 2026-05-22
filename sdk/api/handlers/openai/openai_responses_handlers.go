@@ -111,6 +111,11 @@ func (f *responsesSSEFramer) WriteDone(w io.Writer) {
 
 func (f *responsesSSEFramer) WriteTerminalError(w io.Writer, status int, errText string) {
 	f.Flush(w)
+	if handlers.IsOpenAIResponsesContextWindowError(status, errText) {
+		failedPayload := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
+		writeResponsesSSEChunk(w, responsesSSEFrameWithData([]byte("event: response.failed\n"), failedPayload))
+		return
+	}
 	itemPayload, completedPayload := buildResponsesTerminalErrorPayloads(status, errText)
 	writeResponsesSSEChunk(w, responsesSSEFrameWithData([]byte("event: response.output_item.done\n"), itemPayload))
 	writeResponsesSSEChunk(w, responsesSSEFrameWithData([]byte("event: response.completed\n"), completedPayload))

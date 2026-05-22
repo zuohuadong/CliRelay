@@ -51,7 +51,7 @@ func TestForwardResponsesStreamTerminalErrorSynthesizesAssistantMessageAndComple
 	}
 }
 
-func TestForwardResponsesStreamTerminalContextErrorSynthesizesCompleted(t *testing.T) {
+func TestForwardResponsesStreamTerminalContextErrorWritesFailed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 	h := NewOpenAIResponsesAPIHandler(base)
@@ -75,19 +75,16 @@ func TestForwardResponsesStreamTerminalContextErrorSynthesizesCompleted(t *testi
 
 	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
 	body := recorder.Body.String()
-	if !strings.Contains(body, "event: response.output_item.done") {
-		t.Fatalf("expected output_item.done event, got: %q", body)
+	if !strings.Contains(body, "event: response.failed") {
+		t.Fatalf("expected response.failed event, got: %q", body)
 	}
-	if !strings.Contains(body, "event: response.completed") {
-		t.Fatalf("expected response.completed event, got: %q", body)
+	if !strings.Contains(body, `"type":"response.failed"`) {
+		t.Fatalf("expected response.failed payload, got: %q", body)
 	}
-	if !strings.Contains(body, `"type":"response.completed"`) {
-		t.Fatalf("expected response.completed payload, got: %q", body)
-	}
-	if strings.Contains(body, "event: error") {
-		t.Fatalf("context window terminal error must not use top-level error event, got: %q", body)
+	if strings.Contains(body, "event: response.output_item.done") || strings.Contains(body, "event: response.completed") {
+		t.Fatalf("context window terminal error must not synthesize completed output, got: %q", body)
 	}
 	if !strings.Contains(body, `context_length_exceeded`) {
-		t.Fatalf("expected context_length_exceeded marker in synthesized message, got: %q", body)
+		t.Fatalf("expected context_length_exceeded marker in failed payload, got: %q", body)
 	}
 }

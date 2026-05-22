@@ -721,6 +721,45 @@ func TestAppendWebsocketTimelineEvent(t *testing.T) {
 	}
 }
 
+func TestAppendWebsocketTimelineEventTruncatesLargePayloads(t *testing.T) {
+	var builder strings.Builder
+	ts := time.Date(2026, time.April, 1, 12, 34, 56, 789000000, time.UTC)
+	payload := bytes.Repeat([]byte("a"), responsesWebsocketTimelinePayloadMaxBytes+1024)
+
+	appendWebsocketTimelineEvent(&builder, "response", payload, ts)
+
+	got := builder.String()
+	if !strings.Contains(got, "... websocket payload truncated ...") {
+		t.Fatalf("timeline payload truncation marker not found")
+	}
+	if builder.Len() > responsesWebsocketTimelinePayloadMaxBytes+512 {
+		t.Fatalf("timeline event grew too large: %d", builder.Len())
+	}
+}
+
+func TestAppendWebsocketTimelineEventCapsTotalSize(t *testing.T) {
+	var builder strings.Builder
+	ts := time.Date(2026, time.April, 1, 12, 34, 56, 789000000, time.UTC)
+	payload := bytes.Repeat([]byte("a"), responsesWebsocketTimelinePayloadMaxBytes)
+
+	for builder.Len() < responsesWebsocketTimelineMaxBytes+responsesWebsocketTimelinePayloadMaxBytes {
+		before := builder.Len()
+		appendWebsocketTimelineEvent(&builder, "response", payload, ts)
+		if builder.Len() == before {
+			break
+		}
+	}
+
+	if builder.Len() > responsesWebsocketTimelineMaxBytes {
+		t.Fatalf("timeline length = %d, want <= %d", builder.Len(), responsesWebsocketTimelineMaxBytes)
+	}
+	before := builder.Len()
+	appendWebsocketTimelineEvent(&builder, "response", payload, ts)
+	if builder.Len() != before {
+		t.Fatalf("timeline grew after cap: before=%d after=%d", before, builder.Len())
+	}
+}
+
 func TestSetWebsocketTimelineBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

@@ -35,6 +35,9 @@ const (
 	wsTimelineBodyKey    = "WEBSOCKET_TIMELINE_OVERRIDE"
 	wsPingInterval       = 2 * time.Second
 	wsPingWriteTimeout   = 1 * time.Second
+
+	responsesWebsocketTimelineMaxBytes        = 1 << 20
+	responsesWebsocketTimelinePayloadMaxBytes = 64 << 10
 )
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
@@ -1269,17 +1272,50 @@ func appendWebsocketTimelineEvent(builder *strings.Builder, eventType string, pa
 	if len(trimmedPayload) == 0 {
 		return
 	}
-	if builder.Len() > 0 {
-		builder.WriteString("\n")
+	if builder.Len() >= responsesWebsocketTimelineMaxBytes {
+		return
 	}
-	builder.WriteString("Timestamp: ")
-	builder.WriteString(timestamp.Format(time.RFC3339Nano))
-	builder.WriteString("\n")
-	builder.WriteString("Event: websocket.")
-	builder.WriteString(eventType)
-	builder.WriteString("\n")
-	builder.Write(trimmedPayload)
-	builder.WriteString("\n")
+	truncatedPayload := false
+	if len(trimmedPayload) > responsesWebsocketTimelinePayloadMaxBytes {
+		trimmedPayload = trimmedPayload[:responsesWebsocketTimelinePayloadMaxBytes]
+		truncatedPayload = true
+	}
+	if builder.Len() > 0 {
+		appendWebsocketTimelineString(builder, "\n")
+	}
+	appendWebsocketTimelineString(builder, "Timestamp: ")
+	appendWebsocketTimelineString(builder, timestamp.Format(time.RFC3339Nano))
+	appendWebsocketTimelineString(builder, "\n")
+	appendWebsocketTimelineString(builder, "Event: websocket.")
+	appendWebsocketTimelineString(builder, eventType)
+	appendWebsocketTimelineString(builder, "\n")
+	appendWebsocketTimelineBytes(builder, trimmedPayload)
+	if truncatedPayload {
+		appendWebsocketTimelineString(builder, "\n... websocket payload truncated ...")
+	}
+	appendWebsocketTimelineString(builder, "\n")
+}
+
+func appendWebsocketTimelineString(builder *strings.Builder, value string) {
+	if builder == nil || value == "" || builder.Len() >= responsesWebsocketTimelineMaxBytes {
+		return
+	}
+	remaining := responsesWebsocketTimelineMaxBytes - builder.Len()
+	if len(value) > remaining {
+		value = value[:remaining]
+	}
+	builder.WriteString(value)
+}
+
+func appendWebsocketTimelineBytes(builder *strings.Builder, value []byte) {
+	if builder == nil || len(value) == 0 || builder.Len() >= responsesWebsocketTimelineMaxBytes {
+		return
+	}
+	remaining := responsesWebsocketTimelineMaxBytes - builder.Len()
+	if len(value) > remaining {
+		value = value[:remaining]
+	}
+	builder.Write(value)
 }
 
 func markAPIResponseTimestamp(c *gin.Context) {

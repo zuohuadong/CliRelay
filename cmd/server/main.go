@@ -10,11 +10,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +51,7 @@ func init() {
 	buildinfo.BuildDate = BuildDate
 }
 
+<<<<<<< HEAD
 func parseHomeFlagConfig(rawAddr string, password string) (config.HomeConfig, error) {
 	rawAddr = strings.TrimSpace(rawAddr)
 	if rawAddr == "" {
@@ -165,6 +164,8 @@ func parseHomeBoolQuery(values url.Values, keys ...string) bool {
 	return false
 }
 
+=======
+>>>>>>> upstream/main
 // main is the entry point of the application.
 // It parses command-line flags, loads configuration, and starts the appropriate
 // service based on the provided flags (login, codex-login, or server mode).
@@ -186,8 +187,11 @@ func main() {
 	var vertexImportPrefix string
 	var configPath string
 	var password string
+<<<<<<< HEAD
 	var homeAddr string
 	var homePassword string
+=======
+>>>>>>> upstream/main
 	var homeJWT string
 	var homeDisableClusterDiscovery bool
 	var tuiMode bool
@@ -209,10 +213,15 @@ func main() {
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
 	flag.StringVar(&vertexImportPrefix, "vertex-import-prefix", "", "Prefix for Vertex model namespacing (use with -vertex-import)")
 	flag.StringVar(&password, "password", "", "")
+<<<<<<< HEAD
 	flag.StringVar(&homeAddr, "home", "", "Home control plane address in host:port, redis://host:port, or rediss://host:port format (loads config from home and skips local config file)")
 	flag.StringVar(&homePassword, "home-password", "", "Home control plane password (Redis AUTH)")
 	flag.StringVar(&homeJWT, "home-jwt", "", "Home control plane JWT for mTLS certificate bootstrap and connection")
 	flag.BoolVar(&homeDisableClusterDiscovery, "home-disable-cluster-discovery", false, "Disable Home CLUSTER NODES discovery and keep using the configured -home address")
+=======
+	flag.StringVar(&homeJWT, "home-jwt", "", "Home control plane JWT for mTLS certificate bootstrap and connection")
+	flag.BoolVar(&homeDisableClusterDiscovery, "home-disable-cluster-discovery", false, "Disable Home CLUSTER NODES discovery and keep using the configured -home-jwt address")
+>>>>>>> upstream/main
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
 	flag.BoolVar(&localModel, "local-model", false, "Use embedded model catalog only, skip remote model fetching")
@@ -300,6 +309,7 @@ func main() {
 	}
 	writableBase := util.WritablePath()
 
+<<<<<<< HEAD
 	// Allow env var fallback for home flags so they can be configured without command args.
 	if strings.TrimSpace(homeAddr) == "" {
 		if v, ok := lookupEnv("HOME_ADDR", "home_addr"); ok {
@@ -311,6 +321,8 @@ func main() {
 			homePassword = v
 		}
 	}
+=======
+>>>>>>> upstream/main
 	if strings.TrimSpace(homeJWT) == "" {
 		if v, ok := lookupEnv("HOME_JWT", "home_jwt"); ok {
 			homeJWT = v
@@ -381,6 +393,7 @@ func main() {
 	// Prefer the Postgres store when configured, otherwise fallback to git or local files.
 	var configFilePath string
 	if strings.TrimSpace(homeJWT) != "" {
+<<<<<<< HEAD
 		configLoadedFromHome = true
 		ctxHome, cancelHome := context.WithTimeout(context.Background(), 30*time.Second)
 		homeCfg, errHomeCfg := home.ConfigFromJWT(ctxHome, homeJWT)
@@ -429,11 +442,14 @@ func main() {
 		useObjectStore = false
 		useGitStore = false
 	} else if strings.TrimSpace(homeAddr) != "" {
+=======
+>>>>>>> upstream/main
 		configLoadedFromHome = true
-		trimmedHomePassword := strings.TrimSpace(homePassword)
-		homeCfg, errHomeCfg := parseHomeFlagConfig(homeAddr, trimmedHomePassword)
+		ctxHome, cancelHome := context.WithTimeout(context.Background(), 30*time.Second)
+		homeCfg, errHomeCfg := home.ConfigFromJWT(ctxHome, homeJWT)
+		cancelHome()
 		if errHomeCfg != nil {
-			log.Errorf("invalid -home address %q: %v", homeAddr, errHomeCfg)
+			log.Errorf("invalid -home-jwt: %v", errHomeCfg)
 			return
 		}
 		if homeDisableClusterDiscovery {
@@ -442,9 +458,9 @@ func main() {
 		homeClient := home.New(homeCfg)
 		defer homeClient.Close()
 
-		ctxHome, cancelHome := context.WithTimeout(context.Background(), 30*time.Second)
-		raw, errGetConfig := homeClient.GetConfig(ctxHome)
-		cancelHome()
+		ctxHomeConfig, cancelHomeConfig := context.WithTimeout(context.Background(), 30*time.Second)
+		raw, errGetConfig := homeClient.GetConfig(ctxHomeConfig)
+		cancelHomeConfig()
 		if errGetConfig != nil {
 			log.Errorf("failed to fetch config from home: %v", errGetConfig)
 			return

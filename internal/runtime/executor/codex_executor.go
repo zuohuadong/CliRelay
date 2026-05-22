@@ -127,6 +127,7 @@ func codexTerminalStreamContextLengthErr(eventData []byte) (statusErr, bool) {
 	return newCodexStatusErr(http.StatusBadRequest, body), true
 }
 
+<<<<<<< HEAD
 func codexTerminalStreamErr(eventData []byte) (statusErr, bool) {
 	if err, ok := codexTerminalStreamContextLengthErr(eventData); ok {
 		return err, true
@@ -177,6 +178,8 @@ func codexTerminalErrorStatus(eventData []byte, body []byte) int {
 	}
 }
 
+=======
+>>>>>>> upstream/main
 func codexTerminalErrorBody(eventData []byte, path string) []byte {
 	errorResult := gjson.GetBytes(eventData, path)
 	if !errorResult.Exists() {
@@ -398,7 +401,11 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		eventData := bytes.TrimSpace(line[5:])
 		eventType := gjson.GetBytes(eventData, "type").String()
 
+<<<<<<< HEAD
 		if streamErr, ok := codexTerminalStreamErr(eventData); ok {
+=======
+		if streamErr, ok := codexTerminalStreamContextLengthErr(eventData); ok {
+>>>>>>> upstream/main
 			err = streamErr
 			return resp, err
 		}
@@ -664,7 +671,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 			if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
+<<<<<<< HEAD
 				if streamErr, ok := codexTerminalStreamErr(data); ok {
+=======
+				if streamErr, ok := codexTerminalStreamContextLengthErr(data); ok {
+>>>>>>> upstream/main
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
 					select {

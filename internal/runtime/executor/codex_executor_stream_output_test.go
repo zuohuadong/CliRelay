@@ -127,6 +127,7 @@ func TestCodexExecutorExecuteStreamSurfacesTerminalStreamError(t *testing.T) {
 	assertCodexErrorCode(t, streamErr.Error(), "invalid_request_error", "context_too_large")
 }
 
+<<<<<<< HEAD
 func TestCodexExecutorExecuteSurfacesResponseFailedRateLimitError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -197,6 +198,8 @@ func TestCodexExecutorExecuteTreatsResponseIncompleteAsTerminal(t *testing.T) {
 	}
 }
 
+=======
+>>>>>>> upstream/main
 func TestCodexTerminalStreamContextLengthErrFromResponseFailed(t *testing.T) {
 	err, ok := codexTerminalStreamContextLengthErr([]byte(`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again."}}}`))
 	if !ok {

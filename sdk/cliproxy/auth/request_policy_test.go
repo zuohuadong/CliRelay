@@ -183,6 +183,124 @@ func TestManagerExecute_RequestPolicySkipChannelFallsBack(t *testing.T) {
 	}
 }
 
+func TestManagerExecute_AstronCodePrefersSmallRequestsAndSkipsMCP(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	astron := &requestPolicyTestExecutor{id: "astron-code"}
+	bigmodel := &requestPolicyTestExecutor{id: "bigmodel-coding"}
+	manager.RegisterExecutor(astron)
+	manager.RegisterExecutor(bigmodel)
+	manager.SetConfig(&internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{
+			{
+				Name: "astron-code",
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "astron-code-latest", Alias: "gpt-5.3-codex"},
+				},
+			},
+		},
+		BigModelCodingAPIKey: []internalconfig.OpenAICompatibility{
+			{
+				Name: "bigmodel-coding",
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "glm-5.1", Alias: "gpt-5.3-codex"},
+				},
+			},
+		},
+		ProviderPreferences: []internalconfig.ProviderPreference{
+			{
+				Name: "prefer-astron-code",
+				Match: internalconfig.ProviderPreferenceMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"astron-code"},
+					UpstreamModels:    []string{"astron-code-latest"},
+				},
+				Priority: 100,
+			},
+		},
+		RequestPolicies: []internalconfig.RequestPolicy{
+			{
+				Name: "astron-code-200k-guard",
+				Match: internalconfig.RequestPolicyMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"astron-code"},
+					UpstreamModels:    []string{"astron-code-latest"},
+				},
+				Limits: internalconfig.RequestPolicyLimits{MaxRequestBytes: 200000},
+			},
+			{
+				Name: "astron-code-mcp-skip",
+				Match: internalconfig.RequestPolicyMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"astron-code"},
+					UpstreamModels:    []string{"astron-code-latest"},
+					RequestFeatures:   []string{"mcp"},
+				},
+			},
+		},
+	})
+
+	for _, auth := range []*Auth{
+		{
+			ID:       "astron-auth",
+			Provider: "astron-code",
+			Status:   StatusActive,
+			Attributes: map[string]string{
+				"api_key":      "astron-key",
+				"provider_key": "astron-code",
+				"compat_name":  "astron-code",
+			},
+		},
+		{
+			ID:       "bigmodel-auth",
+			Provider: "bigmodel-coding",
+			Status:   StatusActive,
+			Attributes: map[string]string{
+				"api_key":      "bigmodel-key",
+				"provider_key": "bigmodel-coding",
+				"compat_name":  "bigmodel-coding",
+			},
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.3-codex", Name: "gpt-5.3-codex"}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	}
+
+	_, err := manager.Execute(context.Background(), []string{"astron-code", "bigmodel-coding"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex","input":"small"}`),
+	}, cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: 120000},
+	})
+	if err != nil {
+		t.Fatalf("Execute() small error = %v", err)
+	}
+	if calls := astron.Calls(); len(calls) != 1 || calls[0] != "astron-auth" {
+		t.Fatalf("astron calls = %v, want [astron-auth]", calls)
+	}
+	if calls := bigmodel.Calls(); len(calls) != 0 {
+		t.Fatalf("bigmodel calls after small request = %v, want none", calls)
+	}
+
+	_, err = manager.Execute(context.Background(), []string{"astron-code", "bigmodel-coding"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex","input":"mcp"}`),
+	}, cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestBytesMetadataKey:    120000,
+			cliproxyexecutor.RequestFeaturesMetadataKey: []string{"tools", "mcp"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() mcp error = %v", err)
+	}
+	if calls := bigmodel.Calls(); len(calls) != 1 || calls[0] != "bigmodel-auth" {
+		t.Fatalf("bigmodel calls after mcp request = %v, want [bigmodel-auth]", calls)
+	}
+}
+
 func TestManagerExecute_ProviderPreferencePrefersBigmodelAndFallsBack(t *testing.T) {
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	bigmodel := &requestPolicyTestExecutor{id: "bigmodel-coding"}

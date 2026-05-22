@@ -196,6 +196,23 @@ request-log-storage:
 # Policies can skip a channel or reject locally when request size/tools exceed
 # configured limits. Use skip-channel to fall back to the next available provider.
 # request-policies:
+#   - name: "astron-code-200k-guard"
+#     match:
+#       requested-models: ["gpt-5.3-codex", "glm-5.1"]
+#       upstream-providers: ["astron-code"]
+#       upstream-models: ["astron-code-latest"]
+#     limits:
+#       max-request-bytes: 200000
+#     over-limit:
+#       action: "skip-channel"
+#   - name: "astron-code-mcp-skip"
+#     match:
+#       requested-models: ["gpt-5.3-codex", "glm-5.1"]
+#       upstream-providers: ["astron-code"]
+#       upstream-models: ["astron-code-latest"]
+#       request-features: ["mcp"]
+#     over-limit:
+#       action: "skip-channel"
 #   - name: "glm-5.1-large-request-guard"
 #     match:
 #       # No requested-models needed: policy matches by upstream provider/model,
@@ -233,6 +250,12 @@ request-log-storage:
 # Optional provider preferences for model-scoped upstream priority overrides.
 # This keeps fallback behavior intact while making a specific provider win first.
 # provider-preferences:
+#   - name: "prefer-astron-code-for-small-glm-5.1"
+#     match:
+#       requested-models: ["gpt-5.3-codex", "glm-5.1"]
+#       upstream-providers: ["astron-code"]
+#       upstream-models: ["astron-code-latest"]
+#     priority: 120
 #   - name: "prefer-bigmodel-coding-for-glm-5.1"
 #     match:
 #       upstream-providers: ["bigmodel-coding"]
@@ -474,6 +497,22 @@ streaming:
 #     models:
 #       - name: "glm-5.1"
 #         alias: "gpt-5.3-codex"
+#
+# Optional small-window GLM-5.1-compatible upstream. Pair this with
+# request-policies and provider-preferences above so normal requests prefer
+# this channel while large or MCP requests fall back to bigmodel-coding.
+# openai-compatibility:
+#   - name: "astron-code"
+#     base-url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
+#     identity-fingerprint: "codex"
+#     api-key-entries:
+#       - api-key: "${ASTRON_CODE_API_KEY}"
+#     test-model: "astron-code-latest"
+#     models:
+#       - name: "astron-code-latest"
+#         alias: "gpt-5.3-codex"
+#       - name: "astron-code-latest"
+#         alias: "glm-5.1"
 
 # OpenAI compatibility providers
 # openai-compatibility:

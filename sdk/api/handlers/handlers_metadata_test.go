@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"slices"
 	"testing"
 
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -36,5 +37,25 @@ func TestSetReasoningEffortMetadataSupportsOpenAIResponses(t *testing.T) {
 
 	if got := meta[coreexecutor.ReasoningEffortMetadataKey]; got != "medium" {
 		t.Fatalf("ReasoningEffortMetadataKey = %v, want %q", got, "medium")
+	}
+}
+
+func TestEnrichRequestExecutionMetadataMarksMCPTools(t *testing.T) {
+	meta := make(map[string]any)
+
+	enrichRequestExecutionMetadata(meta, []byte(`{
+		"model":"gpt-5.3-codex",
+		"input":[{"role":"user","content":"use mcp"}],
+		"tools":[{"type":"mcp","server_label":"web-reader"}]
+	}`))
+
+	features, ok := meta[coreexecutor.RequestFeaturesMetadataKey].([]string)
+	if !ok {
+		t.Fatalf("RequestFeaturesMetadataKey = %#v, want []string", meta[coreexecutor.RequestFeaturesMetadataKey])
+	}
+	for _, want := range []string{"tools", "mcp"} {
+		if !slices.Contains(features, want) {
+			t.Fatalf("features = %v, want %q", features, want)
+		}
 	}
 }

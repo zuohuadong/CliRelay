@@ -295,6 +295,9 @@ func requestFeatures(rawJSON []byte, inputItems int, toolDefinitions int, toolCa
 	if toolDefinitions > 0 || toolCalls > 0 {
 		features = append(features, "tools")
 	}
+	if hasMCPTool(rawJSON) {
+		features = append(features, "mcp")
+	}
 	if toolCalls >= 16 {
 		features = append(features, "tool-heavy")
 	}
@@ -346,6 +349,26 @@ func structuredMediaFeatures(rawJSON []byte) (hasImage, hasFile, hasVideo bool) 
 	}
 	walk(payload)
 	return hasImage, hasFile, hasVideo
+}
+
+func hasMCPTool(rawJSON []byte) bool {
+	tools := gjson.GetBytes(rawJSON, "tools")
+	if !tools.Exists() || !tools.IsArray() {
+		return false
+	}
+	found := false
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		if strings.EqualFold(strings.TrimSpace(tool.Get("type").String()), "mcp") {
+			found = true
+			return false
+		}
+		if tool.Get("mcp").Exists() {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // applyContextRetrieval reduces oversized request payloads when context retrieval is enabled.

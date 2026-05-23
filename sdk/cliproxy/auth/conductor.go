@@ -3327,6 +3327,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			continue
 		}
 		if _, okExecutor := m.Executor(providerKey); !okExecutor {
+			logEntryWithRequestID(ctx).Debugf("pickNextMixed: skip provider=%s no executor", providerKey)
 			continue
 		}
 		seenProviders[providerKey] = struct{}{}
@@ -3335,6 +3336,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	if len(eligibleProviders) == 0 {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
+	logEntryWithRequestID(ctx).Debugf("pickNextMixed: model=%s eligibleProviders=%v", model, eligibleProviders)
 	if strings.TrimSpace(model) != "" {
 		providerSet := make(map[string]struct{}, len(eligibleProviders))
 		for _, providerKey := range eligibleProviders {

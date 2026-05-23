@@ -2,12 +2,14 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	log "github.com/sirupsen/logrus"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
@@ -334,25 +336,33 @@ func (s *authScheduler) pickMixed(ctx context.Context, providers []string, model
 	bestPriority := 0
 	hasCandidate := false
 	now := time.Now()
+	shardDebug := make([]string, 0, len(normalized))
 	for providerIndex, providerKey := range normalized {
 		providerState := s.providers[providerKey]
 		if providerState == nil {
+			shardDebug = append(shardDebug, fmt.Sprintf("%s:no_provider_state", providerKey))
 			continue
 		}
 		shard := providerState.ensureModelLocked(modelKey, now)
 		candidateShards[providerIndex] = shard
 		if shard == nil {
+			shardDebug = append(shardDebug, fmt.Sprintf("%s:no_shard", providerKey))
 			continue
 		}
 		priorityReady, okPriority := shard.highestReadyPriorityLocked(false, predicate)
 		if !okPriority {
+			entryCount := len(shard.entries)
+			shardDebug = append(shardDebug, fmt.Sprintf("%s:no_ready(model=%s,entries=%d)", providerKey, modelKey, entryCount))
 			continue
 		}
+		readyCount := shard.readyCountAtPriorityLocked(false, priorityReady)
+		shardDebug = append(shardDebug, fmt.Sprintf("%s:readyPriority=%d,readyCount=%d", providerKey, priorityReady, readyCount))
 		if !hasCandidate || priorityReady > bestPriority {
 			bestPriority = priorityReady
 			hasCandidate = true
 		}
 	}
+	log.Debugf("pickMixed: modelKey=%s providers=%v shards=[%s] bestPriority=%d", modelKey, normalized, strings.Join(shardDebug, " "), bestPriority)
 	if !hasCandidate {
 		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, tried)
 	}

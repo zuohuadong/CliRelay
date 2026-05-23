@@ -474,7 +474,6 @@ func TestOpenAICompatExecutorPayloadOverrideWinsOverThinkingSuffix(t *testing.T)
 	}
 }
 
-<<<<<<< HEAD
 func TestOpenAICompatExecutorIdentityFingerprintOverridesProviderHeaders(t *testing.T) {
 	var gotHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -511,7 +510,28 @@ func TestOpenAICompatExecutorIdentityFingerprintOverridesProviderHeaders(t *test
 	}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FromString("openai"),
 		Stream:       false,
-=======
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got := gotHeaders.Get("User-Agent"); got != "Codex Desktop/test" {
+		t.Fatalf("User-Agent = %q, want fingerprint value", got)
+	}
+	if got := gotHeaders.Get("Version"); got != "0.130.0-alpha.5" {
+		t.Fatalf("Version = %q, want fingerprint value", got)
+	}
+	if got := gotHeaders.Get("Originator"); got != "Codex Desktop" {
+		t.Fatalf("Originator = %q, want fingerprint value", got)
+	}
+	if got := gotHeaders.Get("Session_id"); got != "server-session" {
+		t.Fatalf("Session_id = %q, want fingerprint value", got)
+	}
+	if got := gotHeaders.Get("X-Keep"); got != "ok" {
+		t.Fatalf("X-Keep = %q, want custom provider header preserved", got)
+	}
+}
+
 func TestOpenAICompatExecutorImagesGenerationsPassthrough(t *testing.T) {
 	var gotPath string
 	var gotBody []byte
@@ -543,28 +563,10 @@ func TestOpenAICompatExecutorImagesGenerationsPassthrough(t *testing.T) {
 		Metadata: map[string]any{
 			cliproxyexecutor.RequestPathMetadataKey: "/v1/images/generations",
 		},
->>>>>>> upstream/main
 	})
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)
 	}
-<<<<<<< HEAD
-
-	if got := gotHeaders.Get("User-Agent"); got != "Codex Desktop/test" {
-		t.Fatalf("User-Agent = %q, want fingerprint value", got)
-	}
-	if got := gotHeaders.Get("Version"); got != "0.130.0-alpha.5" {
-		t.Fatalf("Version = %q, want fingerprint value", got)
-	}
-	if got := gotHeaders.Get("Originator"); got != "Codex Desktop" {
-		t.Fatalf("Originator = %q, want fingerprint value", got)
-	}
-	if got := gotHeaders.Get("Session_id"); got != "server-session" {
-		t.Fatalf("Session_id = %q, want fingerprint value", got)
-	}
-	if got := gotHeaders.Get("X-Keep"); got != "ok" {
-		t.Fatalf("X-Keep = %q, want custom provider header preserved", got)
-=======
 	if gotPath != "/v1/images/generations" {
 		t.Fatalf("path = %q, want %q", gotPath, "/v1/images/generations")
 	}
@@ -786,7 +788,6 @@ func TestRewriteOpenAICompatImagesMultipartPayloadPreservesStreamAndFileContentT
 	}
 	if got := form.File["image"]; len(got) != 1 || got[0].Header.Get("Content-Type") != "image/webp" {
 		t.Fatalf("image headers = %#v, want image/webp", got)
->>>>>>> upstream/main
 	}
 }
 

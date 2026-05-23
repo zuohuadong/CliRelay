@@ -234,7 +234,6 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	return meta
 }
 
-<<<<<<< HEAD
 func enrichRequestExecutionMetadata(meta map[string]any, rawJSON []byte) {
 	if meta == nil || len(rawJSON) == 0 {
 		return
@@ -296,8 +295,14 @@ func requestFeatures(rawJSON []byte, inputItems int, toolDefinitions int, toolCa
 	if toolDefinitions > 0 || toolCalls > 0 {
 		features = append(features, "tools")
 	}
+	if hasRequiredToolChoice(rawJSON) {
+		features = append(features, "required-tools")
+	}
 	if hasMCPTool(rawJSON) {
 		features = append(features, "mcp")
+	}
+	if hasXunfeiUnsupportedTool(rawJSON) {
+		features = append(features, "xunfei-unsupported-tools")
 	}
 	if toolCalls >= 16 {
 		features = append(features, "tool-heavy")
@@ -306,6 +311,20 @@ func requestFeatures(rawJSON []byte, inputItems int, toolDefinitions int, toolCa
 		features = append(features, "long-thread")
 	}
 	return features
+}
+
+func hasRequiredToolChoice(rawJSON []byte) bool {
+	toolChoice := gjson.GetBytes(rawJSON, "tool_choice")
+	if !toolChoice.Exists() {
+		return false
+	}
+	if toolChoice.Type == gjson.String {
+		return strings.EqualFold(strings.TrimSpace(toolChoice.String()), "required")
+	}
+	if toolChoice.IsObject() {
+		return strings.EqualFold(strings.TrimSpace(toolChoice.Get("type").String()), "function")
+	}
+	return false
 }
 
 func structuredMediaFeatures(rawJSON []byte) (hasImage, hasFile, hasVideo bool) {
@@ -372,6 +391,23 @@ func hasMCPTool(rawJSON []byte) bool {
 	return found
 }
 
+func hasXunfeiUnsupportedTool(rawJSON []byte) bool {
+	tools := gjson.GetBytes(rawJSON, "tools")
+	if !tools.Exists() || !tools.IsArray() {
+		return false
+	}
+	unsupported := false
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		toolType := strings.ToLower(strings.TrimSpace(tool.Get("type").String()))
+		if toolType == "" || toolType == "function" || toolType == "web_search" {
+			return true
+		}
+		unsupported = true
+		return false
+	})
+	return unsupported
+}
+
 // applyContextRetrieval reduces oversized request payloads when context retrieval is enabled.
 func (h *BaseAPIHandler) applyContextRetrieval(ctx context.Context, modelName string, handlerType string, rawJSON []byte) []byte {
 	if h == nil || h.Cfg == nil || !h.Cfg.ContextRetrieval.Enabled || len(rawJSON) == 0 {
@@ -389,8 +425,6 @@ func (h *BaseAPIHandler) applyContextRetrieval(ctx context.Context, modelName st
 	return rawJSON
 }
 
-=======
->>>>>>> upstream/main
 func setReasoningEffortMetadata(meta map[string]any, handlerType, model string, rawJSON []byte) {
 	if meta == nil {
 		return
@@ -721,11 +755,8 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
-<<<<<<< HEAD
 	enrichRequestExecutionMetadata(reqMeta, rawJSON)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
-=======
->>>>>>> upstream/main
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
@@ -775,11 +806,8 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
-<<<<<<< HEAD
 	enrichRequestExecutionMetadata(reqMeta, rawJSON)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
-=======
->>>>>>> upstream/main
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
@@ -842,11 +870,8 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
-<<<<<<< HEAD
 	enrichRequestExecutionMetadata(reqMeta, rawJSON)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
-=======
->>>>>>> upstream/main
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {

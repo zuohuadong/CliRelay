@@ -618,6 +618,7 @@ func (h *Handler) GetUsageEntityStats(c *gin.Context) {
 	}
 	defer func() { _ = db.Close() }()
 
+	sourceSeen := make(map[string]bool)
 	sourceStats := make([]gin.H, 0)
 	rows, _ := db.Query("SELECT source, count(*), coalesce(sum(case when failed=0 then 1 else 0 end),0), coalesce(sum(case when failed!=0 then 1 else 0 end),0), coalesce(sum(total_tokens),0) FROM request_logs GROUP BY source ORDER BY count(*) DESC LIMIT 20")
 	if rows != nil {
@@ -627,9 +628,12 @@ func (h *Handler) GetUsageEntityStats(c *gin.Context) {
 			var total, successCnt, failCnt, toks int64
 			if rows.Scan(&source, &total, &successCnt, &failCnt, &toks) == nil {
 				sourceStats = append(sourceStats, gin.H{"entity_name": source, "source": source, "requests": total, "failed": failCnt, "tokens": toks})
+				sourceSeen[source] = true
 			}
 		}
 	}
+
+	authIndexToAPIKey := h.buildAuthIndexToAPIKeyMap()
 
 	authStats := make([]gin.H, 0)
 	rows2, _ := db.Query("SELECT auth_index, count(*), coalesce(sum(case when failed=0 then 1 else 0 end),0), coalesce(sum(case when failed!=0 then 1 else 0 end),0), coalesce(sum(total_tokens),0) FROM request_logs GROUP BY auth_index ORDER BY count(*) DESC LIMIT 20")
@@ -640,11 +644,46 @@ func (h *Handler) GetUsageEntityStats(c *gin.Context) {
 			var total, successCnt, failCnt, toks int64
 			if rows2.Scan(&idx, &total, &successCnt, &failCnt, &toks) == nil {
 				authStats = append(authStats, gin.H{"auth_index": idx, "requests": total, "failed": failCnt, "tokens": toks})
+				if apiKey, found := authIndexToAPIKey[idx]; found && apiKey != "" && !sourceSeen[apiKey] {
+					sourceStats = append(sourceStats, gin.H{"entity_name": apiKey, "source": apiKey, "requests": total, "failed": failCnt, "tokens": toks})
+					sourceSeen[apiKey] = true
+				}
 			}
 		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"source": sourceStats, "auth_index": authStats})
+}
+
+func (h *Handler) buildAuthIndexToAPIKeyMap() map[string]string {
+	out := make(map[string]string)
+	if h == nil {
+		return out
+	}
+	h.mu.Lock()
+	manager := h.authManager
+	h.mu.Unlock()
+	if manager == nil {
+		return out
+	}
+	for _, auth := range manager.List() {
+		if auth == nil {
+			continue
+		}
+		idx := strings.TrimSpace(auth.Index)
+		if idx == "" {
+			idx = auth.EnsureIndex()
+		}
+		if idx == "" {
+			continue
+		}
+		if auth.Attributes != nil {
+			if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
+				out[idx] = key
+			}
+		}
+	}
+	return out
 }
 
 func (h *Handler) GetUsageLogs(c *gin.Context) {

@@ -226,6 +226,11 @@ func APIKeyFromContext(ctx context.Context) string {
 
 func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {
 	if auth != nil {
+		if auth.Attributes != nil {
+			if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
+				return key
+			}
+		}
 		provider := strings.TrimSpace(auth.Provider)
 		if strings.EqualFold(provider, "gemini-cli") {
 			if id := strings.TrimSpace(auth.ID); id != "" {
@@ -254,11 +259,6 @@ func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {
 				if trimmed := strings.TrimSpace(email); trimmed != "" {
 					return trimmed
 				}
-			}
-		}
-		if auth.Attributes != nil {
-			if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
-				return key
 			}
 		}
 	}

@@ -24,9 +24,10 @@ import (
 )
 
 type attemptInfo struct {
-	count        int
-	blockedUntil time.Time
-	lastActivity time.Time // track last activity for cleanup
+	count         int
+	blockedUntil  time.Time
+	lastActivity  time.Time
+	lastFailureAt time.Time // dedup concurrent failures within a short window
 }
 
 // attemptCleanupInterval controls how often stale IP entries are purged
@@ -197,6 +198,7 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string) {
 	const maxFailures = 5
 	const banDuration = 30 * time.Minute
+	const failureDedupWindow = 1 * time.Second
 
 	if h == nil {
 		return false, http.StatusForbidden, "remote management disabled"
@@ -216,48 +218,8 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	}
 	envSecret := h.envSecret
 
-	now := time.Now()
-	h.attemptsMu.Lock()
-	ai := h.failedAttempts[clientIP]
-	if ai != nil && !ai.blockedUntil.IsZero() {
-		if now.Before(ai.blockedUntil) {
-			remaining := ai.blockedUntil.Sub(now).Round(time.Second)
-			h.attemptsMu.Unlock()
-			return false, http.StatusForbidden, fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)
-		}
-		// Ban expired, reset state
-		ai.blockedUntil = time.Time{}
-		ai.count = 0
-	}
-	h.attemptsMu.Unlock()
-
 	if !localClient && !allowRemote {
 		return false, http.StatusForbidden, "remote management disabled"
-	}
-
-	fail := func() {
-		h.attemptsMu.Lock()
-		aip := h.failedAttempts[clientIP]
-		if aip == nil {
-			aip = &attemptInfo{}
-			h.failedAttempts[clientIP] = aip
-		}
-		aip.count++
-		aip.lastActivity = time.Now()
-		if aip.count >= maxFailures {
-			aip.blockedUntil = time.Now().Add(banDuration)
-			aip.count = 0
-		}
-		h.attemptsMu.Unlock()
-	}
-
-	reset := func() {
-		h.attemptsMu.Lock()
-		if ai := h.failedAttempts[clientIP]; ai != nil {
-			ai.count = 0
-			ai.blockedUntil = time.Time{}
-		}
-		h.attemptsMu.Unlock()
 	}
 
 	if secretHash == "" && envSecret == "" {
@@ -268,60 +230,88 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		return false, http.StatusUnauthorized, "missing management key"
 	}
 
+	keyValid := false
 	if localClient {
 		if lp := h.localPassword; lp != "" {
 			if subtle.ConstantTimeCompare([]byte(provided), []byte(lp)) == 1 {
-				reset()
-				return true, 0, ""
+				keyValid = true
 			}
 		}
 	}
-
-	if envSecret != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(envSecret)) == 1 {
-		reset()
-		return true, 0, ""
+	if !keyValid && envSecret != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(envSecret)) == 1 {
+		keyValid = true
 	}
-
-	if envSecret != "" {
+	if !keyValid && envSecret != "" {
 		envHash := sha256.Sum256([]byte(envSecret))
 		envHashHex := hex.EncodeToString(envHash[:])
 		if subtle.ConstantTimeCompare([]byte(provided), []byte(envHashHex)) == 1 {
-			reset()
-			return true, 0, ""
+			keyValid = true
 		}
 	}
-
-	if shareToken := h.shareToken(); shareToken != "" {
-		if strings.HasPrefix(shareToken, "sha256:") {
-			storedHash := strings.TrimPrefix(shareToken, "sha256:")
-			providedHash := sha256.Sum256([]byte(provided))
-			providedHashHex := hex.EncodeToString(providedHash[:])
-			if subtle.ConstantTimeCompare([]byte(providedHashHex), []byte(storedHash)) == 1 {
-				reset()
-				return true, 0, ""
-			}
-		} else {
-			if subtle.ConstantTimeCompare([]byte(provided), []byte(shareToken)) == 1 {
-				reset()
-				return true, 0, ""
-			}
-			shareHash := sha256.Sum256([]byte(shareToken))
-			shareHashHex := hex.EncodeToString(shareHash[:])
-			if subtle.ConstantTimeCompare([]byte(provided), []byte(shareHashHex)) == 1 {
-				reset()
-				return true, 0, ""
+	if !keyValid {
+		if shareToken := h.shareToken(); shareToken != "" {
+			if strings.HasPrefix(shareToken, "sha256:") {
+				storedHash := strings.TrimPrefix(shareToken, "sha256:")
+				providedHash := sha256.Sum256([]byte(provided))
+				providedHashHex := hex.EncodeToString(providedHash[:])
+				if subtle.ConstantTimeCompare([]byte(providedHashHex), []byte(storedHash)) == 1 {
+					keyValid = true
+				}
+			} else {
+				if subtle.ConstantTimeCompare([]byte(provided), []byte(shareToken)) == 1 {
+					keyValid = true
+				}
+				if !keyValid {
+					shareHash := sha256.Sum256([]byte(shareToken))
+					shareHashHex := hex.EncodeToString(shareHash[:])
+					if subtle.ConstantTimeCompare([]byte(provided), []byte(shareHashHex)) == 1 {
+						keyValid = true
+					}
+				}
 			}
 		}
 	}
+	if !keyValid && secretHash != "" && bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) == nil {
+		keyValid = true
+	}
 
-	if secretHash == "" || bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
-		fail()
+	if keyValid {
+		h.attemptsMu.Lock()
+		delete(h.failedAttempts, clientIP)
+		h.attemptsMu.Unlock()
+		return true, 0, ""
+	}
+
+	now := time.Now()
+	h.attemptsMu.Lock()
+	ai := h.failedAttempts[clientIP]
+	if ai != nil && !ai.blockedUntil.IsZero() && now.Before(ai.blockedUntil) {
+		remaining := ai.blockedUntil.Sub(now).Round(time.Second)
+		h.attemptsMu.Unlock()
+		return false, http.StatusForbidden, fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)
+	}
+	if ai != nil && !ai.blockedUntil.IsZero() {
+		ai.blockedUntil = time.Time{}
+		ai.count = 0
+	}
+	if ai != nil && !ai.lastFailureAt.IsZero() && now.Sub(ai.lastFailureAt) < failureDedupWindow {
+		h.attemptsMu.Unlock()
 		return false, http.StatusUnauthorized, "invalid management key"
 	}
+	if ai == nil {
+		ai = &attemptInfo{}
+		h.failedAttempts[clientIP] = ai
+	}
+	ai.count++
+	ai.lastFailureAt = now
+	ai.lastActivity = now
+	if ai.count >= maxFailures {
+		ai.blockedUntil = now.Add(banDuration)
+		ai.count = 0
+	}
+	h.attemptsMu.Unlock()
 
-	reset()
-
-	return true, 0, ""
+	return false, http.StatusUnauthorized, "invalid management key"
 }
 
 // persist saves the current in-memory config to disk.

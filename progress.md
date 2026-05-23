@@ -7,6 +7,8 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-23 18:35:33 +0800] [CliRelay] [done] Manually tested astron-code-latest upstream tools support; basic tool_choice=auto works, but Codex-like tool_choice=required returns finish_reason=abort with no tool call
+[2026-05-23 18:20:10 +0800] [CliRelay] [done] Investigated frequent zero-output EOF errors and restored production astron-code tools skip policy after logs showed all failures routing gpt-5.3-codex to astron-code-latest
 [2026-05-22 21:34:30 +0800] [CliRelay] [done] Enabled 4G production swapfile with persistent fstab entry and vm.swappiness=10 after OOMKilled restart investigation
 [2026-05-22 21:42:00 +0800] [CliRelay] [done] Traced the OOM risk to unbounded Responses WebSocket timeline accumulation in openai_responses_websocket.go and added per-event and total-size caps before request-log cloning/flush
 [2026-05-22 21:31:00 +0800] [CliRelay] [done] Investigated production restart as OOMKilled/no-panic container death and installed systemd health watchdog timer to restart cli-proxy-api when /healthz fails

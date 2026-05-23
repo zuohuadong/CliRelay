@@ -295,8 +295,14 @@ func requestFeatures(rawJSON []byte, inputItems int, toolDefinitions int, toolCa
 	if toolDefinitions > 0 || toolCalls > 0 {
 		features = append(features, "tools")
 	}
+	if hasRequiredToolChoice(rawJSON) {
+		features = append(features, "required-tools")
+	}
 	if hasMCPTool(rawJSON) {
 		features = append(features, "mcp")
+	}
+	if hasXunfeiUnsupportedTool(rawJSON) {
+		features = append(features, "xunfei-unsupported-tools")
 	}
 	if toolCalls >= 16 {
 		features = append(features, "tool-heavy")
@@ -305,6 +311,20 @@ func requestFeatures(rawJSON []byte, inputItems int, toolDefinitions int, toolCa
 		features = append(features, "long-thread")
 	}
 	return features
+}
+
+func hasRequiredToolChoice(rawJSON []byte) bool {
+	toolChoice := gjson.GetBytes(rawJSON, "tool_choice")
+	if !toolChoice.Exists() {
+		return false
+	}
+	if toolChoice.Type == gjson.String {
+		return strings.EqualFold(strings.TrimSpace(toolChoice.String()), "required")
+	}
+	if toolChoice.IsObject() {
+		return strings.EqualFold(strings.TrimSpace(toolChoice.Get("type").String()), "function")
+	}
+	return false
 }
 
 func structuredMediaFeatures(rawJSON []byte) (hasImage, hasFile, hasVideo bool) {
@@ -369,6 +389,23 @@ func hasMCPTool(rawJSON []byte) bool {
 		return true
 	})
 	return found
+}
+
+func hasXunfeiUnsupportedTool(rawJSON []byte) bool {
+	tools := gjson.GetBytes(rawJSON, "tools")
+	if !tools.Exists() || !tools.IsArray() {
+		return false
+	}
+	unsupported := false
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		toolType := strings.ToLower(strings.TrimSpace(tool.Get("type").String()))
+		if toolType == "" || toolType == "function" || toolType == "web_search" {
+			return true
+		}
+		unsupported = true
+		return false
+	})
+	return unsupported
 }
 
 // applyContextRetrieval reduces oversized request payloads when context retrieval is enabled.

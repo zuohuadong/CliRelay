@@ -252,6 +252,24 @@ func TestManagerExecute_AstronCodePrefersSmallRequestsAndSkipsMCP(t *testing.T) 
 					RequestFeatures:   []string{"mcp"},
 				},
 			},
+			{
+				Name: "astron-code-required-tools-skip",
+				Match: internalconfig.RequestPolicyMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"astron-code"},
+					UpstreamModels:    []string{"astron-code-latest"},
+					RequestFeatures:   []string{"required-tools"},
+				},
+			},
+			{
+				Name: "astron-code-unsupported-tools-skip",
+				Match: internalconfig.RequestPolicyMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"astron-code"},
+					UpstreamModels:    []string{"astron-code-latest"},
+					RequestFeatures:   []string{"xunfei-unsupported-tools"},
+				},
+			},
 		},
 	})
 
@@ -314,6 +332,54 @@ func TestManagerExecute_AstronCodePrefersSmallRequestsAndSkipsMCP(t *testing.T) 
 	}
 	if calls := bigmodel.Calls(); len(calls) != 1 || calls[0] != "bigmodel-auth" {
 		t.Fatalf("bigmodel calls after mcp request = %v, want [bigmodel-auth]", calls)
+	}
+
+	_, err = manager.Execute(context.Background(), []string{"astron-code", "bigmodel-coding"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex","input":"auto function tool"}`),
+	}, cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestBytesMetadataKey:    120000,
+			cliproxyexecutor.RequestFeaturesMetadataKey: []string{"tools"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() auto tools error = %v", err)
+	}
+	if calls := astron.Calls(); len(calls) != 2 || calls[1] != "astron-auth" {
+		t.Fatalf("astron calls after auto tools request = %v, want second astron-auth", calls)
+	}
+
+	_, err = manager.Execute(context.Background(), []string{"astron-code", "bigmodel-coding"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex","input":"required tool"}`),
+	}, cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestBytesMetadataKey:    120000,
+			cliproxyexecutor.RequestFeaturesMetadataKey: []string{"tools", "required-tools"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() required tools error = %v", err)
+	}
+	if calls := bigmodel.Calls(); len(calls) != 2 || calls[1] != "bigmodel-auth" {
+		t.Fatalf("bigmodel calls after required tools request = %v, want second bigmodel-auth", calls)
+	}
+
+	_, err = manager.Execute(context.Background(), []string{"astron-code", "bigmodel-coding"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex","input":"unsupported tool"}`),
+	}, cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestBytesMetadataKey:    120000,
+			cliproxyexecutor.RequestFeaturesMetadataKey: []string{"tools", "xunfei-unsupported-tools"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() unsupported tools error = %v", err)
+	}
+	if calls := bigmodel.Calls(); len(calls) != 3 || calls[2] != "bigmodel-auth" {
+		t.Fatalf("bigmodel calls after unsupported tools request = %v, want third bigmodel-auth", calls)
 	}
 }
 

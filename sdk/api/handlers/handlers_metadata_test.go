@@ -39,7 +39,6 @@ func TestSetReasoningEffortMetadataSupportsOpenAIResponses(t *testing.T) {
 		t.Fatalf("ReasoningEffortMetadataKey = %v, want %q", got, "medium")
 	}
 }
-<<<<<<< HEAD
 
 func TestEnrichRequestExecutionMetadataMarksMCPTools(t *testing.T) {
 	meta := make(map[string]any)
@@ -60,5 +59,3 @@ func TestEnrichRequestExecutionMetadataMarksMCPTools(t *testing.T) {
 		}
 	}
 }
-=======
->>>>>>> upstream/main

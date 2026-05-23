@@ -1203,21 +1203,6 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 		compatReq := buildOpenAICompatImagesJSONRequest(rawJSON, imageModel, stream)
 		h.handleOpenAICompatImages(c, compatReq, imageModel, responseFormat, "image_edit", stream)
 		return
-<<<<<<< HEAD
-=======
-	}
-
-	var images []string
-	imagesResult := gjson.GetBytes(rawJSON, "images")
-	if imagesResult.IsArray() {
-		for _, img := range imagesResult.Array() {
-			url := strings.TrimSpace(img.Get("image_url").String())
-			if url == "" {
-				continue
-			}
-			images = append(images, url)
-		}
->>>>>>> upstream/main
 	}
 
 	images := collectImageInputs(rawJSON)

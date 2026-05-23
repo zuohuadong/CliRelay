@@ -4,10 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-<<<<<<< HEAD
 	"encoding/base64"
-=======
->>>>>>> upstream/main
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,10 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
-<<<<<<< HEAD
 	"strconv"
-=======
->>>>>>> upstream/main
 	"strings"
 	"time"
 

@@ -36,7 +36,6 @@ tls:
   cert: ""
   key: ""
 
-<<<<<<< HEAD
 # Explicit browser origins allowed to call API routes cross-origin.
 # Leave empty to disable cross-origin browser access by default.
 # Chrome extension origins (`chrome-extension://<extension-id>`) are allowed by default.
@@ -73,8 +72,6 @@ home:
     # Only for testing self-signed endpoints; disables certificate verification.
     insecure-skip-verify: false
 
-=======
->>>>>>> upstream/main
 # Management API settings
 remote-management:
   # Whether to allow remote (non-localhost) management access.
@@ -136,7 +133,6 @@ error-logs-max-files: 10
 # When false, disable in-memory usage statistics aggregation
 usage-statistics-enabled: false
 
-<<<<<<< HEAD
 # Detailed request/response body retention settings for usage.db.
 request-log-storage:
   # When true, persist full request and response bodies in SQLite.
@@ -314,12 +310,11 @@ request-log-storage:
 #         Z_AI_MODE: "ZHIPU"
 #       tool-name: "image_analysis"
 #       timeout-seconds: 60
-=======
+
 # How long (in seconds) usage queue items are retained in memory for the Management API.
 # The local Redis RESP usage output is disabled.
 # Default: 60. Max: 3600.
 redis-usage-queue-retention-seconds: 60
->>>>>>> upstream/main
 
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 proxy-url: ""
@@ -554,9 +549,6 @@ streaming:
 #       - api-key: "sk-or-v1-...b781" # without proxy-url
 #     models: # The models supported by the provider.
 #       - name: "moonshotai/kimi-k2:free" # The actual model name.
-<<<<<<< HEAD
-#         alias: "kimi-k2" # The alias used in the API.
-=======
 #         alias: "kimi-k2"               # The alias used in the API.
 #         image: false                   # optional: set true to allow this model on /v1/images/generations and /v1/images/edits
 #         thinking:                      # optional: omit to default to levels ["low","medium","high"]
@@ -572,7 +564,6 @@ streaming:
 #         alias: "claude-opus-4.66"
 #       - name: "kimi-k2.5"
 #         alias: "claude-opus-4.66"
->>>>>>> upstream/main
 
 # Vertex API keys (Vertex-compatible endpoints, use API key + base URL)
 # vertex-api-key:

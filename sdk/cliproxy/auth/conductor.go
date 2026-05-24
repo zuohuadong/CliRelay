@@ -3386,6 +3386,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		upstreamModel = m.applyOAuthModelAlias(selected, upstreamModel)
 		upstreamModel = m.applyAPIKeyModelAlias(selected, upstreamModel)
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, selected, opts, model, providerKey, upstreamModel); blocked {
+			logEntryWithRequestID(ctx).Debugf("pickNextMixed: request-policy blocked auth=%s provider=%s upstreamModel=%s policy=%s reason=%s", selected.ID, providerKey, upstreamModel, policyErr.policy, policyErr.reason)
 			if policyErr != nil && policyErr.action == requestPolicyActionReject {
 				return nil, nil, "", policyErr
 			}

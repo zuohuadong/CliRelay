@@ -10,6 +10,7 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 type requestPolicyAction string
@@ -88,6 +89,8 @@ func requestPolicyDecision(cfg *internalconfig.Config, auth *Auth, opts cliproxy
 	requestedModel = strings.TrimSpace(requestedModel)
 	upstreamProvider = strings.ToLower(strings.TrimSpace(upstreamProvider))
 	upstreamModel = strings.TrimSpace(upstreamModel)
+	features := requestFeaturesFromMetadata(opts.Metadata)
+	log.Debugf("requestPolicyDecision: requestedModel=%s upstreamProvider=%s upstreamModel=%s requestBytes=%d features=%v", requestedModel, upstreamProvider, upstreamModel, requestBytes, features)
 	for i := range cfg.RequestPolicies {
 		policy := cfg.RequestPolicies[i]
 		if !requestPolicyMatches(policy, requestedModel, upstreamProvider, upstreamModel) {

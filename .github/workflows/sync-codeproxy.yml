@@ -1,0 +1,106 @@
+name: Sync CodeProxy Panel
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub cron is UTC; 10:07 UTC is 18:07 Beijing time.
+    - cron: '7 10 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REPOSITORY: kittors/codeProxy
+  UPSTREAM_BRANCH: main
+  BASE_BRANCH: main
+  SYNC_BRANCH: chore/sync-codeproxy-panel
+  PANEL_DIR: panel
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_PR_TOKEN != '' && secrets.SYNC_PR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Clone upstream panel source
+        run: |
+          git clone --depth 1 --branch "${UPSTREAM_BRANCH}" "https://github.com/${UPSTREAM_REPOSITORY}.git" /tmp/codeproxy
+
+      - name: Sync panel directory
+        id: sync
+        run: |
+          set -euo pipefail
+          # Remove existing panel contents (keep the directory itself)
+          find "${PANEL_DIR}" -mindepth 1 -delete
+
+          # Copy upstream source into panel/
+          # Exclude upstream-only dirs that don't belong inside panel/
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.agents' \
+            --exclude='node_modules' \
+            --exclude='dist' \
+            /tmp/codeproxy/ "${PANEL_DIR}/"
+
+          # Check for changes
+          git add "${PANEL_DIR}/"
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            # Build commit message from upstream short log
+            cd /tmp/codeproxy
+            upstream_sha="$(git rev-parse HEAD)"
+            upstream_log="$(git log --oneline -5)"
+            cd -
+            git commit -m "chore: sync panel from ${UPSTREAM_REPOSITORY}@${upstream_sha}"
+
+            {
+              echo "upstream_sha=${upstream_sha}"
+              echo "upstream_log<<UPSTREAMEOF"
+              echo "${upstream_log}"
+              echo "UPSTREAMEOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push sync branch
+        if: steps.sync.outputs.changed == 'true'
+        run: git push --force-with-lease origin "${SYNC_BRANCH}"
+
+      - name: Create or update pull request
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PR_TOKEN != '' && secrets.SYNC_PR_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repository="${GITHUB_REPOSITORY}"
+          head_owner="${GITHUB_REPOSITORY_OWNER}"
+          title="chore: sync panel from ${UPSTREAM_REPOSITORY}"
+          body="Automated sync of the \`panel/\` directory from [${UPSTREAM_REPOSITORY}](https://github.com/${UPSTREAM_REPOSITORY}) (${UPSTREAM_BRANCH}) into \`${BASE_BRANCH}\`."
+          body="${body}"$'\n\n'"Upstream commit: \`${{ steps.sync.outputs.upstream_sha }}\`"
+          if [ -n "${{ steps.sync.outputs.upstream_log }}" ]; then
+            body="${body}"$'\n\n'"Recent upstream changes:"
+            while IFS= read -r line; do
+              [ -n "${line}" ] || continue
+              body="${body}"$'\n'"- ${line}"
+            done <<< "${{ steps.sync.outputs.upstream_log }}"
+          fi
+          existing_pr="$(gh pr list --repo "${repository}" --base "${BASE_BRANCH}" --head "${SYNC_BRANCH}" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "${existing_pr}" ]; then
+            gh pr edit "${existing_pr}" --repo "${repository}" --title "${title}" --body "${body}"
+          else
+            gh pr create --repo "${repository}" --base "${BASE_BRANCH}" --head "${head_owner}:${SYNC_BRANCH}" --title "${title}" --body "${body}"
+          fi

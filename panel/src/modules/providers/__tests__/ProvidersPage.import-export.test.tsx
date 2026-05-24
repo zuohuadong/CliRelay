@@ -13,8 +13,10 @@ const mocks = vi.hoisted(() => ({
   getOpenCodeGoConfigs: vi.fn(async () => []),
   getVertexConfigs: vi.fn(async () => []),
   getBedrockConfigs: vi.fn(async () => []),
+  getBigModelCodingProviders: vi.fn(async () => []),
   getOpenAIProviders: vi.fn(async () => []),
   saveCodexConfigs: vi.fn(async (_configs: unknown[]) => ({})),
+  saveBigModelCodingProviders: vi.fn(async (_configs: unknown[]) => ({})),
   getEntityStats: vi.fn(async () => ({ source: [] })),
   apiKeyEntriesList: vi.fn(async () => []),
   channelGroupsList: vi.fn(async () => []),
@@ -33,8 +35,10 @@ vi.mock("@/lib/http/apis", async (importOriginal) => {
       getOpenCodeGoConfigs: mocks.getOpenCodeGoConfigs,
       getVertexConfigs: mocks.getVertexConfigs,
       getBedrockConfigs: mocks.getBedrockConfigs,
+      getBigModelCodingProviders: mocks.getBigModelCodingProviders,
       getOpenAIProviders: mocks.getOpenAIProviders,
       saveCodexConfigs: mocks.saveCodexConfigs,
+      saveBigModelCodingProviders: mocks.saveBigModelCodingProviders,
     },
     usageApi: {
       ...mod.usageApi,
@@ -88,8 +92,10 @@ describe("ProvidersPage import/export", () => {
     mocks.getOpenCodeGoConfigs.mockImplementation(async () => []);
     mocks.getVertexConfigs.mockImplementation(async () => []);
     mocks.getBedrockConfigs.mockImplementation(async () => []);
+    mocks.getBigModelCodingProviders.mockImplementation(async () => []);
     mocks.getOpenAIProviders.mockImplementation(async () => []);
     mocks.saveCodexConfigs.mockImplementation(async () => ({}));
+    mocks.saveBigModelCodingProviders.mockImplementation(async () => ({}));
     mocks.getEntityStats.mockImplementation(async () => ({ source: [] }));
     mocks.apiKeyEntriesList.mockImplementation(async () => []);
     mocks.channelGroupsList.mockImplementation(async () => []);
@@ -303,6 +309,54 @@ describe("ProvidersPage import/export", () => {
     const blob = (createObjectURL as any).mock.calls[0][0] as Blob;
     await expect(blob.text()).resolves.toContain('"name": "Codex Main"');
     await expect(blob.text()).resolves.not.toContain('"name": "Legacy"');
+  });
+
+  test("exports only the selected BigModel Coding provider card when names repeat", async () => {
+    const user = userEvent.setup();
+    mocks.getBigModelCodingProviders.mockImplementation(
+      async () =>
+        [
+          {
+            name: "bigmodel-coding",
+            baseUrl: "https://one.example/v1",
+            apiKeyEntries: [{ apiKey: "sk-one" }],
+            models: [{ name: "glm-5.1", alias: "gpt-5.3-codex" }],
+          },
+          {
+            name: "bigmodel-coding",
+            baseUrl: "https://two.example/v1",
+            apiKeyEntries: [{ apiKey: "sk-two" }],
+            models: [{ name: "glm-5.1", alias: "gpt-5.3-codex" }],
+          },
+        ] as any,
+    );
+
+    render(
+      <MemoryRouter initialEntries={["/ai-providers"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/ai-providers/*" element={<ProvidersPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: /BigModel Coding/i }));
+    expect((await screen.findAllByText("bigmodel-coding")).length).toBeGreaterThan(0);
+
+    const selectionBoxes = await screen.findAllByRole("checkbox", {
+      name: /Select bigmodel-coding/i,
+    });
+    await user.click(selectionBoxes[1]);
+    await user.click(screen.getByRole("button", { name: /Export Selected JSON/i }));
+
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    const blob = (createObjectURL as any).mock.calls[0][0] as Blob;
+    const text = await blob.text();
+    expect(text).toContain('"base-url": "https://two.example/v1"');
+    expect(text).not.toContain('"base-url": "https://one.example/v1"');
   });
 
   test("selects all provider cards in the active tab for export", async () => {

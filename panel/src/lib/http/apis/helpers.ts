@@ -221,6 +221,7 @@ export const serializeOpenAIProvider = (provider: OpenAIProvider) => {
   }
   const testModel = normalizeString(provider.testModel);
   if (testModel) payload["test-model"] = testModel;
+  if (provider.disableCooling === true) payload["disable-cooling"] = true;
 
   if (Array.isArray(provider.apiKeyEntries) && provider.apiKeyEntries.length) {
     const entries = provider.apiKeyEntries

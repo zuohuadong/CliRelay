@@ -60,14 +60,17 @@ type ProviderTab =
 const getProviderSelectionKey = (
   kind: ProviderImportKind,
   item: ProviderSimpleConfig | BedrockProviderConfig | OpenAIProvider,
+  index?: number,
 ) =>
-  kind === "openai" || kind === "bigmodel-coding"
-    ? String((item as OpenAIProvider).name ?? "")
-        .trim()
-        .toLowerCase()
-    : String((item as ProviderSimpleConfig).apiKey ?? "")
-        .trim()
-        .toLowerCase();
+  kind === "bigmodel-coding"
+    ? `${String((item as OpenAIProvider).name ?? "").trim().toLowerCase()}:${index ?? 0}`
+    : kind === "openai"
+      ? String((item as OpenAIProvider).name ?? "")
+          .trim()
+          .toLowerCase()
+      : String((item as ProviderSimpleConfig).apiKey ?? "")
+          .trim()
+          .toLowerCase();
 
 export function ProvidersPage() {
   const { t } = useTranslation();
@@ -536,10 +539,11 @@ export function ProvidersPage() {
   const currentSelectableKeys = useMemo(
     () =>
       currentImportKind
-        ? currentTabItems.map((item) =>
+        ? currentTabItems.map((item, idx) =>
             getProviderSelectionKey(
               currentImportKind,
               item as ProviderSimpleConfig | BedrockProviderConfig | OpenAIProvider,
+              idx,
             ),
           )
         : [],
@@ -627,11 +631,12 @@ export function ProvidersPage() {
   const handleExportSelected = useCallback(() => {
     const kind = currentImportKind;
     if (!kind || selectedExportCount === 0) return;
-    const selectedItems = currentTabItems.filter((item) =>
+    const selectedItems = currentTabItems.filter((item, idx) =>
       selectedExportKeySet.has(
         getProviderSelectionKey(
           kind,
           item as ProviderSimpleConfig | BedrockProviderConfig | OpenAIProvider,
+          idx,
         ),
       ),
     );
@@ -852,6 +857,7 @@ export function ProvidersPage() {
           <TabsContent value="bigmodel-coding" className="flex min-h-0 flex-1 flex-col">
             <OpenAIProvidersTab
               providers={bigmodelCodingProviders}
+              kind="bigmodel-coding"
               loading={isActiveTabListLoading("bigmodel-coding")}
               openOpenAIEditor={openBigModelCodingEditor}
               confirmDelete={(index) => setConfirm({ type: "deleteBigModelCoding", index })}
@@ -1006,6 +1012,7 @@ export function ProvidersPage() {
           <TabsContent value="openai" className="flex min-h-0 flex-1 flex-col">
             <OpenAIProvidersTab
               providers={openaiProviders}
+              kind="openai"
               loading={isActiveTabListLoading("openai")}
               openOpenAIEditor={openOpenAIEditor}
               confirmDelete={(index) => setConfirm({ type: "deleteOpenAI", index })}

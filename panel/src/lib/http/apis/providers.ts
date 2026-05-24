@@ -51,6 +51,7 @@ export const providersApi = {
         const priority =
           typeof priorityRaw === "number" && Number.isFinite(priorityRaw) ? priorityRaw : undefined;
         const testModel = normalizeString(item["test-model"] ?? item.testModel) ?? undefined;
+        const disableCooling = item["disable-cooling"] === true;
         return {
           name,
           ...(disabled ? { disabled } : {}),
@@ -61,6 +62,7 @@ export const providersApi = {
           ...(apiKeyEntries ? { apiKeyEntries } : {}),
           ...(priority !== undefined ? { priority } : {}),
           ...(testModel ? { testModel } : {}),
+          ...(disableCooling ? { disableCooling } : {}),
         };
       })
       .filter(Boolean) as OpenAIProvider[];
@@ -366,6 +368,7 @@ export const providersApi = {
         const priority =
           typeof priorityRaw === "number" && Number.isFinite(priorityRaw) ? priorityRaw : undefined;
         const testModel = normalizeString(item["test-model"] ?? item.testModel) ?? undefined;
+        const disableCooling = item["disable-cooling"] === true;
         return {
           name,
           ...(disabled ? { disabled } : {}),
@@ -376,6 +379,7 @@ export const providersApi = {
           ...(apiKeyEntries ? { apiKeyEntries } : {}),
           ...(priority !== undefined ? { priority } : {}),
           ...(testModel ? { testModel } : {}),
+          ...(disableCooling ? { disableCooling } : {}),
         };
       })
       .filter(Boolean) as OpenAIProvider[];

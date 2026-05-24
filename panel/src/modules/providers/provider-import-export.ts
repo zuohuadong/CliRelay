@@ -266,6 +266,7 @@ const normalizeOpenAIItem = (
       ...(normalizeString(value["test-model"] ?? value.testModel)
         ? { testModel: normalizeString(value["test-model"] ?? value.testModel)! }
         : {}),
+      ...(value["disable-cooling"] === true ? { disableCooling: true } : {}),
     },
     duplicateCount: modelDuplicates + entryDuplicates,
   };
@@ -284,7 +285,9 @@ const normalizeItems = <K extends ProviderImportKind>(
     if (kind === "bigmodel-coding" || kind === "openai") {
       const normalized = normalizeOpenAIItem(value);
       if (!normalized.item) return;
-      const key = normalized.item.name.toLowerCase();
+      const key = kind === "bigmodel-coding"
+        ? getBigModelCodingItemKey(normalized.item)
+        : normalized.item.name.toLowerCase();
       if (seen.has(key)) {
         duplicateCount += 1;
         return;
@@ -359,15 +362,27 @@ const readEnvelope = (raw: unknown): { provider?: string; items: unknown } => {
   };
 };
 
+const getBigModelCodingItemKey = (item: OpenAIProvider) => {
+  const base = (item.baseUrl ?? "").toLowerCase();
+  const firstKey = item.apiKeyEntries?.[0]?.apiKey?.toLowerCase() ?? "";
+  return `${item.name.toLowerCase()}:${base}:${firstKey}`;
+};
+
 const getItemKey = (kind: ProviderImportKind, item: CanonicalProviderItem) =>
-  kind === "openai" || kind === "bigmodel-coding"
-    ? (item as OpenAIProvider).name.toLowerCase()
-    : (item as ProviderSimpleConfig).apiKey.toLowerCase();
+  kind === "bigmodel-coding"
+    ? getBigModelCodingItemKey(item as OpenAIProvider)
+    : kind === "openai"
+      ? (item as OpenAIProvider).name.toLowerCase()
+      : (item as ProviderSimpleConfig).apiKey.toLowerCase();
 
 const getItemLabel = (kind: ProviderImportKind, item: CanonicalProviderItem) =>
-  kind === "openai" || kind === "bigmodel-coding"
-    ? (item as OpenAIProvider).name
-    : (item as ProviderSimpleConfig).name || (item as ProviderSimpleConfig).apiKey;
+  kind === "bigmodel-coding"
+    ? (item as OpenAIProvider).baseUrl
+      ? `${(item as OpenAIProvider).name} (${(item as OpenAIProvider).baseUrl})`
+      : (item as OpenAIProvider).name
+    : kind === "openai"
+      ? (item as OpenAIProvider).name
+      : (item as ProviderSimpleConfig).name || (item as ProviderSimpleConfig).apiKey;
 
 export const createProviderExportText = <K extends ProviderImportKind>(
   kind: K,

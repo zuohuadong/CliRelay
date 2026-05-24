@@ -56,6 +56,7 @@ describe("providers helpers", () => {
       prefix: "oa",
       priority: 5,
       testModel: "gpt-4.1",
+      disableCooling: true,
       headers: { "x-provider": "openai" },
       apiKeyEntries: [
         {
@@ -72,6 +73,7 @@ describe("providers helpers", () => {
     expect(draft.disabled).toBe(true);
     expect(draft.baseUrl).toBe("https://example.com/v1");
     expect(draft.priorityText).toBe("5");
+    expect(draft.disableCooling).toBe(true);
     expect(draft.headersEntries).toEqual([
       { id: expect.any(String), key: "x-provider", value: "openai" },
     ]);

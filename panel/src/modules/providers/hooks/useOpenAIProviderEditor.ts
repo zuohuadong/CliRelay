@@ -113,6 +113,7 @@ export function useOpenAIProviderEditor({
       ...(headers ? { headers } : {}),
       ...(priority !== undefined ? { priority } : {}),
       ...(openaiDraft.testModel.trim() ? { testModel: openaiDraft.testModel.trim() } : {}),
+      ...(openaiDraft.disableCooling ? { disableCooling: true } : {}),
       ...(modelCommit.models ? { models: modelCommit.models } : {}),
       ...(apiKeyEntries?.length ? { apiKeyEntries } : {}),
     };

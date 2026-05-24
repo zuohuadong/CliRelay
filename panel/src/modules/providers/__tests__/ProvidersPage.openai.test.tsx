@@ -291,6 +291,45 @@ describe("ProvidersPage openai tab", () => {
     );
   });
 
+  test("preserves disable-cooling when saving an OpenAI Compatible provider", async () => {
+    const user = userEvent.setup();
+    const provider = {
+      name: "OpenAI Main",
+      baseUrl: "https://example.com/v1",
+      disableCooling: true,
+      apiKeyEntries: [{ apiKey: "sk-openai-provider-1234567890" }],
+      models: [{ name: "gpt-4.1" }],
+    } as any;
+    mocks.getOpenAIProviders.mockImplementation(async () => [provider] as any);
+
+    render(
+      <MemoryRouter initialEntries={["/ai-providers/openai"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/ai-providers/*" element={<ProvidersPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("OpenAI Main")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Edit/ }));
+    expect(await screen.findByText("Edit OpenAI-compatible provider")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Save/ }));
+
+    await waitFor(() => {
+      expect(mocks.saveOpenAIProviders).toHaveBeenCalledWith([
+        expect.objectContaining({
+          name: "OpenAI Main",
+          disableCooling: true,
+        }),
+      ]);
+    });
+  });
+
   test("toggles an OpenAI Compatible provider without removing keys", async () => {
     const user = userEvent.setup();
     const provider = {

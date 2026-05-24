@@ -190,6 +190,7 @@ export interface OpenAIProvider {
   apiKeyEntries?: ProviderApiKeyEntry[];
   priority?: number;
   testModel?: string;
+  disableCooling?: boolean;
 }
 
 export interface ProviderSimpleConfig {

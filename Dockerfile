@@ -13,7 +13,7 @@ ENV VITE_APP_VERSION=${VERSION}
 
 RUN bunx vite build
 
-FROM golang:1.26-alpine AS builder
+FROM registry.access.redhat.com/ubi9/go-toolset:latest AS builder
 
 WORKDIR /app
 
@@ -31,13 +31,14 @@ ARG BUILD_DATE=unknown
 
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
 
-FROM alpine:3.23
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 
-RUN apk add --no-cache tini tzdata
+RUN microdnf install -y tzdata tini && \
+    microdnf clean all
 
 RUN mkdir /CLIProxyAPI
 
-COPY --from=builder ./app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
+COPY --from=builder /app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
 
 COPY config.example.yaml /CLIProxyAPI/config.example.yaml
 

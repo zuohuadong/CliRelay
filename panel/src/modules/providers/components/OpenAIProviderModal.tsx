@@ -31,6 +31,7 @@ interface OpenAIProviderModalProps {
   copyText: (text: string) => Promise<void>;
   maskApiKey: (value: string) => string;
   title?: string;
+  description?: string;
 }
 
 export function OpenAIProviderModal({
@@ -51,6 +52,7 @@ export function OpenAIProviderModal({
   copyText,
   maskApiKey,
   title,
+  description,
 }: OpenAIProviderModalProps) {
   const { t } = useTranslation();
   const [discoverQuery, setDiscoverQuery] = useState("");
@@ -105,7 +107,7 @@ export function OpenAIProviderModal({
             ? t("providers.edit_provider", { provider: title })
             : t("providers.edit_openai_provider")
       }
-      description={t("providers.openai_config_desc")}
+      description={description ?? t("providers.openai_config_desc")}
       onClose={closeOpenAIEditor}
       footer={
         <div className="flex flex-wrap items-center gap-2">

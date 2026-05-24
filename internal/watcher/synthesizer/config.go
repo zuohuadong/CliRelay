@@ -65,8 +65,16 @@ func (s *ConfigSynthesizer) synthesizeBigModelCoding(ctx *SynthesisContext) []*c
 		createdEntries := 0
 		for j := range compat.APIKeyEntries {
 			entry := &compat.APIKeyEntries[j]
+			if entry.Disabled {
+				continue
+			}
 			key := strings.TrimSpace(entry.APIKey)
 			proxyURL := strings.TrimSpace(entry.ProxyURL)
+			if pid := strings.TrimSpace(entry.ProxyID); pid != "" {
+				if resolved := cfg.ResolveProxyURL(pid, ""); resolved != "" {
+					proxyURL = resolved
+				}
+			}
 			idKind := fmt.Sprintf("%s:%s", providerName, providerName)
 			id, token := idGen.Next(idKind, key, base, proxyURL)
 			attrs := map[string]string{
@@ -89,6 +97,7 @@ func (s *ConfigSynthesizer) synthesizeBigModelCoding(ctx *SynthesisContext) []*c
 				attrs["models_hash"] = hash
 			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
+			addConfigHeadersToAttrs(entry.Headers, attrs)
 			a := &coreauth.Auth{
 				ID:         id,
 				Provider:   providerName,
@@ -341,8 +350,16 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 		createdEntries := 0
 		for j := range compat.APIKeyEntries {
 			entry := &compat.APIKeyEntries[j]
+			if entry.Disabled {
+				continue
+			}
 			key := strings.TrimSpace(entry.APIKey)
 			proxyURL := strings.TrimSpace(entry.ProxyURL)
+			if pid := strings.TrimSpace(entry.ProxyID); pid != "" {
+				if resolved := cfg.ResolveProxyURL(pid, ""); resolved != "" {
+					proxyURL = resolved
+				}
+			}
 			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
 			id, token := idGen.Next(idKind, key, base, proxyURL)
 			attrs := map[string]string{
@@ -365,6 +382,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				attrs["models_hash"] = hash
 			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
+			addConfigHeadersToAttrs(entry.Headers, attrs)
 			a := &coreauth.Auth{
 				ID:         id,
 				Provider:   providerName,

@@ -360,10 +360,12 @@ const readEnvelope = (raw: unknown): { provider?: string; items: unknown } => {
 };
 
 const getItemKey = (kind: ProviderImportKind, item: CanonicalProviderItem) =>
-  kind === "openai" ? (item as OpenAIProvider).name.toLowerCase() : (item as ProviderSimpleConfig).apiKey.toLowerCase();
+  kind === "openai" || kind === "bigmodel-coding"
+    ? (item as OpenAIProvider).name.toLowerCase()
+    : (item as ProviderSimpleConfig).apiKey.toLowerCase();
 
 const getItemLabel = (kind: ProviderImportKind, item: CanonicalProviderItem) =>
-  kind === "openai"
+  kind === "openai" || kind === "bigmodel-coding"
     ? (item as OpenAIProvider).name
     : (item as ProviderSimpleConfig).name || (item as ProviderSimpleConfig).apiKey;
 

@@ -61,7 +61,7 @@ const getProviderSelectionKey = (
   kind: ProviderImportKind,
   item: ProviderSimpleConfig | BedrockProviderConfig | OpenAIProvider,
 ) =>
-  kind === "openai"
+  kind === "openai" || kind === "bigmodel-coding"
     ? String((item as OpenAIProvider).name ?? "")
         .trim()
         .toLowerCase()
@@ -867,6 +867,11 @@ export function ProvidersPage() {
               }
               selectedKeys={selectedExportKeySet}
               onToggleSelected={toggleExportSelection}
+              title={t("providers.bigmodel_coding_keys")}
+              description={t("providers.bigmodel_coding_desc")}
+              emptyTitle={t("providers.bigmodel_coding_keys")}
+              emptyDescription={t("providers.bigmodel_coding_channel_hint")}
+              addLabel={t("providers.add_provider", { provider: "BigModel Coding" })}
             />
           </TabsContent>
 
@@ -1095,6 +1100,7 @@ export function ProvidersPage() {
         copyText={copyText}
         maskApiKey={maskApiKey}
         title="BigModel Coding"
+        description={t("providers.bigmodel_coding_config_desc")}
       />
 
       <ConfirmModal

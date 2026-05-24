@@ -20,7 +20,7 @@ interface UseOpenAIProviderEditorArgs {
   startRefreshTransition: (action: () => void) => void;
   afterClose: () => void;
   saveProviders?: (providers: OpenAIProvider[]) => Promise<unknown>;
-  deleteProvider?: (name: string) => Promise<unknown>;
+  deleteProvider?: (name: string, index?: number) => Promise<unknown>;
 }
 
 export function useOpenAIProviderEditor({
@@ -159,7 +159,7 @@ export function useOpenAIProviderEditor({
       const entry = openaiProviders[index];
       if (!entry) return;
       try {
-        await deleteProvider(entry.name);
+        await deleteProvider(entry.name, index);
         setOpenaiProviders((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
         notify({ type: "success", message: t("providers.deleted") });
       } catch (err: unknown) {

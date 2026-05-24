@@ -72,8 +72,10 @@ export const providersApi = {
       providers.map((item) => serializeOpenAIProvider(item)),
     ),
 
-  deleteBigModelCodingProvider: (name: string) =>
-    apiClient.delete("/bigmodel-coding-api-key", undefined, { params: { name } }),
+  deleteBigModelCodingProvider: (_name: string, index?: number) =>
+    apiClient.delete("/bigmodel-coding-api-key", undefined, {
+      params: index !== undefined ? { index } : { name: _name },
+    }),
 
   async getGeminiKeys(): Promise<ProviderSimpleConfig[]> {
     const data = await apiClient.get("/gemini-api-key");

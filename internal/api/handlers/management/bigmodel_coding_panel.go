@@ -2,6 +2,7 @@ package management
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -132,11 +133,36 @@ func (h *Handler) PatchBigModelCodingKey(c *gin.Context) {
 
 func (h *Handler) DeleteBigModelCodingKey(c *gin.Context) {
 	apiKey := strings.TrimSpace(c.Query("api-key"))
+	name := strings.TrimSpace(c.Query("name"))
+	indexStr := strings.TrimSpace(c.Query("index"))
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cfg.MigrateBigModelCodingFromOpenAICompatibility()
 	h.cfg.SanitizeBigModelCoding()
+	if indexStr != "" {
+		var idx int
+		if _, err := fmt.Sscanf(indexStr, "%d", &idx); err == nil && idx >= 0 && idx < len(h.cfg.BigModelCodingAPIKey) {
+			h.cfg.BigModelCodingAPIKey = append(h.cfg.BigModelCodingAPIKey[:idx], h.cfg.BigModelCodingAPIKey[idx+1:]...)
+			h.cfg.SanitizeBigModelCoding()
+			h.persistLocked(c)
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid index"})
+		return
+	}
+	if name != "" {
+		out := make([]config.OpenAICompatibility, 0, len(h.cfg.BigModelCodingAPIKey))
+		for _, v := range h.cfg.BigModelCodingAPIKey {
+			if strings.TrimSpace(v.Name) != name {
+				out = append(out, v)
+			}
+		}
+		h.cfg.BigModelCodingAPIKey = out
+		h.cfg.SanitizeBigModelCoding()
+		h.persistLocked(c)
+		return
+	}
 	if apiKey != "" {
 		targetIndex := h.bigModelCodingIndexLocked()
 		if targetIndex < 0 {

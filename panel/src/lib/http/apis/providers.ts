@@ -13,7 +13,6 @@ import {
   normalizeHeaders,
   normalizeModels,
   normalizeString,
-  serializeBigModelCodingKey,
   serializeGeminiKey,
   serializeBedrockKey,
   serializeOpenCodeGoKey,
@@ -33,46 +32,48 @@ const isOauthBackedProviderRow = (item: Record<string, unknown>): boolean => {
 };
 
 export const providersApi = {
-  async getBigModelCodingKeys(): Promise<ProviderSimpleConfig[]> {
+  async getBigModelCodingProviders(): Promise<OpenAIProvider[]> {
     const data = await apiClient.get("/bigmodel-coding-api-key");
     const list = extractArrayPayload(data, "bigmodel-coding-api-key");
     return list
       .map((item) => {
         if (!isRecord(item)) return null;
         if (isOauthBackedProviderRow(item)) return null;
-        const apiKey = normalizeString(item["api-key"] ?? item.apiKey) ?? "";
-        if (!apiKey) return null;
-        const name = normalizeString(item.name) ?? undefined;
-        const prefix = normalizeString(item.prefix) ?? undefined;
+        const name = normalizeString(item.name) ?? "";
+        if (!name) return null;
+        const disabled = item.disabled === true;
         const baseUrl = normalizeString(item["base-url"] ?? item.baseUrl) ?? undefined;
-        const proxyId = normalizeString(item["proxy-id"] ?? item.proxyId) ?? undefined;
+        const prefix = normalizeString(item.prefix) ?? undefined;
         const headers = normalizeHeaders(item.headers);
         const models = normalizeModels(item.models);
-        const excludedModels = normalizeExcludedModels(
-          item["excluded-models"] ?? item.excludedModels,
-        );
+        const apiKeyEntries = normalizeApiKeyEntries(item["api-key-entries"] ?? item.apiKeyEntries);
+        const priorityRaw = item.priority;
+        const priority =
+          typeof priorityRaw === "number" && Number.isFinite(priorityRaw) ? priorityRaw : undefined;
+        const testModel = normalizeString(item["test-model"] ?? item.testModel) ?? undefined;
         return {
-          apiKey,
-          ...(name ? { name } : {}),
-          ...(prefix ? { prefix } : {}),
+          name,
+          ...(disabled ? { disabled } : {}),
           ...(baseUrl ? { baseUrl } : {}),
-          ...(proxyId ? { proxyId } : {}),
+          ...(prefix ? { prefix } : {}),
           ...(headers ? { headers } : {}),
           ...(models ? { models } : {}),
-          ...(excludedModels ? { excludedModels } : {}),
+          ...(apiKeyEntries ? { apiKeyEntries } : {}),
+          ...(priority !== undefined ? { priority } : {}),
+          ...(testModel ? { testModel } : {}),
         };
       })
-      .filter(Boolean) as ProviderSimpleConfig[];
+      .filter(Boolean) as OpenAIProvider[];
   },
 
-  saveBigModelCodingKeys: (configs: ProviderSimpleConfig[]) =>
+  saveBigModelCodingProviders: (providers: OpenAIProvider[]) =>
     apiClient.put(
       "/bigmodel-coding-api-key",
-      configs.map((item) => serializeBigModelCodingKey(item)),
+      providers.map((item) => serializeOpenAIProvider(item)),
     ),
 
-  deleteBigModelCodingKey: (apiKey: string) =>
-    apiClient.delete("/bigmodel-coding-api-key", undefined, { params: { "api-key": apiKey } }),
+  deleteBigModelCodingProvider: (name: string) =>
+    apiClient.delete("/bigmodel-coding-api-key", undefined, { params: { name } }),
 
   async getGeminiKeys(): Promise<ProviderSimpleConfig[]> {
     const data = await apiClient.get("/gemini-api-key");

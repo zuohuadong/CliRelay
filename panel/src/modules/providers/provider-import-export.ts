@@ -13,7 +13,6 @@ import {
   normalizeModels,
   normalizeString,
   serializeBedrockKey,
-  serializeBigModelCodingKey,
   serializeGeminiKey,
   serializeOpenAIProvider,
   serializeOpenCodeGoKey,
@@ -32,7 +31,7 @@ export type ProviderImportKind =
   | "openai";
 
 type ProviderItemsByKind = {
-  "bigmodel-coding": ProviderSimpleConfig[];
+  "bigmodel-coding": OpenAIProvider[];
   gemini: ProviderSimpleConfig[];
   claude: ProviderSimpleConfig[];
   codex: ProviderSimpleConfig[];
@@ -282,7 +281,7 @@ const normalizeItems = <K extends ProviderImportKind>(
   let duplicateCount = 0;
 
   list.forEach((value) => {
-    if (kind === "openai") {
+    if (kind === "bigmodel-coding" || kind === "openai") {
       const normalized = normalizeOpenAIItem(value);
       if (!normalized.item) return;
       const key = normalized.item.name.toLowerCase();
@@ -336,7 +335,8 @@ const normalizeItems = <K extends ProviderImportKind>(
 const serializeItem = (kind: ProviderImportKind, item: CanonicalProviderItem) => {
   switch (kind) {
     case "bigmodel-coding":
-      return serializeBigModelCodingKey(item as ProviderSimpleConfig);
+    case "openai":
+      return serializeOpenAIProvider(item as OpenAIProvider);
     case "gemini":
       return serializeGeminiKey(item as ProviderSimpleConfig);
     case "claude":
@@ -347,8 +347,6 @@ const serializeItem = (kind: ProviderImportKind, item: CanonicalProviderItem) =>
       return serializeOpenCodeGoKey(item as ProviderSimpleConfig);
     case "bedrock":
       return serializeBedrockKey(item as BedrockProviderConfig);
-    case "openai":
-      return serializeOpenAIProvider(item as OpenAIProvider);
   }
 };
 

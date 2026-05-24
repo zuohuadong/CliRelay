@@ -80,7 +80,7 @@ export function ProvidersPage() {
   const [tab, setTab] = useState<ProviderTab>("gemini");
   const [loading, setLoading] = useState(true);
 
-  const [bigmodelCodingKeys, setBigmodelCodingKeys] = useState<ProviderSimpleConfig[]>([]);
+  const [bigmodelCodingProviders, setBigmodelCodingProviders] = useState<OpenAIProvider[]>([]);
   const [geminiKeys, setGeminiKeys] = useState<ProviderSimpleConfig[]>([]);
   const [claudeKeys, setClaudeKeys] = useState<ProviderSimpleConfig[]>([]);
   const [codexKeys, setCodexKeys] = useState<ProviderSimpleConfig[]>([]);
@@ -104,10 +104,11 @@ export function ProvidersPage() {
     | null
     | {
         type: "deleteKey";
-        keyType: "bigmodel-coding" | "gemini" | "claude" | "codex" | "opencode-go" | "vertex" | "bedrock";
+        keyType: "gemini" | "claude" | "codex" | "opencode-go" | "vertex" | "bedrock";
         index: number;
       }
     | { type: "deleteOpenAI"; index: number }
+    | { type: "deleteBigModelCoding"; index: number }
   >(null);
   const handledRouteRef = useRef("");
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -125,7 +126,7 @@ export function ProvidersPage() {
       try {
         switch (tabId) {
           case "bigmodel-coding":
-            setBigmodelCodingKeys(await providersApi.getBigModelCodingKeys());
+            setBigmodelCodingProviders(await providersApi.getBigModelCodingProviders());
             break;
           case "gemini":
             setGeminiKeys(await providersApi.getGeminiKeys());
@@ -296,14 +297,12 @@ export function ProvidersPage() {
     editKeyHeaderCount,
     editKeyModelCount,
   } = useProviderKeyEditor({
-    bigmodelCodingKeys,
     geminiKeys,
     claudeKeys,
     codexKeys,
     openCodeGoKeys,
     vertexKeys,
     bedrockKeys,
-    setBigmodelCodingKeys,
     setGeminiKeys,
     setClaudeKeys,
     setCodexKeys,
@@ -341,6 +340,34 @@ export function ProvidersPage() {
     afterClose: handleOpenAIEditorRouteClose,
   });
 
+  const {
+    editOpenAIOpen: editBigModelCodingOpen,
+    editOpenAIIndex: editBigModelCodingIndex,
+    openaiDraft: bigModelCodingDraft,
+    setOpenaiDraft: setBigModelCodingDraft,
+    openaiDraftError: bigModelCodingDraftError,
+    discoveredModels: bigModelCodingDiscoveredModels,
+    discovering: bigModelCodingDiscovering,
+    discoverSelected: bigModelCodingDiscoverSelected,
+    setDiscoverSelected: setBigModelCodingDiscoverSelected,
+    closeOpenAIEditor: closeBigModelCodingEditor,
+    openOpenAIEditor: openBigModelCodingEditor,
+    saveOpenAIDraft: saveBigModelCodingDraft,
+    deleteOpenAIProvider: deleteBigModelCodingProvider,
+    toggleOpenAIProviderEnabled: toggleBigModelCodingProviderEnabled,
+    toggleOpenAIKeyEntryEnabled: toggleBigModelCodingKeyEntryEnabled,
+    discoverModels: discoverBigModelCodingModels,
+    applyDiscoveredModels: applyBigModelCodingDiscoveredModels,
+  } = useOpenAIProviderEditor({
+    openaiProviders: bigmodelCodingProviders,
+    setOpenaiProviders: setBigmodelCodingProviders,
+    refreshAll,
+    startRefreshTransition: startTransition,
+    afterClose: handleKeyEditorRouteClose,
+    saveProviders: providersApi.saveBigModelCodingProviders,
+    deleteProvider: providersApi.deleteBigModelCodingProvider,
+  });
+
   useEffect(() => {
     if (loading) return;
     const pathname = location.pathname;
@@ -357,7 +384,6 @@ export function ProvidersPage() {
 
     void (async () => {
       if (
-        provider === "bigmodel-coding" ||
         provider === "gemini" ||
         provider === "claude" ||
         provider === "codex" ||
@@ -375,6 +401,21 @@ export function ProvidersPage() {
         const index = Number(action);
         if (Number.isFinite(index) && index >= 0) {
           openKeyEditor(provider, index);
+        }
+        return;
+      }
+
+      if (provider === "bigmodel-coding") {
+        setSelectedExportKeys([]);
+        setTab("bigmodel-coding");
+        await refreshTab("bigmodel-coding");
+        if (action === "new") {
+          openBigModelCodingEditor(null);
+          return;
+        }
+        const index = Number(action);
+        if (Number.isFinite(index) && index >= 0) {
+          openBigModelCodingEditor(index);
         }
         return;
       }
@@ -463,7 +504,7 @@ export function ProvidersPage() {
     (kind: ProviderImportKind) => {
       switch (kind) {
         case "bigmodel-coding":
-          return bigmodelCodingKeys;
+          return bigmodelCodingProviders;
         case "gemini":
           return geminiKeys;
         case "claude":
@@ -480,7 +521,7 @@ export function ProvidersPage() {
           return openaiProviders;
       }
     },
-    [bedrockKeys, bigmodelCodingKeys, claudeKeys, codexKeys, geminiKeys, openCodeGoKeys, openaiProviders, vertexKeys],
+    [bedrockKeys, bigmodelCodingProviders, claudeKeys, codexKeys, geminiKeys, openCodeGoKeys, openaiProviders, vertexKeys],
   );
 
   const currentImportKind = getImportKind();
@@ -517,7 +558,7 @@ export function ProvidersPage() {
     ) => {
       switch (kind) {
         case "bigmodel-coding":
-          await providersApi.saveBigModelCodingKeys(items as ProviderSimpleConfig[]);
+          await providersApi.saveBigModelCodingProviders(items as OpenAIProvider[]);
           return;
         case "gemini":
           await providersApi.saveGeminiKeys(items as ProviderSimpleConfig[]);
@@ -809,22 +850,21 @@ export function ProvidersPage() {
             </TabsList>
           </div>
           <TabsContent value="bigmodel-coding" className="flex min-h-0 flex-1 flex-col">
-            <ProviderKeyListCard
-              icon={Globe}
-              iconSrc={iconGlm}
-              title={t("providers.bigmodel_coding_keys")}
-              description={t("providers.bigmodel_coding_desc")}
-              items={bigmodelCodingKeys}
+            <OpenAIProvidersTab
+              providers={bigmodelCodingProviders}
               loading={isActiveTabListLoading("bigmodel-coding")}
-              onAdd={() => openKeyEditor("bigmodel-coding", null)}
-              onEdit={(idx) => openKeyEditor("bigmodel-coding", idx)}
-              onDelete={(idx) => setConfirm({ type: "deleteKey", keyType: "bigmodel-coding", index: idx })}
-              onToggleEnabled={(idx, enabled) => void toggleKeyEnabled("bigmodel-coding", idx, enabled)}
-              getStats={getSimpleStats}
-              getStatusBar={getSimpleStatusBar}
-              getAccessSummary={getProviderAccessSummary}
-              getLatencyEntry={getLatencyEntry}
-              checkLatency={checkLatency}
+              openOpenAIEditor={openBigModelCodingEditor}
+              confirmDelete={(index) => setConfirm({ type: "deleteBigModelCoding", index })}
+              maskApiKey={maskApiKey}
+              getKeyEntryStats={getOpenAIKeyEntryStats}
+              getProviderStats={getOpenAIProviderStats}
+              getProviderStatusBar={getOpenAIProviderStatusBar}
+              onToggleProviderEnabled={(providerIndex, enabled) =>
+                void toggleBigModelCodingProviderEnabled(providerIndex, enabled)
+              }
+              onToggleKeyEntryEnabled={(providerIndex, entryIndex, enabled) =>
+                void toggleBigModelCodingKeyEntryEnabled(providerIndex, entryIndex, enabled)
+              }
               selectedKeys={selectedExportKeySet}
               onToggleSelected={toggleExportSelection}
             />
@@ -1037,6 +1077,26 @@ export function ProvidersPage() {
         maskApiKey={maskApiKey}
       />
 
+      <OpenAIProviderModal
+        open={editBigModelCodingOpen}
+        editOpenAIIndex={editBigModelCodingIndex}
+        openaiDraft={bigModelCodingDraft}
+        setOpenaiDraft={setBigModelCodingDraft}
+        openaiDraftError={bigModelCodingDraftError}
+        closeOpenAIEditor={closeBigModelCodingEditor}
+        saveOpenAIDraft={saveBigModelCodingDraft}
+        discovering={bigModelCodingDiscovering}
+        discoverModels={discoverBigModelCodingModels}
+        applyDiscoveredModels={applyBigModelCodingDiscoveredModels}
+        discoveredModels={bigModelCodingDiscoveredModels}
+        discoverSelected={bigModelCodingDiscoverSelected}
+        setDiscoverSelected={setBigModelCodingDiscoverSelected}
+        proxyPoolEntries={proxyPoolEntries}
+        copyText={copyText}
+        maskApiKey={maskApiKey}
+        title="BigModel Coding"
+      />
+
       <ConfirmModal
         open={confirm !== null}
         title={t("providers.confirm_delete")}
@@ -1045,9 +1105,13 @@ export function ProvidersPage() {
             ? t("providers.confirm_delete_openai", {
                 name: openaiProviders[confirm.index]?.name ?? "",
               })
-            : confirm?.type === "deleteKey"
-              ? t("providers.confirm_delete_config")
-              : t("providers.confirm_delete_generic")
+            : confirm?.type === "deleteBigModelCoding"
+              ? t("providers.confirm_delete_openai", {
+                  name: bigmodelCodingProviders[confirm.index]?.name ?? "",
+                })
+              : confirm?.type === "deleteKey"
+                ? t("providers.confirm_delete_config")
+                : t("providers.confirm_delete_generic")
         }
         confirmText={t("providers.delete")}
         onClose={() => setConfirm(null)}
@@ -1057,6 +1121,10 @@ export function ProvidersPage() {
           if (!action) return;
           if (action.type === "deleteOpenAI") {
             void deleteOpenAIProvider(action.index);
+            return;
+          }
+          if (action.type === "deleteBigModelCoding") {
+            void deleteBigModelCodingProvider(action.index);
             return;
           }
           void deleteKey(action.keyType, action.index);

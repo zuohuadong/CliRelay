@@ -30,6 +30,7 @@ interface OpenAIProviderModalProps {
   proxyPoolEntries: ProxyPoolEntry[];
   copyText: (text: string) => Promise<void>;
   maskApiKey: (value: string) => string;
+  title?: string;
 }
 
 export function OpenAIProviderModal({
@@ -49,6 +50,7 @@ export function OpenAIProviderModal({
   proxyPoolEntries,
   copyText,
   maskApiKey,
+  title,
 }: OpenAIProviderModalProps) {
   const { t } = useTranslation();
   const [discoverQuery, setDiscoverQuery] = useState("");
@@ -96,8 +98,12 @@ export function OpenAIProviderModal({
       open={open}
       title={
         editOpenAIIndex === null
-          ? t("providers.add_openai_provider")
-          : t("providers.edit_openai_provider")
+          ? title
+            ? t("providers.add_provider", { provider: title })
+            : t("providers.add_openai_provider")
+          : title
+            ? t("providers.edit_provider", { provider: title })
+            : t("providers.edit_openai_provider")
       }
       description={t("providers.openai_config_desc")}
       onClose={closeOpenAIEditor}

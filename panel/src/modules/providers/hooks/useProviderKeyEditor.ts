@@ -15,17 +15,15 @@ import {
   type ProviderKeyDraft,
 } from "@/modules/providers/providers-helpers";
 
-export type ProviderKeyType = "bigmodel-coding" | "gemini" | "claude" | "codex" | "opencode-go" | "vertex" | "bedrock";
+export type ProviderKeyType = "gemini" | "claude" | "codex" | "opencode-go" | "vertex" | "bedrock";
 
 interface UseProviderKeyEditorArgs {
-  bigmodelCodingKeys: ProviderSimpleConfig[];
   geminiKeys: ProviderSimpleConfig[];
   claudeKeys: ProviderSimpleConfig[];
   codexKeys: ProviderSimpleConfig[];
   openCodeGoKeys: ProviderSimpleConfig[];
   vertexKeys: ProviderSimpleConfig[];
   bedrockKeys: BedrockProviderConfig[];
-  setBigmodelCodingKeys: Dispatch<SetStateAction<ProviderSimpleConfig[]>>;
   setGeminiKeys: Dispatch<SetStateAction<ProviderSimpleConfig[]>>;
   setClaudeKeys: Dispatch<SetStateAction<ProviderSimpleConfig[]>>;
   setCodexKeys: Dispatch<SetStateAction<ProviderSimpleConfig[]>>;
@@ -38,14 +36,12 @@ interface UseProviderKeyEditorArgs {
 }
 
 export function useProviderKeyEditor({
-  bigmodelCodingKeys,
   geminiKeys,
   claudeKeys,
   codexKeys,
   openCodeGoKeys,
   vertexKeys,
   bedrockKeys,
-  setBigmodelCodingKeys,
   setGeminiKeys,
   setClaudeKeys,
   setCodexKeys,
@@ -66,20 +62,18 @@ export function useProviderKeyEditor({
 
   const getListByType = useCallback(
     (type: ProviderKeyType) =>
-      type === "bigmodel-coding"
-        ? bigmodelCodingKeys
-        : type === "gemini"
-          ? geminiKeys
-          : type === "claude"
-            ? claudeKeys
-            : type === "codex"
-              ? codexKeys
-              : type === "opencode-go"
-                ? openCodeGoKeys
-                : type === "vertex"
-                  ? vertexKeys
-                  : bedrockKeys,
-    [bedrockKeys, bigmodelCodingKeys, claudeKeys, codexKeys, geminiKeys, openCodeGoKeys, vertexKeys],
+      type === "gemini"
+        ? geminiKeys
+        : type === "claude"
+          ? claudeKeys
+          : type === "codex"
+            ? codexKeys
+            : type === "opencode-go"
+              ? openCodeGoKeys
+              : type === "vertex"
+                ? vertexKeys
+                : bedrockKeys,
+    [bedrockKeys, claudeKeys, codexKeys, geminiKeys, openCodeGoKeys, vertexKeys],
   );
 
   const closeKeyEditor = useCallback(() => {
@@ -185,11 +179,7 @@ export function useProviderKeyEditor({
     };
 
     try {
-      if (type === "bigmodel-coding") {
-        const next = apply(bigmodelCodingKeys);
-        await providersApi.saveBigModelCodingKeys(next);
-        setBigmodelCodingKeys(next);
-      } else if (type === "gemini") {
+      if (type === "gemini") {
         const next = apply(geminiKeys);
         await providersApi.saveGeminiKeys(next);
         setGeminiKeys(next);
@@ -224,7 +214,6 @@ export function useProviderKeyEditor({
       });
     }
   }, [
-    bigmodelCodingKeys,
     claudeKeys,
     bedrockKeys,
     closeKeyEditor,
@@ -236,7 +225,6 @@ export function useProviderKeyEditor({
     notify,
     openCodeGoKeys,
     refreshAll,
-    setBigmodelCodingKeys,
     setClaudeKeys,
     setCodexKeys,
     setBedrockKeys,
@@ -255,10 +243,7 @@ export function useProviderKeyEditor({
       if (!entry) return;
 
       try {
-        if (type === "bigmodel-coding") {
-          await providersApi.deleteBigModelCodingKey(entry.apiKey);
-          setBigmodelCodingKeys((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
-        } else if (type === "gemini") {
+        if (type === "gemini") {
           await providersApi.deleteGeminiKey(entry.apiKey);
           setGeminiKeys((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
         } else if (type === "claude") {
@@ -289,7 +274,6 @@ export function useProviderKeyEditor({
       getListByType,
       notify,
       setBedrockKeys,
-      setBigmodelCodingKeys,
       setClaudeKeys,
       setCodexKeys,
       setGeminiKeys,
@@ -301,22 +285,20 @@ export function useProviderKeyEditor({
 
   const toggleKeyEnabled = useCallback(
     async (
-      type: "bigmodel-coding" | "gemini" | "claude" | "codex" | "opencode-go" | "bedrock",
+      type: "gemini" | "claude" | "codex" | "opencode-go" | "bedrock",
       index: number,
       enabled: boolean,
     ) => {
       const list =
-        type === "bigmodel-coding"
-          ? bigmodelCodingKeys
-          : type === "gemini"
-            ? geminiKeys
-            : type === "claude"
-              ? claudeKeys
-              : type === "codex"
-                ? codexKeys
-                : type === "opencode-go"
-                  ? openCodeGoKeys
-                  : bedrockKeys;
+        type === "gemini"
+          ? geminiKeys
+          : type === "claude"
+            ? claudeKeys
+            : type === "codex"
+              ? codexKeys
+              : type === "opencode-go"
+                ? openCodeGoKeys
+                : bedrockKeys;
       const current = list[index];
       if (!current) return;
       const prev = list;
@@ -329,10 +311,7 @@ export function useProviderKeyEditor({
       const nextList = prev.map((item, itemIndex) => (itemIndex === index ? nextItem : item));
 
       try {
-        if (type === "bigmodel-coding") {
-          setBigmodelCodingKeys(nextList);
-          await providersApi.saveBigModelCodingKeys(nextList);
-        } else if (type === "gemini") {
+        if (type === "gemini") {
           setGeminiKeys(nextList);
           await providersApi.saveGeminiKeys(nextList);
         } else if (type === "claude") {
@@ -354,8 +333,7 @@ export function useProviderKeyEditor({
         });
         startRefreshTransition(() => void refreshAll());
       } catch (err: unknown) {
-        if (type === "bigmodel-coding") setBigmodelCodingKeys(prev);
-        else if (type === "gemini") setGeminiKeys(prev);
+        if (type === "gemini") setGeminiKeys(prev);
         else if (type === "claude") setClaudeKeys(prev);
         else if (type === "codex") setCodexKeys(prev);
         else if (type === "opencode-go") setOpenCodeGoKeys(prev);
@@ -367,7 +345,6 @@ export function useProviderKeyEditor({
       }
     },
     [
-      bigmodelCodingKeys,
       claudeKeys,
       bedrockKeys,
       codexKeys,
@@ -375,7 +352,6 @@ export function useProviderKeyEditor({
       notify,
       openCodeGoKeys,
       refreshAll,
-      setBigmodelCodingKeys,
       setClaudeKeys,
       setCodexKeys,
       setBedrockKeys,
@@ -387,19 +363,17 @@ export function useProviderKeyEditor({
   );
 
   const editKeyTitle =
-    editKeyType === "bigmodel-coding"
-      ? "BigModel Coding"
-      : editKeyType === "gemini"
-        ? "Gemini"
-        : editKeyType === "claude"
-          ? "Claude"
-          : editKeyType === "codex"
-            ? "Codex"
-            : editKeyType === "opencode-go"
-              ? "OpenCode Go"
-              : editKeyType === "vertex"
-                ? "Vertex"
-                : "Bedrock";
+    editKeyType === "gemini"
+      ? "Gemini"
+      : editKeyType === "claude"
+        ? "Claude"
+        : editKeyType === "codex"
+          ? "Codex"
+          : editKeyType === "opencode-go"
+            ? "OpenCode Go"
+            : editKeyType === "vertex"
+              ? "Vertex"
+              : "Bedrock";
 
   const editKeyEnabled = useMemo(() => {
     const list = excludedModelsFromText(keyDraft.excludedModelsText);

@@ -167,26 +167,6 @@ export const serializeGeminiKey = (config: ProviderSimpleConfig) => {
   return payload;
 };
 
-export const serializeBigModelCodingKey = (config: ProviderSimpleConfig) => {
-  const payload: Record<string, unknown> = { "api-key": config.apiKey };
-  const name = normalizeString(config.name);
-  if (name) payload.name = name;
-  const prefix = normalizeString(config.prefix);
-  if (prefix) payload.prefix = prefix;
-  const baseUrl = normalizeString(config.baseUrl);
-  if (baseUrl) payload["base-url"] = baseUrl;
-  const proxyId = normalizeString(config.proxyId);
-  if (proxyId) payload["proxy-id"] = proxyId;
-  const headers = serializeHeaders(config.headers);
-  if (headers) payload.headers = headers;
-  const models = serializeModels(config.models);
-  if (models && models.length) payload.models = models;
-  if (config.excludedModels && config.excludedModels.length) {
-    payload["excluded-models"] = config.excludedModels;
-  }
-  return payload;
-};
-
 export const serializeBedrockKey = (config: BedrockProviderConfig) => {
   const authMode = config.authMode === "sigv4" ? "sigv4" : "api-key";
   const payload: Record<string, unknown> = { "auth-mode": authMode };

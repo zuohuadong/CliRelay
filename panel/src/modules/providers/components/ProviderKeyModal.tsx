@@ -42,7 +42,7 @@ interface ProviderKeyModalProps {
   open: boolean;
   editKeyIndex: number | null;
   editKeyTitle: string;
-  editKeyType: "bigmodel-coding" | "gemini" | "claude" | "codex" | "opencode-go" | "vertex" | "bedrock";
+  editKeyType: "gemini" | "claude" | "codex" | "opencode-go" | "vertex" | "bedrock";
   keyDraft: ProviderKeyDraft;
   setKeyDraft: Dispatch<SetStateAction<ProviderKeyDraft>>;
   keyDraftError: string | null;
@@ -333,15 +333,13 @@ export function ProviderKeyModal({
           : t("providers.edit_config", { type: editKeyTitle })
       }
       description={
-        editKeyType === "bigmodel-coding"
-          ? t("providers.bigmodel_coding_config_desc")
-          : editKeyType === "vertex"
-            ? t("providers.vertex_config_desc")
-            : isBedrock
-              ? t("providers.bedrock_config_desc")
-              : isOpenCodeGo
-                ? t("providers.opencode_go_config_desc")
-                : t("providers.generic_config_desc")
+        editKeyType === "vertex"
+          ? t("providers.vertex_config_desc")
+          : isBedrock
+            ? t("providers.bedrock_config_desc")
+            : isOpenCodeGo
+              ? t("providers.opencode_go_config_desc")
+              : t("providers.generic_config_desc")
       }
       onClose={closeKeyEditor}
       maxWidth="max-w-4xl"

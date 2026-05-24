@@ -3115,6 +3115,8 @@
     "vertex_alias_required": "Vertex: alias required",
     "add_openai_provider": "Add OpenAI-compatible provider",
     "edit_openai_provider": "Edit OpenAI-compatible provider",
+    "add_provider": "Add {{provider}} provider",
+    "edit_provider": "Edit {{provider}} provider",
     "priority_label": "Priority (optional)",
     "test_model_label": "Test model (optional)",
     "api_key_entries": "API key entries",

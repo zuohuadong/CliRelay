@@ -33,6 +33,7 @@ const (
 	panelDistAssetName           = "panel-dist.zip"
 	panelEntryName               = "manage.html"
 	panelDigestMarkerName        = ".panel-dist.sha256"
+	localPanelMarkerName         = ".local-panel-sha256"
 	httpUserAgent                = "CLIProxyAPI-management-syncer"
 	managementSyncMinInterval    = 30 * time.Second
 	updateCheckInterval          = 3 * time.Hour
@@ -269,6 +270,161 @@ func AssetPath(configFilePath string, relativePath string) (string, bool) {
 	return target, true
 }
 
+// localPanelDistDir resolves the local panel build output directory.
+// It checks for panel/dist relative to the executable, the working directory, and the config file.
+func localPanelDistDir() string {
+	candidates := []string{}
+
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "panel", "dist"))
+	}
+
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(wd, "panel", "dist"))
+	}
+
+	for _, dir := range candidates {
+		entry := filepath.Join(dir, panelEntryName)
+		if info, err := os.Stat(entry); err == nil && !info.IsDir() {
+			return dir
+		}
+	}
+
+	return ""
+}
+
+// syncLocalPanelBuild checks for a local panel/dist build output and syncs it to the static directory.
+// Returns true if a local build was synced (meaning no remote download is needed).
+func syncLocalPanelBuild(staticDir string) bool {
+	distDir := localPanelDistDir()
+	if distDir == "" {
+		return false
+	}
+
+	localHash, err := dirSHA256(distDir)
+	if err != nil {
+		return false
+	}
+
+	markerPath := filepath.Join(staticDir, localPanelMarkerName)
+	existingHash, _ := os.ReadFile(markerPath)
+	if strings.TrimSpace(string(existingHash)) == localHash {
+		log.Debug("local panel build is already synced")
+		return panelEntryExists(staticDir)
+	}
+
+	if errMkdir := os.MkdirAll(staticDir, 0o755); errMkdir != nil {
+		log.WithError(errMkdir).Warn("failed to prepare static directory for local panel sync")
+		return false
+	}
+
+	entries, err := os.ReadDir(distDir)
+	if err != nil {
+		log.WithError(err).Warn("failed to read local panel dist directory")
+		return false
+	}
+
+	for _, entry := range entries {
+		src := filepath.Join(distDir, entry.Name())
+		dst := filepath.Join(staticDir, entry.Name())
+		if err := os.RemoveAll(dst); err != nil {
+			log.WithError(err).Warnf("failed to remove stale static entry %s", entry.Name())
+			return false
+		}
+		if entry.IsDir() {
+			if err := copyDir(src, dst); err != nil {
+				log.WithError(err).Warnf("failed to copy local panel directory %s", entry.Name())
+				return false
+			}
+		} else if entry.Type().IsRegular() {
+			if err := copyFile(src, dst); err != nil {
+				log.WithError(err).Warnf("failed to copy local panel file %s", entry.Name())
+				return false
+			}
+		}
+	}
+
+	if err := atomicWriteFile(markerPath, []byte(localHash+"\n")); err != nil {
+		log.WithError(err).Warn("failed to persist local panel digest marker")
+	}
+
+	log.Info("local panel build synced successfully")
+	return true
+}
+
+func copyDir(src, dst string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+		if entry.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else if entry.Type().IsRegular() {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = out.Close() }()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
+}
+
+func dirSHA256(dir string) (string, error) {
+	h := sha256.New()
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		h.Write([]byte(rel))
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		if _, err := io.Copy(h, f); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // EnsureLatestManagementHTML checks the latest management panel asset and updates the local copy when needed.
 // It prefers the SPA zip bundle (panel-dist.zip) and falls back to the single management.html asset.
 // It coalesces concurrent sync attempts and returns whether the asset exists after the sync attempt.
@@ -282,6 +438,11 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		log.Debug("management asset sync skipped: empty static directory")
 		return false
 	}
+
+	if synced := syncLocalPanelBuild(staticDir); synced {
+		return true
+	}
+
 	localPath := filepath.Join(staticDir, managementAssetName)
 
 	_, _, _ = sfGroup.Do(localPath, func() (interface{}, error) {

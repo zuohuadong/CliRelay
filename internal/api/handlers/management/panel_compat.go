@@ -401,6 +401,26 @@ func (h *Handler) DeleteBedrockKey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+func (h *Handler) GetIFlowKeys(c *gin.Context) {
+	items := h.iflowWithAuthIndex()
+	c.JSON(http.StatusOK, gin.H{
+		"iflow":         items,
+		"iflow-api-key": items,
+	})
+}
+
+func (h *Handler) PutIFlowKeys(c *gin.Context) {
+	unsupportedPanelWrite(c, "iflow provider uses OAuth authentication; use the iflow-auth-url endpoint instead")
+}
+
+func (h *Handler) PatchIFlowKey(c *gin.Context) {
+	unsupportedPanelWrite(c, "iflow provider uses OAuth authentication; use the iflow-auth-url endpoint instead")
+}
+
+func (h *Handler) DeleteIFlowKey(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
 func (h *Handler) RequestUnsupportedOAuthProvider(c *gin.Context) {
 	unsupportedPanelWrite(c, "this OAuth provider is not available in this v7 build")
 }

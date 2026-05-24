@@ -79,3 +79,7 @@ jobs:
         run: |
           go build -o test-output ./cmd/server
           rm -f test-output
+      - name: Check panel source exists
+        run: |
+          test -f panel/package.json || { echo "panel/package.json not found"; exit 1; }
+          test -f panel/vite.config.ts || { echo "panel/vite.config.ts not found"; exit 1; }

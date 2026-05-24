@@ -200,6 +200,7 @@ tr.selected td{background:var(--primary-bg)}
     <button class="btn btn-sm" onclick="startOAuth('anthropic')">Anthropic OAuth</button>
     <button class="btn btn-sm" onclick="startOAuth('gemini')">Gemini CLI OAuth</button>
     <button class="btn btn-sm" onclick="startOAuth('xai')">xAI OAuth</button>
+    <button class="btn btn-sm" onclick="startOAuth('iflow')">iFlow OAuth</button>
     <button class="btn btn-sm" onclick="startOAuth('antigravity')">Vertex 导入</button>
   </div>
   <div class="table-wrap">
@@ -400,8 +401,10 @@ function getProviderKey(f){
   var provider=(f.provider||f.type||'unknown').toLowerCase();
   if(provider==='openai-compatibility'){
     var providerName=(f.provider_name||f.label||'').toLowerCase();
-    if(providerName==='bigmodel-coding')return 'bigmodel-coding'
+    if(providerName==='bigmodel-coding')return 'bigmodel-coding';
+    if(providerName==='iflow')return 'iflow'
   }
+  if(provider==='iflow')return 'iflow';
   return provider
 }
 
@@ -466,7 +469,7 @@ function renderToolbar(){
   }
   var html='';
   html+='<button class="filter-chip'+(filter==='all'?' active':'')+'" onclick="filter=\'all\';currentPage=1;render()">全部 <span class="chip-count">'+files.length+'</span></button>';
-  var providerOrder=['codex','anthropic','gemini','openai','xai','kimi','bigmodel-coding','openai-compatibility'];
+  var providerOrder=['codex','anthropic','gemini','openai','xai','kimi','bigmodel-coding','iflow','openai-compatibility'];
   var keys=Object.keys(providerCounts).sort(function(a,b){
     var ai=providerOrder.indexOf(a),bi=providerOrder.indexOf(b);
     if(ai===-1)ai=999;if(bi===-1)bi=999;
@@ -477,6 +480,7 @@ function renderToolbar(){
     var k=keys[i];
     var label=k;
     if(k==='bigmodel-coding')label='BigModel Coding';
+    else if(k==='iflow')label='iFlow (讯飞)';
     else if(k==='openai-compatibility')label='OpenAI 兼容';
     else label=k.charAt(0).toUpperCase()+k.slice(1);
     html+='<button class="filter-chip'+(filter===k?' active':'')+'" onclick="filter=\''+escAttr(k)+'\';currentPage=1;render()">'+escHtml(label)+' <span class="chip-count">'+providerCounts[k]+'</span></button>'
@@ -679,6 +683,7 @@ function showAddModal(){
     '<option value="xai">xAI (Grok)</option>'+
     '<option value="kimi">Kimi</option>'+
     '<option value="bigmodel-coding">BigModel Coding</option>'+
+    '<option value="iflow">iFlow (讯飞)</option>'+
     '<option value="openai-compatibility">OpenAI 兼容</option>'+
     '</select>'+
     '<div id="addFields"></div>'+
@@ -701,6 +706,10 @@ function updateAddFields(){
     cf.innerHTML=
       '<label>Base URL</label><input id="addBaseUrl" placeholder="https://open.bigmodel.cn/api/coding/paas/v4" value="https://open.bigmodel.cn/api/coding/paas/v4">'+
       '<label>API Key</label><textarea id="addApiKey" placeholder="sk-..."></textarea>'
+  }else if(type==='iflow'){
+    f.innerHTML='<p style="color:var(--text2);font-size:13px;margin-bottom:12px">请使用 iFlow OAuth 按钮登录，或输入 Cookie 手动添加</p>'+
+      '<label>Cookie (可选)</label><textarea id="addIflowCookie" placeholder="粘贴讯飞 Cookie..."></textarea>';
+    cf.style.display='none';cf.innerHTML=''
   }else if(type==='openai-compatibility'){
     f.innerHTML='';
     cf.style.display='';
@@ -732,6 +741,14 @@ async function submitAdd(){
     var blob=new Blob([content],{type:'application/json'});
     var fd=new FormData();fd.append('file',blob,'bigmodel-coding.json');
     try{await apiUpload(fd);toast('添加成功',true);closeModal('addModal');loadData()}catch(e){toast('添加失败: '+e.message,false)}
+  }else if(type==='iflow'){
+    var cookieEl=document.getElementById('addIflowCookie');
+    var cookie=cookieEl?cookieEl.value.trim():'';
+    if(!cookie){toast('请使用 iFlow OAuth 按钮登录',false);return}
+    try{
+      await api('POST','/iflow-auth-url',{cookie:cookie});
+      toast('添加成功',true);closeModal('addModal');loadData()
+    }catch(e){toast('添加失败: '+e.message,false)}
   }else if(type==='openai-compatibility'){
     var name=document.getElementById('addCompatName').value.trim();
     var base=document.getElementById('addBaseUrl').value.trim();
@@ -1236,12 +1253,14 @@ async function startOAuth(provider){
     anthropic:'/anthropic-auth-url',
     gemini:'/gemini-cli-auth-url',
     xai:'/xai-auth-url',
+    iflow:'/iflow-auth-url',
     antigravity:'/antigravity-auth-url'
   };
   var path=urlMap[provider];
   if(!path){toast('未知 Provider',false);return}
   try{
-    var data=await api('GET',path+'?is_webui=true');
+    var method=(provider==='iflow')?'POST':'GET';
+    var data=await api(method,path+'?is_webui=true');
     if(data.url){
       window.open(data.url,'_blank','width=600,height=700');
       toast('OAuth 窗口已打开',true);

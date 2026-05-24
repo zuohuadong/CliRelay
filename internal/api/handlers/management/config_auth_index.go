@@ -338,3 +338,64 @@ func (h *Handler) bigModelCodingEntriesLocked() []config.OpenAICompatibility {
 	h.cfg.SanitizeBigModelCoding()
 	return append([]config.OpenAICompatibility(nil), h.cfg.BigModelCodingAPIKey...)
 }
+
+func (h *Handler) iflowWithAuthIndex() []openAICompatibilityWithAuthIndex {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	manager := h.authManager
+	h.mu.Unlock()
+	if manager == nil {
+		return nil
+	}
+	liveUsageByID := h.liveAuthUsageByID()
+
+	var entries []openAICompatibilityWithAuthIndex
+	for _, auth := range manager.List() {
+		if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "iflow") {
+			continue
+		}
+		idx := strings.TrimSpace(auth.Index)
+		if idx == "" {
+			idx = auth.EnsureIndex()
+		}
+		id := strings.TrimSpace(auth.ID)
+		if id == "" {
+			continue
+		}
+		usage := liveUsageByID[id]
+		email := ""
+		if auth.Metadata != nil {
+			if e, ok := auth.Metadata["email"]; ok {
+				if s, ok := e.(string); ok {
+					email = strings.TrimSpace(s)
+				}
+			}
+		}
+		if email == "" {
+			email = strings.TrimSpace(auth.Attributes["api_key"])
+		}
+		apiKey := strings.TrimSpace(auth.Attributes["api_key"])
+		entry := openAICompatibilityWithAuthIndex{
+			Name:           "iflow",
+			BaseURL:        "https://maas-api.cn-huabei-1.mlf.mlfcore.com",
+			AuthIndex:      idx,
+			Success:        usage.Success,
+			Failed:         usage.Failed,
+			RecentRequests: cloneRecentRequestBuckets(usage.RecentRequests),
+			APIKeyEntries: []openAICompatibilityAPIKeyWithAuthIndex{
+				{
+					OpenAICompatibilityAPIKey: config.OpenAICompatibilityAPIKey{
+						APIKey: apiKey,
+					},
+				},
+			},
+		}
+		if email != "" {
+			entry.APIKeyEntries[0].APIKey = email
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}

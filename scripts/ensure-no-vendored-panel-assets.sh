@@ -2,7 +2,7 @@
 set -eu
 
 bad_paths=""
-for path in manage.html management.html panel-meta.json dist panel-dist.zip; do
+for path in static/manage.html static/management.html static/panel-meta.json static/dist static/panel-dist.zip; do
 	if [ -e "$path" ]; then
 		bad_paths="${bad_paths}
 ${path}"
@@ -10,8 +10,8 @@ ${path}"
 done
 
 if [ -n "$bad_paths" ]; then
-	echo "Frontend panel build output must not be committed to the backend repository."
-	echo "Build and deploy panel assets from the panel repository instead."
+	echo "Vendored panel build output must not be committed to the static/ directory."
+	echo "Panel source lives in panel/ and is built during Docker image creation."
 	echo "Unexpected path(s):${bad_paths}"
 	exit 1
 fi

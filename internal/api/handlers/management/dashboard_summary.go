@@ -3,6 +3,7 @@ package management
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,13 +21,28 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 	codexCount := 0
 	vertexCount := 0
 	openaiCount := 0
+	bigmodelCount := 0
+	iflowCount := 0
 	if cfg != nil {
 		geminiCount = len(cfg.GeminiKey)
 		claudeCount = len(cfg.ClaudeKey)
 		codexCount = len(cfg.CodexKey)
 		vertexCount = len(cfg.VertexCompatAPIKey)
 		openaiCount = len(cfg.OpenAICompatibility)
+		cfg.MigrateBigModelCodingFromOpenAICompatibility()
+		cfg.SanitizeBigModelCoding()
+		bigmodelCount = len(cfg.BigModelCodingAPIKey)
 	}
+
+	iflowAuthCount := 0
+	if h.authManager != nil {
+		for _, auth := range h.authManager.List() {
+			if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "iflow") {
+				iflowAuthCount++
+			}
+		}
+	}
+	iflowCount = iflowAuthCount
 
 	authFileCount := 0
 	if h.authManager != nil {
@@ -52,12 +68,14 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 		},
 		"counts": gin.H{
 			"api_keys":         0,
-			"providers_total":  geminiCount + claudeCount + codexCount + vertexCount + openaiCount,
+			"providers_total":  geminiCount + claudeCount + codexCount + vertexCount + openaiCount + bigmodelCount + iflowCount,
 			"gemini_keys":      geminiCount,
 			"claude_keys":      claudeCount,
 			"codex_keys":       codexCount,
 			"vertex_keys":      vertexCount,
 			"openai_providers": openaiCount,
+			"bigmodel_keys":    bigmodelCount,
+			"iflow_keys":       iflowCount,
 			"auth_files":       authFileCount,
 		},
 		"trends": gin.H{

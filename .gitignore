@@ -22,6 +22,19 @@ objectstore/*
 # Static assets
 static/*
 
+# Panel frontend
+panel/.git/
+panel/node_modules/
+panel/dist/
+panel/.omx/
+panel/.sisyphus/
+panel/.agentflow/
+panel/.helloagents/
+panel/.agents/
+panel/test-results/
+panel/playwright-report/
+panel/bun.lockb
+
 # Authentication data
 auths/*
 !auths/.gitkeep

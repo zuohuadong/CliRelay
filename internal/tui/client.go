@@ -310,6 +310,16 @@ func (c *Client) GetOpenAICompat() ([]map[string]any, error) {
 	return c.getWrappedKeyList("/v0/management/openai-compatibility", "openai-compatibility")
 }
 
+// GetBigModelCodingKeys fetches BigModel Coding API keys.
+func (c *Client) GetBigModelCodingKeys() ([]map[string]any, error) {
+	return c.getWrappedKeyList("/v0/management/bigmodel-coding-api-key", "bigmodel-coding-api-key")
+}
+
+// GetIFlowKeys fetches iFlow (讯飞) API keys.
+func (c *Client) GetIFlowKeys() ([]map[string]any, error) {
+	return c.getWrappedKeyList("/v0/management/iflow-api-key", "iflow-api-key")
+}
+
 // getWrappedKeyList fetches a wrapped list from the API.
 func (c *Client) getWrappedKeyList(path, key string) ([]map[string]any, error) {
 	wrapper, err := c.getJSON(path)

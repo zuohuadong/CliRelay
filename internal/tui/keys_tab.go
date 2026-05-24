@@ -21,6 +21,8 @@ type keysTabModel struct {
 	codex    []map[string]any
 	vertex   []map[string]any
 	openai   []map[string]any
+	bigmodel []map[string]any
+	iflow    []map[string]any
 	err      error
 	width    int
 	height   int
@@ -37,13 +39,15 @@ type keysTabModel struct {
 }
 
 type keysDataMsg struct {
-	apiKeys []string
-	gemini  []map[string]any
-	claude  []map[string]any
-	codex   []map[string]any
-	vertex  []map[string]any
-	openai  []map[string]any
-	err     error
+	apiKeys  []string
+	gemini   []map[string]any
+	claude   []map[string]any
+	codex    []map[string]any
+	vertex   []map[string]any
+	openai   []map[string]any
+	bigmodel []map[string]any
+	iflow    []map[string]any
+	err      error
 }
 
 type keyActionMsg struct {
@@ -79,6 +83,8 @@ func (m keysTabModel) fetchKeys() tea.Msg {
 	result.codex, _ = m.client.GetCodexKeys()
 	result.vertex, _ = m.client.GetVertexKeys()
 	result.openai, _ = m.client.GetOpenAICompat()
+	result.bigmodel, _ = m.client.GetBigModelCodingKeys()
+	result.iflow, _ = m.client.GetIFlowKeys()
 	return result
 }
 
@@ -98,6 +104,8 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 			m.codex = msg.codex
 			m.vertex = msg.vertex
 			m.openai = msg.openai
+			m.bigmodel = msg.bigmodel
+			m.iflow = msg.iflow
 			if m.cursor >= len(m.keys) {
 				m.cursor = max(0, len(m.keys)-1)
 			}
@@ -343,6 +351,8 @@ func (m keysTabModel) renderContent() string {
 	renderProviderKeys(&sb, "Claude API Keys", m.claude)
 	renderProviderKeys(&sb, "Codex API Keys", m.codex)
 	renderProviderKeys(&sb, "Vertex API Keys", m.vertex)
+	renderProviderKeys(&sb, "BigModel Coding Keys", m.bigmodel)
+	renderProviderKeys(&sb, "iFlow (讯飞) Keys", m.iflow)
 
 	if len(m.openai) > 0 {
 		renderSection(&sb, "OpenAI Compatibility", len(m.openai))

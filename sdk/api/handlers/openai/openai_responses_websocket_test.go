@@ -1202,14 +1202,14 @@ func TestForwardResponsesWebsocketSynthesizesCompletedForErrors(t *testing.T) {
 
 		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 		h := NewOpenAIResponsesAPIHandler(base)
-		var timelineLog strings.Builder
+		timelineLog := newInMemoryWebsocketTimelineLog()
 		_, errMsg, err := h.forwardResponsesWebsocket(
 			ctx,
 			conn,
 			func(...interface{}) {},
 			data,
 			errCh,
-			&timelineLog,
+			timelineLog,
 			"session-1",
 			false,
 		)
@@ -1298,14 +1298,14 @@ func TestForwardResponsesWebsocketSynthesizesCompletedOnEOFWithoutError(t *testi
 
 		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 		h := NewOpenAIResponsesAPIHandler(base)
-		var timelineLog strings.Builder
+		timelineLog := newInMemoryWebsocketTimelineLog()
 		completedOutput, errMsg, err := h.forwardResponsesWebsocket(
 			ctx,
 			conn,
 			func(...interface{}) {},
 			data,
 			errCh,
-			&timelineLog,
+			timelineLog,
 			"session-1",
 			false,
 		)
@@ -1392,14 +1392,14 @@ func TestForwardResponsesWebsocketEmitsErrorOnEOFWithZeroOutput(t *testing.T) {
 
 		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 		h := NewOpenAIResponsesAPIHandler(base)
-		var timelineLog strings.Builder
+		timelineLog := newInMemoryWebsocketTimelineLog()
 		completedOutput, errMsg, err := h.forwardResponsesWebsocket(
 			ctx,
 			conn,
 			func(...interface{}) {},
 			data,
 			errCh,
-			&timelineLog,
+			timelineLog,
 			"session-1",
 			false,
 		)

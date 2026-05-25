@@ -205,6 +205,14 @@ request-log-storage:
 #       max-request-bytes: 200000
 #     over-limit:
 #       action: "skip-channel"
+#   - name: "astron-code-image-skip"
+#     match:
+#       requested-models: ["gpt-5.3-codex", "glm-5.1"]
+#       upstream-providers: ["astron-code"]
+#       upstream-models: ["astron-code-latest"]
+#       request-features: ["image"]
+#     over-limit:
+#       action: "skip-channel"
 #   - name: "astron-code-mcp-skip"
 #     match:
 #       requested-models: ["gpt-5.3-codex", "glm-5.1"]

@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-25 14:31:33 +0800] [CliRelay] [done] Verified gpt-5.3-codex image requests were incorrectly routed to astron-code, added production astron-code image skip policy, restarted cli-proxy-api so multimodal adapters load into the BigModel executor, and confirmed a left-green/right-blue image routes to glm-5.1 and returns green/blue
 [2026-05-23 18:35:33 +0800] [CliRelay] [done] Manually tested astron-code-latest upstream tools support; basic tool_choice=auto works, but Codex-like tool_choice=required returns finish_reason=abort with no tool call
 [2026-05-23 18:20:10 +0800] [CliRelay] [done] Investigated frequent zero-output EOF errors and restored production astron-code tools skip policy after logs showed all failures routing gpt-5.3-codex to astron-code-latest
 [2026-05-22 21:34:30 +0800] [CliRelay] [done] Enabled 4G production swapfile with persistent fstab entry and vm.swappiness=10 after OOMKilled restart investigation

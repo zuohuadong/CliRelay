@@ -33,7 +33,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X 'main.Version=${VERSION
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 
-RUN microdnf install -y tzdata tini && \
+RUN microdnf install -y tzdata && \
     microdnf clean all
 
 RUN mkdir /CLIProxyAPI
@@ -54,6 +54,4 @@ RUN cp /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
 
 STOPSIGNAL SIGTERM
 
-ENTRYPOINT ["/sbin/tini", "--"]
-
-CMD ["./CLIProxyAPI"]
+ENTRYPOINT ["./CLIProxyAPI"]

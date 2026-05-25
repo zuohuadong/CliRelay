@@ -18,6 +18,7 @@ type requestPolicyAction string
 const (
 	requestPolicyActionSkipChannel requestPolicyAction = "skip-channel"
 	requestPolicyActionReject      requestPolicyAction = "reject"
+	requestPolicyActionCompress    requestPolicyAction = "compress"
 )
 
 type requestPolicyLimitError struct {
@@ -104,6 +105,9 @@ func requestPolicyDecision(cfg *internalconfig.Config, auth *Auth, opts cliproxy
 		if action == "" {
 			action = requestPolicyActionSkipChannel
 		}
+		if action == requestPolicyActionCompress {
+			continue
+		}
 		if action != requestPolicyActionReject {
 			action = requestPolicyActionSkipChannel
 		}
@@ -119,6 +123,34 @@ func requestPolicyDecision(cfg *internalconfig.Config, auth *Auth, opts cliproxy
 		}
 	}
 	return false, nil
+}
+
+func requestPolicyCompressionDecision(cfg *internalconfig.Config, opts cliproxyexecutor.Options, requestedModel, upstreamProvider, upstreamModel string) (*internalconfig.RequestPolicy, string) {
+	if cfg == nil || len(cfg.RequestPolicies) == 0 || compressionDisabledFromMetadata(opts.Metadata) {
+		return nil, ""
+	}
+	requestBytes, _ := requestBytesFromMetadata(opts.Metadata)
+	requestedModel = strings.TrimSpace(requestedModel)
+	upstreamProvider = strings.ToLower(strings.TrimSpace(upstreamProvider))
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	for i := range cfg.RequestPolicies {
+		policy := cfg.RequestPolicies[i]
+		action := requestPolicyAction(strings.ToLower(strings.TrimSpace(policy.OverLimit.Action)))
+		if action != requestPolicyActionCompress {
+			continue
+		}
+		if strings.TrimSpace(policy.OverLimit.Compression.Provider) == "" || strings.TrimSpace(policy.OverLimit.Compression.Model) == "" {
+			continue
+		}
+		if !requestPolicyMatches(policy, requestedModel, upstreamProvider, upstreamModel) {
+			continue
+		}
+		triggered, reason := requestPolicyTriggered(policy, opts.Metadata, requestBytes)
+		if triggered {
+			return &policy, reason
+		}
+	}
+	return nil, ""
 }
 
 func requestPolicyMatches(policy internalconfig.RequestPolicy, requestedModel, upstreamProvider, upstreamModel string) bool {

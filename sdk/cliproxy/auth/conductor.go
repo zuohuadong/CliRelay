@@ -877,7 +877,13 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
 		execReq := req
 		execReq.Model = execModel
-		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, opts)
+		execOpts := opts
+		var errCompress error
+		execReq, execOpts, errCompress = m.maybeCompressRequest(ctx, provider, routeModel, execModel, execReq, execOpts)
+		if errCompress != nil {
+			return nil, errCompress
+		}
+		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
 		if errStream != nil {
 			if errCtx := ctx.Err(); errCtx != nil {
 				return nil, errCtx
@@ -1398,7 +1404,13 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
 			execReq.Model = upstreamModel
-			resp, errExec := executor.Execute(execCtx, auth, execReq, opts)
+			execOpts := opts
+			var errCompress error
+			execReq, execOpts, errCompress = m.maybeCompressRequest(execCtx, provider, routeModel, upstreamModel, execReq, execOpts)
+			if errCompress != nil {
+				return cliproxyexecutor.Response{}, errCompress
+			}
+			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
 			if errExec != nil {
 				if errCtx := execCtx.Err(); errCtx != nil {

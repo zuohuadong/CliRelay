@@ -755,8 +755,20 @@ type RequestPolicyLimits struct {
 
 // RequestPolicyOverLimit controls behavior after a request exceeds a configured limit.
 type RequestPolicyOverLimit struct {
-	// Action is "skip-channel" or "reject". Empty defaults to "skip-channel".
+	// Action is "skip-channel", "reject", or "compress". Empty defaults to "skip-channel".
 	Action string `yaml:"action,omitempty" json:"action,omitempty"`
+	// Compression controls the LLM compressor used when Action is "compress".
+	Compression RequestPolicyCompression `yaml:"compression,omitempty" json:"compression,omitempty"`
+}
+
+// RequestPolicyCompression controls pre-execution LLM request compression.
+type RequestPolicyCompression struct {
+	Provider           string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Model              string `yaml:"model,omitempty" json:"model,omitempty"`
+	TargetRequestBytes int64  `yaml:"target-request-bytes,omitempty" json:"target-request-bytes,omitempty"`
+	// UnavailableAction is "skip" or "reject". Empty defaults to "skip".
+	UnavailableAction string `yaml:"unavailable-action,omitempty" json:"unavailable-action,omitempty"`
+	Prompt            string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 }
 
 // ProviderPreference sets model-scoped upstream provider selection priority.
@@ -969,9 +981,25 @@ func (cfg *Config) SanitizeRequestPolicies() {
 		policy.Match.RequestFeatures = normalizePolicyValues(policy.Match.RequestFeatures, true)
 		policy.OverLimit.Action = strings.ToLower(strings.TrimSpace(policy.OverLimit.Action))
 		switch policy.OverLimit.Action {
-		case "", "skip-channel", "reject":
+		case "", "skip-channel", "reject", "compress":
 		default:
 			policy.OverLimit.Action = "skip-channel"
+		}
+		policy.OverLimit.Compression.Provider = strings.ToLower(strings.TrimSpace(policy.OverLimit.Compression.Provider))
+		policy.OverLimit.Compression.Model = strings.TrimSpace(policy.OverLimit.Compression.Model)
+		policy.OverLimit.Compression.UnavailableAction = strings.ToLower(strings.TrimSpace(policy.OverLimit.Compression.UnavailableAction))
+		switch policy.OverLimit.Compression.UnavailableAction {
+		case "", "skip", "reject":
+		default:
+			policy.OverLimit.Compression.UnavailableAction = "skip"
+		}
+		if policy.OverLimit.Action == "compress" {
+			if policy.OverLimit.Compression.TargetRequestBytes <= 0 {
+				policy.OverLimit.Compression.TargetRequestBytes = 512000
+			}
+			if policy.OverLimit.Compression.Provider == "" || policy.OverLimit.Compression.Model == "" {
+				policy.OverLimit.Action = "skip-channel"
+			}
 		}
 		if policy.Limits.MaxRequestBytes <= 0 && policy.Limits.MinRequestBytes <= 0 && policy.Limits.MinInputItems <= 0 && policy.Limits.MinToolCalls <= 0 && len(policy.Match.RequestFeatures) == 0 {
 			continue

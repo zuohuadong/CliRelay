@@ -247,6 +247,20 @@ request-log-storage:
 #       max-request-bytes: 600000
 #     over-limit:
 #       action: "skip-channel"
+#   - name: "glm-5.1-large-request-compress"
+#     match:
+#       requested-models: ["gpt-5.3-codex"]
+#       upstream-providers: ["bigmodel-coding"]
+#       upstream-models: ["glm-5.1"]
+#     limits:
+#       max-request-bytes: 600000
+#     over-limit:
+#       action: "compress"
+#       compression:
+#         provider: "gemini"
+#         model: "gemini-3-flash-preview"
+#         target-request-bytes: 512000
+#         unavailable-action: "skip" # skip, reject
 #   - name: "glm-5.1-tool-heavy-skip"
 #     match:
 #       upstream-providers: ["bigmodel-coding"]

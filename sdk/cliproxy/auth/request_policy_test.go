@@ -10,14 +10,18 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
 type requestPolicyTestExecutor struct {
 	id string
 
-	mu    sync.Mutex
-	calls []string
-	err   error
+	mu              sync.Mutex
+	calls           []string
+	models          []string
+	payloads        [][]byte
+	responseByModel map[string][]byte
+	err             error
 }
 
 func (e *requestPolicyTestExecutor) Identifier() string { return e.id }
@@ -32,9 +36,14 @@ func (e *requestPolicyTestExecutor) Execute(ctx context.Context, auth *Auth, req
 	}
 	e.mu.Lock()
 	e.calls = append(e.calls, authID)
+	e.models = append(e.models, req.Model)
+	e.payloads = append(e.payloads, append([]byte(nil), req.Payload...))
 	e.mu.Unlock()
 	if e.err != nil {
 		return cliproxyexecutor.Response{}, e.err
+	}
+	if payload := e.responseByModel[req.Model]; len(payload) > 0 {
+		return cliproxyexecutor.Response{Payload: append([]byte(nil), payload...)}, nil
 	}
 	return cliproxyexecutor.Response{Payload: []byte(`{"ok":true}`)}, nil
 }
@@ -49,6 +58,8 @@ func (e *requestPolicyTestExecutor) ExecuteStream(ctx context.Context, auth *Aut
 	}
 	e.mu.Lock()
 	e.calls = append(e.calls, authID)
+	e.models = append(e.models, req.Model)
+	e.payloads = append(e.payloads, append([]byte(nil), req.Payload...))
 	e.mu.Unlock()
 	if e.err != nil {
 		return nil, e.err
@@ -76,6 +87,24 @@ func (e *requestPolicyTestExecutor) Calls() []string {
 	defer e.mu.Unlock()
 	out := make([]string, len(e.calls))
 	copy(out, e.calls)
+	return out
+}
+
+func (e *requestPolicyTestExecutor) Models() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, len(e.models))
+	copy(out, e.models)
+	return out
+}
+
+func (e *requestPolicyTestExecutor) Payloads() [][]byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([][]byte, len(e.payloads))
+	for i := range e.payloads {
+		out[i] = append([]byte(nil), e.payloads[i]...)
+	}
 	return out
 }
 
@@ -196,6 +225,184 @@ func TestManagerExecute_RequestPolicySkipChannelFallsBack(t *testing.T) {
 	}
 	if calls := codex.Calls(); len(calls) != 1 || calls[0] != "codex-auth" {
 		t.Fatalf("codex calls = %v, want [codex-auth]", calls)
+	}
+}
+
+func TestManagerExecute_RequestPolicyCompressThenUsesOriginalProvider(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	compressed := []byte(`{"model":"gpt-5.3-codex","input":"short"}`)
+	compressor := &requestPolicyTestExecutor{
+		id: "gemini",
+		responseByModel: map[string][]byte{
+			"gemini-3-flash-preview": []byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"model\":\"gpt-5.3-codex\",\"input\":\"short\"}"}]}]}`),
+		},
+	}
+	bigmodel := &requestPolicyTestExecutor{id: "bigmodel-coding"}
+	manager.RegisterExecutor(compressor)
+	manager.RegisterExecutor(bigmodel)
+	manager.SetConfig(&internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{
+			{
+				Name:    "bigmodel-coding",
+				BaseURL: "https://bigmodel.example/v1",
+				APIKeyEntries: []internalconfig.OpenAICompatibilityAPIKey{
+					{APIKey: "bigmodel-key"},
+				},
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "glm-5.1", Alias: "gpt-5.3-codex"},
+				},
+			},
+		},
+		RequestPolicies: []internalconfig.RequestPolicy{
+			{
+				Name: "glm-compress",
+				Match: internalconfig.RequestPolicyMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"bigmodel-coding"},
+					UpstreamModels:    []string{"glm-5.1"},
+				},
+				Limits: internalconfig.RequestPolicyLimits{MaxRequestBytes: 10},
+				OverLimit: internalconfig.RequestPolicyOverLimit{
+					Action: "compress",
+					Compression: internalconfig.RequestPolicyCompression{
+						Provider:           "gemini",
+						Model:              "gemini-3-flash-preview",
+						TargetRequestBytes: 80,
+					},
+				},
+			},
+		},
+	})
+
+	for _, auth := range []*Auth{
+		{
+			ID:       "gemini-auth",
+			Provider: "gemini",
+			Status:   StatusActive,
+			Attributes: map[string]string{
+				"api_key": "gemini-key",
+			},
+		},
+		{
+			ID:       "bigmodel-auth",
+			Provider: "bigmodel-coding",
+			Status:   StatusActive,
+			Attributes: map[string]string{
+				"api_key":      "bigmodel-key",
+				"base_url":     "https://bigmodel.example/v1",
+				"provider_key": "bigmodel-coding",
+				"compat_name":  "bigmodel-coding",
+			},
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+		model := "gpt-5.3-codex"
+		if auth.Provider == "gemini" {
+			model = "gemini-3-flash-preview"
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model, Name: model}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	}
+
+	original := []byte(`{"model":"gpt-5.3-codex","input":"this payload is intentionally long enough to require compression before GLM"}`)
+	resp, err := manager.Execute(context.Background(), []string{"bigmodel-coding"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: original,
+	}, cliproxyexecutor.Options{
+		OriginalRequest: original,
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		Metadata:        map[string]any{cliproxyexecutor.RequestBytesMetadataKey: len(original)},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if string(resp.Payload) != `{"ok":true}` {
+		t.Fatalf("response = %s", resp.Payload)
+	}
+	if calls := compressor.Calls(); len(calls) != 1 || calls[0] != "gemini-auth" {
+		t.Fatalf("compressor calls = %v, want [gemini-auth]", calls)
+	}
+	if models := bigmodel.Models(); len(models) != 1 || models[0] != "glm-5.1" {
+		t.Fatalf("bigmodel models = %v, want [glm-5.1]", models)
+	}
+	payloads := bigmodel.Payloads()
+	if len(payloads) != 1 || string(payloads[0]) != string(compressed) {
+		t.Fatalf("bigmodel payloads = %q, want %q", payloads, compressed)
+	}
+}
+
+func TestManagerExecute_RequestPolicyCompressionUnavailableSkipsCompression(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	bigmodel := &requestPolicyTestExecutor{id: "bigmodel-coding"}
+	manager.RegisterExecutor(bigmodel)
+	manager.SetConfig(&internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{
+			{
+				Name:    "bigmodel-coding",
+				BaseURL: "https://bigmodel.example/v1",
+				APIKeyEntries: []internalconfig.OpenAICompatibilityAPIKey{
+					{APIKey: "bigmodel-key"},
+				},
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "glm-5.1", Alias: "gpt-5.3-codex"},
+				},
+			},
+		},
+		RequestPolicies: []internalconfig.RequestPolicy{
+			{
+				Name: "glm-compress",
+				Match: internalconfig.RequestPolicyMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"bigmodel-coding"},
+					UpstreamModels:    []string{"glm-5.1"},
+				},
+				Limits: internalconfig.RequestPolicyLimits{MaxRequestBytes: 10},
+				OverLimit: internalconfig.RequestPolicyOverLimit{
+					Action: "compress",
+					Compression: internalconfig.RequestPolicyCompression{
+						Provider:           "gemini",
+						Model:              "missing-compressor-model",
+						TargetRequestBytes: 80,
+					},
+				},
+			},
+		},
+	})
+
+	auth := &Auth{
+		ID:       "bigmodel-auth",
+		Provider: "bigmodel-coding",
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"api_key":      "bigmodel-key",
+			"base_url":     "https://bigmodel.example/v1",
+			"provider_key": "bigmodel-coding",
+			"compat_name":  "bigmodel-coding",
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register bigmodel: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.3-codex", Name: "gpt-5.3-codex"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+
+	original := []byte(`{"model":"gpt-5.3-codex","input":"this payload stays original because compressor auth is unavailable"}`)
+	_, err := manager.Execute(context.Background(), []string{"bigmodel-coding"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: original,
+	}, cliproxyexecutor.Options{
+		OriginalRequest: original,
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		Metadata:        map[string]any{cliproxyexecutor.RequestBytesMetadataKey: len(original)},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	payloads := bigmodel.Payloads()
+	if len(payloads) != 1 || string(payloads[0]) != string(original) {
+		t.Fatalf("bigmodel payloads = %q, want original %q", payloads, original)
 	}
 }
 

@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-25 22:18:21 +0800] [CliRelay] [done] Implemented configurable LLM request compression for oversized gpt-5.3-codex -> bigmodel-coding flows; verified go test ./... and server build
 [2026-05-25 17:24:00 +0800] [CliRelay] [done] Repaired management panel usage contracts for chart data, request logs, log content, dashboard summary aggregation, cleanup, and public usage routes
 [2026-05-25 14:31:33 +0800] [CliRelay] [done] Verified gpt-5.3-codex image requests were incorrectly routed to astron-code, added production astron-code image skip policy, restarted cli-proxy-api so multimodal adapters load into the BigModel executor, and confirmed a left-green/right-blue image routes to glm-5.1 and returns green/blue
 [2026-05-23 18:35:33 +0800] [CliRelay] [done] Manually tested astron-code-latest upstream tools support; basic tool_choice=auto works, but Codex-like tool_choice=required returns finish_reason=abort with no tool call

@@ -1657,8 +1657,16 @@ func shouldStopMixedProviderFallback(provider, routeModel string, err error) boo
 	if isModelSupportError(err) || isRequestInvalidError(err) {
 		return false
 	}
+	// If the error is explicitly retryable (e.g. empty_stream from upstream
+	// closing before first payload), continue fallback to next provider instead
+	// of stopping. This allows bigmodel-coding to serve as a fallback when
+	// astron-code drops the connection.
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr.Retryable {
+		return false
+	}
 	switch statusCodeFromError(err) {
-	case 0, http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	case http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return true
 	default:
 		return false

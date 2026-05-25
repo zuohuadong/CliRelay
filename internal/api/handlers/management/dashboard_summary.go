@@ -2,7 +2,6 @@ package management
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -10,10 +9,7 @@ import (
 )
 
 func (h *Handler) GetDashboardSummary(c *gin.Context) {
-	days := 7
-	if parsed, err := strconv.Atoi(c.DefaultQuery("days", "7")); err == nil && parsed > 0 {
-		days = parsed
-	}
+	filters := usageFiltersFromQuery(c)
 
 	cfg := h.cfg
 	geminiCount := 0
@@ -53,18 +49,48 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 		}
 	}
 
+	totals := usageTotals{}
+	requestVolume := []gin.H{}
+	successRateTrend := []gin.H{}
+	totalTokensTrend := []gin.H{}
+	totalCostTrend := []gin.H{}
+	failedRequestsTrend := []gin.H{}
+	throughputSeries := []gin.H{}
+	if db, ok := h.usageDB(); ok {
+		defer func() { _ = db.Close() }()
+		totals = queryUsageTotals(db, filters)
+		for _, point := range queryUsageDailySeries(db, filters) {
+			requests := int64FromGinValue(point["requests"])
+			failed := int64FromGinValue(point["failed_requests"])
+			successRate := float64(0)
+			if requests > 0 {
+				successRate = float64(requests-failed) / float64(requests) * 100
+			}
+			requestVolume = append(requestVolume, gin.H{"date": point["date"], "value": requests, "requests": requests})
+			successRateTrend = append(successRateTrend, gin.H{"date": point["date"], "value": successRate, "success_rate": successRate})
+			totalTokensTrend = append(totalTokensTrend, gin.H{"date": point["date"], "value": point["total_tokens"], "total_tokens": point["total_tokens"]})
+			totalCostTrend = append(totalCostTrend, gin.H{"date": point["date"], "value": point["total_cost"], "total_cost": point["total_cost"]})
+			failedRequestsTrend = append(failedRequestsTrend, gin.H{"date": point["date"], "value": failed, "failed_requests": failed})
+		}
+		throughputSeries = queryUsageHourlyThroughput(db, filters)
+	}
+	successRate := float64(0)
+	if totals.Total > 0 {
+		successRate = float64(totals.Success) / float64(totals.Total) * 100
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"kpi": gin.H{
-			"total_requests":   0,
-			"success_requests": 0,
-			"failed_requests":  0,
-			"success_rate":     0,
-			"input_tokens":     0,
-			"output_tokens":    0,
-			"reasoning_tokens": 0,
-			"cached_tokens":    0,
-			"total_tokens":     0,
-			"total_cost":       0,
+			"total_requests":   totals.Total,
+			"success_requests": totals.Success,
+			"failed_requests":  totals.Failed,
+			"success_rate":     successRate,
+			"input_tokens":     totals.InputTokens,
+			"output_tokens":    totals.OutputTokens,
+			"reasoning_tokens": totals.ReasoningTokens,
+			"cached_tokens":    totals.CachedTokens,
+			"total_tokens":     totals.TotalTokens,
+			"total_cost":       totals.TotalCost,
 		},
 		"counts": gin.H{
 			"api_keys":         0,
@@ -79,16 +105,29 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 			"auth_files":       authFileCount,
 		},
 		"trends": gin.H{
-			"request_volume":    []gin.H{},
-			"success_rate":      []gin.H{},
-			"total_tokens":      []gin.H{},
-			"total_cost":        []gin.H{},
-			"failed_requests":   []gin.H{},
-			"throughput_series": []gin.H{},
+			"request_volume":    requestVolume,
+			"success_rate":      successRateTrend,
+			"total_tokens":      totalTokensTrend,
+			"total_cost":        totalCostTrend,
+			"failed_requests":   failedRequestsTrend,
+			"throughput_series": throughputSeries,
 		},
 		"meta": gin.H{
 			"generated_at": time.Now().UTC().Format(time.RFC3339),
 		},
-		"days": days,
+		"days": filters.Days,
 	})
+}
+
+func int64FromGinValue(value any) int64 {
+	switch typed := value.(type) {
+	case int64:
+		return typed
+	case int:
+		return int64(typed)
+	case float64:
+		return int64(typed)
+	default:
+		return 0
+	}
 }

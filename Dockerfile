@@ -13,6 +13,10 @@ ENV VITE_APP_VERSION=${VERSION}
 
 RUN bunx vite build
 
+FROM alpine:3.23 AS tzdata-provider
+
+RUN apk add --no-cache tzdata
+
 FROM registry.access.redhat.com/ubi9/go-toolset:latest AS builder
 
 WORKDIR /app
@@ -33,9 +37,6 @@ RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.V
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 
-RUN microdnf install -y tzdata && \
-    microdnf clean all
-
 RUN mkdir /CLIProxyAPI
 
 COPY --from=builder /app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
@@ -43,6 +44,8 @@ COPY --from=builder /app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
 COPY config.example.yaml /CLIProxyAPI/config.example.yaml
 
 COPY --from=panel-builder /panel/dist /CLIProxyAPI/static
+
+COPY --from=tzdata-provider /usr/share/zoneinfo /usr/share/zoneinfo
 
 WORKDIR /CLIProxyAPI
 

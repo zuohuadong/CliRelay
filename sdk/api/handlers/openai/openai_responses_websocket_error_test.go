@@ -28,7 +28,7 @@ func TestBuildResponsesWebsocketErrorPayloadWritesFailedForContextWindow(t *test
 			StatusCode: http.StatusRequestEntityTooLarge,
 			Error:      jsonError(`{"error":{"message":"request policy glm-5.1-large-request-guard blocked upstream model glm-5.1 via provider bigmodel-coding: request_bytes 600749 exceeds max-request-bytes 600000","type":"invalid_request_error","code":"context_length_exceeded"}}`),
 		}
-		errorPayload, errWrite := writeResponsesWebsocketError(conn, nil, errMsg)
+		errorPayload, errWrite := writeResponsesWebsocketError(conn, nil, errMsg, nil)
 		if errWrite != nil {
 			t.Fatalf("write websocket error: %v", errWrite)
 		}
@@ -36,6 +36,7 @@ func TestBuildResponsesWebsocketErrorPayloadWritesFailedForContextWindow(t *test
 			t.Fatalf("expected websocket error payload")
 		}
 	}))
+
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
@@ -74,7 +75,7 @@ func TestWriteResponsesWebsocketErrorSynthesizesCompletedForRateLimit(t *testing
 			StatusCode: http.StatusTooManyRequests,
 			Error:      jsonError(`{"error":{"message":"usage limit reached","type":"rate_limit_error","code":"rate_limit_exceeded"}}`),
 		}
-		errorPayload, errWrite := writeResponsesWebsocketError(conn, nil, errMsg)
+		errorPayload, errWrite := writeResponsesWebsocketError(conn, nil, errMsg, nil)
 		if errWrite != nil {
 			t.Fatalf("write websocket error: %v", errWrite)
 		}

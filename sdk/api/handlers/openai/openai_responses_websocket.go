@@ -1170,23 +1170,13 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						}
 					}
 					if errMsg == nil {
+						output := outputAccumulator.Output()
 						outputItemCount := outputAccumulator.Count()
-						if outputItemCount == 0 {
-							// Upstream closed with zero output; treat it as a server error so the
-							// Codex client sees a visible failure instead of a silent empty completed.
-							errMsg = &interfaces.ErrorMessage{
-								StatusCode: http.StatusBadGateway,
-								Error:      fmt.Errorf("upstream closed connection without sending any response data"),
-							}
-							log.Warnf(
-								"responses websocket: upstream EOF with zero output, emitting error id=%s",
-								sessionID,
-							)
-						} else {
-							completedPayload, errBuild := buildResponsesWebsocketEOFCompletedPayload(outputAccumulator.Output())
+						if responsesWebsocketOutputHasActionableToolCall(output) {
+							completedPayload, errBuild := buildResponsesWebsocketEOFCompletedPayload(output)
 							if errBuild != nil {
 								cancel(errBuild)
-								return outputAccumulator.Output(), nil, errBuild
+								return output, nil, errBuild
 							}
 							markAPIResponseTimestamp(c)
 							if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, completedPayload, time.Now()); errWrite != nil {
@@ -1197,16 +1187,25 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 									errWrite,
 								)
 								cancel(errWrite)
-								return outputAccumulator.Output(), nil, errWrite
+								return output, nil, errWrite
 							}
-							log.Infof(
-								"responses websocket: synthesized terminal completed after upstream EOF id=%s output_items=%d",
+							log.Warnf(
+								"responses websocket: synthesized terminal completed after actionable upstream EOF id=%s output_items=%d",
 								sessionID,
 								outputItemCount,
 							)
 							cancel(nil)
-							return outputAccumulator.Output(), nil, nil
+							return output, nil, nil
 						}
+						errMsg = &interfaces.ErrorMessage{
+							StatusCode: http.StatusRequestTimeout,
+							Error:      fmt.Errorf("stream closed before response.completed"),
+						}
+						log.Warnf(
+							"responses websocket: upstream EOF before response.completed id=%s output_items=%d",
+							sessionID,
+							outputItemCount,
+						)
 					}
 					if suppressReplayableErrors && shouldReplayResponsesWebsocketTranscript(errMsg) {
 						cancel(errMsg.Error)
@@ -1355,24 +1354,29 @@ func (a *responsesWebsocketOutputAccumulator) Count() int {
 	return responsesWebsocketOutputItemCount(a.completedOutput)
 }
 
-func appendResponseOutputItemDone(output []byte, payload []byte) []byte {
-	item := gjson.GetBytes(payload, "item")
-	if !item.Exists() || !item.IsObject() {
-		return output
-	}
-	merged, errMerge := mergeJSONArrayRaw(string(output), "["+item.Raw+"]")
-	if errMerge != nil {
-		return output
-	}
-	return []byte(merged)
-}
-
 func responsesWebsocketOutputItemCount(output []byte) int {
 	result := gjson.ParseBytes(output)
 	if !result.IsArray() {
 		return 0
 	}
 	return len(result.Array())
+}
+
+func responsesWebsocketOutputHasActionableToolCall(output []byte) bool {
+	result := gjson.ParseBytes(output)
+	if !result.IsArray() {
+		return false
+	}
+	for _, item := range result.Array() {
+		switch item.Get("type").String() {
+		case "function_call", "custom_tool_call":
+			if strings.TrimSpace(item.Get("call_id").String()) != "" &&
+				strings.TrimSpace(item.Get("name").String()) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func buildResponsesWebsocketEOFCompletedPayload(output []byte) ([]byte, error) {

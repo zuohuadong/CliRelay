@@ -7,7 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
-[2026-05-26 10:51:05 +0800] [CliRelay] [running] Committing and pushing CliRelay fixes to main, waiting for build completion, then updating the deployed version
+[2026-05-26 11:11:59 +0800] [CliRelay] [done] Committed and pushed monitoring label plus Codex websocket disconnect fixes, waited for GHCR build success, deployed ghcr.io/zuohuadong/clirelay:main-f7cf1b7 to production, and verified /healthz
 [2026-05-26 10:39:24 +0800] [CliRelay] [done] Restored CLIProxyAPI-style Responses WebSocket upstream Codex disconnect subscription so downstream clients close instead of staying stuck thinking; verified targeted websocket tests, go test ./..., and required server build
 [2026-05-26 10:22:53 +0800] [CliRelay] [done] Fixed management request logs and monitor API key usage distribution to resolve display labels from API key names; verified Go tests/build and panel lint/format/test/build
 [2026-05-25 22:18:21 +0800] [CliRelay] [done] Implemented configurable LLM request compression for oversized gpt-5.3-codex -> bigmodel-coding flows; verified go test ./... and server build

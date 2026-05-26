@@ -1590,7 +1590,7 @@ func TestResponsesWebsocketTimelineRecordsDisconnectEvent(t *testing.T) {
 	}
 }
 
-func TestResponsesWebsocketDoesNotSubscribeToCodexUpstreamDisconnect(t *testing.T) {
+func TestResponsesWebsocketClosesOnCodexUpstreamDisconnect(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	executor := &websocketUpstreamDisconnectExecutor{subscribed: make(chan string, 1)}
@@ -1611,10 +1611,19 @@ func TestResponsesWebsocketDoesNotSubscribeToCodexUpstreamDisconnect(t *testing.
 	}
 	defer func() { _ = conn.Close() }()
 
+	var sessionID string
 	select {
-	case sessionID := <-executor.subscribed:
-		t.Fatalf("unexpected upstream disconnect subscription for downstream session %s", sessionID)
-	case <-time.After(250 * time.Millisecond):
+	case sessionID = <-executor.subscribed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for upstream disconnect subscription")
+	}
+
+	executor.TriggerDisconnect(sessionID, errors.New("upstream disconnected"))
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, err = conn.ReadMessage()
+	if err == nil {
+		t.Fatalf("expected downstream websocket to close after upstream disconnect")
 	}
 }
 

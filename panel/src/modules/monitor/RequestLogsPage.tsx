@@ -191,6 +191,7 @@ export function RequestLogsPage() {
     return buildRequestLogKeyOptions(filterOptions.api_keys, filterOptions.api_key_names ?? {}, {
       allKeys: t("request_logs.all_keys"),
       systemCall: t("request_logs.system_call"),
+      unnamedKey: t("common.unnamed"),
     });
   }, [filterOptions.api_keys, filterOptions.api_key_names, t]);
 

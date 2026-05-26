@@ -12,9 +12,7 @@ describe("requestLogsShared", () => {
     expect(isSystemRequestLogKey("POST /image-generation/test", "")).toBe(true);
     expect(isSystemRequestLogKey("", "")).toBe(true);
     expect(isSystemRequestLogKey("sk-live-123", "")).toBe(false);
-    expect(
-      isSystemRequestLogKey("POST /image-generation/test", "已有名称"),
-    ).toBe(false);
+    expect(isSystemRequestLogKey("POST /image-generation/test", "已有名称")).toBe(false);
   });
 
   test("marks system-triggered logs so key name can render as 系统调用", () => {
@@ -45,24 +43,26 @@ describe("requestLogsShared", () => {
 
   test("deduplicates system call filter options", () => {
     const options = buildRequestLogKeyOptions(
-      [
-        "POST /image-generation/test",
-        "/v0/management/image-generation/test",
-        "sk-live-123456",
-      ],
+      ["POST /image-generation/test", "/v0/management/image-generation/test", "sk-live-123456"],
       { "sk-live-123456": "Live Key" },
-      { allKeys: "全部密钥", systemCall: "系统调用" },
+      { allKeys: "全部密钥", systemCall: "系统调用", unnamedKey: "未命名" },
     );
 
-    expect(
-      options.filter((option) => option.label === "系统调用"),
-    ).toHaveLength(1);
+    expect(options.filter((option) => option.label === "系统调用")).toHaveLength(1);
     expect(options.find((option) => option.label === "系统调用")?.value).toBe(
       SYSTEM_REQUEST_LOG_FILTER_VALUE,
     );
-    expect(options.find((option) => option.label === "Live Key")?.value).toBe(
-      "sk-live-123456",
+    expect(options.find((option) => option.label === "Live Key")?.value).toBe("sk-live-123456");
+  });
+
+  test("does not expose raw key text when a request-log key name is missing", () => {
+    const options = buildRequestLogKeyOptions(
+      ["sk-live-123456"],
+      {},
+      { allKeys: "全部密钥", systemCall: "系统调用", unnamedKey: "未命名" },
     );
+
+    expect(options.find((option) => option.value === "sk-live-123456")?.label).toBe("未命名");
   });
 
   test("keeps high-signal request metrics before bulky identifier columns", () => {

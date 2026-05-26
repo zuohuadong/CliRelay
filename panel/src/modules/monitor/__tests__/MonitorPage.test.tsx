@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
+import { resolveAPIKeyDistributionName } from "@/modules/monitor/MonitorPage";
 import { MonitorDistributionSections } from "@/modules/monitor/MonitorDashboardSections";
 
 vi.mock("@/modules/ui/charts/EChart", () => ({
@@ -8,6 +9,11 @@ vi.mock("@/modules/ui/charts/EChart", () => ({
 }));
 
 describe("MonitorPage distribution legends", () => {
+  test("uses the configured key name and never raw key text for API key distribution labels", () => {
+    expect(resolveAPIKeyDistributionName("Primary Key", "Unnamed")).toBe("Primary Key");
+    expect(resolveAPIKeyDistributionName("", "Unnamed")).toBe("Unnamed");
+  });
+
   test("renders model distribution legend rows as toggle buttons", async () => {
     const user = userEvent.setup();
     const toggleModelDistributionLegend = vi.fn();

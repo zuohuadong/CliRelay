@@ -7,6 +7,9 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-26 10:51:05 +0800] [CliRelay] [running] Committing and pushing CliRelay fixes to main, waiting for build completion, then updating the deployed version
+[2026-05-26 10:39:24 +0800] [CliRelay] [done] Restored CLIProxyAPI-style Responses WebSocket upstream Codex disconnect subscription so downstream clients close instead of staying stuck thinking; verified targeted websocket tests, go test ./..., and required server build
+[2026-05-26 10:22:53 +0800] [CliRelay] [done] Fixed management request logs and monitor API key usage distribution to resolve display labels from API key names; verified Go tests/build and panel lint/format/test/build
 [2026-05-25 22:18:21 +0800] [CliRelay] [done] Implemented configurable LLM request compression for oversized gpt-5.3-codex -> bigmodel-coding flows; verified go test ./... and server build
 [2026-05-25 17:24:00 +0800] [CliRelay] [done] Repaired management panel usage contracts for chart data, request logs, log content, dashboard summary aggregation, cleanup, and public usage routes
 [2026-05-25 14:31:33 +0800] [CliRelay] [done] Verified gpt-5.3-codex image requests were incorrectly routed to astron-code, added production astron-code image skip policy, restarted cli-proxy-api so multimodal adapters load into the BigModel executor, and confirmed a left-green/right-blue image routes to glm-5.1 and returns green/blue

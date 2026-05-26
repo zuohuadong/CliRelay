@@ -2,10 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 import { usageApi } from "@/lib/http/apis";
 import { useTheme } from "@/modules/ui/ThemeProvider";
 import { CHART_COLOR_CLASSES, HOURLY_MODEL_COLORS } from "@/modules/monitor/monitor-constants";
-import {
-  formatCompact,
-  formatMonthDay,
-} from "@/modules/monitor/monitor-format";
+import { formatCompact, formatMonthDay } from "@/modules/monitor/monitor-format";
 import {
   createDailyTrendOption,
   createHourlyModelOption,
@@ -35,6 +32,11 @@ const HOURLY_TOKEN_KEYS = {
   cached: "hourly_cached",
   total: "__total_token__",
 } as const;
+
+export const resolveAPIKeyDistributionName = (name: string | undefined, unnamedLabel: string) => {
+  const trimmed = String(name ?? "").trim();
+  return trimmed || unnamedLabel;
+};
 
 export function MonitorPage() {
   const { t } = useTranslation();
@@ -392,7 +394,7 @@ export function MonitorPage() {
       return acc + (apikeyMetric === "requests" ? item.requests : item.tokens);
     }, 0);
     const data = top.map((item) => ({
-      name: item.name || item.api_key.slice(0, 8) + "…",
+      name: resolveAPIKeyDistributionName(item.name, t("common.unnamed")),
       value: apikeyMetric === "requests" ? item.requests : item.tokens,
     }));
     if (otherValue > 0) {

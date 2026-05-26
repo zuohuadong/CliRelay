@@ -70,9 +70,9 @@ func newUsageContractTestHandler(t *testing.T) *Handler {
 		latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens,
 		total_tokens, cost, input_content, output_content
 	) values
-		(1, datetime('now', '-1 day'), 'sk-a', 'Primary', 'gpt-5', 'codex', 'Codex', 'auth-a', 0, 1200, 100, 10, 20, 3, 4, 37, 0.12, 'legacy input', 'legacy output'),
-		(2, datetime('now', '-1 day'), 'sk-a', 'Primary', 'gpt-5', 'codex', 'Codex', 'auth-a', 1, 500, 50, 1, 2, 0, 0, 3, 0.01, '', ''),
-		(3, datetime('now', '-20 day'), 'sk-b', 'Secondary', 'old-model', 'web', 'Web', 'auth-b', 0, 300, 30, 5, 6, 0, 0, 11, 0.02, '', '');
+		(1, datetime('now', '-1 day'), 'sk-a', '', 'gpt-5', 'codex', 'Codex', 'auth-a', 0, 1200, 100, 10, 20, 3, 4, 37, 0.12, 'legacy input', 'legacy output'),
+		(2, datetime('now', '-1 day'), 'sk-a', 'Stale Primary', 'gpt-5', 'codex', 'Codex', 'auth-a', 1, 500, 50, 1, 2, 0, 0, 3, 0.01, '', ''),
+		(3, datetime('now', '-20 day'), 'sk-b', '', 'old-model', 'web', 'Web', 'auth-b', 0, 300, 30, 5, 6, 0, 0, 11, 0.02, '', '');
 	insert into request_log_content (log_id, input_content, output_content, detail_content)
 	values (1, 'client body', 'server body', 'debug details');`)
 	if err != nil {
@@ -129,7 +129,7 @@ func TestUsageChartDataContract(t *testing.T) {
 		t.Fatalf("unexpected model distribution: %#v", models)
 	}
 	apiKeys := payload["apikey_distribution"].([]any)
-	if len(apiKeys) != 1 || apiKeys[0].(map[string]any)["api_key"] != "sk-a" {
+	if len(apiKeys) != 1 || apiKeys[0].(map[string]any)["api_key"] != "sk-a" || apiKeys[0].(map[string]any)["name"] != "Primary" {
 		t.Fatalf("unexpected api key distribution: %#v", apiKeys)
 	}
 }
@@ -146,7 +146,7 @@ func TestUsageLogsContractFiltersAndContentFlag(t *testing.T) {
 		t.Fatalf("failed items len = %d, want 1", len(failedItems))
 	}
 	failedItem := failedItems[0].(map[string]any)
-	if failedItem["id"].(float64) != 2 || failedItem["failed"] != true || failedItem["has_content"] != false {
+	if failedItem["id"].(float64) != 2 || failedItem["api_key_name"] != "Primary" || failedItem["failed"] != true || failedItem["has_content"] != false {
 		t.Fatalf("unexpected failed item: %#v", failedItem)
 	}
 
@@ -159,7 +159,7 @@ func TestUsageLogsContractFiltersAndContentFlag(t *testing.T) {
 		t.Fatalf("success items len = %d, want 1", len(successItems))
 	}
 	successItem := successItems[0].(map[string]any)
-	if successItem["id"].(float64) != 1 || successItem["has_content"] != true {
+	if successItem["id"].(float64) != 1 || successItem["api_key_name"] != "Primary" || successItem["has_content"] != true {
 		t.Fatalf("unexpected success item: %#v", successItem)
 	}
 	filters := successPayload["filters"].(map[string]any)

@@ -1178,9 +1178,8 @@ func queryUsageAPIKeyDistribution(db *sql.DB, filters usageFilters) []gin.H {
 	}
 	cols := requestLogColumns(db)
 	whereSQL, args := filters.whereClause(db)
-	nameExpr := usageColumnExpr(cols, "api_key_name", "''")
-	keyExpr := usageColumnExpr(cols, "api_key", "''")
-	rows, err := db.Query("SELECT "+keyExpr+", coalesce(nullif("+nameExpr+", ''), "+keyExpr+"), count(*) as cnt, coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0) FROM request_logs WHERE "+whereSQL+" GROUP BY "+keyExpr+", "+nameExpr+" ORDER BY cnt DESC LIMIT 20", args...)
+	joinSQL, keyExpr, nameExpr := usageAPIKeyNameLookup(db, cols)
+	rows, err := db.Query("SELECT "+keyExpr+", "+nameExpr+", count(*) as cnt, coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0) FROM request_logs"+joinSQL+" WHERE "+whereSQL+" GROUP BY "+keyExpr+", "+nameExpr+" ORDER BY cnt DESC LIMIT 20", args...)
 	if err != nil || rows == nil {
 		return []gin.H{}
 	}
@@ -1209,11 +1208,12 @@ func buildUsageLogsPayload(db *sql.DB, filters usageFilters, public bool) gin.H 
 	}
 
 	offset := (filters.Page - 1) * filters.Size
+	joinSQL, keyExpr, nameExpr := usageAPIKeyNameLookup(db, cols)
 	selectCols := strings.Join([]string{
 		usageColumnExpr(cols, "id", "0"),
 		usageColumnExpr(cols, "timestamp", "''"),
-		usageColumnExpr(cols, "api_key", "''"),
-		usageColumnExpr(cols, "api_key_name", "''"),
+		keyExpr,
+		nameExpr,
 		usageColumnExpr(cols, "model", "''"),
 		usageColumnExpr(cols, "source", "''"),
 		usageColumnExpr(cols, "channel_name", "''"),
@@ -1228,7 +1228,7 @@ func buildUsageLogsPayload(db *sql.DB, filters usageFilters, public bool) gin.H 
 		usageColumnExpr(cols, "total_tokens", "0"),
 		usageColumnExpr(cols, "cost", "0"),
 	}, ", ")
-	rows, err := db.Query("SELECT "+selectCols+" FROM request_logs WHERE "+whereSQL+" ORDER BY "+usageColumnExpr(cols, "id", "rowid")+" DESC LIMIT ? OFFSET ?", append(args, filters.Size, offset)...)
+	rows, err := db.Query("SELECT "+selectCols+" FROM request_logs"+joinSQL+" WHERE "+whereSQL+" ORDER BY "+usageColumnExpr(cols, "id", "rowid")+" DESC LIMIT ? OFFSET ?", append(args, filters.Size, offset)...)
 	items := make([]gin.H, 0)
 	if err == nil && rows != nil {
 		defer rows.Close()
@@ -1269,8 +1269,9 @@ func usageLogFilters(db *sql.DB, public bool) gin.H {
 		apiKeys = distinctStringValues(db, "request_logs", "api_key", "api_key != ''", nil)
 	}
 	apiKeyNames := gin.H{}
-	if cols["api_key"] && cols["api_key_name"] {
-		rows, err := db.Query("SELECT api_key, api_key_name FROM request_logs WHERE coalesce(api_key, '') != '' AND coalesce(api_key_name, '') != '' GROUP BY api_key, api_key_name ORDER BY api_key LIMIT 500")
+	if cols["api_key"] {
+		joinSQL, keyExpr, nameExpr := usageAPIKeyNameLookup(db, cols)
+		rows, err := db.Query("SELECT " + keyExpr + ", " + nameExpr + " FROM request_logs" + joinSQL + " WHERE coalesce(" + keyExpr + ", '') != '' AND coalesce(" + nameExpr + ", '') != '' GROUP BY " + keyExpr + ", " + nameExpr + " ORDER BY " + nameExpr + ", " + keyExpr + " LIMIT 500")
 		if err == nil && rows != nil {
 			defer rows.Close()
 			for rows.Next() {
@@ -1542,6 +1543,36 @@ func usageColumnExpr(cols map[string]bool, column, fallback string) string {
 		return column
 	}
 	return fallback
+}
+
+func usageRequestLogColumnExpr(cols map[string]bool, column, fallback string) string {
+	if cols[column] {
+		return "request_logs." + column
+	}
+	return fallback
+}
+
+func usageAPIKeyNameLookup(db *sql.DB, requestLogCols map[string]bool) (string, string, string) {
+	keyExpr := usageRequestLogColumnExpr(requestLogCols, "api_key", "''")
+	logNameExpr := usageRequestLogColumnExpr(requestLogCols, "api_key_name", "''")
+	nameExpr := "coalesce(nullif(" + logNameExpr + ", ''), '')"
+	if !requestLogCols["api_key"] || !dbTableHasColumns(db, "api_keys", "key", "name") {
+		return "", keyExpr, nameExpr
+	}
+	return " LEFT JOIN api_keys ON api_keys.key = request_logs.api_key", keyExpr, "coalesce(nullif(api_keys.name, ''), nullif(" + logNameExpr + ", ''), '')"
+}
+
+func dbTableHasColumns(db *sql.DB, table string, columns ...string) bool {
+	if !dbTableExists(db, table) {
+		return false
+	}
+	available := tableColumns(db, table)
+	for _, column := range columns {
+		if !available[column] {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Handler) updateConfigAPIKeys(keys []string) {

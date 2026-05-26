@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	_ "modernc.org/sqlite"
 )
 
@@ -101,5 +104,33 @@ FROM request_logs
 	}
 	if got.InputTokens != 10 || got.OutputTokens != 20 || got.ReasoningTokens != 3 || got.CachedTokens != 4 || got.TotalTokens != 33 {
 		t.Fatalf("unexpected token fields: %+v", got)
+	}
+}
+
+func TestSQLiteSinkIgnoresCanceledContextNoise(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data", "usage.db")
+	sink := &sqliteSink{}
+	sink.SetPath(dbPath)
+
+	prevUsageEnabled := redisqueue.UsageStatisticsEnabled()
+	redisqueue.SetUsageStatisticsEnabled(true)
+	t.Cleanup(func() {
+		redisqueue.SetUsageStatisticsEnabled(prevUsageEnabled)
+	})
+
+	hook := logtest.NewGlobal()
+	t.Cleanup(hook.Reset)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sink.HandleUsage(ctx, coreusage.Record{
+		Provider: "codex",
+		Model:    "gpt-5.5",
+	})
+
+	for _, entry := range hook.AllEntries() {
+		if entry.Level <= log.WarnLevel && strings.Contains(entry.Message, "usage sqlite sink: insert request log") {
+			t.Fatalf("unexpected warning for canceled context: %s", entry.Message)
+		}
 	}
 }

@@ -3114,7 +3114,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		upstreamModel = m.applyAPIKeyModelAlias(candidate, upstreamModel)
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, candidate, opts, model, provider, upstreamModel); blocked {
 			if policyErr != nil {
-				logEntryWithRequestID(ctx).Debugf("request policy skipped auth=%s provider=%s model=%s policy=%s reason=%s", candidate.ID, provider, model, policyErr.policy, policyErr.reason)
+				logEntryWithRequestID(ctx).Tracef("request policy skipped auth=%s provider=%s model=%s policy=%s reason=%s", candidate.ID, provider, model, policyErr.policy, policyErr.reason)
 				if policyErr.action == requestPolicyActionReject {
 					m.mu.RUnlock()
 					return nil, nil, policyErr
@@ -3347,7 +3347,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			continue
 		}
 		if _, okExecutor := m.Executor(providerKey); !okExecutor {
-			logEntryWithRequestID(ctx).Debugf("pickNextMixed: skip provider=%s no executor", providerKey)
+			logEntryWithRequestID(ctx).Tracef("pickNextMixed: skip provider=%s no executor", providerKey)
 			continue
 		}
 		seenProviders[providerKey] = struct{}{}
@@ -3356,7 +3356,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	if len(eligibleProviders) == 0 {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	logEntryWithRequestID(ctx).Debugf("pickNextMixed: model=%s eligibleProviders=%v", model, eligibleProviders)
+	logEntryWithRequestID(ctx).Tracef("pickNextMixed: model=%s eligibleProviders=%v", model, eligibleProviders)
 	if strings.TrimSpace(model) != "" {
 		providerSet := make(map[string]struct{}, len(eligibleProviders))
 		for _, providerKey := range eligibleProviders {
@@ -3406,7 +3406,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		upstreamModel = m.applyOAuthModelAlias(selected, upstreamModel)
 		upstreamModel = m.applyAPIKeyModelAlias(selected, upstreamModel)
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, selected, opts, model, providerKey, upstreamModel); blocked {
-			logEntryWithRequestID(ctx).Debugf("pickNextMixed: request-policy blocked auth=%s provider=%s upstreamModel=%s policy=%s reason=%s", selected.ID, providerKey, upstreamModel, policyErr.policy, policyErr.reason)
+			logEntryWithRequestID(ctx).Tracef("pickNextMixed: request-policy blocked auth=%s provider=%s upstreamModel=%s policy=%s reason=%s", selected.ID, providerKey, upstreamModel, policyErr.policy, policyErr.reason)
 			if policyErr != nil && policyErr.action == requestPolicyActionReject {
 				return nil, nil, "", policyErr
 			}

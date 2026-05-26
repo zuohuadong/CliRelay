@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,6 +115,10 @@ INSERT INTO request_logs (
 		totalTokens,
 	)
 	if errInsert != nil {
+		if errors.Is(errInsert, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			log.WithError(errInsert).Debug("usage sqlite sink: insert request log canceled")
+			return
+		}
 		log.WithError(errInsert).Warn("usage sqlite sink: insert request log")
 	}
 }

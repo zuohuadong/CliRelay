@@ -91,7 +91,9 @@ func requestPolicyDecision(cfg *internalconfig.Config, auth *Auth, opts cliproxy
 	upstreamProvider = strings.ToLower(strings.TrimSpace(upstreamProvider))
 	upstreamModel = strings.TrimSpace(upstreamModel)
 	features := requestFeaturesFromMetadata(opts.Metadata)
-	log.Debugf("requestPolicyDecision: requestedModel=%s upstreamProvider=%s upstreamModel=%s requestBytes=%d features=%v", requestedModel, upstreamProvider, upstreamModel, requestBytes, features)
+	if log.IsLevelEnabled(log.TraceLevel) {
+		log.Tracef("requestPolicyDecision: requestedModel=%s upstreamProvider=%s upstreamModel=%s requestBytes=%d features=%v", requestedModel, upstreamProvider, upstreamModel, requestBytes, features)
+	}
 	for i := range cfg.RequestPolicies {
 		policy := cfg.RequestPolicies[i]
 		if !requestPolicyMatches(policy, requestedModel, upstreamProvider, upstreamModel) {

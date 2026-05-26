@@ -1100,7 +1100,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	suppressReplayableErrors bool,
 ) ([]byte, *interfaces.ErrorMessage, error) {
 	completed := false
-	completedOutput := []byte("[]")
+	outputAccumulator := newResponsesWebsocketOutputAccumulator()
 	downstreamSessionKey := ""
 	if c != nil && c.Request != nil {
 		downstreamSessionKey = websocketDownstreamSessionKey(c.Request)
@@ -1110,7 +1110,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 		select {
 		case <-c.Request.Context().Done():
 			cancel(c.Request.Context().Err())
-			return completedOutput, nil, c.Request.Context().Err()
+			return outputAccumulator.Output(), nil, c.Request.Context().Err()
 		case errMsg, ok := <-errs:
 			if !ok {
 				errs = nil
@@ -1119,7 +1119,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			if errMsg != nil {
 				if suppressReplayableErrors && shouldReplayResponsesWebsocketTranscript(errMsg) {
 					cancel(errMsg.Error)
-					return completedOutput, errMsg, nil
+					return outputAccumulator.Output(), errMsg, nil
 				}
 				h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
 				markAPIResponseTimestamp(c)
@@ -1139,7 +1139,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					// 	errWrite,
 					// )
 					cancel(errMsg.Error)
-					return completedOutput, errMsg, errWrite
+					return outputAccumulator.Output(), errMsg, errWrite
 				}
 			}
 			if errMsg != nil {
@@ -1147,7 +1147,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			} else {
 				cancel(nil)
 			}
-			return completedOutput, errMsg, nil
+			return outputAccumulator.Output(), errMsg, nil
 		case chunk, ok := <-data:
 			if !ok {
 				if !completed {
@@ -1170,7 +1170,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						}
 					}
 					if errMsg == nil {
-						outputItemCount := responsesWebsocketOutputItemCount(completedOutput)
+						outputItemCount := outputAccumulator.Count()
 						if outputItemCount == 0 {
 							// Upstream closed with zero output; treat it as a server error so the
 							// Codex client sees a visible failure instead of a silent empty completed.
@@ -1183,10 +1183,10 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 								sessionID,
 							)
 						} else {
-							completedPayload, errBuild := buildResponsesWebsocketEOFCompletedPayload(completedOutput)
+							completedPayload, errBuild := buildResponsesWebsocketEOFCompletedPayload(outputAccumulator.Output())
 							if errBuild != nil {
 								cancel(errBuild)
-								return completedOutput, nil, errBuild
+								return outputAccumulator.Output(), nil, errBuild
 							}
 							markAPIResponseTimestamp(c)
 							if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, completedPayload, time.Now()); errWrite != nil {
@@ -1197,7 +1197,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 									errWrite,
 								)
 								cancel(errWrite)
-								return completedOutput, nil, errWrite
+								return outputAccumulator.Output(), nil, errWrite
 							}
 							log.Infof(
 								"responses websocket: synthesized terminal completed after upstream EOF id=%s output_items=%d",
@@ -1205,12 +1205,12 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 								outputItemCount,
 							)
 							cancel(nil)
-							return completedOutput, nil, nil
+							return outputAccumulator.Output(), nil, nil
 						}
 					}
 					if suppressReplayableErrors && shouldReplayResponsesWebsocketTranscript(errMsg) {
 						cancel(errMsg.Error)
-						return completedOutput, errMsg, nil
+						return outputAccumulator.Output(), errMsg, nil
 					}
 					h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
 					markAPIResponseTimestamp(c)
@@ -1230,13 +1230,13 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 							errWrite,
 						)
 						cancel(errMsg.Error)
-						return completedOutput, errMsg, errWrite
+						return outputAccumulator.Output(), errMsg, errWrite
 					}
 					cancel(errMsg.Error)
-					return completedOutput, errMsg, nil
+					return outputAccumulator.Output(), errMsg, nil
 				}
 				cancel(nil)
-				return completedOutput, nil, nil
+				return outputAccumulator.Output(), nil, nil
 			}
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
@@ -1245,9 +1245,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				eventType := gjson.GetBytes(payloads[i], "type").String()
 				if eventType == wsEventTypeCompleted {
 					completed = true
-					completedOutput = responseCompletedOutputFromPayload(payloads[i])
+					outputAccumulator.SetCompleted(payloads[i])
 				} else if eventType == "response.output_item.done" {
-					completedOutput = appendResponseOutputItemDone(completedOutput, payloads[i])
+					outputAccumulator.AppendOutputItemDone(payloads[i])
 				}
 				markAPIResponseTimestamp(c)
 				// log.Infof(
@@ -1265,7 +1265,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						errWrite,
 					)
 					cancel(errWrite)
-					return completedOutput, nil, errWrite
+					return outputAccumulator.Output(), nil, errWrite
 				}
 			}
 		}
@@ -1296,6 +1296,63 @@ func responseCompletedOutputFromPayload(payload []byte) []byte {
 		return bytes.Clone([]byte(output.Raw))
 	}
 	return []byte("[]")
+}
+
+type responsesWebsocketOutputAccumulator struct {
+	completedOutput []byte
+	items           []string
+}
+
+func newResponsesWebsocketOutputAccumulator() *responsesWebsocketOutputAccumulator {
+	return &responsesWebsocketOutputAccumulator{completedOutput: []byte("[]")}
+}
+
+func (a *responsesWebsocketOutputAccumulator) SetCompleted(payload []byte) {
+	if a == nil {
+		return
+	}
+	a.completedOutput = responseCompletedOutputFromPayload(payload)
+	a.items = nil
+}
+
+func (a *responsesWebsocketOutputAccumulator) AppendOutputItemDone(payload []byte) {
+	if a == nil {
+		return
+	}
+	item := gjson.GetBytes(payload, "item")
+	if !item.Exists() || !item.IsObject() {
+		return
+	}
+	a.items = append(a.items, item.Raw)
+}
+
+func (a *responsesWebsocketOutputAccumulator) Output() []byte {
+	if a == nil {
+		return []byte("[]")
+	}
+	if len(a.items) == 0 {
+		return bytes.Clone(a.completedOutput)
+	}
+	var builder strings.Builder
+	builder.WriteByte('[')
+	for i, item := range a.items {
+		if i > 0 {
+			builder.WriteByte(',')
+		}
+		builder.WriteString(item)
+	}
+	builder.WriteByte(']')
+	return []byte(builder.String())
+}
+
+func (a *responsesWebsocketOutputAccumulator) Count() int {
+	if a == nil {
+		return 0
+	}
+	if len(a.items) > 0 {
+		return len(a.items)
+	}
+	return responsesWebsocketOutputItemCount(a.completedOutput)
 }
 
 func appendResponseOutputItemDone(output []byte, payload []byte) []byte {

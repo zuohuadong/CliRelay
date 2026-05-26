@@ -689,6 +689,31 @@ func TestResponseCompletedOutputFromPayload(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketOutputAccumulator(t *testing.T) {
+	acc := newResponsesWebsocketOutputAccumulator()
+	acc.AppendOutputItemDone([]byte(`{"type":"response.output_item.done","item":{"type":"message","id":"out-1"}}`))
+	acc.AppendOutputItemDone([]byte(`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc-1","call_id":"call-1","name":"shell","arguments":"{}"}}`))
+
+	if got := acc.Count(); got != 2 {
+		t.Fatalf("Count() = %d, want 2", got)
+	}
+	output := acc.Output()
+	if got := gjson.GetBytes(output, "0.id").String(); got != "out-1" {
+		t.Fatalf("output[0].id = %q, want out-1; output=%s", got, output)
+	}
+	if got := gjson.GetBytes(output, "1.call_id").String(); got != "call-1" {
+		t.Fatalf("output[1].call_id = %q, want call-1; output=%s", got, output)
+	}
+
+	acc.SetCompleted([]byte(`{"type":"response.completed","response":{"output":[{"type":"message","id":"final"}]}}`))
+	if got := acc.Count(); got != 1 {
+		t.Fatalf("Count() after completed = %d, want 1", got)
+	}
+	if got := gjson.GetBytes(acc.Output(), "0.id").String(); got != "final" {
+		t.Fatalf("completed output id = %q, want final; output=%s", got, acc.Output())
+	}
+}
+
 func TestAppendWebsocketEvent(t *testing.T) {
 	var builder strings.Builder
 

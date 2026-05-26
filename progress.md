@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-26 22:53:20 +0800] [CliRelay] [done] Checked production logs after main-fe0cc51 deployment, found long-lived /v1/responses websocket sessions and local downstream ping/close behavior diverging from router-for-me/CLIProxyAPI, removed the fork-only websocket keepalive/graceful-close path, and verified targeted tests, go test ./..., required server build, and git diff --check
 [2026-05-26 17:16:38 +0800] [CliRelay] [done] Matched Codex interaction behavior to native CLIProxyAPI response shape by synthesizing response.completed only when EOF follows a complete function/custom tool call, kept non-actionable EOF as fast stream-closed errors, and verified targeted tests, go test ./..., required server build, and git diff --check
 [2026-05-26 17:00:18 +0800] [CliRelay] [done] Compared latest main with native CLIProxyAPI websocket EOF behavior, stopped synthesizing response.completed when upstream closes before response.completed, added partial-output EOF regression coverage, and verified go test ./... plus required server build
 [2026-05-26 15:20:39 +0800] [CliRelay] [done] Re-compared production routing behavior with upstream CLIProxyAPI, found Astron small-window policy drift plus missing xunfei-unsupported-tools skip, updated production config, restarted cli-proxy-api, and verified /healthz

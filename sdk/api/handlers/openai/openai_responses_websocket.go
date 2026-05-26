@@ -35,8 +35,6 @@ const (
 	wsDoneMarker         = "[DONE]"
 	wsTurnStateHeader    = "x-codex-turn-state"
 	wsTimelineBodyKey    = "WEBSOCKET_TIMELINE_OVERRIDE"
-	wsPingInterval       = 2 * time.Second
-	wsPingWriteTimeout   = 1 * time.Second
 
 	responsesWebsocketTimelineMaxBytes        = 1 << 20
 	responsesWebsocketTimelinePayloadMaxBytes = 64 << 10
@@ -256,7 +254,6 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 		}
 	}
-	go keepResponsesWebsocketAlive(conn, wsDone, passthroughSessionID)
 
 	var wsTerminateErr error
 	defer func() {
@@ -272,8 +269,6 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			log.Infof("responses websocket: upstream execution session closed id=%s", passthroughSessionID)
 		}
 		wsTimelineLog.SetContext(c)
-		_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		time.Sleep(100 * time.Millisecond)
 		if errClose := conn.Close(); errClose != nil {
 			log.Warnf("responses websocket: close connection error: %v", errClose)
 		}
@@ -1561,26 +1556,6 @@ func markAPIResponseTimestamp(c *gin.Context) {
 		return
 	}
 	c.Set("API_RESPONSE_TIMESTAMP", time.Now())
-}
-
-func keepResponsesWebsocketAlive(conn *websocket.Conn, done <-chan struct{}, sessionID string) {
-	if conn == nil {
-		return
-	}
-	ticker := time.NewTicker(wsPingInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-done:
-			return
-		case <-ticker.C:
-			deadline := time.Now().Add(wsPingWriteTimeout)
-			if err := conn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
-				log.Debugf("responses websocket: keepalive ping failed id=%s error=%v", sessionID, err)
-				return
-			}
-		}
-	}
 }
 
 func shouldReplayResponsesWebsocketTranscript(errMsg *interfaces.ErrorMessage) bool {

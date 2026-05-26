@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 
@@ -144,7 +143,7 @@ func TestShouldCaptureRequestBody(t *testing.T) {
 	}
 }
 
-func TestAttachWebsocketLogSourcesUsesLoggerLogsDir(t *testing.T) {
+func TestAttachWebsocketLogSourcesKeepsWebsocketFastPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	logsDir := t.TempDir()
@@ -155,30 +154,13 @@ func TestAttachWebsocketLogSourcesUsesLoggerLogsDir(t *testing.T) {
 	c.Request.Header.Set("Upgrade", "websocket")
 
 	attachWebsocketLogSources(c, logger, true)
-	defer cleanupFileBodySourcesFromContext(c)
 
 	for _, key := range []string{
 		logging.WebsocketTimelineSourceContextKey,
 		logging.APIWebsocketTimelineSourceContextKey,
 	} {
-		value, exists := c.Get(key)
-		if !exists {
-			t.Fatalf("expected %s source to be attached", key)
-		}
-		source, ok := value.(*logging.FileBodySource)
-		if !ok || source == nil {
-			t.Fatalf("%s source type = %T", key, value)
-		}
-		file, errPart := source.CreatePart("probe")
-		if errPart != nil {
-			t.Fatalf("CreatePart(%s): %v", key, errPart)
-		}
-		path := file.Name()
-		if errClose := file.Close(); errClose != nil {
-			t.Fatalf("close part: %v", errClose)
-		}
-		if !strings.HasPrefix(path, logsDir+string(os.PathSeparator)) {
-			t.Fatalf("%s part path %s is not under logs dir %s", key, path, logsDir)
+		if value, exists := c.Get(key); exists {
+			t.Fatalf("unexpected %s source attached on websocket fast path: %T", key, value)
 		}
 	}
 }

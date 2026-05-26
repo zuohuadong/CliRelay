@@ -79,16 +79,10 @@ func attachWebsocketLogSources(c *gin.Context, logger logging.RequestLogger, log
 	if c == nil || !loggerEnabled || !isResponsesWebsocketUpgrade(c.Request) {
 		return
 	}
-	factory, ok := logger.(fileBodySourceFactory)
-	if !ok || factory == nil {
-		return
-	}
-	if source, errSource := factory.NewFileBodySource("websocket-timeline"); errSource == nil {
-		c.Set(logging.WebsocketTimelineSourceContextKey, source)
-	}
-	if source, errSource := factory.NewFileBodySource("api-websocket-timeline"); errSource == nil {
-		c.Set(logging.APIWebsocketTimelineSourceContextKey, source)
-	}
+	// Keep Responses WebSocket timelines in the bounded in-memory fast path.
+	// File-backed parts create one or more temp-file writes per stream frame and
+	// are expensive for long-lived Codex websocket sessions.
+	_ = logger
 }
 
 func shouldSkipMethodForRequestLogging(req *http.Request) bool {

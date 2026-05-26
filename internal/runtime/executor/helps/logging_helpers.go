@@ -25,6 +25,9 @@ const (
 	apiResponseKey          = "API_RESPONSE"
 	apiWebsocketTimelineKey = "API_WEBSOCKET_TIMELINE"
 	creditsUsedKey          = "__antigravity_credits_used__"
+
+	apiWebsocketTimelineMaxBytes      = 1 << 20
+	apiWebsocketTimelineChunkMaxBytes = 64 << 10
 )
 
 // UpstreamRequestLog captures the outbound upstream request details for logging.
@@ -416,15 +419,34 @@ func appendAPIWebsocketTimeline(ginCtx *gin.Context, chunk []byte) {
 	if len(data) == 0 {
 		return
 	}
-	if source, ok := apiWebsocketTimelineSource(ginCtx); ok {
-		if errAppend := source.AppendPart(data); errAppend == nil {
-			return
-		} else {
-			log.WithError(errAppend).Warn("failed to append api websocket timeline log part")
-		}
+	if len(data) > apiWebsocketTimelineChunkMaxBytes {
+		truncated := make([]byte, 0, apiWebsocketTimelineChunkMaxBytes+48)
+		truncated = append(truncated, data[:apiWebsocketTimelineChunkMaxBytes]...)
+		truncated = append(truncated, []byte("\n... api websocket payload truncated ...")...)
+		data = truncated
 	}
 	if existing, exists := ginCtx.Get(apiWebsocketTimelineKey); exists {
+		if existingBytes, ok := existing.([]byte); ok && len(existingBytes) >= apiWebsocketTimelineMaxBytes {
+			return
+		}
+	}
+
+	if existing, exists := ginCtx.Get(apiWebsocketTimelineKey); exists {
 		if existingBytes, ok := existing.([]byte); ok && len(existingBytes) > 0 {
+			if len(existingBytes) >= apiWebsocketTimelineMaxBytes {
+				return
+			}
+			separatorLen := 2
+			if bytes.HasSuffix(existingBytes, []byte("\n")) {
+				separatorLen = 1
+			}
+			remaining := apiWebsocketTimelineMaxBytes - len(existingBytes) - separatorLen
+			if remaining <= 0 {
+				return
+			}
+			if len(data) > remaining {
+				data = data[:remaining]
+			}
 			combined := make([]byte, 0, len(existingBytes)+len(data)+2)
 			combined = append(combined, existingBytes...)
 			if !bytes.HasSuffix(existingBytes, []byte("\n")) {
@@ -435,6 +457,9 @@ func appendAPIWebsocketTimeline(ginCtx *gin.Context, chunk []byte) {
 			ginCtx.Set(apiWebsocketTimelineKey, combined)
 			return
 		}
+	}
+	if len(data) > apiWebsocketTimelineMaxBytes {
+		data = data[:apiWebsocketTimelineMaxBytes]
 	}
 	ginCtx.Set(apiWebsocketTimelineKey, bytes.Clone(data))
 }

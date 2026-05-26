@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-26 13:02:55 +0800] [CliRelay] [done] Compared current main against 7c02f7b, found WebSocket request-log file-backed timeline I/O regression, restored bounded in-memory fast path, and verified tests/build
 [2026-05-26 12:36:05 +0800] [CliRelay] [done] Committed and pushed Responses WebSocket output accumulation optimization to main, waited for GHCR build success, updated the production host, and verified /healthz
 [2026-05-26 11:26:16 +0800] [CliRelay] [done] Compared upstream CLIProxyAPI Responses WebSocket handling, optimized local output-item accumulation to avoid repeated JSON merges on long websocket streams, and verified targeted tests, go test ./..., and required server build
 [2026-05-26 11:11:59 +0800] [CliRelay] [done] Committed and pushed monitoring label plus Codex websocket disconnect fixes, waited for GHCR build success, deployed ghcr.io/zuohuadong/clirelay:main-f7cf1b7 to production, and verified /healthz

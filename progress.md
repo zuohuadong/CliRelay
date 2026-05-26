@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-26 15:20:39 +0800] [CliRelay] [done] Re-compared production routing behavior with upstream CLIProxyAPI, found Astron small-window policy drift plus missing xunfei-unsupported-tools skip, updated production config, restarted cli-proxy-api, and verified /healthz
 [2026-05-26 14:01:02 +0800] [CliRelay] [done] Compared production WebSocket logs with upstream CLIProxyAPI, identified logging write amplification, reduced high-frequency debug/request-policy/SQLite cancellation log noise, and verified tests/build
 [2026-05-26 13:02:55 +0800] [CliRelay] [done] Compared current main against 7c02f7b, found WebSocket request-log file-backed timeline I/O regression, restored bounded in-memory fast path, and verified tests/build
 [2026-05-26 12:36:05 +0800] [CliRelay] [done] Committed and pushed Responses WebSocket output accumulation optimization to main, waited for GHCR build success, updated the production host, and verified /healthz

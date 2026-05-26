@@ -16,6 +16,7 @@
 [2026-05-22 21:42:00 +0800] [CliRelay] [done] Traced the OOM risk to unbounded Responses WebSocket timeline accumulation in openai_responses_websocket.go and added per-event and total-size caps before request-log cloning/flush
 [2026-05-22 21:31:00 +0800] [CliRelay] [done] Investigated production restart as OOMKilled/no-panic container death and installed systemd health watchdog timer to restart cli-proxy-api when /healthz fails
 [2026-05-22 15:06:30 +0800] [CliRelay] [done] Added production astron-code tools skip policy so Codex/glm-5.1 tool turns route to bigmodel-coding instead of surfacing zero-output EOF errors
+[2026-05-26 08:11:40 +0800] [CliRelay] [done] Restored the management auth-file download route used by the panel; verified route coverage, go test ./..., and required server build
 [2026-05-26 07:28:34 +0800] [CliRelay] [done] Restored backend persistence for management dashboard and request-log usage data by adding a SQLite usage sink; verified targeted tests, go test ./..., and required server build
 [2026-05-22 14:48:30 +0800] [CliRelay] [done] Fixed Responses WebSocket EOF-with-zero-output path to emit a visible error instead of a silent empty completed, and added regression coverage
 [2026-05-22 14:35:30 +0800] [CliRelay] [done] Surface context_length_exceeded as response.failed so Codex can compact on real context errors; deployed main-e96dde8 and verified server health

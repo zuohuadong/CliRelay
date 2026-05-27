@@ -560,12 +560,11 @@ streaming:
 #       - name: "glm-5.1"
 #         alias: "gpt-5.3-codex"
 #
-# Optional small-window GLM-5.1-compatible upstream. Pair this with
-# request-policies and provider-preferences above so normal requests prefer
-# this channel while large or MCP requests fall back to bigmodel-coding.
-# openai-compatibility:
-#   - name: "astron-code"
-#     base-url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
+# iFlytek Astron Coding Plan — first-class upstream for XunFei Coding Plan.
+# Supports GLM-5, DeepSeek-V3.2, and other models via the astron-code-latest
+# unified model ID. Uses standard OpenAI Chat Completions protocol.
+# astron-code:
+#   - base-url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
 #     identity-fingerprint: "codex"
 #     priority: 300
 #     api-key-entries:

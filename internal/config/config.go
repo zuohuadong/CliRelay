@@ -143,6 +143,12 @@ type Config struct {
 	// folded into BigModelCodingAPIKey during sanitization and never emitted.
 	BigModelCodingAPIKeyLegacy []OpenAICompatibility `yaml:"bigmodel-coding-api-key,omitempty" json:"bigmodel-coding-api-key,omitempty"`
 
+	// AstronCodeAPIKey defines iFlytek Astron Coding Plan configurations.
+	// Uses standard OpenAI Chat Completions protocol with the unified model ID
+	// "astron-code-latest". The underlying model (GLM-5, DeepSeek-V3.2, etc.)
+	// is configured on the iFlytek platform side.
+	AstronCodeAPIKey []OpenAICompatibility `yaml:"astron-code,omitempty" json:"astron-code,omitempty"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
@@ -727,6 +733,11 @@ const (
 	DefaultBigModelCodingBaseURL      = "https://open.bigmodel.cn/api/coding/paas/v4"
 	DefaultBigModelCodingModel        = "glm-5.1"
 	DefaultBigModelCodingAlias        = "gpt-5.3-codex"
+
+	DefaultAstronCodeProviderName = "astron-code"
+	DefaultAstronCodeBaseURL      = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
+	DefaultAstronCodeModel        = "astron-code-latest"
+	DefaultAstronCodeAlias        = "gpt-5.3-codex"
 )
 
 // RequestPolicy defines a generic pre-execution policy for matching requests and channels.
@@ -928,6 +939,12 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Sanitize BigModel Coding providers.
 	cfg.SanitizeBigModelCoding()
+
+	// Move legacy astron-code entries out of the generic OpenAI compatibility pool.
+	cfg.MigrateAstronCodeFromOpenAICompatibility()
+
+	// Sanitize Astron Code providers.
+	cfg.SanitizeAstronCode()
 
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
@@ -1424,6 +1441,64 @@ func ensureBigModelCodingModels(models []OpenAICompatibilityModel) []OpenAICompa
 	return append(models, OpenAICompatibilityModel{
 		Name:  DefaultBigModelCodingModel,
 		Alias: DefaultBigModelCodingAlias,
+	})
+}
+
+func (cfg *Config) MigrateAstronCodeFromOpenAICompatibility() {
+	if cfg == nil || len(cfg.OpenAICompatibility) == 0 {
+		return
+	}
+	nextCompat := make([]OpenAICompatibility, 0, len(cfg.OpenAICompatibility))
+	for i := range cfg.OpenAICompatibility {
+		entry := cfg.OpenAICompatibility[i]
+		if strings.EqualFold(strings.TrimSpace(entry.Name), DefaultAstronCodeProviderName) {
+			cfg.AstronCodeAPIKey = append(cfg.AstronCodeAPIKey, entry)
+			continue
+		}
+		nextCompat = append(nextCompat, entry)
+	}
+	cfg.OpenAICompatibility = nextCompat
+}
+
+func (cfg *Config) SanitizeAstronCode() {
+	if cfg == nil {
+		return
+	}
+	if len(cfg.AstronCodeAPIKey) == 0 {
+		return
+	}
+	out := make([]OpenAICompatibility, 0, len(cfg.AstronCodeAPIKey))
+	for i := range cfg.AstronCodeAPIKey {
+		e := cfg.AstronCodeAPIKey[i]
+		e.Name = DefaultAstronCodeProviderName
+		e.Prefix = normalizeModelPrefix(e.Prefix)
+		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		if e.BaseURL == "" {
+			e.BaseURL = DefaultAstronCodeBaseURL
+		}
+		e.TestModel = strings.TrimSpace(e.TestModel)
+		if e.TestModel == "" {
+			e.TestModel = DefaultAstronCodeModel
+		}
+		e.Headers = NormalizeHeaders(e.Headers)
+		e.IdentityFingerprint = "codex"
+		e.Models = ensureAstronCodeModels(e.Models)
+		out = append(out, e)
+	}
+	cfg.AstronCodeAPIKey = out
+}
+
+func ensureAstronCodeModels(models []OpenAICompatibilityModel) []OpenAICompatibilityModel {
+	for i := range models {
+		models[i].Name = strings.TrimSpace(models[i].Name)
+		models[i].Alias = strings.TrimSpace(models[i].Alias)
+		if models[i].Name == DefaultAstronCodeModel && models[i].Alias == DefaultAstronCodeAlias {
+			return models
+		}
+	}
+	return append(models, OpenAICompatibilityModel{
+		Name:  DefaultAstronCodeModel,
+		Alias: DefaultAstronCodeAlias,
 	})
 }
 

@@ -176,6 +176,18 @@ describe("providersApi OpenCode Go", () => {
           ],
         };
       }
+      if (path === "/astron-code-api-key") {
+        return {
+          "astron-code-api-key": [
+            {
+              name: "astron-code",
+              "base-url": "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+              "api-key-entries": [{ "api-key": "sk-astron" }],
+            },
+            oauthRow,
+          ],
+        };
+      }
       return {};
     });
 
@@ -202,5 +214,42 @@ describe("providersApi OpenCode Go", () => {
         apiKeyEntries: [{ apiKey: "sk-openai" }],
       },
     ]);
+    await expect(providersApi.getAstronCodeProviders()).resolves.toEqual([
+      {
+        name: "astron-code",
+        baseUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+        apiKeyEntries: [{ apiKey: "sk-astron" }],
+      },
+    ]);
+  });
+
+  test("serializes and deletes Astron Code providers through the dedicated endpoint", async () => {
+    const { providersApi } = await import("@/lib/http/apis/providers");
+    putMock.mockResolvedValue({ status: "ok" });
+    deleteMock.mockResolvedValue({ status: "ok" });
+
+    await providersApi.saveAstronCodeProviders([
+      {
+        name: "astron-code",
+        baseUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+        apiKeyEntries: [{ apiKey: "sk-astron" }],
+        models: [{ name: "astron-code-latest", alias: "gpt-5.3-codex" }],
+      },
+    ]);
+
+    expect(putMock).toHaveBeenCalledWith("/astron-code-api-key", [
+      {
+        name: "astron-code",
+        "base-url": "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+        "api-key-entries": [{ "api-key": "sk-astron" }],
+        models: [{ name: "astron-code-latest", alias: "gpt-5.3-codex" }],
+      },
+    ]);
+
+    await providersApi.deleteAstronCodeProvider("astron-code", 0);
+
+    expect(deleteMock).toHaveBeenCalledWith("/astron-code-api-key", undefined, {
+      params: { index: 0 },
+    });
   });
 });

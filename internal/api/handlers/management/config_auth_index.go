@@ -339,6 +339,15 @@ func (h *Handler) bigModelCodingEntriesLocked() []config.OpenAICompatibility {
 	return append([]config.OpenAICompatibility(nil), h.cfg.BigModelCodingAPIKey...)
 }
 
+func (h *Handler) astronCodeEntriesLocked() []config.OpenAICompatibility {
+	if h == nil || h.cfg == nil {
+		return nil
+	}
+	h.cfg.MigrateAstronCodeFromOpenAICompatibility()
+	h.cfg.SanitizeAstronCode()
+	return append([]config.OpenAICompatibility(nil), h.cfg.AstronCodeAPIKey...)
+}
+
 func (h *Handler) iflowWithAuthIndex() []openAICompatibilityWithAuthIndex {
 	if h == nil {
 		return nil

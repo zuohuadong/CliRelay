@@ -18,6 +18,7 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 	vertexCount := 0
 	openaiCount := 0
 	bigmodelCount := 0
+	astronCodeCount := 0
 	iflowCount := 0
 	if cfg != nil {
 		geminiCount = len(cfg.GeminiKey)
@@ -28,6 +29,9 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 		cfg.MigrateBigModelCodingFromOpenAICompatibility()
 		cfg.SanitizeBigModelCoding()
 		bigmodelCount = len(cfg.BigModelCodingAPIKey)
+		cfg.MigrateAstronCodeFromOpenAICompatibility()
+		cfg.SanitizeAstronCode()
+		astronCodeCount = len(cfg.AstronCodeAPIKey)
 	}
 
 	iflowAuthCount := 0
@@ -94,13 +98,14 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 		},
 		"counts": gin.H{
 			"api_keys":         0,
-			"providers_total":  geminiCount + claudeCount + codexCount + vertexCount + openaiCount + bigmodelCount + iflowCount,
+			"providers_total":  geminiCount + claudeCount + codexCount + vertexCount + openaiCount + bigmodelCount + astronCodeCount + iflowCount,
 			"gemini_keys":      geminiCount,
 			"claude_keys":      claudeCount,
 			"codex_keys":       codexCount,
 			"vertex_keys":      vertexCount,
 			"openai_providers": openaiCount,
 			"bigmodel_keys":    bigmodelCount,
+			"astron_code_keys": astronCodeCount,
 			"iflow_keys":       iflowCount,
 			"auth_files":       authFileCount,
 		},

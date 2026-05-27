@@ -453,6 +453,9 @@ func isOpenAICompatAPIKeyAuth(auth *Auth) bool {
 	if strings.EqualFold(strings.TrimSpace(auth.Provider), internalconfig.DefaultBigModelCodingProviderName) {
 		return true
 	}
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), internalconfig.DefaultAstronCodeProviderName) {
+		return true
+	}
 	if auth.Attributes == nil {
 		return false
 	}
@@ -1033,7 +1036,8 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 			}
 			if compatName != "" ||
 				strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") ||
-				strings.EqualFold(strings.TrimSpace(auth.Provider), internalconfig.DefaultBigModelCodingProviderName) {
+				strings.EqualFold(strings.TrimSpace(auth.Provider), internalconfig.DefaultBigModelCodingProviderName) ||
+				strings.EqualFold(strings.TrimSpace(auth.Provider), internalconfig.DefaultAstronCodeProviderName) {
 				if entry := resolveOpenAICompatConfig(cfg, providerKey, compatName, auth.Provider); entry != nil {
 					compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 				}
@@ -2087,7 +2091,8 @@ func resolveUpstreamModelForOpenAICompatAPIKey(cfg *internalconfig.Config, auth 
 	}
 	if compatName == "" &&
 		!strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") &&
-		!strings.EqualFold(strings.TrimSpace(auth.Provider), internalconfig.DefaultBigModelCodingProviderName) {
+		!strings.EqualFold(strings.TrimSpace(auth.Provider), internalconfig.DefaultBigModelCodingProviderName) &&
+		!strings.EqualFold(strings.TrimSpace(auth.Provider), internalconfig.DefaultAstronCodeProviderName) {
 		return ""
 	}
 	entry := resolveOpenAICompatConfig(cfg, providerKey, compatName, auth.Provider)
@@ -2120,6 +2125,12 @@ func resolveOpenAICompatConfig(cfg *internalconfig.Config, providerKey, compatNa
 			}
 			break
 		}
+		if strings.EqualFold(strings.TrimSpace(candidate), internalconfig.DefaultAstronCodeProviderName) {
+			if entry := resolveAstronCodeConfig(cfg); entry != nil {
+				return entry
+			}
+			break
+		}
 	}
 	for i := range cfg.OpenAICompatibility {
 		compat := &cfg.OpenAICompatibility[i]
@@ -2141,6 +2152,19 @@ func resolveBigModelCodingConfig(cfg *internalconfig.Config) *internalconfig.Ope
 	}
 	for i := range cfg.BigModelCodingAPIKey {
 		entry := &cfg.BigModelCodingAPIKey[i]
+		if !entry.Disabled {
+			return entry
+		}
+	}
+	return nil
+}
+
+func resolveAstronCodeConfig(cfg *internalconfig.Config) *internalconfig.OpenAICompatibility {
+	if cfg == nil {
+		return nil
+	}
+	for i := range cfg.AstronCodeAPIKey {
+		entry := &cfg.AstronCodeAPIKey[i]
 		if !entry.Disabled {
 			return entry
 		}

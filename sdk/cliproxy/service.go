@@ -380,6 +380,9 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 	if strings.EqualFold(strings.TrimSpace(a.Provider), "bigmodel-coding") {
 		return "bigmodel-coding", "bigmodel-coding", true
 	}
+	if strings.EqualFold(strings.TrimSpace(a.Provider), "astron-code") {
+		return "astron-code", "astron-code", true
+	}
 	return "", "", false
 }
 
@@ -419,6 +422,10 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		}
 		if strings.EqualFold(compatProviderKey, "bigmodel-coding") {
 			s.coreManager.RegisterExecutor(executor.NewBigModelCodingExecutor(s.cfg))
+			return
+		}
+		if strings.EqualFold(compatProviderKey, "astron-code") {
+			s.coreManager.RegisterExecutor(executor.NewAstronCodeExecutor(s.cfg))
 			return
 		}
 		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(compatProviderKey, s.cfg))
@@ -601,6 +608,7 @@ func (s *Service) registerHomeExecutors() {
 	s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
 	s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
 	s.coreManager.RegisterExecutor(executor.NewBigModelCodingExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewAstronCodeExecutor(s.cfg))
 	s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor("openai-compatibility", s.cfg))
 }
 
@@ -1087,6 +1095,8 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	if compatDetected {
 		if strings.EqualFold(strings.TrimSpace(compatProviderKey), "bigmodel-coding") {
 			provider = "bigmodel-coding"
+		} else if strings.EqualFold(strings.TrimSpace(compatProviderKey), "astron-code") {
+			provider = "astron-code"
 		} else {
 			provider = "openai-compatibility"
 		}
@@ -1185,6 +1195,22 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 			ms := buildOpenAICompatibilityConfigModels(entry)
 			if len(ms) > 0 {
 				s.registerResolvedModelsForAuth(a, "bigmodel-coding", applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
+			} else {
+				GlobalModelRegistry().UnregisterClient(a.ID)
+			}
+			return
+		}
+		GlobalModelRegistry().UnregisterClient(a.ID)
+		return
+	case "astron-code":
+		for i := range s.cfg.AstronCodeAPIKey {
+			entry := &s.cfg.AstronCodeAPIKey[i]
+			if entry.Disabled {
+				continue
+			}
+			ms := buildOpenAICompatibilityConfigModels(entry)
+			if len(ms) > 0 {
+				s.registerResolvedModelsForAuth(a, "astron-code", applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
 			} else {
 				GlobalModelRegistry().UnregisterClient(a.ID)
 			}

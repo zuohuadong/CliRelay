@@ -34,6 +34,8 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeCodexKeys(ctx)...)
 	// BigModel Coding Plan API Keys
 	out = append(out, s.synthesizeBigModelCoding(ctx)...)
+	// Astron Coding Plan API Keys
+	out = append(out, s.synthesizeAstronCode(ctx)...)
 	// OpenAI-compat
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
@@ -59,6 +61,120 @@ func (s *ConfigSynthesizer) synthesizeBigModelCoding(ctx *SynthesisContext) []*c
 		base := strings.TrimSpace(compat.BaseURL)
 		if base == "" {
 			base = config.DefaultBigModelCodingBaseURL
+		}
+		disableCooling := compat.DisableCooling
+
+		createdEntries := 0
+		for j := range compat.APIKeyEntries {
+			entry := &compat.APIKeyEntries[j]
+			if entry.Disabled {
+				continue
+			}
+			key := strings.TrimSpace(entry.APIKey)
+			proxyURL := strings.TrimSpace(entry.ProxyURL)
+			if pid := strings.TrimSpace(entry.ProxyID); pid != "" {
+				if resolved := cfg.ResolveProxyURL(pid, ""); resolved != "" {
+					proxyURL = resolved
+				}
+			}
+			idKind := fmt.Sprintf("%s:%s", providerName, providerName)
+			id, token := idGen.Next(idKind, key, base, proxyURL)
+			attrs := map[string]string{
+				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
+				"base_url":     base,
+				"compat_name":  providerName,
+				"provider_key": providerName,
+			}
+			metadata := map[string]any{}
+			if disableCooling {
+				metadata["disable_cooling"] = true
+			}
+			if compat.Priority != 0 {
+				attrs["priority"] = strconv.Itoa(compat.Priority)
+			}
+			if key != "" {
+				attrs["api_key"] = key
+			}
+			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
+				attrs["models_hash"] = hash
+			}
+			addConfigHeadersToAttrs(compat.Headers, attrs)
+			addConfigHeadersToAttrs(entry.Headers, attrs)
+			a := &coreauth.Auth{
+				ID:         id,
+				Provider:   providerName,
+				Label:      providerName,
+				Prefix:     prefix,
+				Status:     coreauth.StatusActive,
+				ProxyURL:   proxyURL,
+				Attributes: attrs,
+				Metadata:   metadata,
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			}
+			if len(a.Metadata) == 0 {
+				a.Metadata = nil
+			}
+			out = append(out, a)
+			createdEntries++
+		}
+		if createdEntries == 0 {
+			idKind := fmt.Sprintf("%s:%s", providerName, providerName)
+			id, token := idGen.Next(idKind, base)
+			attrs := map[string]string{
+				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
+				"base_url":     base,
+				"compat_name":  providerName,
+				"provider_key": providerName,
+			}
+			metadata := map[string]any{}
+			if disableCooling {
+				metadata["disable_cooling"] = true
+			}
+			if compat.Priority != 0 {
+				attrs["priority"] = strconv.Itoa(compat.Priority)
+			}
+			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
+				attrs["models_hash"] = hash
+			}
+			addConfigHeadersToAttrs(compat.Headers, attrs)
+			a := &coreauth.Auth{
+				ID:         id,
+				Provider:   providerName,
+				Label:      providerName,
+				Prefix:     prefix,
+				Status:     coreauth.StatusActive,
+				Attributes: attrs,
+				Metadata:   metadata,
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			}
+			if len(a.Metadata) == 0 {
+				a.Metadata = nil
+			}
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// synthesizeAstronCode creates Auth entries for iFlytek Astron Coding Plan.
+func (s *ConfigSynthesizer) synthesizeAstronCode(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+
+	out := make([]*coreauth.Auth, 0)
+	for i := range cfg.AstronCodeAPIKey {
+		compat := &cfg.AstronCodeAPIKey[i]
+		if compat.Disabled {
+			continue
+		}
+		prefix := strings.TrimSpace(compat.Prefix)
+		providerName := config.DefaultAstronCodeProviderName
+		base := strings.TrimSpace(compat.BaseURL)
+		if base == "" {
+			base = config.DefaultAstronCodeBaseURL
 		}
 		disableCooling := compat.DisableCooling
 

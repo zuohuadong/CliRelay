@@ -71,10 +71,13 @@ func TestBuildAPIKeyClientsCounts(t *testing.T) {
 		OpenAICompatibility: []config.OpenAICompatibility{
 			{APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "o1"}, {APIKey: "o2"}}},
 		},
+		AstronCodeAPIKey: []config.OpenAICompatibility{
+			{APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "a1"}}},
+		},
 	}
 
 	gemini, vertex, claude, codex, compat := BuildAPIKeyClients(cfg)
-	if gemini != 2 || vertex != 1 || claude != 1 || codex != 2 || compat != 2 {
+	if gemini != 2 || vertex != 1 || claude != 1 || codex != 2 || compat != 3 {
 		t.Fatalf("unexpected counts: %d %d %d %d %d", gemini, vertex, claude, codex, compat)
 	}
 }

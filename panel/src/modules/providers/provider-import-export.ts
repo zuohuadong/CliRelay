@@ -22,6 +22,7 @@ import { normalizeOpenAIBaseUrl } from "@/modules/providers/providers-helpers";
 
 export type ProviderImportKind =
   | "bigmodel-coding"
+  | "astron-code"
   | "gemini"
   | "claude"
   | "codex"
@@ -32,6 +33,7 @@ export type ProviderImportKind =
 
 type ProviderItemsByKind = {
   "bigmodel-coding": OpenAIProvider[];
+  "astron-code": OpenAIProvider[];
   gemini: ProviderSimpleConfig[];
   claude: ProviderSimpleConfig[];
   codex: ProviderSimpleConfig[];
@@ -149,7 +151,7 @@ const normalizeEntryList = (
 };
 
 const normalizeSimpleItem = (
-  kind: "bigmodel-coding" | "gemini" | "claude" | "codex" | "opencode-go" | "vertex",
+  kind: "bigmodel-coding" | "astron-code" | "gemini" | "claude" | "codex" | "opencode-go" | "vertex",
   value: unknown,
 ): { item: ProviderSimpleConfig | null; duplicateCount: number } => {
   if (!isRecord(value)) return { item: null, duplicateCount: 0 };
@@ -282,10 +284,10 @@ const normalizeItems = <K extends ProviderImportKind>(
   let duplicateCount = 0;
 
   list.forEach((value) => {
-    if (kind === "bigmodel-coding" || kind === "openai") {
+    if (kind === "bigmodel-coding" || kind === "astron-code" || kind === "openai") {
       const normalized = normalizeOpenAIItem(value);
       if (!normalized.item) return;
-      const key = kind === "bigmodel-coding"
+      const key = kind === "bigmodel-coding" || kind === "astron-code"
         ? getBigModelCodingItemKey(normalized.item)
         : normalized.item.name.toLowerCase();
       if (seen.has(key)) {
@@ -338,6 +340,7 @@ const normalizeItems = <K extends ProviderImportKind>(
 const serializeItem = (kind: ProviderImportKind, item: CanonicalProviderItem) => {
   switch (kind) {
     case "bigmodel-coding":
+    case "astron-code":
     case "openai":
       return serializeOpenAIProvider(item as OpenAIProvider);
     case "gemini":
@@ -369,14 +372,14 @@ const getBigModelCodingItemKey = (item: OpenAIProvider) => {
 };
 
 const getItemKey = (kind: ProviderImportKind, item: CanonicalProviderItem) =>
-  kind === "bigmodel-coding"
+  kind === "bigmodel-coding" || kind === "astron-code"
     ? getBigModelCodingItemKey(item as OpenAIProvider)
     : kind === "openai"
       ? (item as OpenAIProvider).name.toLowerCase()
       : (item as ProviderSimpleConfig).apiKey.toLowerCase();
 
 const getItemLabel = (kind: ProviderImportKind, item: CanonicalProviderItem) =>
-  kind === "bigmodel-coding"
+  kind === "bigmodel-coding" || kind === "astron-code"
     ? (item as OpenAIProvider).baseUrl
       ? `${(item as OpenAIProvider).name} (${(item as OpenAIProvider).baseUrl})`
       : (item as OpenAIProvider).name

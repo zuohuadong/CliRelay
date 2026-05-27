@@ -165,6 +165,34 @@ func TestBigModelCodingExecutorNormalizesThinkingAndToolParallelism(t *testing.T
 	}
 }
 
+func TestAstronCodeExecutorReusesSyntheticStreamingToolCallIDs(t *testing.T) {
+	seq := &astronToolCallIDSeq{}
+	first := ensureAstronToolCallIDs([]byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"read","arguments":""}}]}}]}`), seq)
+	second := ensureAstronToolCallIDs([]byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"file\":\"README.md\"}"}}]}}]}`), seq)
+
+	firstID := gjson.Get(strings.TrimSpace(strings.TrimPrefix(string(first), "data:")), "choices.0.delta.tool_calls.0.id").String()
+	secondID := gjson.Get(strings.TrimSpace(strings.TrimPrefix(string(second), "data:")), "choices.0.delta.tool_calls.0.id").String()
+	if firstID == "" {
+		t.Fatalf("first synthetic id is empty: %s", first)
+	}
+	if secondID != firstID {
+		t.Fatalf("second synthetic id = %q, want %q", secondID, firstID)
+	}
+}
+
+func TestAstronCodeExecutorGeneratesDistinctNonStreamToolCallIDs(t *testing.T) {
+	body := ensureAstronNonStreamToolCallIDs([]byte(`{"choices":[{"index":0,"message":{"tool_calls":[{"type":"function","function":{"name":"read","arguments":"{}"}},{"type":"function","function":{"name":"glob","arguments":"{}"}}]}}]}`))
+
+	firstID := gjson.GetBytes(body, "choices.0.message.tool_calls.0.id").String()
+	secondID := gjson.GetBytes(body, "choices.0.message.tool_calls.1.id").String()
+	if firstID == "" || secondID == "" {
+		t.Fatalf("synthetic ids should be present: %s", body)
+	}
+	if firstID == secondID {
+		t.Fatalf("synthetic ids should be distinct, got %q", firstID)
+	}
+}
+
 func TestBigModelCodingExecutorDoesNotSetToolStreamForNonStreamingTools(t *testing.T) {
 	executor := NewBigModelCodingExecutor(&config.Config{})
 	payload := []byte(`{

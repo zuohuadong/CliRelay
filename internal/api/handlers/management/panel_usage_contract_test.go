@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -64,17 +65,29 @@ func newUsageContractTestHandler(t *testing.T) *Handler {
 	if err != nil {
 		t.Fatalf("create usage schema: %v", err)
 	}
-	_, err = db.Exec(`insert into api_keys (key, name) values ('sk-a', 'Primary'), ('sk-b', 'Secondary');
-	insert into request_logs (
+	now := time.Now().UTC()
+	ts1 := now.Add(-1 * time.Hour).Format(time.RFC3339Nano)
+	ts2 := now.Add(-25 * time.Hour).Format(time.RFC3339Nano)
+	ts3 := now.Add(-20 * 24 * time.Hour).Format(time.RFC3339Nano)
+
+	_, err = db.Exec(`insert into api_keys (key, name) values ('sk-a', 'Primary'), ('sk-b', 'Secondary')`)
+	if err != nil {
+		t.Fatalf("seed api keys: %v", err)
+	}
+	_, err = db.Exec(`insert into request_logs (
 		id, timestamp, api_key, api_key_name, model, source, channel_name, auth_index, failed,
 		latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens,
 		total_tokens, cost, input_content, output_content
 	) values
-		(1, datetime('now', '-1 day'), 'sk-a', '', 'gpt-5', 'codex', 'Codex', 'auth-a', 0, 1200, 100, 10, 20, 3, 4, 37, 0.12, 'legacy input', 'legacy output'),
-		(2, datetime('now', '-1 day'), 'sk-a', 'Stale Primary', 'gpt-5', 'codex', 'Codex', 'auth-a', 1, 500, 50, 1, 2, 0, 0, 3, 0.01, '', ''),
-		(3, datetime('now', '-20 day'), 'sk-b', '', 'old-model', 'web', 'Web', 'auth-b', 0, 300, 30, 5, 6, 0, 0, 11, 0.02, '', '');
-	insert into request_log_content (log_id, input_content, output_content, detail_content)
-	values (1, 'client body', 'server body', 'debug details');`)
+		(1, ?, 'sk-a', '', 'gpt-5', 'codex', 'Codex', 'auth-a', 0, 1200, 100, 10, 20, 3, 4, 37, 0.12, 'legacy input', 'legacy output'),
+		(2, ?, 'sk-a', 'Stale Primary', 'gpt-5', 'codex', 'Codex', 'auth-a', 1, 500, 50, 1, 2, 0, 0, 3, 0.01, '', ''),
+		(3, ?, 'sk-b', '', 'old-model', 'web', 'Web', 'auth-b', 0, 300, 30, 5, 6, 0, 0, 11, 0.02, '', '')`,
+		ts1, ts2, ts3)
+	if err != nil {
+		t.Fatalf("seed usage data: %v", err)
+	}
+	_, err = db.Exec(`insert into request_log_content (log_id, input_content, output_content, detail_content)
+	values (1, 'client body', 'server body', 'debug details')`)
 	if err != nil {
 		t.Fatalf("seed usage data: %v", err)
 	}
@@ -117,12 +130,18 @@ func TestUsageChartDataContract(t *testing.T) {
 		t.Fatalf("unexpected stats: %#v", stats)
 	}
 	daily := payload["daily_series"].([]any)
-	if len(daily) != 1 {
-		t.Fatalf("daily len = %d, want 1", len(daily))
+	if len(daily) != 2 {
+		t.Fatalf("daily len = %d, want 2", len(daily))
 	}
-	point := daily[0].(map[string]any)
-	if point["requests"].(float64) != 2 || point["failed_requests"].(float64) != 1 || point["input_tokens"].(float64) != 11 {
-		t.Fatalf("unexpected daily point: %#v", point)
+	var totalRequests, totalFailed, totalInput float64
+	for _, d := range daily {
+		pt := d.(map[string]any)
+		totalRequests += pt["requests"].(float64)
+		totalFailed += pt["failed_requests"].(float64)
+		totalInput += pt["input_tokens"].(float64)
+	}
+	if totalRequests != 2 || totalFailed != 1 || totalInput != 11 {
+		t.Fatalf("unexpected daily totals: requests=%v failed=%v input=%v", totalRequests, totalFailed, totalInput)
 	}
 	models := payload["model_distribution"].([]any)
 	if len(models) != 1 || models[0].(map[string]any)["requests"].(float64) != 2 {
@@ -231,7 +250,7 @@ func TestDashboardSummaryUsesUsageAggregation(t *testing.T) {
 		t.Fatalf("unexpected dashboard kpi: %#v", kpi)
 	}
 	trends := payload["trends"].(map[string]any)
-	if len(trends["request_volume"].([]any)) != 1 || len(trends["throughput_series"].([]any)) != 1 {
+	if len(trends["request_volume"].([]any)) != 2 || len(trends["throughput_series"].([]any)) != 2 {
 		t.Fatalf("unexpected dashboard trends: %#v", trends)
 	}
 }
@@ -248,5 +267,71 @@ func TestPublicUsageSummaryContract(t *testing.T) {
 	usage := payload["usage"].(map[string]any)
 	if usage["total_requests"].(float64) != 2 || usage["total_tokens"].(float64) != 40 {
 		t.Fatalf("unexpected public usage payload: %#v", usage)
+	}
+}
+
+func TestRFC3339TimestampDayFilterAccuracy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, "usage.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	now := time.Now().UTC()
+	recent := now.Add(-1 * time.Hour).Format(time.RFC3339Nano)
+	boundary := now.Add(-25 * time.Hour).Format(time.RFC3339Nano)
+	old := now.Add(-8 * 24 * time.Hour).Format(time.RFC3339Nano)
+
+	_, err = db.Exec(`CREATE TABLE request_logs (
+		id INTEGER PRIMARY KEY, timestamp TEXT NOT NULL, api_key TEXT NOT NULL DEFAULT '',
+		api_key_name TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '',
+		channel_name TEXT NOT NULL DEFAULT '', auth_index TEXT NOT NULL DEFAULT '', failed INTEGER NOT NULL DEFAULT 0,
+		latency_ms INTEGER NOT NULL DEFAULT 0, first_token_ms INTEGER NOT NULL DEFAULT 0,
+		input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+		reasoning_tokens INTEGER NOT NULL DEFAULT 0, cached_tokens INTEGER NOT NULL DEFAULT 0,
+		total_tokens INTEGER NOT NULL DEFAULT 0, cost REAL NOT NULL DEFAULT 0,
+		input_content TEXT NOT NULL DEFAULT '', output_content TEXT NOT NULL DEFAULT ''
+	)`)
+	if err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO request_logs (id, timestamp, total_tokens) VALUES (1, ?, 100), (2, ?, 200), (3, ?, 300)`, recent, boundary, old)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	_ = db.Close()
+
+	h := &Handler{cfg: &config.Config{}, configFilePath: filepath.Join(dir, "config.yaml")}
+
+	status, payload := performUsageContractRequest(t, http.MethodGet, "/v0/management/usage/chart-data?days=1", nil, nil, h.GetUsageChartData)
+	if status != http.StatusOK {
+		t.Fatalf("days=1 status = %d", status)
+	}
+	stats1 := payload["stats"].(map[string]any)
+	if stats1["total"].(float64) != 1 {
+		t.Fatalf("days=1 should include only the recent record, got total=%v (recent=1h ago, boundary=25h ago should be excluded)", stats1["total"])
+	}
+
+	status, payload = performUsageContractRequest(t, http.MethodGet, "/v0/management/usage/chart-data?days=7", nil, nil, h.GetUsageChartData)
+	if status != http.StatusOK {
+		t.Fatalf("days=7 status = %d", status)
+	}
+	stats7 := payload["stats"].(map[string]any)
+	if stats7["total"].(float64) != 2 {
+		t.Fatalf("days=7 should include recent + boundary records, got total=%v", stats7["total"])
+	}
+
+	status, payload = performUsageContractRequest(t, http.MethodGet, "/v0/management/usage/chart-data?days=30", nil, nil, h.GetUsageChartData)
+	if status != http.StatusOK {
+		t.Fatalf("days=30 status = %d", status)
+	}
+	stats30 := payload["stats"].(map[string]any)
+	if stats30["total"].(float64) != 3 {
+		t.Fatalf("days=30 should include all records, got total=%v", stats30["total"])
 	}
 }

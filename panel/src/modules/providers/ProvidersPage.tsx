@@ -48,6 +48,7 @@ import { summarizeProviderAccess } from "@/modules/providers/provider-access";
 
 type ProviderTab =
   | "bigmodel-coding"
+  | "astron-code"
   | "gemini"
   | "claude"
   | "codex"
@@ -62,7 +63,7 @@ const getProviderSelectionKey = (
   item: ProviderSimpleConfig | BedrockProviderConfig | OpenAIProvider,
   index?: number,
 ) =>
-  kind === "bigmodel-coding"
+  kind === "bigmodel-coding" || kind === "astron-code"
     ? `${String((item as OpenAIProvider).name ?? "").trim().toLowerCase()}:${index ?? 0}`
     : kind === "openai"
       ? String((item as OpenAIProvider).name ?? "")
@@ -84,6 +85,7 @@ export function ProvidersPage() {
   const [loading, setLoading] = useState(true);
 
   const [bigmodelCodingProviders, setBigmodelCodingProviders] = useState<OpenAIProvider[]>([]);
+  const [astronCodeProviders, setAstronCodeProviders] = useState<OpenAIProvider[]>([]);
   const [geminiKeys, setGeminiKeys] = useState<ProviderSimpleConfig[]>([]);
   const [claudeKeys, setClaudeKeys] = useState<ProviderSimpleConfig[]>([]);
   const [codexKeys, setCodexKeys] = useState<ProviderSimpleConfig[]>([]);
@@ -112,6 +114,7 @@ export function ProvidersPage() {
       }
     | { type: "deleteOpenAI"; index: number }
     | { type: "deleteBigModelCoding"; index: number }
+    | { type: "deleteAstronCode"; index: number }
   >(null);
   const handledRouteRef = useRef("");
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -130,6 +133,9 @@ export function ProvidersPage() {
         switch (tabId) {
           case "bigmodel-coding":
             setBigmodelCodingProviders(await providersApi.getBigModelCodingProviders());
+            break;
+          case "astron-code":
+            setAstronCodeProviders(await providersApi.getAstronCodeProviders());
             break;
           case "gemini":
             setGeminiKeys(await providersApi.getGeminiKeys());
@@ -371,6 +377,34 @@ export function ProvidersPage() {
     deleteProvider: providersApi.deleteBigModelCodingProvider,
   });
 
+  const {
+    editOpenAIOpen: editAstronCodeOpen,
+    editOpenAIIndex: editAstronCodeIndex,
+    openaiDraft: astronCodeDraft,
+    setOpenaiDraft: setAstronCodeDraft,
+    openaiDraftError: astronCodeDraftError,
+    discoveredModels: astronCodeDiscoveredModels,
+    discovering: astronCodeDiscovering,
+    discoverSelected: astronCodeDiscoverSelected,
+    setDiscoverSelected: setAstronCodeDiscoverSelected,
+    closeOpenAIEditor: closeAstronCodeEditor,
+    openOpenAIEditor: openAstronCodeEditor,
+    saveOpenAIDraft: saveAstronCodeDraft,
+    deleteOpenAIProvider: deleteAstronCodeProvider,
+    toggleOpenAIProviderEnabled: toggleAstronCodeProviderEnabled,
+    toggleOpenAIKeyEntryEnabled: toggleAstronCodeKeyEntryEnabled,
+    discoverModels: discoverAstronCodeModels,
+    applyDiscoveredModels: applyAstronCodeDiscoveredModels,
+  } = useOpenAIProviderEditor({
+    openaiProviders: astronCodeProviders,
+    setOpenaiProviders: setAstronCodeProviders,
+    refreshAll,
+    startRefreshTransition: startTransition,
+    afterClose: handleKeyEditorRouteClose,
+    saveProviders: providersApi.saveAstronCodeProviders,
+    deleteProvider: providersApi.deleteAstronCodeProvider,
+  });
+
   useEffect(() => {
     if (loading) return;
     const pathname = location.pathname;
@@ -419,6 +453,21 @@ export function ProvidersPage() {
         const index = Number(action);
         if (Number.isFinite(index) && index >= 0) {
           openBigModelCodingEditor(index);
+        }
+        return;
+      }
+
+      if (provider === "astron-code") {
+        setSelectedExportKeys([]);
+        setTab("astron-code");
+        await refreshTab("astron-code");
+        if (action === "new") {
+          openAstronCodeEditor(null);
+          return;
+        }
+        const index = Number(action);
+        if (Number.isFinite(index) && index >= 0) {
+          openAstronCodeEditor(index);
         }
         return;
       }
@@ -508,6 +557,8 @@ export function ProvidersPage() {
       switch (kind) {
         case "bigmodel-coding":
           return bigmodelCodingProviders;
+        case "astron-code":
+          return astronCodeProviders;
         case "gemini":
           return geminiKeys;
         case "claude":
@@ -524,7 +575,7 @@ export function ProvidersPage() {
           return openaiProviders;
       }
     },
-    [bedrockKeys, bigmodelCodingProviders, claudeKeys, codexKeys, geminiKeys, openCodeGoKeys, openaiProviders, vertexKeys],
+    [bedrockKeys, bigmodelCodingProviders, astronCodeProviders, claudeKeys, codexKeys, geminiKeys, openCodeGoKeys, openaiProviders, vertexKeys],
   );
 
   const currentImportKind = getImportKind();
@@ -563,6 +614,9 @@ export function ProvidersPage() {
       switch (kind) {
         case "bigmodel-coding":
           await providersApi.saveBigModelCodingProviders(items as OpenAIProvider[]);
+          return;
+        case "astron-code":
+          await providersApi.saveAstronCodeProviders(items as OpenAIProvider[]);
           return;
         case "gemini":
           await providersApi.saveGeminiKeys(items as ProviderSimpleConfig[]);
@@ -817,6 +871,10 @@ export function ProvidersPage() {
                 <img src={iconGlm} alt="" className="size-4" />
                 BigModel Coding
               </TabsTrigger>
+              <TabsTrigger value="astron-code">
+                <img src={iconGlm} alt="" className="size-4" />
+                Astron Code
+              </TabsTrigger>
               <TabsTrigger value="gemini">
                 <img src={iconGemini} alt="" className="size-4" />
                 Gemini
@@ -878,6 +936,33 @@ export function ProvidersPage() {
               emptyTitle={t("providers.bigmodel_coding_keys")}
               emptyDescription={t("providers.bigmodel_coding_channel_hint")}
               addLabel={t("providers.add_provider", { provider: "BigModel Coding" })}
+            />
+          </TabsContent>
+
+          <TabsContent value="astron-code" className="flex min-h-0 flex-1 flex-col">
+            <OpenAIProvidersTab
+              providers={astronCodeProviders}
+              kind="astron-code"
+              loading={isActiveTabListLoading("astron-code")}
+              openOpenAIEditor={openAstronCodeEditor}
+              confirmDelete={(index) => setConfirm({ type: "deleteAstronCode", index })}
+              maskApiKey={maskApiKey}
+              getKeyEntryStats={getOpenAIKeyEntryStats}
+              getProviderStats={getOpenAIProviderStats}
+              getProviderStatusBar={getOpenAIProviderStatusBar}
+              onToggleProviderEnabled={(providerIndex, enabled) =>
+                void toggleAstronCodeProviderEnabled(providerIndex, enabled)
+              }
+              onToggleKeyEntryEnabled={(providerIndex, entryIndex, enabled) =>
+                void toggleAstronCodeKeyEntryEnabled(providerIndex, entryIndex, enabled)
+              }
+              selectedKeys={selectedExportKeySet}
+              onToggleSelected={toggleExportSelection}
+              title={t("providers.astron_code_keys")}
+              description={t("providers.astron_code_desc")}
+              emptyTitle={t("providers.astron_code_keys")}
+              emptyDescription={t("providers.astron_code_channel_hint")}
+              addLabel={t("providers.add_provider", { provider: "Astron Code" })}
             />
           </TabsContent>
 
@@ -1110,6 +1195,27 @@ export function ProvidersPage() {
         description={t("providers.bigmodel_coding_config_desc")}
       />
 
+      <OpenAIProviderModal
+        open={editAstronCodeOpen}
+        editOpenAIIndex={editAstronCodeIndex}
+        openaiDraft={astronCodeDraft}
+        setOpenaiDraft={setAstronCodeDraft}
+        openaiDraftError={astronCodeDraftError}
+        closeOpenAIEditor={closeAstronCodeEditor}
+        saveOpenAIDraft={saveAstronCodeDraft}
+        discovering={astronCodeDiscovering}
+        discoverModels={discoverAstronCodeModels}
+        applyDiscoveredModels={applyAstronCodeDiscoveredModels}
+        discoveredModels={astronCodeDiscoveredModels}
+        discoverSelected={astronCodeDiscoverSelected}
+        setDiscoverSelected={setAstronCodeDiscoverSelected}
+        proxyPoolEntries={proxyPoolEntries}
+        copyText={copyText}
+        maskApiKey={maskApiKey}
+        title="Astron Code"
+        description={t("providers.astron_code_config_desc")}
+      />
+
       <ConfirmModal
         open={confirm !== null}
         title={t("providers.confirm_delete")}
@@ -1122,7 +1228,11 @@ export function ProvidersPage() {
               ? t("providers.confirm_delete_openai", {
                   name: bigmodelCodingProviders[confirm.index]?.name ?? "",
                 })
-              : confirm?.type === "deleteKey"
+              : confirm?.type === "deleteAstronCode"
+                ? t("providers.confirm_delete_openai", {
+                    name: astronCodeProviders[confirm.index]?.name ?? "",
+                  })
+                : confirm?.type === "deleteKey"
                 ? t("providers.confirm_delete_config")
                 : t("providers.confirm_delete_generic")
         }
@@ -1138,6 +1248,10 @@ export function ProvidersPage() {
           }
           if (action.type === "deleteBigModelCoding") {
             void deleteBigModelCodingProvider(action.index);
+            return;
+          }
+          if (action.type === "deleteAstronCode") {
+            void deleteAstronCodeProvider(action.index);
             return;
           }
           void deleteKey(action.keyType, action.index);

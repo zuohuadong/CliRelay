@@ -954,15 +954,15 @@ func (f usageFilters) whereClause(db *sql.DB) (string, []any) {
 	parts := []string{"1=1"}
 	args := []any{}
 	if f.Days > 0 && cols["timestamp"] {
-		parts = append(parts, "timestamp >= datetime('now', ?)")
+		parts = append(parts, "datetime(timestamp) >= datetime('now', ?)")
 		args = append(args, "-"+strconv.Itoa(f.Days)+" days")
 	}
 	if f.Start != "" && cols["timestamp"] {
-		parts = append(parts, "timestamp >= ?")
+		parts = append(parts, "datetime(timestamp) >= datetime(?)")
 		args = append(args, f.Start)
 	}
 	if f.End != "" && cols["timestamp"] {
-		parts = append(parts, "timestamp <= ?")
+		parts = append(parts, "datetime(timestamp) <= datetime(?)")
 		args = append(args, f.End)
 	}
 	if f.Model != "" && cols["model"] {

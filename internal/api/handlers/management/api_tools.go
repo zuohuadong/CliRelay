@@ -726,7 +726,8 @@ func proxyURLFromAPIKeyConfig(cfg *config.Config, auth *coreauth.Auth) string {
 	}
 	if compatName != "" ||
 		strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") ||
-		strings.EqualFold(strings.TrimSpace(auth.Provider), config.DefaultBigModelCodingProviderName) {
+		strings.EqualFold(strings.TrimSpace(auth.Provider), config.DefaultBigModelCodingProviderName) ||
+		strings.EqualFold(strings.TrimSpace(auth.Provider), config.DefaultAstronCodeProviderName) {
 		return resolveOpenAICompatAPIKeyProxyURL(cfg, auth, strings.TrimSpace(authAccount), providerKey, compatName)
 	}
 
@@ -769,6 +770,12 @@ func resolveOpenAICompatAPIKeyProxyURL(cfg *config.Config, auth *coreauth.Auth, 
 	for _, candidate := range candidates {
 		if strings.EqualFold(strings.TrimSpace(candidate), config.DefaultBigModelCodingProviderName) {
 			if proxyURL := resolveOpenAICompatProxyURLFromEntries(cfg.BigModelCodingAPIKey, apiKey); proxyURL != "" {
+				return proxyURL
+			}
+			break
+		}
+		if strings.EqualFold(strings.TrimSpace(candidate), config.DefaultAstronCodeProviderName) {
+			if proxyURL := resolveOpenAICompatProxyURLFromEntries(cfg.AstronCodeAPIKey, apiKey); proxyURL != "" {
 				return proxyURL
 			}
 			break

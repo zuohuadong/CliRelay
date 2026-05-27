@@ -84,6 +84,14 @@ func TestAPICallTransportAPIKeyAuthFallsBackToConfigProxyURL(t *testing.T) {
 					ProxyURL: "http://compat-proxy.example.com:8080",
 				}},
 			}},
+			AstronCodeAPIKey: []config.OpenAICompatibility{{
+				Name:    "astron-code",
+				BaseURL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+				APIKeyEntries: []config.OpenAICompatibilityAPIKey{{
+					APIKey:   "astron-key",
+					ProxyURL: "http://astron-proxy.example.com:8080",
+				}},
+			}},
 		},
 	}
 
@@ -127,6 +135,18 @@ func TestAPICallTransportAPIKeyAuthFallsBackToConfigProxyURL(t *testing.T) {
 				},
 			},
 			wantProxy: "http://compat-proxy.example.com:8080",
+		},
+		{
+			name: "astron-code",
+			auth: &coreauth.Auth{
+				Provider: "astron-code",
+				Attributes: map[string]string{
+					"api_key":      "astron-key",
+					"compat_name":  "astron-code",
+					"provider_key": "astron-code",
+				},
+			},
+			wantProxy: "http://astron-proxy.example.com:8080",
 		},
 	}
 

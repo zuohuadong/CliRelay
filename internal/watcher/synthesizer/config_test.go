@@ -439,6 +439,48 @@ func TestConfigSynthesizer_BigModelCoding(t *testing.T) {
 	}
 }
 
+func TestConfigSynthesizer_AstronCode(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			AstronCodeAPIKey: []config.OpenAICompatibility{
+				{
+					BaseURL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "astron-key", ProxyURL: "http://proxy.local:8080"},
+					},
+					Models: []config.OpenAICompatibilityModel{
+						{Name: "astron-code-latest", Alias: "gpt-5.3-codex"},
+					},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	auth := auths[0]
+	if auth.Provider != "astron-code" {
+		t.Fatalf("provider = %q, want astron-code", auth.Provider)
+	}
+	if auth.Attributes["provider_key"] != "astron-code" || auth.Attributes["compat_name"] != "astron-code" {
+		t.Fatalf("unexpected attrs: %#v", auth.Attributes)
+	}
+	if auth.Attributes["base_url"] != "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2" {
+		t.Fatalf("base_url = %q", auth.Attributes["base_url"])
+	}
+	if auth.ProxyURL != "http://proxy.local:8080" {
+		t.Fatalf("proxy_url = %q", auth.ProxyURL)
+	}
+}
+
 func TestConfigSynthesizer_VertexCompat(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	ctx := &SynthesisContext{

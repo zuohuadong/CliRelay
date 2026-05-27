@@ -1198,6 +1198,7 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 			"session-1",
 			false,
 			nil,
+			nil,
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -1285,6 +1286,7 @@ func TestForwardResponsesWebsocketSynthesizesCompletedForErrors(t *testing.T) {
 			timelineLog,
 			"session-1",
 			false,
+			nil,
 			nil,
 		)
 		if err != nil {
@@ -1383,6 +1385,7 @@ func TestForwardResponsesWebsocketSynthesizesCompletedForActionableEOF(t *testin
 			"session-1",
 			false,
 			nil,
+			nil,
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -1478,6 +1481,7 @@ func TestForwardResponsesWebsocketEmitsErrorOnEOFAfterPartialMessage(t *testing.
 			timelineLog,
 			"session-1",
 			false,
+			nil,
 			nil,
 		)
 		if err != nil {
@@ -1582,6 +1586,7 @@ func TestForwardResponsesWebsocketEmitsErrorOnEOFWithZeroOutput(t *testing.T) {
 			"session-1",
 			false,
 			nil,
+			nil,
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -1676,6 +1681,7 @@ func TestForwardResponsesWebsocketLogsAttemptedResponseOnWriteFailure(t *testing
 			timelineLog,
 			"session-1",
 			false,
+			nil,
 			nil,
 		)
 		if err == nil {

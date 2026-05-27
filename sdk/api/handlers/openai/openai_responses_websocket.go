@@ -318,20 +318,35 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	}
 	forceTranscriptReplayNextRequest := false
 
-	for {
-		msgType, payload, errReadMessage := conn.ReadMessage()
-		if errReadMessage != nil {
-			wsTerminateErr = errReadMessage
-			if websocket.IsCloseError(errReadMessage, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
-				log.Infof("responses websocket: client disconnected id=%s error=%v", passthroughSessionID, errReadMessage)
-			} else {
-				// log.Warnf("responses websocket: read message failed id=%s error=%v", passthroughSessionID, errReadMessage)
+	type downstreamRead struct {
+		msgType int
+		payload []byte
+		err     error
+	}
+	downstreamReadCh := make(chan downstreamRead, 64)
+	clientDisconnected := make(chan struct{})
+	go func() {
+		defer close(downstreamReadCh)
+		for {
+			msgType, payload, errReadMessage := conn.ReadMessage()
+			if errReadMessage != nil {
+				close(clientDisconnected)
+				return
 			}
+			downstreamReadCh <- downstreamRead{msgType: msgType, payload: payload}
+		}
+	}()
+
+	for {
+		msg, ok := <-downstreamReadCh
+		if !ok {
+			wsTerminateErr = fmt.Errorf("client disconnected")
 			return
 		}
-		if msgType != websocket.TextMessage && msgType != websocket.BinaryMessage {
+		if msg.msgType != websocket.TextMessage && msg.msgType != websocket.BinaryMessage {
 			continue
 		}
+		payload := msg.payload
 		// log.Infof(
 		// 	"responses websocket: downstream_in id=%s type=%d event=%s payload=%s",
 		// 	passthroughSessionID,
@@ -453,7 +468,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
 
-			completedOutput, forwardErrMsg, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, wsTimelineLog, passthroughSessionID, replayAttempt == 0, wsWriteMu)
+			completedOutput, forwardErrMsg, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, wsTimelineLog, passthroughSessionID, replayAttempt == 0, wsWriteMu, clientDisconnected)
 			if errForward != nil {
 				wsTerminateErr = errForward
 				log.Warnf("responses websocket: forward failed id=%s error=%v", passthroughSessionID, errForward)
@@ -1125,6 +1140,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	sessionID string,
 	suppressReplayableErrors bool,
 	writeMu *sync.Mutex,
+	clientDisconnected <-chan struct{},
 ) ([]byte, *interfaces.ErrorMessage, error) {
 	completed := false
 	outputAccumulator := newResponsesWebsocketOutputAccumulator()
@@ -1141,6 +1157,11 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 		case <-c.Request.Context().Done():
 			cancel(c.Request.Context().Err())
 			return outputAccumulator.Output(), nil, c.Request.Context().Err()
+		case <-clientDisconnected:
+			errClient := fmt.Errorf("responses websocket: client disconnected during forward id=%s", sessionID)
+			log.Infof("%v", errClient)
+			cancel(errClient)
+			return outputAccumulator.Output(), nil, errClient
 		case <-idleTimer.C:
 			errIdle := fmt.Errorf("responses websocket: upstream idle timeout (%v) id=%s", responsesWebsocketForwardIdleTimeout, sessionID)
 			log.Warnf("%v", errIdle)

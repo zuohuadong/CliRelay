@@ -401,8 +401,6 @@ request-retry: 3
 # Maximum wait time in seconds for a cooled-down credential before triggering a retry.
 max-retry-interval: 30
 
-<<<<<<< HEAD
-=======
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
 disable-cooling: false
 
@@ -419,7 +417,6 @@ disable-image-generation: false
 # When > 0, overrides the default worker count (16).
 # auth-auto-refresh-workers: 16
 
->>>>>>> upstream/main
 # Quota exceeded behavior
 quota-exceeded:
   switch-project: true # Whether to automatically switch to another project when a quota is exceeded
@@ -440,6 +437,7 @@ routing:
   #     match:
   #       prefixes: ["team-a"]
   #       channels: ["Team A Codex"]
+  #       tags: ["pro", "team-a"]
   # path-routes:
   #   - path: "/pro"
   #     group: "pro"

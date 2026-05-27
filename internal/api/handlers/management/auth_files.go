@@ -410,6 +410,12 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		"source":         "memory",
 		"size":           int64(0),
 	}
+	tags := buildAuthTagPayload(auth)
+	entry["channel_name"] = auth.ChannelName()
+	entry["default_tags"] = tags.DefaultTags
+	entry["custom_tags"] = tags.CustomTags
+	entry["hidden_default_tags"] = tags.HiddenDefaultTags
+	entry["display_tags"] = tags.DisplayTags
 	entry["success"] = auth.Success
 	entry["failed"] = auth.Failed
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
@@ -1278,6 +1284,11 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 
 		if fieldPath == "headers" {
 			applyAuthFileHeadersPatch(targetAuth, value)
+		} else if normalized, okNormalize, errNormalize := normalizeAuthFileTagPatchValue(fieldPath, value); errNormalize != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errNormalize.Error()})
+			return
+		} else if okNormalize {
+			targetAuth.Metadata[fieldPath] = normalized
 		} else if errSet := setAuthFileMetadataValue(targetAuth.Metadata, fieldPath, value); errSet != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": errSet.Error()})
 			return
@@ -1430,6 +1441,9 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["headers"]; ok {
 		syncAuthFileHeaderAttributes(auth)
 	}
+	if _, ok := touchedRoots["label"]; ok {
+		syncAuthFileLabel(auth)
+	}
 	if _, ok := touchedRoots["priority"]; ok {
 		syncAuthFilePriorityAttribute(auth)
 	}
@@ -1442,6 +1456,60 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["disabled"]; ok {
 		syncAuthFileDisabledState(auth)
 	}
+}
+
+func normalizeAuthFileTagPatchValue(fieldPath string, value any) ([]string, bool, error) {
+	switch fieldPath {
+	case "custom_tags":
+		values, ok := authFileStringSlice(value)
+		if !ok {
+			return nil, true, fmt.Errorf("custom_tags must be an array of strings")
+		}
+		normalized, err := normalizeEditableTags(values, maxCustomAuthTags)
+		if err != nil {
+			return nil, true, err
+		}
+		return normalized, true, nil
+	case "hidden_default_tags", "display_tags":
+		values, ok := authFileStringSlice(value)
+		if !ok {
+			return nil, true, fmt.Errorf("%s must be an array of strings", fieldPath)
+		}
+		return normalizeTagList(values), true, nil
+	default:
+		return nil, false, nil
+	}
+}
+
+func authFileStringSlice(value any) ([]string, bool) {
+	switch typed := value.(type) {
+	case []string:
+		return typed, true
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, text)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func syncAuthFileLabel(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	label, ok := auth.Metadata["label"].(string)
+	if !ok {
+		auth.Label = ""
+		return
+	}
+	auth.Label = strings.TrimSpace(label)
 }
 
 func syncAuthFileHeaderAttributes(auth *coreauth.Auth) {

@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-28 07:30:41 +0800] [CliRelay] [done] Fixed missing panel channel-group functionality by enabling routing-config read/write, tag-based group matching, auth-file tag payloads, and validation coverage; verified go test ./..., required server build, panel build, and focused panel tests with localStorage file
 [2026-05-28 06:57:54 +0800] [CliRelay] [done] Reviewed pending management channel/tag changes, rebased onto latest origin/main, resolved upstream executor conflict markers while preserving TTFT tracking and local BigModel/compact behavior, and reverified go test ./..., required server build, and git diff --check before pushing
 [2026-05-27 16:45:21 +0800] [CliRelay] [done] Fixed pending Astron Code first-class channel review blockers: added auth synthesis/count/proxy handling, stabilized Astron synthetic tool call IDs, corrected panel endpoint text, restored compile consistency, and verified go test ./..., required server build, panel build, provider API test, and git diff --check
 [2026-05-27 16:18:39 +0800] [CliRelay] [running] Fixing pending Astron Code first-class channel review blockers: auth synthesis, proxy/config counts, stable tool call IDs, and panel endpoint text

@@ -164,6 +164,14 @@ func authGroups(cfg *internalconfig.Config, auth *Auth) map[string]struct{} {
 				}
 			}
 		}
+		if !matched {
+			for _, tag := range group.Match.Tags {
+				if authMatchesDisplayTag(auth, tag) {
+					matched = true
+					break
+				}
+			}
+		}
 		if matched {
 			out[group.Name] = struct{}{}
 		}
@@ -172,6 +180,91 @@ func authGroups(cfg *internalconfig.Config, auth *Auth) map[string]struct{} {
 		return nil
 	}
 	return out
+}
+
+func authMatchesDisplayTag(auth *Auth, candidate string) bool {
+	if auth == nil {
+		return false
+	}
+	target := normalizeAuthDisplayTag(candidate)
+	if target == "" {
+		return false
+	}
+	for tag := range authDisplayTagSet(auth) {
+		if tag == target {
+			return true
+		}
+	}
+	return false
+}
+
+func authDisplayTagSet(auth *Auth) map[string]struct{} {
+	defaultTags := make(map[string]struct{})
+	if auth == nil {
+		return defaultTags
+	}
+	addDefault := func(value string) {
+		if normalized := normalizeAuthDisplayTag(value); normalized != "" {
+			defaultTags[normalized] = struct{}{}
+		}
+	}
+	if provider := strings.TrimSpace(auth.Provider); provider != "" && !strings.EqualFold(provider, "unknown") {
+		addDefault(provider)
+	}
+	if auth.Metadata == nil {
+		return defaultTags
+	}
+	if planType := metadataFirstString(auth.Metadata, "plan_type", "planType"); planType != "" {
+		addDefault(planType)
+	}
+	customTags := metadataStringSet(auth.Metadata, "custom_tags", normalizeAuthDisplayTag)
+	hiddenDefaultTags := metadataStringSet(auth.Metadata, "hidden_default_tags", normalizeAuthDisplayTag)
+	if displayTags := metadataStringSet(auth.Metadata, "display_tags", normalizeAuthDisplayTag); displayTags != nil {
+		out := make(map[string]struct{}, len(displayTags))
+		for tag := range displayTags {
+			if _, allowed := defaultTags[tag]; allowed {
+				out[tag] = struct{}{}
+				continue
+			}
+			if _, allowed := customTags[tag]; allowed {
+				out[tag] = struct{}{}
+			}
+		}
+		return out
+	}
+	out := make(map[string]struct{}, len(defaultTags)+len(customTags))
+	for tag := range defaultTags {
+		out[tag] = struct{}{}
+	}
+	for tag := range hiddenDefaultTags {
+		delete(out, tag)
+	}
+	for tag := range customTags {
+		out[tag] = struct{}{}
+	}
+	return out
+}
+
+func metadataFirstString(meta map[string]any, keys ...string) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	for _, key := range keys {
+		if raw, ok := meta[key].(string); ok {
+			if trimmed := strings.TrimSpace(raw); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
+}
+
+func normalizeAuthDisplayTag(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(value), "-")
 }
 
 func authAllowedByGroups(cfg *internalconfig.Config, auth *Auth, allowed map[string]struct{}) bool {

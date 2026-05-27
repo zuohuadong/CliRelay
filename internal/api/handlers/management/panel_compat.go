@@ -15,7 +15,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	_ "modernc.org/sqlite"
 )
 
@@ -225,34 +227,22 @@ func (h *Handler) PutAPIKeyPermissionProfiles(c *gin.Context) {
 }
 
 func (h *Handler) GetRoutingConfig(c *gin.Context) {
-	strategy := "round-robin"
-	if h != nil && h.cfg != nil && strings.TrimSpace(h.cfg.Routing.Strategy) != "" {
-		strategy = strings.TrimSpace(h.cfg.Routing.Strategy)
+	routingCfg := currentRoutingConfig(nil)
+	if h != nil && h.cfg != nil {
+		routingCfg = currentRoutingConfig(h.cfg)
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"strategy":              strategy,
-		"include-default-group": true,
-		"channel-groups":        []gin.H{},
-		"path-routes":           []gin.H{},
-	})
+	if h != nil && h.authManager != nil {
+		if known, err := collectKnownChannels(h.cfg, h.authManager.List(), ""); err == nil {
+			routingCfg = canonicalizeRoutingConfigChannels(routingCfg, known)
+		}
+	}
+	c.JSON(http.StatusOK, routingCfg)
 }
 
 func (h *Handler) PutRoutingConfig(c *gin.Context) {
-	var body struct {
-		Strategy      string          `json:"strategy"`
-		ChannelGroups json.RawMessage `json:"channel-groups"`
-		PathRoutes    json.RawMessage `json:"path-routes"`
-	}
+	var body config.RoutingConfig
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	if len(body.ChannelGroups) > 0 && string(body.ChannelGroups) != "null" && string(body.ChannelGroups) != "[]" {
-		unsupportedPanelWrite(c, "channel groups are not available in this v7 build")
-		return
-	}
-	if len(body.PathRoutes) > 0 && string(body.PathRoutes) != "null" && string(body.PathRoutes) != "[]" {
-		unsupportedPanelWrite(c, "path routes are not available in this v7 build")
 		return
 	}
 	normalized, ok := normalizeRoutingStrategy(body.Strategy)
@@ -260,8 +250,38 @@ func (h *Handler) PutRoutingConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid routing strategy"})
 		return
 	}
-	h.cfg.Routing.Strategy = normalized
-	h.persist(c)
+	body.Strategy = normalized
+	nextCfg := &config.Config{}
+	if h != nil && h.cfg != nil {
+		copied := *h.cfg
+		nextCfg = &copied
+	}
+	nextCfg.Routing = body
+	nextCfg.SanitizeRouting()
+	var auths []*coreauth.Auth
+	if h != nil && h.authManager != nil {
+		auths = h.authManager.List()
+	}
+	if err := validateRoutingAndAPIKeyRestrictions(nextCfg, auths); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	h.mu.Lock()
+	if h.cfg == nil {
+		h.cfg = &config.Config{}
+	}
+	h.cfg.Routing = nextCfg.Routing
+	ok = h.persistLocked(c)
+	updatedCfg := h.cfg
+	h.mu.Unlock()
+	if !ok {
+		return
+	}
+	if h.authManager != nil {
+		h.authManager.SetConfig(updatedCfg)
+	}
+	managementasset.SetCurrentConfig(updatedCfg)
 }
 
 func (h *Handler) GetProxyPool(c *gin.Context) {

@@ -184,6 +184,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 		item.Priority = group.Priority
 		item.AllowedModels = append(item.AllowedModels, group.AllowedModels...)
 		item.Prefixes = append(item.Prefixes, group.Match.Prefixes...)
+		item.Tags = append(item.Tags, group.Match.Tags...)
 		configuredChannelsByGroup[item.Name] = append(configuredChannelsByGroup[item.Name], group.Match.Channels...)
 	}
 
@@ -273,7 +274,7 @@ func channelGroupMatchesDescriptor(group config.RoutingChannelGroup, channel cha
 			return true
 		}
 	}
-	return false
+	return channelMatchesAnyTag(channel, group.Match.Tags)
 }
 
 func channelMatchesAnyTag(channel channelDescriptor, tags []string) bool {

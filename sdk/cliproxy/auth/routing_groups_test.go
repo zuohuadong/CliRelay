@@ -129,6 +129,46 @@ func TestAuthGroupsMatchesLegacyOAuthEmailAfterRename(t *testing.T) {
 	}
 }
 
+func TestAuthGroupsMatchesDisplayTags(t *testing.T) {
+	t.Parallel()
+
+	cfg := &internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{
+					Name: "paid",
+					Match: internalconfig.ChannelGroupMatch{
+						Tags: []string{"vip-team"},
+					},
+				},
+				{
+					Name: "hidden-free",
+					Match: internalconfig.ChannelGroupMatch{
+						Tags: []string{"free"},
+					},
+				},
+			},
+		},
+	}
+	auth := &Auth{
+		Provider: "codex",
+		Metadata: map[string]any{
+			"plan_type":           "free",
+			"custom_tags":         []any{"VIP Team"},
+			"hidden_default_tags": []any{"free"},
+			"display_tags":        []any{"codex", "vip-team"},
+		},
+	}
+
+	groups := authGroups(cfg, auth)
+	if _, ok := groups["paid"]; !ok {
+		t.Fatalf("expected paid group match through display tag, got %v", groups)
+	}
+	if _, ok := groups["hidden-free"]; ok {
+		t.Fatalf("did not expect hidden free tag to match, got %v", groups)
+	}
+}
+
 func TestDerivedGroupPriorityPreservesExplicitZero(t *testing.T) {
 	t.Parallel()
 

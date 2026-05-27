@@ -9,6 +9,7 @@ import (
 type ChannelGroupMatch struct {
 	Prefixes []string `yaml:"prefixes,omitempty" json:"prefixes,omitempty"`
 	Channels []string `yaml:"channels,omitempty" json:"channels,omitempty"`
+	Tags     []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 }
 
 type RoutingChannelGroup struct {
@@ -109,6 +110,7 @@ func (cfg *Config) SanitizeRouting() {
 		group.Match.Channels = normalizeStringList(group.Match.Channels, func(value string) string {
 			return strings.TrimSpace(value)
 		})
+		group.Match.Tags = normalizeStringList(group.Match.Tags, normalizeRoutingTag)
 		group.ChannelPriorities = normalizeChannelPriorities(group.ChannelPriorities)
 		group.AllowedModels = normalizeStringList(group.AllowedModels, func(value string) string {
 			return strings.TrimSpace(value)
@@ -144,4 +146,12 @@ func (cfg *Config) SanitizeRouting() {
 }
 
 func (cfg *Config) SanitizeAPIKeyEntries() {
+}
+
+func normalizeRoutingTag(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(value), "-")
 }

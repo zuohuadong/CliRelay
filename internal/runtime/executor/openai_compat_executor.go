@@ -145,17 +145,11 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 			translated = updated
 		}
 	}
-<<<<<<< HEAD
 	translated, err = e.normalizeBigModelTools(translated, baseURL)
-=======
-	reporter.SetTranslatedReasoningEffort(translated, to.String())
-
-	url := strings.TrimSuffix(baseURL, "/") + endpoint
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
->>>>>>> upstream/main
 	if err != nil {
 		return resp, err
 	}
+	reporter.SetTranslatedReasoningEffort(translated, to.String())
 
 	requestBody := translated
 	contentType := "application/json"
@@ -369,14 +363,11 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
 	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
-<<<<<<< HEAD
 	translated, err = e.normalizeBigModelTools(translated, baseURL)
 	if err != nil {
 		return nil, err
 	}
-=======
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
->>>>>>> upstream/main
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))

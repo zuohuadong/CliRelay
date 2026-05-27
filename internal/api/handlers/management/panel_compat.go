@@ -365,10 +365,6 @@ func mustParseURL(raw string) *url.URL {
 	return u
 }
 
-func (h *Handler) GetChannelGroups(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"items": []gin.H{}})
-}
-
 func (h *Handler) GetCCSwitchImportConfigs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ccswitch-import-configs": []gin.H{}})
 }

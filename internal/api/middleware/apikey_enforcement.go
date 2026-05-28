@@ -473,3 +473,24 @@ func stringInSlice(s string, slice []string) bool {
 	}
 	return false
 }
+
+// GetConcurrencySnapshot returns a list of API keys with their current
+// concurrency count and the total in-flight request count.
+func GetConcurrencySnapshot() ([]map[string]interface{}, int64) {
+	var snapshots []map[string]interface{}
+	var totalInFlight int64
+	concurrencyCounters.Range(func(key, value interface{}) bool {
+		counter := value.(*concurrencyCounter)
+		current := counter.current.Load()
+		if current <= 0 {
+			return true
+		}
+		snapshots = append(snapshots, map[string]interface{}{
+			"api_key":     key.(string),
+			"concurrency": current,
+		})
+		totalInFlight += current
+		return true
+	})
+	return snapshots, totalInFlight
+}

@@ -200,3 +200,43 @@ func getDB() *sql.DB {
 	db, _ := defaultSink.databaseLocked()
 	return db
 }
+
+// ChannelLatency holds the average latency stats for a single channel (source).
+type ChannelLatency struct {
+	Source string  `json:"source"`
+	Count  int64   `json:"count"`
+	AvgMs  float64 `json:"avg_ms"`
+}
+
+// GetChannelAvgLatency returns average request latency grouped by source (channel)
+// for the last N days.
+func GetChannelAvgLatency(days int) ([]ChannelLatency, error) {
+	db := getDB()
+	if db == nil {
+		return nil, nil
+	}
+	if days < 1 {
+		days = 7
+	}
+	cutoff := time.Now().AddDate(0, 0, -days).UTC().Format(time.RFC3339)
+	rows, err := db.Query(`
+		SELECT source, COUNT(*) as cnt, AVG(latency_ms) as avg_lat
+		FROM request_logs
+		WHERE timestamp > ? AND source != ''
+		GROUP BY source
+		ORDER BY avg_lat DESC
+		LIMIT 10
+	`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var result []ChannelLatency
+	for rows.Next() {
+		var cl ChannelLatency
+		if err := rows.Scan(&cl.Source, &cl.Count, &cl.AvgMs); err == nil {
+			result = append(result, cl)
+		}
+	}
+	return result, rows.Err()
+}

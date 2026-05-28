@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 )
 
 func (h *Handler) GetDashboardSummary(c *gin.Context) {
@@ -53,6 +54,12 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 		}
 	}
 
+	// API key count from the usage DB
+	apiKeyCount := 0
+	if keys := usage.ListAPIKeys(); keys != nil {
+		apiKeyCount = len(keys)
+	}
+
 	totals := usageTotals{}
 	requestVolume := []gin.H{}
 	successRateTrend := []gin.H{}
@@ -97,7 +104,7 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 			"total_cost":       totals.TotalCost,
 		},
 		"counts": gin.H{
-			"api_keys":         0,
+			"api_keys":         apiKeyCount,
 			"providers_total":  geminiCount + claudeCount + codexCount + vertexCount + openaiCount + bigmodelCount + astronCodeCount + iflowCount,
 			"gemini_keys":      geminiCount,
 			"claude_keys":      claudeCount,

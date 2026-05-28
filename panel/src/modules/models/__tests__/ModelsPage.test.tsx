@@ -293,6 +293,82 @@ describe("ModelsPage", () => {
     expect(screen.queryByText("gpt-should-not-leak")).not.toBeInTheDocument();
   });
 
+  test("keeps BigModel Coding upstream model names when an alias is configured", async () => {
+    mocks.apiGet.mockImplementation((path: string) => {
+      if (path === "/model-configs?scope=active" || path === "/model-configs") {
+        return Promise.resolve({
+          data: [
+            {
+              id: "glm-5.1",
+              owned_by: "bigmodel-coding",
+              description: "BigModel Coding upstream model",
+              enabled: true,
+              source: "seed",
+              pricing: { mode: "token" },
+            },
+            {
+              id: "gpt-5.3-codex",
+              owned_by: "bigmodel-coding",
+              description: "Codex alias",
+              enabled: true,
+              source: "seed",
+              pricing: { mode: "token" },
+            },
+            {
+              id: "gpt-should-not-leak",
+              owned_by: "openai",
+              description: "Unconfigured registry model",
+              enabled: true,
+              source: "seed",
+              pricing: { mode: "token" },
+            },
+          ],
+        });
+      }
+      if (path === "/model-configs?scope=library") {
+        return Promise.resolve({ data: [] });
+      }
+      if (path === "/auth-files") {
+        return Promise.resolve({ files: [] });
+      }
+      if (path === "/bigmodel-coding-api-key") {
+        return Promise.resolve({
+          "bigmodel-coding-api-key": [
+            {
+              name: "bigmodel-coding",
+              "api-key-entries": [{ "api-key": "sk-bigmodel" }],
+              models: [{ name: "glm-5.1", alias: "gpt-5.3-codex" }],
+            },
+          ],
+        });
+      }
+      if (
+        path === "/gemini-api-key" ||
+        path === "/claude-api-key" ||
+        path === "/codex-api-key" ||
+        path === "/opencode-go-api-key" ||
+        path === "/vertex-api-key" ||
+        path === "/openai-compatibility" ||
+        path === "/astron-code-api-key"
+      ) {
+        return Promise.resolve([]);
+      }
+      if (path === "/model-owner-presets") {
+        return Promise.resolve({ data: ownerPresetItems });
+      }
+      if (path.startsWith("/usage/logs")) {
+        return Promise.resolve({ stats: { total_cost: 0 } });
+      }
+      return Promise.resolve({});
+    });
+
+    renderPage();
+
+    expect(await screen.findByText("glm-5.1")).toBeInTheDocument();
+    expect(await screen.findByText("gpt-5.3-codex")).toBeInTheDocument();
+    expect(screen.queryByText("gpt-should-not-leak")).not.toBeInTheDocument();
+  });
+
   test("loads the full model library only after switching to the library tab", async () => {
     renderPage();
 

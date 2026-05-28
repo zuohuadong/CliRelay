@@ -99,6 +99,12 @@ const PROVIDER_CHANNELS = [
   { key: "vertex", load: providersApi.getVertexConfigs },
 ] as const;
 
+const OPENAI_COMPAT_PROVIDER_CHANNELS = [
+  { fallbackOwner: "openai-compatibility", load: providersApi.getOpenAIProviders },
+  { fallbackOwner: "bigmodel-coding", load: providersApi.getBigModelCodingProviders },
+  { fallbackOwner: "astron-code", load: providersApi.getAstronCodeProviders },
+] as const;
+
 const emptyAvailability = (): ConfiguredModelAvailability => ({
   scoped: false,
   items: [],
@@ -274,10 +280,10 @@ const withOptionalPrefix = (id: string, prefix?: string): string[] => {
   return [trimmedId, `${trimmedPrefix}/${trimmedId}`];
 };
 
-const providerModelId = (model: ProviderModel): string => {
+const providerModelIds = (model: ProviderModel): string[] => {
   const alias = String(model.alias ?? "").trim();
-  if (alias) return alias;
-  return String(model.name ?? "").trim();
+  const name = String(model.name ?? "").trim();
+  return Array.from(new Set([alias, name].filter(Boolean)));
 };
 
 const isExcluded = (modelId: string, excludedModels?: string[]) => {
@@ -294,14 +300,15 @@ const addExplicitProviderModels = (
 ) => {
   if (!Array.isArray(models) || models.length === 0) return;
   for (const model of models) {
-    const id = providerModelId(model);
-    if (!id || isExcluded(id, excludedModels)) continue;
-    for (const candidate of withOptionalPrefix(id, prefix)) {
-      addModel(map, {
-        id: candidate,
-        owned_by: provider,
-        source: "provider",
-      });
+    for (const id of providerModelIds(model)) {
+      if (isExcluded(id, excludedModels)) continue;
+      for (const candidate of withOptionalPrefix(id, prefix)) {
+        addModel(map, {
+          id: candidate,
+          owned_by: provider,
+          source: "provider",
+        });
+      }
     }
   }
 };
@@ -369,16 +376,25 @@ const loadProviderModelItems = async (): Promise<ModelAvailabilityItem[]> => {
     }),
   );
 
-  let openAIProviders: OpenAIProvider[] = [];
-  try {
-    openAIProviders = (await providersApi.getOpenAIProviders()).filter(hasOpenAIProviderCredential);
-  } catch {
-    openAIProviders = [];
-  }
+  await Promise.all(
+    OPENAI_COMPAT_PROVIDER_CHANNELS.map(async ({ fallbackOwner, load }) => {
+      let providers: OpenAIProvider[] = [];
+      try {
+        providers = (await load()).filter(hasOpenAIProviderCredential);
+      } catch {
+        providers = [];
+      }
 
-  for (const provider of openAIProviders) {
-    addExplicitProviderModels(map, provider.models, provider.name, provider.prefix);
-  }
+      for (const provider of providers) {
+        addExplicitProviderModels(
+          map,
+          provider.models,
+          provider.name || fallbackOwner,
+          provider.prefix,
+        );
+      }
+    }),
+  );
 
   return Array.from(map.values());
 };

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import i18n from "@/i18n";
@@ -182,6 +182,31 @@ describe("RoutingConfigEditor", () => {
     expect(screen.getByTestId("allowed-models")).toHaveTextContent(
       "claude-opus-4-5,claude-sonnet-4-5",
     );
+  });
+
+  test("does not reload channel models when toggling model selections", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(async () => ["claude-sonnet-4-5", "claude-opus-4-5"]);
+
+    render(<Harness loadModelsForChannels={loadModelsForChannels} />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Team A Claude" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("tab", { name: "模型列表" }));
+
+    expect(await screen.findByLabelText("claude-opus-4-5")).toBeChecked();
+    await waitFor(() => expect(loadModelsForChannels).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByLabelText("claude-opus-4-5"));
+
+    expect(screen.getByLabelText("claude-opus-4-5")).not.toBeChecked();
+    expect(screen.getByLabelText("claude-sonnet-4-5")).toBeChecked();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(loadModelsForChannels).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("table", { name: "允许模型" })).toBeInTheDocument();
   });
 
   test("renders channel-scoped models as a checkbox table with descriptions and prices", async () => {

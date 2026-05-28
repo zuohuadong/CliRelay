@@ -270,20 +270,35 @@ func AssetPath(configFilePath string, relativePath string) (string, bool) {
 	return target, true
 }
 
-// localPanelDistDir resolves the local panel build output directory.
-// It checks for panel/dist relative to the executable, the working directory, and the config file.
-func localPanelDistDir() string {
+// localPanelDistDir resolves a bundled or local panel build output directory.
+// It checks Docker image bundle paths first, then panel/dist near the executable and working directory.
+func localPanelDistDir(staticDir string) string {
 	candidates := []string{}
 
 	if exe, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "panel", "dist"))
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "static"),
+			filepath.Join(exeDir, "panel", "dist"),
+		)
 	}
 
 	if wd, err := os.Getwd(); err == nil {
-		candidates = append(candidates, filepath.Join(wd, "panel", "dist"))
+		candidates = append(candidates,
+			filepath.Join(wd, "static"),
+			filepath.Join(wd, "panel", "dist"),
+		)
 	}
 
+	candidates = append(candidates, "/app/panel-dist", "/CLIProxyAPI/static")
+
+	staticAbs, errStaticAbs := filepath.Abs(staticDir)
 	for _, dir := range candidates {
+		if staticAbs != "" && errStaticAbs == nil {
+			if dirAbs, err := filepath.Abs(dir); err == nil && dirAbs == staticAbs {
+				continue
+			}
+		}
 		entry := filepath.Join(dir, panelEntryName)
 		if info, err := os.Stat(entry); err == nil && !info.IsDir() {
 			return dir
@@ -296,7 +311,7 @@ func localPanelDistDir() string {
 // syncLocalPanelBuild checks for a local panel/dist build output and syncs it to the static directory.
 // Returns true if a local build was synced (meaning no remote download is needed).
 func syncLocalPanelBuild(staticDir string) bool {
-	distDir := localPanelDistDir()
+	distDir := localPanelDistDir(staticDir)
 	if distDir == "" {
 		return false
 	}

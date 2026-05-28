@@ -7,6 +7,9 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-28 22:31:25 +0800] [CliRelay] [done] Added startup/deploy-safe management panel static sync from Docker-bundled panel assets so mounted data/static refreshes when the image panel changes; verified managementasset tests, focused channel-group panel tests, go test ./..., required server build, and git diff --check
+[2026-05-28 22:28:11 +0800] [CliRelay] [done] Fixed channel-group model list flickering by decoupling model loading from manual model selection changes, added regression coverage, verified focused panel tests/build, and hot-updated production management panel static assets
+[2026-05-28 22:21:29 +0800] [CliRelay] [done] Restored production channel-group tag matching UI by replacing the stale mounted management panel static directory with the current embedded panel assets; verified live panel metadata/chunk contents and focused channel-groups panel tests
 [2026-05-28 14:47:00 +0800] [CliRelay] [done] Fixed live channel-groups empty options by defaulting missing include-default-group consistently across routing and channel group APIs; verified target management tests, go test ./..., required server build, and git diff --check
 [2026-05-28 14:20:00 +0800] [CliRelay] [done] Fixed empty panel channel selection by aligning /channel-groups channel descriptors with known channel naming, exposing dedicated provider channels, adding API key permission fallback channel names, and verifying Go tests/build plus panel tests/build
 [2026-05-28 12:49:08 +0800] [CliRelay] [done] Reviewed OpenAI-compatible channel group fallback and scheduler import formatting changes; verified management tests, go test ./..., required server build, and git diff --check before commit/push

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, CircleAlert, Pencil, Plus, Trash2, TriangleAlert, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ChannelGroupChannelDetail } from "@/lib/http/apis/channel-groups";
@@ -310,6 +310,10 @@ function renderChannelTags(tags: string[]) {
   );
 }
 
+function stringArraysEqual(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 export function RoutingConfigEditor({
   values,
   disabled,
@@ -342,6 +346,11 @@ export function RoutingConfigEditor({
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState("");
   const [modelsSelectionTouched, setModelsSelectionTouched] = useState(false);
+  const modelsSelectionTouchedRef = useRef(modelsSelectionTouched);
+
+  useEffect(() => {
+    modelsSelectionTouchedRef.current = modelsSelectionTouched;
+  }, [modelsSelectionTouched]);
 
   const update = useCallback(
     (patch: Partial<VisualConfigValues>) => {
@@ -478,8 +487,13 @@ export function RoutingConfigEditor({
   );
   const selectedTagValues = useMemo(() => syncDraftTags(groupDraft.tags), [groupDraft.tags]);
   const resolvedDraftChannels = useMemo(
-    () => resolveGroupChannels(groupDraft),
-    [groupDraft, resolveGroupChannels],
+    () =>
+      resolveGroupChannels({
+        channels: groupDraft.channels,
+        matchMode: groupDraft.matchMode,
+        tags: groupDraft.tags,
+      }),
+    [groupDraft.channels, groupDraft.matchMode, groupDraft.tags, resolveGroupChannels],
   );
   const resolvedDraftChannelValues = useMemo(
     () => resolvedDraftChannels.map((channel) => channel.name.trim()).filter(Boolean),
@@ -1316,6 +1330,7 @@ export function RoutingConfigEditor({
     setModelsLoading(true);
     setModelsError("");
     setModelOptions([]);
+    const preserveManualSelection = modelsSelectionTouchedRef.current;
     const modelLoader = editingSystemDefaultGroup
       ? loadModelsForChannels(resolvedDraftChannelValues, SYSTEM_DEFAULT_GROUP_NAME)
       : loadModelsForChannels(resolvedDraftChannelValues);
@@ -1332,12 +1347,16 @@ export function RoutingConfigEditor({
         const normalized = Array.from(optionMap.values()).sort((a, b) => a.id.localeCompare(b.id));
         setModelOptions(normalized);
         const allowed = new Set(normalized.map((model) => model.id));
-        setGroupDraft((current) => ({
-          ...current,
-          allowedModels: modelsSelectionTouched
+        setGroupDraft((current) => {
+          const nextAllowedModels = preserveManualSelection
             ? current.allowedModels.filter((model) => allowed.has(model))
-            : normalized.map((model) => model.id),
-        }));
+            : normalized.map((model) => model.id);
+          if (stringArraysEqual(current.allowedModels, nextAllowedModels)) return current;
+          return {
+            ...current,
+            allowedModels: nextAllowedModels,
+          };
+        });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -1358,7 +1377,6 @@ export function RoutingConfigEditor({
     groupEditorTab,
     editingSystemDefaultGroup,
     loadModelsForChannels,
-    modelsSelectionTouched,
     resolvedDraftChannelValues,
     t,
   ]);

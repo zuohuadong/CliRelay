@@ -77,6 +77,61 @@ func TestFetchLatestAssetPrefersPanelDist(t *testing.T) {
 	}
 }
 
+func TestSyncLocalPanelBuildUsesBundledStaticDirectory(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "bundle", "static")
+	staticDir := filepath.Join(root, "data", "static")
+	if err := os.MkdirAll(filepath.Join(sourceDir, "assets"), 0o755); err != nil {
+		t.Fatalf("mkdir source assets: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, panelEntryName), []byte("<!doctype html>"), 0o644); err != nil {
+		t.Fatalf("write source entry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "assets", "app.js"), []byte("console.log('new')"), 0o644); err != nil {
+		t.Fatalf("write source asset: %v", err)
+	}
+	if err := os.MkdirAll(staticDir, 0o755); err != nil {
+		t.Fatalf("mkdir static dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(staticDir, panelEntryName), []byte("old"), 0o644); err != nil {
+		t.Fatalf("write old entry: %v", err)
+	}
+
+	t.Chdir(filepath.Join(root, "bundle"))
+
+	if !syncLocalPanelBuild(staticDir) {
+		t.Fatal("syncLocalPanelBuild() = false, want true")
+	}
+
+	copied, err := os.ReadFile(filepath.Join(staticDir, "assets", "app.js"))
+	if err != nil {
+		t.Fatalf("read copied asset: %v", err)
+	}
+	if string(copied) != "console.log('new')" {
+		t.Fatalf("copied asset = %q", copied)
+	}
+	if _, err := os.Stat(filepath.Join(staticDir, localPanelMarkerName)); err != nil {
+		t.Fatalf("stat local panel marker: %v", err)
+	}
+}
+
+func TestLocalPanelDistDirSkipsTargetStaticDirectory(t *testing.T) {
+	root := t.TempDir()
+	staticDir := filepath.Join(root, "static")
+	if err := os.MkdirAll(staticDir, 0o755); err != nil {
+		t.Fatalf("mkdir static dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(staticDir, panelEntryName), []byte("<!doctype html>"), 0o644); err != nil {
+		t.Fatalf("write static entry: %v", err)
+	}
+
+	t.Chdir(root)
+
+	if got := localPanelDistDir(staticDir); got != "" {
+		t.Fatalf("localPanelDistDir() = %q, want empty when candidate is target static dir", got)
+	}
+}
+
 func newPanelDistArchive(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 

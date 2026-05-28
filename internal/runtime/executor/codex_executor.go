@@ -899,6 +899,18 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 		auth.Metadata = make(map[string]any)
 	}
 	auth.Metadata["id_token"] = td.IDToken
+	// Re-extract plan_type from the refreshed ID token so plan upgrades/downgrades
+	// are reflected without restarting or waiting for a full file re-synthesis.
+	if td.IDToken != "" {
+		if claims, errParse := codexauth.ParseJWTToken(td.IDToken); errParse == nil && claims != nil {
+			if pt := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); pt != "" {
+				if auth.Attributes == nil {
+					auth.Attributes = make(map[string]string)
+				}
+				auth.Attributes["plan_type"] = pt
+			}
+		}
+	}
 	auth.Metadata["access_token"] = td.AccessToken
 	if td.RefreshToken != "" {
 		auth.Metadata["refresh_token"] = td.RefreshToken

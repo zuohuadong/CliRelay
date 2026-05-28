@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -151,6 +152,56 @@ func TestFinalizeStreamingWritesAPIWebsocketTimeline(t *testing.T) {
 	}
 	if !streamWriter.closed {
 		t.Fatal("expected stream writer to be closed")
+	}
+}
+
+func TestResponseWriterWrapperWriteCapsBufferedBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	wrapper := NewResponseWriterWrapper(c.Writer, &testRequestLogger{enabled: true}, &RequestInfo{})
+
+	first := bytes.Repeat([]byte("a"), maxBufferedResponseBodyBytes-1)
+	second := []byte("bc")
+
+	if _, err := wrapper.Write(first); err != nil {
+		t.Fatalf("first Write error: %v", err)
+	}
+	if _, err := wrapper.Write(second); err != nil {
+		t.Fatalf("second Write error: %v", err)
+	}
+
+	if got := wrapper.body.Len(); got != maxBufferedResponseBodyBytes-1 {
+		t.Fatalf("buffered body len = %d, want %d", got, maxBufferedResponseBodyBytes-1)
+	}
+	if got := recorder.Body.Len(); got != len(first)+len(second) {
+		t.Fatalf("response body len = %d, want %d", got, len(first)+len(second))
+	}
+}
+
+func TestResponseWriterWrapperWriteStringCapsBufferedBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	wrapper := NewResponseWriterWrapper(c.Writer, &testRequestLogger{enabled: true}, &RequestInfo{})
+
+	first := strings.Repeat("a", maxBufferedResponseBodyBytes-1)
+	second := "bc"
+
+	if _, err := wrapper.WriteString(first); err != nil {
+		t.Fatalf("first WriteString error: %v", err)
+	}
+	if _, err := wrapper.WriteString(second); err != nil {
+		t.Fatalf("second WriteString error: %v", err)
+	}
+
+	if got := wrapper.body.Len(); got != maxBufferedResponseBodyBytes-1 {
+		t.Fatalf("buffered body len = %d, want %d", got, maxBufferedResponseBodyBytes-1)
+	}
+	if got := recorder.Body.Len(); got != len(first)+len(second) {
+		t.Fatalf("response body len = %d, want %d", got, len(first)+len(second))
 	}
 }
 

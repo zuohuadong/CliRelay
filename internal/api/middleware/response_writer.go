@@ -18,6 +18,8 @@ const requestBodyOverrideContextKey = "REQUEST_BODY_OVERRIDE"
 const responseBodyOverrideContextKey = "RESPONSE_BODY_OVERRIDE"
 const websocketTimelineOverrideContextKey = "WEBSOCKET_TIMELINE_OVERRIDE"
 
+const maxBufferedResponseBodyBytes = 2 * 1024 * 1024
+
 // RequestInfo holds essential details of an incoming HTTP request for logging purposes.
 type RequestInfo struct {
 	URL       string              // URL is the request URL.
@@ -93,7 +95,9 @@ func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
 	}
 
 	if w.shouldBufferResponseBody() {
-		w.body.Write(data)
+		if w.body.Len()+len(data) <= maxBufferedResponseBodyBytes {
+			w.body.Write(data)
+		}
 	}
 
 	return n, err
@@ -140,7 +144,9 @@ func (w *ResponseWriterWrapper) WriteString(data string) (int, error) {
 	}
 
 	if w.shouldBufferResponseBody() {
-		w.body.WriteString(data)
+		if w.body.Len()+len(data) <= maxBufferedResponseBodyBytes {
+			w.body.WriteString(data)
+		}
 	}
 	return n, err
 }

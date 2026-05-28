@@ -38,6 +38,8 @@ const (
 	APIWebsocketTimelineSourceContextKey = "API_WEBSOCKET_TIMELINE_SOURCE"
 )
 
+const maxBufferedResponseBodyBytes = 2 * 1024 * 1024
+
 type homeRequestLogClient interface {
 	HeartbeatOK() bool
 	RPushRequestLog(ctx context.Context, payload []byte) error
@@ -1945,7 +1947,9 @@ func (w *homeStreamingLogWriter) asyncWriter() {
 		if len(chunk) == 0 {
 			continue
 		}
-		_, _ = w.responseBody.Write(chunk)
+		if w.responseBody.Len()+len(chunk) <= maxBufferedResponseBodyBytes {
+			_, _ = w.responseBody.Write(chunk)
+		}
 	}
 }
 
@@ -2010,22 +2014,26 @@ func (w *homeStreamingLogWriter) SetFirstChunkTimestamp(timestamp time.Time) {
 	}
 }
 
+func (w *homeStreamingLogWriter) closeChunkWriter() {
+	if w == nil || w.chunkChan == nil {
+		return
+	}
+	close(w.chunkChan)
+	<-w.doneChan
+	w.chunkChan = nil
+}
+
 func (w *homeStreamingLogWriter) Close() error {
 	if w == nil {
 		return nil
 	}
 
+	w.closeChunkWriter()
+
 	client := currentHomeRequestLogClient()
 	if client == nil || !client.HeartbeatOK() {
 		return nil
 	}
-
-	if w.chunkChan != nil {
-		close(w.chunkChan)
-		<-w.doneChan
-		w.chunkChan = nil
-	}
-
 	responsePayload := w.responseBody.Bytes()
 
 	var buf bytes.Buffer

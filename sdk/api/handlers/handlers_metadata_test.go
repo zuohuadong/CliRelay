@@ -40,6 +40,7 @@ func TestSetReasoningEffortMetadataSupportsOpenAIResponses(t *testing.T) {
 	}
 }
 
+<<<<<<< HEAD
 func TestEnrichRequestExecutionMetadataMarksMCPTools(t *testing.T) {
 	meta := make(map[string]any)
 
@@ -127,5 +128,26 @@ func TestEnrichRequestExecutionMetadataKeepsXunfeiSupportedAutoTools(t *testing.
 		if slices.Contains(features, unexpected) {
 			t.Fatalf("features = %v, did not want %q", features, unexpected)
 		}
+=======
+func TestSetServiceTierMetadataExtractsValue(t *testing.T) {
+	meta := make(map[string]any)
+
+	setServiceTierMetadata(meta, []byte(`{"service_tier":"priority"}`))
+
+	gotServiceTier := meta[coreexecutor.ServiceTierMetadataKey]
+	if gotServiceTier != "priority" {
+		t.Fatalf("ServiceTierMetadataKey = %v, want %q", gotServiceTier, "priority")
+	}
+}
+
+func TestSetServiceTierMetadataDefaultsWhenMissing(t *testing.T) {
+	meta := make(map[string]any)
+
+	setServiceTierMetadata(meta, []byte(`{"model":"gpt-5.4"}`))
+
+	gotServiceTier := meta[coreexecutor.ServiceTierMetadataKey]
+	if gotServiceTier != "default" {
+		t.Fatalf("ServiceTierMetadataKey = %v, want %q", gotServiceTier, "default")
+>>>>>>> upstream/main
 	}
 }

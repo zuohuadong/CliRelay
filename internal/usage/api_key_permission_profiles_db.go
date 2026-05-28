@@ -49,6 +49,17 @@ func initAPIKeyPermissionProfilesTable(db *sql.DB) {
 	if _, err := db.Exec(createAPIKeyPermissionProfilesTableSQL); err != nil {
 		log.Errorf("usage: create api_key_permission_profiles table: %v", err)
 	}
+	migrateAPIKeyPermissionProfilesColumns(db)
+}
+
+func migrateAPIKeyPermissionProfilesColumns(db *sql.DB) {
+	var name string
+	err := db.QueryRow("SELECT name FROM pragma_table_info('api_key_permission_profiles') WHERE name='spending_limit'").Scan(&name)
+	if err != nil {
+		if _, alterErr := db.Exec("ALTER TABLE api_key_permission_profiles ADD COLUMN spending_limit real NOT NULL DEFAULT 0"); alterErr != nil {
+			log.Errorf("usage: migrate api_key_permission_profiles add spending_limit: %v", alterErr)
+		}
+	}
 }
 
 func ListAPIKeyPermissionProfiles() []APIKeyPermissionProfileRow {

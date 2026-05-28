@@ -239,19 +239,28 @@ func (h *Handler) GetAPIKeyPermissionProfiles(c *gin.Context) {
 }
 
 func (h *Handler) PutAPIKeyPermissionProfiles(c *gin.Context) {
-	var body struct {
-		Profiles []usage.APIKeyPermissionProfileRow `json:"api-key-permission-profiles"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
 		return
 	}
-	if err := usage.ReplaceAllAPIKeyPermissionProfiles(body.Profiles); err != nil {
+	var profiles []usage.APIKeyPermissionProfileRow
+	if err := json.Unmarshal(data, &profiles); err != nil {
+		var wrapped struct {
+			Profiles []usage.APIKeyPermissionProfileRow `json:"api-key-permission-profiles"`
+		}
+		if err2 := json.Unmarshal(data, &wrapped); err2 != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
+		}
+		profiles = wrapped.Profiles
+	}
+	if err := usage.ReplaceAllAPIKeyPermissionProfiles(profiles); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	h.refreshAccessProviders()
-	c.JSON(http.StatusOK, gin.H{"api-key-permission-profiles": body.Profiles})
+	c.JSON(http.StatusOK, gin.H{"api-key-permission-profiles": profiles})
 }
 
 func (h *Handler) GetRoutingConfig(c *gin.Context) {

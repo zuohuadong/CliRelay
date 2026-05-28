@@ -1315,76 +1315,6 @@
   ],
   "codex-free": [
     {
-      "id": "gpt-5.2",
-      "object": "model",
-      "created": 1765440000,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.2",
-      "version": "gpt-5.2",
-      "description": "Stable version of GPT 5.2",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.3-codex",
-      "object": "model",
-      "created": 1770307200,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.3 Codex",
-      "version": "gpt-5.3",
-      "description": "Stable version of GPT 5.3 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 600000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.4",
-      "object": "model",
-      "created": 1772668800,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.4",
-      "version": "gpt-5.4",
-      "description": "Stable version of GPT 5.4",
-      "context_length": 1050000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
       "id": "gpt-5.4-mini",
       "object": "model",
       "created": 1773705600,
@@ -1394,6 +1324,29 @@
       "version": "gpt-5.4-mini",
       "description": "GPT-5.4 mini brings the strengths of GPT-5.4 to a faster, more efficient model designed for high-volume workloads.",
       "context_length": 400000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.5",
+      "object": "model",
+      "created": 1776902400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.5",
+      "version": "gpt-5.5",
+      "description": "Frontier model for complex coding, research, and real-world work.",
+      "context_length": 272000,
       "max_completion_tokens": 128000,
       "supported_parameters": [
         "tools"
@@ -1465,7 +1418,7 @@
       "display_name": "GPT 5.3 Codex",
       "version": "gpt-5.3",
       "description": "Stable version of GPT 5.3 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 600000,
+      "context_length": 400000,
       "max_completion_tokens": 128000,
       "supported_parameters": [
         "tools"
@@ -1606,7 +1559,7 @@
       "display_name": "GPT 5.3 Codex",
       "version": "gpt-5.3",
       "description": "Stable version of GPT 5.3 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 600000,
+      "context_length": 400000,
       "max_completion_tokens": 128000,
       "supported_parameters": [
         "tools"
@@ -1770,7 +1723,7 @@
       "display_name": "GPT 5.3 Codex",
       "version": "gpt-5.3",
       "description": "Stable version of GPT 5.3 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 600000,
+      "context_length": 400000,
       "max_completion_tokens": 128000,
       "supported_parameters": [
         "tools"
@@ -2198,6 +2151,7 @@
         ]
       }
     }
+
   ],
   "xai": [
     {

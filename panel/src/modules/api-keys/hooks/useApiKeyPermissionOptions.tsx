@@ -9,6 +9,14 @@ import {
 } from "@/modules/api-keys/apiKeyPageUtils";
 import type { MultiSelectOption } from "@/modules/ui/MultiSelect";
 
+const firstNonEmpty = (...values: Array<string | undefined>): string => {
+  for (const value of values) {
+    const normalized = String(value ?? "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+};
+
 export function useApiKeyPermissionOptions() {
   const [availableModels, setAvailableModels] = useState<MultiSelectOption[]>([]);
   const [availableChannels, setAvailableChannels] = useState<MultiSelectOption[]>([]);
@@ -115,15 +123,29 @@ export function useApiKeyPermissionOptions() {
 
   const loadChannels = useCallback(async () => {
     try {
-      const [geminiKeys, claudeKeys, codexKeys, vertexKeys, openaiProviders, authFiles] =
-        await Promise.all([
-          providersApi.getGeminiKeys().catch(() => []),
-          providersApi.getClaudeConfigs().catch(() => []),
-          providersApi.getCodexConfigs().catch(() => []),
-          providersApi.getVertexConfigs().catch(() => []),
-          providersApi.getOpenAIProviders().catch(() => []),
-          authFilesApi.list().catch(() => ({ files: [] })),
-        ]);
+      const [
+        geminiKeys,
+        claudeKeys,
+        codexKeys,
+        vertexKeys,
+        bedrockKeys,
+        openCodeGoKeys,
+        openaiProviders,
+        bigModelCodingProviders,
+        astronCodeProviders,
+        authFiles,
+      ] = await Promise.all([
+        providersApi.getGeminiKeys().catch(() => []),
+        providersApi.getClaudeConfigs().catch(() => []),
+        providersApi.getCodexConfigs().catch(() => []),
+        providersApi.getVertexConfigs().catch(() => []),
+        providersApi.getBedrockConfigs().catch(() => []),
+        providersApi.getOpenCodeGoConfigs().catch(() => []),
+        providersApi.getOpenAIProviders().catch(() => []),
+        providersApi.getBigModelCodingProviders().catch(() => []),
+        providersApi.getAstronCodeProviders().catch(() => []),
+        authFilesApi.list().catch(() => ({ files: [] })),
+      ]);
 
       const seen = new Set<string>();
       const options: MultiSelectOption[] = [];
@@ -145,11 +167,31 @@ export function useApiKeyPermissionOptions() {
         });
       };
 
-      geminiKeys.forEach((item) => push(item.name || "", "API", "gemini"));
-      claudeKeys.forEach((item) => push(item.name || "", "API", "claude"));
-      codexKeys.forEach((item) => push(item.name || "", "API", "codex"));
-      vertexKeys.forEach((item) => push(item.name || "", "API", "vertex"));
-      openaiProviders.forEach((item) => push(item.name || "", "API", "openai"));
+      geminiKeys.forEach((item) =>
+        push(firstNonEmpty(item.name, item.prefix, "gemini"), "API", "gemini"),
+      );
+      claudeKeys.forEach((item) =>
+        push(firstNonEmpty(item.name, item.prefix, "claude"), "API", "claude"),
+      );
+      codexKeys.forEach((item) =>
+        push(firstNonEmpty(item.name, item.prefix, "codex"), "API", "codex"),
+      );
+      vertexKeys.forEach((item) =>
+        push(firstNonEmpty(item.name, item.prefix, "vertex"), "API", "vertex"),
+      );
+      bedrockKeys.forEach((item) => push(firstNonEmpty(item.name, item.prefix), "API", "bedrock"));
+      openCodeGoKeys.forEach((item) =>
+        push(firstNonEmpty(item.name, item.prefix), "API", "opencode-go"),
+      );
+      openaiProviders.forEach((item) =>
+        push(firstNonEmpty(item.name, item.prefix), "API", "openai"),
+      );
+      bigModelCodingProviders.forEach((item) =>
+        push(firstNonEmpty(item.name, item.prefix, "bigmodel-coding"), "API", "bigmodel-coding"),
+      );
+      astronCodeProviders.forEach((item) =>
+        push(firstNonEmpty(item.name, item.prefix, "astron-code"), "API", "astron-code"),
+      );
       (authFiles.files || []).forEach((file) => {
         if (
           String(file.account_type || "")

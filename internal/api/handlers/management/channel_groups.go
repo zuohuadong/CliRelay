@@ -67,16 +67,38 @@ func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []cha
 
 	if cfg != nil {
 		for _, entry := range cfg.GeminiKey {
-			push(entry.Prefix, entry.Prefix, "gemini", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("gemini", nil))
+			channelName := strings.TrimSpace(entry.Prefix)
+			if channelName == "" {
+				channelName = "gemini"
+			}
+			push(channelName, entry.Prefix, "gemini", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("gemini", nil))
 		}
 		for _, entry := range cfg.ClaudeKey {
-			push(entry.Prefix, entry.Prefix, "claude", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("claude", nil))
+			channelName := strings.TrimSpace(entry.Prefix)
+			if channelName == "" {
+				channelName = "claude"
+			}
+			push(channelName, entry.Prefix, "claude", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("claude", nil))
 		}
 		for _, entry := range cfg.CodexKey {
-			push(entry.Prefix, entry.Prefix, "codex", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("codex", nil))
+			channelName := strings.TrimSpace(entry.Prefix)
+			if channelName == "" {
+				channelName = "codex"
+			}
+			push(channelName, entry.Prefix, "codex", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("codex", nil))
+		}
+		for _, entry := range cfg.BedrockKey {
+			push(entry.Name, entry.Prefix, "bedrock", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("bedrock", nil))
+		}
+		for _, entry := range cfg.OpenCodeGoKey {
+			push(entry.Name, entry.Prefix, "opencode-go", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("opencode-go", nil))
 		}
 		for _, entry := range cfg.VertexCompatAPIKey {
-			push("", entry.Prefix, "vertex", false, channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("vertex", nil))
+			channelName := strings.TrimSpace(entry.Prefix)
+			if channelName == "" {
+				channelName = "vertex"
+			}
+			push(channelName, entry.Prefix, "vertex", false, channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("vertex", nil))
 		}
 		for _, entry := range cfg.OpenAICompatibility {
 			channelName := strings.TrimSpace(entry.Name)
@@ -84,6 +106,20 @@ func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []cha
 				channelName = entry.Prefix
 			}
 			push(channelName, entry.Prefix, "openai", entry.Disabled, channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("openai", nil))
+		}
+		for _, entry := range cfg.BigModelCodingAPIKey {
+			channelName := strings.TrimSpace(entry.Name)
+			if channelName == "" {
+				channelName = config.DefaultBigModelCodingProviderName
+			}
+			push(channelName, entry.Prefix, config.DefaultBigModelCodingProviderName, entry.Disabled, channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues(config.DefaultBigModelCodingProviderName, nil))
+		}
+		for _, entry := range cfg.AstronCodeAPIKey {
+			channelName := strings.TrimSpace(entry.Name)
+			if channelName == "" {
+				channelName = config.DefaultAstronCodeProviderName
+			}
+			push(channelName, entry.Prefix, config.DefaultAstronCodeProviderName, entry.Disabled, channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues(config.DefaultAstronCodeProviderName, nil))
 		}
 	}
 

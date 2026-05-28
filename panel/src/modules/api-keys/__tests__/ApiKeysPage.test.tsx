@@ -49,7 +49,11 @@ const mocks = vi.hoisted(() => ({
   getClaudeConfigs: vi.fn(async () => []),
   getCodexConfigs: vi.fn(async () => []),
   getVertexConfigs: vi.fn(async () => []),
+  getBedrockConfigs: vi.fn(async () => []),
+  getOpenCodeGoConfigs: vi.fn(async () => []),
   getOpenAIProviders: vi.fn(async () => []),
+  getBigModelCodingProviders: vi.fn(async () => []),
+  getAstronCodeProviders: vi.fn(async () => []),
   apiClientGet: vi.fn(async (url: string) => {
     if (url === "/api-key-permission-profiles") {
       return { "api-key-permission-profiles": state.permissionProfiles };
@@ -105,7 +109,11 @@ vi.mock("@/lib/http/apis", async (importOriginal) => {
       getClaudeConfigs: mocks.getClaudeConfigs,
       getCodexConfigs: mocks.getCodexConfigs,
       getVertexConfigs: mocks.getVertexConfigs,
+      getBedrockConfigs: mocks.getBedrockConfigs,
+      getOpenCodeGoConfigs: mocks.getOpenCodeGoConfigs,
       getOpenAIProviders: mocks.getOpenAIProviders,
+      getBigModelCodingProviders: mocks.getBigModelCodingProviders,
+      getAstronCodeProviders: mocks.getAstronCodeProviders,
     },
   };
 });
@@ -209,7 +217,11 @@ describe("ApiKeysPage", () => {
     mocks.getClaudeConfigs.mockClear();
     mocks.getCodexConfigs.mockClear();
     mocks.getVertexConfigs.mockClear();
+    mocks.getBedrockConfigs.mockClear();
+    mocks.getOpenCodeGoConfigs.mockClear();
     mocks.getOpenAIProviders.mockClear();
+    mocks.getBigModelCodingProviders.mockClear();
+    mocks.getAstronCodeProviders.mockClear();
     mocks.apiClientGet.mockClear();
   });
 

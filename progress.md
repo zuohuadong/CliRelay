@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-28 14:20:00 +0800] [CliRelay] [done] Fixed empty panel channel selection by aligning /channel-groups channel descriptors with known channel naming, exposing dedicated provider channels, adding API key permission fallback channel names, and verifying Go tests/build plus panel tests/build
 [2026-05-28 12:49:08 +0800] [CliRelay] [done] Reviewed OpenAI-compatible channel group fallback and scheduler import formatting changes; verified management tests, go test ./..., required server build, and git diff --check before commit/push
 [2026-05-28 11:48:33 +0800] [CliRelay] [done] Reviewed the remaining API key permission/provider panel changes, fixed masked key preservation, atomic concurrency limiting, request body restoration, allowed-channel auth selection wiring, and legacy api_keys table migration; verified targeted Go tests, go test ./..., required server build, and git diff --check
 [2026-05-28 11:30:50 +0800] [CliRelay] [done] Reviewed the local memory-guard patch, added 2 MiB response buffer caps for middleware and home streaming request logs, fixed home streaming writer cleanup so heartbeat drops do not leak chunk goroutines, and verified go test ./... plus the required server build

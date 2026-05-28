@@ -35,7 +35,11 @@ const mocks = vi.hoisted(() => ({
   getClaudeConfigs: vi.fn(async () => []),
   getCodexConfigs: vi.fn(async () => []),
   getVertexConfigs: vi.fn(async () => []),
+  getBedrockConfigs: vi.fn(async () => []),
+  getOpenCodeGoConfigs: vi.fn(async () => []),
   getOpenAIProviders: vi.fn(async () => []),
+  getBigModelCodingProviders: vi.fn(async () => []),
+  getAstronCodeProviders: vi.fn(async () => []),
   apiClientGet: vi.fn(async (url: string) => {
     if (url === "/api-key-permission-profiles") {
       return { "api-key-permission-profiles": state.permissionProfiles };
@@ -84,7 +88,11 @@ vi.mock("@/lib/http/apis", async (importOriginal) => {
       getClaudeConfigs: mocks.getClaudeConfigs,
       getCodexConfigs: mocks.getCodexConfigs,
       getVertexConfigs: mocks.getVertexConfigs,
+      getBedrockConfigs: mocks.getBedrockConfigs,
+      getOpenCodeGoConfigs: mocks.getOpenCodeGoConfigs,
       getOpenAIProviders: mocks.getOpenAIProviders,
+      getBigModelCodingProviders: mocks.getBigModelCodingProviders,
+      getAstronCodeProviders: mocks.getAstronCodeProviders,
     },
   };
 });
@@ -175,7 +183,11 @@ describe("ApiKeyPermissionsPage", () => {
     ] as any);
     mocks.getCodexConfigs.mockResolvedValue([]);
     mocks.getVertexConfigs.mockResolvedValue([]);
+    mocks.getBedrockConfigs.mockResolvedValue([]);
+    mocks.getOpenCodeGoConfigs.mockResolvedValue([]);
     mocks.getOpenAIProviders.mockResolvedValue([]);
+    mocks.getBigModelCodingProviders.mockResolvedValue([]);
+    mocks.getAstronCodeProviders.mockResolvedValue([]);
     mocks.apiClientGet.mockClear();
   });
 
@@ -225,6 +237,23 @@ describe("ApiKeyPermissionsPage", () => {
     });
     expect(mocks.fetchConfigYaml).not.toHaveBeenCalled();
     expect(mocks.saveConfigYaml).not.toHaveBeenCalled();
+  });
+
+  test("shows API key provider fallback names in the exact channel selector", async () => {
+    mocks.getGeminiKeys.mockResolvedValue([{ apiKey: "gemini-key" }] as any);
+    mocks.getBigModelCodingProviders.mockResolvedValue([{ name: "bigmodel-coding" }] as any);
+
+    renderPage();
+
+    expect(await screen.findByText("标准配置")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "新增配置" }));
+    const dialog = await screen.findByRole("dialog", { name: "新增权限配置" });
+
+    await userEvent.click(within(dialog).getByLabelText("精确渠道覆盖（高级）"));
+    await userEvent.click(within(dialog).getByRole("button", { name: "全部渠道" }));
+
+    expect(await screen.findByRole("button", { name: /gemini/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /bigmodel-coding/i })).toBeInTheDocument();
   });
 
   test("updates API keys that are explicitly or historically bound to an edited profile", async () => {
@@ -298,9 +327,7 @@ describe("ApiKeyPermissionsPage", () => {
         "system-prompt": "",
       },
     ];
-    mocks.apiKeyEntriesList
-      .mockResolvedValueOnce(staleEntries)
-      .mockResolvedValueOnce(freshEntries);
+    mocks.apiKeyEntriesList.mockResolvedValueOnce(staleEntries).mockResolvedValueOnce(freshEntries);
 
     renderPage();
 

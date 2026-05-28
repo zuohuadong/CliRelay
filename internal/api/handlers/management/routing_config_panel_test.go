@@ -108,3 +108,46 @@ func TestPanelRoutingConfigRejectsReservedPathRoute(t *testing.T) {
 		t.Fatalf("unexpected unrelated route detail in response: %s", rec.Body.String())
 	}
 }
+
+func TestChannelGroupsExposeConfiguredProviderChannels(t *testing.T) {
+	cfg := &config.Config{
+		Routing:            config.RoutingConfig{IncludeDefaultGroup: true},
+		GeminiKey:          []config.GeminiKey{{APIKey: "gemini-key"}},
+		ClaudeKey:          []config.ClaudeKey{{APIKey: "claude-key"}},
+		CodexKey:           []config.CodexKey{{APIKey: "codex-key"}},
+		VertexCompatAPIKey: []config.VertexCompatKey{{APIKey: "vertex-key"}},
+		BedrockKey:         []config.BedrockKey{{Name: "bedrock-team", APIKey: "bedrock-key", AuthMode: config.BedrockAuthModeAPIKey}},
+		OpenCodeGoKey:      []config.OpenCodeGoKey{{Name: "opencode-go-team", APIKey: "opencode-key"}},
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{Name: "qwen", BaseURL: "https://qwen.example.com/v1"},
+			{Prefix: "compat-prefix", BaseURL: "https://compat.example.com/v1"},
+		},
+		BigModelCodingAPIKey: []config.OpenAICompatibility{{BaseURL: config.DefaultBigModelCodingBaseURL}},
+		AstronCodeAPIKey:     []config.OpenAICompatibility{{BaseURL: config.DefaultAstronCodeBaseURL}},
+	}
+
+	items := buildChannelGroupItems(cfg, nil)
+	channels := make(map[string]struct{})
+	for _, item := range items {
+		for _, channel := range item.Channels {
+			channels[channel] = struct{}{}
+		}
+	}
+
+	for _, want := range []string{
+		"gemini",
+		"claude",
+		"codex",
+		"vertex",
+		"bedrock-team",
+		"opencode-go-team",
+		"qwen",
+		"compat-prefix",
+		config.DefaultBigModelCodingProviderName,
+		config.DefaultAstronCodeProviderName,
+	} {
+		if _, ok := channels[want]; !ok {
+			t.Fatalf("channel %q missing from channel groups: %#v", want, items)
+		}
+	}
+}

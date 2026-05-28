@@ -676,11 +676,15 @@ func (h *Handler) GetUsageEntityStats(c *gin.Context) {
 	defer func() { _ = db.Close() }()
 
 	filters := usageFiltersFromQuery(c)
-	whereSQL, args := filters.whereClause(db)
 	sourceSeen := make(map[string]bool)
 	sourceStats := make([]gin.H, 0)
 	cols := requestLogColumns(db)
-	rows, _ := db.Query("SELECT "+usageColumnExpr(cols, "source", "''")+", count(*), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"=0 then 1 else 0 end),0), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(avg("+usageColumnExpr(cols, "latency_ms", "0")+"),0) FROM request_logs WHERE "+whereSQL+" GROUP BY "+usageColumnExpr(cols, "source", "''")+" ORDER BY count(*) DESC LIMIT 100", args...)
+	sourceFilters := filters
+	if len(sourceFilters.Sources) > 0 {
+		sourceFilters.AuthIndexes = nil
+	}
+	sourceWhereSQL, sourceArgs := sourceFilters.whereClause(db)
+	rows, _ := db.Query("SELECT "+usageColumnExpr(cols, "source", "''")+", count(*), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"=0 then 1 else 0 end),0), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(avg("+usageColumnExpr(cols, "latency_ms", "0")+"),0) FROM request_logs WHERE "+sourceWhereSQL+" GROUP BY "+usageColumnExpr(cols, "source", "''")+" ORDER BY count(*) DESC LIMIT 100", sourceArgs...)
 	if rows != nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -697,7 +701,12 @@ func (h *Handler) GetUsageEntityStats(c *gin.Context) {
 	authIndexToAPIKey := h.buildAuthIndexToAPIKeyMap()
 
 	authStats := make([]gin.H, 0)
-	rows2, _ := db.Query("SELECT "+usageColumnExpr(cols, "auth_index", "''")+", count(*), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"=0 then 1 else 0 end),0), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(avg("+usageColumnExpr(cols, "latency_ms", "0")+"),0) FROM request_logs WHERE "+whereSQL+" GROUP BY "+usageColumnExpr(cols, "auth_index", "''")+" ORDER BY count(*) DESC LIMIT 100", args...)
+	authFilters := filters
+	if len(authFilters.AuthIndexes) > 0 {
+		authFilters.Sources = nil
+	}
+	authWhereSQL, authArgs := authFilters.whereClause(db)
+	rows2, _ := db.Query("SELECT "+usageColumnExpr(cols, "auth_index", "''")+", count(*), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"=0 then 1 else 0 end),0), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(avg("+usageColumnExpr(cols, "latency_ms", "0")+"),0) FROM request_logs WHERE "+authWhereSQL+" GROUP BY "+usageColumnExpr(cols, "auth_index", "''")+" ORDER BY count(*) DESC LIMIT 100", authArgs...)
 	if rows2 != nil {
 		defer rows2.Close()
 		for rows2.Next() {

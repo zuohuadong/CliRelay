@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-28 22:57:23 +0800] [CliRelay] [running] Fixing Auth Files usage-count stats returning zero by separating entity-stats auth_index and source scopes
 [2026-05-28 22:51:20 +0800] [CliRelay] [done] Fixed Models page availability filtering so BigModel Coding/Astron Code provider models participate in scoped model lists and aliased entries keep both alias and upstream names like glm-5.1; verified focused panel test, panel build, go test ./..., required server build, git diff --check, and hot-updated production static assets
 [2026-05-28 22:31:25 +0800] [CliRelay] [done] Added startup/deploy-safe management panel static sync from Docker-bundled panel assets so mounted data/static refreshes when the image panel changes; verified managementasset tests, focused channel-group panel tests, go test ./..., required server build, and git diff --check
 [2026-05-28 22:28:11 +0800] [CliRelay] [done] Fixed channel-group model list flickering by decoupling model loading from manual model selection changes, added regression coverage, verified focused panel tests/build, and hot-updated production management panel static assets

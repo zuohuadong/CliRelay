@@ -153,6 +153,45 @@ func TestUsageChartDataContract(t *testing.T) {
 	}
 }
 
+func TestUsageEntityStatsSeparatesAuthIndexAndSourceScopes(t *testing.T) {
+	h := newUsageContractTestHandler(t)
+
+	status, payload := performUsageContractRequest(t, http.MethodGet, "/v0/management/usage/entity-stats?days=7&auth_index=auth-a&source=missing-auth-file.json", nil, nil, h.GetUsageEntityStats)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+
+	authStats := payload["auth_index"].([]any)
+	if len(authStats) != 1 {
+		t.Fatalf("auth_index stats len = %d, want 1: %#v", len(authStats), authStats)
+	}
+	authPoint := authStats[0].(map[string]any)
+	if authPoint["entity_name"] != "auth-a" || authPoint["requests"].(float64) != 2 || authPoint["failed"].(float64) != 1 {
+		t.Fatalf("unexpected auth stats: %#v", authPoint)
+	}
+	sourceStats := payload["source"].([]any)
+	if len(sourceStats) != 0 {
+		t.Fatalf("source stats should honor only the source scope, got %#v", sourceStats)
+	}
+
+	status, payload = performUsageContractRequest(t, http.MethodGet, "/v0/management/usage/entity-stats?days=7&auth_index=missing-auth&source=codex", nil, nil, h.GetUsageEntityStats)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	sourceStats = payload["source"].([]any)
+	if len(sourceStats) != 1 {
+		t.Fatalf("source stats len = %d, want 1: %#v", len(sourceStats), sourceStats)
+	}
+	sourcePoint := sourceStats[0].(map[string]any)
+	if sourcePoint["entity_name"] != "codex" || sourcePoint["requests"].(float64) != 2 || sourcePoint["failed"].(float64) != 1 {
+		t.Fatalf("unexpected source stats: %#v", sourcePoint)
+	}
+	authStats = payload["auth_index"].([]any)
+	if len(authStats) != 0 {
+		t.Fatalf("auth_index stats should honor only the auth_index scope, got %#v", authStats)
+	}
+}
+
 func TestUsageLogsContractFiltersAndContentFlag(t *testing.T) {
 	h := newUsageContractTestHandler(t)
 

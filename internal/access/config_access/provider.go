@@ -2,47 +2,99 @@ package configaccess
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
-// Register ensures the config-access provider is available to the access manager.
 func Register(cfg *sdkconfig.SDKConfig) {
 	if cfg == nil {
 		sdkaccess.UnregisterProvider(sdkaccess.AccessProviderTypeConfigAPIKey)
 		return
 	}
 
-	keys := normalizeKeys(cfg.APIKeys)
-	if len(keys) == 0 {
+	keyConfigs := buildKeyConfigMap(cfg)
+	if len(keyConfigs) == 0 {
 		sdkaccess.UnregisterProvider(sdkaccess.AccessProviderTypeConfigAPIKey)
 		return
 	}
 
 	sdkaccess.RegisterProvider(
 		sdkaccess.AccessProviderTypeConfigAPIKey,
-		newProvider(sdkaccess.DefaultAccessProviderName, keys),
+		newProvider(sdkaccess.DefaultAccessProviderName, keyConfigs),
 	)
+}
+
+func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
+	result := make(map[string]keyConfig)
+
+	rows := usage.ListAPIKeys()
+	profiles := usage.ListAPIKeyPermissionProfiles()
+	for _, row := range rows {
+		row = usage.EffectiveAPIKeyRowWithProfiles(row, profiles)
+		trimmed := strings.TrimSpace(row.Key)
+		if trimmed == "" || row.Disabled {
+			continue
+		}
+		if _, exists := result[trimmed]; exists {
+			continue
+		}
+		result[trimmed] = keyConfig{
+			allowedModels:        row.AllowedModels,
+			allowedChannels:      row.AllowedChannels,
+			allowedChannelGroups: row.AllowedChannelGroups,
+			dailyLimit:           row.DailyLimit,
+			totalQuota:           row.TotalQuota,
+			spendingLimit:        row.SpendingLimit,
+			concurrencyLimit:     row.ConcurrencyLimit,
+			rpmLimit:             row.RPMLimit,
+			tpmLimit:             row.TPMLimit,
+			systemPrompt:         row.SystemPrompt,
+		}
+	}
+
+	for _, k := range cfg.APIKeys {
+		trimmed := strings.TrimSpace(k)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := result[trimmed]; exists {
+			continue
+		}
+		result[trimmed] = keyConfig{}
+	}
+
+	return result
+}
+
+type keyConfig struct {
+	allowedModels        []string
+	allowedChannels      []string
+	allowedChannelGroups []string
+	dailyLimit           int
+	totalQuota           int
+	spendingLimit        float64
+	concurrencyLimit     int
+	rpmLimit             int
+	tpmLimit             int
+	systemPrompt         string
 }
 
 type provider struct {
 	name string
-	keys map[string]struct{}
+	keys map[string]keyConfig
 }
 
-func newProvider(name string, keys []string) *provider {
+func newProvider(name string, keyConfigs map[string]keyConfig) *provider {
 	providerName := strings.TrimSpace(name)
 	if providerName == "" {
 		providerName = sdkaccess.DefaultAccessProviderName
 	}
-	keySet := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		keySet[key] = struct{}{}
-	}
-	return &provider{name: providerName, keys: keySet}
+	return &provider{name: providerName, keys: keyConfigs}
 }
 
 func (p *provider) Identifier() string {
@@ -59,6 +111,7 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 	if len(p.keys) == 0 {
 		return nil, sdkaccess.NewNotHandledError()
 	}
+
 	authHeader := r.Header.Get("Authorization")
 	authHeaderGoogle := r.Header.Get("X-Goog-Api-Key")
 	authHeaderAnthropic := r.Header.Get("X-Api-Key")
@@ -89,13 +142,44 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 		if candidate.value == "" {
 			continue
 		}
-		if _, ok := p.keys[candidate.value]; ok {
+		if kc, ok := p.keys[candidate.value]; ok {
+			metadata := map[string]string{
+				"source": candidate.source,
+			}
+			if len(kc.allowedModels) > 0 {
+				metadata["allowed-models"] = strings.Join(kc.allowedModels, ",")
+			}
+			if len(kc.allowedChannels) > 0 {
+				metadata["allowed-channels"] = strings.Join(kc.allowedChannels, ",")
+			}
+			if len(kc.allowedChannelGroups) > 0 {
+				metadata["allowed-channel-groups"] = strings.Join(kc.allowedChannelGroups, ",")
+			}
+			if kc.dailyLimit > 0 {
+				metadata["daily-limit"] = fmt.Sprintf("%d", kc.dailyLimit)
+			}
+			if kc.totalQuota > 0 {
+				metadata["total-quota"] = fmt.Sprintf("%d", kc.totalQuota)
+			}
+			if kc.concurrencyLimit > 0 {
+				metadata["concurrency-limit"] = fmt.Sprintf("%d", kc.concurrencyLimit)
+			}
+			if kc.rpmLimit > 0 {
+				metadata["rpm-limit"] = fmt.Sprintf("%d", kc.rpmLimit)
+			}
+			if kc.tpmLimit > 0 {
+				metadata["tpm-limit"] = fmt.Sprintf("%d", kc.tpmLimit)
+			}
+			if kc.spendingLimit > 0 {
+				metadata["spending-limit"] = fmt.Sprintf("%f", kc.spendingLimit)
+			}
+			if kc.systemPrompt != "" {
+				metadata["system-prompt"] = kc.systemPrompt
+			}
 			return &sdkaccess.Result{
 				Provider:  p.Identifier(),
 				Principal: candidate.value,
-				Metadata: map[string]string{
-					"source": candidate.source,
-				},
+				Metadata:  metadata,
 			}, nil
 		}
 	}
@@ -115,27 +199,4 @@ func extractBearerToken(header string) string {
 		return header
 	}
 	return strings.TrimSpace(parts[1])
-}
-
-func normalizeKeys(keys []string) []string {
-	if len(keys) == 0 {
-		return nil
-	}
-	normalized := make([]string, 0, len(keys))
-	seen := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		trimmedKey := strings.TrimSpace(key)
-		if trimmedKey == "" {
-			continue
-		}
-		if _, exists := seen[trimmedKey]; exists {
-			continue
-		}
-		seen[trimmedKey] = struct{}{}
-		normalized = append(normalized, trimmedKey)
-	}
-	if len(normalized) == 0 {
-		return nil
-	}
-	return normalized
 }

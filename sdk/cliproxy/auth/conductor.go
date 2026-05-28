@@ -3262,6 +3262,10 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	allowedChannels := allowedChannelsFromMetadata(opts.Metadata)
+	allowedGroups := allowedChannelGroupsFromMetadata(opts.Metadata)
+	routeGroup := routeGroupFromMetadata(opts.Metadata)
+	runtimeConfig, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
@@ -3309,7 +3313,16 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if _, ok := m.executors[providerKey]; !ok {
 			continue
 		}
-		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
+		if !authAllowedByChannels(candidate, allowedChannels) {
+			continue
+		}
+		if !authAllowedByGroups(runtimeConfig, candidate, allowedGroups) {
+			continue
+		}
+		if !authInRouteGroup(runtimeConfig, candidate, routeGroup) {
+			continue
+		}
+		if modelKey != "" && !candidateSupportsModel(runtimeConfig, registryRef, candidate, model, routeGroup, allowedGroups) {
 			continue
 		}
 		candidates = append(candidates, candidate)
@@ -3357,6 +3370,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	}
 
 	if !m.useSchedulerFastPath() {
+		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
+	}
+	if len(allowedChannelsFromMetadata(opts.Metadata)) > 0 || len(allowedChannelGroupsFromMetadata(opts.Metadata)) > 0 || routeGroupFromMetadata(opts.Metadata) != "" {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 

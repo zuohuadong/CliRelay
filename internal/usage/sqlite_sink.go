@@ -193,3 +193,10 @@ func nonEmpty(value, fallback string) string {
 	}
 	return value
 }
+
+func getDB() *sql.DB {
+	defaultSink.mu.Lock()
+	defer defaultSink.mu.Unlock()
+	db, _ := defaultSink.databaseLocked()
+	return db
+}

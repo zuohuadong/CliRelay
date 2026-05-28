@@ -54,6 +54,12 @@ func allowedChannelGroupsFromMetadata(meta map[string]any) map[string]struct{} {
 	return metadataStringSet(meta, "allowed-channel-groups", internalrouting.NormalizeGroupName)
 }
 
+func allowedChannelsFromMetadata(meta map[string]any) map[string]struct{} {
+	return metadataStringSet(meta, "allowed-channels", func(value string) string {
+		return strings.ToLower(strings.TrimSpace(value))
+	})
+}
+
 func routeGroupFromMetadata(meta map[string]any) string {
 	if len(meta) == 0 {
 		return ""

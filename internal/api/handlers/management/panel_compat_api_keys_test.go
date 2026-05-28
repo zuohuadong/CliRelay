@@ -75,3 +75,25 @@ func TestAPIKeyEntriesFromDBUsesUsageDBMetadata(t *testing.T) {
 		t.Fatalf("permission profile = %q", got.PermissionProfileID)
 	}
 }
+
+func TestPreserveMaskedAPIKeysUsesExistingSecrets(t *testing.T) {
+	existing := []panelAPIKeyEntry{
+		{Key: "sk-live-secret-123456", Name: "primary"},
+		{Key: "sk-other-secret-abcdef", Name: "secondary"},
+	}
+	incoming := []panelAPIKeyEntry{
+		{Key: maskAPIKey(existing[0].Key), Name: "renamed"},
+		{Key: "sk-new-secret", Name: "new"},
+	}
+
+	got := preserveMaskedAPIKeys(incoming, existing)
+	if got[0].Key != existing[0].Key {
+		t.Fatalf("masked key was not restored: %q", got[0].Key)
+	}
+	if got[0].Name != "renamed" {
+		t.Fatalf("entry metadata changed: %+v", got[0])
+	}
+	if got[1].Key != "sk-new-secret" {
+		t.Fatalf("new key changed: %q", got[1].Key)
+	}
+}

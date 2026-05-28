@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	_ "modernc.org/sqlite"
 )
@@ -103,15 +105,21 @@ func (h *Handler) updateState(updaterAvailable bool) gin.H {
 }
 
 func (h *Handler) GetAPIKeyEntries(c *gin.Context) {
-	if entries, ok := h.apiKeyEntriesFromDB(); ok {
-		c.JSON(http.StatusOK, gin.H{"api-key-entries": entries})
-		return
+	var entries []panelAPIKeyEntry
+	if dbEntries, ok := h.apiKeyEntriesFromDB(); ok {
+		entries = dbEntries
+	} else {
+		entries = make([]panelAPIKeyEntry, 0)
+		if h != nil && h.cfg != nil {
+			entries = entriesFromKeys(h.cfg.APIKeys)
+		}
 	}
-	entries := make([]panelAPIKeyEntry, 0)
-	if h != nil && h.cfg != nil {
-		entries = entriesFromKeys(h.cfg.APIKeys)
+	masked := make([]panelAPIKeyEntry, len(entries))
+	for i, e := range entries {
+		masked[i] = e
+		masked[i].Key = maskAPIKey(e.Key)
 	}
-	c.JSON(http.StatusOK, gin.H{"api-key-entries": entries})
+	c.JSON(http.StatusOK, gin.H{"api-key-entries": masked})
 }
 
 func (h *Handler) PutAPIKeyEntries(c *gin.Context) {
@@ -119,6 +127,8 @@ func (h *Handler) PutAPIKeyEntries(c *gin.Context) {
 	if !ok {
 		return
 	}
+	existing, _ := h.currentAPIKeyEntries()
+	entries = preserveMaskedAPIKeys(entries, existing)
 	keys := keysFromEntries(entries)
 	h.mu.Lock()
 	h.cfg.APIKeys = keys
@@ -128,6 +138,7 @@ func (h *Handler) PutAPIKeyEntries(c *gin.Context) {
 		return
 	}
 	h.persist(c)
+	h.refreshAccessProviders()
 }
 
 func (h *Handler) PatchAPIKeyEntries(c *gin.Context) {
@@ -141,10 +152,7 @@ func (h *Handler) PatchAPIKeyEntries(c *gin.Context) {
 		return
 	}
 
-	entries, dbOK := h.apiKeyEntriesFromDB()
-	if !dbOK && h != nil && h.cfg != nil {
-		entries = entriesFromKeys(h.cfg.APIKeys)
-	}
+	entries, dbOK := h.currentAPIKeyEntries()
 	idx := -1
 	if body.Index != nil {
 		idx = *body.Index
@@ -161,6 +169,11 @@ func (h *Handler) PatchAPIKeyEntries(c *gin.Context) {
 		return
 	}
 	key := strings.TrimSpace(body.Value.Key)
+	if key == "" || isMaskedAPIKey(key) {
+		if idx >= 0 && idx < len(entries) {
+			key = strings.TrimSpace(entries[idx].Key)
+		}
+	}
 	if key == "" {
 		key = strings.TrimSpace(body.Match)
 	}
@@ -181,13 +194,11 @@ func (h *Handler) PatchAPIKeyEntries(c *gin.Context) {
 		}
 	}
 	h.persist(c)
+	h.refreshAccessProviders()
 }
 
 func (h *Handler) DeleteAPIKeyEntries(c *gin.Context) {
-	entries, dbOK := h.apiKeyEntriesFromDB()
-	if !dbOK && h != nil && h.cfg != nil {
-		entries = entriesFromKeys(h.cfg.APIKeys)
-	}
+	entries, dbOK := h.currentAPIKeyEntries()
 	idx := -1
 	if raw := strings.TrimSpace(c.Query("index")); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil {
@@ -216,14 +227,31 @@ func (h *Handler) DeleteAPIKeyEntries(c *gin.Context) {
 		}
 	}
 	h.persist(c)
+	h.refreshAccessProviders()
 }
 
 func (h *Handler) GetAPIKeyPermissionProfiles(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"api-key-permission-profiles": []gin.H{}})
+	profiles := usage.ListAPIKeyPermissionProfiles()
+	if profiles == nil {
+		profiles = []usage.APIKeyPermissionProfileRow{}
+	}
+	c.JSON(http.StatusOK, gin.H{"api-key-permission-profiles": profiles})
 }
 
 func (h *Handler) PutAPIKeyPermissionProfiles(c *gin.Context) {
-	unsupportedPanelWrite(c, "api-key permission profiles are not available in this v7 build")
+	var body struct {
+		Profiles []usage.APIKeyPermissionProfileRow `json:"api-key-permission-profiles"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if err := usage.ReplaceAllAPIKeyPermissionProfiles(body.Profiles); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.refreshAccessProviders()
+	c.JSON(http.StatusOK, gin.H{"api-key-permission-profiles": body.Profiles})
 }
 
 func (h *Handler) GetRoutingConfig(c *gin.Context) {
@@ -394,27 +422,79 @@ func (h *Handler) PutCCSwitchImportConfigs(c *gin.Context) {
 }
 
 func (h *Handler) GetOpenCodeGoKeys(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"opencode-go-api-key": []gin.H{}})
+	h.mu.Lock()
+	items := append([]config.OpenCodeGoKey(nil), h.cfg.OpenCodeGoKey...)
+	h.mu.Unlock()
+	c.JSON(http.StatusOK, gin.H{"opencode-go-api-key": items})
 }
 
 func (h *Handler) PutOpenCodeGoKeys(c *gin.Context) {
-	unsupportedPanelWrite(c, "opencode-go provider is not available in this v7 build")
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+		return
+	}
+	var arr []config.OpenCodeGoKey
+	if err = json.Unmarshal(data, &arr); err != nil {
+		var obj struct {
+			Items []config.OpenCodeGoKey `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
+		}
+		arr = obj.Items
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.OpenCodeGoKey = append([]config.OpenCodeGoKey(nil), arr...)
+	h.cfg.SanitizeOpenCodeGoKeys()
+	h.persistLocked(c)
 }
 
 func (h *Handler) DeleteOpenCodeGoKey(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.OpenCodeGoKey = nil
+	h.persistLocked(c)
 }
 
 func (h *Handler) GetBedrockKeys(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"bedrock-api-key": []gin.H{}})
+	h.mu.Lock()
+	items := append([]config.BedrockKey(nil), h.cfg.BedrockKey...)
+	h.mu.Unlock()
+	c.JSON(http.StatusOK, gin.H{"bedrock-api-key": items})
 }
 
 func (h *Handler) PutBedrockKeys(c *gin.Context) {
-	unsupportedPanelWrite(c, "bedrock provider is not available in this v7 build")
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+		return
+	}
+	var arr []config.BedrockKey
+	if err = json.Unmarshal(data, &arr); err != nil {
+		var obj struct {
+			Items []config.BedrockKey `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
+		}
+		arr = obj.Items
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.BedrockKey = append([]config.BedrockKey(nil), arr...)
+	h.cfg.SanitizeBedrockKeys()
+	h.persistLocked(c)
 }
 
 func (h *Handler) DeleteBedrockKey(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.BedrockKey = nil
+	h.persistLocked(c)
 }
 
 func (h *Handler) GetIFlowKeys(c *gin.Context) {
@@ -1632,6 +1712,7 @@ func (h *Handler) apiKeyEntriesFromDB() ([]panelAPIKeyEntry, bool) {
 	if _, err := db.Exec("select 1 from api_keys limit 1"); err != nil {
 		return nil, false
 	}
+	usage.EnsureAPIKeysTable(db)
 	selectPermissionProfile := "''"
 	if apiKeysDBHasColumn(db, "permission_profile_id") {
 		selectPermissionProfile = "permission_profile_id"
@@ -1708,11 +1789,7 @@ func (h *Handler) replaceAPIKeyEntriesInDB(entries []panelAPIKeyEntry) error {
 	)`); err != nil {
 		return err
 	}
-	if !apiKeysDBHasColumn(db, "permission_profile_id") {
-		if _, err := db.Exec(`alter table api_keys add column permission_profile_id text not null default ''`); err != nil {
-			return err
-		}
-	}
+	usage.EnsureAPIKeysTable(db)
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -1947,4 +2024,59 @@ func firstNonEmpty(values ...string) string {
 
 func unsupportedPanelWrite(c *gin.Context, message string) {
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "unsupported", "message": message})
+}
+
+func (h *Handler) currentAPIKeyEntries() ([]panelAPIKeyEntry, bool) {
+	entries, dbOK := h.apiKeyEntriesFromDB()
+	if !dbOK && h != nil && h.cfg != nil {
+		entries = entriesFromKeys(h.cfg.APIKeys)
+	}
+	return entries, dbOK
+}
+
+func maskAPIKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	if len(key) <= 8 {
+		return "sk-***" + key[len(key)-3:]
+	}
+	return "sk-***" + key[len(key)-4:]
+}
+
+func isMaskedAPIKey(key string) bool {
+	return strings.HasPrefix(strings.TrimSpace(key), "sk-***")
+}
+
+func preserveMaskedAPIKeys(entries, existing []panelAPIKeyEntry) []panelAPIKeyEntry {
+	if len(entries) == 0 {
+		return entries
+	}
+	out := make([]panelAPIKeyEntry, len(entries))
+	copy(out, entries)
+	for i := range out {
+		key := strings.TrimSpace(out[i].Key)
+		if key == "" || !isMaskedAPIKey(key) {
+			continue
+		}
+		if i < len(existing) && maskAPIKey(existing[i].Key) == key {
+			out[i].Key = strings.TrimSpace(existing[i].Key)
+			continue
+		}
+		for _, candidate := range existing {
+			if maskAPIKey(candidate.Key) == key {
+				out[i].Key = strings.TrimSpace(candidate.Key)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func (h *Handler) refreshAccessProviders() {
+	if h == nil || h.cfg == nil {
+		return
+	}
+	configaccess.Register(&h.cfg.SDKConfig)
 }

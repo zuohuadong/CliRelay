@@ -27,6 +27,24 @@ func TestAllowedChannelGroupsFromMetadataParsesStringList(t *testing.T) {
 	}
 }
 
+func TestAllowedChannelsFromMetadataParsesStringList(t *testing.T) {
+	t.Parallel()
+
+	allowed := allowedChannelsFromMetadata(map[string]any{
+		"allowed-channels": " Codex,openai,,CODEX ",
+	})
+
+	if len(allowed) != 2 {
+		t.Fatalf("allowed channel count = %d, want 2", len(allowed))
+	}
+	if _, ok := allowed["codex"]; !ok {
+		t.Fatal("expected normalized channel codex")
+	}
+	if _, ok := allowed["openai"]; !ok {
+		t.Fatal("expected normalized channel openai")
+	}
+}
+
 func TestCanServeModelWithScopesSupportsAllowedGroupPrefixedModels(t *testing.T) {
 	t.Parallel()
 

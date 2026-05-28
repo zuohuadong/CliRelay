@@ -107,6 +107,30 @@ FROM request_logs
 	}
 }
 
+func TestEnsureAPIKeysTableMigratesLegacySchema(t *testing.T) {
+	db, errOpen := sql.Open("sqlite", filepath.Join(t.TempDir(), "usage.db"))
+	if errOpen != nil {
+		t.Fatalf("open db: %v", errOpen)
+	}
+	defer func() {
+		if errClose := db.Close(); errClose != nil {
+			t.Fatalf("close db: %v", errClose)
+		}
+	}()
+
+	if _, errExec := db.Exec(`create table api_keys (key text not null primary key, name text not null default '')`); errExec != nil {
+		t.Fatalf("create legacy api_keys table: %v", errExec)
+	}
+
+	EnsureAPIKeysTable(db)
+
+	for _, column := range []string{"daily_limit", "allowed_channel_groups", "system_prompt", "permission_profile_id"} {
+		if !apiKeysDBHasColumn(db, column) {
+			t.Fatalf("expected migrated column %s", column)
+		}
+	}
+}
+
 func TestSQLiteSinkIgnoresCanceledContextNoise(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data", "usage.db")
 	sink := &sqliteSink{}

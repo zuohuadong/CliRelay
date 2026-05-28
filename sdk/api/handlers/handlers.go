@@ -219,6 +219,20 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if requestPath != "" {
 		meta[coreexecutor.RequestPathMetadataKey] = requestPath
 	}
+	if ctx != nil {
+		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
+			if raw, exists := ginCtx.Get("accessMetadata"); exists {
+				if accessMetadata, ok := raw.(map[string]string); ok {
+					if allowedChannels := strings.TrimSpace(accessMetadata["allowed-channels"]); allowedChannels != "" {
+						meta["allowed-channels"] = allowedChannels
+					}
+					if allowedGroups := strings.TrimSpace(accessMetadata["allowed-channel-groups"]); allowedGroups != "" {
+						meta["allowed-channel-groups"] = allowedGroups
+					}
+				}
+			}
+		}
+	}
 	if pinnedAuthID := pinnedAuthIDFromContext(ctx); pinnedAuthID != "" {
 		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
 	}

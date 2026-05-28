@@ -134,11 +134,63 @@ func collectKnownChannelsWithPolicy(cfg *config.Config, auths []*coreauth.Auth, 
 				return nil, err
 			}
 		}
+		for _, entry := range cfg.BedrockKey {
+			if strings.TrimSpace(entry.GetAPIKey()) == "" {
+				continue
+			}
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Bedrock API key config", failOnConflict); err != nil {
+				return nil, err
+			}
+		}
+		for _, entry := range cfg.OpenCodeGoKey {
+			if strings.TrimSpace(entry.APIKey) == "" {
+				continue
+			}
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "OpenCode Go API key config", failOnConflict); err != nil {
+				return nil, err
+			}
+		}
 		for _, entry := range cfg.OpenAICompatibility {
 			if strings.TrimSpace(entry.BaseURL) == "" {
 				continue
 			}
 			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "OpenAI compatibility config", failOnConflict); err != nil {
+				return nil, err
+			}
+		}
+		for _, entry := range cfg.BigModelCodingAPIKey {
+			if strings.TrimSpace(entry.BaseURL) == "" {
+				continue
+			}
+			name := entry.Name
+			if name == "" {
+				name = "bigmodel-coding"
+			}
+			if err := addKnownChannelWithPolicy(known, name, name, "BigModel coding config", failOnConflict); err != nil {
+				return nil, err
+			}
+		}
+		for _, entry := range cfg.AstronCodeAPIKey {
+			if strings.TrimSpace(entry.BaseURL) == "" {
+				continue
+			}
+			name := entry.Name
+			if name == "" {
+				name = "astron-code"
+			}
+			if err := addKnownChannelWithPolicy(known, name, name, "Astron code config", failOnConflict); err != nil {
+				return nil, err
+			}
+		}
+		for _, entry := range cfg.VertexCompatAPIKey {
+			if strings.TrimSpace(entry.APIKey) == "" {
+				continue
+			}
+			name := entry.Prefix
+			if name == "" {
+				name = "vertex"
+			}
+			if err := addKnownChannelWithPolicy(known, name, name, "Vertex compat config", failOnConflict); err != nil {
 				return nil, err
 			}
 		}

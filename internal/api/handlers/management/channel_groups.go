@@ -454,5 +454,7 @@ func currentRoutingConfig(cfg *config.Config) config.RoutingConfig {
 	if cfg == nil {
 		return config.RoutingConfig{IncludeDefaultGroup: true}
 	}
-	return cfg.Routing
+	routingCfg := cfg.Routing
+	routingCfg.IncludeDefaultGroup = true
+	return routingCfg
 }

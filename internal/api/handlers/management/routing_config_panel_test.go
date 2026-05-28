@@ -111,7 +111,6 @@ func TestPanelRoutingConfigRejectsReservedPathRoute(t *testing.T) {
 
 func TestChannelGroupsExposeConfiguredProviderChannels(t *testing.T) {
 	cfg := &config.Config{
-		Routing:            config.RoutingConfig{IncludeDefaultGroup: true},
 		GeminiKey:          []config.GeminiKey{{APIKey: "gemini-key"}},
 		ClaudeKey:          []config.ClaudeKey{{APIKey: "claude-key"}},
 		CodexKey:           []config.CodexKey{{APIKey: "codex-key"}},

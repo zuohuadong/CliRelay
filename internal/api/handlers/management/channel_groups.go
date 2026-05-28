@@ -79,7 +79,11 @@ func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []cha
 			push("", entry.Prefix, "vertex", false, channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("vertex", nil))
 		}
 		for _, entry := range cfg.OpenAICompatibility {
-			push(entry.Name, entry.Prefix, "openai", entry.Disabled, channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("openai", nil))
+			channelName := strings.TrimSpace(entry.Name)
+			if channelName == "" {
+				channelName = entry.Prefix
+			}
+			push(channelName, entry.Prefix, "openai", entry.Disabled, channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("openai", nil))
 		}
 	}
 

@@ -24,10 +24,7 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
-<<<<<<< HEAD
 	log "github.com/sirupsen/logrus"
-=======
->>>>>>> upstream/main
 	"github.com/tidwall/gjson"
 	"golang.org/x/net/context"
 )

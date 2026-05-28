@@ -40,7 +40,6 @@ func TestSetReasoningEffortMetadataSupportsOpenAIResponses(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 func TestEnrichRequestExecutionMetadataMarksMCPTools(t *testing.T) {
 	meta := make(map[string]any)
 
@@ -128,7 +127,9 @@ func TestEnrichRequestExecutionMetadataKeepsXunfeiSupportedAutoTools(t *testing.
 		if slices.Contains(features, unexpected) {
 			t.Fatalf("features = %v, did not want %q", features, unexpected)
 		}
-=======
+	}
+}
+
 func TestSetServiceTierMetadataExtractsValue(t *testing.T) {
 	meta := make(map[string]any)
 
@@ -148,6 +149,5 @@ func TestSetServiceTierMetadataDefaultsWhenMissing(t *testing.T) {
 	gotServiceTier := meta[coreexecutor.ServiceTierMetadataKey]
 	if gotServiceTier != "default" {
 		t.Fatalf("ServiceTierMetadataKey = %v, want %q", gotServiceTier, "default")
->>>>>>> upstream/main
 	}
 }

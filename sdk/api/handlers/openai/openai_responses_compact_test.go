@@ -23,6 +23,7 @@ type compactCaptureExecutor struct {
 	alt          string
 	sourceFormat string
 	models       []string
+	calls        int
 	failures     map[string]error
 }
 
@@ -34,6 +35,7 @@ func (e *compactCaptureExecutor) Identifier() string {
 }
 
 func (e *compactCaptureExecutor) Execute(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
+	e.calls++
 	e.alt = opts.Alt
 	e.sourceFormat = opts.SourceFormat.String()
 	e.models = append(e.models, req.Model)

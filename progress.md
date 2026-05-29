@@ -7,6 +7,7 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-30 07:19:53 +0800] [CliRelay] [done] Fixed latest main image build by resolving websocket conflict markers and compact executor test counter; verified go test ./..., required server build, and git diff --check before deploying latest server image
 [2026-05-29 23:54:37 +0800] [CliRelay] [done] Expanded Auth Files type filters to include supported OAuth/auth-file providers plus dynamic file types, mapped filter-specific add-OAuth defaults, verified targeted Auth Files tests, panel build, and git diff --check
 [2026-05-28 22:57:23 +0800] [CliRelay] [running] Fixing Auth Files usage-count stats returning zero by separating entity-stats auth_index and source scopes
 [2026-05-28 22:51:20 +0800] [CliRelay] [done] Fixed Models page availability filtering so BigModel Coding/Astron Code provider models participate in scoped model lists and aliased entries keep both alias and upstream names like glm-5.1; verified focused panel test, panel build, go test ./..., required server build, git diff --check, and hot-updated production static assets

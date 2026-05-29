@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, type Dispatch, type SetStateAction } from "react";
 import type { AuthFileItem } from "@/lib/http/types";
 import {
+  AUTH_FILE_TYPE_FILTERS,
   AUTH_FILES_PAGE_SIZE,
   authFileMatchesStatusFilter,
   authFilesSortCollator,
@@ -38,7 +39,7 @@ export function useAuthFilesListState({
   setSelectedFileNames,
 }: UseAuthFilesListStateOptions) {
   const providerOptions = useMemo(() => {
-    const set = new Set<string>();
+    const set = new Set<string>(AUTH_FILE_TYPE_FILTERS);
     files.forEach((file) => set.add(resolveFileType(file)));
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [files]);

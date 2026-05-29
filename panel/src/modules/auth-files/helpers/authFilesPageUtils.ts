@@ -57,6 +57,17 @@ export type AuthFileStatusFilter =
   | "other-error"
   | "disabled";
 
+export const AUTH_FILE_TYPE_FILTERS = [
+  "codex",
+  "claude",
+  "antigravity",
+  "gemini-cli",
+  "kimi",
+  "qwen",
+  "iflow",
+  "vertex",
+];
+
 export const AUTH_FILE_STATUS_FILTERS: AuthFileStatusFilter[] = [
   "all",
   "http-429",
@@ -823,6 +834,20 @@ export const resolveFileType = (file: AuthFileItem): string => {
 export const resolveProviderLabel = (providerKey: string): string => {
   const normalized = normalizeProviderKey(providerKey);
   if (!normalized || normalized === "all") return "All";
+  const labels: Record<string, string> = {
+    aistudio: "AI Studio",
+    antigravity: "Antigravity",
+    claude: "Claude",
+    codex: "Codex",
+    gemini: "Gemini",
+    "gemini-cli": "Gemini CLI",
+    iflow: "iFlow",
+    kimi: "Kimi",
+    qwen: "Qwen",
+    vertex: "Vertex",
+    xai: "xAI",
+  };
+  if (labels[normalized]) return labels[normalized];
   return normalized.replace(
     /(^|-)([a-z])/g,
     (_, sep: string, ch: string) => `${sep}${ch.toUpperCase()}`,

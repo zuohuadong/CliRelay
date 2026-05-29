@@ -536,6 +536,18 @@ describe("Auth Files helper coverage", () => {
         "runtime.json",
       ]);
       expect(Array.from(result.current.selectedFileNameSet)).toEqual(["alpha.json"]);
+      expect(result.current.providerOptions).toEqual(
+        expect.arrayContaining([
+          "antigravity",
+          "claude",
+          "codex",
+          "gemini-cli",
+          "iflow",
+          "kimi",
+          "qwen",
+          "vertex",
+        ]),
+      );
       expect(result.current.filterCounts.counts.codex).toBe(3);
       expect(result.current.selectableFilteredFiles.map((file) => file.name)).toEqual([
         "alpha.json",

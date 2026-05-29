@@ -28,6 +28,8 @@ const (
 
 	apiWebsocketTimelineMaxBytes      = 1 << 20
 	apiWebsocketTimelineChunkMaxBytes = 64 << 10
+
+	apiResponseMaxBytes = 2 << 20
 )
 
 // UpstreamRequestLog captures the outbound upstream request details for logging.
@@ -47,6 +49,7 @@ type upstreamAttempt struct {
 	index                int
 	request              string
 	response             *strings.Builder
+	responseCapped       bool
 	responseIntroWritten bool
 	statusWritten        bool
 	headersWritten       bool
@@ -142,6 +145,10 @@ func RecordAPIResponseError(ctx context.Context, cfg *config.Config, err error) 
 	attempts, attempt := ensureAttempt(ginCtx)
 	ensureResponseIntro(attempt)
 
+	if attempt.responseCapped {
+		return
+	}
+
 	if attempt.bodyStarted && !attempt.bodyHasContent {
 		// Ensure body does not stay empty marker if error arrives first.
 		attempt.bodyStarted = false
@@ -171,6 +178,10 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 	attempts, attempt := ensureAttempt(ginCtx)
 	ensureResponseIntro(attempt)
 
+	if attempt.responseCapped {
+		return
+	}
+
 	if !attempt.headersWritten {
 		attempt.response.WriteString("Headers:\n")
 		writeHeaders(attempt.response, nil)
@@ -193,6 +204,10 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 	attempt.response.WriteString(string(data))
 	attempt.bodyHasContent = true
 	attempt.prevWasSSEEvent = currentChunkIsSSEEvent
+
+	if attempt.response.Len() >= apiResponseMaxBytes {
+		attempt.responseCapped = true
+	}
 
 	updateAggregatedResponse(ginCtx, attempts)
 }
@@ -382,9 +397,16 @@ func updateAggregatedRequest(ginCtx *gin.Context, attempts []*upstreamAttempt) {
 	}
 	var builder strings.Builder
 	for _, attempt := range attempts {
+		if builder.Len() >= apiResponseMaxBytes {
+			break
+		}
 		builder.WriteString(attempt.request)
 	}
-	ginCtx.Set(apiRequestKey, []byte(builder.String()))
+	data := []byte(builder.String())
+	if len(data) > apiResponseMaxBytes {
+		data = data[:apiResponseMaxBytes]
+	}
+	ginCtx.Set(apiRequestKey, data)
 }
 
 func updateAggregatedResponse(ginCtx *gin.Context, attempts []*upstreamAttempt) {
@@ -395,6 +417,9 @@ func updateAggregatedResponse(ginCtx *gin.Context, attempts []*upstreamAttempt) 
 	for idx, attempt := range attempts {
 		if attempt == nil || attempt.response == nil {
 			continue
+		}
+		if builder.Len() >= apiResponseMaxBytes {
+			break
 		}
 		responseText := attempt.response.String()
 		if responseText == "" {
@@ -408,7 +433,11 @@ func updateAggregatedResponse(ginCtx *gin.Context, attempts []*upstreamAttempt) 
 			builder.WriteString("\n")
 		}
 	}
-	ginCtx.Set(apiResponseKey, []byte(builder.String()))
+	data := []byte(builder.String())
+	if len(data) > apiResponseMaxBytes {
+		data = data[:apiResponseMaxBytes]
+	}
+	ginCtx.Set(apiResponseKey, data)
 }
 
 func appendAPIWebsocketTimeline(ginCtx *gin.Context, chunk []byte) {

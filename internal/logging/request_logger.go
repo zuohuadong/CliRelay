@@ -1677,35 +1677,30 @@ func (w *FileStreamingLogWriter) WriteAPIRequest(apiRequest []byte) error {
 	if len(apiRequest) == 0 {
 		return nil
 	}
+	if len(apiRequest) > maxBufferedResponseBodyBytes {
+		apiRequest = apiRequest[:maxBufferedResponseBodyBytes]
+	}
 	w.apiRequest = bytes.Clone(apiRequest)
 	return nil
 }
 
-// WriteAPIResponse buffers the upstream API response details for later writing.
-//
-// Parameters:
-//   - apiResponse: The API response data
-//
-// Returns:
-//   - error: Always returns nil (buffering cannot fail)
 func (w *FileStreamingLogWriter) WriteAPIResponse(apiResponse []byte) error {
 	if len(apiResponse) == 0 {
 		return nil
+	}
+	if len(apiResponse) > maxBufferedResponseBodyBytes {
+		apiResponse = apiResponse[:maxBufferedResponseBodyBytes]
 	}
 	w.apiResponse = bytes.Clone(apiResponse)
 	return nil
 }
 
-// WriteAPIWebsocketTimeline buffers the upstream websocket timeline for later writing.
-//
-// Parameters:
-//   - apiWebsocketTimeline: The upstream websocket event timeline
-//
-// Returns:
-//   - error: Always returns nil (buffering cannot fail)
 func (w *FileStreamingLogWriter) WriteAPIWebsocketTimeline(apiWebsocketTimeline []byte) error {
 	if len(apiWebsocketTimeline) == 0 {
 		return nil
+	}
+	if len(apiWebsocketTimeline) > maxBufferedResponseBodyBytes {
+		apiWebsocketTimeline = apiWebsocketTimeline[:maxBufferedResponseBodyBytes]
 	}
 	w.apiWebsocketTimeline = bytes.Clone(apiWebsocketTimeline)
 	return nil
@@ -1995,6 +1990,9 @@ func (w *homeStreamingLogWriter) WriteAPIRequest(apiRequest []byte) error {
 	if w == nil || len(apiRequest) == 0 {
 		return nil
 	}
+	if len(apiRequest) > maxBufferedResponseBodyBytes {
+		apiRequest = apiRequest[:maxBufferedResponseBodyBytes]
+	}
 	w.apiRequest = bytes.Clone(apiRequest)
 	return nil
 }
@@ -2003,6 +2001,9 @@ func (w *homeStreamingLogWriter) WriteAPIResponse(apiResponse []byte) error {
 	if w == nil || len(apiResponse) == 0 {
 		return nil
 	}
+	if len(apiResponse) > maxBufferedResponseBodyBytes {
+		apiResponse = apiResponse[:maxBufferedResponseBodyBytes]
+	}
 	w.apiResponse = bytes.Clone(apiResponse)
 	return nil
 }
@@ -2010,6 +2011,9 @@ func (w *homeStreamingLogWriter) WriteAPIResponse(apiResponse []byte) error {
 func (w *homeStreamingLogWriter) WriteAPIWebsocketTimeline(apiWebsocketTimeline []byte) error {
 	if w == nil || len(apiWebsocketTimeline) == 0 {
 		return nil
+	}
+	if len(apiWebsocketTimeline) > maxBufferedResponseBodyBytes {
+		apiWebsocketTimeline = apiWebsocketTimeline[:maxBufferedResponseBodyBytes]
 	}
 	w.apiWebsocketTime = bytes.Clone(apiWebsocketTimeline)
 	return nil

@@ -1,5 +1,6 @@
 # Binaries
 cli-proxy-api
+server
 *.exe
 
 # Configuration
@@ -47,6 +48,7 @@ GEMINI.md
 
 # Tooling metadata
 .vscode/*
+.omx/
 .worktrees/
 .codex/*
 .claude/*

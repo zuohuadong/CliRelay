@@ -750,6 +750,7 @@ const (
 	DefaultAstronCodeBaseURL      = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
 	DefaultAstronCodeModel        = "astron-code-latest"
 	DefaultAstronCodeAlias        = "gpt-5.3-codex"
+	DefaultAstronCodeGLMAlias     = DefaultBigModelCodingModel
 )
 
 // RequestPolicy defines a generic pre-execution policy for matching requests and channels.
@@ -1507,17 +1508,34 @@ func (cfg *Config) SanitizeAstronCode() {
 }
 
 func ensureAstronCodeModels(models []OpenAICompatibilityModel) []OpenAICompatibilityModel {
+	hasDefaultAlias := false
+	hasGLMAlias := false
 	for i := range models {
 		models[i].Name = strings.TrimSpace(models[i].Name)
 		models[i].Alias = strings.TrimSpace(models[i].Alias)
-		if models[i].Name == DefaultAstronCodeModel && models[i].Alias == DefaultAstronCodeAlias {
-			return models
+		if models[i].Name != DefaultAstronCodeModel {
+			continue
+		}
+		switch models[i].Alias {
+		case DefaultAstronCodeAlias:
+			hasDefaultAlias = true
+		case DefaultAstronCodeGLMAlias:
+			hasGLMAlias = true
 		}
 	}
-	return append(models, OpenAICompatibilityModel{
-		Name:  DefaultAstronCodeModel,
-		Alias: DefaultAstronCodeAlias,
-	})
+	if !hasDefaultAlias {
+		models = append(models, OpenAICompatibilityModel{
+			Name:  DefaultAstronCodeModel,
+			Alias: DefaultAstronCodeAlias,
+		})
+	}
+	if !hasGLMAlias {
+		models = append(models, OpenAICompatibilityModel{
+			Name:  DefaultAstronCodeModel,
+			Alias: DefaultAstronCodeGLMAlias,
+		})
+	}
+	return models
 }
 
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.

@@ -130,14 +130,38 @@ func TestSanitizeBigModelCodingAddsDefaults(t *testing.T) {
 	if entry.TestModel != DefaultBigModelCodingModel {
 		t.Fatalf("test-model = %q", entry.TestModel)
 	}
-	if !hasBigModelDefaultAlias(entry.Models) {
+	if !hasModelAlias(entry.Models, DefaultBigModelCodingModel, DefaultBigModelCodingAlias) {
 		t.Fatalf("missing default alias in %#v", entry.Models)
 	}
 }
 
-func hasBigModelDefaultAlias(models []OpenAICompatibilityModel) bool {
+func TestSanitizeAstronCodeAddsGLM51Alias(t *testing.T) {
+	cfg := &Config{AstronCodeAPIKey: []OpenAICompatibility{{APIKeyEntries: []OpenAICompatibilityAPIKey{{APIKey: "sk"}}}}}
+	cfg.SanitizeAstronCode()
+	if len(cfg.AstronCodeAPIKey) != 1 {
+		t.Fatalf("astron-code len = %d, want 1", len(cfg.AstronCodeAPIKey))
+	}
+	entry := cfg.AstronCodeAPIKey[0]
+	if entry.Name != DefaultAstronCodeProviderName {
+		t.Fatalf("name = %q", entry.Name)
+	}
+	if entry.BaseURL != DefaultAstronCodeBaseURL {
+		t.Fatalf("base-url = %q", entry.BaseURL)
+	}
+	if entry.TestModel != DefaultAstronCodeModel {
+		t.Fatalf("test-model = %q", entry.TestModel)
+	}
+	if !hasModelAlias(entry.Models, DefaultAstronCodeModel, DefaultAstronCodeAlias) {
+		t.Fatalf("missing default alias in %#v", entry.Models)
+	}
+	if !hasModelAlias(entry.Models, DefaultAstronCodeModel, DefaultAstronCodeGLMAlias) {
+		t.Fatalf("missing glm-5.1 alias in %#v", entry.Models)
+	}
+}
+
+func hasModelAlias(models []OpenAICompatibilityModel, name, alias string) bool {
 	for _, model := range models {
-		if model.Name == DefaultBigModelCodingModel && model.Alias == DefaultBigModelCodingAlias {
+		if model.Name == name && model.Alias == alias {
 			return true
 		}
 	}

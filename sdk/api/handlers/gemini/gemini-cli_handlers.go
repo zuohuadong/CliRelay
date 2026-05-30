@@ -143,6 +143,10 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 		}
 		c.Set("API_RESPONSE_TIMESTAMP", time.Now())
 		_, _ = c.Writer.Write(output)
+		const maxAPIResponseBytes = 2 << 20
+		if len(output) > maxAPIResponseBytes {
+			output = output[:maxAPIResponseBytes]
+		}
 		c.Set("API_RESPONSE", output)
 	}
 }

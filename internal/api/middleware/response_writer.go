@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -293,6 +294,8 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 		cleanupFileBodySources(websocketTimelineSource, apiWebsocketTimelineSource)
 		return nil
 	}
+
+	helps.FlushAggregatedResponse(c)
 
 	if w.isStreaming && w.streamWriter != nil {
 		if w.chunkChannel != nil {

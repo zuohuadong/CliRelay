@@ -461,17 +461,30 @@ func appendClaudeAPIResponse(c *gin.Context, data []byte) {
 	if _, exists := c.Get("API_RESPONSE_TIMESTAMP"); !exists {
 		c.Set("API_RESPONSE_TIMESTAMP", time.Now())
 	}
+
+	const maxAPIResponseBytes = 2 << 20
+
 	if existing, exists := c.Get("API_RESPONSE"); exists {
 		if existingBytes, ok := existing.([]byte); ok && len(existingBytes) > 0 {
+			if len(existingBytes) >= maxAPIResponseBytes {
+				return
+			}
 			combined := make([]byte, 0, len(existingBytes)+len(data)+1)
 			combined = append(combined, existingBytes...)
 			if existingBytes[len(existingBytes)-1] != '\n' {
 				combined = append(combined, '\n')
 			}
 			combined = append(combined, data...)
+			if len(combined) > maxAPIResponseBytes {
+				combined = combined[:maxAPIResponseBytes]
+			}
 			c.Set("API_RESPONSE", combined)
 			return
 		}
 	}
-	c.Set("API_RESPONSE", bytes.Clone(data))
+	cloned := bytes.Clone(data)
+	if len(cloned) > maxAPIResponseBytes {
+		cloned = cloned[:maxAPIResponseBytes]
+	}
+	c.Set("API_RESPONSE", cloned)
 }

@@ -175,10 +175,15 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 	if ginCtx == nil {
 		return
 	}
-	attempts, attempt := ensureAttempt(ginCtx)
+	_, attempt := ensureAttempt(ginCtx)
 	ensureResponseIntro(attempt)
 
 	if attempt.responseCapped {
+		return
+	}
+
+	if attempt.response.Len()+len(data) > apiResponseMaxBytes {
+		attempt.responseCapped = true
 		return
 	}
 
@@ -204,12 +209,6 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 	attempt.response.WriteString(string(data))
 	attempt.bodyHasContent = true
 	attempt.prevWasSSEEvent = currentChunkIsSSEEvent
-
-	if attempt.response.Len() >= apiResponseMaxBytes {
-		attempt.responseCapped = true
-	}
-
-	updateAggregatedResponse(ginCtx, attempts)
 }
 
 // RecordAPIWebsocketRequest stores an upstream websocket request event in Gin context.
@@ -389,6 +388,17 @@ func ensureResponseIntro(attempt *upstreamAttempt) {
 	attempt.response.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
 	attempt.response.WriteString("\n")
 	attempt.responseIntroWritten = true
+}
+
+func FlushAggregatedResponse(ginCtx *gin.Context) {
+	if ginCtx == nil {
+		return
+	}
+	attempts := getAttempts(ginCtx)
+	if len(attempts) == 0 {
+		return
+	}
+	updateAggregatedResponse(ginCtx, attempts)
 }
 
 func updateAggregatedRequest(ginCtx *gin.Context, attempts []*upstreamAttempt) {

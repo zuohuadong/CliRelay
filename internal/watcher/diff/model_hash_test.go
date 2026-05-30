@@ -36,6 +36,28 @@ func TestComputeOpenAICompatModelsHash_IncludesImageFlag(t *testing.T) {
 	}
 }
 
+func TestComputeOpenAICompatModelsHash_IncludesContextLength(t *testing.T) {
+	noLimit := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "gpt-4", Alias: "gpt4"}})
+	withLimit := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "gpt-4", Alias: "gpt4", ContextLength: 200000}})
+	if noLimit == "" || withLimit == "" {
+		t.Fatal("hashes should not be empty")
+	}
+	if noLimit == withLimit {
+		t.Fatal("hash should change when context-length changes")
+	}
+}
+
+func TestComputeOpenAICompatModelsHash_IncludesMaxCompletionTokens(t *testing.T) {
+	noLimit := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "gpt-4", Alias: "gpt4"}})
+	withLimit := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "gpt-4", Alias: "gpt4", MaxCompletionTokens: 16384}})
+	if noLimit == "" || withLimit == "" {
+		t.Fatal("hashes should not be empty")
+	}
+	if noLimit == withLimit {
+		t.Fatal("hash should change when max-completion-tokens changes")
+	}
+}
+
 func TestComputeOpenAICompatModelsHash_NormalizesAndDedups(t *testing.T) {
 	a := []config.OpenAICompatibilityModel{
 		{Name: "gpt-4", Alias: "gpt4"},

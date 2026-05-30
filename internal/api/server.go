@@ -191,6 +191,8 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
+
+	mcpProxyCounter atomic.Uint64
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -444,6 +446,18 @@ func (s *Server) setupRoutes() {
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
 		codexDirect.POST("/responses/compact", openaiResponsesHandlers.Compact)
+	}
+
+	mcp := s.engine.Group("/mcp")
+	mcp.Use(
+		AuthMiddleware(s.accessManager),
+		middleware.APIKeyConcurrencyMiddleware(),
+		middleware.APIKeyQuotaMiddleware(),
+		middleware.APIKeyRateLimitMiddleware(),
+	)
+	{
+		mcp.Any("/zai/:server", s.proxyZAIMCP)
+		mcp.Any("/zai/:server/*path", s.proxyZAIMCP)
 	}
 
 	// Gemini compatible API routes

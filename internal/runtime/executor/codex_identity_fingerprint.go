@@ -71,6 +71,36 @@ func applyCodexIdentityFingerprintHeaders(headers http.Header, fp config.CodexId
 	}
 }
 
+// ApplyCodexIdentityFingerprintHeaders applies the configured Codex identity
+// headers to non-executor HTTP requests that still need to resemble Codex.
+func ApplyCodexIdentityFingerprintHeaders(cfg *config.Config, headers http.Header, websocket bool) bool {
+	fp, ok := codexIdentityFingerprint(cfg)
+	if !ok {
+		return false
+	}
+	applyCodexIdentityFingerprintConfigHeaders(headers, fp, websocket)
+	return true
+}
+
+// ApplyDefaultCodexIdentityFingerprintHeaders applies the built-in Codex identity
+// template for dedicated compatibility surfaces that intentionally impersonate Codex.
+func ApplyDefaultCodexIdentityFingerprintHeaders(headers http.Header, websocket bool) {
+	fp := config.DefaultCodexIdentityFingerprint()
+	fp.Enabled = true
+	applyCodexIdentityFingerprintConfigHeaders(headers, fp, websocket)
+}
+
+func applyCodexIdentityFingerprintConfigHeaders(headers http.Header, fp config.CodexIdentityFingerprintConfig, websocket bool) {
+	if headers == nil {
+		return
+	}
+	fp = config.NormalizeCodexIdentityFingerprint(fp)
+	applyCodexIdentityFingerprintHeaders(headers, fp, websocket)
+	if strings.TrimSpace(fp.Originator) != "" {
+		headers.Set("Originator", fp.Originator)
+	}
+}
+
 func isCodexFingerprintRuntimeBlockedHeader(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "authorization", "content-type", "accept", "connection", "chatgpt-account-id",

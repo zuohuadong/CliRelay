@@ -7,6 +7,10 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-31 07:58:08 +0800] [CliRelay] [done] Updated Z.AI MCP proxy regression coverage to match live web_search_prime tool naming and search_query/search_result_count call arguments; verified focused internal/api MCP tests and git diff --check
+[2026-05-31 07:54:59 +0800] [CliRelay] [done] Verified on the production host with real Astron and Z.AI credentials plus Codex fingerprint headers: direct Astron chat returned 200, direct Z.AI MCP initialize/tools/call returned 200, and a temporary current-code relay instance successfully proxied Z.AI MCP before cleanup
+[2026-05-31 07:47:39 +0800] [CliRelay] [done] Added standalone Z.AI MCP route coverage and Astron-model-plus-Z.AI-MCP coexistence tests; verified focused MCP tests, go test ./..., required server build, and git diff --check
+[2026-05-31 07:38:36 +0800] [CliRelay] [done] Implemented CliRelay-hosted Z.AI MCP proxy endpoints with bigmodel-coding key selection, Codex identity fingerprint headers, targeted proxy tests, go test ./..., required server build, and git diff --check
 [2026-05-30 07:19:53 +0800] [CliRelay] [done] Fixed latest main image build by resolving websocket conflict markers and compact executor test counter; verified go test ./..., required server build, and git diff --check before deploying latest server image
 [2026-05-29 23:54:37 +0800] [CliRelay] [done] Expanded Auth Files type filters to include supported OAuth/auth-file providers plus dynamic file types, mapped filter-specific add-OAuth defaults, verified targeted Auth Files tests, panel build, and git diff --check
 [2026-05-28 22:57:23 +0800] [CliRelay] [running] Fixing Auth Files usage-count stats returning zero by separating entity-stats auth_index and source scopes

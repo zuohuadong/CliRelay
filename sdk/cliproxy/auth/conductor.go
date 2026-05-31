@@ -3169,7 +3169,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		upstreamModel = m.applyAPIKeyModelAlias(candidate, upstreamModel)
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, candidate, opts, model, provider, upstreamModel); blocked {
 			if policyErr != nil {
-				logEntryWithRequestID(ctx).Tracef("request policy skipped auth=%s provider=%s model=%s policy=%s reason=%s", candidate.ID, provider, model, policyErr.policy, policyErr.reason)
+				logEntryWithRequestID(ctx).Debugf("request policy skipped auth=%s provider=%s model=%s policy=%s reason=%s", candidate.ID, provider, model, policyErr.policy, policyErr.reason)
 				if policyErr.action == requestPolicyActionReject {
 					m.mu.RUnlock()
 					return nil, nil, policyErr
@@ -3361,7 +3361,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		upstreamModel = m.applyAPIKeyModelAlias(candidate, upstreamModel)
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, candidate, opts, model, providerKey, upstreamModel); blocked {
 			if policyErr != nil {
-				logEntryWithRequestID(ctx).Tracef("request policy skipped auth=%s provider=%s model=%s policy=%s reason=%s", candidate.ID, providerKey, model, policyErr.policy, policyErr.reason)
+				logEntryWithRequestID(ctx).Debugf("request policy skipped auth=%s provider=%s model=%s policy=%s reason=%s", candidate.ID, providerKey, model, policyErr.policy, policyErr.reason)
 				if policyErr.action == requestPolicyActionReject {
 					m.mu.RUnlock()
 					return nil, nil, "", policyErr
@@ -3490,7 +3490,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		upstreamModel = m.applyOAuthModelAlias(selected, upstreamModel)
 		upstreamModel = m.applyAPIKeyModelAlias(selected, upstreamModel)
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, selected, opts, model, providerKey, upstreamModel); blocked {
-			logEntryWithRequestID(ctx).Tracef("pickNextMixed: request-policy blocked auth=%s provider=%s upstreamModel=%s policy=%s reason=%s", selected.ID, providerKey, upstreamModel, policyErr.policy, policyErr.reason)
+			logEntryWithRequestID(ctx).Debugf("pickNextMixed: request-policy blocked auth=%s provider=%s upstreamModel=%s policy=%s reason=%s", selected.ID, providerKey, upstreamModel, policyErr.policy, policyErr.reason)
 			if policyErr != nil && policyErr.action == requestPolicyActionReject {
 				return nil, nil, "", policyErr
 			}

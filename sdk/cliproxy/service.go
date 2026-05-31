@@ -1198,12 +1198,15 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = registry.GetXAIModels()
 		models = applyExcludedModels(models, excluded)
 	case "bigmodel-coding":
+		log.Debugf("registerModelsForAuth: bigmodel-coding auth=%s, BigModelCodingAPIKey count=%d", a.ID, len(s.cfg.BigModelCodingAPIKey))
 		for i := range s.cfg.BigModelCodingAPIKey {
 			entry := &s.cfg.BigModelCodingAPIKey[i]
 			if entry.Disabled {
+				log.Debugf("registerModelsForAuth: bigmodel-coding entry[%d] is disabled", i)
 				continue
 			}
 			ms := buildOpenAICompatibilityConfigModels(entry)
+			log.Debugf("registerModelsForAuth: bigmodel-coding entry[%d] models count=%d, models=%v", i, len(ms), ms)
 			if len(ms) > 0 {
 				s.registerResolvedModelsForAuth(a, "bigmodel-coding", applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
 			} else {
@@ -1214,19 +1217,24 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
 	case "astron-code":
+		log.Debugf("registerModelsForAuth: astron-code auth=%s, AstronCodeAPIKey count=%d", a.ID, len(s.cfg.AstronCodeAPIKey))
 		for i := range s.cfg.AstronCodeAPIKey {
 			entry := &s.cfg.AstronCodeAPIKey[i]
 			if entry.Disabled {
+				log.Debugf("registerModelsForAuth: astron-code entry[%d] is disabled", i)
 				continue
 			}
 			ms := buildOpenAICompatibilityConfigModels(entry)
+			log.Debugf("registerModelsForAuth: astron-code entry[%d] models count=%d, models=%v", i, len(ms), ms)
 			if len(ms) > 0 {
 				s.registerResolvedModelsForAuth(a, "astron-code", applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
 			} else {
+				log.Warnf("registerModelsForAuth: astron-code entry[%d] has no models, unregistering auth=%s", i, a.ID)
 				GlobalModelRegistry().UnregisterClient(a.ID)
 			}
 			return
 		}
+		log.Warnf("registerModelsForAuth: no astron-code entry found for auth=%s, unregistering", a.ID)
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
 	default:

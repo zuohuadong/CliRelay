@@ -3,6 +3,7 @@ package management
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -106,20 +107,13 @@ func (h *Handler) updateState(updaterAvailable bool) gin.H {
 
 func (h *Handler) GetAPIKeyEntries(c *gin.Context) {
 	var entries []panelAPIKeyEntry
-	if dbEntries, ok := h.apiKeyEntriesFromDB(); ok {
-		entries = dbEntries
-	} else {
-		entries = make([]panelAPIKeyEntry, 0)
-		if h != nil && h.cfg != nil {
-			entries = entriesFromKeys(h.cfg.APIKeys)
-		}
+	if h != nil {
+		entries, _ = h.currentAPIKeyEntries()
 	}
-	masked := make([]panelAPIKeyEntry, len(entries))
-	for i, e := range entries {
-		masked[i] = e
-		masked[i].Key = maskAPIKey(e.Key)
+	if entries == nil {
+		entries = []panelAPIKeyEntry{}
 	}
-	c.JSON(http.StatusOK, gin.H{"api-key-entries": masked})
+	c.JSON(http.StatusOK, gin.H{"api-key-entries": entries})
 }
 
 func (h *Handler) PutAPIKeyEntries(c *gin.Context) {
@@ -129,6 +123,9 @@ func (h *Handler) PutAPIKeyEntries(c *gin.Context) {
 	}
 	existing, _ := h.currentAPIKeyEntries()
 	entries = preserveMaskedAPIKeys(entries, existing)
+	if rejectMaskedAPIKeyEntries(c, entries) {
+		return
+	}
 	keys := keysFromEntries(entries)
 	h.mu.Lock()
 	h.cfg.APIKeys = keys
@@ -185,6 +182,9 @@ func (h *Handler) PatchAPIKeyEntries(c *gin.Context) {
 	entries[idx] = body.Value
 	if entries[idx].CreatedAt == "" {
 		entries[idx].CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if rejectMaskedAPIKeyEntries(c, entries) {
+		return
 	}
 	h.updateConfigAPIKeys(keysFromEntries(entries))
 	if dbOK {
@@ -1786,6 +1786,9 @@ func (h *Handler) replaceAPIKeyEntriesInDB(entries []panelAPIKeyEntry) error {
 	if !ok {
 		return nil
 	}
+	if hasMaskedAPIKeyEntry(entries) {
+		return fmt.Errorf("masked api key entry cannot be persisted")
+	}
 	defer func() { _ = db.Close() }()
 	if _, err := db.Exec(`create table if not exists api_keys (
 		key text not null primary key,
@@ -2046,8 +2049,16 @@ func unsupportedPanelWrite(c *gin.Context, message string) {
 
 func (h *Handler) currentAPIKeyEntries() ([]panelAPIKeyEntry, bool) {
 	entries, dbOK := h.apiKeyEntriesFromDB()
-	if !dbOK && h != nil && h.cfg != nil {
-		entries = entriesFromKeys(h.cfg.APIKeys)
+	if h != nil && h.cfg != nil {
+		if dbOK {
+			repaired, changed := repairMaskedAPIKeyEntries(entries, h.cfg.APIKeys)
+			entries = repaired
+			if changed && !hasMaskedAPIKeyEntry(entries) {
+				_ = h.replaceAPIKeyEntriesInDB(entries)
+			}
+		} else {
+			entries = entriesFromKeys(h.cfg.APIKeys)
+		}
 	}
 	return entries, dbOK
 }
@@ -2065,6 +2076,25 @@ func maskAPIKey(key string) string {
 
 func isMaskedAPIKey(key string) bool {
 	return strings.HasPrefix(strings.TrimSpace(key), "sk-***")
+}
+
+func hasMaskedAPIKeyEntry(entries []panelAPIKeyEntry) bool {
+	for _, entry := range entries {
+		if isMaskedAPIKey(entry.Key) {
+			return true
+		}
+	}
+	return false
+}
+
+func rejectMaskedAPIKeyEntries(c *gin.Context, entries []panelAPIKeyEntry) bool {
+	if !hasMaskedAPIKeyEntry(entries) {
+		return false
+	}
+	c.JSON(http.StatusBadRequest, gin.H{
+		"error": "masked api key cannot be saved; reload the page or enter the full key",
+	})
+	return true
 }
 
 func preserveMaskedAPIKeys(entries, existing []panelAPIKeyEntry) []panelAPIKeyEntry {
@@ -2090,6 +2120,21 @@ func preserveMaskedAPIKeys(entries, existing []panelAPIKeyEntry) []panelAPIKeyEn
 		}
 	}
 	return out
+}
+
+func repairMaskedAPIKeyEntries(entries []panelAPIKeyEntry, configKeys []string) ([]panelAPIKeyEntry, bool) {
+	if len(entries) == 0 || len(configKeys) == 0 {
+		return entries, false
+	}
+	out := preserveMaskedAPIKeys(entries, entriesFromKeys(configKeys))
+	changed := false
+	for i := range entries {
+		if strings.TrimSpace(entries[i].Key) != strings.TrimSpace(out[i].Key) {
+			changed = true
+			break
+		}
+	}
+	return out, changed
 }
 
 func (h *Handler) refreshAccessProviders() {

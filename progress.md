@@ -7,6 +7,10 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-31 09:41:14 +0800] [CliRelay] [done] Fixed API key entry storage protection: management API now returns full keys to the authenticated panel, repairs matching masked SQLite rows from config keys, rejects unresolved sk-*** values before save, and passes focused management tests, go test ./..., required server build, and git diff --check
+[2026-05-31 09:37:51 +0800] [CliRelay] [running] Fixing API key entry persistence so management-panel masked values cannot be saved as real keys and existing masked DB rows can be repaired from config keys when possible
+[2026-05-31 08:06:48 +0800] [CliRelay] [done] Deployed GitHub-built image ghcr.io/zuohuadong/clirelay:main-4573ff0 to production, verified /healthz, runtime version 4573ff01, and live /mcp/zai/web-search-prime initialize/tools/call with real credentials
+[2026-05-31 08:00:09 +0800] [CliRelay] [running] Waiting for GitHub Actions image build for 4573ff01 and preparing production update to the latest MCP proxy build
 [2026-05-31 07:58:08 +0800] [CliRelay] [done] Updated Z.AI MCP proxy regression coverage to match live web_search_prime tool naming and search_query/search_result_count call arguments; verified focused internal/api MCP tests and git diff --check
 [2026-05-31 07:54:59 +0800] [CliRelay] [done] Verified on the production host with real Astron and Z.AI credentials plus Codex fingerprint headers: direct Astron chat returned 200, direct Z.AI MCP initialize/tools/call returned 200, and a temporary current-code relay instance successfully proxied Z.AI MCP before cleanup
 [2026-05-31 07:47:39 +0800] [CliRelay] [done] Added standalone Z.AI MCP route coverage and Astron-model-plus-Z.AI-MCP coexistence tests; verified focused MCP tests, go test ./..., required server build, and git diff --check

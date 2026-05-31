@@ -2,10 +2,15 @@ package management
 
 import (
 	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	_ "modernc.org/sqlite"
 )
@@ -96,4 +101,112 @@ func TestPreserveMaskedAPIKeysUsesExistingSecrets(t *testing.T) {
 	if got[1].Key != "sk-new-secret" {
 		t.Fatalf("new key changed: %q", got[1].Key)
 	}
+}
+
+func TestGetAPIKeyEntriesReturnsFullKeysAndRepairsMaskedDB(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data dir: %v", err)
+	}
+	dbPath := filepath.Join(dataDir, "usage.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	_, err = db.Exec(`create table api_keys (
+		key text not null primary key,
+		name text not null default '',
+		disabled integer not null default 0,
+		daily_limit integer not null default 0,
+		total_quota integer not null default 0,
+		spending_limit real not null default 0,
+		concurrency_limit integer not null default 0,
+		rpm_limit integer not null default 0,
+		tpm_limit integer not null default 0,
+		allowed_models text not null default '[]',
+		allowed_channels text not null default '[]',
+		allowed_channel_groups text not null default '[]',
+		system_prompt text not null default '',
+		created_at text not null default '',
+		updated_at text not null default '',
+		permission_profile_id text not null default ''
+	)`)
+	if err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	fullKey := "sk-live-secret-123456"
+	_, err = db.Exec(`insert into api_keys (key, name, created_at) values (?, ?, ?)`,
+		maskAPIKey(fullKey), "masked row", "2026-05-17T00:00:00Z")
+	if err != nil {
+		t.Fatalf("insert api key: %v", err)
+	}
+	h := &Handler{
+		cfg:            &config.Config{SDKConfig: config.SDKConfig{APIKeys: []string{fullKey}}},
+		configFilePath: filepath.Join(dir, "config.yaml"),
+	}
+
+	rec := runAPIKeyEntriesRequest(t, h, http.MethodGet, "", h.GetAPIKeyEntries)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Entries []panelAPIKeyEntry `json:"api-key-entries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Entries) != 1 || payload.Entries[0].Key != fullKey {
+		t.Fatalf("entries = %+v, want full key", payload.Entries)
+	}
+
+	var storedKey string
+	if err := db.QueryRow("select key from api_keys").Scan(&storedKey); err != nil {
+		t.Fatalf("query stored key: %v", err)
+	}
+	if storedKey != fullKey {
+		t.Fatalf("stored key = %q, want repaired full key", storedKey)
+	}
+}
+
+func TestPutAPIKeyEntriesRejectsUnresolvedMaskedKeys(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data dir: %v", err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, "usage.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`create table api_keys (key text not null primary key)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	h := &Handler{
+		cfg:            &config.Config{SDKConfig: config.SDKConfig{APIKeys: []string{"sk-real-secret-0000"}}},
+		configFilePath: filepath.Join(dir, "config.yaml"),
+	}
+
+	rec := runAPIKeyEntriesRequest(t, h, http.MethodPut, `[{"key":"sk-***hrt9","name":"bad"}]`, h.PutAPIKeyEntries)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if h.cfg.APIKeys[0] != "sk-real-secret-0000" {
+		t.Fatalf("config API keys changed: %#v", h.cfg.APIKeys)
+	}
+}
+
+func runAPIKeyEntriesRequest(t *testing.T, h *Handler, method, body string, fn func(*gin.Context)) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(method, "/v0/management/api-key-entries", strings.NewReader(body))
+	if body != "" {
+		ctx.Request.Header.Set("Content-Type", "application/json")
+	}
+	fn(ctx)
+	return rec
 }

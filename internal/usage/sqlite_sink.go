@@ -94,7 +94,8 @@ func (s *sqliteSink) HandleUsage(ctx context.Context, record coreusage.Record) {
 		totalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CachedTokens
 	}
 
-	_, errInsert := db.ExecContext(ctx, `
+	insertCtx := context.WithoutCancel(ctx)
+	_, errInsert := db.ExecContext(insertCtx, `
 INSERT INTO request_logs (
   timestamp, api_key, model, source, channel_name, auth_index, failed,
   latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens,

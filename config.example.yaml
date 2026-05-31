@@ -425,6 +425,7 @@ quota-exceeded:
 # Routing strategy for selecting credentials when multiple match.
 routing:
   strategy: "round-robin" # round-robin (default), fill-first
+<<<<<<< HEAD
   include-default-group: true
   # channel-groups:
   #   - name: "pro"
@@ -457,6 +458,24 @@ routing:
 #     name: "Team A"
 #     allowed-channel-groups: ["team-a", "pro"]
 #     allowed-channels: ["Team A Codex"]
+=======
+  # Enable universal session-sticky routing for all clients.
+  # Session IDs are extracted from: metadata.user_id (Claude Code session format),
+  # X-Session-ID, X-Amp-Thread-Id (Amp CLI),
+  # X-Client-Request-Id (PI), conversation_id, or first few messages hash.
+  # Automatic failover is always enabled when bound auth becomes unavailable.
+  session-affinity: false # default: false
+  # How long session-to-auth bindings are retained. Default: 1h
+  session-affinity-ttl: "1h"
+>>>>>>> upstream/main
+
+# Codex provider behavior.
+codex:
+  # When true, and routing.strategy is fill-first or routing.session-affinity is true,
+  # remap Codex prompt_cache_key and installation identity per selected auth.
+  # Some superstitious users believe request tracking identifiers can be used
+  # as evidence for TOS enforcement bans; this option only satisfies those odd concerns.
+  identity-confuse: false
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: true

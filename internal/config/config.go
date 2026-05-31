@@ -116,6 +116,9 @@ type Config struct {
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
 
+	// Codex configures provider-wide Codex request behavior.
+	Codex CodexConfig `yaml:"codex" json:"codex"`
+
 	// CodexHeaderDefaults configures fallback headers for Codex OAuth model requests.
 	// These are used only when the client does not send its own headers.
 	CodexHeaderDefaults CodexHeaderDefaults `yaml:"codex-header-defaults" json:"codex-header-defaults"`
@@ -211,6 +214,7 @@ type CodexHeaderDefaults struct {
 	BetaFeatures string `yaml:"beta-features" json:"beta-features"`
 }
 
+<<<<<<< HEAD
 const (
 	DefaultCodexFingerprintUserAgent     = "Codex Desktop/0.130.0-alpha.5 (Mac OS 26.4.1; arm64) unknown (Codex Desktop; 26.506.31421)"
 	DefaultCodexFingerprintVersion       = "0.130.0-alpha.5"
@@ -290,6 +294,11 @@ func DefaultClaudeIdentityFingerprint() ClaudeIdentityFingerprintConfig {
 		SessionMode:             DefaultClaudeFingerprintSessionMode,
 		CustomHeaders:           map[string]string{},
 	}
+=======
+// CodexConfig configures provider-wide Codex request behavior.
+type CodexConfig struct {
+	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
+>>>>>>> upstream/main
 }
 
 // TLSConfig holds HTTPS server settings.
@@ -339,7 +348,20 @@ type QuotaExceeded struct {
 type RoutingConfig struct {
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
+<<<<<<< HEAD
 	SessionAffinity    bool   `yaml:"session-affinity,omitempty" json:"session-affinity,omitempty"`
+=======
+	// SessionAffinity enables universal session-sticky routing for all clients.
+	// Session IDs are extracted from multiple sources:
+	// metadata.user_id (Claude Code session format), X-Session-ID,
+	// X-Amp-Thread-Id (Amp CLI thread), X-Client-Request-Id (PI), metadata.user_id,
+	// conversation_id, or message hash.
+	// Automatic failover is always enabled when bound auth becomes unavailable.
+	SessionAffinity bool `yaml:"session-affinity,omitempty" json:"session-affinity,omitempty"`
+
+	// SessionAffinityTTL specifies how long session-to-auth bindings are retained.
+	// Default: 1h. Accepts duration strings like "30m", "1h", "2h30m".
+>>>>>>> upstream/main
 	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
 
 	IncludeDefaultGroup bool                  `yaml:"include-default-group,omitempty" json:"include-default-group,omitempty"`

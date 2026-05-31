@@ -447,6 +447,58 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			lastResponseOutput = completedOutput
 			break
 		}
+<<<<<<< HEAD
+=======
+
+		requestJSON = repairResponsesWebsocketToolCalls(downstreamSessionKey, requestJSON)
+		requestJSON = dedupeResponsesWebsocketInputItemsByID(requestJSON)
+		updatedLastRequest = bytes.Clone(requestJSON)
+		previousLastRequest := bytes.Clone(lastRequest)
+		previousLastResponseOutput := bytes.Clone(lastResponseOutput)
+		forcedTranscriptReplay := forceTranscriptReplayNextRequest
+		lastRequest = updatedLastRequest
+		if forcedTranscriptReplay {
+			forceTranscriptReplayNextRequest = false
+		}
+
+		modelName := gjson.GetBytes(requestJSON, "model").String()
+		cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+		cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
+		cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
+		if pinnedAuthID != "" {
+			cliCtx = handlers.WithPinnedAuthID(cliCtx, pinnedAuthID)
+		} else {
+			cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
+				authID = strings.TrimSpace(authID)
+				if authID == "" || h == nil || h.AuthManager == nil {
+					return
+				}
+				selectedAuth, ok := sessionAuthByID(authID)
+				if !ok || selectedAuth == nil {
+					return
+				}
+				if websocketUpstreamSupportsIncrementalInput(selectedAuth.Attributes, selectedAuth.Metadata) {
+					pinnedAuthID = authID
+				}
+			})
+		}
+		dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
+
+		completedOutput, forwardErrMsg, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, wsTimelineLog, passthroughSessionID)
+		if errForward != nil {
+			wsTerminateErr = errForward
+			log.Warnf("responses websocket: forward failed id=%s error=%v", passthroughSessionID, errForward)
+			return
+		}
+		if shouldReleaseResponsesWebsocketPinnedAuth(forwardErrMsg) {
+			pinnedAuthID = ""
+			forceTranscriptReplayNextRequest = true
+			lastRequest = previousLastRequest
+			lastResponseOutput = previousLastResponseOutput
+			continue
+		}
+		lastResponseOutput = completedOutput
+>>>>>>> upstream/main
 	}
 }
 

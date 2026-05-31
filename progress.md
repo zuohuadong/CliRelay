@@ -7,6 +7,8 @@
 ---
 
 <!-- Agent 工作记录按时间倒序排列 -->
+[2026-05-31 09:58:37 +0800] [CliRelay] [done] Fixed dashboard request throughput trend undefined x-axis labels by adding backend label fields for daily/hourly usage trends and frontend date/hour fallbacks; verified focused dashboard tests, TypeScript check, go test ./..., panel build, required server build, and git diff --check
+[2026-05-31 09:55:27 +0800] [CliRelay] [running] Fixing dashboard request throughput trend axis labels showing undefined by aligning throughput series label contracts across backend and panel chart rendering
 [2026-05-31 09:41:14 +0800] [CliRelay] [done] Fixed API key entry storage protection: management API now returns full keys to the authenticated panel, repairs matching masked SQLite rows from config keys, rejects unresolved sk-*** values before save, and passes focused management tests, go test ./..., required server build, and git diff --check
 [2026-05-31 09:37:51 +0800] [CliRelay] [running] Fixing API key entry persistence so management-panel masked values cannot be saved as real keys and existing masked DB rows can be repaired from config keys when possible
 [2026-05-31 08:06:48 +0800] [CliRelay] [done] Deployed GitHub-built image ghcr.io/zuohuadong/clirelay:main-4573ff0 to production, verified /healthz, runtime version 4573ff01, and live /mcp/zai/web-search-prime initialize/tools/call with real credentials

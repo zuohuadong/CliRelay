@@ -292,6 +292,14 @@ func TestDashboardSummaryUsesUsageAggregation(t *testing.T) {
 	if len(trends["request_volume"].([]any)) != 2 || len(trends["throughput_series"].([]any)) != 2 {
 		t.Fatalf("unexpected dashboard trends: %#v", trends)
 	}
+	requestPoint := trends["request_volume"].([]any)[0].(map[string]any)
+	if requestPoint["label"] == "" || requestPoint["label"] != requestPoint["date"] {
+		t.Fatalf("request trend label mismatch: %#v", requestPoint)
+	}
+	throughputPoint := trends["throughput_series"].([]any)[0].(map[string]any)
+	if throughputPoint["label"] == "" || throughputPoint["label"] != throughputPoint["hour"] {
+		t.Fatalf("throughput trend label mismatch: %#v", throughputPoint)
+	}
 }
 
 func TestPublicUsageSummaryContract(t *testing.T) {

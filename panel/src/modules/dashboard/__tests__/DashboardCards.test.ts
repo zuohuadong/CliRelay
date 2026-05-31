@@ -36,6 +36,8 @@ describe("dashboard card composition", () => {
     expect(source).toContain("maximumFractionDigits: 2");
     expect(source).toContain("formatThroughputTooltip");
     expect(source).toContain("formatter: formatThroughputTooltip");
+    expect(source).toContain("resolveThroughputLabel");
+    expect(source).toContain("point.label ?? point.hour ??");
   });
 
   test("uses the shared Card component for system monitor panels", () => {

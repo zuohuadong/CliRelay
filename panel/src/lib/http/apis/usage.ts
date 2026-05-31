@@ -369,12 +369,14 @@ export interface DashboardSummary {
 }
 
 export interface DashboardTrendPoint {
-  label: string;
+  label?: string;
+  date?: string;
   value: number;
 }
 
 export interface DashboardThroughputPoint {
-  label: string;
+  label?: string;
+  hour?: string;
   rpm: number;
   tpm: number;
 }

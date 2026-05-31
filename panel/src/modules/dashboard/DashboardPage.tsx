@@ -62,8 +62,12 @@ const formatThroughputTooltip = (params: any) => {
   return [title, ...lines].join("<br/>");
 };
 
+const resolveTrendLabel = (point: DashboardTrendPoint) => point.label ?? point.date ?? "";
+const resolveThroughputLabel = (point: DashboardThroughputPoint) =>
+  point.label ?? point.hour ?? "";
+
 function createSparklineOption(points: DashboardTrendPoint[], color: string): ECBasicOption {
-  const labels = points.map((point) => point.label);
+  const labels = points.map(resolveTrendLabel);
   const values = points.map((point) => point.value);
 
   return {
@@ -123,7 +127,7 @@ function createThroughputOption(
   showRPM: boolean,
   showTPM: boolean,
 ): ECBasicOption {
-  const labels = points.map((point) => point.label);
+  const labels = points.map(resolveThroughputLabel);
   const rpmValues = points.map((point) => point.rpm);
   const tpmValues = points.map((point) => point.tpm);
 

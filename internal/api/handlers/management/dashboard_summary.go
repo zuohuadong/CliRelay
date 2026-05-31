@@ -77,11 +77,12 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 			if requests > 0 {
 				successRate = float64(requests-failed) / float64(requests) * 100
 			}
-			requestVolume = append(requestVolume, gin.H{"date": point["date"], "value": requests, "requests": requests})
-			successRateTrend = append(successRateTrend, gin.H{"date": point["date"], "value": successRate, "success_rate": successRate})
-			totalTokensTrend = append(totalTokensTrend, gin.H{"date": point["date"], "value": point["total_tokens"], "total_tokens": point["total_tokens"]})
-			totalCostTrend = append(totalCostTrend, gin.H{"date": point["date"], "value": point["total_cost"], "total_cost": point["total_cost"]})
-			failedRequestsTrend = append(failedRequestsTrend, gin.H{"date": point["date"], "value": failed, "failed_requests": failed})
+			label := point["date"]
+			requestVolume = append(requestVolume, gin.H{"date": label, "label": label, "value": requests, "requests": requests})
+			successRateTrend = append(successRateTrend, gin.H{"date": label, "label": label, "value": successRate, "success_rate": successRate})
+			totalTokensTrend = append(totalTokensTrend, gin.H{"date": label, "label": label, "value": point["total_tokens"], "total_tokens": point["total_tokens"]})
+			totalCostTrend = append(totalCostTrend, gin.H{"date": label, "label": label, "value": point["total_cost"], "total_cost": point["total_cost"]})
+			failedRequestsTrend = append(failedRequestsTrend, gin.H{"date": label, "label": label, "value": failed, "failed_requests": failed})
 		}
 		throughputSeries = queryUsageHourlyThroughput(db, filters)
 	}

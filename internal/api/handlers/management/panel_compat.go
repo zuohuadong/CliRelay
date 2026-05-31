@@ -1280,7 +1280,7 @@ func queryUsageHourlyThroughput(db *sql.DB, filters usageFilters) []gin.H {
 		var hour string
 		var requests, tokens int64
 		if rows.Scan(&hour, &requests, &tokens) == nil {
-			out = append(out, gin.H{"hour": hour, "requests": requests, "rpm": float64(requests) / 60, "total_tokens": tokens, "tpm": float64(tokens) / 60})
+			out = append(out, gin.H{"hour": hour, "label": hour, "requests": requests, "rpm": float64(requests) / 60, "total_tokens": tokens, "tpm": float64(tokens) / 60})
 		}
 	}
 	return out

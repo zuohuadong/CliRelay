@@ -84,7 +84,7 @@ func TestEnrichRequestExecutionMetadataMarksRequiredAndXunfeiUnsupportedTools(t 
 	}
 }
 
-func TestEnrichRequestExecutionMetadataMarksForcedFunctionToolChoice(t *testing.T) {
+func TestEnrichRequestExecutionMetadataAllowsForcedFunctionToolChoiceForAstron(t *testing.T) {
 	meta := make(map[string]any)
 
 	enrichRequestExecutionMetadata(meta, []byte(`{
@@ -98,8 +98,8 @@ func TestEnrichRequestExecutionMetadataMarksForcedFunctionToolChoice(t *testing.
 	if !ok {
 		t.Fatalf("RequestFeaturesMetadataKey = %#v, want []string", meta[coreexecutor.RequestFeaturesMetadataKey])
 	}
-	if !slices.Contains(features, "required-tools") {
-		t.Fatalf("features = %v, want required-tools", features)
+	if slices.Contains(features, "required-tools") {
+		t.Fatalf("features = %v, did not want required-tools", features)
 	}
 }
 

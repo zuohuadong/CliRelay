@@ -336,9 +336,6 @@ func hasRequiredToolChoice(rawJSON []byte) bool {
 	if toolChoice.Type == gjson.String {
 		return strings.EqualFold(strings.TrimSpace(toolChoice.String()), "required")
 	}
-	if toolChoice.IsObject() {
-		return strings.EqualFold(strings.TrimSpace(toolChoice.Get("type").String()), "function")
-	}
 	return false
 }
 

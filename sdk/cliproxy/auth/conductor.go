@@ -3111,7 +3111,15 @@ func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) boo
 	if auth == nil || strings.TrimSpace(routeModel) == "" {
 		return false
 	}
-	return m.selectionModelKeyForAuth(auth, routeModel) != canonicalModelKey(routeModel)
+	if m.selectionModelKeyForAuth(auth, routeModel) != canonicalModelKey(routeModel) {
+		return true
+	}
+	requestedModel := rewriteModelForAuth(routeModel, auth)
+	if strings.TrimSpace(requestedModel) == "" {
+		requestedModel = strings.TrimSpace(routeModel)
+	}
+	apiKeyModel := m.applyAPIKeyModelAlias(auth, requestedModel)
+	return canonicalModelKey(apiKeyModel) != canonicalModelKey(requestedModel)
 }
 
 func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
@@ -3346,6 +3354,19 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 			continue
 		}
 		if modelKey != "" && !candidateSupportsModel(runtimeConfig, registryRef, candidate, model, routeGroup, allowedGroups) {
+			continue
+		}
+		upstreamModel := rewriteModelForAuth(model, candidate)
+		upstreamModel = m.applyOAuthModelAlias(candidate, upstreamModel)
+		upstreamModel = m.applyAPIKeyModelAlias(candidate, upstreamModel)
+		if blocked, policyErr := requestPolicyDecision(runtimeConfig, candidate, opts, model, providerKey, upstreamModel); blocked {
+			if policyErr != nil {
+				logEntryWithRequestID(ctx).Tracef("request policy skipped auth=%s provider=%s model=%s policy=%s reason=%s", candidate.ID, providerKey, model, policyErr.policy, policyErr.reason)
+				if policyErr.action == requestPolicyActionReject {
+					m.mu.RUnlock()
+					return nil, nil, "", policyErr
+				}
+			}
 			continue
 		}
 		candidates = append(candidates, candidate)

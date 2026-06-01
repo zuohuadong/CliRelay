@@ -6,6 +6,8 @@
 
 ---
 
+[2026-06-01 16:08:16 +0800] [CliRelay] [done] Investigated reported iFlytek/Astron scheduling issue on production: verified small requests route to astron-code, large requests skip Astron by the 200k guard, found production compression provider misconfigured as gemini-api-key, hotfixed it to gemini with config backup and container restart, and verified compression auth now resolves via a live probe
+[2026-06-01 16:01:07 +0800] [CliRelay] [running] Investigating production routing logs for reported iFlytek/Astron scheduling issue; checking live container state, request logs, and request-policy skip evidence
 <!-- Agent 工作记录按时间倒序排列 -->
 [2026-05-31 09:58:37 +0800] [CliRelay] [done] Fixed dashboard request throughput trend undefined x-axis labels by adding backend label fields for daily/hourly usage trends and frontend date/hour fallbacks; verified focused dashboard tests, TypeScript check, go test ./..., panel build, required server build, and git diff --check
 [2026-05-31 09:55:27 +0800] [CliRelay] [running] Fixing dashboard request throughput trend axis labels showing undefined by aligning throughput series label contracts across backend and panel chart rendering

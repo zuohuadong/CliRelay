@@ -17,7 +17,7 @@ FROM alpine:3.23 AS tzdata-provider
 
 RUN apk add --no-cache tzdata
 
-FROM registry.access.redhat.com/ubi9/go-toolset:latest AS builder
+FROM registry.access.redhat.com/ubi9/go-toolset:9.6 AS builder
 
 WORKDIR /app
 
@@ -35,7 +35,7 @@ ARG BUILD_DATE=unknown
 
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
 
-FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.6
 
 RUN mkdir /CLIProxyAPI
 

@@ -17,7 +17,7 @@ FROM alpine:3.23 AS tzdata-provider
 
 RUN apk add --no-cache tzdata
 
-FROM registry.access.redhat.com/ubi9/go-toolset:9.6 AS builder
+FROM golang:1.26 AS builder
 
 WORKDIR /app
 

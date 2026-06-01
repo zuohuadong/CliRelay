@@ -968,7 +968,11 @@ func shouldHandleResponsesWebsocketPrewarmLocally(rawJSON []byte, lastRequest []
 		return false
 	}
 	generateResult := gjson.GetBytes(rawJSON, "generate")
-	return generateResult.Exists() && !generateResult.Bool()
+	if !generateResult.Exists() || generateResult.Bool() {
+		return false
+	}
+	input := gjson.GetBytes(rawJSON, "input")
+	return !input.Exists() || (input.IsArray() && len(input.Array()) == 0)
 }
 
 func writeResponsesWebsocketSyntheticPrewarm(

@@ -1921,7 +1921,6 @@ func TestWebsocketUpstreamSupportsIncrementalInputForModelFalseWhenMixedBackends
 			registry.GetGlobalRegistry().UnregisterClient(auth.ID)
 		}
 	})
-
 	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
 	h := NewOpenAIResponsesAPIHandler(base)
 	if h.websocketUpstreamSupportsIncrementalInputForModel("gpt-5.3-codex") {
@@ -2108,8 +2107,9 @@ func TestResponsesWebsocketStripsGenerateWhenWebsocketAttemptFallsBackToHTTP(t *
 		registry.GetGlobalRegistry().UnregisterClient(authWS.ID)
 		registry.GetGlobalRegistry().UnregisterClient(authHTTP.ID)
 	})
-
-	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{
+		Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 1},
+	}, manager)
 	h := NewOpenAIResponsesAPIHandler(base)
 	router := gin.New()
 	router.GET("/v1/responses/ws", h.ResponsesWebsocket)

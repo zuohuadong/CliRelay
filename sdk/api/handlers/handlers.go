@@ -250,6 +250,10 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 }
 
 func enrichRequestExecutionMetadata(meta map[string]any, rawJSON []byte) {
+	enrichRequestExecutionMetadataForAlt(meta, rawJSON, "")
+}
+
+func enrichRequestExecutionMetadataForAlt(meta map[string]any, rawJSON []byte, alt string) {
 	if meta == nil || len(rawJSON) == 0 {
 		return
 	}
@@ -257,6 +261,11 @@ func enrichRequestExecutionMetadata(meta map[string]any, rawJSON []byte) {
 	toolDefinitions := countTopLevelTools(rawJSON)
 	toolCalls := countJSONOccurrences(rawJSON, []string{"function_call", "tool_call", "function_call_output", "tool_result"})
 	features := requestFeatures(rawJSON, inputItems, toolDefinitions, toolCalls)
+	if alt == "responses/compact" {
+		// Compact requests summarize historical context; top-level tool/media
+		// definitions are not executable features for the selected upstream.
+		features = nil
+	}
 	meta[coreexecutor.InputItemsMetadataKey] = inputItems
 	meta[coreexecutor.ToolDefinitionsMetadataKey] = toolDefinitions
 	meta[coreexecutor.ToolCallsMetadataKey] = toolCalls
@@ -793,7 +802,7 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
-	enrichRequestExecutionMetadata(reqMeta, rawJSON)
+	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
@@ -845,7 +854,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
-	enrichRequestExecutionMetadata(reqMeta, rawJSON)
+	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
@@ -910,7 +919,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
-	enrichRequestExecutionMetadata(reqMeta, rawJSON)
+	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)

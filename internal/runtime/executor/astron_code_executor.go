@@ -48,10 +48,10 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	to := sdktranslator.FromString("openai")
 	endpoint := "/chat/completions"
 	imagePassthrough := false
+	compactPassthrough := false
 	switch opts.Alt {
 	case "responses/compact":
-		to = sdktranslator.FromString("openai-response")
-		endpoint = "/responses/compact"
+		compactPassthrough = true
 	case "images/generations":
 		endpoint = "/images/generations"
 		imagePassthrough = true
@@ -66,6 +66,11 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	var translated []byte
 	if imagePassthrough {
 		translated = e.overrideModel(req.Payload, baseModel)
+	} else if compactPassthrough {
+		translated, err = buildAstronCompactChatPayload(originalPayloadSource, baseModel)
+		if err != nil {
+			return resp, err
+		}
 	} else {
 		requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 		adaptedPayload, errAdapt := e.applyAstronMultimodalAdapter(ctx, req.Payload, baseModel, from.String(), requestedModel)
@@ -164,6 +169,16 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+	if compactPassthrough {
+		wrapped, errWrap := buildAstronCompactResponse(originalPayloadSource, baseModel, body, httpResp.Header)
+		if errWrap != nil {
+			err = errWrap
+			return resp, err
+		}
+		reporter.Publish(ctx, helps.ParseOpenAIUsage(wrapped.Payload))
+		reporter.EnsurePublished(ctx)
+		return wrapped, nil
+	}
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	reporter.EnsurePublished(ctx)
 	if imagePassthrough {

@@ -130,6 +130,30 @@ func TestEnrichRequestExecutionMetadataKeepsXunfeiSupportedAutoTools(t *testing.
 	}
 }
 
+func TestEnrichRequestExecutionMetadataCompactIgnoresHistoricalToolFeatures(t *testing.T) {
+	meta := make(map[string]any)
+
+	enrichRequestExecutionMetadataForAlt(meta, []byte(`{
+		"model":"gpt-5.3-codex",
+		"input":[{"role":"user","content":"hi"}],
+		"tool_choice":"required",
+		"tools":[
+			{"type":"mcp","server_label":"web-reader"},
+			{"type":"web_search_preview"}
+		]
+	}`), "responses/compact")
+
+	if got := meta[coreexecutor.InputItemsMetadataKey]; got != 1 {
+		t.Fatalf("InputItemsMetadataKey = %v, want 1", got)
+	}
+	if got := meta[coreexecutor.ToolDefinitionsMetadataKey]; got != 2 {
+		t.Fatalf("ToolDefinitionsMetadataKey = %v, want 2", got)
+	}
+	if features, ok := meta[coreexecutor.RequestFeaturesMetadataKey].([]string); ok && len(features) > 0 {
+		t.Fatalf("compact features = %v, want none", features)
+	}
+}
+
 func TestSetServiceTierMetadataExtractsValue(t *testing.T) {
 	meta := make(map[string]any)
 

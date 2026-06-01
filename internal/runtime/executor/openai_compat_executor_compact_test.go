@@ -476,6 +476,59 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 }
 
+func TestAstronCodeExecutorCompactUsesChatAndWrapsResponse(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"astron-code-latest","choices":[{"index":0,"message":{"role":"assistant","content":"summary text"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}`))
+	}))
+	defer server.Close()
+
+	executor := NewAstronCodeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v2",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"gpt-5.3-codex","input":[{"role":"user","content":"hi"}],"tools":[{"type":"mcp","server_label":"web-reader"}],"tool_choice":"required"}`)
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "astron-code-latest",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		Alt:             "responses/compact",
+		OriginalRequest: payload,
+		Stream:          false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v2/chat/completions" {
+		t.Fatalf("path = %q, want %q", gotPath, "/v2/chat/completions")
+	}
+	if gjson.GetBytes(gotBody, "tools").Exists() {
+		t.Fatalf("unexpected tools in compact chat body: %s", string(gotBody))
+	}
+	if got := gjson.GetBytes(gotBody, "messages.1.content").String(); !strings.Contains(got, `"content":"hi"`) {
+		t.Fatalf("compact prompt did not include original transcript: %s", got)
+	}
+	if got := gjson.GetBytes(resp.Payload, "object").String(); got != "response.compaction" {
+		t.Fatalf("object = %q, want response.compaction; body=%s", got, string(resp.Payload))
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.#").Int(); got != 2 {
+		t.Fatalf("output length = %d, want user message plus compaction; body=%s", got, string(resp.Payload))
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.1.encrypted_content").String(); got != "summary text" {
+		t.Fatalf("compaction content = %q, want summary text", got)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 11 {
+		t.Fatalf("usage.input_tokens = %d, want 11", got)
+	}
+}
+
 func TestOpenAICompatExecutorPayloadOverrideWinsOverThinkingSuffix(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -680,6 +680,8 @@
     "detail_tab_fields": "Fields",
     "detail_tab_channel": "Channel",
     "detail_tab_json_desc": "View the raw JSON content of this auth file.",
+    "content_empty": "Content is empty",
+    "content_empty_desc": "Unable to read the content of this auth file.",
     "detail_tab_models_desc": "Query supported models for this credential to troubleshoot permissions and exclusions.",
     "trend_last_7_days_requests": "Last 7 days requests",
     "trend_current_weekly_cycle": "Current weekly cycle",

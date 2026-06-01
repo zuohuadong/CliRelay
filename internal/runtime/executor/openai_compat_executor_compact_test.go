@@ -97,6 +97,30 @@ func TestAstronCodeExecutorDowngradesRequiredToolChoiceToAuto(t *testing.T) {
 	}
 }
 
+func TestAstronCodeExecutorNormalizesWebSearchPreviewTool(t *testing.T) {
+	executor := NewAstronCodeExecutor(&config.Config{})
+	payload := []byte(`{
+		"model":"astron-code-latest",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"web_search_preview","search_context_size":"high"}],
+		"tool_choice":{"type":"web_search_preview"}
+	}`)
+
+	out, err := executor.normalizeAstronPayload(payload, "astron-code-latest")
+	if err != nil {
+		t.Fatalf("normalizeAstronPayload error: %v", err)
+	}
+	if got := gjson.GetBytes(out, "tools.0.type").String(); got != "web_search" {
+		t.Fatalf("tools.0.type = %q, want web_search: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "tools.0.search_context_size").String(); got != "high" {
+		t.Fatalf("tools.0.search_context_size = %q, want high: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "tool_choice").String(); got != "auto" {
+		t.Fatalf("tool_choice = %q, want auto: %s", got, string(out))
+	}
+}
+
 func TestBigModelCodingExecutorInjectsOfficialMCPTools(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

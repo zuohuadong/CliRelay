@@ -420,7 +420,7 @@ func hasXunfeiUnsupportedTool(rawJSON []byte) bool {
 	unsupported := false
 	tools.ForEach(func(_, tool gjson.Result) bool {
 		toolType := strings.ToLower(strings.TrimSpace(tool.Get("type").String()))
-		if toolType == "" || toolType == "function" || toolType == "web_search" {
+		if toolType == "" || toolType == "function" || toolType == "web_search" || strings.HasPrefix(toolType, "web_search_") {
 			return true
 		}
 		unsupported = true

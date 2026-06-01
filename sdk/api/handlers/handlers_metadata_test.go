@@ -69,7 +69,7 @@ func TestEnrichRequestExecutionMetadataMarksRequiredAndXunfeiUnsupportedTools(t 
 		"tool_choice":"required",
 		"tools":[
 			{"type":"function","name":"read_file","parameters":{"type":"object"}},
-			{"type":"web_search_preview"}
+			{"type":"image_generation"}
 		]
 	}`))
 
@@ -80,6 +80,33 @@ func TestEnrichRequestExecutionMetadataMarksRequiredAndXunfeiUnsupportedTools(t 
 	for _, want := range []string{"tools", "required-tools", "xunfei-unsupported-tools"} {
 		if !slices.Contains(features, want) {
 			t.Fatalf("features = %v, want %q", features, want)
+		}
+	}
+}
+
+func TestEnrichRequestExecutionMetadataTreatsWebSearchPreviewAsXunfeiSupported(t *testing.T) {
+	meta := make(map[string]any)
+
+	enrichRequestExecutionMetadata(meta, []byte(`{
+		"model":"gpt-5.3-codex",
+		"input":[{"role":"user","content":"search for docs"}],
+		"tool_choice":"auto",
+		"tools":[
+			{"type":"function","name":"read_file","parameters":{"type":"object"}},
+			{"type":"web_search_preview","search_context_size":"high"}
+		]
+	}`))
+
+	features, ok := meta[coreexecutor.RequestFeaturesMetadataKey].([]string)
+	if !ok {
+		t.Fatalf("RequestFeaturesMetadataKey = %#v, want []string", meta[coreexecutor.RequestFeaturesMetadataKey])
+	}
+	if !slices.Contains(features, "tools") {
+		t.Fatalf("features = %v, want tools", features)
+	}
+	for _, unexpected := range []string{"required-tools", "xunfei-unsupported-tools", "mcp"} {
+		if slices.Contains(features, unexpected) {
+			t.Fatalf("features = %v, did not want %q", features, unexpected)
 		}
 	}
 }

@@ -392,6 +392,7 @@ func (e *AstronCodeExecutor) normalizeAstronPayload(payload []byte, model string
 	}
 
 	finish := func(payload []byte) ([]byte, error) {
+		payload = normalizeAstronWebSearchTools(payload)
 		payload = normalizeAstronRequiredToolChoice(payload)
 		payload = e.normalizeAstronToolParallelism(payload)
 		return normalizeAstronUserInputGuidance(payload), nil
@@ -496,6 +497,57 @@ func normalizeAstronRequiredToolChoice(payload []byte) []byte {
 		return payload
 	}
 	return updated
+}
+
+func normalizeAstronWebSearchTools(payload []byte) []byte {
+	var root map[string]any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return payload
+	}
+
+	tools, ok := root["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		return payload
+	}
+
+	changed := false
+	for i, item := range tools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		toolType := strings.ToLower(strings.TrimSpace(fmt.Sprint(tool["type"])))
+		if !isOpenAIWebSearchToolType(toolType) || toolType == "web_search" {
+			continue
+		}
+		normalized := make(map[string]any, len(tool))
+		for k, v := range tool {
+			normalized[k] = v
+		}
+		normalized["type"] = "web_search"
+		tools[i] = normalized
+		changed = true
+	}
+	if changed {
+		root["tools"] = tools
+	}
+
+	if toolChoice, ok := root["tool_choice"].(map[string]any); ok {
+		choiceType := strings.ToLower(strings.TrimSpace(fmt.Sprint(toolChoice["type"])))
+		if isOpenAIWebSearchToolType(choiceType) {
+			root["tool_choice"] = "auto"
+			changed = true
+		}
+	}
+
+	if !changed {
+		return payload
+	}
+	out, err := json.Marshal(root)
+	if err != nil {
+		return payload
+	}
+	return out
 }
 
 func (e *AstronCodeExecutor) normalizeAstronToolParallelism(payload []byte) []byte {

@@ -694,6 +694,8 @@
     "detail_tab_fields": "字段",
     "detail_tab_channel": "渠道",
     "detail_tab_json_desc": "查看该认证文件的原始 JSON 内容。",
+    "content_empty": "内容为空",
+    "content_empty_desc": "无法读取该认证文件的内容。",
     "detail_tab_models_desc": "查询该凭证支持的模型，用于排查权限与排除规则。",
     "trend_last_7_days_requests": "近 7 天请求数",
     "trend_current_weekly_cycle": "当前周周期",

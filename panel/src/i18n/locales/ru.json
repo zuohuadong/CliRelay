@@ -679,6 +679,8 @@
     "detail_tab_fields": "Поля",
     "detail_tab_channel": "Канал",
     "detail_tab_json_desc": "Просмотр исходного JSON содержимого этого файла авторизации.",
+    "content_empty": "Содержимое пусто",
+    "content_empty_desc": "Не удалось прочитать содержимое этого файла авторизации.",
     "detail_tab_models_desc": "Запросить поддерживаемые модели для этих учётных данных, чтобы проверить права и исключения.",
     "trend_last_7_days_requests": "Запросы за 7 дней",
     "trend_current_weekly_cycle": "Текущий недельный цикл",

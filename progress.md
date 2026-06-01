@@ -104,3 +104,5 @@
 [2026-05-19 16:20:44 +0800] [CliRelay] [running] Validating codex/codex-responses-context-too-large for main push and deploy
 [2026-05-20 09:16:53 +0800] [CliRelay] [running] Investigating and fixing xhigh -> glm-5.1 thinking validation failure on latest main image
 [2026-05-20 09:36:43 +0800] [CliRelay] [done] Deployed main-b9aa7d6 and verified gpt-5.3-codex xhigh requests clamp to glm-5.1 high without validation errors
+[2026-06-01 17:12:04 +0800] [CliRelay] [running] Investigating production request #157515 where Codex compact routed to bigmodel-coding despite a small user turn; checking compact metadata and Astron request-policy skips
+[2026-06-01 17:27:05 +0800] [CliRelay] [done] Fixed production compact routing for request #157515 pattern: compact metadata no longer treats historical tool definitions as executable request features, Astron compact now uses chat fallback and wraps response.compaction JSON, deployed main-e82ab18, and verified a live compact request with MCP/web_search history routes to astron-code-latest

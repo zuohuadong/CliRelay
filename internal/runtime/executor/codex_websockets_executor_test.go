@@ -458,7 +458,6 @@ func TestApplyCodexPromptCacheHeadersDoesNotSetDeprecatedConversationHeader(t *t
 	}
 }
 
-<<<<<<< HEAD
 func TestNormalizeCodexWebsocketCompletionPrefixesResponseID(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -514,12 +513,13 @@ func TestApplyCodexWebsocketHeadersUsesCanonicalAccountHeader(t *testing.T) {
 
 	if got := headerValueCaseInsensitive(headers, "ChatGPT-Account-ID"); got != "acct-1" {
 		t.Fatalf("ChatGPT-Account-ID = %s, want acct-1", got)
-=======
+	}
+}
+
 func TestApplyCodexWebsocketHeadersIdentityConfuseRemapsPromptCacheKey(t *testing.T) {
 	cfg := &config.Config{
 		Routing: config.RoutingConfig{SessionAffinity: true},
 		Codex:   config.CodexConfig{IdentityConfuse: true},
->>>>>>> upstream/main
 	}
 	auth := &cliproxyauth.Auth{ID: "auth-ws-1", Provider: "codex"}
 	req := cliproxyexecutor.Request{

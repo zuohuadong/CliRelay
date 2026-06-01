@@ -77,17 +77,16 @@ type websocketPinnedFailoverExecutor struct {
 	payloads map[string][][]byte
 }
 
-<<<<<<< HEAD
 type websocketPreviousResponseReplayExecutor struct {
 	mu       sync.Mutex
 	calls    int
 	payloads [][]byte
-=======
+}
+
 type websocketBootstrapFallbackExecutor struct {
 	mu       sync.Mutex
 	authIDs  []string
 	payloads map[string][][]byte
->>>>>>> upstream/main
 }
 
 type websocketPinnedFailoverStatusError struct {

@@ -55,8 +55,6 @@ func TestConvertOpenAIResponsesRequestToGemini_ReasoningSignatureCompatibility(t
 	}
 }
 
-<<<<<<< HEAD
-=======
 func TestConvertOpenAIResponsesRequestToGemini_SystemAndDeveloperRoles(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -131,7 +129,6 @@ func TestConvertOpenAIResponsesRequestToGemini_SystemAndDeveloperRoles(t *testin
 	}
 }
 
->>>>>>> upstream/main
 func validResponsesGPTReasoningSignature() string {
 	raw := make([]byte, 1+8+16+16+32)
 	raw[0] = 0x80

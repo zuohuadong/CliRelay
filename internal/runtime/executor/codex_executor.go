@@ -30,16 +30,10 @@ import (
 )
 
 const (
-<<<<<<< HEAD
-	codexUserAgent                    = "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9"
-	codexOriginator                   = "codex_cli_rs"
-	codexDefaultImageToolModel        = "gpt-image-2"
-	codexCompactResponseHeaderTimeout = 30 * time.Second
-=======
 	codexUserAgent             = "codex-tui/0.135.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.135.0)"
 	codexOriginator            = "codex-tui"
 	codexDefaultImageToolModel = "gpt-image-2"
->>>>>>> upstream/main
+	codexCompactResponseHeaderTimeout = 30 * time.Second
 )
 
 var dataTag = []byte("data:")
@@ -1188,16 +1182,13 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
-<<<<<<< HEAD
 	if fingerprintEnabled {
 		applyCodexIdentityFingerprintHeaders(r.Header, fp, false)
 		if strings.TrimSpace(ginHeaders.Get("Originator")) == "" && !isAPIKey {
 			r.Header.Set("Originator", fp.Originator)
 		}
 	}
-=======
 	deleteDeprecatedCodexConversationHeader(r.Header)
->>>>>>> upstream/main
 }
 
 func newCodexStatusErr(statusCode int, body []byte) statusErr {

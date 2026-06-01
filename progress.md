@@ -6,6 +6,8 @@
 
 ---
 
+[2026-06-01 16:15:18 +0800] [CliRelay] [done] Probed direct Astron/iFlytek upstream request-size acceptance: 120KB/200KB/300KB/360KB/380KB/382KB JSON requests succeeded, 384KB/386KB/390KB/400KB/500KB failed with upstream input-token limit errors around 202k tokens; current 200KB guard is conservative rather than an observed hard upstream limit
+[2026-06-01 16:10:42 +0800] [CliRelay] [running] Probing direct Astron/iFlytek upstream request-size acceptance to validate whether the current 200KB routing guard is accurate
 [2026-06-01 16:08:16 +0800] [CliRelay] [done] Investigated reported iFlytek/Astron scheduling issue on production: verified small requests route to astron-code, large requests skip Astron by the 200k guard, found production compression provider misconfigured as gemini-api-key, hotfixed it to gemini with config backup and container restart, and verified compression auth now resolves via a live probe
 [2026-06-01 16:01:07 +0800] [CliRelay] [running] Investigating production routing logs for reported iFlytek/Astron scheduling issue; checking live container state, request logs, and request-policy skip evidence
 <!-- Agent 工作记录按时间倒序排列 -->

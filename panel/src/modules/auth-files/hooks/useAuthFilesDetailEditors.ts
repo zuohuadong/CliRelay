@@ -28,7 +28,7 @@ import {
   type PrefixProxyEditorState,
 } from "@/modules/auth-files/helpers/authFilesPageUtils";
 
-type DetailTab = "usage" | "fields" | "models";
+type DetailTab = "usage" | "content" | "fields" | "models";
 type DetailTrendWindow = "5h" | "week";
 type RefreshDetailTrendOptions = { silent?: boolean };
 
@@ -257,7 +257,7 @@ export function useAuthFilesDetailEditors(
     async (file: AuthFileItem) => {
       const hasTrend = supportsAuthFileTrend(file);
       setDetailOpen(true);
-      setDetailTab(hasTrend ? "usage" : "fields");
+      setDetailTab(hasTrend ? "usage" : "content");
       setDetailTrendWindow("5h");
       setDetailFile(file);
       setDetailLoading(true);

@@ -28,7 +28,7 @@ import {
   type PrefixProxyEditorState,
 } from "@/modules/auth-files/helpers/authFilesPageUtils";
 
-type DetailTab = "usage" | "fields" | "models";
+type DetailTab = "usage" | "content" | "fields" | "models";
 type DetailTrendWindow = "5h" | "week";
 
 const padTwo = (value: number) => String(value).padStart(2, "0");
@@ -433,6 +433,7 @@ export function AuthFileDetailModal({
                 {supportsUsageTrend ? (
                   <TabsTrigger value="usage">{t("auth_files.detail_tab_usage")}</TabsTrigger>
                 ) : null}
+                <TabsTrigger value="content">{t("auth_files.detail_tab_json")}</TabsTrigger>
                 <TabsTrigger value="fields">{t("auth_files.detail_tab_fields")}</TabsTrigger>
                 <TabsTrigger value="models">{t("auth_files.detail_tab_models")}</TabsTrigger>
               </TabsList>
@@ -447,6 +448,23 @@ export function AuthFileDetailModal({
                   {renderUsageTrend()}
                 </TabsContent>
               ) : null}
+
+              <TabsContent value="content" className="pb-1">
+                {detailLoading ? (
+                  <div className="text-sm text-slate-600 dark:text-white/65">
+                    {t("common.loading_ellipsis")}
+                  </div>
+                ) : detailText ? (
+                  <pre className="overflow-auto whitespace-pre rounded-lg bg-slate-50/80 p-4 text-xs leading-relaxed text-slate-800 dark:bg-white/[0.04] dark:text-white/80">
+                    {detailText}
+                  </pre>
+                ) : (
+                  <EmptyState
+                    title={t("auth_files.content_empty")}
+                    description={t("auth_files.content_empty_desc")}
+                  />
+                )}
+              </TabsContent>
 
               <TabsContent value="fields" className="pb-1">
                 {prefixProxyEditor.loading ? (

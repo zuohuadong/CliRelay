@@ -79,6 +79,24 @@ func TestOpenAICompatExecutorNormalizesBigModelMCPTool(t *testing.T) {
 	}
 }
 
+func TestAstronCodeExecutorDowngradesRequiredToolChoiceToAuto(t *testing.T) {
+	executor := NewAstronCodeExecutor(&config.Config{})
+	payload := []byte(`{
+		"model":"astron-code-latest",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"function","function":{"name":"noop","parameters":{"type":"object"}}}],
+		"tool_choice":"required"
+	}`)
+
+	out, err := executor.normalizeAstronPayload(payload, "astron-code-latest")
+	if err != nil {
+		t.Fatalf("normalizeAstronPayload error: %v", err)
+	}
+	if got := gjson.GetBytes(out, "tool_choice").String(); got != "auto" {
+		t.Fatalf("tool_choice = %q, want auto: %s", got, string(out))
+	}
+}
+
 func TestBigModelCodingExecutorInjectsOfficialMCPTools(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

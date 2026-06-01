@@ -196,13 +196,13 @@ request-log-storage:
 # Policies can skip a channel or reject locally when request size/tools exceed
 # configured limits. Use skip-channel to fall back to the next available provider.
 # request-policies:
-#   - name: "astron-code-200k-guard"
+#   - name: "astron-code-360k-guard"
 #     match:
 #       requested-models: ["gpt-5.3-codex", "glm-5.1"]
 #       upstream-providers: ["astron-code"]
 #       upstream-models: ["astron-code-latest"]
 #     limits:
-#       max-request-bytes: 200000
+#       max-request-bytes: 360000
 #     over-limit:
 #       action: "skip-channel"
 #   - name: "astron-code-image-skip"
@@ -219,14 +219,6 @@ request-log-storage:
 #       upstream-providers: ["astron-code"]
 #       upstream-models: ["astron-code-latest"]
 #       request-features: ["mcp"]
-#     over-limit:
-#       action: "skip-channel"
-#   - name: "astron-code-required-tools-skip"
-#     match:
-#       requested-models: ["gpt-5.3-codex", "glm-5.1"]
-#       upstream-providers: ["astron-code"]
-#       upstream-models: ["astron-code-latest"]
-#       request-features: ["required-tools"]
 #     over-limit:
 #       action: "skip-channel"
 #   - name: "astron-code-unsupported-tools-skip"

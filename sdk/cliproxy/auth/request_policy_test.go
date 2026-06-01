@@ -228,6 +228,67 @@ func TestManagerExecute_RequestPolicySkipChannelFallsBack(t *testing.T) {
 	}
 }
 
+func TestRequestPolicyDecision_AstronCode360KGuard(t *testing.T) {
+	cfg := &internalconfig.Config{
+		RequestPolicies: []internalconfig.RequestPolicy{
+			{
+				Name: "astron-code-360k-guard",
+				Match: internalconfig.RequestPolicyMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"astron-code"},
+					UpstreamModels:    []string{"astron-code-latest"},
+				},
+				Limits: internalconfig.RequestPolicyLimits{MaxRequestBytes: 360000},
+			},
+		},
+	}
+	auth := &Auth{Provider: "astron-code"}
+
+	blocked, errLimit := requestPolicyDecision(cfg, auth, cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: 350000},
+	}, "gpt-5.3-codex", "astron-code", "astron-code-latest")
+	if blocked || errLimit != nil {
+		t.Fatalf("350KB request blocked=%v err=%v, want allowed", blocked, errLimit)
+	}
+
+	blocked, errLimit = requestPolicyDecision(cfg, auth, cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: 370000},
+	}, "gpt-5.3-codex", "astron-code", "astron-code-latest")
+	if !blocked || errLimit == nil {
+		t.Fatalf("370KB request blocked=%v err=%v, want blocked", blocked, errLimit)
+	}
+	if errLimit.policy != "astron-code-360k-guard" {
+		t.Fatalf("policy = %q, want astron-code-360k-guard", errLimit.policy)
+	}
+}
+
+func TestRequestPolicyDecision_RequiredToolsDoesNotSkipAstron(t *testing.T) {
+	cfg := &internalconfig.Config{
+		RequestPolicies: []internalconfig.RequestPolicy{
+			{
+				Name: "astron-code-unsupported-tools-skip",
+				Match: internalconfig.RequestPolicyMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"astron-code"},
+					UpstreamModels:    []string{"astron-code-latest"},
+					RequestFeatures:   []string{"xunfei-unsupported-tools"},
+				},
+			},
+		},
+	}
+	auth := &Auth{Provider: "astron-code"}
+
+	blocked, errLimit := requestPolicyDecision(cfg, auth, cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestBytesMetadataKey:    120000,
+			cliproxyexecutor.RequestFeaturesMetadataKey: []string{"tools", "required-tools"},
+		},
+	}, "gpt-5.3-codex", "astron-code", "astron-code-latest")
+	if blocked || errLimit != nil {
+		t.Fatalf("required tools blocked=%v err=%v, want allowed", blocked, errLimit)
+	}
+}
+
 func TestManagerExecute_RequestPolicyCompressThenUsesOriginalProvider(t *testing.T) {
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	compressed := []byte(`{"model":"gpt-5.3-codex","input":"short"}`)
@@ -442,13 +503,13 @@ func TestManagerExecute_AstronCodePrefersSmallRequestsAndSkipsMCP(t *testing.T) 
 		},
 		RequestPolicies: []internalconfig.RequestPolicy{
 			{
-				Name: "astron-code-200k-guard",
+				Name: "astron-code-360k-guard",
 				Match: internalconfig.RequestPolicyMatch{
 					RequestedModels:   []string{"gpt-5.3-codex"},
 					UpstreamProviders: []string{"astron-code"},
 					UpstreamModels:    []string{"astron-code-latest"},
 				},
-				Limits: internalconfig.RequestPolicyLimits{MaxRequestBytes: 200000},
+				Limits: internalconfig.RequestPolicyLimits{MaxRequestBytes: 360000},
 			},
 			{
 				Name: "astron-code-mcp-skip",
@@ -457,15 +518,6 @@ func TestManagerExecute_AstronCodePrefersSmallRequestsAndSkipsMCP(t *testing.T) 
 					UpstreamProviders: []string{"astron-code"},
 					UpstreamModels:    []string{"astron-code-latest"},
 					RequestFeatures:   []string{"mcp"},
-				},
-			},
-			{
-				Name: "astron-code-required-tools-skip",
-				Match: internalconfig.RequestPolicyMatch{
-					RequestedModels:   []string{"gpt-5.3-codex"},
-					UpstreamProviders: []string{"astron-code"},
-					UpstreamModels:    []string{"astron-code-latest"},
-					RequestFeatures:   []string{"required-tools"},
 				},
 			},
 			{
@@ -559,22 +611,6 @@ func TestManagerExecute_AstronCodePrefersSmallRequestsAndSkipsMCP(t *testing.T) 
 
 	_, err = manager.Execute(context.Background(), []string{"astron-code", "bigmodel-coding"}, cliproxyexecutor.Request{
 		Model:   "gpt-5.3-codex",
-		Payload: []byte(`{"model":"gpt-5.3-codex","input":"required tool"}`),
-	}, cliproxyexecutor.Options{
-		Metadata: map[string]any{
-			cliproxyexecutor.RequestBytesMetadataKey:    120000,
-			cliproxyexecutor.RequestFeaturesMetadataKey: []string{"tools", "required-tools"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Execute() required tools error = %v", err)
-	}
-	if calls := bigmodel.Calls(); len(calls) != 2 || calls[1] != "bigmodel-auth" {
-		t.Fatalf("bigmodel calls after required tools request = %v, want second bigmodel-auth", calls)
-	}
-
-	_, err = manager.Execute(context.Background(), []string{"astron-code", "bigmodel-coding"}, cliproxyexecutor.Request{
-		Model:   "gpt-5.3-codex",
 		Payload: []byte(`{"model":"gpt-5.3-codex","input":"unsupported tool"}`),
 	}, cliproxyexecutor.Options{
 		Metadata: map[string]any{
@@ -585,8 +621,8 @@ func TestManagerExecute_AstronCodePrefersSmallRequestsAndSkipsMCP(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Execute() unsupported tools error = %v", err)
 	}
-	if calls := bigmodel.Calls(); len(calls) != 3 || calls[2] != "bigmodel-auth" {
-		t.Fatalf("bigmodel calls after unsupported tools request = %v, want third bigmodel-auth", calls)
+	if calls := bigmodel.Calls(); len(calls) != 2 || calls[1] != "bigmodel-auth" {
+		t.Fatalf("bigmodel calls after unsupported tools request = %v, want second bigmodel-auth", calls)
 	}
 }
 

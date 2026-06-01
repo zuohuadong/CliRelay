@@ -377,7 +377,9 @@ func (e *AstronCodeExecutor) normalizeAstronPayload(payload []byte, model string
 	}
 
 	finish := func(payload []byte) ([]byte, error) {
-		return normalizeAstronUserInputGuidance(e.normalizeAstronToolParallelism(payload)), nil
+		payload = normalizeAstronRequiredToolChoice(payload)
+		payload = e.normalizeAstronToolParallelism(payload)
+		return normalizeAstronUserInputGuidance(payload), nil
 	}
 
 	detected := false
@@ -460,6 +462,25 @@ func (e *AstronCodeExecutor) normalizeAstronPayload(payload []byte, model string
 	payload, _ = sjson.DeleteBytes(payload, "reasoning")
 	payload, _ = sjson.DeleteBytes(payload, "reasoning_effort")
 	return finish(payload)
+}
+
+func normalizeAstronRequiredToolChoice(payload []byte) []byte {
+	toolChoice := gjson.GetBytes(payload, "tool_choice")
+	if !toolChoice.Exists() || toolChoice.Type != gjson.String {
+		return payload
+	}
+	if !strings.EqualFold(strings.TrimSpace(toolChoice.String()), "required") {
+		return payload
+	}
+	tools := gjson.GetBytes(payload, "tools")
+	if !tools.IsArray() || len(tools.Array()) == 0 {
+		return payload
+	}
+	updated, err := sjson.SetBytes(payload, "tool_choice", "auto")
+	if err != nil {
+		return payload
+	}
+	return updated
 }
 
 func (e *AstronCodeExecutor) normalizeAstronToolParallelism(payload []byte) []byte {

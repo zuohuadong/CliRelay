@@ -6,6 +6,8 @@
 
 ---
 
+[2026-06-01 16:58:25 +0800] [CliRelay] [done] Fixed Astron required-tool routing regression: reproduced small Responses tool_choice=required requests falling to bigmodel-coding and returning 1308, removed the required-tools Astron skip, normalized Astron string required tool_choice to auto, raised the Astron size guard to 360KB, deployed main-6977096 to production, and verified the same probe now routes to astron-code-latest
+[2026-06-01 16:30:44 +0800] [CliRelay] [done] Investigated production request #156704: usage.db shows antigravity/gemini-3-flash-agent via source finoxiang@gmail.com failed in 4252ms with zero tokens/cost, main.log shows upstream 400 "User location is not supported for the API use", and production config maps antigravity gemini-3-flash-agent to client alias gpt-5.2 while excluding gpt-5.2 from codex OAuth routing
 [2026-06-01 16:15:18 +0800] [CliRelay] [done] Probed direct Astron/iFlytek upstream request-size acceptance: 120KB/200KB/300KB/360KB/380KB/382KB JSON requests succeeded, 384KB/386KB/390KB/400KB/500KB failed with upstream input-token limit errors around 202k tokens; current 200KB guard is conservative rather than an observed hard upstream limit
 [2026-06-01 16:10:42 +0800] [CliRelay] [running] Probing direct Astron/iFlytek upstream request-size acceptance to validate whether the current 200KB routing guard is accurate
 [2026-06-01 16:08:16 +0800] [CliRelay] [done] Investigated reported iFlytek/Astron scheduling issue on production: verified small requests route to astron-code, large requests skip Astron by the 200k guard, found production compression provider misconfigured as gemini-api-key, hotfixed it to gemini with config backup and container restart, and verified compression auth now resolves via a live probe

@@ -109,6 +109,13 @@ const appendUniqueParams = (qs: URLSearchParams, key: string, values?: string[])
   });
 };
 
+const appendNaturalTodayStart = (qs: URLSearchParams, days: number) => {
+  if (days !== 1 || qs.has("start")) return;
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  qs.set("start", todayStart.toISOString());
+};
+
 export const usageApi = {
   async getUsage(): Promise<UsageData> {
     const response = await apiClient.get<Record<string, unknown>>("/usage");
@@ -160,6 +167,7 @@ export const usageApi = {
 
   async getChartData(days = 7, apiKey = ""): Promise<ChartDataResponse> {
     const qs = new URLSearchParams({ days: String(days) });
+    appendNaturalTodayStart(qs, days);
     if (apiKey && apiKey !== "all") qs.set("api_key", apiKey);
     const resp = await apiClient.get<ChartDataResponse>(`/usage/chart-data?${qs.toString()}`);
     return {
@@ -243,7 +251,10 @@ export const usageApi = {
     const qs = new URLSearchParams();
     if (params.page) qs.set("page", String(params.page));
     if (params.size) qs.set("size", String(params.size));
-    if (params.days) qs.set("days", String(params.days));
+    if (params.days) {
+      qs.set("days", String(params.days));
+      appendNaturalTodayStart(qs, params.days);
+    }
     if (params.api_key) qs.set("api_key", params.api_key);
     if (params.model) qs.set("model", params.model);
     if (params.channel) qs.set("channel", params.channel);
@@ -283,7 +294,9 @@ export const usageApi = {
   },
 
   getDashboardSummary(days = 7): Promise<DashboardSummary> {
-    return apiClient.get<DashboardSummary>(`/dashboard-summary?days=${days}`);
+    const qs = new URLSearchParams({ days: String(days) });
+    appendNaturalTodayStart(qs, days);
+    return apiClient.get<DashboardSummary>(`/dashboard-summary?${qs.toString()}`);
   },
 
   async getLogContent(id: number): Promise<LogContentResponse> {

@@ -116,6 +116,7 @@ export function MonitorPage() {
     let failed = 0;
     let inputTokens = 0;
     let outputTokens = 0;
+    let totalTokens = 0;
 
     if (chartData?.daily_series) {
       for (const pt of chartData.daily_series) {
@@ -123,6 +124,7 @@ export function MonitorPage() {
         failed += pt.failed_requests || 0;
         inputTokens += pt.input_tokens || 0;
         outputTokens += pt.output_tokens || 0;
+        totalTokens += pt.total_tokens ?? (pt.input_tokens || 0) + (pt.output_tokens || 0);
       }
     }
 
@@ -136,7 +138,7 @@ export function MonitorPage() {
       successRate: rate,
       inputTokens,
       outputTokens,
-      totalTokens: inputTokens + outputTokens,
+      totalTokens,
     };
   }, [chartData]);
 
@@ -240,7 +242,7 @@ export function MonitorPage() {
         requests: pt.requests,
         inputTokens: pt.input_tokens,
         outputTokens: pt.output_tokens,
-        totalTokens: pt.input_tokens + pt.output_tokens,
+        totalTokens: pt.total_tokens ?? pt.input_tokens + pt.output_tokens,
       };
     });
   }, [chartData]);

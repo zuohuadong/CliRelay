@@ -12,8 +12,57 @@ vi.mock("@/lib/http/client", () => ({
 
 describe("usage auth file trend api", () => {
   beforeEach(() => {
+    vi.useRealTimers();
     getMock.mockReset();
     postMock.mockReset();
+  });
+
+  test("scopes today chart data to the local calendar day", async () => {
+    const { usageApi } = await import("@/lib/http/apis/usage");
+    vi.useFakeTimers();
+    const now = new Date("2026-06-02T08:30:00Z");
+    vi.setSystemTime(now);
+    getMock.mockResolvedValue({});
+
+    await usageApi.getChartData(1);
+
+    const calledPath = String(getMock.mock.calls[0]?.[0] ?? "");
+    expect(calledPath.startsWith("/usage/chart-data?")).toBe(true);
+    const params = new URLSearchParams(calledPath.split("?")[1] ?? "");
+    const expectedStart = new Date(now);
+    expectedStart.setHours(0, 0, 0, 0);
+    expect(params.get("days")).toBe("1");
+    expect(params.get("start")).toBe(expectedStart.toISOString());
+  });
+
+  test("keeps non-today chart data on rolling day windows", async () => {
+    const { usageApi } = await import("@/lib/http/apis/usage");
+    getMock.mockResolvedValue({});
+
+    await usageApi.getChartData(7);
+
+    const calledPath = String(getMock.mock.calls[0]?.[0] ?? "");
+    const params = new URLSearchParams(calledPath.split("?")[1] ?? "");
+    expect(params.get("days")).toBe("7");
+    expect(params.has("start")).toBe(false);
+  });
+
+  test("scopes today dashboard summary to the local calendar day", async () => {
+    const { usageApi } = await import("@/lib/http/apis/usage");
+    vi.useFakeTimers();
+    const now = new Date("2026-06-02T08:30:00Z");
+    vi.setSystemTime(now);
+    getMock.mockResolvedValue({});
+
+    await usageApi.getDashboardSummary(1);
+
+    const calledPath = String(getMock.mock.calls[0]?.[0] ?? "");
+    expect(calledPath.startsWith("/dashboard-summary?")).toBe(true);
+    const params = new URLSearchParams(calledPath.split("?")[1] ?? "");
+    const expectedStart = new Date(now);
+    expectedStart.setHours(0, 0, 0, 0);
+    expect(params.get("days")).toBe("1");
+    expect(params.get("start")).toBe(expectedStart.toISOString());
   });
 
   test("fetches a single auth file trend by auth_index", async () => {

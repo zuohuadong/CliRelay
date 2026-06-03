@@ -375,7 +375,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			return resp, wsErr
 		}
 
-		if terminalErr, ok := codexTerminalStreamErr(payload); ok {
+		if terminalErr, _, ok := codexTerminalStreamErr(payload); ok {
 			if sess != nil {
 				e.invalidateUpstreamConn(sess, conn, "upstream_error", terminalErr)
 			}
@@ -652,7 +652,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return
 			}
 
-			if terminalErr, ok := codexTerminalStreamErr(payload); ok {
+			if terminalErr, _, ok := codexTerminalStreamErr(payload); ok {
 				terminateReason = "upstream_error"
 				terminateErr = terminalErr
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", terminalErr)
@@ -917,14 +917,11 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		}
 	}
 	headers.Set("OpenAI-Beta", betaHeader)
-<<<<<<< HEAD
-=======
 	sessionFallback := ""
 	if strings.Contains(headers.Get("User-Agent"), "Mac OS") {
 		sessionFallback = uuid.NewString()
 	}
 	ensureCodexWebsocketSessionHeader(headers, ginHeaders, sessionFallback)
->>>>>>> upstream/main
 	if originator := strings.TrimSpace(ginHeaders.Get("Originator")); originator != "" {
 		headers.Set("Originator", originator)
 	} else if !isAPIKey {

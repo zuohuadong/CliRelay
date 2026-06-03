@@ -1,9 +1,45 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
+
+type emptyThenPayloadStreamExecutor struct {
+	id      string
+	payload []byte
+}
+
+func (e *emptyThenPayloadStreamExecutor) Identifier() string { return e.id }
+
+func (e *emptyThenPayloadStreamExecutor) Execute(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, &Error{Code: "not_implemented", Message: "Execute not implemented"}
+}
+
+func (e *emptyThenPayloadStreamExecutor) ExecuteStream(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	chunks := make(chan cliproxyexecutor.StreamChunk, 1)
+	if len(e.payload) > 0 {
+		chunks <- cliproxyexecutor.StreamChunk{Payload: e.payload}
+	}
+	close(chunks)
+	return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *emptyThenPayloadStreamExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
+	return auth, nil
+}
+
+func (e *emptyThenPayloadStreamExecutor) CountTokens(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, &Error{Code: "not_implemented", Message: "CountTokens not implemented"}
+}
+
+func (e *emptyThenPayloadStreamExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
+	return nil, &Error{Code: "not_implemented", Message: "HttpRequest not implemented", HTTPStatus: http.StatusNotImplemented}
+}
 
 func TestShouldStopMixedProviderFallback_EmptyStreamRetryable(t *testing.T) {
 	emptyStreamErr := &Error{
@@ -76,5 +112,46 @@ func TestShouldStopMixedProviderFallback_NonRetryable502(t *testing.T) {
 	// Non-retryable 502 should stop fallback
 	if !shouldStopMixedProviderFallback("astron-code", "gpt-5.3-codex", err) {
 		t.Error("expected fallback to stop for non-retryable 502 error, but it continued")
+	}
+}
+
+func TestManagerExecuteStream_DownstreamWebsocketAstronEmptyStreamFallsBack(t *testing.T) {
+	const model = "gpt-5.3-codex"
+	m := NewManager(nil, nil, nil)
+	m.RegisterExecutor(&emptyThenPayloadStreamExecutor{id: "astron-code"})
+	m.RegisterExecutor(&emptyThenPayloadStreamExecutor{id: "bigmodel-coding", payload: []byte("bigmodel-ok")})
+
+	astronAuth := &Auth{ID: "astron-auth", Provider: "astron-code", Status: StatusActive}
+	bigModelAuth := &Auth{ID: "bigmodel-auth", Provider: "bigmodel-coding", Status: StatusActive}
+	if _, err := m.Register(context.Background(), astronAuth); err != nil {
+		t.Fatalf("register astron auth: %v", err)
+	}
+	if _, err := m.Register(context.Background(), bigModelAuth); err != nil {
+		t.Fatalf("register bigmodel auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(astronAuth.ID, astronAuth.Provider, []*registry.ModelInfo{{ID: model}})
+	registry.GetGlobalRegistry().RegisterClient(bigModelAuth.ID, bigModelAuth.Provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(astronAuth.ID)
+		registry.GetGlobalRegistry().UnregisterClient(bigModelAuth.ID)
+	})
+
+	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
+	result, err := m.ExecuteStream(ctx, []string{"astron-code", "bigmodel-coding"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("execute stream: %v", err)
+	}
+	if result == nil || result.Chunks == nil {
+		t.Fatalf("expected stream result with chunks")
+	}
+	chunk, ok := <-result.Chunks
+	if !ok {
+		t.Fatalf("stream closed before fallback payload")
+	}
+	if chunk.Err != nil {
+		t.Fatalf("fallback chunk error: %v", chunk.Err)
+	}
+	if string(chunk.Payload) != "bigmodel-ok" {
+		t.Fatalf("payload = %q, want bigmodel-ok", string(chunk.Payload))
 	}
 }

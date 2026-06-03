@@ -135,10 +135,7 @@ func codexTerminalStreamErr(eventData []byte) (statusErr, []byte, bool) {
 	if len(body) == 0 {
 		return statusErr{}, nil, false
 	}
-	if !codexTerminalStreamErrShouldHandle(body) {
-		return statusErr{}, nil, false
-	}
-	return newCodexStatusErr(http.StatusBadRequest, body), body, true
+	return newCodexStatusErr(codexTerminalErrorStatus(eventData, body), body), body, true
 }
 
 func codexTerminalStreamErrShouldHandle(body []byte) bool {
@@ -147,33 +144,6 @@ func codexTerminalStreamErrShouldHandle(body []byte) bool {
 	}
 	code, _, ok := codexStatusErrorClassification(http.StatusBadRequest, body)
 	return ok && code == "thinking_signature_invalid"
-}
-
-func codexTerminalStreamErr(eventData []byte) (statusErr, bool) {
-	if err, ok := codexTerminalStreamContextLengthErr(eventData); ok {
-		return err, true
-	}
-
-	eventType := gjson.GetBytes(eventData, "type").String()
-	var body []byte
-	switch eventType {
-	case "error":
-		body = codexTerminalErrorBody(eventData, "error")
-		if len(body) == 0 {
-			body = codexTerminalTopLevelErrorBody(eventData)
-		}
-	case "response.failed":
-		body = codexTerminalErrorBody(eventData, "response.error")
-		if len(body) == 0 {
-			body = codexTerminalErrorBody(eventData, "error")
-		}
-	default:
-		return statusErr{}, false
-	}
-	if len(body) == 0 {
-		return statusErr{}, false
-	}
-	return newCodexStatusErr(codexTerminalErrorStatus(eventData, body), body), true
 }
 
 func codexTerminalErrorStatus(eventData []byte, body []byte) int {
@@ -914,12 +884,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		eventData := bytes.TrimSpace(line[5:])
 		eventType := gjson.GetBytes(eventData, "type").String()
 
-<<<<<<< HEAD
-		if streamErr, ok := codexTerminalStreamErr(eventData); ok {
-=======
 		if streamErr, terminalBody, ok := codexTerminalStreamErr(eventData); ok {
 			clearCodexReasoningReplayOnInvalidSignature(replayScope, streamErr.StatusCode(), terminalBody)
->>>>>>> upstream/main
 			err = streamErr
 			return resp, err
 		}
@@ -1201,12 +1167,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 			if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
-<<<<<<< HEAD
-				if streamErr, ok := codexTerminalStreamErr(data); ok {
-=======
 				if streamErr, terminalBody, ok := codexTerminalStreamErr(data); ok {
 					clearCodexReasoningReplayOnInvalidSignature(replayScope, streamErr.StatusCode(), terminalBody)
->>>>>>> upstream/main
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
 					select {
@@ -1507,6 +1469,9 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	if err != nil {
 		return nil, nil, codexIdentityConfuseState{}, err
 	}
+	if strings.TrimSpace(cache.ID) != "" {
+		setCodexSessionHeaderCasePreserved(httpReq.Header, "Session_id", cache.ID)
+	}
 	return httpReq, rawJSON, identityState, nil
 }
 
@@ -1552,16 +1517,10 @@ func applyCodexIdentityConfuseHeaders(headers http.Header, state *codexIdentityC
 		return
 	}
 
-<<<<<<< HEAD
-	setHeaderCasePreserved(headers, "Session-Id", state.promptCacheKey)
-	setHeaderCasePreserved(headers, "Session_id", state.promptCacheKey)
-	setHeaderCasePreserved(headers, "Conversation_id", state.promptCacheKey)
-=======
 	setCodexSessionHeaderCasePreserved(headers, "Session_id", state.promptCacheKey)
 	if headerValueCaseInsensitive(headers, "Conversation_id") != "" {
 		setHeaderCasePreserved(headers, "Conversation_id", state.promptCacheKey)
 	}
->>>>>>> upstream/main
 	headers.Set("X-Client-Request-Id", state.promptCacheKey)
 	headers.Set("Thread-Id", state.promptCacheKey)
 	headers.Set("X-Codex-Window-Id", state.promptCacheKey+":0")

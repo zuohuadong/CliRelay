@@ -905,7 +905,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			lastErr = errStream
 			continue
 		}
-		if cliproxyexecutor.DownstreamWebsocket(ctx) {
+		if cliproxyexecutor.DownstreamWebsocket(ctx) && !shouldProbeDownstreamWebsocketBootstrap(provider) {
 			return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, nil, streamResult.Chunks), nil
 		}
 
@@ -972,6 +972,15 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		lastErr = &Error{Code: "auth_not_found", Message: "no upstream model available"}
 	}
 	return nil, lastErr
+}
+
+func shouldProbeDownstreamWebsocketBootstrap(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "astron-code", "bigmodel-coding":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Manager) rebuildAPIKeyModelAliasFromRuntimeConfig() {

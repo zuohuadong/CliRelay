@@ -610,9 +610,9 @@ func TestOpenAICompatExecutorIdentityFingerprintOverridesProviderHeaders(t *test
 		IdentityFingerprint: config.IdentityFingerprintConfig{
 			Codex: config.CodexIdentityFingerprintConfig{
 				Enabled:     true,
-				UserAgent:   "Codex Desktop/test",
-				Version:     "0.130.0-alpha.5",
-				Originator:  "Codex Desktop",
+				UserAgent:   "codex-tui/test",
+				Version:     "0.135.0",
+				Originator:  "codex-tui",
 				SessionMode: "fixed",
 				SessionID:   "server-session",
 			},
@@ -638,13 +638,13 @@ func TestOpenAICompatExecutorIdentityFingerprintOverridesProviderHeaders(t *test
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	if got := gotHeaders.Get("User-Agent"); got != "Codex Desktop/test" {
+	if got := gotHeaders.Get("User-Agent"); got != "codex-tui/test" {
 		t.Fatalf("User-Agent = %q, want fingerprint value", got)
 	}
-	if got := gotHeaders.Get("Version"); got != "0.130.0-alpha.5" {
+	if got := gotHeaders.Get("Version"); got != "0.135.0" {
 		t.Fatalf("Version = %q, want fingerprint value", got)
 	}
-	if got := gotHeaders.Get("Originator"); got != "Codex Desktop" {
+	if got := gotHeaders.Get("Originator"); got != "codex-tui" {
 		t.Fatalf("Originator = %q, want fingerprint value", got)
 	}
 	if got := gotHeaders.Get("Session_id"); got != "server-session" {

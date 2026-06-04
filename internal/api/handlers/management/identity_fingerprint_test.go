@@ -13,7 +13,7 @@ import (
 )
 
 func TestPutIdentityFingerprintAcceptsWrappedPayload(t *testing.T) {
-	const ua = "Codex Desktop/0.130.0-alpha.5 (Mac OS 26.4.1; arm64) unknown (Codex Desktop; 26.506.31421)"
+	const ua = "codex-tui/0.135.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.135.0)"
 	cfg := &config.Config{}
 	h := newIdentityFingerprintTestHandler(t, cfg)
 
@@ -22,8 +22,8 @@ func TestPutIdentityFingerprintAcceptsWrappedPayload(t *testing.T) {
 			"codex": {
 				"enabled": true,
 				"user-agent": "` + ua + `",
-				"version": "0.130.0-alpha.5",
-				"originator": "Codex Desktop",
+				"version": "0.135.0",
+				"originator": "codex-tui",
 				"websocket-beta": "responses_websockets=2026-02-06",
 				"session-mode": "per-request"
 			},
@@ -46,7 +46,7 @@ func TestPutIdentityFingerprintAcceptsWrappedPayload(t *testing.T) {
 	if !cfg.IdentityFingerprint.Codex.Enabled {
 		t.Fatal("expected codex fingerprint to be enabled")
 	}
-	if got := cfg.IdentityFingerprint.Codex.Version; got != "0.130.0-alpha.5" {
+	if got := cfg.IdentityFingerprint.Codex.Version; got != "0.135.0" {
 		t.Fatalf("expected version to be preserved, got %q", got)
 	}
 }
@@ -67,9 +67,9 @@ func TestPatchIdentityFingerprintPreservesUnspecifiedProvider(t *testing.T) {
 	body := `{
 		"codex": {
 			"enabled": true,
-			"user-agent": "Codex Desktop/0.130.0-alpha.5 (Mac OS 26.4.1; arm64) unknown (Codex Desktop; 26.506.31421)",
-			"version": "0.130.0-alpha.5",
-			"originator": "Codex Desktop",
+			"user-agent": "codex-tui/0.135.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.135.0)",
+			"version": "0.135.0",
+			"originator": "codex-tui",
 			"session-mode": "per-request"
 		}
 	}`

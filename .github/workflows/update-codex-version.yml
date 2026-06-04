@@ -1,0 +1,85 @@
+name: Update codex-tui version
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub cron is UTC; 10:00 UTC = 18:00 Beijing time
+    - cron: '0 10 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  BRANCH_NAME: chore/update-codex-version
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_PR_TOKEN != '' && secrets.SYNC_PR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run update script
+        id: update
+        run: |
+          set -euo pipefail
+          BEFORE="$(grep -oP 'DefaultCodexFingerprintVersion\s+=\s+"\K[^"]+' internal/config/config.go)"
+          bash scripts/update-codex-version.sh
+          AFTER="$(grep -oP 'DefaultCodexFingerprintVersion\s+=\s+"\K[^"]+' internal/config/config.go)"
+
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No version change detected (still $BEFORE)"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "version=$AFTER" >> "$GITHUB_OUTPUT"
+            echo "Version updated: $BEFORE -> $AFTER"
+          fi
+
+      - name: Run tests
+        if: steps.update.outputs.changed == 'true'
+        run: go test ./internal/config/ ./internal/api/handlers/management/ ./internal/api/ ./internal/runtime/executor/
+
+      - name: Commit and push
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          git checkout -B "${BRANCH_NAME}"
+          git add -A
+          git commit -m "fix(codex): update identity fingerprint to codex-tui ${{ steps.update.outputs.version }}"
+          git push --force-with-lease origin "${BRANCH_NAME}"
+
+      - name: Create or update pull request
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PR_TOKEN != '' && secrets.SYNC_PR_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${{ steps.update.outputs.version }}"
+          title="fix(codex): update identity fingerprint to codex-tui ${version}"
+          body="Automated version bump detected by the daily codex-tui version monitor."$'\n\n'"Updates the codex identity fingerprint defaults (User-Agent, Version, Originator) to match the latest \`@openai/codex\` release on npm."$'\n\n'"**New version:** \`${version}\`"
+          repository="${GITHUB_REPOSITORY}"
+          head_owner="${GITHUB_REPOSITORY_OWNER}"
+          existing_pr="$(gh pr list --repo "${repository}" --base main --head "${BRANCH_NAME}" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "${existing_pr}" ]; then
+            gh pr edit "${existing_pr}" --repo "${repository}" --title "${title}" --body "${body}"
+            echo "Updated existing PR #${existing_pr}"
+          else
+            gh pr create --repo "${repository}" --base main --head "${head_owner}:${BRANCH_NAME}" --title "${title}" --body "${body}"
+            echo "Created new PR"
+          fi

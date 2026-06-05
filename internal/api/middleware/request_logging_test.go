@@ -143,7 +143,11 @@ func TestShouldCaptureRequestBody(t *testing.T) {
 	}
 }
 
+<<<<<<< HEAD
 func TestAttachWebsocketLogSourcesKeepsWebsocketFastPath(t *testing.T) {
+=======
+func TestAttachRequestLogSourcesUsesLoggerLogsDir(t *testing.T) {
+>>>>>>> upstream/main
 	gin.SetMode(gin.TestMode)
 
 	logsDir := t.TempDir()
@@ -153,7 +157,12 @@ func TestAttachWebsocketLogSourcesKeepsWebsocketFastPath(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
 	c.Request.Header.Set("Upgrade", "websocket")
 
+<<<<<<< HEAD
 	attachWebsocketLogSources(c, logger, true)
+=======
+	attachRequestLogSources(c, logger, true)
+	defer cleanupFileBodySourcesFromContext(c)
+>>>>>>> upstream/main
 
 	for _, key := range []string{
 		logging.WebsocketTimelineSourceContextKey,

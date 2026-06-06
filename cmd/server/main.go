@@ -567,6 +567,9 @@ func main() {
 				} else if cfg.Home.Enabled {
 					log.Info("Home mode: remote model updates disabled")
 				}
+				if cfg.OpenRouterSyncEnabled {
+					registry.StartOpenRouterSync(context.Background(), true, cfg.OpenRouterSyncIntervalMinutes, cfg.OpenRouterAPIKey)
+				}
 				hook := tui.NewLogHook(2000)
 				hook.SetFormatter(&logging.LogFormatter{})
 				log.AddHook(hook)
@@ -644,6 +647,9 @@ func main() {
 				registry.StartModelsUpdater(context.Background())
 			} else if cfg.Home.Enabled {
 				log.Info("Home mode: remote model updates disabled")
+			}
+			if cfg.OpenRouterSyncEnabled {
+				registry.StartOpenRouterSync(context.Background(), true, cfg.OpenRouterSyncIntervalMinutes, cfg.OpenRouterAPIKey)
 			}
 			cmd.StartService(cfg, configFilePath, password)
 		}

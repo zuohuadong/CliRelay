@@ -602,6 +602,41 @@ func (h *Handler) GetModelOwnerPresets(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
+func (h *Handler) GetConfiguredModelAvailability(c *gin.Context) {
+	availableModels := registry.GetGlobalRegistry().GetAvailableModels("openai")
+
+	availableIDs := make(map[string]bool, len(availableModels))
+	for _, m := range availableModels {
+		if id, ok := m["id"].(string); ok {
+			availableIDs[id] = true
+		}
+	}
+
+	staticModels := allStaticModelInfos()
+	items := make([]gin.H, 0, len(staticModels))
+	for _, model := range staticModels {
+		_, configured := availableIDs[model.ID]
+		items = append(items, gin.H{
+			"id":         model.ID,
+			"owned_by":   model.OwnedBy,
+			"kind":       "canonical",
+			"alias":      false,
+			"configured": configured,
+			"available":  configured,
+			"paths": []gin.H{
+				{"scope": "openai", "label": "OpenAI Chat", "method": "POST", "path": "/v1/chat/completions", "family": "openai"},
+				{"scope": "openai", "label": "OpenAI Responses", "method": "POST", "path": "/v1/responses", "family": "openai"},
+			},
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"items":            items,
+		"total":            len(items),
+		"configured_count": len(availableIDs),
+	})
+}
+
 func (h *Handler) GetModelPathAvailability(c *gin.Context) {
 	models := allStaticModelInfos()
 	items := make([]gin.H, 0, len(models))
@@ -655,6 +690,43 @@ func (h *Handler) GetUsageSummary(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"usage": gin.H{"total_requests": summary.Total, "success_count": summary.Success, "failure_count": summary.Failed, "total_tokens": summary.TotalTokens, "apis": gin.H{}, "requests_by_day": reqsByDay, "requests_by_hour": gin.H{}, "tokens_by_day": toksByDay, "tokens_by_hour": gin.H{}}})
+}
+
+func (h *Handler) GetUsageSummaryPublic(c *gin.Context) {
+	db, ok := h.usageDB()
+	if !ok {
+		c.JSON(http.StatusOK, gin.H{
+			"total_requests": 0,
+			"success_count":  0,
+			"failure_count":  0,
+			"total_tokens":   0,
+		})
+		return
+	}
+	defer func() { _ = db.Close() }()
+
+	if !dbTableExists(db, "request_logs") {
+		c.JSON(http.StatusOK, gin.H{
+			"total_requests": 0,
+			"success_count":  0,
+			"failure_count":  0,
+			"total_tokens":   0,
+		})
+		return
+	}
+
+	cols := requestLogColumns(db)
+	row := db.QueryRow("SELECT count(*), coalesce(sum(case when " + usageColumnExpr(cols, "failed", "0") + "=0 then 1 else 0 end),0), coalesce(sum(case when " + usageColumnExpr(cols, "failed", "0") + "!=0 then 1 else 0 end),0), coalesce(sum(" + usageColumnExpr(cols, "total_tokens", "0") + "),0) FROM request_logs")
+
+	var totalRequests, successCount, failureCount, totalTokens int64
+	_ = row.Scan(&totalRequests, &successCount, &failureCount, &totalTokens)
+
+	c.JSON(http.StatusOK, gin.H{
+		"total_requests": totalRequests,
+		"success_count":  successCount,
+		"failure_count":  failureCount,
+		"total_tokens":   totalTokens,
+	})
 }
 
 func (h *Handler) GetUsageChartData(c *gin.Context) {

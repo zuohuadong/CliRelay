@@ -819,7 +819,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/model-configs", s.mgmt.GetModelConfigs)
 		mgmt.GET("/model-owner-presets", s.mgmt.GetModelOwnerPresets)
 		mgmt.GET("/model-path-availability", s.mgmt.GetModelPathAvailability)
+		mgmt.GET("/models/configured-availability", s.mgmt.GetConfiguredModelAvailability)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
+		mgmt.GET("/model-openrouter-sync", s.mgmt.GetOpenRouterSync)
+		mgmt.PUT("/model-openrouter-sync", s.mgmt.PutOpenRouterSync)
+		mgmt.POST("/model-openrouter-sync/run", s.mgmt.RunOpenRouterSync)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
@@ -853,6 +857,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/usage/auth-file-trend", s.mgmt.GetAuthFileTrend)
 		mgmt.GET("/usage/logs/:id/content", s.mgmt.GetUsageLogContent)
 		mgmt.POST("/quota/reconcile", s.mgmt.ReconcileQuota)
+
+		// Public usage summary (no management auth required, read-only)
+		mgmt.GET("/usage/summary/public", s.mgmt.GetUsageSummaryPublic)
 	}
 }
 

@@ -1248,7 +1248,7 @@ func writePreformattedAPISectionWithSource(w io.Writer, sectionHeader string, se
 		}
 	}
 	tracker := &trailingNewlineTrackingWriter{writer: w}
-	if errWrite := source.WriteTo(tracker); errWrite != nil {
+	if _, errWrite := source.WriteTo(tracker); errWrite != nil {
 		return errWrite
 	}
 	if errWrite := writeSectionSpacing(w, tracker.trailingNewlines); errWrite != nil {
@@ -1767,8 +1767,6 @@ func (w *FileStreamingLogWriter) WriteAPIRequest(apiRequest []byte) error {
 	return nil
 }
 
-<<<<<<< HEAD
-=======
 // WriteAPIRequestSource buffers a file-backed upstream API request for final writing.
 func (w *FileStreamingLogWriter) WriteAPIRequestSource(apiRequestSource *FileBodySource) error {
 	if apiRequestSource == nil || !apiRequestSource.HasPayload() {
@@ -1785,7 +1783,6 @@ func (w *FileStreamingLogWriter) WriteAPIRequestSource(apiRequestSource *FileBod
 //
 // Returns:
 //   - error: Always returns nil (buffering cannot fail)
->>>>>>> upstream/main
 func (w *FileStreamingLogWriter) WriteAPIResponse(apiResponse []byte) error {
 	if len(apiResponse) == 0 {
 		return nil
@@ -1797,8 +1794,6 @@ func (w *FileStreamingLogWriter) WriteAPIResponse(apiResponse []byte) error {
 	return nil
 }
 
-<<<<<<< HEAD
-=======
 // WriteAPIResponseSource buffers a file-backed upstream API response for final writing.
 func (w *FileStreamingLogWriter) WriteAPIResponseSource(apiResponseSource *FileBodySource) error {
 	if apiResponseSource == nil || !apiResponseSource.HasPayload() {
@@ -1815,7 +1810,6 @@ func (w *FileStreamingLogWriter) WriteAPIResponseSource(apiResponseSource *FileB
 //
 // Returns:
 //   - error: Always returns nil (buffering cannot fail)
->>>>>>> upstream/main
 func (w *FileStreamingLogWriter) WriteAPIWebsocketTimeline(apiWebsocketTimeline []byte) error {
 	if len(apiWebsocketTimeline) == 0 {
 		return nil

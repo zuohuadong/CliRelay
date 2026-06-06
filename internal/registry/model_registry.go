@@ -164,6 +164,7 @@ func (r *ModelRegistry) invalidateAvailableModelsCacheLocked() {
 // LookupModelInfo searches dynamic registry (provider-specific > global) then static definitions.
 func LookupModelInfo(modelID string, provider ...string) *ModelInfo {
 	modelID = strings.TrimSpace(modelID)
+	modelID = StripContextWindowMarker(modelID)
 	if modelID == "" {
 		return nil
 	}
@@ -1029,6 +1030,25 @@ func (r *ModelRegistry) GetModelCount(modelID string) int {
 	return 0
 }
 
+// IsModelConfigured checks if a model has at least one auth client backing it.
+// It normalizes the model ID by stripping context window markers before lookup.
+func (r *ModelRegistry) IsModelConfigured(modelID string) bool {
+	if r == nil {
+		return false
+	}
+	modelID = StripContextWindowMarker(strings.TrimSpace(modelID))
+	if modelID == "" {
+		return false
+	}
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	reg, exists := r.models[modelID]
+	if !exists {
+		return false
+	}
+	return reg.Count > 0
+}
+
 // GetModelProviders returns provider identifiers that currently supply the given model
 // Parameters:
 //   - modelID: The model ID to check
@@ -1088,6 +1108,7 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 
 // GetModelInfo returns ModelInfo, prioritizing provider-specific definition if available.
 func (r *ModelRegistry) GetModelInfo(modelID, provider string) *ModelInfo {
+	modelID = StripContextWindowMarker(modelID)
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 	if reg, ok := r.models[modelID]; ok && reg != nil {

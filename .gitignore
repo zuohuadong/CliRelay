@@ -13,7 +13,12 @@ logs/*
 conv/*
 temp/*
 refs/*
+<<<<<<< HEAD
 verify-report-*.txt
+=======
+plugins/*
+examples/plugin/bin/*
+>>>>>>> upstream/main
 
 # Storage backends
 pgstore/*

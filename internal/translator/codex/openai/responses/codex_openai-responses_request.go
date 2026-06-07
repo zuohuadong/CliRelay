@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"encoding/json"
 	"fmt"
 
 	log "github.com/sirupsen/logrus"
@@ -17,32 +18,195 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 		rawJSON, _ = sjson.SetRawBytes(rawJSON, "input", input)
 	}
 
-	rawJSON, _ = sjson.SetBytes(rawJSON, "stream", true)
-	rawJSON, _ = sjson.SetBytes(rawJSON, "store", false)
-	rawJSON, _ = sjson.SetBytes(rawJSON, "parallel_tool_calls", true)
-	rawJSON, _ = sjson.SetBytes(rawJSON, "include", []string{"reasoning.encrypted_content"})
-	// Codex Responses rejects token limit fields, so strip them out before forwarding.
-	rawJSON, _ = sjson.DeleteBytes(rawJSON, "max_output_tokens")
-	rawJSON, _ = sjson.DeleteBytes(rawJSON, "max_completion_tokens")
-	rawJSON, _ = sjson.DeleteBytes(rawJSON, "temperature")
-	rawJSON, _ = sjson.DeleteBytes(rawJSON, "top_p")
-	if v := gjson.GetBytes(rawJSON, "service_tier"); v.Exists() {
-		if v.String() != "priority" {
-			rawJSON, _ = sjson.DeleteBytes(rawJSON, "service_tier")
+	// Batch all set/delete operations via unmarshal-modify-marshal to avoid
+	// O(n*m) allocations from sequential sjson calls (each creates a full copy).
+	var obj map[string]any
+	if err := json.Unmarshal(rawJSON, &obj); err != nil {
+		// Fallback to original if we cannot parse.
+		return rawJSON
+	}
+
+	// Set fields.
+	obj["stream"] = true
+	obj["store"] = false
+	obj["parallel_tool_calls"] = true
+	obj["include"] = []string{"reasoning.encrypted_content"}
+
+	// Delete fields that Codex upstream rejects.
+	delete(obj, "max_output_tokens")
+	delete(obj, "max_completion_tokens")
+	delete(obj, "temperature")
+	delete(obj, "top_p")
+	delete(obj, "truncation")
+	delete(obj, "user")
+
+	// Conditional deletes.
+	if v, ok := obj["service_tier"]; ok {
+		s, _ := v.(string)
+		if s != "priority" {
+			delete(obj, "service_tier")
+		}
+	}
+	delete(obj, "context_management")
+
+	// Convert role "system" to "developer" in input array.
+	if input, ok := obj["input"]; ok {
+		obj["input"] = convertSystemRoleInInput(input)
+	}
+
+	// Normalize built-in tool types.
+	if tools, ok := obj["tools"]; ok {
+		obj["tools"] = normalizeBuiltinToolsInArray(tools)
+	}
+	if tc, ok := obj["tool_choice"]; ok {
+		obj["tool_choice"] = normalizeToolChoice(tc)
+	}
+
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return rawJSON
+	}
+	return out
+}
+
+// convertSystemRoleInInput converts role "system" to "developer" in the input
+// array without repeated sjson.SetBytes calls on the full payload.
+func convertSystemRoleInInput(input any) any {
+	items, ok := input.([]any)
+	if !ok {
+		return input
+	}
+	changed := false
+	result := make([]any, len(items))
+	for i, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			result[i] = item
+			continue
+		}
+		if role, _ := m["role"].(string); role == "system" {
+			cp := make(map[string]any, len(m))
+			for k, v := range m {
+				cp[k] = v
+			}
+			cp["role"] = "developer"
+			result[i] = cp
+			changed = true
+		} else {
+			result[i] = item
+		}
+	}
+	if !changed {
+		return input
+	}
+	return result
+}
+
+// normalizeBuiltinToolsInArray normalizes legacy tool type names in the tools
+// array without repeated sjson.SetBytes calls on the full payload.
+func normalizeBuiltinToolsInArray(tools any) any {
+	items, ok := tools.([]any)
+	if !ok {
+		return tools
+	}
+	changed := false
+	result := make([]any, len(items))
+	for i, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			result[i] = item
+			continue
+		}
+		currentType, _ := m["type"].(string)
+		normalizedType := normalizeCodexBuiltinToolType(currentType)
+		if normalizedType != "" {
+			cp := make(map[string]any, len(m))
+			for k, v := range m {
+				cp[k] = v
+			}
+			cp["type"] = normalizedType
+			result[i] = cp
+			changed = true
+			log.Debugf("codex responses: normalized builtin tool type from %q to %q", currentType, normalizedType)
+		} else {
+			result[i] = item
+		}
+	}
+	if !changed {
+		return tools
+	}
+	return result
+}
+
+// normalizeToolChoice normalizes tool_choice.type and tool_choice.tools[].type
+// without repeated sjson calls on the full payload.
+func normalizeToolChoice(tc any) any {
+	m, ok := tc.(map[string]any)
+	if !ok {
+		return tc
+	}
+	changed := false
+	cp := make(map[string]any, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+
+	// Normalize top-level type.
+	currentType, _ := cp["type"].(string)
+	normalizedType := normalizeCodexBuiltinToolType(currentType)
+	if normalizedType != "" {
+		cp["type"] = normalizedType
+		changed = true
+		log.Debugf("codex responses: normalized builtin tool type at tool_choice.type from %q to %q", currentType, normalizedType)
+	}
+
+	// Normalize tool_choice.tools[].type.
+	if tools, ok := cp["tools"].([]any); ok {
+		toolsChanged := false
+		toolsResult := make([]any, len(tools))
+		for i, tool := range tools {
+			tm, ok := tool.(map[string]any)
+			if !ok {
+				toolsResult[i] = tool
+				continue
+			}
+			t, _ := tm["type"].(string)
+			nt := normalizeCodexBuiltinToolType(t)
+			if nt != "" {
+				tcp := make(map[string]any, len(tm))
+				for k, v := range tm {
+					tcp[k] = v
+				}
+				tcp["type"] = nt
+				toolsResult[i] = tcp
+				toolsChanged = true
+				log.Debugf("codex responses: normalized builtin tool type at tool_choice.tools from %q to %q", t, nt)
+			} else {
+				toolsResult[i] = tool
+			}
+		}
+		if toolsChanged {
+			cp["tools"] = toolsResult
+			changed = true
 		}
 	}
 
-	rawJSON, _ = sjson.DeleteBytes(rawJSON, "truncation")
-	rawJSON = applyResponsesCompactionCompatibility(rawJSON)
+	if !changed {
+		return tc
+	}
+	return cp
+}
 
-	// Delete the user field as it is not supported by the Codex upstream.
-	rawJSON, _ = sjson.DeleteBytes(rawJSON, "user")
-
-	// Convert role "system" to "developer" in input array to comply with Codex API requirements.
-	rawJSON = convertSystemRoleToDeveloper(rawJSON)
-	rawJSON = normalizeCodexBuiltinTools(rawJSON)
-
-	return rawJSON
+// normalizeCodexBuiltinToolType centralizes the current known Codex Responses
+// built-in tool alias compatibility. If Codex introduces more legacy aliases,
+// extend this helper instead of adding path-specific rewrite logic elsewhere.
+func normalizeCodexBuiltinToolType(toolType string) string {
+	switch toolType {
+	case "web_search_preview", "web_search_preview_2025_03_11":
+		return "web_search"
+	default:
+		return ""
+	}
 }
 
 // applyResponsesCompactionCompatibility handles OpenAI Responses context_management.compaction
@@ -53,6 +217,8 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 //
 // Compatibility strategy:
 // 1) Remove context_management before forwarding to Codex upstream.
+//
+// Deprecated: compaction is now removed inline by ConvertOpenAIResponsesRequestToCodex.
 func applyResponsesCompactionCompatibility(rawJSON []byte) []byte {
 	if !gjson.GetBytes(rawJSON, "context_management").Exists() {
 		return rawJSON
@@ -65,6 +231,9 @@ func applyResponsesCompactionCompatibility(rawJSON []byte) []byte {
 // convertSystemRoleToDeveloper traverses the input array and converts any message items
 // with role "system" to role "developer". This is necessary because Codex API does not
 // accept "system" role in the input array.
+//
+// Deprecated: system-to-developer conversion is now performed inline by
+// ConvertOpenAIResponsesRequestToCodex via convertSystemRoleInInput.
 func convertSystemRoleToDeveloper(rawJSON []byte) []byte {
 	inputResult := gjson.GetBytes(rawJSON, "input")
 	if !inputResult.IsArray() {
@@ -87,6 +256,9 @@ func convertSystemRoleToDeveloper(rawJSON []byte) []byte {
 
 // normalizeCodexBuiltinTools rewrites legacy/preview built-in tool variants to the
 // stable names expected by the current Codex upstream.
+//
+// Deprecated: tool normalization is now performed inline by
+// ConvertOpenAIResponsesRequestToCodex via normalizeBuiltinToolsInArray.
 func normalizeCodexBuiltinTools(rawJSON []byte) []byte {
 	result := rawJSON
 
@@ -127,16 +299,4 @@ func normalizeCodexBuiltinToolAtPath(rawJSON []byte, path string) []byte {
 
 	log.Debugf("codex responses: normalized builtin tool type at %s from %q to %q", path, currentType, normalizedType)
 	return updated
-}
-
-// normalizeCodexBuiltinToolType centralizes the current known Codex Responses
-// built-in tool alias compatibility. If Codex introduces more legacy aliases,
-// extend this helper instead of adding path-specific rewrite logic elsewhere.
-func normalizeCodexBuiltinToolType(toolType string) string {
-	switch toolType {
-	case "web_search_preview", "web_search_preview_2025_03_11":
-		return "web_search"
-	default:
-		return ""
-	}
 }

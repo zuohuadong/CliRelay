@@ -94,6 +94,27 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	})
 }
 
+// rejectUnconfiguredModel checks if the model is configured when RejectUnconfiguredModels is enabled.
+// Returns true if the request was rejected (model not configured), false otherwise.
+func (h *OpenAIAPIHandler) rejectUnconfiguredModel(c *gin.Context, modelName string) bool {
+	if !h.BaseAPIHandler.Cfg.RejectUnconfiguredModels {
+		return false
+	}
+	if modelName == "" {
+		return false
+	}
+	if registry.GetGlobalRegistry().IsModelConfigured(modelName) {
+		return false
+	}
+	c.JSON(http.StatusNotFound, handlers.ErrorResponse{
+		Error: handlers.ErrorDetail{
+			Message: fmt.Sprintf("Model %s is not configured. No auth credentials are available for this model.", modelName),
+			Type:    "invalid_request_error",
+		},
+	})
+	return true
+}
+
 // ChatCompletions handles the /v1/chat/completions endpoint.
 // It determines whether the request is for a streaming or non-streaming response
 // and calls the appropriate handler based on the model provider.
@@ -110,6 +131,11 @@ func (h *OpenAIAPIHandler) ChatCompletions(c *gin.Context) {
 				Type:    "invalid_request_error",
 			},
 		})
+		return
+	}
+
+	modelName := gjson.GetBytes(rawJSON, "model").String()
+	if h.rejectUnconfiguredModel(c, modelName) {
 		return
 	}
 
@@ -165,6 +191,11 @@ func (h *OpenAIAPIHandler) Completions(c *gin.Context) {
 				Type:    "invalid_request_error",
 			},
 		})
+		return
+	}
+
+	modelName := gjson.GetBytes(rawJSON, "model").String()
+	if h.rejectUnconfiguredModel(c, modelName) {
 		return
 	}
 

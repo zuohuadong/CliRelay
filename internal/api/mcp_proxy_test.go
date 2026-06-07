@@ -48,7 +48,7 @@ func TestProxyZAIMCPForwardsThroughBigModelCodingAuthWithCodexFingerprint(t *tes
 			Codex: config.CodexIdentityFingerprintConfig{
 				Enabled:     true,
 				UserAgent:   "codex-tui/test",
-				Version:     "0.135.0",
+				Version:     "0.137.0",
 				Originator:  "codex-tui",
 				SessionMode: "fixed",
 				SessionID:   "server-session",
@@ -105,7 +105,7 @@ func TestProxyZAIMCPForwardsThroughBigModelCodingAuthWithCodexFingerprint(t *tes
 	if got := gotHeaders.Get("User-Agent"); got != "codex-tui/test" {
 		t.Fatalf("User-Agent = %q", got)
 	}
-	if got := gotHeaders.Get("Version"); got != "0.135.0" {
+	if got := gotHeaders.Get("Version"); got != "0.137.0" {
 		t.Fatalf("Version = %q", got)
 	}
 	if got := gotHeaders.Get("Originator"); got != "codex-tui" {

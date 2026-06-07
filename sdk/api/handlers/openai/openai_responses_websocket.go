@@ -547,23 +547,34 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 	if allowIncrementalInputWithPreviousResponseID {
 		if prev := strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String()); prev != "" {
 			if strings.HasPrefix(prev, "resp_") {
-				normalized, errDelete := sjson.DeleteBytes(rawJSON, "type")
-				if errDelete != nil {
+				// Use unmarshal-modify-marshal to avoid O(n*m) allocations
+				// from sequential sjson calls on the full payload.
+				var normalized []byte
+				var obj map[string]json.RawMessage
+				if errUnmarshal := json.Unmarshal(rawJSON, &obj); errUnmarshal != nil {
 					normalized = bytes.Clone(rawJSON)
-				}
-				if !gjson.GetBytes(normalized, "model").Exists() {
-					modelName := strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
-					if modelName != "" {
-						normalized, _ = sjson.SetBytes(normalized, "model", modelName)
+				} else {
+					delete(obj, "type")
+					obj["stream"] = json.RawMessage(`true`)
+					if _, ok := obj["model"]; !ok {
+						modelName := strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
+						if modelName != "" {
+							modelBytes, _ := json.Marshal(modelName)
+							obj["model"] = json.RawMessage(modelBytes)
+						}
+					}
+					if _, ok := obj["instructions"]; !ok {
+						instructions := gjson.GetBytes(lastRequest, "instructions")
+						if instructions.Exists() {
+							obj["instructions"] = json.RawMessage(instructions.Raw)
+						}
+					}
+					if out, errMarshal := json.Marshal(obj); errMarshal == nil {
+						normalized = out
+					} else {
+						normalized = bytes.Clone(rawJSON)
 					}
 				}
-				if !gjson.GetBytes(normalized, "instructions").Exists() {
-					instructions := gjson.GetBytes(lastRequest, "instructions")
-					if instructions.Exists() {
-						normalized, _ = sjson.SetRawBytes(normalized, "instructions", []byte(instructions.Raw))
-					}
-				}
-				normalized, _ = sjson.SetBytes(normalized, "stream", true)
 				return normalized, bytes.Clone(normalized), nil
 			}
 			log.Infof("responses websocket: stripping invalid previous_response_id (missing resp_ prefix): %s", prev)
@@ -612,27 +623,34 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 		mergedInput = dedupedInput
 	}
 
-	normalized, errDelete := sjson.DeleteBytes(rawJSON, "type")
-	if errDelete != nil {
-		normalized = bytes.Clone(rawJSON)
-	}
-	normalized, _ = sjson.DeleteBytes(normalized, "previous_response_id")
-	var errSet error
-	normalized, errSet = sjson.SetRawBytes(normalized, "input", []byte(mergedInput))
-	if errSet != nil {
+	// Build the normalized request using unmarshal-modify-marshal to avoid
+	// O(n*m) allocations from sequential sjson calls on the full payload.
+	var obj map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(rawJSON, &obj); errUnmarshal != nil {
 		return nil, lastRequest, &interfaces.ErrorMessage{
 			StatusCode: http.StatusBadRequest,
-			Error:      fmt.Errorf("failed to merge websocket input: %w", errSet),
+			Error:      fmt.Errorf("invalid request JSON: %w", errUnmarshal),
 		}
 	}
-	if !gjson.GetBytes(normalized, "model").Exists() {
+	delete(obj, "type")
+	delete(obj, "previous_response_id")
+	obj["input"] = json.RawMessage(mergedInput)
+	obj["stream"] = json.RawMessage(`true`)
+	if _, ok := obj["model"]; !ok {
 		modelName := strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
 		if modelName != "" {
-			normalized, _ = sjson.SetBytes(normalized, "model", modelName)
+			modelBytes, _ := json.Marshal(modelName)
+			obj["model"] = json.RawMessage(modelBytes)
+		}
+	}
+	normalized, errMarshal := json.Marshal(obj)
+	if errMarshal != nil {
+		return nil, lastRequest, &interfaces.ErrorMessage{
+			StatusCode: http.StatusBadRequest,
+			Error:      fmt.Errorf("failed to marshal normalized request: %w", errMarshal),
 		}
 	}
 	normalized = copyMissingResponsesRequestFields(normalized, lastRequest)
-	normalized, _ = sjson.SetBytes(normalized, "stream", true)
 	return normalized, bytes.Clone(normalized), nil
 }
 
@@ -838,11 +856,19 @@ func dedupeInputItemsByID(rawArray string) (string, error) {
 		filtered = append(filtered, item)
 	}
 
-	out, errMarshal := json.Marshal(filtered)
-	if errMarshal != nil {
-		return "", errMarshal
+	// Build the output JSON array by concatenating raw items with commas,
+	// avoiding json.Marshal which allocates a large contiguous buffer for
+	// the entire array (a major heap allocation hotspot under load).
+	var buf bytes.Buffer
+	buf.WriteByte('[')
+	for i, item := range filtered {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.Write(item)
 	}
-	return string(out), nil
+	buf.WriteByte(']')
+	return buf.String(), nil
 }
 
 func websocketUpstreamSupportsIncrementalInput(attributes map[string]string, metadata map[string]any) bool {

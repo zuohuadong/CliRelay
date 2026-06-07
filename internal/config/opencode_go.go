@@ -10,6 +10,7 @@ type OpenCodeGoKey struct {
 	BaseURL        string            `yaml:"base-url,omitempty" json:"base-url,omitempty"`
 	ProxyURL       string            `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
 	ProxyID        string            `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+	VisionModel    string            `yaml:"vision-model,omitempty" json:"vision-model,omitempty"`
 	Models         []OpenCodeGoModel `yaml:"models,omitempty" json:"models,omitempty"`
 	Headers        map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 	ExcludedModels []string          `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
@@ -37,6 +38,7 @@ func (cfg *Config) SanitizeOpenCodeGoKeys() {
 		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
+		entry.VisionModel = strings.TrimSpace(entry.VisionModel)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
 		entry.Models = sanitizeOpenCodeGoModels(entry.Models)

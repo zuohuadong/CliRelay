@@ -49,11 +49,8 @@ type upstreamAttempt struct {
 	index                int
 	request              string
 	response             *strings.Builder
-<<<<<<< HEAD
-	responseCapped       bool
-=======
 	responseSource       *logging.FileBodySource
->>>>>>> upstream/main
+	responseCapped       bool
 	responseIntroWritten bool
 	statusWritten        bool
 	headersWritten       bool
@@ -215,13 +212,8 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 	if ginCtx == nil {
 		return
 	}
-<<<<<<< HEAD
-	_, attempt := ensureAttempt(ginCtx)
-	ensureResponseIntro(attempt)
-=======
 	attempts, attempt := ensureAttempt(ginCtx)
 	ensureResponseIntro(ginCtx, attempt)
->>>>>>> upstream/main
 
 	if attempt.responseCapped {
 		return
@@ -256,11 +248,7 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 	writeAttemptResponse(ginCtx, attempt, data)
 	attempt.bodyHasContent = true
 	attempt.prevWasSSEEvent = currentChunkIsSSEEvent
-<<<<<<< HEAD
-=======
-
 	updateAggregatedResponseIfMemoryBacked(ginCtx, attempts)
->>>>>>> upstream/main
 }
 
 // RecordAPIWebsocketRequest stores an upstream websocket request event in Gin context.
@@ -452,17 +440,6 @@ func ensureResponseIntro(ginCtx *gin.Context, attempt *upstreamAttempt) {
 	attempt.responseIntroWritten = true
 }
 
-<<<<<<< HEAD
-func FlushAggregatedResponse(ginCtx *gin.Context) {
-	if ginCtx == nil {
-		return
-	}
-	attempts := getAttempts(ginCtx)
-	if len(attempts) == 0 {
-		return
-	}
-	updateAggregatedResponse(ginCtx, attempts)
-=======
 func writeAttemptResponse(ginCtx *gin.Context, attempt *upstreamAttempt, payload []byte) {
 	if attempt == nil || len(payload) == 0 {
 		return
@@ -485,7 +462,6 @@ func writeAttemptResponse(ginCtx *gin.Context, attempt *upstreamAttempt, payload
 		attempt.response = &strings.Builder{}
 	}
 	attempt.response.Write(payload)
->>>>>>> upstream/main
 }
 
 func updateAggregatedRequest(ginCtx *gin.Context, attempts []*upstreamAttempt) {
@@ -508,6 +484,17 @@ func updateAggregatedRequest(ginCtx *gin.Context, attempts []*upstreamAttempt) {
 
 func updateAggregatedResponseIfMemoryBacked(ginCtx *gin.Context, attempts []*upstreamAttempt) {
 	if apiResponseSourceOrNil(ginCtx) != nil {
+		return
+	}
+	updateAggregatedResponse(ginCtx, attempts)
+}
+
+func FlushAggregatedResponse(ginCtx *gin.Context) {
+	if ginCtx == nil {
+		return
+	}
+	attempts := getAttempts(ginCtx)
+	if len(attempts) == 0 {
 		return
 	}
 	updateAggregatedResponse(ginCtx, attempts)

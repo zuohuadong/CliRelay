@@ -36,6 +36,8 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeBigModelCoding(ctx)...)
 	// Astron Coding Plan API Keys
 	out = append(out, s.synthesizeAstronCode(ctx)...)
+	// OpenCode Go API Keys
+	out = append(out, s.synthesizeOpenCodeGo(ctx)...)
 	// OpenAI-compat
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
@@ -268,6 +270,65 @@ func (s *ConfigSynthesizer) synthesizeAstronCode(ctx *SynthesisContext) []*corea
 			}
 			out = append(out, a)
 		}
+	}
+	return out
+}
+
+// synthesizeOpenCodeGo creates Auth entries for OpenCode Go providers.
+func (s *ConfigSynthesizer) synthesizeOpenCodeGo(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+
+	const providerName = "opencode-go"
+	out := make([]*coreauth.Auth, 0, len(cfg.OpenCodeGoKey))
+	for i := range cfg.OpenCodeGoKey {
+		entry := cfg.OpenCodeGoKey[i]
+		key := strings.TrimSpace(entry.APIKey)
+		if key == "" {
+			continue
+		}
+		prefix := strings.TrimSpace(entry.Prefix)
+		base := strings.TrimSpace(entry.BaseURL)
+		if base == "" {
+			base = "http://localhost:8080/v1"
+		}
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		if pid := strings.TrimSpace(entry.ProxyID); pid != "" {
+			if resolved := cfg.ResolveProxyURL(pid, ""); resolved != "" {
+				proxyURL = resolved
+			}
+		}
+		id, token := idGen.Next("opencode-go:apikey", key, base, proxyURL)
+		attrs := map[string]string{
+			"source":       fmt.Sprintf("config:opencode-go[%s]", token),
+			"base_url":     base,
+			"compat_name":  providerName,
+			"provider_key": providerName,
+			"api_key":      key,
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		if entry.VisionModel != "" {
+			attrs["vision_model"] = entry.VisionModel
+		}
+		if hash := diff.ComputeOpenCodeGoModelsHash(entry.Models); hash != "" {
+			attrs["models_hash"] = hash
+		}
+		addConfigHeadersToAttrs(entry.Headers, attrs)
+		a := &coreauth.Auth{
+			ID:         id,
+			Provider:   providerName,
+			Label:      providerName,
+			Prefix:     prefix,
+			Status:     coreauth.StatusActive,
+			ProxyURL:   proxyURL,
+			Attributes: attrs,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		out = append(out, a)
 	}
 	return out
 }

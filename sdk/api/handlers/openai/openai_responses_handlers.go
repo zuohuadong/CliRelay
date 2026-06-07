@@ -468,6 +468,27 @@ func (h *OpenAIResponsesAPIHandler) Models() []map[string]any {
 	return modelRegistry.GetAvailableModels("openai")
 }
 
+// rejectUnconfiguredModel checks if the model is configured when RejectUnconfiguredModels is enabled.
+// Returns true if the request was rejected (model not configured), false otherwise.
+func (h *OpenAIResponsesAPIHandler) rejectUnconfiguredModel(c *gin.Context, modelName string) bool {
+	if !h.BaseAPIHandler.Cfg.RejectUnconfiguredModels {
+		return false
+	}
+	if modelName == "" {
+		return false
+	}
+	if registry.GetGlobalRegistry().IsModelConfigured(modelName) {
+		return false
+	}
+	c.JSON(http.StatusNotFound, handlers.ErrorResponse{
+		Error: handlers.ErrorDetail{
+			Message: fmt.Sprintf("Model %s is not configured. No auth credentials are available for this model.", modelName),
+			Type:    "invalid_request_error",
+		},
+	})
+	return true
+}
+
 // OpenAIResponsesModels handles the /v1/models endpoint.
 // It returns a list of available AI models with their capabilities
 // and specifications in OpenAIResponses-compatible format.
@@ -497,6 +518,11 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 		return
 	}
 
+	modelName := gjson.GetBytes(rawJSON, "model").String()
+	if h.rejectUnconfiguredModel(c, modelName) {
+		return
+	}
+
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")
 	if streamResult.Type == gjson.True {
@@ -519,6 +545,11 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 		return
 	}
 
+	modelName := gjson.GetBytes(rawJSON, "model").String()
+	if h.rejectUnconfiguredModel(c, modelName) {
+		return
+	}
+
 	streamResult := gjson.GetBytes(rawJSON, "stream")
 	if streamResult.Type == gjson.True {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
@@ -536,7 +567,7 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", "application/json")
-	modelName := gjson.GetBytes(rawJSON, "model").String()
+	modelName = gjson.GetBytes(rawJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "responses/compact")
@@ -560,7 +591,6 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 //   - rawJSON: The raw JSON bytes of the OpenAIResponses-compatible request
 func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []byte) {
 	c.Header("Content-Type", "application/json")
-
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)

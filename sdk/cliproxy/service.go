@@ -383,6 +383,9 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 	if strings.EqualFold(strings.TrimSpace(a.Provider), "astron-code") {
 		return "astron-code", "astron-code", true
 	}
+	if strings.EqualFold(strings.TrimSpace(a.Provider), "opencode-go") {
+		return "opencode-go", "opencode-go", true
+	}
 	return "", "", false
 }
 
@@ -426,6 +429,10 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		}
 		if strings.EqualFold(compatProviderKey, "astron-code") {
 			s.coreManager.RegisterExecutor(executor.NewAstronCodeExecutor(s.cfg))
+			return
+		}
+		if strings.EqualFold(compatProviderKey, "opencode-go") {
+			s.coreManager.RegisterExecutor(executor.NewOpenCodeGoExecutor(s.cfg))
 			return
 		}
 		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(compatProviderKey, s.cfg))
@@ -609,6 +616,7 @@ func (s *Service) registerHomeExecutors() {
 	s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
 	s.coreManager.RegisterExecutor(executor.NewBigModelCodingExecutor(s.cfg))
 	s.coreManager.RegisterExecutor(executor.NewAstronCodeExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewOpenCodeGoExecutor(s.cfg))
 	s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor("openai-compatibility", s.cfg))
 }
 
@@ -1106,6 +1114,8 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 			provider = "bigmodel-coding"
 		} else if strings.EqualFold(strings.TrimSpace(compatProviderKey), "astron-code") {
 			provider = "astron-code"
+		} else if strings.EqualFold(strings.TrimSpace(compatProviderKey), "opencode-go") {
+			provider = "opencode-go"
 		} else {
 			provider = "openai-compatibility"
 		}
@@ -1233,6 +1243,21 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 			return
 		}
 		log.Warnf("registerModelsForAuth: no astron-code entry found for auth=%s, unregistering", a.ID)
+		GlobalModelRegistry().UnregisterClient(a.ID)
+		return
+	case "opencode-go":
+		log.Debugf("registerModelsForAuth: opencode-go auth=%s, OpenCodeGoKey count=%d", a.ID, len(s.cfg.OpenCodeGoKey))
+		for i := range s.cfg.OpenCodeGoKey {
+			entry := &s.cfg.OpenCodeGoKey[i]
+			ms := buildOpenCodeGoConfigModels(entry)
+			log.Debugf("registerModelsForAuth: opencode-go entry[%d] models count=%d, models=%v", i, len(ms), ms)
+			if len(ms) > 0 {
+				s.registerResolvedModelsForAuth(a, "opencode-go", applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
+			} else {
+				GlobalModelRegistry().UnregisterClient(a.ID)
+			}
+			return
+		}
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
 	default:
@@ -1489,6 +1514,32 @@ func (s *Service) resolveConfigCodexKey(auth *coreauth.Auth) *config.CodexKey {
 	return nil
 }
 
+func (s *Service) resolveConfigOpenCodeGoKey(auth *coreauth.Auth) *config.OpenCodeGoKey {
+	if auth == nil || s.cfg == nil {
+		return nil
+	}
+	var attrKey, attrBase string
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+	}
+	for i := range s.cfg.OpenCodeGoKey {
+		entry := &s.cfg.OpenCodeGoKey[i]
+		cfgKey := strings.TrimSpace(entry.APIKey)
+		cfgBase := strings.TrimSpace(entry.BaseURL)
+		if attrKey != "" && strings.EqualFold(cfgKey, attrKey) {
+			if cfgBase == "" || strings.EqualFold(cfgBase, attrBase) {
+				return entry
+			}
+			continue
+		}
+		if attrKey == "" && attrBase != "" && strings.EqualFold(cfgBase, attrBase) {
+			return entry
+		}
+	}
+	return nil
+}
+
 func (s *Service) oauthExcludedModels(provider, authKind string) []string {
 	cfg := s.cfg
 	if cfg == nil {
@@ -1665,6 +1716,13 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		})
 	}
 	return models
+}
+
+func buildOpenCodeGoConfigModels(entry *config.OpenCodeGoKey) []*ModelInfo {
+	if entry == nil || len(entry.Models) == 0 {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "opencode-go", "openai-compatibility")
 }
 
 func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*ModelInfo {

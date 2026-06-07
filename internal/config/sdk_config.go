@@ -60,6 +60,26 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+
+	// RejectUnconfiguredModels rejects POST requests for models that have no
+	// configured auth credentials backing them. When false (default), such
+	// requests proceed to the normal routing path which may return a generic
+	// upstream error. When true, the proxy returns 404 immediately with a
+	// descriptive error message.
+	RejectUnconfiguredModels bool `yaml:"reject-unconfigured-models" json:"rejectUnconfiguredModels"`
+
+	// OpenRouterSyncEnabled enables periodic OpenRouter model metadata synchronization.
+	// When enabled, model listings, pricing, and context window information are
+	// fetched from the OpenRouter API and registered in the model registry.
+	OpenRouterSyncEnabled bool `yaml:"openrouter-sync-enabled" json:"openrouterSyncEnabled"`
+
+	// OpenRouterSyncIntervalMinutes controls how often the OpenRouter model
+	// catalog is refreshed. Minimum is 60 minutes. Default is 1440 (24 hours).
+	OpenRouterSyncIntervalMinutes int `yaml:"openrouter-sync-interval-minutes" json:"openrouterSyncIntervalMinutes"`
+
+	// OpenRouterAPIKey is an optional API key for authenticating with the
+	// OpenRouter API. When set, it is included as a Bearer token in sync requests.
+	OpenRouterAPIKey string `yaml:"openrouter-api-key" json:"openRouterApiKey"`
 }
 
 // StreamingConfig holds server streaming behavior configuration.

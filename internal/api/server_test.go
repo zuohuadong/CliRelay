@@ -149,6 +149,7 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 	}
 }
 
+<<<<<<< HEAD
 func TestManagementAuthFileDownloadRoute(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 
@@ -159,6 +160,14 @@ func TestManagementAuthFileDownloadRoute(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v0/management/auth-files/download?name="+url.QueryEscape(fileName), nil)
+=======
+func TestManagementPluginsRouteRegistered(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/plugins", nil)
+>>>>>>> upstream/main
 	req.Header.Set("Authorization", "Bearer test-management-key")
 	rr := httptest.NewRecorder()
 	server.engine.ServeHTTP(rr, req)
@@ -166,8 +175,21 @@ func TestManagementAuthFileDownloadRoute(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
 	}
+<<<<<<< HEAD
 	if got := strings.TrimSpace(rr.Body.String()); got != `{"ok":true}` {
 		t.Fatalf("body = %q", got)
+=======
+
+	var payload struct {
+		PluginsEnabled bool  `json:"plugins_enabled"`
+		Plugins        []any `json:"plugins"`
+	}
+	if errUnmarshal := json.Unmarshal(rr.Body.Bytes(), &payload); errUnmarshal != nil {
+		t.Fatalf("unmarshal response: %v body=%s", errUnmarshal, rr.Body.String())
+	}
+	if payload.Plugins == nil {
+		t.Fatalf("plugins field = nil, want array; body=%s", rr.Body.String())
+>>>>>>> upstream/main
 	}
 }
 

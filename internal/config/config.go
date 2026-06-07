@@ -1111,7 +1111,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	return &cfg, nil
 }
 
-<<<<<<< HEAD
 // SanitizeRequestPolicies normalizes request policy matching and drops inactive rules.
 func (cfg *Config) SanitizeRequestPolicies() {
 	if cfg == nil || len(cfg.RequestPolicies) == 0 {
@@ -1364,7 +1363,6 @@ func normalizePolicyValues(values []string, lower bool) []string {
 	return out
 }
 
-=======
 // NormalizePluginsConfig applies default plugin configuration values.
 func (cfg *Config) NormalizePluginsConfig() {
 	if cfg == nil {
@@ -1379,7 +1377,6 @@ func (cfg *Config) NormalizePluginsConfig() {
 	}
 }
 
->>>>>>> upstream/main
 // SanitizePayloadRules validates raw JSON payload rule params and drops invalid rules.
 func (cfg *Config) SanitizePayloadRules() {
 	if cfg == nil {

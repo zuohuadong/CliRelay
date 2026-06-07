@@ -17,11 +17,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-<<<<<<< HEAD
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-=======
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
->>>>>>> upstream/main
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"golang.org/x/crypto/bcrypt"
@@ -54,12 +51,9 @@ type Handler struct {
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
-<<<<<<< HEAD
 	startTime           time.Time
-=======
 	postAuthPersistHook coreauth.PostAuthHook
 	pluginHost          *pluginhost.Host
->>>>>>> upstream/main
 }
 
 // NewHandler creates a new management handler instance.

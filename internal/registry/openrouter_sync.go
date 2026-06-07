@@ -395,16 +395,29 @@ func fetchAndRegisterOpenRouterModels(apiKey string) (*OpenRouterSyncResult, err
 		registerOpenRouterModel(m)
 	}
 
-	// Remove models that were previously registered but are no longer in the API response
+	reconcileRemovedOpenRouterModels(state, seenIDs)
+
+	return result, nil
+}
+
+func reconcileRemovedOpenRouterModels(state *OpenRouterSyncState, seenIDs map[string]struct{}) {
+	if state == nil {
+		return
+	}
 	state.mu.Lock()
+	removedIDs := make([]string, 0)
 	for id := range state.registeredModels {
-		if _, stillPresent := seenIDs[id]; !stillPresent {
-			delete(state.registeredModels, id)
+		if _, stillPresent := seenIDs[id]; stillPresent {
+			continue
 		}
+		delete(state.registeredModels, id)
+		removedIDs = append(removedIDs, id)
 	}
 	state.mu.Unlock()
 
-	return result, nil
+	for _, id := range removedIDs {
+		GetGlobalRegistry().UnregisterClient(openRouterSyncClientID(id))
+	}
 }
 
 func modelChanged(old, new *openRouterModelEntry) bool {
@@ -435,8 +448,11 @@ func registerOpenRouterModel(m *openRouterModel) {
 
 	// Register as a client so the model appears in available model listings.
 	// Use a stable client ID based on the model ID to avoid duplicate registrations.
-	clientID := "openrouter-sync:" + m.ID
-	registry.RegisterClient(clientID, "openrouter", []*ModelInfo{info})
+	registry.RegisterClient(openRouterSyncClientID(m.ID), "openrouter", []*ModelInfo{info})
+}
+
+func openRouterSyncClientID(modelID string) string {
+	return "openrouter-sync:" + modelID
 }
 
 // extractOwner derives a provider name from an OpenRouter model ID

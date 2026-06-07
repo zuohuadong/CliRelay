@@ -89,15 +89,6 @@ func attachRequestLogSources(c *gin.Context, logger logging.RequestLogger, logge
 	if source, errSource := factory.NewFileBodySource("api-response"); errSource == nil {
 		c.Set(logging.APIResponseSourceContextKey, source)
 	}
-	if !isResponsesWebsocketUpgrade(c.Request) {
-		return
-	}
-	if source, errSource := factory.NewFileBodySource("websocket-timeline"); errSource == nil {
-		c.Set(logging.WebsocketTimelineSourceContextKey, source)
-	}
-	if source, errSource := factory.NewFileBodySource("api-websocket-timeline"); errSource == nil {
-		c.Set(logging.APIWebsocketTimelineSourceContextKey, source)
-	}
 }
 
 func shouldSkipMethodForRequestLogging(req *http.Request) bool {

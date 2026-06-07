@@ -464,8 +464,59 @@ func (h *Handler) PutOpenCodeGoKeys(c *gin.Context) {
 func (h *Handler) DeleteOpenCodeGoKey(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.cfg.OpenCodeGoKey = nil
-	h.persistLocked(c)
+	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
+		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
+			base := strings.TrimSpace(baseRaw)
+			out := make([]config.OpenCodeGoKey, 0, len(h.cfg.OpenCodeGoKey))
+			for _, v := range h.cfg.OpenCodeGoKey {
+				if strings.TrimSpace(v.APIKey) == val && strings.TrimSpace(v.BaseURL) == base {
+					continue
+				}
+				out = append(out, v)
+			}
+			if len(out) != len(h.cfg.OpenCodeGoKey) {
+				h.cfg.OpenCodeGoKey = out
+				h.cfg.SanitizeOpenCodeGoKeys()
+				h.persistLocked(c)
+			} else {
+				c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
+			}
+			return
+		}
+
+		matchIndex := -1
+		matchCount := 0
+		for i := range h.cfg.OpenCodeGoKey {
+			if strings.TrimSpace(h.cfg.OpenCodeGoKey[i].APIKey) == val {
+				matchCount++
+				if matchIndex == -1 {
+					matchIndex = i
+				}
+			}
+		}
+		if matchCount == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
+			return
+		}
+		if matchCount > 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "multiple items match api-key; base-url is required"})
+			return
+		}
+		h.cfg.OpenCodeGoKey = append(h.cfg.OpenCodeGoKey[:matchIndex], h.cfg.OpenCodeGoKey[matchIndex+1:]...)
+		h.cfg.SanitizeOpenCodeGoKeys()
+		h.persistLocked(c)
+		return
+	}
+	if idxStr := c.Query("index"); idxStr != "" {
+		idx, errParse := strconv.Atoi(idxStr)
+		if errParse == nil && idx >= 0 && idx < len(h.cfg.OpenCodeGoKey) {
+			h.cfg.OpenCodeGoKey = append(h.cfg.OpenCodeGoKey[:idx], h.cfg.OpenCodeGoKey[idx+1:]...)
+			h.cfg.SanitizeOpenCodeGoKeys()
+			h.persistLocked(c)
+			return
+		}
+	}
+	c.JSON(http.StatusBadRequest, gin.H{"error": "missing api-key or index"})
 }
 
 func (h *Handler) GetBedrockKeys(c *gin.Context) {

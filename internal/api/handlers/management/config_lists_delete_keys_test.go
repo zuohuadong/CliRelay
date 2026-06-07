@@ -170,3 +170,93 @@ func TestDeleteCodexKey_RequiresBaseURLWhenAPIKeyDuplicated(t *testing.T) {
 		t.Fatalf("codex keys len = %d, want 2", got)
 	}
 }
+
+func TestDeleteOpenCodeGoKey_DeletesOnlyMatchingAPIKey(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	h := &Handler{
+		cfg: &config.Config{
+			OpenCodeGoKey: []config.OpenCodeGoKey{
+				{Name: "first", APIKey: "sk-first"},
+				{Name: "second", APIKey: "sk-second"},
+			},
+		},
+		configFilePath: writeTestConfigFile(t),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/v0/management/opencode-go-api-key?api-key=sk-first", nil)
+
+	h.DeleteOpenCodeGoKey(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := len(h.cfg.OpenCodeGoKey); got != 1 {
+		t.Fatalf("opencode-go keys len = %d, want 1", got)
+	}
+	if got := h.cfg.OpenCodeGoKey[0].APIKey; got != "sk-second" {
+		t.Fatalf("remaining api-key = %q, want %q", got, "sk-second")
+	}
+}
+
+func TestDeleteOpenCodeGoKey_RequiresBaseURLWhenAPIKeyDuplicated(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	h := &Handler{
+		cfg: &config.Config{
+			OpenCodeGoKey: []config.OpenCodeGoKey{
+				{APIKey: "shared-key", BaseURL: "https://a.example.com"},
+				{APIKey: "shared-key", BaseURL: "https://b.example.com"},
+			},
+		},
+		configFilePath: writeTestConfigFile(t),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/v0/management/opencode-go-api-key?api-key=shared-key", nil)
+
+	h.DeleteOpenCodeGoKey(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if got := len(h.cfg.OpenCodeGoKey); got != 2 {
+		t.Fatalf("opencode-go keys len = %d, want 2", got)
+	}
+}
+
+func TestDeleteOpenCodeGoKey_DeletesOnlyMatchingBaseURL(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	h := &Handler{
+		cfg: &config.Config{
+			OpenCodeGoKey: []config.OpenCodeGoKey{
+				{APIKey: "shared-key", BaseURL: "https://a.example.com"},
+				{APIKey: "shared-key", BaseURL: "https://b.example.com"},
+			},
+		},
+		configFilePath: writeTestConfigFile(t),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/v0/management/opencode-go-api-key?api-key=shared-key&base-url=https://b.example.com", nil)
+
+	h.DeleteOpenCodeGoKey(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := len(h.cfg.OpenCodeGoKey); got != 1 {
+		t.Fatalf("opencode-go keys len = %d, want 1", got)
+	}
+	if got := h.cfg.OpenCodeGoKey[0].BaseURL; got != "https://a.example.com" {
+		t.Fatalf("remaining base-url = %q, want %q", got, "https://a.example.com")
+	}
+}

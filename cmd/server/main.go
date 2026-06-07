@@ -685,14 +685,10 @@ func main() {
 			} else if cfg.Home.Enabled {
 				log.Info("Home mode: remote model updates disabled")
 			}
-<<<<<<< HEAD
 			if cfg.OpenRouterSyncEnabled {
 				registry.StartOpenRouterSync(context.Background(), true, cfg.OpenRouterSyncIntervalMinutes, cfg.OpenRouterAPIKey)
 			}
-			cmd.StartService(cfg, configFilePath, password)
-=======
 			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost)
->>>>>>> upstream/main
 		}
 	}
 }

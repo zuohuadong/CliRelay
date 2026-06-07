@@ -428,17 +428,8 @@ func (h *Handler) DeleteClaudeKey(c *gin.Context) {
 
 // openai-compatibility: []OpenAICompatibility
 func (h *Handler) GetOpenAICompat(c *gin.Context) {
-	// Include astron-code and bigmodel-coding entries in the openai-compatibility
-	// response so that the control panel (which only fetches /openai-compatibility)
-	// can display them even after they have been migrated to dedicated config fields.
 	compat := h.openAICompatibilityWithAuthIndex()
-	astron := h.astronCodeWithAuthIndex()
-	bigmodel := h.bigModelCodingWithAuthIndex()
-	combined := make([]openAICompatibilityWithAuthIndex, 0, len(compat)+len(astron)+len(bigmodel))
-	combined = append(combined, compat...)
-	combined = append(combined, astron...)
-	combined = append(combined, bigmodel...)
-	c.JSON(200, gin.H{"openai-compatibility": combined})
+	c.JSON(200, gin.H{"openai-compatibility": compat})
 }
 func (h *Handler) PutOpenAICompat(c *gin.Context) {
 	data, err := c.GetRawData()

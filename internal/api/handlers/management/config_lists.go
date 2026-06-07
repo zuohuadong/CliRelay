@@ -428,7 +428,17 @@ func (h *Handler) DeleteClaudeKey(c *gin.Context) {
 
 // openai-compatibility: []OpenAICompatibility
 func (h *Handler) GetOpenAICompat(c *gin.Context) {
-	c.JSON(200, gin.H{"openai-compatibility": h.openAICompatibilityWithAuthIndex()})
+	// Include astron-code and bigmodel-coding entries in the openai-compatibility
+	// response so that the control panel (which only fetches /openai-compatibility)
+	// can display them even after they have been migrated to dedicated config fields.
+	compat := h.openAICompatibilityWithAuthIndex()
+	astron := h.astronCodeWithAuthIndex()
+	bigmodel := h.bigModelCodingWithAuthIndex()
+	combined := make([]openAICompatibilityWithAuthIndex, 0, len(compat)+len(astron)+len(bigmodel))
+	combined = append(combined, compat...)
+	combined = append(combined, astron...)
+	combined = append(combined, bigmodel...)
+	c.JSON(200, gin.H{"openai-compatibility": combined})
 }
 func (h *Handler) PutOpenAICompat(c *gin.Context) {
 	data, err := c.GetRawData()
@@ -448,9 +458,20 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 		arr = obj.Items
 	}
 	filtered := make([]config.OpenAICompatibility, 0, len(arr))
+	astronEntries := make([]config.OpenAICompatibility, 0)
+	bigmodelEntries := make([]config.OpenAICompatibility, 0)
 	for i := range arr {
 		normalizeOpenAICompatibilityEntry(&arr[i])
-		if strings.TrimSpace(arr[i].BaseURL) != "" {
+		if strings.TrimSpace(arr[i].BaseURL) == "" {
+			continue
+		}
+		nameLower := strings.ToLower(strings.TrimSpace(arr[i].Name))
+		switch nameLower {
+		case strings.ToLower(config.DefaultAstronCodeProviderName):
+			astronEntries = append(astronEntries, arr[i])
+		case strings.ToLower(config.DefaultBigModelCodingProviderName):
+			bigmodelEntries = append(bigmodelEntries, arr[i])
+		default:
 			filtered = append(filtered, arr[i])
 		}
 	}
@@ -458,6 +479,14 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 	defer h.mu.Unlock()
 	h.cfg.OpenAICompatibility = filtered
 	h.cfg.SanitizeOpenAICompatibility()
+	if len(astronEntries) > 0 {
+		h.cfg.AstronCodeAPIKey = astronEntries
+		h.cfg.SanitizeAstronCode()
+	}
+	if len(bigmodelEntries) > 0 {
+		h.cfg.BigModelCodingAPIKey = bigmodelEntries
+		h.cfg.SanitizeBigModelCoding()
+	}
 	h.persistLocked(c)
 }
 func (h *Handler) PatchOpenAICompat(c *gin.Context) {
@@ -472,6 +501,7 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		Models              *[]config.OpenAICompatibilityModel  `json:"models"`
 		Headers             *map[string]string                  `json:"headers"`
 		IdentityFingerprint *string                             `json:"identity-fingerprint"`
+		DisableCooling      *bool                               `json:"disable-cooling"`
 	}
 	var body struct {
 		Name  *string            `json:"name"`
@@ -481,6 +511,19 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
+	}
+
+	// Route astron-code and bigmodel-coding patches to their dedicated handlers.
+	if body.Name != nil {
+		nameLower := strings.ToLower(strings.TrimSpace(*body.Name))
+		if nameLower == strings.ToLower(config.DefaultAstronCodeProviderName) {
+			h.PatchAstronCodeKey(c)
+			return
+		}
+		if nameLower == strings.ToLower(config.DefaultBigModelCodingProviderName) {
+			h.PatchBigModelCodingKey(c)
+			return
+		}
 	}
 
 	h.mu.Lock()
@@ -548,6 +591,19 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 }
 
 func (h *Handler) DeleteOpenAICompat(c *gin.Context) {
+	// Route astron-code and bigmodel-coding deletes to their dedicated handlers.
+	if name := c.Query("name"); name != "" {
+		nameLower := strings.ToLower(strings.TrimSpace(name))
+		if nameLower == strings.ToLower(config.DefaultAstronCodeProviderName) {
+			h.DeleteAstronCodeKey(c)
+			return
+		}
+		if nameLower == strings.ToLower(config.DefaultBigModelCodingProviderName) {
+			h.DeleteBigModelCodingKey(c)
+			return
+		}
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if name := c.Query("name"); name != "" {

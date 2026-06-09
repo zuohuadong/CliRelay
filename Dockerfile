@@ -17,9 +17,11 @@ FROM alpine:3.23 AS tzdata-provider
 
 RUN apk add --no-cache tzdata
 
-FROM golang:1.26 AS builder
+FROM golang:1.26-bookworm AS builder
 
 WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential git && rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum ./
 

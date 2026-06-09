@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 FROM oven/bun:1.2 AS panel-builder
 
 WORKDIR /panel
@@ -21,6 +22,14 @@ FROM golang:1.26 AS builder
 
 WORKDIR /app
 
+=======
+FROM golang:1.26-bookworm AS builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential git && rm -rf /var/lib/apt/lists/*
+
+>>>>>>> upstream/main
 COPY go.mod go.sum ./
 
 RUN go mod download
@@ -35,7 +44,13 @@ ARG BUILD_DATE=unknown
 
 RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
 
+<<<<<<< HEAD
 FROM registry.access.redhat.com/ubi9/ubi-minimal:9.6
+=======
+FROM debian:bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata ca-certificates && rm -rf /var/lib/apt/lists/*
+>>>>>>> upstream/main
 
 RUN mkdir /CLIProxyAPI
 

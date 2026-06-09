@@ -992,12 +992,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 		Headers:         headersFromContext(ctx),
 	}
 	opts.Metadata = reqMeta
-<<<<<<< HEAD
 	maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
 	bootstrapRetries := 0
-=======
 	req, opts = h.applyRequestInterceptors(ctx, handlerType, modelName, req, opts)
->>>>>>> upstream/main
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	for err != nil && bootstrapRetries < maxBootstrapRetries && streamBootstrapRetryEligible(err) {
 		bootstrapRetries++
@@ -1108,13 +1105,10 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 			return
 		}
 		sentPayload := false
-<<<<<<< HEAD
-=======
 		bootstrapRetries := 0
 		chunkIndex := 0
 		var historyChunks [][]byte
 		maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
->>>>>>> upstream/main
 
 		sendErr := func(msg *interfaces.ErrorMessage) bool {
 			if ctx == nil {

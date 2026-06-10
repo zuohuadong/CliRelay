@@ -1005,13 +1005,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture),
 	}
 	opts.Metadata = reqMeta
-<<<<<<< HEAD
 	maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
 	bootstrapRetries := 0
-	req, opts = h.applyRequestInterceptors(ctx, handlerType, modelName, req, opts)
-=======
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, modelName, req, opts)
->>>>>>> upstream/main
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	for err != nil && bootstrapRetries < maxBootstrapRetries && streamBootstrapRetryEligible(err) {
 		bootstrapRetries++

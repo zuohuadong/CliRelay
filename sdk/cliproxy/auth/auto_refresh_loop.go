@@ -129,8 +129,13 @@ func (l *authAutoRefreshLoop) loop(ctx context.Context) {
 	}
 	defer timer.Stop()
 
+	quotaTicker := time.NewTicker(l.interval)
+	defer quotaTicker.Stop()
+
 	var timerCh <-chan time.Time
-	l.resetTimer(timer, &timerCh, time.Now())
+	now := time.Now()
+	l.resetTimer(timer, &timerCh, now)
+	l.handleQuotaRecoveries(ctx, now)
 
 	for {
 		select {
@@ -145,8 +150,17 @@ func (l *authAutoRefreshLoop) loop(ctx context.Context) {
 			l.handleDue(ctx, now)
 			l.applyDirty(now)
 			l.resetTimer(timer, &timerCh, now)
+		case <-quotaTicker.C:
+			l.handleQuotaRecoveries(ctx, time.Now())
 		}
 	}
+}
+
+func (l *authAutoRefreshLoop) handleQuotaRecoveries(ctx context.Context, now time.Time) {
+	if l == nil || l.manager == nil {
+		return
+	}
+	l.manager.checkQuotaRecoveries(ctx, l.manager.snapshotAuths(), now)
 }
 
 func (l *authAutoRefreshLoop) resetTimer(timer *time.Timer, timerCh *<-chan time.Time, now time.Time) {

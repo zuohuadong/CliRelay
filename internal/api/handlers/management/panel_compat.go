@@ -1035,7 +1035,42 @@ func (h *Handler) GetAuthFileTrend(c *gin.Context) {
 }
 
 func (h *Handler) ReconcileQuota(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	var req struct {
+		AuthIndex string `json:"authIndex"`
+		AuthID    string `json:"auth_id"`
+		ID        string `json:"id"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	authID := strings.TrimSpace(req.AuthIndex)
+	if authID == "" {
+		authID = strings.TrimSpace(req.AuthID)
+	}
+	if authID == "" {
+		authID = strings.TrimSpace(req.ID)
+	}
+	if authID == "" {
+		authID = strings.TrimSpace(c.Query("authIndex"))
+	}
+	if authID == "" {
+		authID = strings.TrimSpace(c.Query("auth_id"))
+	}
+	if authID == "" {
+		authID = strings.TrimSpace(c.Query("id"))
+	}
+	if authID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "auth id is required"})
+		return
+	}
+	changed := false
+	if h.authManager != nil {
+		var err error
+		changed, err = h.authManager.ReconcileQuota(c.Request.Context(), authID)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"status": "error", "error": err.Error()})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "changed": changed})
 }
 
 type usageFilters struct {

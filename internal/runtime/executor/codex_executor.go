@@ -1451,6 +1451,152 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	return auth, nil
 }
 
+// ProbeQuotaRecovery performs a lightweight quota check for Codex auths by calling
+// the ChatGPT usage endpoint. It implements the cliproxyauth.QuotaRecoveryProber interface.
+func (e *CodexExecutor) ProbeQuotaRecovery(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.QuotaProbeResult, error) {
+	if auth == nil {
+		return nil, fmt.Errorf("codex executor: auth is nil")
+	}
+	accountID := ""
+	if auth.Metadata != nil {
+		if v, ok := auth.Metadata["account_id"].(string); ok {
+			accountID = strings.TrimSpace(v)
+		}
+	}
+	if accountID == "" {
+		return nil, fmt.Errorf("codex executor: missing account_id")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://chatgpt.com/backend-api/wham/usage", nil)
+	if err != nil {
+		return nil, err
+	}
+	apiKey, _ := codexCreds(auth)
+	applyCodexHeaders(req, auth, apiKey, false, e.cfg)
+
+	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("codex executor: close quota probe body error: %v", errClose)
+		}
+	}()
+
+	body, err := readUpstreamResponseBody(e.Identifier(), resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, newCodexStatusErr(resp.StatusCode, body)
+	}
+	return parseCodexQuotaProbe(body), nil
+}
+
+func parseCodexQuotaProbe(body []byte) *cliproxyauth.QuotaProbeResult {
+	if len(body) == 0 {
+		return nil
+	}
+
+	rateLimit := gjson.GetBytes(body, "rate_limit")
+	if !rateLimit.Exists() {
+		return nil
+	}
+
+	allowed := rateLimit.Get("allowed")
+	limitReached := rateLimit.Get("limit_reached")
+	if limitReached.Exists() && limitReached.Bool() {
+		return &cliproxyauth.QuotaProbeResult{
+			Recovered:     false,
+			NextRecoverAt: codexQuotaProbeNextRecoverAt(rateLimit, false),
+		}
+	}
+
+	hasWindowUsage := false
+	hasExhaustedWindow := false
+	nextRecoverAt := time.Time{}
+	for _, path := range []string{"primary_window", "secondary_window"} {
+		window := rateLimit.Get(path)
+		if !window.Exists() {
+			continue
+		}
+		usedPercent := window.Get("used_percent")
+		windowExhausted := false
+		if usedPercent.Exists() {
+			hasWindowUsage = true
+			windowExhausted = usedPercent.Float() >= 100
+			if windowExhausted {
+				hasExhaustedWindow = true
+			}
+		}
+		if !windowExhausted {
+			continue
+		}
+		if resetAt := codexQuotaWindowResetAt(window, time.Now()); !resetAt.IsZero() {
+			if nextRecoverAt.IsZero() || resetAt.Before(nextRecoverAt) {
+				nextRecoverAt = resetAt
+			}
+		}
+	}
+
+	if !hasExhaustedWindow {
+		if allowed.Exists() {
+			return &cliproxyauth.QuotaProbeResult{
+				Recovered:     allowed.Bool(),
+				NextRecoverAt: codexQuotaProbeNextRecoverAt(rateLimit, false),
+			}
+		}
+		if hasWindowUsage {
+			return &cliproxyauth.QuotaProbeResult{Recovered: true}
+		}
+	}
+
+	return &cliproxyauth.QuotaProbeResult{
+		Recovered:     false,
+		NextRecoverAt: nextRecoverAt,
+	}
+}
+
+func codexQuotaProbeNextRecoverAt(rateLimit gjson.Result, exhaustedOnly bool) time.Time {
+	nextRecoverAt := time.Time{}
+	for _, path := range []string{"primary_window", "secondary_window"} {
+		window := rateLimit.Get(path)
+		if !window.Exists() {
+			continue
+		}
+		if exhaustedOnly {
+			usedPercent := window.Get("used_percent")
+			if usedPercent.Exists() && usedPercent.Float() < 100 {
+				continue
+			}
+		}
+		if resetAt := codexQuotaWindowResetAt(window, time.Now()); !resetAt.IsZero() {
+			if nextRecoverAt.IsZero() || resetAt.Before(nextRecoverAt) {
+				nextRecoverAt = resetAt
+			}
+		}
+	}
+	return nextRecoverAt
+}
+
+func codexQuotaWindowResetAt(window gjson.Result, now time.Time) time.Time {
+	if !window.Exists() {
+		return time.Time{}
+	}
+	if resetAt := window.Get("reset_at").Int(); resetAt > 0 {
+		resetAtTime := time.Unix(resetAt, 0)
+		if resetAtTime.After(now) {
+			return resetAtTime
+		}
+	}
+	if afterSeconds := window.Get("reset_after_seconds").Int(); afterSeconds > 0 {
+		return now.Add(time.Duration(afterSeconds) * time.Second)
+	}
+	return time.Time{}
+}
+
 type codexIdentityConfuseState struct {
 	enabled                bool
 	authID                 string

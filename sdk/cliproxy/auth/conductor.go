@@ -199,8 +199,10 @@ type Manager struct {
 	rtProvider RoundTripperProvider
 
 	// Auto refresh state
-	refreshCancel context.CancelFunc
-	refreshLoop   *authAutoRefreshLoop
+	refreshCancel    context.CancelFunc
+	refreshLoop      *authAutoRefreshLoop
+	refreshSemaphore chan struct{}
+	quotaProbeAfter  map[string]time.Time
 
 	requestPrepareLocks sync.Map
 }
@@ -222,6 +224,8 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		homeRuntimeAuths: make(map[string]map[string]*Auth),
 		providerOffsets:  make(map[string]int),
 		modelPoolOffsets: make(map[string]int),
+		refreshSemaphore: make(chan struct{}, refreshMaxConcurrency),
+		quotaProbeAfter:  make(map[string]time.Time),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})

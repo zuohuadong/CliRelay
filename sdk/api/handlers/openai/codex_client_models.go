@@ -28,8 +28,8 @@ var codexClientAllowedReasoningLevels = map[string]struct{}{
 	"xhigh":  {},
 }
 
-func (h *OpenAIAPIHandler) codexClientModelsResponse() map[string]any {
-	return CodexClientModelsResponse(h.Models())
+func (h *OpenAIAPIHandler) codexClientModelsResponse(models []map[string]any) map[string]any {
+	return CodexClientModelsResponse(models)
 }
 
 func CodexClientModelsResponse(models []map[string]any) map[string]any {

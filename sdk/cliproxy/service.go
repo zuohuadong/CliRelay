@@ -122,6 +122,20 @@ type modelRegistrationTask struct {
 	run      func()
 }
 
+type executorRegistrationOptions struct {
+	includeBaseline   bool
+	includePlugins    bool
+	forceReplaceAuths bool
+	auths             []*coreauth.Auth
+}
+
+var registerPluginExecutors = func(host *pluginhost.Host, manager *coreauth.Manager) {
+	if host == nil || manager == nil {
+		return
+	}
+	host.RegisterExecutors(manager, registry.GetGlobalRegistry())
+}
+
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
 // This allows external code to monitor API usage and token consumption.
 //
@@ -192,8 +206,12 @@ func (s *Service) syncPluginModelRuntime(ctx context.Context) {
 		ctx = context.Background()
 	}
 	s.pluginHost.RegisterModels(ctx, registry.GetGlobalRegistry())
-	s.rebindExecutors()
-	s.pluginHost.RegisterExecutors(s.coreManager, registry.GetGlobalRegistry())
+	s.registerAvailableExecutors(ctx, executorRegistrationOptions{
+		includeBaseline:   s.cfg != nil && s.cfg.Home.Enabled,
+		includePlugins:    true,
+		forceReplaceAuths: true,
+		auths:             s.coreManager.List(),
+	})
 	s.refreshPluginModelRegistrations(ctx)
 	s.coreManager.RefreshSchedulerAll()
 }
@@ -819,6 +837,76 @@ func (s *Service) ensureExecutorsForAuth(a *coreauth.Auth) {
 }
 
 func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace bool) {
+	if a == nil {
+		return
+	}
+	s.registerAvailableExecutors(context.Background(), executorRegistrationOptions{
+		auths:             []*coreauth.Auth{a},
+		forceReplaceAuths: forceReplace,
+	})
+}
+
+func (s *Service) registerAvailableExecutors(ctx context.Context, opts executorRegistrationOptions) {
+	if s == nil || s.coreManager == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Keep all Service-owned executor registration paths here so native, Home,
+	// auth-derived, and plugin executors stay in the same binding order.
+	if opts.includeBaseline {
+		s.registerExecutorsForAuths(baselineExecutorAuths(), true)
+	}
+	if len(opts.auths) > 0 {
+		s.registerExecutorsForAuths(opts.auths, opts.forceReplaceAuths)
+	}
+	if opts.includePlugins && s.pluginHost != nil {
+		registerPluginExecutors(s.pluginHost, s.coreManager)
+	}
+}
+
+func baselineExecutorAuths() []*coreauth.Auth {
+	providers := []string{
+		"codex",
+		"claude",
+		"gemini",
+		"vertex",
+		"gemini-cli",
+		"aistudio",
+		"antigravity",
+		"kimi",
+		"xai",
+		"openai-compatibility",
+	}
+	auths := make([]*coreauth.Auth, 0, len(providers))
+	for _, provider := range providers {
+		auth := &coreauth.Auth{
+			ID:       provider,
+			Provider: provider,
+		}
+		if provider == "openai-compatibility" {
+			auth.Attributes = map[string]string{"compat_name": "openai-compatibility"}
+		}
+		auths = append(auths, auth)
+	}
+	return auths
+}
+
+func (s *Service) registerExecutorsForAuths(auths []*coreauth.Auth, forceReplace bool) {
+	reboundCodex := false
+	for _, auth := range auths {
+		if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+			if reboundCodex && forceReplace {
+				continue
+			}
+			reboundCodex = true
+		}
+		s.registerExecutorForAuth(auth, forceReplace)
+	}
+}
+
+func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 	if s == nil || s.coreManager == nil || a == nil {
 		return
 	}
@@ -1037,24 +1125,6 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 	return true
 }
 
-// rebindExecutors refreshes provider executors so they observe the latest configuration.
-func (s *Service) rebindExecutors() {
-	if s == nil || s.coreManager == nil {
-		return
-	}
-	auths := s.coreManager.List()
-	reboundCodex := false
-	for _, auth := range auths {
-		if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
-			if reboundCodex {
-				continue
-			}
-			reboundCodex = true
-		}
-		s.ensureExecutorsForAuthWithMode(auth, true)
-	}
-}
-
 func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 	if s == nil {
 		return
@@ -1139,10 +1209,15 @@ func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 		s.coreManager.SetConfig(newCfg)
 		s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
 	}
-	if newCfg.Home.Enabled {
-		s.registerHomeExecutors()
+	var auths []*coreauth.Auth
+	if s.coreManager != nil {
+		auths = s.coreManager.List()
 	}
-	s.rebindExecutors()
+	s.registerAvailableExecutors(context.Background(), executorRegistrationOptions{
+		includeBaseline:   newCfg.Home.Enabled,
+		forceReplaceAuths: true,
+		auths:             auths,
+	})
 	ctx := context.Background()
 	s.registerConfigAPIKeyAuths(ctx, newCfg)
 	s.syncPluginRuntime(ctx)
@@ -1200,6 +1275,7 @@ func forceHomeRuntimeConfig(cfg *config.Config) {
 	cfg.RemoteManagement.DisableControlPanel = true
 }
 
+<<<<<<< HEAD
 func (s *Service) registerHomeExecutors() {
 	if s == nil || s.coreManager == nil || s.cfg == nil {
 		return
@@ -1221,6 +1297,8 @@ func (s *Service) registerHomeExecutors() {
 	s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor("openai-compatibility", s.cfg))
 }
 
+=======
+>>>>>>> upstream/main
 func (s *Service) applyHomeOverlay(remoteCfg *config.Config) {
 	if s == nil || remoteCfg == nil {
 		return
@@ -1442,7 +1520,9 @@ func (s *Service) Run(ctx context.Context) error {
 
 	s.ensureWebsocketGateway()
 	if homeEnabled {
-		s.registerHomeExecutors()
+		s.registerAvailableExecutors(ctx, executorRegistrationOptions{
+			includeBaseline: true,
+		})
 		// Home mode does not expose in-process Redis RESP usage output; usage is forwarded to home instead.
 		redisqueue.SetEnabled(true)
 	}
@@ -1635,9 +1715,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 			s.pluginHost.ApplyConfig(ctx, &config.Config{})
 			s.pluginHost.RegisterModels(ctx, registry.GetGlobalRegistry())
-			if s.coreManager != nil {
-				s.pluginHost.RegisterExecutors(s.coreManager, registry.GetGlobalRegistry())
-			}
+			s.registerAvailableExecutors(ctx, executorRegistrationOptions{
+				includePlugins: true,
+			})
 			s.pluginHost.RegisterFrontendAuthProviders()
 			s.pluginHost.ShutdownAll()
 			if s.accessManager != nil {

@@ -3695,7 +3695,11 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 			}
 			continue
 		}
-		candidates = append(candidates, candidate)
+		prepared := prepareCandidateForSelection(runtimeConfig, candidate, "", nil, model, provider, upstreamModel)
+		if prepared == nil {
+			continue
+		}
+		candidates = append(candidates, prepared)
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
@@ -3879,12 +3883,14 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if !authInRouteGroup(runtimeConfig, candidate, routeGroup) {
 			continue
 		}
-		if modelKey != "" && !candidateSupportsModel(runtimeConfig, registryRef, candidate, model, routeGroup, allowedGroups) {
-			continue
-		}
 		upstreamModel := rewriteModelForAuth(model, candidate)
 		upstreamModel = m.applyOAuthModelAlias(candidate, upstreamModel)
 		upstreamModel = m.applyAPIKeyModelAlias(candidate, upstreamModel)
+		if modelKey != "" &&
+			!candidateSupportsModel(runtimeConfig, registryRef, candidate, model, routeGroup, allowedGroups) &&
+			!candidateSupportsModel(runtimeConfig, registryRef, candidate, upstreamModel, routeGroup, allowedGroups) {
+			continue
+		}
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, candidate, opts, model, providerKey, upstreamModel); blocked {
 			if policyErr != nil {
 				logEntryWithRequestID(ctx).Tracef("request policy skipped auth=%s provider=%s model=%s policy=%s reason=%s", candidate.ID, providerKey, model, policyErr.policy, policyErr.reason)
@@ -3895,7 +3901,11 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 			}
 			continue
 		}
-		candidates = append(candidates, candidate)
+		prepared := prepareCandidateForSelection(runtimeConfig, candidate, routeGroup, allowedGroups, model, providerKey, upstreamModel)
+		if prepared == nil {
+			continue
+		}
+		candidates = append(candidates, prepared)
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()

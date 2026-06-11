@@ -808,6 +808,131 @@ func TestManagerExecute_ProviderPreferencePrefersBigmodelAndFallsBack(t *testing
 	}
 }
 
+func TestManagerExecute_CodexSparkAliasPreferenceAndGuard(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	codex := &requestPolicyTestExecutor{id: "codex"}
+	astron := &requestPolicyTestExecutor{id: "astron-code"}
+	manager.RegisterExecutor(codex)
+	manager.RegisterExecutor(astron)
+
+	cfg := &internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{
+			{
+				Name: "astron-code",
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "astron-code-latest", Alias: "gpt-5.3-codex"},
+				},
+			},
+		},
+		OAuthModelAlias: map[string][]internalconfig.OAuthModelAlias{
+			"codex": {
+				{Name: "gpt-5.3-codex-spark", Alias: "gpt-5.3-codex", Fork: true},
+			},
+		},
+		ProviderPreferences: []internalconfig.ProviderPreference{
+			{
+				Name: "prefer-codex-spark",
+				Match: internalconfig.ProviderPreferenceMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"codex"},
+					UpstreamModels:    []string{"gpt-5.3-codex-spark"},
+				},
+				Priority: 500,
+			},
+			{
+				Name: "prefer-astron",
+				Match: internalconfig.ProviderPreferenceMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"astron-code"},
+					UpstreamModels:    []string{"astron-code-latest"},
+				},
+				Priority: 300,
+			},
+		},
+		RequestPolicies: []internalconfig.RequestPolicy{
+			{
+				Name: "codex-spark-128k-guard",
+				Match: internalconfig.RequestPolicyMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"codex"},
+					UpstreamModels:    []string{"gpt-5.3-codex-spark"},
+				},
+				Limits:    internalconfig.RequestPolicyLimits{MaxRequestBytes: 128000},
+				OverLimit: internalconfig.RequestPolicyOverLimit{Action: "skip-channel"},
+			},
+		},
+	}
+	manager.SetConfig(cfg)
+	manager.SetOAuthModelAlias(cfg.OAuthModelAlias)
+
+	for _, auth := range []*Auth{
+		{
+			ID:       "codex-auth",
+			Provider: "codex",
+			Status:   StatusActive,
+			Attributes: map[string]string{
+				"auth_kind": "oauth",
+				"plan_type": "plus",
+			},
+		},
+		{
+			ID:       "astron-auth",
+			Provider: "astron-code",
+			Status:   StatusActive,
+			Attributes: map[string]string{
+				"api_key":      "astron-key",
+				"provider_key": "astron-code",
+				"compat_name":  "astron-code",
+			},
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+		authID := auth.ID
+		t.Cleanup(func() {
+			registry.GetGlobalRegistry().UnregisterClient(authID)
+		})
+	}
+	registry.GetGlobalRegistry().RegisterClient("codex-auth", "codex", []*registry.ModelInfo{{ID: "gpt-5.3-codex-spark", Name: "gpt-5.3-codex-spark"}})
+	registry.GetGlobalRegistry().RegisterClient("astron-auth", "astron-code", []*registry.ModelInfo{{ID: "gpt-5.3-codex", Name: "gpt-5.3-codex"}})
+
+	_, err := manager.Execute(context.Background(), []string{"astron-code", "codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex","input":"small"}`),
+	}, cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: 120000},
+	})
+	if err != nil {
+		t.Fatalf("Execute() small error = %v", err)
+	}
+	if calls := codex.Calls(); len(calls) != 1 || calls[0] != "codex-auth" {
+		t.Fatalf("codex calls = %v, want [codex-auth]", calls)
+	}
+	if models := codex.Models(); len(models) != 1 || models[0] != "gpt-5.3-codex-spark" {
+		t.Fatalf("codex models = %v, want [gpt-5.3-codex-spark]", models)
+	}
+	if calls := astron.Calls(); len(calls) != 0 {
+		t.Fatalf("astron calls after small request = %v, want none", calls)
+	}
+
+	_, err = manager.Execute(context.Background(), []string{"astron-code", "codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex","input":"large"}`),
+	}, cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: 128001},
+	})
+	if err != nil {
+		t.Fatalf("Execute() large error = %v", err)
+	}
+	if calls := astron.Calls(); len(calls) != 1 || calls[0] != "astron-auth" {
+		t.Fatalf("astron calls after large request = %v, want [astron-auth]", calls)
+	}
+	if models := astron.Models(); len(models) != 1 || models[0] != "astron-code-latest" {
+		t.Fatalf("astron models = %v, want [astron-code-latest]", models)
+	}
+}
+
 func TestManagerExecute_RequestPolicyRejectsWhenNoFallback(t *testing.T) {
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	bigmodel := &requestPolicyTestExecutor{id: "bigmodel-coding"}

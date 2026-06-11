@@ -88,6 +88,7 @@ func runPanelAssetSyncer(ctx context.Context) {
 
 	runOnce := func() {
 		cfg := currentConfigPtr.Load()
+<<<<<<< HEAD
 		if cfg == nil {
 			log.Debug("management asset syncer skipped: config not yet available")
 			return
@@ -98,6 +99,10 @@ func runPanelAssetSyncer(ctx context.Context) {
 		}
 		if cfg.RemoteManagement.DisableAutoUpdatePanel {
 			log.Debug("management asset syncer skipped: disable-auto-update-panel is enabled")
+=======
+		if reason, skip := autoUpdateSkipReason(cfg); skip {
+			log.Debugf("management asset auto-updater skipped: %s", reason)
+>>>>>>> upstream/main
 			return
 		}
 
@@ -116,6 +121,22 @@ func runPanelAssetSyncer(ctx context.Context) {
 			runOnce()
 		}
 	}
+}
+
+func autoUpdateSkipReason(cfg *config.Config) (string, bool) {
+	if cfg == nil {
+		return "config not yet available", true
+	}
+	if cfg.Home.Enabled {
+		return "cluster mode enabled", true
+	}
+	if cfg.RemoteManagement.DisableControlPanel {
+		return "control panel disabled", true
+	}
+	if cfg.RemoteManagement.DisableAutoUpdatePanel {
+		return "disable-auto-update-panel is enabled", true
+	}
+	return "", false
 }
 
 func newHTTPClient(proxyURL string) *http.Client {

@@ -493,9 +493,11 @@ func (h *OpenAIResponsesAPIHandler) rejectUnconfiguredModel(c *gin.Context, mode
 // It returns a list of available AI models with their capabilities
 // and specifications in OpenAIResponses-compatible format.
 func (h *OpenAIResponsesAPIHandler) OpenAIResponsesModels(c *gin.Context) {
+	models := h.Models()
+	models = h.BaseAPIHandler.FilterModelsByAccess(c, models)
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
-		"data":   h.Models(),
+		"data":   models,
 	})
 }
 

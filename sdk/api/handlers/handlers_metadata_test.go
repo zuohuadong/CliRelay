@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"golang.org/x/net/context"
 )
@@ -200,5 +201,71 @@ func TestSetServiceTierMetadataDefaultsWhenMissing(t *testing.T) {
 	gotServiceTier := meta[coreexecutor.ServiceTierMetadataKey]
 	if gotServiceTier != "default" {
 		t.Fatalf("ServiceTierMetadataKey = %v, want %q", gotServiceTier, "default")
+	}
+}
+
+func TestFilterModelsByAccess(t *testing.T) {
+	h := &BaseAPIHandler{}
+
+	models := []map[string]any{
+		{"id": "gpt-5.3-codex"},
+		{"id": "glm-5.1"},
+		{"id": "gemini-3-flash"},
+		{"id": "gpt-5.4"},
+		{"name": "models/gemini-3-pro"},
+	}
+
+	// 1. nil Context
+	res1 := h.FilterModelsByAccess(nil, models)
+	if len(res1) != len(models) {
+		t.Fatalf("nil context: expected %d, got %d", len(models), len(res1))
+	}
+
+	// 2. No accessMetadata
+	c2 := &gin.Context{}
+	res2 := h.FilterModelsByAccess(c2, models)
+	if len(res2) != len(models) {
+		t.Fatalf("no metadata: expected %d, got %d", len(models), len(res2))
+	}
+
+	// 3. Metadata with no allowed-models
+	c3 := &gin.Context{}
+	c3.Set("accessMetadata", map[string]string{})
+	res3 := h.FilterModelsByAccess(c3, models)
+	if len(res3) != len(models) {
+		t.Fatalf("no allowed-models: expected %d, got %d", len(models), len(res3))
+	}
+
+	// 4. Allowed-models exact match
+	c4 := &gin.Context{}
+	c4.Set("accessMetadata", map[string]string{"allowed-models": "gpt-5.3-codex,glm-5.1"})
+	res4 := h.FilterModelsByAccess(c4, models)
+	if len(res4) != 2 {
+		t.Fatalf("exact match: expected 2, got %d", len(res4))
+	}
+	if res4[0]["id"] != "gpt-5.3-codex" || res4[1]["id"] != "glm-5.1" {
+		t.Fatalf("exact match: unexpected elements: %v", res4)
+	}
+
+	// 5. Allowed-models wildcard match
+	c5 := &gin.Context{}
+	c5.Set("accessMetadata", map[string]string{"allowed-models": "gpt-*"})
+	res5 := h.FilterModelsByAccess(c5, models)
+	if len(res5) != 2 {
+		t.Fatalf("wildcard match: expected 2, got %d", len(res5))
+	}
+	if res5[0]["id"] != "gpt-5.3-codex" || res5[1]["id"] != "gpt-5.4" {
+		t.Fatalf("wildcard match: unexpected elements: %v", res5)
+	}
+
+	// 6. Gemini name fields may include a models/ prefix.
+	c6 := &gin.Context{}
+	c6.Set("accessMetadata", map[string]string{"allowed-models": "gemini-3-pro"})
+	res6 := h.FilterModelsByAccess(c6, models)
+	if len(res6) != 1 {
+		t.Fatalf("gemini name match: expected 1, got %d", len(res6))
+	}
+	if res6[0]["name"] != "models/gemini-3-pro" {
+		t.Fatalf("gemini name match: unexpected elements: %v", res6)
 	}
 }

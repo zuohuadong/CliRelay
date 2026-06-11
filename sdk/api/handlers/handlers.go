@@ -1819,3 +1819,86 @@ func (h *BaseAPIHandler) LoggingAPIResponseError(ctx context.Context, err *inter
 // APIHandlerCancelFunc is a function type for canceling an API handler's context.
 // It can optionally accept parameters, which are used for logging the response.
 type APIHandlerCancelFunc func(params ...interface{})
+
+// FilterModelsByAccess filters available models list by checking the permitted models
+// configured for the API key in the context. If no restriction is set, it returns all models.
+func (h *BaseAPIHandler) FilterModelsByAccess(c *gin.Context, allModels []map[string]any) []map[string]any {
+	if c == nil {
+		return allModels
+	}
+	raw, exists := c.Get("accessMetadata")
+	if !exists {
+		return allModels
+	}
+	metadata, ok := raw.(map[string]string)
+	if !ok {
+		return allModels
+	}
+	allowedModelsStr, ok := metadata["allowed-models"]
+	if !ok || strings.TrimSpace(allowedModelsStr) == "" {
+		return allModels
+	}
+
+	allowedParts := strings.Split(allowedModelsStr, ",")
+	allowedModels := make([]string, 0, len(allowedParts))
+	for _, p := range allowedParts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			allowedModels = append(allowedModels, strings.ToLower(p))
+		}
+	}
+	if len(allowedModels) == 0 {
+		return allModels
+	}
+
+	filtered := make([]map[string]any, 0, len(allModels))
+	for _, m := range allModels {
+		if m == nil {
+			continue
+		}
+		modelIDs := modelAccessIDs(m)
+		if len(modelIDs) == 0 {
+			continue
+		}
+
+		matched := false
+		for _, modelID := range modelIDs {
+			for _, allowed := range allowedModels {
+				if allowed == modelID {
+					matched = true
+					break
+				}
+				if strings.HasSuffix(allowed, "*") {
+					prefix := strings.TrimSuffix(allowed, "*")
+					if strings.HasPrefix(modelID, prefix) {
+						matched = true
+						break
+					}
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if matched {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered
+}
+
+func modelAccessIDs(model map[string]any) []string {
+	values := make([]string, 0, 3)
+	for _, key := range []string{"id", "name"} {
+		value, _ := model[key].(string)
+		value = strings.TrimSpace(strings.ToLower(value))
+		if value == "" {
+			continue
+		}
+		values = append(values, value)
+		if trimmed := strings.TrimPrefix(value, "models/"); trimmed != value {
+			values = append(values, trimmed)
+		}
+	}
+	return values
+}

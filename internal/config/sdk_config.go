@@ -70,7 +70,7 @@ type SDKConfig struct {
 
 	// OpenRouterSyncEnabled enables periodic OpenRouter model metadata synchronization.
 	// When enabled, model listings, pricing, and context window information are
-	// fetched from the OpenRouter API and registered in the model registry.
+	// fetched from the OpenRouter API for management metadata.
 	OpenRouterSyncEnabled bool `yaml:"openrouter-sync-enabled" json:"openrouterSyncEnabled"`
 
 	// OpenRouterSyncIntervalMinutes controls how often the OpenRouter model

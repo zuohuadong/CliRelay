@@ -342,15 +342,19 @@ func fetchAndRegisterOpenRouterModels(apiKey string) (*OpenRouterSyncResult, err
 		return nil, fmt.Errorf("decode: %w", err)
 	}
 
-	state := GetOpenRouterSyncState()
+	return syncOpenRouterModels(GetOpenRouterSyncState(), modelsResp.Data, time.Now()), nil
+}
+
+func syncOpenRouterModels(state *OpenRouterSyncState, models []openRouterModel, now time.Time) *OpenRouterSyncResult {
+	if state == nil {
+		return &OpenRouterSyncResult{}
+	}
+
 	result := &OpenRouterSyncResult{}
-	now := time.Now()
+	seenIDs := make(map[string]struct{}, len(models))
 
-	// Build a set of model IDs seen in this sync
-	seenIDs := make(map[string]struct{}, len(modelsResp.Data))
-
-	for i := range modelsResp.Data {
-		m := &modelsResp.Data[i]
+	for i := range models {
+		m := &models[i]
 		if m.ID == "" {
 			continue
 		}
@@ -371,6 +375,9 @@ func fetchAndRegisterOpenRouterModels(apiKey string) (*OpenRouterSyncResult, err
 		}
 
 		state.mu.Lock()
+		if state.registeredModels == nil {
+			state.registeredModels = make(map[string]*openRouterModelEntry)
+		}
 		existing, exists := state.registeredModels[m.ID]
 		state.mu.Unlock()
 
@@ -390,14 +397,11 @@ func fetchAndRegisterOpenRouterModels(apiKey string) (*OpenRouterSyncResult, err
 			state.mu.Unlock()
 			result.Added++
 		}
-
-		// Register in the global model registry
-		registerOpenRouterModel(m)
 	}
 
 	reconcileRemovedOpenRouterModels(state, seenIDs)
 
-	return result, nil
+	return result
 }
 
 func reconcileRemovedOpenRouterModels(state *OpenRouterSyncState, seenIDs map[string]struct{}) {
@@ -428,41 +432,8 @@ func modelChanged(old, new *openRouterModelEntry) bool {
 		old.Name != new.Name
 }
 
-func registerOpenRouterModel(m *openRouterModel) {
-	registry := GetGlobalRegistry()
-
-	displayName := m.Name
-	if displayName == "" {
-		displayName = m.ID
-	}
-
-	info := &ModelInfo{
-		ID:                  m.ID,
-		Object:              "model",
-		OwnedBy:             extractOwner(m.ID),
-		Type:                "openai",
-		DisplayName:         displayName,
-		ContextLength:       m.ContextLength,
-		MaxCompletionTokens: m.TopProvider.MaxCompletionTokens,
-	}
-
-	// Register as a client so the model appears in available model listings.
-	// Use a stable client ID based on the model ID to avoid duplicate registrations.
-	registry.RegisterClient(openRouterSyncClientID(m.ID), "openrouter", []*ModelInfo{info})
-}
-
 func openRouterSyncClientID(modelID string) string {
 	return "openrouter-sync:" + modelID
-}
-
-// extractOwner derives a provider name from an OpenRouter model ID
-// (e.g., "anthropic/claude-3.5-sonnet" -> "anthropic").
-func extractOwner(modelID string) string {
-	parts := strings.SplitN(modelID, "/", 2)
-	if len(parts) == 2 {
-		return parts[0]
-	}
-	return "openrouter"
 }
 
 // parsePrice converts an OpenRouter price string (per-token in USD) to a float64.

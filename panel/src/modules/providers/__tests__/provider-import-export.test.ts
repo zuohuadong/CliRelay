@@ -16,7 +16,7 @@ describe("provider import/export helpers", () => {
         models: [
           { name: "gpt-4", alias: "gpt-4" },
           { name: "gpt-4" },
-          { name: "claude-3", alias: "sonnet" },
+          { name: "claude-3", alias: "sonnet", contextLength: 220000 },
         ],
       },
       {
@@ -35,7 +35,7 @@ describe("provider import/export helpers", () => {
           "excluded-models": ["claude-3", "gpt-4"],
           headers: { A: "1", Z: "2" },
           models: [
-            { alias: "sonnet", name: "claude-3" },
+            { alias: "sonnet", "context-length": 220000, name: "claude-3" },
             { name: "gpt-4" },
           ],
           name: "Beta",

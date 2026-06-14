@@ -172,6 +172,7 @@ export interface ProviderModel {
   alias?: string;
   priority?: number;
   testModel?: string;
+  contextLength?: number;
 }
 
 export interface ProviderApiKeyEntry {

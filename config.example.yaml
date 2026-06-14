@@ -217,13 +217,13 @@ request-log-storage:
 # Policies can skip a channel or reject locally when request size/tools exceed
 # configured limits. Use skip-channel to fall back to the next available provider.
 # request-policies:
-#   - name: "astron-code-360k-guard"
+#   - name: "astron-code-220k-guard"
 #     match:
 #       requested-models: ["gpt-5.3-codex", "glm-5.1"]
 #       upstream-providers: ["astron-code"]
 #       upstream-models: ["astron-code-latest"]
 #     limits:
-#       max-request-bytes: 360000
+#       max-request-bytes: 220000
 #     over-limit:
 #       action: "skip-channel"
 #   - name: "astron-code-image-skip"
@@ -307,10 +307,10 @@ request-log-storage:
 #       upstream-providers: ["astron-code"]
 #       upstream-models: ["astron-code-latest"]
 #     priority: 300
-#   - name: "prefer-bigmodel-coding-for-glm-5.1"
+#   - name: "prefer-bigmodel-coding-for-large-codex"
 #     match:
+#       requested-models: ["gpt-5.3-codex"]
 #       upstream-providers: ["bigmodel-coding"]
-#       upstream-models: ["glm-5.1"]
 #     priority: 100
 
 # Optional media-to-text adapter for text-only upstream models.
@@ -586,11 +586,15 @@ streaming:
 #   - base-url: "https://open.bigmodel.cn/api/coding/paas/v4"
 #     api-key-entries:
 #       - api-key: "sk-..."
-#     test-model: "glm-5.1"
+#     test-model: "glm-5.2"
 #     identity-fingerprint: "codex"
 #     models:
 #       - name: "glm-5.1"
 #         alias: "gpt-5.3-codex"
+#         context-length: 220000
+#       - name: "glm-5.2"
+#         alias: "gpt-5.3-codex"
+#         context-length: 1048576
 #
 # iFlytek Astron Coding Plan — first-class upstream for XunFei Coding Plan.
 # Supports GLM-5, DeepSeek-V3.2, and other models via the astron-code-latest
@@ -605,8 +609,10 @@ streaming:
 #     models:
 #       - name: "astron-code-latest"
 #         alias: "gpt-5.3-codex"
+#         context-length: 220000
 #       - name: "astron-code-latest"
 #         alias: "glm-5.1"
+#         context-length: 220000
 
 # OpenCode Go provider (OpenAI-compatible coding assistant)
 # opencode-go-api-key:

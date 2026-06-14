@@ -1963,7 +1963,8 @@
     "routing_rules_title": "Routing Rules (optional)",
     "routing_rules_desc": "Leave empty for default routing; configure for model aliases, priority, etc.",
     "validation_alias_required": "Models must have alias (use name => alias)",
-    "validation_priority_number": "Model {{name}}'s priority must be a number"
+    "validation_priority_number": "Model {{name}}'s priority must be a number",
+    "context_length_placeholder": "Context length"
   },
   "m_config": {
     "unsaved_changes": "Unsaved changes",

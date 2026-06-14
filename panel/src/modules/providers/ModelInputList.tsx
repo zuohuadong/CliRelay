@@ -9,6 +9,7 @@ export type ModelEntryDraft = {
   alias: string;
   priorityText: string;
   testModel: string;
+  contextLengthText: string;
 };
 
 const uid = () => `model-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -19,6 +20,7 @@ export const createEmptyModelEntry = (): ModelEntryDraft => ({
   alias: "",
   priorityText: "",
   testModel: "",
+  contextLengthText: "",
 });
 
 export function ModelInputList({
@@ -44,6 +46,7 @@ export function ModelInputList({
   const resolvedNamePlaceholder = namePlaceholder ?? t("common.model_name_placeholder");
   const resolvedAliasPlaceholder = aliasPlaceholder ?? t("common.model_alias_placeholder");
   const resolvedTestModelPlaceholder = t("providers.test_model_placeholder");
+  const resolvedContextLengthPlaceholder = t("providers.context_length_placeholder");
   return (
     <section className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -66,7 +69,7 @@ export function ModelInputList({
           {entries.map((entry, idx) => (
             <div key={entry.id} className="flex items-start gap-2">
               <div className="min-w-0 flex-1 grid gap-2 md:grid-cols-12">
-                <div className={showPriority || showTestModel ? "md:col-span-4" : "md:col-span-6"}>
+                <div className={showPriority || showTestModel ? "md:col-span-3" : "md:col-span-4"}>
                   <TextInput
                     value={entry.name}
                     placeholder={resolvedNamePlaceholder}
@@ -77,7 +80,7 @@ export function ModelInputList({
                     }}
                   />
                 </div>
-                <div className={showPriority || showTestModel ? "md:col-span-4" : "md:col-span-6"}>
+                <div className={showPriority || showTestModel ? "md:col-span-3" : "md:col-span-4"}>
                   <TextInput
                     value={entry.alias}
                     placeholder={resolvedAliasPlaceholder}
@@ -119,6 +122,22 @@ export function ModelInputList({
                     />
                   </div>
                 ) : null}
+                <div className={showPriority || showTestModel ? "md:col-span-2" : "md:col-span-4"}>
+                  <TextInput
+                    value={entry.contextLengthText}
+                    placeholder={resolvedContextLengthPlaceholder}
+                    disabled={disabled}
+                    inputMode="numeric"
+                    onChange={(e) => {
+                      const value = e.currentTarget.value;
+                      onChange(
+                        entries.map((it, i) =>
+                          i === idx ? { ...it, contextLengthText: value } : it,
+                        ),
+                      );
+                    }}
+                  />
+                </div>
               </div>
               <button
                 type="button"

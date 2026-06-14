@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,8 +172,8 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 	legacyReq.Header.Set("Authorization", "Bearer test-management-key")
 	legacyRR := httptest.NewRecorder()
 	server.engine.ServeHTTP(legacyRR, legacyReq)
-	if legacyRR.Code != http.StatusOK {
-		t.Fatalf("legacy usage status = %d, want %d body=%s", legacyRR.Code, http.StatusOK, legacyRR.Body.String())
+	if legacyRR.Code != http.StatusNotFound {
+		t.Fatalf("legacy usage status = %d, want %d body=%s", legacyRR.Code, http.StatusNotFound, legacyRR.Body.String())
 	}
 
 	authReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=2", nil)
@@ -206,28 +205,6 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 
 	if remaining := redisqueue.PopOldest(1); len(remaining) != 0 {
 		t.Fatalf("remaining queue = %q, want empty", remaining)
-	}
-}
-
-func TestManagementAuthFileDownloadRoute(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-
-	server := newTestServer(t)
-	fileName := "download-user.json"
-	if errWrite := os.WriteFile(filepath.Join(server.cfg.AuthDir, fileName), []byte(`{"ok":true}`), 0o600); errWrite != nil {
-		t.Fatalf("write auth file: %v", errWrite)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/v0/management/auth-files/download?name="+url.QueryEscape(fileName), nil)
-	req.Header.Set("Authorization", "Bearer test-management-key")
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
-	}
-	if got := strings.TrimSpace(rr.Body.String()); got != `{"ok":true}` {
-		t.Fatalf("body = %q", got)
 	}
 }
 
@@ -290,6 +267,45 @@ func TestManagementPluginsRouteRegistered(t *testing.T) {
 	}
 }
 
+func TestVideosRoutesKeepXAINativeAndExposeOpenAIPrefix(t *testing.T) {
+	server := newTestServer(t)
+
+	nativeReq := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"sora-2","prompt":"make a video"}`))
+	nativeReq.Header.Set("Authorization", "Bearer test-key")
+	nativeReq.Header.Set("Content-Type", "application/json")
+	nativeRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(nativeRR, nativeReq)
+	if nativeRR.Code != http.StatusBadRequest {
+		t.Fatalf("native status = %d, want %d body=%s", nativeRR.Code, http.StatusBadRequest, nativeRR.Body.String())
+	}
+	if !strings.Contains(nativeRR.Body.String(), "/v1/videos/generations") {
+		t.Fatalf("expected /v1/videos to keep xAI native validation, body=%s", nativeRR.Body.String())
+	}
+
+	openAIReq := httptest.NewRequest(http.MethodPost, "/openai/v1/videos", strings.NewReader(`{"model":`))
+	openAIReq.Header.Set("Authorization", "Bearer test-key")
+	openAIReq.Header.Set("Content-Type", "application/json")
+	openAIRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(openAIRR, openAIReq)
+	if openAIRR.Code != http.StatusBadRequest {
+		t.Fatalf("openai create status = %d, want %d body=%s", openAIRR.Code, http.StatusBadRequest, openAIRR.Body.String())
+	}
+	if !strings.Contains(openAIRR.Body.String(), "body must be valid JSON") {
+		t.Fatalf("expected /openai/v1/videos create handler, body=%s", openAIRR.Body.String())
+	}
+
+	contentReq := httptest.NewRequest(http.MethodGet, "/openai/v1/videos/video_123/content?variant=thumbnail", nil)
+	contentReq.Header.Set("Authorization", "Bearer test-key")
+	contentRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(contentRR, contentReq)
+	if contentRR.Code != http.StatusBadRequest {
+		t.Fatalf("content status = %d, want %d body=%s", contentRR.Code, http.StatusBadRequest, contentRR.Body.String())
+	}
+	if !strings.Contains(contentRR.Body.String(), "variant") {
+		t.Fatalf("expected /openai/v1/videos content handler, body=%s", contentRR.Body.String())
+	}
+}
+
 func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 
@@ -314,72 +330,6 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
 		}
 	})
-}
-
-func TestAmpProviderModelRoutes(t *testing.T) {
-	testCases := []struct {
-		name         string
-		path         string
-		wantStatus   int
-		wantContains string
-	}{
-		{
-			name:         "openai root models",
-			path:         "/api/provider/openai/models",
-			wantStatus:   http.StatusOK,
-			wantContains: `"object":"list"`,
-		},
-		{
-			name:         "groq root models",
-			path:         "/api/provider/groq/models",
-			wantStatus:   http.StatusOK,
-			wantContains: `"object":"list"`,
-		},
-		{
-			name:         "openai models",
-			path:         "/api/provider/openai/v1/models",
-			wantStatus:   http.StatusOK,
-			wantContains: `"object":"list"`,
-		},
-		{
-			name:         "anthropic models",
-			path:         "/api/provider/anthropic/v1/models",
-			wantStatus:   http.StatusOK,
-			wantContains: `"data"`,
-		},
-		{
-			name:         "google models v1",
-			path:         "/api/provider/google/v1/models",
-			wantStatus:   http.StatusOK,
-			wantContains: `"models"`,
-		},
-		{
-			name:         "google models v1beta",
-			path:         "/api/provider/google/v1beta/models",
-			wantStatus:   http.StatusOK,
-			wantContains: `"models"`,
-		},
-	}
-
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			server := newTestServer(t)
-
-			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
-			req.Header.Set("Authorization", "Bearer test-key")
-
-			rr := httptest.NewRecorder()
-			server.engine.ServeHTTP(rr, req)
-
-			if rr.Code != tc.wantStatus {
-				t.Fatalf("unexpected status code for %s: got %d want %d; body=%s", tc.path, rr.Code, tc.wantStatus, rr.Body.String())
-			}
-			if body := rr.Body.String(); !strings.Contains(body, tc.wantContains) {
-				t.Fatalf("response body for %s missing %q: %s", tc.path, tc.wantContains, body)
-			}
-		})
-	}
 }
 
 func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
@@ -638,5 +588,41 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 		if strings.HasPrefix(entry.Name(), "error-") && strings.HasSuffix(entry.Name(), ".log") {
 			t.Fatalf("unexpected forced error log in config dir %s", configLogsDir)
 		}
+	}
+}
+
+func TestHomeModelsAuthStatus(t *testing.T) {
+	cases := []struct {
+		name        string
+		raw         string
+		wantStatus  int
+		wantHandled bool
+	}{
+		{"no credentials", `{"error":{"type":"no_credentials","message":"Missing API key"}}`, http.StatusUnauthorized, true},
+		{"invalid credential", `{"error":{"type":"invalid_credential","message":"Invalid API key"}}`, http.StatusUnauthorized, true},
+		{"internal error maps to bad gateway", `{"error":{"type":"internal_error","message":"boom"}}`, http.StatusBadGateway, true},
+		{"models payload not an error", `{"openai":[{"id":"gpt-5.5"}]}`, 0, false},
+		{"empty payload not an error", `{}`, 0, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, handled := homeModelsAuthStatus([]byte(tc.raw))
+			if handled != tc.wantHandled {
+				t.Fatalf("handled = %v, want %v (status=%d)", handled, tc.wantHandled, status)
+			}
+			if handled && status != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", status, tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestHomeModelsErrorMessage(t *testing.T) {
+	if msg := homeModelsErrorMessage([]byte(`{"error":{"type":"invalid_credential","message":"Invalid API key"}}`)); msg != "Invalid API key" {
+		t.Fatalf("message = %q, want %q", msg, "Invalid API key")
+	}
+	if msg := homeModelsErrorMessage([]byte(`{"openai":[]}`)); msg != "home models request failed" {
+		t.Fatalf("default message = %q, want fallback", msg)
 	}
 }

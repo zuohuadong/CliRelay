@@ -471,7 +471,7 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 // Priority for session ID extraction:
 //  1. metadata.user_id (Claude Code format with _session_{uuid}) - highest priority
 //  2. X-Session-ID header
-//  3. X-Amp-Thread-Id header (Amp CLI thread ID)
+//  3. Session_id header (Codex)
 //  4. X-Client-Request-Id header (PI)
 //  5. metadata.user_id (non-Claude Code format)
 //  6. conversation_id field in request body
@@ -572,7 +572,7 @@ func (s *SessionAffinitySelector) InvalidateAuth(authID string) {
 // Priority order:
 //  1. metadata.user_id (Claude Code format with _session_{uuid}) - highest priority for Claude Code clients
 //  2. X-Session-ID header
-//  3. X-Amp-Thread-Id header (Amp CLI thread ID)
+//  3. Session_id header (Codex)
 //  4. X-Client-Request-Id header (PI)
 //  5. metadata.user_id (non-Claude Code format)
 //  6. conversation_id field in request body
@@ -612,10 +612,13 @@ func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]
 		}
 	}
 
-	// 3. X-Amp-Thread-Id header (Amp CLI thread ID)
+	// 3. Session_id header (Codex)
 	if headers != nil {
-		if tid := headers.Get("X-Amp-Thread-Id"); tid != "" {
-			return "amp:" + tid, ""
+		if sid := headers.Get("Session-Id"); sid != "" {
+			return "codex:" + sid, ""
+		}
+		if sid := headers.Get("Session_id"); sid != "" {
+			return "codex:" + sid, ""
 		}
 	}
 
@@ -630,18 +633,18 @@ func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]
 		return "", ""
 	}
 
-	// 5. metadata.user_id (non-Claude Code format)
+	// 6. metadata.user_id (non-Claude Code format)
 	userID := gjson.GetBytes(payload, "metadata.user_id").String()
 	if userID != "" {
 		return "user:" + userID, ""
 	}
 
-	// 6. conversation_id field
+	// 7. conversation_id field
 	if convID := gjson.GetBytes(payload, "conversation_id").String(); convID != "" {
 		return "conv:" + convID, ""
 	}
 
-	// 7. Hash-based fallback from message content
+	// 8. Hash-based fallback from message content
 	return extractMessageHashIDs(payload)
 }
 

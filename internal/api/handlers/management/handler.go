@@ -45,8 +45,6 @@ type Handler struct {
 	mu                     sync.Mutex
 	attemptsMu             sync.Mutex
 	failedAttempts         map[string]*attemptInfo // keyed by client IP
-	imageTasksMu           sync.Mutex
-	imageGenerationTasks   map[string]*imageGenerationTestTask
 	authManager            *coreauth.Manager
 	tokenStore             coreauth.Store
 	localPassword          string
@@ -56,12 +54,21 @@ type Handler struct {
 	postAuthHook           coreauth.PostAuthHook
 	postAuthPersistHook    coreauth.PostAuthHook
 	pluginHost             *pluginhost.Host
-	startTime              time.Time
 	configReloadHook       func(context.Context, *config.Config)
 	pluginStoreRegistryURL string
 	pluginStoreHTTPClient  pluginstore.HTTPDoer
 	pluginReleaseCacheMu   sync.Mutex
 	pluginReleaseCache     map[string]pluginReleaseCacheEntry
+	imageTasksMu           sync.Mutex
+	imageGenerationTasks   map[string]*imageGenerationTestTask
+	startTime              time.Time
+}
+
+func (h *Handler) shareToken() string {
+	if h == nil || h.cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(h.cfg.RemoteManagement.ShareToken)
 }
 
 // NewHandler creates a new management handler instance.
@@ -73,12 +80,12 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		cfg:                  cfg,
 		configFilePath:       configFilePath,
 		failedAttempts:       make(map[string]*attemptInfo),
-		imageGenerationTasks: make(map[string]*imageGenerationTestTask),
 		authManager:          manager,
 		tokenStore:           sdkAuth.GetTokenStore(),
 		allowRemoteOverride:  envSecret != "",
 		envSecret:            envSecret,
 		startTime:            time.Now(),
+		imageGenerationTasks: make(map[string]*imageGenerationTestTask),
 	}
 	h.startAttemptCleanup()
 	return h
@@ -94,13 +101,6 @@ func (h *Handler) startAttemptCleanup() {
 			h.purgeStaleAttempts()
 		}
 	}()
-}
-
-func (h *Handler) shareToken() string {
-	if h == nil || h.cfg == nil {
-		return ""
-	}
-	return strings.TrimSpace(h.cfg.RemoteManagement.ShareToken)
 }
 
 // purgeStaleAttempts removes IP entries that have been idle beyond attemptMaxIdleTime

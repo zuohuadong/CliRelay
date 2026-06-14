@@ -294,14 +294,7 @@ func ensureAstronCodeAlias(entry *config.OpenAICompatibility) {
 	for i := range entry.Models {
 		entry.Models[i].Name = strings.TrimSpace(entry.Models[i].Name)
 		entry.Models[i].Alias = strings.TrimSpace(entry.Models[i].Alias)
-		if entry.Models[i].Name == astronCodeModel && entry.Models[i].Alias == astronCodeAlias {
-			return
-		}
 	}
-	entry.Models = append(entry.Models, config.OpenAICompatibilityModel{
-		Name:  astronCodeModel,
-		Alias: astronCodeAlias,
-	})
 }
 
 func isAstronCodeEntry(entry config.OpenAICompatibility) bool {

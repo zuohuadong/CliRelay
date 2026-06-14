@@ -1576,14 +1576,8 @@ func ensureBigModelCodingModels(models []OpenAICompatibilityModel) []OpenAICompa
 	for i := range models {
 		models[i].Name = strings.TrimSpace(models[i].Name)
 		models[i].Alias = strings.TrimSpace(models[i].Alias)
-		if models[i].Name == DefaultBigModelCodingModel && models[i].Alias == DefaultBigModelCodingAlias {
-			return models
-		}
 	}
-	return append(models, OpenAICompatibilityModel{
-		Name:  DefaultBigModelCodingModel,
-		Alias: DefaultBigModelCodingAlias,
-	})
+	return models
 }
 
 func (cfg *Config) MigrateAstronCodeFromOpenAICompatibility() {
@@ -1631,32 +1625,9 @@ func (cfg *Config) SanitizeAstronCode() {
 }
 
 func ensureAstronCodeModels(models []OpenAICompatibilityModel) []OpenAICompatibilityModel {
-	hasDefaultAlias := false
-	hasGLMAlias := false
 	for i := range models {
 		models[i].Name = strings.TrimSpace(models[i].Name)
 		models[i].Alias = strings.TrimSpace(models[i].Alias)
-		if models[i].Name != DefaultAstronCodeModel {
-			continue
-		}
-		switch models[i].Alias {
-		case DefaultAstronCodeAlias:
-			hasDefaultAlias = true
-		case DefaultAstronCodeGLMAlias:
-			hasGLMAlias = true
-		}
-	}
-	if !hasDefaultAlias {
-		models = append(models, OpenAICompatibilityModel{
-			Name:  DefaultAstronCodeModel,
-			Alias: DefaultAstronCodeAlias,
-		})
-	}
-	if !hasGLMAlias {
-		models = append(models, OpenAICompatibilityModel{
-			Name:  DefaultAstronCodeModel,
-			Alias: DefaultAstronCodeGLMAlias,
-		})
 	}
 	return models
 }

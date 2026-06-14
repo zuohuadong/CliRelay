@@ -130,8 +130,9 @@ func TestSanitizeBigModelCodingAddsDefaults(t *testing.T) {
 	if entry.TestModel != DefaultBigModelCodingModel {
 		t.Fatalf("test-model = %q", entry.TestModel)
 	}
-	if !hasModelAlias(entry.Models, DefaultBigModelCodingModel, DefaultBigModelCodingAlias) {
-		t.Fatalf("missing default alias in %#v", entry.Models)
+	// Default alias is NOT auto-injected; user must configure models explicitly.
+	if len(entry.Models) != 0 {
+		t.Fatalf("expected no auto-injected models, got %#v", entry.Models)
 	}
 }
 
@@ -151,11 +152,9 @@ func TestSanitizeAstronCodeAddsGLM51Alias(t *testing.T) {
 	if entry.TestModel != DefaultAstronCodeModel {
 		t.Fatalf("test-model = %q", entry.TestModel)
 	}
-	if !hasModelAlias(entry.Models, DefaultAstronCodeModel, DefaultAstronCodeAlias) {
-		t.Fatalf("missing default alias in %#v", entry.Models)
-	}
-	if !hasModelAlias(entry.Models, DefaultAstronCodeModel, DefaultAstronCodeGLMAlias) {
-		t.Fatalf("missing glm-5.1 alias in %#v", entry.Models)
+	// Default aliases are NOT auto-injected; user must configure models explicitly.
+	if len(entry.Models) != 0 {
+		t.Fatalf("expected no auto-injected models, got %#v", entry.Models)
 	}
 }
 

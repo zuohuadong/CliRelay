@@ -294,14 +294,7 @@ func ensureBigModelCodingAlias(entry *config.OpenAICompatibility) {
 	for i := range entry.Models {
 		entry.Models[i].Name = strings.TrimSpace(entry.Models[i].Name)
 		entry.Models[i].Alias = strings.TrimSpace(entry.Models[i].Alias)
-		if entry.Models[i].Name == bigModelCodingModel && entry.Models[i].Alias == bigModelCodingAlias {
-			return
-		}
 	}
-	entry.Models = append(entry.Models, config.OpenAICompatibilityModel{
-		Name:  bigModelCodingModel,
-		Alias: bigModelCodingAlias,
-	})
 }
 
 func isBigModelCodingEntry(entry config.OpenAICompatibility) bool {

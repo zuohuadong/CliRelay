@@ -128,8 +128,6 @@ type Options struct {
 	Metadata map[string]any
 	// RequestAfterAuthInterceptor runs after credential selection and before executor translation.
 	RequestAfterAuthInterceptor RequestAfterAuthInterceptor
-<<<<<<< HEAD
-=======
 }
 
 // ResponseFormatOrSource returns the response target format for an execution.
@@ -138,7 +136,6 @@ func ResponseFormatOrSource(opts Options) sdktranslator.Format {
 		return opts.ResponseFormat
 	}
 	return opts.SourceFormat
->>>>>>> upstream/main
 }
 
 // Response wraps either a full provider response or metadata for streaming flows.

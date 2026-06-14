@@ -634,6 +634,24 @@ func (m *Manager) executionModelCandidates(auth *Auth, routeModel string) []stri
 	return []string{resolved}
 }
 
+func (m *Manager) executionModelCandidatesForCapacityCheck(auth *Auth, routeModel string) []string {
+	if auth != nil && auth.Attributes != nil {
+		if homeModel := strings.TrimSpace(auth.Attributes[homeUpstreamModelAttributeKey]); homeModel != "" {
+			return []string{homeModel}
+		}
+	}
+	requestedModel := rewriteModelForAuth(routeModel, auth)
+	requestedModel = m.applyOAuthModelAlias(auth, requestedModel)
+	if pool := m.resolveOpenAICompatUpstreamModelPool(auth, requestedModel); len(pool) > 0 {
+		return pool
+	}
+	resolved := m.applyAPIKeyModelAlias(auth, requestedModel)
+	if strings.TrimSpace(resolved) == "" {
+		resolved = requestedModel
+	}
+	return []string{resolved}
+}
+
 func (m *Manager) selectionModelForAuth(auth *Auth, routeModel string) string {
 	requestedModel := rewriteModelForAuth(routeModel, auth)
 	if strings.TrimSpace(requestedModel) == "" {
@@ -679,13 +697,16 @@ func executionResultModel(routeModel, upstreamModel string, pooled bool) string 
 	return strings.TrimSpace(upstreamModel)
 }
 
-func (m *Manager) filterExecutionModels(auth *Auth, routeModel string, candidates []string, pooled bool) []string {
+func (m *Manager) filterExecutionModels(cfg *internalconfig.Config, auth *Auth, routeModel string, candidates []string, pooled bool, opts cliproxyexecutor.Options) []string {
 	if len(candidates) == 0 {
 		return nil
 	}
 	now := time.Now()
 	out := make([]string, 0, len(candidates))
 	for _, upstreamModel := range candidates {
+		if !requestFitsConfiguredModelContext(cfg, auth, opts, upstreamModel) {
+			continue
+		}
 		stateModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 		blocked, _, _ := isAuthBlockedForModel(auth, stateModel, now)
 		if blocked {
@@ -696,15 +717,82 @@ func (m *Manager) filterExecutionModels(auth *Auth, routeModel string, candidate
 	return out
 }
 
-func (m *Manager) preparedExecutionModels(auth *Auth, routeModel string) ([]string, bool) {
+func (m *Manager) preparedExecutionModels(auth *Auth, routeModel string, opts cliproxyexecutor.Options) ([]string, bool) {
 	candidates := m.executionModelCandidates(auth, routeModel)
 	pooled := len(candidates) > 1
-	return m.filterExecutionModels(auth, routeModel, candidates, pooled), pooled
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil {
+		cfg = &internalconfig.Config{}
+	}
+	return m.filterExecutionModels(cfg, auth, routeModel, candidates, pooled, opts), pooled
 }
 
 func (m *Manager) prepareExecutionModels(auth *Auth, routeModel string) []string {
-	models, _ := m.preparedExecutionModels(auth, routeModel)
+	models, _ := m.preparedExecutionModels(auth, routeModel, cliproxyexecutor.Options{})
 	return models
+}
+
+func requestFitsConfiguredModelContext(cfg *internalconfig.Config, auth *Auth, opts cliproxyexecutor.Options, upstreamModel string) bool {
+	requestBytes, ok := requestBytesFromMetadata(opts.Metadata)
+	if !ok || requestBytes <= 0 {
+		return true
+	}
+	contextLength, ok := configuredOpenAICompatModelContextLength(cfg, auth, upstreamModel)
+	if !ok || contextLength <= 0 {
+		return true
+	}
+	return requestBytes <= contextLength
+}
+
+func authHasConfiguredContextCapacity(m *Manager, cfg *internalconfig.Config, auth *Auth, opts cliproxyexecutor.Options, routeModel string) bool {
+	requestBytes, ok := requestBytesFromMetadata(opts.Metadata)
+	if !ok || requestBytes <= 0 {
+		return true
+	}
+	candidates := m.executionModelCandidatesForCapacityCheck(auth, routeModel)
+	if len(candidates) == 0 {
+		return true
+	}
+	hasConfiguredContext := false
+	for _, upstreamModel := range candidates {
+		contextLength, ok := configuredOpenAICompatModelContextLength(cfg, auth, upstreamModel)
+		if !ok || contextLength <= 0 {
+			return true
+		}
+		hasConfiguredContext = true
+		if requestBytes <= contextLength {
+			return true
+		}
+	}
+	return !hasConfiguredContext
+}
+
+func configuredOpenAICompatModelContextLength(cfg *internalconfig.Config, auth *Auth, upstreamModel string) (int64, bool) {
+	if cfg == nil || auth == nil {
+		return 0, false
+	}
+	providerKey := ""
+	compatName := ""
+	if auth.Attributes != nil {
+		providerKey = strings.TrimSpace(auth.Attributes["provider_key"])
+		compatName = strings.TrimSpace(auth.Attributes["compat_name"])
+	}
+	entry := resolveOpenAICompatConfig(cfg, providerKey, compatName, auth.Provider)
+	if entry == nil || len(entry.Models) == 0 {
+		return 0, false
+	}
+	target := canonicalPolicyModel(upstreamModel)
+	for i := range entry.Models {
+		model := entry.Models[i]
+		if canonicalPolicyModel(model.Name) != target && canonicalPolicyModel(model.Alias) != target {
+			continue
+		}
+		if model.ContextLength <= 0 {
+			return 0, false
+		}
+		return int64(model.ContextLength), true
+	}
+	return 0, false
 }
 
 func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
@@ -1151,15 +1239,12 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		execReq := req
 		execReq.Model = execModel
 		execOpts := opts
-		execReq, execOpts = applyRequestAfterAuthInterceptor(ctx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
-<<<<<<< HEAD
 		var errCompress error
 		execReq, execOpts, errCompress = m.maybeCompressRequest(ctx, provider, routeModel, execModel, execReq, execOpts)
 		if errCompress != nil {
 			return nil, errCompress
 		}
-=======
->>>>>>> upstream/main
+		execReq, execOpts = applyRequestAfterAuthInterceptor(ctx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
 		if errStream != nil {
 			if errCtx := ctx.Err(); errCtx != nil {
@@ -1825,7 +1910,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 
-		models, pooled := m.preparedExecutionModels(auth, routeModel)
+		models, pooled := m.preparedExecutionModels(auth, routeModel, opts)
 		if len(models) == 0 {
 			continue
 		}
@@ -1847,15 +1932,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execReq := req
 			execReq.Model = upstreamModel
 			execOpts := opts
-			execReq, execOpts = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
-<<<<<<< HEAD
 			var errCompress error
 			execReq, execOpts, errCompress = m.maybeCompressRequest(execCtx, provider, routeModel, upstreamModel, execReq, execOpts)
 			if errCompress != nil {
 				return cliproxyexecutor.Response{}, errCompress
 			}
-=======
->>>>>>> upstream/main
+			execReq, execOpts = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
 			if errExec != nil {
@@ -1938,7 +2020,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 
-		models, pooled := m.preparedExecutionModels(auth, routeModel)
+		models, pooled := m.preparedExecutionModels(auth, routeModel, opts)
 		if len(models) == 0 {
 			continue
 		}
@@ -2041,7 +2123,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
-		models, pooled := m.preparedExecutionModels(auth, routeModel)
+		models, pooled := m.preparedExecutionModels(auth, routeModel, opts)
 		if len(models) == 0 {
 			continue
 		}
@@ -3691,6 +3773,10 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		upstreamModel := rewriteModelForAuth(model, candidate)
 		upstreamModel = m.applyOAuthModelAlias(candidate, upstreamModel)
 		upstreamModel = m.applyAPIKeyModelAlias(candidate, upstreamModel)
+		if !authHasConfiguredContextCapacity(m, runtimeConfig, candidate, opts, model) {
+			logEntryWithRequestID(ctx).Tracef("context length skipped auth=%s provider=%s model=%s upstreamModel=%s", candidate.ID, provider, model, upstreamModel)
+			continue
+		}
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, candidate, opts, model, provider, upstreamModel); blocked {
 			if policyErr != nil {
 				logEntryWithRequestID(ctx).Tracef("request policy skipped auth=%s provider=%s model=%s policy=%s reason=%s", candidate.ID, provider, model, policyErr.policy, policyErr.reason)
@@ -3797,6 +3883,13 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		upstreamModel := rewriteModelForAuth(model, selected)
 		upstreamModel = m.applyOAuthModelAlias(selected, upstreamModel)
 		upstreamModel = m.applyAPIKeyModelAlias(selected, upstreamModel)
+		if !authHasConfiguredContextCapacity(m, runtimeConfig, selected, opts, model) {
+			if tried == nil {
+				tried = make(map[string]struct{})
+			}
+			tried[selected.ID] = struct{}{}
+			continue
+		}
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, selected, opts, model, provider, upstreamModel); blocked {
 			if policyErr != nil && policyErr.action == requestPolicyActionReject {
 				return nil, nil, policyErr
@@ -3895,6 +3988,10 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if modelKey != "" &&
 			!candidateSupportsModel(runtimeConfig, registryRef, candidate, model, routeGroup, allowedGroups) &&
 			!candidateSupportsModel(runtimeConfig, registryRef, candidate, upstreamModel, routeGroup, allowedGroups) {
+			continue
+		}
+		if !authHasConfiguredContextCapacity(m, runtimeConfig, candidate, opts, model) {
+			logEntryWithRequestID(ctx).Tracef("context length skipped auth=%s provider=%s model=%s upstreamModel=%s", candidate.ID, providerKey, model, upstreamModel)
 			continue
 		}
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, candidate, opts, model, providerKey, upstreamModel); blocked {
@@ -4036,6 +4133,13 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		upstreamModel := rewriteModelForAuth(model, selected)
 		upstreamModel = m.applyOAuthModelAlias(selected, upstreamModel)
 		upstreamModel = m.applyAPIKeyModelAlias(selected, upstreamModel)
+		if !authHasConfiguredContextCapacity(m, runtimeConfig, selected, opts, model) {
+			if tried == nil {
+				tried = make(map[string]struct{})
+			}
+			tried[selected.ID] = struct{}{}
+			continue
+		}
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, selected, opts, model, providerKey, upstreamModel); blocked {
 			logEntryWithRequestID(ctx).Tracef("pickNextMixed: request-policy blocked auth=%s provider=%s upstreamModel=%s policy=%s reason=%s", selected.ID, providerKey, upstreamModel, policyErr.policy, policyErr.reason)
 			if policyErr != nil && policyErr.action == requestPolicyActionReject {

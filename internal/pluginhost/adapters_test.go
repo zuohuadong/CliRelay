@@ -1342,8 +1342,6 @@ func TestInterceptRequestAfterAuthPassesTargetFormat(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
-=======
 func TestInterceptorsSkipExceptedPlugin(t *testing.T) {
 	originCalls := 0
 	otherCalls := 0
@@ -1419,7 +1417,6 @@ func TestInterceptorsSkipExceptedPlugin(t *testing.T) {
 	}
 }
 
->>>>>>> upstream/main
 func TestResponseInterceptorsChainAndStreamHistory(t *testing.T) {
 	var seenHistory [][]byte
 	var sawSecondResponse bool

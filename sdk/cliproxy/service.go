@@ -1275,30 +1275,6 @@ func forceHomeRuntimeConfig(cfg *config.Config) {
 	cfg.RemoteManagement.DisableControlPanel = true
 }
 
-<<<<<<< HEAD
-func (s *Service) registerHomeExecutors() {
-	if s == nil || s.coreManager == nil || s.cfg == nil {
-		return
-	}
-
-	// Register baseline executors so home-dispatched auth entries can execute without
-	// requiring any local auth-dir credentials.
-	s.coreManager.RegisterExecutor(executor.NewCodexAutoExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewGeminiExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewGeminiVertexExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewGeminiCLIExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewAIStudioExecutor(s.cfg, "", s.wsGateway))
-	s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewBigModelCodingExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewAstronCodeExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewOpenCodeGoExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor("openai-compatibility", s.cfg))
-}
-
-=======
->>>>>>> upstream/main
 func (s *Service) applyHomeOverlay(remoteCfg *config.Config) {
 	if s == nil || remoteCfg == nil {
 		return

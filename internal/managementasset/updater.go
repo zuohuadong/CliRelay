@@ -88,21 +88,8 @@ func runPanelAssetSyncer(ctx context.Context) {
 
 	runOnce := func() {
 		cfg := currentConfigPtr.Load()
-<<<<<<< HEAD
-		if cfg == nil {
-			log.Debug("management asset syncer skipped: config not yet available")
-			return
-		}
-		if cfg.RemoteManagement.DisableControlPanel {
-			log.Debug("management asset syncer skipped: control panel disabled")
-			return
-		}
-		if cfg.RemoteManagement.DisableAutoUpdatePanel {
-			log.Debug("management asset syncer skipped: disable-auto-update-panel is enabled")
-=======
 		if reason, skip := autoUpdateSkipReason(cfg); skip {
 			log.Debugf("management asset auto-updater skipped: %s", reason)
->>>>>>> upstream/main
 			return
 		}
 

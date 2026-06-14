@@ -870,14 +870,8 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
-<<<<<<< HEAD
-	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
-	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
-	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
-=======
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
->>>>>>> upstream/main
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
@@ -892,14 +886,6 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		Stream:                      false,
 		Alt:                         alt,
 		OriginalRequest:             rawJSON,
-<<<<<<< HEAD
-		SourceFormat:                sdktranslator.FromString(handlerType),
-		Headers:                     headersFromContext(ctx),
-		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture),
-	}
-	opts.Metadata = reqMeta
-	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, modelName, req, opts)
-=======
 		SourceFormat:                sdktranslator.FromString(entryProtocol),
 		ResponseFormat:              sdktranslator.FromString(responseProtocol),
 		Headers:                     modelExecutionHeaders(ctx, execOptions.Headers),
@@ -908,7 +894,6 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	}
 	opts.Metadata = reqMeta
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, modelName, req, opts, execOptions.SkipInterceptorPluginID)
->>>>>>> upstream/main
 	resp, err := h.AuthManager.Execute(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
@@ -929,11 +914,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	executedReq, executedOpts := afterAuthCapture.apply(req, opts)
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
-<<<<<<< HEAD
-	body, responseHeaders := h.applyResponseInterceptors(ctx, handlerType, normalizedModel, modelName, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK)
-=======
 	body, responseHeaders := h.applyResponseInterceptors(ctx, responseProtocol, normalizedModel, modelName, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
->>>>>>> upstream/main
 	return body, responseHeaders, nil
 }
 
@@ -965,17 +946,10 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 		OriginalRequest:             rawJSON,
 		SourceFormat:                sdktranslator.FromString(handlerType),
 		Headers:                     headersFromContext(ctx),
-<<<<<<< HEAD
-		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture),
-	}
-	opts.Metadata = reqMeta
-	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, modelName, req, opts)
-=======
 		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture, ""),
 	}
 	opts.Metadata = reqMeta
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, modelName, req, opts, "")
->>>>>>> upstream/main
 	resp, err := h.AuthManager.ExecuteCount(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
@@ -996,11 +970,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 	executedReq, executedOpts := afterAuthCapture.apply(req, opts)
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
-<<<<<<< HEAD
-	body, responseHeaders := h.applyResponseInterceptors(ctx, handlerType, normalizedModel, modelName, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK)
-=======
 	body, responseHeaders := h.applyResponseInterceptors(ctx, handlerType, normalizedModel, modelName, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, "")
->>>>>>> upstream/main
 	return body, responseHeaders, nil
 }
 
@@ -1031,14 +1001,8 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
-<<<<<<< HEAD
-	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
-	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
-	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
-=======
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
->>>>>>> upstream/main
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
@@ -1053,16 +1017,6 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		Stream:                      true,
 		Alt:                         alt,
 		OriginalRequest:             rawJSON,
-<<<<<<< HEAD
-		SourceFormat:                sdktranslator.FromString(handlerType),
-		Headers:                     headersFromContext(ctx),
-		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture),
-	}
-	opts.Metadata = reqMeta
-	maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
-	bootstrapRetries := 0
-	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, modelName, req, opts)
-=======
 		SourceFormat:                sdktranslator.FromString(entryProtocol),
 		ResponseFormat:              sdktranslator.FromString(responseProtocol),
 		Headers:                     modelExecutionHeaders(ctx, execOptions.Headers),
@@ -1071,7 +1025,8 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 	opts.Metadata = reqMeta
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, modelName, req, opts, execOptions.SkipInterceptorPluginID)
->>>>>>> upstream/main
+	maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
+	bootstrapRetries := 0
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	for err != nil && bootstrapRetries < maxBootstrapRetries && streamBootstrapRetryEligible(err) {
 		bootstrapRetries++
@@ -1130,13 +1085,8 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			return
 		}
 		executedReq, executedOpts := executedRequest()
-<<<<<<< HEAD
-		intercepted := interceptorHost.InterceptStreamChunk(ctx, pluginapi.StreamChunkInterceptRequest{
-			SourceFormat:    handlerType,
-=======
 		intercepted := interceptStreamChunk(ctx, interceptorHost, pluginapi.StreamChunkInterceptRequest{
 			SourceFormat:    responseProtocol,
->>>>>>> upstream/main
 			Model:           normalizedModel,
 			RequestedModel:  modelName,
 			RequestHeaders:  cloneHeader(executedOpts.Headers),
@@ -1145,11 +1095,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			RequestBody:     cloneBytes(executedReq.Payload),
 			ChunkIndex:      pluginapi.StreamChunkHeaderInitIndex,
 			Metadata:        executedOpts.Metadata,
-<<<<<<< HEAD
-		})
-=======
 		}, execOptions.SkipInterceptorPluginID)
->>>>>>> upstream/main
 		applyStreamHeaders(intercepted.Headers)
 		streamHeaderInitialized = true
 	}
@@ -1280,13 +1226,8 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 					payload := cloneBytes(chunk.Payload)
 					if streamInterceptorsActive {
 						executedReq, executedOpts := executedRequest()
-<<<<<<< HEAD
-						intercepted := interceptorHost.InterceptStreamChunk(ctx, pluginapi.StreamChunkInterceptRequest{
-							SourceFormat:    handlerType,
-=======
 						intercepted := interceptStreamChunk(ctx, interceptorHost, pluginapi.StreamChunkInterceptRequest{
 							SourceFormat:    responseProtocol,
->>>>>>> upstream/main
 							Model:           normalizedModel,
 							RequestedModel:  modelName,
 							RequestHeaders:  cloneHeader(executedOpts.Headers),
@@ -1297,11 +1238,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 							HistoryChunks:   cloneByteSlices(historyChunks),
 							ChunkIndex:      chunkIndex,
 							Metadata:        executedOpts.Metadata,
-<<<<<<< HEAD
-						})
-=======
 						}, execOptions.SkipInterceptorPluginID)
->>>>>>> upstream/main
 						applyStreamHeaders(intercepted.Headers)
 						if len(intercepted.Body) > 0 {
 							payload = cloneBytes(intercepted.Body)
@@ -1702,9 +1639,6 @@ func mergeRequestInterceptorHeaders(current, updates http.Header, clear []string
 	return out
 }
 
-<<<<<<< HEAD
-func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context, handlerType, requestedModel string, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Request, coreexecutor.Options) {
-=======
 func interceptRequestBeforeAuth(ctx context.Context, host PluginInterceptorHost, req pluginapi.RequestInterceptRequest, skipPluginID string) pluginapi.RequestInterceptResponse {
 	if skipPluginID != "" {
 		if skipper, ok := host.(pluginInterceptorSkipHost); ok {
@@ -1742,16 +1676,11 @@ func interceptStreamChunk(ctx context.Context, host PluginInterceptorHost, req p
 }
 
 func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context, handlerType, requestedModel string, req coreexecutor.Request, opts coreexecutor.Options, skipPluginID string) (coreexecutor.Request, coreexecutor.Options) {
->>>>>>> upstream/main
 	host := h.interceptorHost()
 	if host == nil {
 		return req, opts
 	}
-<<<<<<< HEAD
-	resp := host.InterceptRequestBeforeAuth(ctx, pluginapi.RequestInterceptRequest{
-=======
 	resp := interceptRequestBeforeAuth(ctx, host, pluginapi.RequestInterceptRequest{
->>>>>>> upstream/main
 		SourceFormat:   handlerType,
 		Model:          req.Model,
 		RequestedModel: requestedModel,
@@ -1768,20 +1697,12 @@ func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context,
 	return req, opts
 }
 
-<<<<<<< HEAD
-func (h *BaseAPIHandler) requestAfterAuthInterceptor(capture *requestAfterAuthCapture) coreexecutor.RequestAfterAuthInterceptor {
-=======
 func (h *BaseAPIHandler) requestAfterAuthInterceptor(capture *requestAfterAuthCapture, skipPluginID string) coreexecutor.RequestAfterAuthInterceptor {
->>>>>>> upstream/main
 	if !requestInterceptorsEnabled(h.interceptorHost()) {
 		return nil
 	}
 	return func(ctx context.Context, req coreexecutor.RequestAfterAuthInterceptRequest) coreexecutor.RequestAfterAuthInterceptResponse {
-<<<<<<< HEAD
-		resp := h.applyRequestInterceptorsAfterAuth(ctx, req)
-=======
 		resp := h.applyRequestInterceptorsAfterAuth(ctx, req, skipPluginID)
->>>>>>> upstream/main
 		if capture != nil {
 			capture.record(req, resp)
 		}
@@ -1789,20 +1710,12 @@ func (h *BaseAPIHandler) requestAfterAuthInterceptor(capture *requestAfterAuthCa
 	}
 }
 
-<<<<<<< HEAD
-func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, req coreexecutor.RequestAfterAuthInterceptRequest) coreexecutor.RequestAfterAuthInterceptResponse {
-=======
 func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, req coreexecutor.RequestAfterAuthInterceptRequest, skipPluginID string) coreexecutor.RequestAfterAuthInterceptResponse {
->>>>>>> upstream/main
 	host := h.interceptorHost()
 	if !requestInterceptorsEnabled(host) {
 		return coreexecutor.RequestAfterAuthInterceptResponse{}
 	}
-<<<<<<< HEAD
-	resp := host.InterceptRequestAfterAuth(ctx, pluginapi.RequestInterceptRequest{
-=======
 	resp := interceptRequestAfterAuth(ctx, host, pluginapi.RequestInterceptRequest{
->>>>>>> upstream/main
 		SourceFormat:   req.SourceFormat.String(),
 		ToFormat:       req.ToFormat.String(),
 		Model:          req.Model,
@@ -1811,11 +1724,7 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 		Headers:        cloneHeader(req.Headers),
 		Body:           cloneBytes(req.Body),
 		Metadata:       req.Metadata,
-<<<<<<< HEAD
-	})
-=======
 	}, skipPluginID)
->>>>>>> upstream/main
 	return coreexecutor.RequestAfterAuthInterceptResponse{
 		Headers:      resp.Headers,
 		Body:         resp.Body,
@@ -1823,11 +1732,7 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 	}
 }
 
-<<<<<<< HEAD
-func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, handlerType, normalizedModel, requestedModel string, opts coreexecutor.Options, rawResponseHeaders, responseHeaders http.Header, originalRequest, requestBody, body []byte, statusCode int) ([]byte, http.Header) {
-=======
 func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, handlerType, normalizedModel, requestedModel string, opts coreexecutor.Options, rawResponseHeaders, responseHeaders http.Header, originalRequest, requestBody, body []byte, statusCode int, skipPluginID string) ([]byte, http.Header) {
->>>>>>> upstream/main
 	host := h.interceptorHost()
 	if host == nil {
 		return body, responseHeaders

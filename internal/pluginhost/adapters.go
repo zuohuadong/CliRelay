@@ -569,20 +569,6 @@ func (h *Host) callStreamChunkInterceptor(ctx context.Context, pluginID string, 
 }
 
 func (h *Host) InterceptRequestBeforeAuth(ctx context.Context, req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
-<<<<<<< HEAD
-	return h.interceptRequest(ctx, req, "RequestInterceptor.InterceptRequestBeforeAuth", func(interceptor pluginapi.RequestInterceptor, ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
-		return interceptor.InterceptRequestBeforeAuth(ctx, req)
-	})
-}
-
-func (h *Host) InterceptRequestAfterAuth(ctx context.Context, req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
-	return h.interceptRequest(ctx, req, "RequestInterceptor.InterceptRequestAfterAuth", func(interceptor pluginapi.RequestInterceptor, ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
-		return interceptor.InterceptRequestAfterAuth(ctx, req)
-	})
-}
-
-func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterceptRequest, method string, invoke func(pluginapi.RequestInterceptor, context.Context, pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error)) pluginapi.RequestInterceptResponse {
-=======
 	return h.InterceptRequestBeforeAuthExcept(ctx, req, "")
 }
 
@@ -603,7 +589,6 @@ func (h *Host) InterceptRequestAfterAuthExcept(ctx context.Context, req pluginap
 }
 
 func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterceptRequest, method string, invoke func(pluginapi.RequestInterceptor, context.Context, pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error), skipPluginID string) pluginapi.RequestInterceptResponse {
->>>>>>> upstream/main
 	current := pluginapi.RequestInterceptResponse{
 		Headers: cloneHeader(req.Headers),
 		Body:    bytes.Clone(req.Body),
@@ -1382,24 +1367,15 @@ func (a *executorAdapter) RequestToFormat(req coreexecutor.Request, opts coreexe
 	if a == nil {
 		return ""
 	}
-<<<<<<< HEAD
-	requestedFormat := executorRequestedFormat(req, opts)
-	inputFormat, errInput := a.selectExecutorInputFormat(requestedFormat)
-=======
 	inputRequested := executorInputFormat(req, opts)
 	inputFormat, errInput := a.selectExecutorInputFormat(inputRequested)
->>>>>>> upstream/main
 	if errInput != nil {
 		return ""
 	}
 	return inputFormat
 }
 
-<<<<<<< HEAD
-func executorRequestedFormat(req coreexecutor.Request, opts coreexecutor.Options) sdktranslator.Format {
-=======
 func executorInputFormat(req coreexecutor.Request, opts coreexecutor.Options) sdktranslator.Format {
->>>>>>> upstream/main
 	if opts.SourceFormat != "" {
 		return normalizeExecutorFormatName(opts.SourceFormat.String())
 	}

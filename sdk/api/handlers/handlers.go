@@ -871,6 +871,8 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
+	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
+	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
@@ -1002,6 +1004,8 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
+	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
+	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON

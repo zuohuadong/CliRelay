@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -194,6 +195,13 @@ type authAwareStreamExecutor struct {
 	authIDs []string
 }
 
+type routePolicyExecutor struct {
+	id string
+
+	mu     sync.Mutex
+	models []string
+}
+
 type invalidJSONStreamExecutor struct{}
 
 type splitResponsesEventStreamExecutor struct{}
@@ -325,6 +333,282 @@ func (e *authAwareStreamExecutor) AuthIDs() []string {
 	out := make([]string, len(e.authIDs))
 	copy(out, e.authIDs)
 	return out
+}
+
+func (e *routePolicyExecutor) Identifier() string { return e.id }
+
+func (e *routePolicyExecutor) Execute(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
+	e.mu.Lock()
+	e.models = append(e.models, req.Model)
+	e.mu.Unlock()
+	return coreexecutor.Response{Payload: []byte(e.id + ":" + req.Model)}, nil
+}
+
+func (e *routePolicyExecutor) ExecuteStream(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.mu.Lock()
+	e.models = append(e.models, req.Model)
+	e.mu.Unlock()
+	ch := make(chan coreexecutor.StreamChunk, 1)
+	ch <- coreexecutor.StreamChunk{Payload: []byte(e.id + ":" + req.Model)}
+	close(ch)
+	return &coreexecutor.StreamResult{Chunks: ch}, nil
+}
+
+func (e *routePolicyExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *routePolicyExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
+}
+
+func (e *routePolicyExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, &coreauth.Error{
+		Code:       "not_implemented",
+		Message:    "HttpRequest not implemented",
+		HTTPStatus: http.StatusNotImplemented,
+	}
+}
+
+func (e *routePolicyExecutor) Models() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, len(e.models))
+	copy(out, e.models)
+	return out
+}
+
+func newContextRoutingPolicyHandler(t *testing.T) (*BaseAPIHandler, *routePolicyExecutor, *routePolicyExecutor, *routePolicyExecutor) {
+	t.Helper()
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	codex := &routePolicyExecutor{id: "codex"}
+	astron := &routePolicyExecutor{id: "astron-code"}
+	bigmodel := &routePolicyExecutor{id: "bigmodel-coding"}
+	manager.RegisterExecutor(codex)
+	manager.RegisterExecutor(astron)
+	manager.RegisterExecutor(bigmodel)
+
+	cfg := &internalconfig.Config{
+		AstronCodeAPIKey: []internalconfig.OpenAICompatibility{
+			{
+				Name: "astron-code",
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "astron-code-latest", Alias: "gpt-5.3-codex", ContextLength: 512},
+				},
+			},
+		},
+		BigModelCodingAPIKey: []internalconfig.OpenAICompatibility{
+			{
+				Name: "bigmodel-coding",
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "glm-5.1", Alias: "gpt-5.3-codex", ContextLength: 512},
+					{Name: "glm-5.2", Alias: "gpt-5.3-codex", ContextLength: 2048},
+				},
+			},
+		},
+		OAuthModelAlias: map[string][]internalconfig.OAuthModelAlias{
+			"codex": {
+				{Name: "gpt-5.3-codex-spark", Alias: "gpt-5.3-codex", Fork: true},
+			},
+		},
+		ProviderPreferences: []internalconfig.ProviderPreference{
+			{
+				Name: "prefer-codex-spark",
+				Match: internalconfig.ProviderPreferenceMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"codex"},
+					UpstreamModels:    []string{"gpt-5.3-codex-spark"},
+				},
+				Priority: 500,
+			},
+			{
+				Name: "prefer-astron",
+				Match: internalconfig.ProviderPreferenceMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"astron-code"},
+					UpstreamModels:    []string{"astron-code-latest"},
+				},
+				Priority: 300,
+			},
+			{
+				Name: "prefer-bigmodel",
+				Match: internalconfig.ProviderPreferenceMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"bigmodel-coding"},
+				},
+				Priority: 100,
+			},
+		},
+		RequestPolicies: []internalconfig.RequestPolicy{
+			{
+				Name: "codex-spark-small-window-guard",
+				Match: internalconfig.RequestPolicyMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"codex"},
+					UpstreamModels:    []string{"gpt-5.3-codex-spark"},
+				},
+				Limits:    internalconfig.RequestPolicyLimits{MaxRequestBytes: 128},
+				OverLimit: internalconfig.RequestPolicyOverLimit{Action: "skip-channel"},
+			},
+		},
+	}
+	manager.SetConfig(cfg)
+	manager.SetOAuthModelAlias(cfg.OAuthModelAlias)
+
+	auths := []*coreauth.Auth{
+		{
+			ID:       "codex-auth",
+			Provider: "codex",
+			Status:   coreauth.StatusActive,
+			Attributes: map[string]string{
+				"auth_kind": "oauth",
+			},
+		},
+		{
+			ID:       "astron-auth",
+			Provider: "astron-code",
+			Status:   coreauth.StatusActive,
+			Attributes: map[string]string{
+				"api_key":      "test-astron-key",
+				"auth_kind":    "api_key",
+				"provider_key": "astron-code",
+				"compat_name":  "astron-code",
+			},
+		},
+		{
+			ID:       "bigmodel-auth",
+			Provider: "bigmodel-coding",
+			Status:   coreauth.StatusActive,
+			Attributes: map[string]string{
+				"api_key":      "test-bigmodel-key",
+				"auth_kind":    "api_key",
+				"provider_key": "bigmodel-coding",
+				"compat_name":  "bigmodel-coding",
+			},
+		},
+	}
+	for _, auth := range auths {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("manager.Register(%s): %v", auth.ID, err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.3-codex"}})
+		t.Cleanup(func(id string) func() {
+			return func() { registry.GetGlobalRegistry().UnregisterClient(id) }
+		}(auth.ID))
+	}
+
+	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager), codex, astron, bigmodel
+}
+
+func TestExecuteWithAuthManager_RequestBytesPolicyFallsBackFromCodexSparkToAstron(t *testing.T) {
+	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
+	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("x", 256) + `"}`)
+
+	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
+	if errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
+	}
+	if got := string(body); got != "astron-code:astron-code-latest" {
+		t.Fatalf("response = %q, want astron fallback", got)
+	}
+	if models := codex.Models(); len(models) != 0 {
+		t.Fatalf("codex should be skipped by request policy, got calls for %v", models)
+	}
+	if models := astron.Models(); len(models) != 1 || models[0] != "astron-code-latest" {
+		t.Fatalf("astron models = %v, want [astron-code-latest]", models)
+	}
+	if models := bigmodel.Models(); len(models) != 0 {
+		t.Fatalf("bigmodel should not be used while astron fits, got calls for %v", models)
+	}
+}
+
+func TestExecuteWithAuthManager_ContextLengthFallsBackFromAstronToBigModel(t *testing.T) {
+	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
+	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("x", 768) + `"}`)
+
+	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
+	if errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
+	}
+	if got := string(body); got != "bigmodel-coding:glm-5.2" {
+		t.Fatalf("response = %q, want bigmodel glm-5.2 fallback", got)
+	}
+	if models := codex.Models(); len(models) != 0 {
+		t.Fatalf("codex should be skipped by request policy, got calls for %v", models)
+	}
+	if models := astron.Models(); len(models) != 0 {
+		t.Fatalf("astron should be skipped when context-length is exceeded, got calls for %v", models)
+	}
+	if models := bigmodel.Models(); len(models) != 1 || models[0] != "glm-5.2" {
+		t.Fatalf("bigmodel models = %v, want [glm-5.2]", models)
+	}
+}
+
+func TestExecuteStreamWithAuthManager_RequestBytesPolicyFallsBackFromCodexSparkToAstron(t *testing.T) {
+	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
+	rawJSON := []byte(`{"model":"gpt-5.3-codex","stream":true,"input":"` + strings.Repeat("x", 256) + `"}`)
+
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
+	if dataChan == nil || errChan == nil {
+		t.Fatalf("expected non-nil channels")
+	}
+
+	var got []byte
+	for chunk := range dataChan {
+		got = append(got, chunk...)
+	}
+	for msg := range errChan {
+		if msg != nil {
+			t.Fatalf("unexpected stream error: %+v", msg)
+		}
+	}
+
+	if string(got) != "astron-code:astron-code-latest" {
+		t.Fatalf("stream response = %q, want astron fallback", string(got))
+	}
+	if models := codex.Models(); len(models) != 0 {
+		t.Fatalf("codex should be skipped by request policy, got calls for %v", models)
+	}
+	if models := astron.Models(); len(models) != 1 || models[0] != "astron-code-latest" {
+		t.Fatalf("astron models = %v, want [astron-code-latest]", models)
+	}
+	if models := bigmodel.Models(); len(models) != 0 {
+		t.Fatalf("bigmodel should not be used while astron fits, got calls for %v", models)
+	}
+}
+
+func TestExecuteStreamWithAuthManager_ContextLengthFallsBackFromAstronToBigModel(t *testing.T) {
+	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
+	rawJSON := []byte(`{"model":"gpt-5.3-codex","stream":true,"input":"` + strings.Repeat("x", 768) + `"}`)
+
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
+	if dataChan == nil || errChan == nil {
+		t.Fatalf("expected non-nil channels")
+	}
+
+	var got []byte
+	for chunk := range dataChan {
+		got = append(got, chunk...)
+	}
+	for msg := range errChan {
+		if msg != nil {
+			t.Fatalf("unexpected stream error: %+v", msg)
+		}
+	}
+
+	if string(got) != "bigmodel-coding:glm-5.2" {
+		t.Fatalf("stream response = %q, want bigmodel glm-5.2 fallback", string(got))
+	}
+	if models := codex.Models(); len(models) != 0 {
+		t.Fatalf("codex should be skipped by request policy, got calls for %v", models)
+	}
+	if models := astron.Models(); len(models) != 0 {
+		t.Fatalf("astron should be skipped when context-length is exceeded, got calls for %v", models)
+	}
+	if models := bigmodel.Models(); len(models) != 1 || models[0] != "glm-5.2" {
+		t.Fatalf("bigmodel models = %v, want [glm-5.2]", models)
+	}
 }
 
 func TestExecuteStreamWithAuthManager_RetriesBeforeFirstByte(t *testing.T) {

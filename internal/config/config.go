@@ -200,6 +200,8 @@ type PluginsConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 	// Dir is the plugin discovery directory.
 	Dir string `yaml:"dir" json:"dir"`
+	// StoreSources appends third-party plugin store registries to the built-in official source.
+	StoreSources []string `yaml:"store-sources,omitempty" json:"store-sources,omitempty"`
 	// Configs stores per-plugin instance configuration by plugin ID.
 	Configs map[string]PluginInstanceConfig `yaml:"configs" json:"configs"`
 }

@@ -2,75 +2,14 @@
 # Use "127.0.0.1" or "localhost" to restrict access to local machine only.
 host: ""
 
-# OAuth client credentials for provider login flows.
-# Gemini CLI / Code Assist and Antigravity OAuth use their official OAuth clients by default.
-# Set credentials only when you intentionally want to override those clients.
-# You can set overrides either in config.yaml or via environment variables:
-#   - Gemini:      CLIRELAY_GEMINI_OAUTH_CLIENT_ID / CLIRELAY_GEMINI_OAUTH_CLIENT_SECRET
-#   - Antigravity: CLIRELAY_ANTIGRAVITY_OAUTH_CLIENT_ID / CLIRELAY_ANTIGRAVITY_OAUTH_CLIENT_SECRET
-oauth-clients:
-  gemini:
-    client-id: ""
-    client-secret: ""
-  antigravity:
-    client-id: ""
-    client-secret: ""
-
 # Server port
 port: 8317
-
-# Project timezone (IANA name). Affects "today" boundaries and day-based aggregation in monitoring/usage pages.
-# Examples: "Asia/Shanghai", "UTC", "America/Los_Angeles"
-timezone: ""
-
-# Redis settings for usage statistics persistence
-redis:
-  enable: false
-  addr: "127.0.0.1:6379"
-  password: ""
-  db: 0
 
 # TLS settings for HTTPS. When enabled, the server listens with the provided certificate and key.
 tls:
   enable: false
   cert: ""
   key: ""
-
-# Explicit browser origins allowed to call API routes cross-origin.
-# Leave empty to disable cross-origin browser access by default.
-# Chrome extension origins (`chrome-extension://<extension-id>`) are allowed by default.
-# Examples:
-# cors-allow-origins:
-#   - "https://admin.example.com"
-#   - "http://localhost:5173"
-cors-allow-origins: []
-
-# Reverse proxies whose X-Forwarded-For / X-Real-IP headers may be trusted.
-# Leave empty for direct exposure. For Docker bridge + Nginx, trust only the
-# proxy/container subnet, for example:
-# trusted-proxies:
-#   - "172.18.0.0/16"
-trusted-proxies: []
-
-# Optional "home" control plane integration over Redis protocol.
-home:
-  enabled: false
-  host: "127.0.0.1"
-  port: 6379
-  password: ""
-  # Keep CPA pinned to the configured home address instead of switching to CLUSTER NODES entries.
-  # Useful when Home is behind NAT, Docker networking, or a reverse proxy.
-  disable-cluster-discovery: false
-  # Optional TLS for the outbound Redis connection to the home control plane.
-  # Enable this when connecting through rediss:// or an SSL stream proxy.
-  tls:
-    enable: false
-    # Optional SNI/certificate name override. Leave empty to use the configured home host.
-    server-name: ""
-    # Trust a private CA bundle in addition to system roots.
-    ca-cert: ""
-    # Only for testing self-signed endpoints; disables certificate verification.
-    insecure-skip-verify: false
 
 # Management API settings
 remote-management:
@@ -86,15 +25,14 @@ remote-management:
   # Disable the bundled management control panel asset download and HTTP route when true.
   disable-control-panel: false
 
-  # Disable periodic background sync of the management panel release asset when true.
-  # If the local panel asset is missing, the server may still try to download it on first access.
-  disable-auto-update-panel: false
+  # Disable automatic periodic background updates of the management panel from GitHub (default: false).
+  # When enabled, the panel is only downloaded on first access if missing, and never auto-updated afterward.
+  # disable-auto-update-panel: false
 
   # GitHub repository for the management control panel. Accepts a repository URL or releases API URL.
-  panel-github-repository: "https://github.com/zuohuadong/codeProxy"
+  panel-github-repository: "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
 
-# Authentication directory (supports ~ for home directory).
-# In Docker/cloud deployments, AUTH_PATH overrides this value at runtime.
+# Authentication directory (supports ~ for home directory)
 auth-dir: "~/.cli-proxy-api"
 
 # API keys for authentication
@@ -103,10 +41,6 @@ api-keys:
   - "your-api-key-2"
   - "your-api-key-3"
 
-# When true, allow /v1 and /v1beta requests without API keys when no keys/providers
-# are configured. Not recommended for production.
-allow-unauthenticated: false
-
 # Enable debug logging
 debug: false
 
@@ -114,7 +48,6 @@ debug: false
 pprof:
   enable: false
   addr: "127.0.0.1:8316"
-  allow-remote: false
 
 # Standard dynamic library plugins are trusted in-process code. They are disabled by default.
 # Build Go examples with go build -buildmode=c-shared for the target GOOS/GOARCH.
@@ -128,6 +61,9 @@ pprof:
 plugins:
   enabled: false
   dir: "plugins"
+  # Additional plugin store registries. The built-in official registry is always included.
+  # store-sources:
+  #   - "https://example.com/cliproxy-plugins/registry.json"
   configs:
     example:
       enabled: true
@@ -154,252 +90,14 @@ error-logs-max-files: 10
 # When false, disable in-memory usage statistics aggregation
 usage-statistics-enabled: false
 
-# Detailed request/response body retention settings for usage.db.
-request-log-storage:
-  # When true, persist full request and response bodies in SQLite.
-  # When false, stop writing new content while preserving existing stored content.
-  store-content: true
-
-  # Keep full request/response bodies for the last N days.
-  # Set to 0 to retain full content indefinitely.
-  # The lightweight request metadata rows are retained separately.
-  content-retention-days: 30
-
-  # Run background content cleanup every N minutes.
-  cleanup-interval-minutes: 1440
-
-  # Cap the total size of stored request/response bodies (MB).
-  # When exceeded, the oldest full bodies are pruned early even if their retention days are not over.
-  # Default is 1024 (≈1GB). Set to 0 to disable the size cap.
-  max-total-size-mb: 1024
-
-  # Reclaim disk space after cleanup. This can be I/O intensive on very large databases.
-  vacuum-on-cleanup: true
-
-# Optional request context retrieval for large Codex/OpenAI-compatible payloads.
-# This trims oversized request history before forwarding while preserving recent turns
-# and retrieving older keyword-relevant items.
-# context-retrieval:
-#   enabled: false
-#   models:
-#     - name: "*codex*"
-#       protocol: "openai-response"
-#     - name: "*codex*"
-#       protocol: "openai"
-#   max-input-bytes: 1600000
-#   preserve-recent-turns: 10
-#   chunk:
-#     max-bytes: 12000
-#   retrieval:
-#     top-k: 40
-#     strategy: "keyword"
-#   # Optional second pass: if primary retrieval still exceeds budget, retry with
-#   # a smaller budget and truncate oversized retained item text with prefix/suffix.
-#   secondary:
-#     enabled: true
-#     max-input-bytes: 800000
-#     preserve-recent-turns: 6
-#     top-k: 24
-#     max-summary-bytes: 2000
-#     max-item-bytes: 24000
-#   codex-aware:
-#     enabled: true
-#     preserve-tool-pairs: true
-#     # off, drop-orphans. drop-orphans removes historical function_call items
-#     # whose matching function_call_output is not present after context reduction.
-#     tool-pair-repair: "drop-orphans"
-#     insert-summary: true
-#     max-summary-bytes: 4000
-#     preserve-recent-commands: 8
-#     preserve-recent-errors: 8
-
-# Optional request policies for routing around provider/model limits.
-# Policies can skip a channel or reject locally when request size/tools exceed
-# configured limits. Use skip-channel to fall back to the next available provider.
-# request-policies:
-#   - name: "astron-code-220k-guard"
-#     match:
-#       requested-models: ["gpt-5.3-codex", "glm-5.1"]
-#       upstream-providers: ["astron-code"]
-#       upstream-models: ["astron-code-latest"]
-#     limits:
-#       max-request-bytes: 220000
-#     over-limit:
-#       action: "skip-channel"
-#   - name: "astron-code-image-skip"
-#     match:
-#       requested-models: ["gpt-5.3-codex", "glm-5.1"]
-#       upstream-providers: ["astron-code"]
-#       upstream-models: ["astron-code-latest"]
-#       request-features: ["image"]
-#     over-limit:
-#       action: "skip-channel"
-#   - name: "astron-code-mcp-skip"
-#     match:
-#       requested-models: ["gpt-5.3-codex", "glm-5.1"]
-#       upstream-providers: ["astron-code"]
-#       upstream-models: ["astron-code-latest"]
-#       request-features: ["mcp"]
-#     over-limit:
-#       action: "skip-channel"
-#   - name: "astron-code-unsupported-tools-skip"
-#     match:
-#       requested-models: ["gpt-5.3-codex", "glm-5.1"]
-#       upstream-providers: ["astron-code"]
-#       upstream-models: ["astron-code-latest"]
-#       request-features: ["xunfei-unsupported-tools"]
-#     over-limit:
-#       action: "skip-channel"
-#   - name: "glm-5.1-large-request-guard"
-#     match:
-#       # No requested-models needed: policy matches by upstream provider/model,
-#       # so any client model aliased to GLM-5.1 is automatically protected.
-#       upstream-providers: ["bigmodel-coding"]
-#       upstream-models: ["glm-5.1"]
-#     limits:
-#       max-request-bytes: 600000
-#     over-limit:
-#       action: "skip-channel"
-#   - name: "glm-5.1-large-request-compress"
-#     match:
-#       requested-models: ["gpt-5.3-codex"]
-#       upstream-providers: ["bigmodel-coding"]
-#       upstream-models: ["glm-5.1"]
-#     limits:
-#       max-request-bytes: 600000
-#     over-limit:
-#       action: "compress"
-#       compression:
-#         provider: "gemini"
-#         model: "gemini-3-flash-preview"
-#         target-request-bytes: 512000
-#         unavailable-action: "skip" # skip, reject
-#   - name: "glm-5.1-tool-heavy-skip"
-#     match:
-#       upstream-providers: ["bigmodel-coding"]
-#       upstream-models: ["glm-5.1"]
-#     limits:
-#       min-tool-calls: 16
-#     over-limit:
-#       action: "skip-channel"
-#   - name: "glm-5.1-tools-skip"
-#     match:
-#       upstream-providers: ["bigmodel-coding"]
-#       upstream-models: ["glm-5.1"]
-#       request-features: ["tools"]
-#     over-limit:
-#       action: "skip-channel"
-#   - name: "glm-5.1-long-thread-skip"
-#     match:
-#       upstream-providers: ["bigmodel-coding"]
-#       upstream-models: ["glm-5.1"]
-#     limits:
-#       min-input-items: 120
-#     over-limit:
-#       action: "skip-channel"
-
-# Optional provider preferences for model-scoped upstream priority overrides.
-# This keeps fallback behavior intact while making a specific provider win first.
-# provider-preferences:
-#   - name: "prefer-astron-code-for-small-glm-5.1"
-#     match:
-#       requested-models: ["gpt-5.3-codex", "glm-5.1"]
-#       upstream-providers: ["astron-code"]
-#       upstream-models: ["astron-code-latest"]
-#     priority: 300
-#   - name: "prefer-bigmodel-coding-for-large-codex"
-#     match:
-#       requested-models: ["gpt-5.3-codex"]
-#       upstream-providers: ["bigmodel-coding"]
-#     priority: 100
-
-# Optional media-to-text adapter for text-only upstream models.
-# It runs after alias resolution, so the rule below matches the real route:
-# requested gpt-5.3-codex -> bigmodel-coding/glm-5.1. Native GPT-5.5/5.4
-# channels are unaffected.
-# multimodal-adapters:
-#   enabled: true
-#   default-action: "extract" # extract, reject, strip
-#   unavailable-action: "reject" # reject, strip, pass-through
-#   inject-as: "visual_context"
-#   max-media-items: 4
-#   max-output-bytes: 12000
-#   rules:
-#     - name: "glm-5.1-codex-vision"
-#       match:
-#         requested-models: ["gpt-5.3-codex"]
-#         upstream-providers: ["bigmodel-coding"]
-#         upstream-models: ["glm-5.1"]
-#         protocols: ["openai-response", "openai"]
-#       extractor: "zai-vision-http"
-#   extractors:
-#     - name: "zai-vision-http"
-#       type: "zai-vision-http"
-#       endpoint: "https://open.bigmodel.cn/api/paas/v4"
-#       headers:
-#         Authorization: "Bearer ${Z_AI_API_KEY}"
-#       tool-name: "glm-5.1"
-#       env:
-#         identity_fingerprint: "codex"
-#         max_tokens: "512"
-#         disable_thinking: "true"
-#       timeout-seconds: 60
-#     - name: "zai-vision-mcp"
-#       type: "mcp"
-#       command: "npx"
-#       args: ["-y", "@z_ai/mcp-server@latest"]
-#       env:
-#         Z_AI_API_KEY: "${Z_AI_API_KEY}"
-#         Z_AI_MODE: "ZHIPU"
-#       tool-name: "image_analysis"
-#       timeout-seconds: 60
-
 # How long (in seconds) usage queue items are retained in memory for the Management API.
 # The local Redis RESP usage output is disabled.
 # Default: 60. Max: 3600.
 redis-usage-queue-retention-seconds: 60
 
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
+# Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""
-
-# Proxy Manager controls automatic proxy assignment, health checking, and ban-aware rotation.
-# When enabled, auth entries without a proxy_id/proxy_url are automatically assigned from the
-# proxy-pool, unhealthy proxies are detected and disabled, and proxies associated with banned
-# accounts are taken offline to prevent further account losses.
-#
-# proxy-manager:
-#   # Automatic proxy assignment for auth entries that have no proxy configured.
-#   proxy-assignment:
-#     enabled: true
-#     strategy: spread              # spread | round-robin | random
-#     providers:                    # only assign to these providers (empty = all)
-#       - codex
-#       - claude
-#
-#   # Background health checking for enabled proxy-pool entries.
-#   proxy-health:
-#     enabled: true
-#     interval: 5m                  # check interval
-#     timeout: 10s                  # per-check timeout
-#     failure-threshold: 3          # consecutive failures before auto-disable
-#     recovery-interval: 15m        # retry a disabled proxy after this long
-#     test-url: "https://api.openai.com/v1/models"
-#
-#   # Ban-aware rotation: when accounts using the same proxy get banned, auto-disable it.
-#   proxy-ban-detect:
-#     enabled: true
-#     ban-threshold: 3              # bans within window to trigger proxy disable
-#     window-minutes: 60            # rolling window in minutes
-#     auto-disable-proxy: true      # disable the proxy when threshold is reached
-
-# When true, disables TLS certificate verification for all upstream HTTPS connections.
-# Use only when upstream APIs use self-signed certificates or in trusted internal networks.
-# Default is false (verification enabled).
-insecure-skip-verify: false
-
-# Path to a PEM-encoded CA certificate file for verifying upstream server certificates.
-# When empty, the system default root CA pool is used.
-ca-cert: ""
 
 # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
 force-model-prefix: false
@@ -411,21 +109,21 @@ passthrough-headers: false
 # Number of times to retry a request. Retries will occur if the HTTP response code is 403, 408, 500, 502, 503, or 504.
 request-retry: 3
 
+# Maximum number of different credentials to try for one failed request.
+# Set to 0 to keep legacy behavior (try all available credentials).
+max-retry-credentials: 0
+
 # Maximum wait time in seconds for a cooled-down credential before triggering a retry.
 max-retry-interval: 30
 
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
 disable-cooling: false
 
-# disable-image-generation supports: false (default), true, or "chat".
+# disable-image-generation supports: false (default), true, "chat", or "passthrough".
 # - true: disable image_generation everywhere (also returns 404 for /v1/images/generations and /v1/images/edits).
 # - "chat": disable image_generation injection on non-images endpoints, but keep /v1/images/generations and /v1/images/edits enabled.
+# - "passthrough": never inject or strip image_generation on non-images endpoints (forward the client payload unchanged); behaves like "chat" on /v1/images/* endpoints.
 disable-image-generation: false
-
-# Reject requests for models that have no configured auth credentials.
-# When true, the proxy returns 404 immediately instead of forwarding the
-# request to upstream (which would fail anyway).
-# reject-unconfigured-models: false
 
 # Base model used when proxying gpt-image-2 via the hosted image_generation tool (Responses API).
 # Must start with "gpt-" (case-insensitive). If unset or invalid, defaults to "gpt-5.4-mini".
@@ -439,50 +137,19 @@ disable-image-generation: false
 quota-exceeded:
   switch-project: true # Whether to automatically switch to another project when a quota is exceeded
   switch-preview-model: true # Whether to automatically switch to a preview model when a quota is exceeded
+  antigravity-credits: true # Whether to use credits as last-resort fallback when all free-tier auths are exhausted for Claude models
 
 # Routing strategy for selecting credentials when multiple match.
 routing:
   strategy: "round-robin" # round-robin (default), fill-first
-  include-default-group: true
   # Enable universal session-sticky routing for all clients.
   # Session IDs are extracted from: metadata.user_id (Claude Code session format),
-  # X-Session-ID, X-Amp-Thread-Id (Amp CLI),
-  # X-Client-Request-Id (PI), conversation_id, or first few messages hash.
+  # X-Session-ID, Session_id (Codex), X-Client-Request-Id (PI), conversation_id,
+  # or first few messages hash.
   # Automatic failover is always enabled when bound auth becomes unavailable.
   session-affinity: false # default: false
   # How long session-to-auth bindings are retained. Default: 1h
   session-affinity-ttl: "1h"
-  # channel-groups:
-  #   - name: "pro"
-  #     description: "Paid channels"
-  #     priority: 100
-  #     match:
-  #       prefixes: ["pro"]
-  #   - name: "team-a"
-  #     description: "Team A channels"
-  #     match:
-  #       prefixes: ["team-a"]
-  #       channels: ["Team A Codex"]
-  #       tags: ["pro", "team-a"]
-  # path-routes:
-  #   - path: "/pro"
-  #     group: "pro"
-  #     strip-prefix: true
-  #     fallback: "none"
-  #   - path: "/team-a"
-  #     group: "team-a"
-  #     strip-prefix: true
-  #     fallback: "default"
-
-# Optional client API keys with per-key permissions. Empty allowed-* arrays mean "no restriction".
-# api-key-entries:
-#   - key: "sk-user-pro"
-#     name: "Pro User"
-#     allowed-channel-groups: ["pro"]
-#   - key: "sk-team-a"
-#     name: "Team A"
-#     allowed-channel-groups: ["team-a", "pro"]
-#     allowed-channels: ["Team A Codex"]
 
 # Codex provider behavior.
 codex:
@@ -501,20 +168,31 @@ enable-gemini-cli-endpoint: false
 
 # When > 0, emit blank lines every N seconds for non-streaming responses to prevent idle timeouts.
 nonstream-keepalive-interval: 0
-
 # Streaming behavior (SSE keep-alives + safe bootstrap retries).
-streaming:
-  keepalive-seconds: 15   # Default: 15. Set < 0 to disable keep-alives.
-  bootstrap-retries: 1    # Default: 1. Retries before first byte is sent.
+# streaming:
+#   keepalive-seconds: 15   # Default: 0 (disabled). <= 0 disables keep-alives.
+#   bootstrap-retries: 1    # Default: 0 (disabled). Retries before first byte is sent.
+
+# Signature cache validation for thinking blocks (Antigravity/Claude).
+# When true (default), cached signatures are preferred and validated.
+# When false, client signatures are used directly after normalization (bypass mode for testing).
+# antigravity-signature-cache-enabled: true
+
+# Bypass mode signature validation strictness (only applies when signature cache is disabled).
+# When true, validates full Claude protobuf tree (Field 2 -> Field 1 structure).
+# When false (default), only checks R/E prefix + base64 + first byte 0x12.
+# antigravity-signature-bypass-strict: false
 
 # Gemini API keys
 # gemini-api-key:
 #   - api-key: "AIzaSy...01"
 #     prefix: "test" # optional: require calls like "test/gemini-3-pro-preview" to target this credential
+#     disable-cooling: false # optional: per-auth override for auth/model cooldown scheduling
 #     base-url: "https://generativelanguage.googleapis.com"
 #     headers:
 #       X-Custom-Header: "custom-value"
 #     proxy-url: "socks5://proxy.example.com:1080"
+#     # proxy-url: "direct" # optional: explicit direct connect for this credential
 #     models:
 #       - name: "gemini-2.5-flash" # upstream model name
 #         alias: "gemini-flash"    # client alias mapped to the upstream model
@@ -529,10 +207,12 @@ streaming:
 # codex-api-key:
 #   - api-key: "sk-atSM..."
 #     prefix: "test" # optional: require calls like "test/gpt-5-codex" to target this credential
+#     disable-cooling: false # optional: per-auth override for auth/model cooldown scheduling
 #     base-url: "https://www.example.com" # use the custom codex API endpoint
 #     headers:
 #       X-Custom-Header: "custom-value"
 #     proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override
+#     # proxy-url: "direct" # optional: explicit direct connect for this credential
 #     models:
 #       - name: "gpt-5-codex"   # upstream model name
 #         alias: "codex-latest" # client alias mapped to the upstream model
@@ -547,10 +227,12 @@ streaming:
 #   - api-key: "sk-atSM..." # use the official claude API key, no need to set the base url
 #   - api-key: "sk-atSM..."
 #     prefix: "test" # optional: require calls like "test/claude-sonnet-latest" to target this credential
+#     disable-cooling: false # optional: per-auth override for auth/model cooldown scheduling
 #     base-url: "https://www.example.com" # use the custom claude API endpoint
 #     headers:
 #       X-Custom-Header: "custom-value"
 #     proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override
+#     # proxy-url: "direct" # optional: explicit direct connect for this credential
 #     models:
 #       - name: "claude-3-5-sonnet-20241022" # upstream model name
 #         alias: "claude-sonnet-latest"      # client alias mapped to the upstream model
@@ -569,81 +251,45 @@ streaming:
 #         - "API"
 #         - "proxy"
 #       cache-user-id: true          # optional: default is false; set true to reuse cached user_id per API key instead of generating a random one each request
+#     experimental-cch-signing: false # optional: default is false; when true, sign the final /v1/messages body using the current Claude Code cch algorithm
+#                                     # keep this disabled unless you explicitly need the behavior, so upstream seed changes fall back to legacy proxy behavior
 
 # Default headers for Claude API requests. Update when Claude Code releases new versions.
-# These are used as fallbacks when the client does not send its own headers.
+# In legacy mode, user-agent/package-version/runtime-version/timeout are used as fallbacks
+# when the client omits them, while OS/arch remain runtime-derived. When
+# stabilize-device-profile is enabled, OS/arch stay pinned to the baseline values below,
+# while user-agent/package-version/runtime-version seed a software fingerprint that can
+# still upgrade to newer official Claude client versions.
 # claude-header-defaults:
 #   user-agent: "claude-cli/2.1.44 (external, sdk-cli)"
 #   package-version: "0.74.0"
 #   runtime-version: "v24.3.0"
+#   os: "MacOS"
+#   arch: "arm64"
 #   timeout: "600"
+#   stabilize-device-profile: false  # optional, default false; set true to enable per-auth/API-key fingerprint pinning
 
-# Zhipu Coding Plan API keys. This is intentionally separate from the generic
-# OpenAI compatibility pool because Coding Plan uses provider-specific payload,
-# MCP, multimodal, and Codex identity handling while exposing an OpenAI Chat
-# Completions HTTP endpoint.
-# bigmodel-coding:
-#   - base-url: "https://open.bigmodel.cn/api/coding/paas/v4"
-#     api-key-entries:
-#       - api-key: "sk-..."
-#     test-model: "glm-5.2"
-#     identity-fingerprint: "codex"
-#     models:
-#       - name: "glm-5.1"
-#         alias: "gpt-5.3-codex"
-#         context-length: 220000
-#       - name: "glm-5.2"
-#         alias: "gpt-5.3-codex"
-#         context-length: 1048576
-#
-# iFlytek Astron Coding Plan — first-class upstream for XunFei Coding Plan.
-# Supports GLM-5, DeepSeek-V3.2, and other models via the astron-code-latest
-# unified model ID. Uses standard OpenAI Chat Completions protocol.
-# astron-code:
-#   - base-url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
-#     identity-fingerprint: "codex"
-#     priority: 300
-#     api-key-entries:
-#       - api-key: "${ASTRON_CODE_API_KEY}"
-#     test-model: "astron-code-latest"
-#     models:
-#       - name: "astron-code-latest"
-#         alias: "gpt-5.3-codex"
-#         context-length: 220000
-#       - name: "astron-code-latest"
-#         alias: "glm-5.1"
-#         context-length: 220000
-
-# OpenCode Go provider (OpenAI-compatible coding assistant)
-# opencode-go-api-key:
-#   - api-key: "your-opencode-go-api-key"
-#     base-url: "http://localhost:8080/v1"
-#     vision-model: "deepseek-chat" # optional: model used for vision/image preprocessing
-#     models:
-#       - name: "opencode-go-latest"
-#         alias: "opencode-go"
+# Default headers for Codex OAuth model requests.
+# These are used only for file-backed/OAuth Codex requests when the client
+# does not send the header. `user-agent` applies to HTTP and websocket requests;
+# `beta-features` only applies to websocket requests. They do not apply to codex-api-key entries.
+# codex-header-defaults:
+#   user-agent: "codex_cli_rs/0.114.0 (Mac OS 14.2.0; x86_64) vscode/1.111.0"
+#   beta-features: "multi_agent"
 
 # OpenAI compatibility providers
-# openrouter-sync-enabled: false
-# openrouter-sync-interval-minutes: 1440
-# openrouter-api-key: ""
 # openai-compatibility:
 #   - name: "openrouter" # The name of the provider; it will be used in the user agent and other places.
+#     disabled: false # optional: set to true to disable this provider without removing it
 #     prefix: "test" # optional: require calls like "test/kimi-k2" to target this provider's credentials
 #     base-url: "https://openrouter.ai/api/v1" # The base URL of the provider.
+#     disable-cooling: false # optional: per-provider override for auth/model cooldown scheduling
 #     headers:
 #       X-Custom-Header: "custom-value"
-#     # optional: how /v1/images/edits is sent upstream. Use "passthrough" for
-#     # native edits endpoints, "image-generations" or "chat-multimodal" for
-#     # providers that do not support OpenAI-style edits directly. Empty defaults
-#     # to "passthrough".
-#     image-edits-mode: "passthrough"
-#     # optional with image-edits-mode: "image-generations"; supported values
-#     # are "image" and "image_url". Empty defaults to "image".
-#     image-generations-image-field: ""
 #     api-key-entries:
 #       - api-key: "sk-or-v1-...b780"
 #         proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override
+#         # proxy-url: "direct" # optional: explicit direct connect for this credential
 #       - api-key: "sk-or-v1-...b781" # without proxy-url
 #     models: # The models supported by the provider.
 #       - name: "moonshotai/kimi-k2:free" # The actual model name.
@@ -663,12 +309,13 @@ streaming:
 #       - name: "kimi-k2.5"
 #         alias: "claude-opus-4.66"
 
-# Vertex API keys (Vertex-compatible endpoints, use API key + base URL)
+# Vertex API keys (Vertex-compatible endpoints, base-url is optional)
 # vertex-api-key:
 #   - api-key: "vk-123..."                        # x-goog-api-key header
 #     prefix: "test"                              # optional: require calls like "test/vertex-pro" to target this credential
-#     base-url: "https://example.com/api"         # e.g. https://zenmux.ai/api
+#     base-url: "https://example.com/api"         # optional, e.g. https://zenmux.ai/api; falls back to Google Vertex when omitted
 #     proxy-url: "socks5://proxy.example.com:1080" # optional per-key proxy override
+#     # proxy-url: "direct" # optional: explicit direct connect for this credential
 #     headers:
 #       X-Custom-Header: "custom-value"
 #     models:                                     # optional: map aliases to upstream model names
@@ -676,45 +323,17 @@ streaming:
 #         alias: "vertex-flash"                   # client-visible alias
 #       - name: "gemini-2.5-pro"
 #         alias: "vertex-pro"
-
-# Amp Integration
-# ampcode:
-#   # Configure upstream URL for Amp CLI OAuth and management features
-#   upstream-url: "https://ampcode.com"
-#   # Optional: Override API key for Amp upstream (otherwise uses env or file)
-#   upstream-api-key: ""
-#   # Per-client upstream API key mapping
-#   # Maps client API keys (from top-level api-keys) to different Amp upstream API keys.
-#   # Useful when different clients need to use different Amp accounts/quotas.
-#   # If a client key isn't mapped, falls back to upstream-api-key (default behavior).
-#   upstream-api-keys:
-#     - upstream-api-key: "amp_key_for_team_a"    # Upstream key to use for these clients
-#       api-keys:                                 # Client keys that use this upstream key
-#         - "your-api-key-1"
-#         - "your-api-key-2"
-#     - upstream-api-key: "amp_key_for_team_b"
-#       api-keys:
-#         - "your-api-key-3"
-#   # Restrict Amp management routes (/api/auth, /api/user, etc.) to localhost only (default: false)
-#   restrict-management-to-localhost: false
-#   # Force model mappings to run before checking local API keys (default: false)
-#   force-model-mappings: false
-#   # Amp Model Mappings
-#   # Route unavailable Amp models to alternative models available in your local proxy.
-#   # Useful when Amp CLI requests models you don't have access to (e.g., Claude Opus 4.5)
-#   # but you have a similar model available (e.g., Claude Sonnet 4).
-#   model-mappings:
-#     - from: "claude-opus-4-5-20251101"          # Model requested by Amp CLI
-#       to: "gemini-claude-opus-4-5-thinking"     # Route to this available model instead
-#     - from: "claude-sonnet-4-5-20250929"
-#       to: "gemini-claude-sonnet-4-5-thinking"
-#     - from: "claude-haiku-4-5-20251001"
-#       to: "gemini-2.5-flash"
+#     excluded-models:                            # optional: models to exclude from listing
+#       - "imagen-3.0-generate-002"
+#       - "imagen-*"
 
 # Global OAuth model name aliases (per channel)
 # These aliases rename model IDs for both model listing and request routing.
-# Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow, kimi, xai.
-# NOTE: Aliases do not apply to gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, or ampcode.
+# Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, kimi, xai.
+# NOTE: Aliases do not apply to gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, or vertex-api-key.
+# NOTE: Because aliases affect the merged /v1 model list and merged request routing, overlapping
+# client-visible names can become ambiguous across providers. For strict backend pinning, use
+# unique aliases/prefixes or avoid overlapping names.
 # You can repeat the same name with different aliases to expose multiple client model names.
 # oauth-model-alias:
 #   gemini-cli:
@@ -736,12 +355,6 @@ streaming:
 #   codex:
 #     - name: "gpt-5"
 #       alias: "g5"
-#   qwen:
-#     - name: "qwen3-coder-plus"
-#       alias: "qwen-plus"
-#   iflow:
-#     - name: "glm-4.7"
-#       alias: "glm-god"
 #   kimi:
 #     - name: "kimi-k2.5"
 #       alias: "k2.5"
@@ -769,10 +382,6 @@ streaming:
 #     - "claude-3-5-haiku-20241022"
 #   codex:
 #     - "gpt-5-codex-mini"
-#   qwen:
-#     - "vision-model"
-#   iflow:
-#     - "tstars2.0"
 #   kimi:
 #     - "kimi-k2-thinking"
 #   xai:

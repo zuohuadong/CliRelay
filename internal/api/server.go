@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -26,8 +25,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/access"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/modules"
-	ampmodule "github.com/router-for-me/CLIProxyAPI/v7/internal/api/modules/amp"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
@@ -207,6 +204,9 @@ type Server struct {
 	requestLogger logging.RequestLogger
 	loggerToggle  func(bool)
 
+	// mcpProxyCounter is the round-robin counter for MCP proxy upstream selection.
+	mcpProxyCounter atomic.Uint64
+
 	// configFilePath is the absolute path to the YAML config file for persistence.
 	configFilePath string
 
@@ -221,9 +221,6 @@ type Server struct {
 
 	// management handler
 	mgmt *managementHandlers.Handler
-
-	// ampModule is the Amp routing module for model mapping hot-reload
-	ampModule *ampmodule.AmpModule
 
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
@@ -243,8 +240,6 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
-
-	mcpProxyCounter atomic.Uint64
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -271,9 +266,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create gin engine
 	engine := gin.New()
-	if errSetTrustedProxies := engine.SetTrustedProxies(nil); errSetTrustedProxies != nil {
-		log.Warnf("failed to disable trusted proxy headers: %v", errSetTrustedProxies)
-	}
 	if optionState.engineConfigurator != nil {
 		optionState.engineConfigurator(engine)
 	}
@@ -329,6 +321,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.handlers.SetPluginHost(optionState.pluginHost)
 	if optionState.pluginHost != nil {
 		optionState.pluginHost.SetModelExecutor(s.handlers)
+		optionState.pluginHost.SetAuthManager(authManager)
 	}
 	// Save initial YAML snapshot
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
@@ -362,18 +355,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Setup routes
 	s.setupRoutes()
-
-	// Register Amp module using V2 interface with Context
-	s.ampModule = ampmodule.NewLegacy(accessManager, AuthMiddleware(accessManager))
-	ctx := modules.Context{
-		Engine:         engine,
-		BaseHandler:    s.handlers,
-		Config:         cfg,
-		AuthMiddleware: AuthMiddleware(accessManager),
-	}
-	if err := modules.RegisterModule(ctx, s.ampModule); err != nil {
-		log.Errorf("Failed to register Amp module: %v", err)
-	}
 
 	// Apply additional router configurators from options
 	if optionState.routerConfigurator != nil {
@@ -412,12 +393,7 @@ func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 		}
 		if c != nil && c.Request != nil {
 			path := c.Request.URL.Path
-			if strings.HasPrefix(path, "/v0/management/") ||
-				path == "/v0/management" ||
-				path == "/management.html" ||
-				path == "/manage" ||
-				strings.HasPrefix(path, "/manage/") ||
-				strings.HasPrefix(path, "/v0/resource/plugins/") {
+			if strings.HasPrefix(path, "/v0/management/") || path == "/v0/management" || strings.HasPrefix(path, "/v0/resource/plugins/") || path == "/management.html" {
 				c.Next()
 				return
 			}
@@ -446,21 +422,6 @@ func (s *Server) setupRoutes() {
 	s.engine.HEAD("/healthz", healthzHandler)
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
-	s.engine.GET("/manage", func(c *gin.Context) {
-		c.Redirect(http.StatusFound, "/manage/")
-	})
-	s.engine.GET("/manage/*filepath", s.serveManagementControlPanelAsset)
-	publicUsage := s.engine.Group("/v0/management/public/usage")
-	{
-		publicUsage.GET("", s.mgmt.GetPublicUsageSummary)
-		publicUsage.POST("", s.mgmt.GetPublicUsageSummary)
-		publicUsage.GET("/logs", s.mgmt.GetPublicUsageLogs)
-		publicUsage.POST("/logs", s.mgmt.GetPublicUsageLogs)
-		publicUsage.GET("/chart-data", s.mgmt.GetPublicUsageChartData)
-		publicUsage.POST("/chart-data", s.mgmt.GetPublicUsageChartData)
-		publicUsage.GET("/logs/:id/content", s.mgmt.GetPublicUsageLogContent)
-		publicUsage.POST("/logs/:id/content", s.mgmt.GetPublicUsageLogContent)
-	}
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -469,22 +430,14 @@ func (s *Server) setupRoutes() {
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
-	v1.Use(
-		AuthMiddleware(s.accessManager),
-		middleware.APIKeyConcurrencyMiddleware(),
-		middleware.APIKeyQuotaMiddleware(),
-		middleware.APIKeyRateLimitMiddleware(),
-		middleware.APIKeyModelAccessMiddleware(),
-		middleware.APIKeyChannelAccessMiddleware(),
-		middleware.APIKeySystemPromptMiddleware(),
-	)
+	v1.Use(AuthMiddleware(s.accessManager))
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
 		v1.POST("/completions", openaiHandlers.Completions)
 		v1.POST("/images/generations", openaiHandlers.ImagesGenerations)
 		v1.POST("/images/edits", openaiHandlers.ImagesEdits)
-		v1.POST("/videos", openaiHandlers.VideosCreate)
+		v1.POST("/videos", openaiHandlers.XAIVideosGenerations)
 		v1.POST("/videos/generations", openaiHandlers.XAIVideosGenerations)
 		v1.POST("/videos/edits", openaiHandlers.XAIVideosEdits)
 		v1.POST("/videos/extensions", openaiHandlers.XAIVideosExtensions)
@@ -496,49 +449,38 @@ func (s *Server) setupRoutes() {
 		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
 	}
 
+	openaiV1 := s.engine.Group("/openai/v1")
+	openaiV1.Use(AuthMiddleware(s.accessManager))
+	{
+		openaiV1.POST("/videos", openaiHandlers.VideosCreate)
+		openaiV1.GET("/videos/:video_id/content", openaiHandlers.VideosContent)
+		openaiV1.GET("/videos/:video_id", openaiHandlers.VideosRetrieve)
+	}
+
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
-	codexDirect.Use(
-		AuthMiddleware(s.accessManager),
-		middleware.APIKeyConcurrencyMiddleware(),
-		middleware.APIKeyQuotaMiddleware(),
-		middleware.APIKeyRateLimitMiddleware(),
-		middleware.APIKeyModelAccessMiddleware(),
-		middleware.APIKeyChannelAccessMiddleware(),
-		middleware.APIKeySystemPromptMiddleware(),
-	)
+	codexDirect.Use(AuthMiddleware(s.accessManager))
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
 		codexDirect.POST("/responses/compact", openaiResponsesHandlers.Compact)
 	}
 
-	mcp := s.engine.Group("/mcp")
-	mcp.Use(
-		AuthMiddleware(s.accessManager),
-		middleware.APIKeyConcurrencyMiddleware(),
-		middleware.APIKeyQuotaMiddleware(),
-		middleware.APIKeyRateLimitMiddleware(),
-	)
-	{
-		mcp.Any("/zai/:server", s.proxyZAIMCP)
-		mcp.Any("/zai/:server/*path", s.proxyZAIMCP)
-	}
-
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
-	v1beta.Use(
-		AuthMiddleware(s.accessManager),
-		middleware.APIKeyConcurrencyMiddleware(),
-		middleware.APIKeyQuotaMiddleware(),
-		middleware.APIKeyRateLimitMiddleware(),
-		middleware.APIKeyModelAccessMiddleware(),
-		middleware.APIKeyChannelAccessMiddleware(),
-	)
+	v1beta.Use(AuthMiddleware(s.accessManager))
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
 		v1beta.GET("/models/*action", s.geminiGetHandler(geminiHandlers))
+	}
+
+	// MCP proxy routes
+	mcp := s.engine.Group("/mcp")
+	mcp.Use(AuthMiddleware(s.accessManager))
+	{
+		mcp.Any("/zai/:server", s.proxyZAIMCP)
+		mcp.Any("/zai/:server/*path", s.proxyZAIMCP)
 	}
 
 	// Root endpoint
@@ -680,10 +622,6 @@ func (s *Server) registerManagementRoutes() {
 	mgmt := s.engine.Group("/v0/management")
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
 	{
-		mgmt.GET("/dashboard-summary", s.mgmt.GetDashboardSummary)
-		mgmt.GET("/system-stats", s.mgmt.GetSystemStats)
-		mgmt.GET("/system-stats/ws", s.mgmt.SystemStatsWebSocket)
-
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
@@ -717,17 +655,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 		mgmt.PATCH("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 
-		mgmt.GET("/auto-update/enabled", s.mgmt.GetAutoUpdateEnabled)
-		mgmt.PUT("/auto-update/enabled", s.mgmt.PutAutoUpdateEnabled)
-		mgmt.PATCH("/auto-update/enabled", s.mgmt.PutAutoUpdateEnabled)
-		mgmt.GET("/auto-update/channel", s.mgmt.GetAutoUpdateChannel)
-		mgmt.PUT("/auto-update/channel", s.mgmt.PutAutoUpdateChannel)
-		mgmt.PATCH("/auto-update/channel", s.mgmt.PutAutoUpdateChannel)
-		mgmt.GET("/update/current", s.mgmt.GetCurrentUpdateState)
-		mgmt.GET("/update/check", s.mgmt.CheckUpdate)
-		mgmt.GET("/update/progress", s.mgmt.GetUpdateProgress)
-		mgmt.POST("/update/apply", s.mgmt.ApplyUpdate)
-
 		mgmt.GET("/proxy-url", s.mgmt.GetProxyURL)
 		mgmt.PUT("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.PATCH("/proxy-url", s.mgmt.PutProxyURL)
@@ -747,12 +674,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/api-keys", s.mgmt.PutAPIKeys)
 		mgmt.PATCH("/api-keys", s.mgmt.PatchAPIKeys)
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
-		mgmt.GET("/api-key-entries", s.mgmt.GetAPIKeyEntries)
-		mgmt.PUT("/api-key-entries", s.mgmt.PutAPIKeyEntries)
-		mgmt.PATCH("/api-key-entries", s.mgmt.PatchAPIKeyEntries)
-		mgmt.DELETE("/api-key-entries", s.mgmt.DeleteAPIKeyEntries)
-		mgmt.GET("/api-key-permission-profiles", s.mgmt.GetAPIKeyPermissionProfiles)
-		mgmt.PUT("/api-key-permission-profiles", s.mgmt.PutAPIKeyPermissionProfiles)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 
@@ -760,26 +681,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/gemini-api-key", s.mgmt.PutGeminiKeys)
 		mgmt.PATCH("/gemini-api-key", s.mgmt.PatchGeminiKey)
 		mgmt.DELETE("/gemini-api-key", s.mgmt.DeleteGeminiKey)
-		mgmt.GET("/opencode-go-api-key", s.mgmt.GetOpenCodeGoKeys)
-		mgmt.PUT("/opencode-go-api-key", s.mgmt.PutOpenCodeGoKeys)
-		mgmt.PATCH("/opencode-go-api-key", s.mgmt.PutOpenCodeGoKeys)
-		mgmt.DELETE("/opencode-go-api-key", s.mgmt.DeleteOpenCodeGoKey)
-		mgmt.GET("/bigmodel-coding-api-key", s.mgmt.GetBigModelCodingKeys)
-		mgmt.PUT("/bigmodel-coding-api-key", s.mgmt.PutBigModelCodingKeys)
-		mgmt.PATCH("/bigmodel-coding-api-key", s.mgmt.PatchBigModelCodingKey)
-		mgmt.DELETE("/bigmodel-coding-api-key", s.mgmt.DeleteBigModelCodingKey)
-		mgmt.GET("/astron-code-api-key", s.mgmt.GetAstronCodeKeys)
-		mgmt.PUT("/astron-code-api-key", s.mgmt.PutAstronCodeKeys)
-		mgmt.PATCH("/astron-code-api-key", s.mgmt.PatchAstronCodeKey)
-		mgmt.DELETE("/astron-code-api-key", s.mgmt.DeleteAstronCodeKey)
-		mgmt.GET("/bedrock-api-key", s.mgmt.GetBedrockKeys)
-		mgmt.PUT("/bedrock-api-key", s.mgmt.PutBedrockKeys)
-		mgmt.PATCH("/bedrock-api-key", s.mgmt.PutBedrockKeys)
-		mgmt.DELETE("/bedrock-api-key", s.mgmt.DeleteBedrockKey)
-		mgmt.GET("/iflow-api-key", s.mgmt.GetIFlowKeys)
-		mgmt.PUT("/iflow-api-key", s.mgmt.PutIFlowKeys)
-		mgmt.PATCH("/iflow-api-key", s.mgmt.PatchIFlowKey)
-		mgmt.DELETE("/iflow-api-key", s.mgmt.DeleteIFlowKey)
 
 		mgmt.GET("/logs", s.mgmt.GetLogs)
 		mgmt.DELETE("/logs", s.mgmt.DeleteLogs)
@@ -792,30 +693,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/ws-auth", s.mgmt.GetWebsocketAuth)
 		mgmt.PUT("/ws-auth", s.mgmt.PutWebsocketAuth)
 		mgmt.PATCH("/ws-auth", s.mgmt.PutWebsocketAuth)
-
-		mgmt.GET("/ampcode", s.mgmt.GetAmpCode)
-		mgmt.GET("/ampcode/upstream-url", s.mgmt.GetAmpUpstreamURL)
-		mgmt.PUT("/ampcode/upstream-url", s.mgmt.PutAmpUpstreamURL)
-		mgmt.PATCH("/ampcode/upstream-url", s.mgmt.PutAmpUpstreamURL)
-		mgmt.DELETE("/ampcode/upstream-url", s.mgmt.DeleteAmpUpstreamURL)
-		mgmt.GET("/ampcode/upstream-api-key", s.mgmt.GetAmpUpstreamAPIKey)
-		mgmt.PUT("/ampcode/upstream-api-key", s.mgmt.PutAmpUpstreamAPIKey)
-		mgmt.PATCH("/ampcode/upstream-api-key", s.mgmt.PutAmpUpstreamAPIKey)
-		mgmt.DELETE("/ampcode/upstream-api-key", s.mgmt.DeleteAmpUpstreamAPIKey)
-		mgmt.GET("/ampcode/restrict-management-to-localhost", s.mgmt.GetAmpRestrictManagementToLocalhost)
-		mgmt.PUT("/ampcode/restrict-management-to-localhost", s.mgmt.PutAmpRestrictManagementToLocalhost)
-		mgmt.PATCH("/ampcode/restrict-management-to-localhost", s.mgmt.PutAmpRestrictManagementToLocalhost)
-		mgmt.GET("/ampcode/model-mappings", s.mgmt.GetAmpModelMappings)
-		mgmt.PUT("/ampcode/model-mappings", s.mgmt.PutAmpModelMappings)
-		mgmt.PATCH("/ampcode/model-mappings", s.mgmt.PatchAmpModelMappings)
-		mgmt.DELETE("/ampcode/model-mappings", s.mgmt.DeleteAmpModelMappings)
-		mgmt.GET("/ampcode/force-model-mappings", s.mgmt.GetAmpForceModelMappings)
-		mgmt.PUT("/ampcode/force-model-mappings", s.mgmt.PutAmpForceModelMappings)
-		mgmt.PATCH("/ampcode/force-model-mappings", s.mgmt.PutAmpForceModelMappings)
-		mgmt.GET("/ampcode/upstream-api-keys", s.mgmt.GetAmpUpstreamAPIKeys)
-		mgmt.PUT("/ampcode/upstream-api-keys", s.mgmt.PutAmpUpstreamAPIKeys)
-		mgmt.PATCH("/ampcode/upstream-api-keys", s.mgmt.PatchAmpUpstreamAPIKeys)
-		mgmt.DELETE("/ampcode/upstream-api-keys", s.mgmt.DeleteAmpUpstreamAPIKeys)
 
 		mgmt.GET("/request-retry", s.mgmt.GetRequestRetry)
 		mgmt.PUT("/request-retry", s.mgmt.PutRequestRetry)
@@ -831,17 +708,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/routing/strategy", s.mgmt.GetRoutingStrategy)
 		mgmt.PUT("/routing/strategy", s.mgmt.PutRoutingStrategy)
 		mgmt.PATCH("/routing/strategy", s.mgmt.PutRoutingStrategy)
-		mgmt.GET("/routing-config", s.mgmt.GetRoutingConfig)
-		mgmt.PUT("/routing-config", s.mgmt.PutRoutingConfig)
-		mgmt.GET("/proxy-pool", s.mgmt.GetProxyPool)
-		mgmt.PUT("/proxy-pool", s.mgmt.PutProxyPool)
-		mgmt.POST("/proxy-pool/check", s.mgmt.CheckProxyPool)
-		mgmt.GET("/channel-groups", s.mgmt.GetChannelGroups)
-		mgmt.GET("/ccswitch-import-configs", s.mgmt.GetCCSwitchImportConfigs)
-		mgmt.PUT("/ccswitch-import-configs", s.mgmt.PutCCSwitchImportConfigs)
-		mgmt.GET("/identity-fingerprint", s.mgmt.GetIdentityFingerprint)
-		mgmt.PUT("/identity-fingerprint", s.mgmt.PutIdentityFingerprint)
-		mgmt.PATCH("/identity-fingerprint", s.mgmt.PatchIdentityFingerprint)
 
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)
@@ -874,22 +740,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/oauth-model-alias", s.mgmt.DeleteOAuthModelAlias)
 
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
-		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
-		mgmt.GET("/auth-files/page", s.mgmt.ServeAuthFilesPage)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
-		mgmt.GET("/models", s.mgmt.GetModels)
-		mgmt.GET("/model-configs", s.mgmt.GetModelConfigs)
-		mgmt.GET("/model-owner-presets", s.mgmt.GetModelOwnerPresets)
-		mgmt.GET("/model-path-availability", s.mgmt.GetModelPathAvailability)
-		mgmt.GET("/models/configured-availability", s.mgmt.GetConfiguredModelAvailability)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
-		mgmt.GET("/model-openrouter-sync", s.mgmt.GetOpenRouterSync)
-		mgmt.PUT("/model-openrouter-sync", s.mgmt.PutOpenRouterSync)
-		mgmt.POST("/model-openrouter-sync/run", s.mgmt.RunOpenRouterSync)
-		mgmt.GET("/model-prices", s.mgmt.GetModelPrices)
-		mgmt.PUT("/model-prices/:model", s.mgmt.PutModelPrice)
-		mgmt.DELETE("/model-prices/:model", s.mgmt.DeleteModelPrice)
-		mgmt.POST("/model-prices/refresh", s.mgmt.RefreshModelPrices)
+		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
@@ -901,31 +754,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/gemini-cli-auth-url", s.mgmt.RequestGeminiCLIToken)
 		mgmt.GET("/antigravity-auth-url", s.mgmt.RequestAntigravityToken)
 		mgmt.GET("/kimi-auth-url", s.mgmt.RequestKimiToken)
-		mgmt.GET("/qwen-auth-url", s.mgmt.RequestUnsupportedOAuthProvider)
-		mgmt.POST("/iflow-auth-url", s.mgmt.RequestIFlowToken)
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
-
-		mgmt.GET("/image-generation/channels", s.mgmt.GetImageGenerationChannels)
-		mgmt.POST("/image-generation/test", s.mgmt.StartImageGenerationTest)
-		mgmt.GET("/image-generation/test/:task_id", s.mgmt.GetImageGenerationTest)
-
-		mgmt.GET("/usage", s.mgmt.GetUsageSummary)
-		mgmt.GET("/usage/chart-data", s.mgmt.GetUsageChartData)
-		mgmt.GET("/usage/entity-stats", s.mgmt.GetUsageEntityStats)
-		mgmt.GET("/usage/logs", s.mgmt.GetUsageLogs)
-		mgmt.DELETE("/usage/logs", s.mgmt.DeleteUsageLogs)
-		mgmt.GET("/usage/export", s.mgmt.ExportUsage)
-		mgmt.POST("/usage/import", s.mgmt.ImportUsage)
-		mgmt.POST("/usage/auth-file-quota-snapshot", s.mgmt.RecordAuthFileQuotaSnapshot)
-		mgmt.GET("/usage/auth-file-group-trend", s.mgmt.GetAuthFileGroupTrend)
-		mgmt.GET("/usage/auth-file-trend", s.mgmt.GetAuthFileTrend)
-		mgmt.GET("/usage/logs/:id/content", s.mgmt.GetUsageLogContent)
-		mgmt.POST("/quota/reconcile", s.mgmt.ReconcileQuota)
-
-		// Public usage summary (no management auth required, read-only)
-		mgmt.GET("/usage/summary/public", s.mgmt.GetUsageSummaryPublic)
 	}
 }
 
@@ -1036,113 +867,33 @@ func (s *Server) pluginResourceNoRoute(c *gin.Context) {
 }
 
 func (s *Server) serveManagementControlPanel(c *gin.Context) {
-	if !s.ensureManagementControlPanel(c) {
-		return
-	}
-
-	filePath := managementasset.FilePath(s.configFilePath)
-	if strings.TrimSpace(filePath) == "" {
-		c.AbortWithStatus(http.StatusNotFound)
-		return
-	}
-
-	s.servePanelHTML(c, filePath)
-}
-
-func (s *Server) serveManagementControlPanelAsset(c *gin.Context) {
-	if !s.ensureManagementControlPanel(c) {
-		return
-	}
-
-	requestedPath := strings.TrimPrefix(c.Param("filepath"), "/")
-	if requestedPath == "" {
-		s.servePanelHTML(c, managementasset.FilePath(s.configFilePath))
-		return
-	}
-
-	filePath, ok := managementasset.AssetPath(s.configFilePath, requestedPath)
-	if !ok {
-		c.AbortWithStatus(http.StatusNotFound)
-		return
-	}
-
-	info, err := os.Stat(filePath)
-	if err == nil && !info.IsDir() {
-		c.File(filePath)
-		return
-	}
-	if err != nil && !os.IsNotExist(err) {
-		log.WithError(err).Error("failed to stat management control panel asset")
-		c.AbortWithStatus(http.StatusInternalServerError)
-		return
-	}
-
-	if strings.HasPrefix(requestedPath, "assets/") {
-		c.AbortWithStatus(http.StatusNotFound)
-		return
-	}
-
-	s.servePanelHTML(c, managementasset.FilePath(s.configFilePath))
-}
-
-const panelTokenInjectionScript = `<script>(function(){var p=new URLSearchParams(window.location.search);var t=p.get('token');if(t){try{var a={apiBase:window.location.origin,managementKey:t,rememberPassword:true,expiresAt:Date.now()+720*60*60*1000};localStorage.setItem('code-proxy-admin-auth',JSON.stringify(a));p.delete('token');var s=p.toString();history.replaceState({},'',window.location.pathname+(s?'?'+s:'')+window.location.hash)}catch(e){}}})();</script>`
-
-func (s *Server) servePanelHTML(c *gin.Context, filePath string) {
-	token := c.Query("token")
-	if token == "" {
-		c.File(filePath)
-		return
-	}
-
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		log.WithError(err).Error("failed to read management control panel HTML")
-		c.AbortWithStatus(http.StatusInternalServerError)
-		return
-	}
-
-	html := string(data)
-	inject := panelTokenInjectionScript
-	idx := strings.Index(html, "</head>")
-	if idx >= 0 {
-		html = html[:idx] + inject + html[idx:]
-	} else {
-		html = inject + html
-	}
-
-	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
-	c.String(http.StatusOK, html)
-}
-
-func (s *Server) ensureManagementControlPanel(c *gin.Context) bool {
 	cfg := s.cfg
 	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
 		c.AbortWithStatus(http.StatusNotFound)
-		return false
+		return
 	}
 	filePath := managementasset.FilePath(s.configFilePath)
 	if strings.TrimSpace(filePath) == "" {
 		c.AbortWithStatus(http.StatusNotFound)
-		return false
+		return
 	}
 
 	if _, err := os.Stat(filePath); err != nil {
 		if os.IsNotExist(err) {
-			// Synchronously ensure the panel asset is available with a detached context.
+			// Synchronously ensure management.html is available with a detached context.
 			// Control panel bootstrap should not be canceled by client disconnects.
 			if !managementasset.EnsureLatestManagementHTML(context.Background(), managementasset.StaticDir(s.configFilePath), cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository) {
 				c.AbortWithStatus(http.StatusNotFound)
-				return false
+				return
 			}
 		} else {
 			log.WithError(err).Error("failed to stat management control panel asset")
 			c.AbortWithStatus(http.StatusInternalServerError)
-			return false
+			return
 		}
 	}
 
-	return true
+	c.File(filePath)
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {
@@ -1426,12 +1177,22 @@ func (s *Server) loadHomeModelEntries(c *gin.Context) ([]homeModelEntry, bool) {
 		return nil, false
 	}
 
-	raw, errGet := client.GetModels(c.Request.Context())
+	raw, errGet := client.GetModels(c.Request.Context(), c.Request.Header, c.Request.URL.Query())
 	if errGet != nil {
 		c.JSON(http.StatusBadGateway, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
 				Message: errGet.Error(),
 				Type:    "server_error",
+			},
+		})
+		return nil, false
+	}
+
+	if statusCode, ok := homeModelsAuthStatus(raw); ok {
+		c.JSON(statusCode, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: homeModelsErrorMessage(raw),
+				Type:    "authentication_error",
 			},
 		})
 		return nil, false
@@ -1484,6 +1245,70 @@ func homeGeminiModelMatches(entry homeModelEntry, action string) bool {
 	normalizedAction := strings.TrimPrefix(action, "models/")
 	normalizedID := strings.TrimPrefix(id, "models/")
 	return action == id || action == "models/"+id || normalizedAction == normalizedID
+}
+
+// homeModelsAuthStatus inspects a home models response for an authentication/error envelope.
+// It returns the HTTP status code to surface (401 for credential issues, 502 otherwise)
+// and true when the payload is an error response rather than model data.
+func homeModelsAuthStatus(raw []byte) (int, bool) {
+	errType := homeModelsErrorType(raw)
+	if errType == "" {
+		return 0, false
+	}
+	if errType == "no_credentials" || errType == "invalid_credential" {
+		return http.StatusUnauthorized, true
+	}
+	return http.StatusBadGateway, true
+}
+
+func homeModelsErrorType(raw []byte) string {
+	top, ok := unmarshalHomeModelsTopLevel(raw)
+	if !ok {
+		return ""
+	}
+	rawErr, exists := top["error"]
+	if !exists {
+		return ""
+	}
+	var errObj struct {
+		Type string `json:"type"`
+	}
+	if errUnmarshal := json.Unmarshal(rawErr, &errObj); errUnmarshal != nil {
+		return ""
+	}
+	return strings.TrimSpace(errObj.Type)
+}
+
+func homeModelsErrorMessage(raw []byte) string {
+	top, ok := unmarshalHomeModelsTopLevel(raw)
+	if !ok {
+		return "home models request failed"
+	}
+	rawErr, exists := top["error"]
+	if !exists {
+		return "home models request failed"
+	}
+	var errObj struct {
+		Message string `json:"message"`
+	}
+	if errUnmarshal := json.Unmarshal(rawErr, &errObj); errUnmarshal != nil {
+		return "home models request failed"
+	}
+	if msg := strings.TrimSpace(errObj.Message); msg != "" {
+		return msg
+	}
+	return "home models request failed"
+}
+
+func unmarshalHomeModelsTopLevel(raw []byte) (map[string]json.RawMessage, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var top map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(raw, &top); errUnmarshal != nil {
+		return nil, false
+	}
+	return top, true
 }
 
 func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
@@ -1845,6 +1670,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	s.handlers.SetPluginHost(s.pluginHost)
 	if s.pluginHost != nil {
 		s.pluginHost.SetModelExecutor(s.handlers)
+		s.pluginHost.SetAuthManager(s.handlers.AuthManager)
 	}
 
 	if s.mgmt != nil {
@@ -1853,19 +1679,6 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		s.mgmt.SetPluginHost(s.pluginHost)
 	}
 	s.refreshPluginManagementRoutes()
-
-	// Notify Amp module only when Amp config has changed.
-	ampConfigChanged := oldCfg == nil || !reflect.DeepEqual(oldCfg.AmpCode, cfg.AmpCode)
-	if ampConfigChanged {
-		if s.ampModule != nil {
-			log.Debugf("triggering amp module config update")
-			if err := s.ampModule.OnConfigUpdated(cfg); err != nil {
-				log.Errorf("failed to update Amp module config: %v", err)
-			}
-		} else {
-			log.Warnf("amp module is nil, skipping config update")
-		}
-	}
 
 	// Count client sources from configuration and auth store.
 	authEntries := 0

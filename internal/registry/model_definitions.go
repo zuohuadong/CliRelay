@@ -110,14 +110,6 @@ func AntigravityWebSearchModelFor(modelID string) string {
 	return ""
 }
 
-func normalizeAntigravityCapabilityModelID(modelID string) string {
-	modelID = strings.ToLower(strings.TrimSpace(modelID))
-	if open := strings.LastIndex(modelID, "("); open >= 0 && strings.HasSuffix(modelID, ")") {
-		modelID = strings.TrimSpace(modelID[:open])
-	}
-	return modelID
-}
-
 // GetXAIModels returns the standard xAI Grok model definitions.
 func GetXAIModels() []*ModelInfo {
 	return WithXAIBuiltins(cloneModelInfos(getModels().XAI))
@@ -134,6 +126,14 @@ func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
 // not depend on remote models.json updates.
 func WithXAIBuiltins(models []*ModelInfo) []*ModelInfo {
 	return upsertModelInfos(models, xaiBuiltinImageModelInfo(), xaiBuiltinImageQualityModelInfo(), xaiBuiltinVideoModelInfo(), xaiBuiltinVideo15PreviewModelInfo())
+}
+
+func normalizeAntigravityCapabilityModelID(modelID string) string {
+	modelID = strings.ToLower(strings.TrimSpace(modelID))
+	if open := strings.LastIndex(modelID, "("); open >= 0 && strings.HasSuffix(modelID, ")") {
+		modelID = strings.TrimSpace(modelID[:open])
+	}
+	return modelID
 }
 
 func codexBuiltinImageModelInfo() *ModelInfo {

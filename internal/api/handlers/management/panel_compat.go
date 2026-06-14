@@ -581,22 +581,6 @@ func (h *Handler) RequestUnsupportedOAuthProvider(c *gin.Context) {
 	unsupportedPanelWrite(c, "this OAuth provider is not available in this v7 build")
 }
 
-func (h *Handler) GetImageGenerationChannels(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"items": []gin.H{}})
-}
-
-func (h *Handler) StartImageGenerationTest(c *gin.Context) {
-	unsupportedPanelWrite(c, "image generation test tasks are not available in this v7 build")
-}
-
-func (h *Handler) GetImageGenerationTest(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"task_id": c.Param("task_id"),
-		"status":  "unsupported",
-		"message": "image generation test tasks are not available in this v7 build",
-	})
-}
-
 func (h *Handler) GetModels(c *gin.Context) {
 	models := registry.GetGlobalRegistry().GetAvailableModels("openai")
 	if len(models) == 0 {

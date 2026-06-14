@@ -95,6 +95,11 @@ const normalizeModelList = (
         ...(normalizeString(model.testModel)
           ? { testModel: normalizeString(model.testModel)! }
           : {}),
+        ...(typeof model.contextLength === "number" &&
+        Number.isFinite(model.contextLength) &&
+        model.contextLength > 0
+          ? { contextLength: model.contextLength }
+          : {}),
       };
       return normalized;
     })

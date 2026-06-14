@@ -45,6 +45,8 @@ type Handler struct {
 	mu                     sync.Mutex
 	attemptsMu             sync.Mutex
 	failedAttempts         map[string]*attemptInfo // keyed by client IP
+	imageTasksMu           sync.Mutex
+	imageGenerationTasks   map[string]*imageGenerationTestTask
 	authManager            *coreauth.Manager
 	tokenStore             coreauth.Store
 	localPassword          string
@@ -68,14 +70,15 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	envSecret = strings.TrimSpace(envSecret)
 
 	h := &Handler{
-		cfg:                 cfg,
-		configFilePath:      configFilePath,
-		failedAttempts:      make(map[string]*attemptInfo),
-		authManager:         manager,
-		tokenStore:          sdkAuth.GetTokenStore(),
-		allowRemoteOverride: envSecret != "",
-		envSecret:           envSecret,
-		startTime:           time.Now(),
+		cfg:                  cfg,
+		configFilePath:       configFilePath,
+		failedAttempts:       make(map[string]*attemptInfo),
+		imageGenerationTasks: make(map[string]*imageGenerationTestTask),
+		authManager:          manager,
+		tokenStore:           sdkAuth.GetTokenStore(),
+		allowRemoteOverride:  envSecret != "",
+		envSecret:            envSecret,
+		startTime:            time.Now(),
 	}
 	h.startAttemptCleanup()
 	return h

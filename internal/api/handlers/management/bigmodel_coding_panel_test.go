@@ -48,7 +48,7 @@ func TestPutBigModelCodingKeysCreatesDedicatedEntry(t *testing.T) {
 	if len(entry.APIKeyEntries) != 1 || entry.APIKeyEntries[0].APIKey != "sk-bigmodel" {
 		t.Fatalf("api key entries = %#v", entry.APIKeyEntries)
 	}
-	assertBigModelCodingAlias(t, entry.Models)
+	assertNoAutoInjectedDefaultAlias(t, entry.Models)
 }
 
 func TestPatchBigModelCodingKeyPreservesTargetedDefaults(t *testing.T) {
@@ -70,7 +70,7 @@ func TestPatchBigModelCodingKeyPreservesTargetedDefaults(t *testing.T) {
 	if entry.IdentityFingerprint != "codex" {
 		t.Fatalf("identity fingerprint = %q, want codex", entry.IdentityFingerprint)
 	}
-	assertBigModelCodingAlias(t, entry.Models)
+	assertNoAutoInjectedDefaultAlias(t, entry.Models)
 }
 
 func TestGetBigModelCodingKeysFiltersOpenAICompatEntries(t *testing.T) {
@@ -101,14 +101,13 @@ func TestGetBigModelCodingKeysFiltersOpenAICompatEntries(t *testing.T) {
 	}
 }
 
-func assertBigModelCodingAlias(t *testing.T, models []config.OpenAICompatibilityModel) {
+func assertNoAutoInjectedDefaultAlias(t *testing.T, models []config.OpenAICompatibilityModel) {
 	t.Helper()
 	for _, model := range models {
 		if model.Name == bigModelCodingModel && model.Alias == bigModelCodingAlias {
-			return
+			t.Fatalf("auto-injected default alias %s -> %s should not be present in %#v", bigModelCodingModel, bigModelCodingAlias, models)
 		}
 	}
-	t.Fatalf("missing %s -> %s alias in %#v", bigModelCodingModel, bigModelCodingAlias, models)
 }
 
 func newBigModelCodingPanelTestHandler(t *testing.T, cfg *config.Config) *Handler {

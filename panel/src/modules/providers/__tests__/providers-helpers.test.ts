@@ -27,7 +27,15 @@ describe("providers helpers", () => {
       proxyId: "hk",
       excludedModels: ["claude-3-opus", "claude-3-haiku"],
       headers: { "x-test": "1" },
-      models: [{ name: "claude-3-opus", alias: "opus", priority: 10, testModel: "probe-model" }],
+      models: [
+        {
+          name: "claude-3-opus",
+          alias: "opus",
+          priority: 10,
+          testModel: "probe-model",
+          contextLength: 220000,
+        },
+      ],
       skipAnthropicProcessing: true,
     });
 
@@ -43,6 +51,7 @@ describe("providers helpers", () => {
         alias: "opus",
         priorityText: "10",
         testModel: "probe-model",
+        contextLengthText: "220000",
       },
     ]);
     expect(draft.skipAnthropicProcessing).toBe(true);
@@ -66,7 +75,7 @@ describe("providers helpers", () => {
           headers: { "x-entry": "edge" },
         },
       ],
-      models: [{ name: "gpt-4.1", alias: "primary" }],
+      models: [{ name: "gpt-4.1", alias: "primary", contextLength: 1048576 }],
     });
 
     expect(draft.name).toBe("OpenAI Main");
@@ -85,6 +94,16 @@ describe("providers helpers", () => {
         proxyUrl: "https://proxy.example.com",
         proxyId: "hk",
         headersEntries: [{ id: expect.any(String), key: "x-entry", value: "edge" }],
+      },
+    ]);
+    expect(draft.modelEntries).toEqual([
+      {
+        id: expect.any(String),
+        name: "gpt-4.1",
+        alias: "primary",
+        priorityText: "",
+        testModel: "",
+        contextLengthText: "1048576",
       },
     ]);
   });

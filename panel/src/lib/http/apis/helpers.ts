@@ -51,11 +51,17 @@ export const normalizeModels = (value: unknown): ProviderModel[] | undefined => 
       const priority =
         typeof priorityRaw === "number" && Number.isFinite(priorityRaw) ? priorityRaw : undefined;
       const testModel = normalizeString(item["test-model"] ?? item.testModel) ?? undefined;
+      const contextLengthRaw = item["context-length"] ?? item.contextLength;
+      const contextLength =
+        typeof contextLengthRaw === "number" && Number.isFinite(contextLengthRaw)
+          ? contextLengthRaw
+          : undefined;
       return {
         name,
         ...(alias ? { alias } : {}),
         ...(priority !== undefined ? { priority } : {}),
         ...(testModel ? { testModel } : {}),
+        ...(contextLength !== undefined ? { contextLength } : {}),
       };
     })
     .filter(Boolean) as ProviderModel[];
@@ -99,6 +105,13 @@ export const serializeModels = (models?: ProviderModel[]) =>
           }
           const testModel = normalizeString(model?.testModel);
           if (testModel) payload["test-model"] = testModel;
+          if (
+            typeof model?.contextLength === "number" &&
+            Number.isFinite(model.contextLength) &&
+            model.contextLength > 0
+          ) {
+            payload["context-length"] = model.contextLength;
+          }
           return payload;
         })
         .filter(Boolean)

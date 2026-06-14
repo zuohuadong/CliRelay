@@ -94,16 +94,26 @@ func (s *sqliteSink) HandleUsage(ctx context.Context, record coreusage.Record) {
 		totalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CachedTokens
 	}
 
+	// Cost is computed from the actual upstream model that handled the request
+	// (record.Model), never from the client alias. Failed requests cost nothing.
+	modelName := nonEmpty(record.Model, "unknown")
+	requestCost := 0.0
+	if failed == 0 {
+		requestCost = CalculateModelCostWithDB(db, modelName,
+			detail.InputTokens, detail.OutputTokens, detail.ReasoningTokens, detail.CachedTokens)
+	}
+	apiKeyName := LookupAPIKeyNameWithDB(db, record.APIKey)
+
 	insertCtx := context.WithoutCancel(ctx)
 	_, errInsert := db.ExecContext(insertCtx, `
 INSERT INTO request_logs (
   timestamp, api_key, model, source, channel_name, auth_index, failed,
   latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens,
   cached_tokens, total_tokens, input_content, output_content, cost, api_key_name
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, '', '', 0, '')
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, '', '', ?, ?)
 `, timestamp.UTC().Format(time.RFC3339Nano),
 		strings.TrimSpace(record.APIKey),
-		nonEmpty(record.Model, "unknown"),
+		modelName,
 		strings.TrimSpace(record.Source),
 		strings.TrimSpace(record.Provider),
 		strings.TrimSpace(record.AuthIndex),
@@ -114,6 +124,8 @@ INSERT INTO request_logs (
 		detail.ReasoningTokens,
 		detail.CachedTokens,
 		totalTokens,
+		requestCost,
+		apiKeyName,
 	)
 	if errInsert != nil {
 		if errors.Is(errInsert, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
@@ -184,7 +196,14 @@ CREATE INDEX IF NOT EXISTS idx_logs_model ON request_logs(model);
 CREATE INDEX IF NOT EXISTS idx_logs_failed ON request_logs(failed);
 CREATE INDEX IF NOT EXISTS idx_logs_auth_index ON request_logs(auth_index);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	// Ensure the pricing table exists and is seeded with official platform
+	// prices so per-request cost can be computed from the first insert onward.
+	EnsureModelPricesTable(db)
+	SeedOfficialModelPrices(db)
+	return nil
 }
 
 func nonEmpty(value, fallback string) string {

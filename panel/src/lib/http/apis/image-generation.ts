@@ -21,6 +21,16 @@ export interface ImageEditTestRequest {
   images: File[];
 }
 
+export interface ImageGenerationChannel {
+  provider: string;
+  model: string;
+  type?: string;
+}
+
+export interface ImageGenerationChannelsResponse {
+  items?: ImageGenerationChannel[];
+}
+
 export interface ImageGenerationResultItem {
   b64_json?: string;
   revised_prompt?: string;
@@ -60,6 +70,10 @@ export interface ImageGenerationTestTaskResponse
 }
 
 export const imageGenerationApi = {
+  getChannels: (): Promise<ImageGenerationChannelsResponse> => {
+    return apiClient.get<ImageGenerationChannelsResponse>("/image-generation/channels");
+  },
+
   startTestTask: (
     payload: ImageGenerationTestRequest | ImageEditTestRequest,
   ): Promise<ImageGenerationTestTaskStartResponse> => {

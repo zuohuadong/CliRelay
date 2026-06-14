@@ -141,6 +141,7 @@ export function ProviderKeyModal({
         alias: "",
         priorityText: "",
         testModel: "",
+        contextLengthText: "",
       });
     }
 

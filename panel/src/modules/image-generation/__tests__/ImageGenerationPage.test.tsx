@@ -3,12 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import i18n from "@/i18n";
-import { authFilesApi, imageGenerationApi } from "@/lib/http/apis";
+import { imageGenerationApi } from "@/lib/http/apis";
 import { ImageGenerationPage } from "@/modules/image-generation/ImageGenerationPage";
 import { ThemeProvider } from "@/modules/ui/ThemeProvider";
 import { ToastProvider } from "@/modules/ui/ToastProvider";
 
-const authFilesListMock = () => authFilesApi.list as unknown as ReturnType<typeof vi.fn>;
+const imageGenerationChannelsMock = () =>
+  imageGenerationApi.getChannels as unknown as ReturnType<typeof vi.fn>;
 const imageGenerationStartTaskMock = () =>
   imageGenerationApi.startTestTask as unknown as ReturnType<typeof vi.fn>;
 const imageGenerationGetTaskMock = () =>
@@ -39,30 +40,11 @@ function renderPage() {
 describe("ImageGenerationPage", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("zh-CN");
-    vi.spyOn(authFilesApi, "list");
+    vi.spyOn(imageGenerationApi, "getChannels");
     vi.spyOn(imageGenerationApi, "startTestTask");
     vi.spyOn(imageGenerationApi, "getTestTask");
-    authFilesListMock().mockResolvedValue({
-      files: [
-        {
-          name: "codex-a.json",
-          type: "codex",
-          account_type: "oauth",
-          label: "设计号 A",
-        },
-        {
-          name: "codex-b.json",
-          provider: "codex",
-          account_type: "oauth",
-          label: "设计号 B",
-        },
-        {
-          name: "gemini.json",
-          type: "gemini-cli",
-          account_type: "oauth",
-          label: "Gemini 账号",
-        },
-      ],
+    imageGenerationChannelsMock().mockResolvedValue({
+      items: [{ provider: "codex", model: "gpt-image-2", type: "registered" }],
     });
   });
 
@@ -386,17 +368,8 @@ describe("ImageGenerationPage", () => {
     expect(within(dialog).getByTestId("image-generation-preview")).toHaveClass("bg-slate-100");
   });
 
-  test("greys related actions and shows the empty hint when no codex oauth channel is configured", async () => {
-    authFilesListMock().mockResolvedValue({
-      files: [
-        {
-          name: "gemini.json",
-          type: "gemini-cli",
-          account_type: "oauth",
-          label: "Gemini 账号",
-        },
-      ],
-    });
+  test("greys related actions and shows the empty hint when no image channel is configured", async () => {
+    imageGenerationChannelsMock().mockResolvedValue({ items: [] });
 
     renderPage();
 

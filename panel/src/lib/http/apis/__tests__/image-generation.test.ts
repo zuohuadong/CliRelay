@@ -39,6 +39,16 @@ describe("imageGenerationApi", () => {
     );
   });
 
+  test("loads image generation channels from the management endpoint", async () => {
+    const { imageGenerationApi } = await import("@/lib/http/apis/image-generation");
+
+    getMock.mockResolvedValue({ items: [{ provider: "codex", model: "gpt-image-2" }] });
+
+    await imageGenerationApi.getChannels();
+
+    expect(getMock).toHaveBeenCalledWith("/image-generation/channels");
+  });
+
   test("creates a background task for multipart image generation tests", async () => {
     const { imageGenerationApi } = await import("@/lib/http/apis/image-generation");
 

@@ -267,6 +267,7 @@ func TestManagementPluginsRouteRegistered(t *testing.T) {
 	}
 }
 
+<<<<<<< HEAD
 func TestManagementPanelSPARoutesServeBundledAssets(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 	staticDir := t.TempDir()
@@ -368,6 +369,8 @@ func TestManagementAuthAcceptsQueryTokenForBrowserWebSocket(t *testing.T) {
 	}
 }
 
+=======
+>>>>>>> upstream/main
 func TestVideosRoutesKeepXAINativeAndExposeOpenAIPrefix(t *testing.T) {
 	server := newTestServer(t)
 
@@ -424,6 +427,7 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	})
 
 	t.Run("management control panel returns 404", func(t *testing.T) {
+<<<<<<< HEAD
 		for _, path := range []string{"/management.html", "/manage", "/manage/dashboard", "/assets/app.js"} {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			rr := httptest.NewRecorder()
@@ -431,6 +435,13 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 			if rr.Code != http.StatusNotFound {
 				t.Fatalf("%s status = %d, want %d body=%s", path, rr.Code, http.StatusNotFound, rr.Body.String())
 			}
+=======
+		req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+>>>>>>> upstream/main
 		}
 	})
 }

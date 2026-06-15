@@ -314,6 +314,7 @@ func (h *Host) callHostModelExecuteStream(ctx context.Context, request []byte) (
 		ctx = context.Background()
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
+<<<<<<< HEAD
 	streamRegistered := false
 	defer func() {
 		if !streamRegistered {
@@ -322,6 +323,11 @@ func (h *Host) callHostModelExecuteStream(ctx context.Context, request []byte) (
 	}()
 	stream, errMsg := executor.ExecuteModelStream(streamCtx, modelExecutionRequestFromPlugin(req.HostModelExecutionRequest, skipPluginID))
 	if errMsg != nil {
+=======
+	stream, errMsg := executor.ExecuteModelStream(streamCtx, modelExecutionRequestFromPlugin(req.HostModelExecutionRequest, skipPluginID))
+	if errMsg != nil {
+		cancel()
+>>>>>>> upstream/main
 		return nil, modelExecutionError(errMsg)
 	}
 	streamID := ""
@@ -329,9 +335,15 @@ func (h *Host) callHostModelExecuteStream(ctx context.Context, request []byte) (
 		streamID = h.modelStreams.open(req.HostCallbackID, stream.Chunks, cancel)
 	}
 	if streamID == "" {
+<<<<<<< HEAD
 		return nil, fmt.Errorf("host model stream bridge is unavailable")
 	}
 	streamRegistered = true
+=======
+		cancel()
+		return nil, fmt.Errorf("host model stream bridge is unavailable")
+	}
+>>>>>>> upstream/main
 	if req.HostCallbackID != "" {
 		h.addCallbackCleanup(req.HostCallbackID, func() {
 			h.modelStreams.close(streamID)

@@ -622,6 +622,10 @@ func (s *Server) registerManagementRoutes() {
 	mgmt := s.engine.Group("/v0/management")
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
 	{
+		mgmt.GET("/dashboard-summary", s.mgmt.GetDashboardSummary)
+		mgmt.GET("/system-stats", s.mgmt.GetSystemStats)
+		mgmt.GET("/system-stats/ws", s.mgmt.SystemStatsWebSocket)
+
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
@@ -757,6 +761,26 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
+
+		mgmt.GET("/image-generation/channels", s.mgmt.GetImageGenerationChannels)
+		mgmt.POST("/image-generation/test", s.mgmt.StartImageGenerationTest)
+		mgmt.GET("/image-generation/test/:task_id", s.mgmt.GetImageGenerationTest)
+
+		mgmt.GET("/usage", s.mgmt.GetUsageSummary)
+		mgmt.GET("/usage/chart-data", s.mgmt.GetUsageChartData)
+		mgmt.GET("/usage/entity-stats", s.mgmt.GetUsageEntityStats)
+		mgmt.GET("/usage/logs", s.mgmt.GetUsageLogs)
+		mgmt.DELETE("/usage/logs", s.mgmt.DeleteUsageLogs)
+		mgmt.GET("/usage/export", s.mgmt.ExportUsage)
+		mgmt.POST("/usage/import", s.mgmt.ImportUsage)
+		mgmt.POST("/usage/auth-file-quota-snapshot", s.mgmt.RecordAuthFileQuotaSnapshot)
+		mgmt.GET("/usage/auth-file-group-trend", s.mgmt.GetAuthFileGroupTrend)
+		mgmt.GET("/usage/auth-file-trend", s.mgmt.GetAuthFileTrend)
+		mgmt.GET("/usage/logs/:id/content", s.mgmt.GetUsageLogContent)
+		mgmt.POST("/quota/reconcile", s.mgmt.ReconcileQuota)
+
+		// Public usage summary (no management auth required, read-only)
+		mgmt.GET("/usage/summary/public", s.mgmt.GetUsageSummaryPublic)
 	}
 }
 

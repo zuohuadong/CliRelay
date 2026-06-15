@@ -168,12 +168,12 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 		t.Fatalf("missing key status = %d, want %d body=%s", missingKeyRR.Code, http.StatusUnauthorized, missingKeyRR.Body.String())
 	}
 
-	legacyReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage?count=2", nil)
-	legacyReq.Header.Set("Authorization", "Bearer test-management-key")
-	legacyRR := httptest.NewRecorder()
-	server.engine.ServeHTTP(legacyRR, legacyReq)
-	if legacyRR.Code != http.StatusNotFound {
-		t.Fatalf("legacy usage status = %d, want %d body=%s", legacyRR.Code, http.StatusNotFound, legacyRR.Body.String())
+	summaryReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage?count=2", nil)
+	summaryReq.Header.Set("Authorization", "Bearer test-management-key")
+	summaryRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(summaryRR, summaryReq)
+	if summaryRR.Code != http.StatusOK {
+		t.Fatalf("usage summary status = %d, want %d body=%s", summaryRR.Code, http.StatusOK, summaryRR.Body.String())
 	}
 
 	authReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=2", nil)
@@ -264,6 +264,40 @@ func TestManagementPluginsRouteRegistered(t *testing.T) {
 	server.engine.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+}
+
+func TestManagementPanelCompatibilityRoutesRegistered(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/v0/management/dashboard-summary?days=1"},
+		{http.MethodGet, "/v0/management/usage/chart-data?days=1"},
+		{http.MethodGet, "/v0/management/usage/entity-stats?days=1&auth_index=auth-a"},
+		{http.MethodGet, "/v0/management/usage/logs?page=1&size=1"},
+		{http.MethodGet, "/v0/management/usage/auth-file-trend?auth_index=auth-a&days=7&hours=5"},
+		{http.MethodPost, "/v0/management/usage/auth-file-quota-snapshot"},
+		{http.MethodPost, "/v0/management/quota/reconcile"},
+		{http.MethodGet, "/v0/management/image-generation/channels"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			req := httptest.NewRequest(route.method, route.path, nil)
+			req.Header.Set("Authorization", "Bearer test-management-key")
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+			if rr.Code == http.StatusNotFound {
+				t.Fatalf("route returned 404; body=%s", rr.Body.String())
+			}
+			if rr.Code == http.StatusUnauthorized {
+				t.Fatalf("route unexpectedly unauthorized; body=%s", rr.Body.String())
+			}
+		})
 	}
 }
 

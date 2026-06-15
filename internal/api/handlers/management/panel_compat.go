@@ -637,6 +637,51 @@ func (h *Handler) GetModelOwnerPresets(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
+func (h *Handler) PutModelOwnerPresets(c *gin.Context) {
+	var body struct {
+		Items []struct {
+			Value       string `json:"value"`
+			ID          string `json:"id"`
+			Owner       string `json:"owner"`
+			Label       string `json:"label"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Enabled     *bool  `json:"enabled"`
+		} `json:"items"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	seen := map[string]struct{}{}
+	items := make([]gin.H, 0, len(body.Items))
+	for _, item := range body.Items {
+		value := normalizeOwner(firstNonEmpty(item.Value, item.ID, item.Owner))
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		label := strings.TrimSpace(firstNonEmpty(item.Label, item.Name, value))
+		enabled := true
+		if item.Enabled != nil {
+			enabled = *item.Enabled
+		}
+		items = append(items, gin.H{
+			"value":       value,
+			"label":       label,
+			"description": strings.TrimSpace(item.Description),
+			"enabled":     enabled,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return fmt.Sprint(items[i]["label"]) < fmt.Sprint(items[j]["label"])
+	})
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
 func (h *Handler) GetConfiguredModelAvailability(c *gin.Context) {
 	availableModels := registry.GetGlobalRegistry().GetAvailableModels("openai")
 

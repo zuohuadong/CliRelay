@@ -314,21 +314,36 @@ func TestManagementPanelCompatibilityRoutesRegistered(t *testing.T) {
 	routes := []struct {
 		method string
 		path   string
+		body   string
 	}{
-		{http.MethodGet, "/v0/management/dashboard-summary?days=1"},
-		{http.MethodGet, "/v0/management/usage/chart-data?days=1"},
-		{http.MethodGet, "/v0/management/usage/entity-stats?days=1&auth_index=auth-a"},
-		{http.MethodGet, "/v0/management/usage/logs?page=1&size=1"},
-		{http.MethodGet, "/v0/management/usage/auth-file-trend?auth_index=auth-a&days=7&hours=5"},
-		{http.MethodPost, "/v0/management/usage/auth-file-quota-snapshot"},
-		{http.MethodPost, "/v0/management/quota/reconcile"},
-		{http.MethodGet, "/v0/management/image-generation/channels"},
+		{method: http.MethodGet, path: "/v0/management/dashboard-summary?days=1"},
+		{method: http.MethodGet, path: "/v0/management/update/check"},
+		{method: http.MethodGet, path: "/v0/management/proxy-pool"},
+		{method: http.MethodGet, path: "/v0/management/model-owner-presets"},
+		{method: http.MethodPut, path: "/v0/management/model-owner-presets", body: `{"items":[{"value":"openai","label":"OpenAI"}]}`},
+		{method: http.MethodGet, path: "/v0/management/model-configs?scope=library"},
+		{method: http.MethodGet, path: "/v0/management/usage/chart-data?days=1"},
+		{method: http.MethodGet, path: "/v0/management/usage/entity-stats?days=1&auth_index=auth-a"},
+		{method: http.MethodGet, path: "/v0/management/usage/logs?page=1&size=1"},
+		{method: http.MethodGet, path: "/v0/management/usage/auth-file-trend?auth_index=auth-a&days=7&hours=5"},
+		{method: http.MethodPost, path: "/v0/management/usage/auth-file-quota-snapshot"},
+		{method: http.MethodPost, path: "/v0/management/quota/reconcile"},
+		{method: http.MethodGet, path: "/v0/management/image-generation/channels"},
 	}
 
 	for _, route := range routes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
-			req := httptest.NewRequest(route.method, route.path, nil)
+			var body *strings.Reader
+			if route.body != "" {
+				body = strings.NewReader(route.body)
+			} else {
+				body = strings.NewReader("")
+			}
+			req := httptest.NewRequest(route.method, route.path, body)
 			req.Header.Set("Authorization", "Bearer test-management-key")
+			if route.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
 			rr := httptest.NewRecorder()
 			server.engine.ServeHTTP(rr, req)
 			if rr.Code == http.StatusNotFound {
@@ -338,6 +353,18 @@ func TestManagementPanelCompatibilityRoutesRegistered(t *testing.T) {
 				t.Fatalf("route unexpectedly unauthorized; body=%s", rr.Body.String())
 			}
 		})
+	}
+}
+
+func TestManagementAuthAcceptsQueryTokenForBrowserWebSocket(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/system-stats?token=test-management-key", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
 	}
 }
 

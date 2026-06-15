@@ -302,6 +302,50 @@ func TestDashboardSummaryUsesUsageAggregation(t *testing.T) {
 	}
 }
 
+func TestAuthFileTrendUsesRequestLogsByAuthIndex(t *testing.T) {
+	h := newUsageContractTestHandler(t)
+	status, payload := performUsageContractRequest(t, http.MethodGet, "/v0/management/usage/auth-file-trend?auth_index=auth-a&days=7&hours=48", nil, nil, h.GetAuthFileTrend)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	if payload["auth_index"] != "auth-a" {
+		t.Fatalf("auth_index = %#v, want auth-a", payload["auth_index"])
+	}
+	if payload["request_total"].(float64) != 2 || payload["cycle_request_total"].(float64) != 2 {
+		t.Fatalf("unexpected totals: %#v", payload)
+	}
+	if payload["cycle_start"] == "" {
+		t.Fatalf("cycle_start should be populated: %#v", payload)
+	}
+	daily := payload["daily_usage"].([]any)
+	if len(daily) != 2 {
+		t.Fatalf("daily_usage len = %d, want 2: %#v", len(daily), daily)
+	}
+	var dailyTotal float64
+	for _, item := range daily {
+		dailyTotal += item.(map[string]any)["requests"].(float64)
+	}
+	if dailyTotal != 2 {
+		t.Fatalf("daily requests total = %v, want 2: %#v", dailyTotal, daily)
+	}
+	hourly := payload["hourly_usage"].([]any)
+	if len(hourly) != 2 {
+		t.Fatalf("hourly_usage len = %d, want 2: %#v", len(hourly), hourly)
+	}
+	quotaSeries := payload["quota_series"].([]any)
+	if len(quotaSeries) != 0 {
+		t.Fatalf("quota_series should remain empty without quota snapshots: %#v", quotaSeries)
+	}
+
+	status, payload = performUsageContractRequest(t, http.MethodGet, "/v0/management/usage/auth-file-trend?auth_index=missing&days=7&hours=48", nil, nil, h.GetAuthFileTrend)
+	if status != http.StatusOK {
+		t.Fatalf("missing status = %d, want %d", status, http.StatusOK)
+	}
+	if payload["request_total"].(float64) != 0 || len(payload["daily_usage"].([]any)) != 0 || len(payload["hourly_usage"].([]any)) != 0 {
+		t.Fatalf("missing auth should return empty trend: %#v", payload)
+	}
+}
+
 func TestPublicUsageSummaryContract(t *testing.T) {
 	h := newUsageContractTestHandler(t)
 	status, payload := performUsageContractRequest(t, http.MethodPost, "/v0/management/public/usage", []byte(`{"api_key":"sk-a","days":7}`), nil, h.GetPublicUsageSummary)

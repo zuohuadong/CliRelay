@@ -267,6 +267,46 @@ func TestManagementPluginsRouteRegistered(t *testing.T) {
 	}
 }
 
+func TestManagementPanelSPARoutesServeBundledAssets(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	staticDir := t.TempDir()
+	t.Setenv("MANAGEMENT_STATIC_PATH", staticDir)
+	if err := os.WriteFile(filepath.Join(staticDir, "manage.html"), []byte("<html>panel</html>"), 0o600); err != nil {
+		t.Fatalf("write manage.html: %v", err)
+	}
+	assetsDir := filepath.Join(staticDir, "assets")
+	if err := os.MkdirAll(assetsDir, 0o700); err != nil {
+		t.Fatalf("create assets dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(assetsDir, "app.js"), []byte("console.log('panel')"), 0o600); err != nil {
+		t.Fatalf("write app.js: %v", err)
+	}
+
+	server := newTestServer(t)
+
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{path: "/manage", want: "panel"},
+		{path: "/manage/dashboard", want: "panel"},
+		{path: "/manage/assets/app.js", want: "console.log"},
+		{path: "/assets/app.js", want: "console.log"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), tc.want) {
+				t.Fatalf("body = %q, want substring %q", rr.Body.String(), tc.want)
+			}
+		})
+	}
+}
+
 func TestManagementPanelCompatibilityRoutesRegistered(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 
@@ -357,11 +397,13 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	})
 
 	t.Run("management control panel returns 404", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
-		rr := httptest.NewRecorder()
-		server.engine.ServeHTTP(rr, req)
-		if rr.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+		for _, path := range []string{"/management.html", "/manage", "/manage/dashboard", "/assets/app.js"} {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("%s status = %d, want %d body=%s", path, rr.Code, http.StatusNotFound, rr.Body.String())
+			}
 		}
 	})
 }

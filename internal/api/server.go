@@ -393,7 +393,7 @@ func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 		}
 		if c != nil && c.Request != nil {
 			path := c.Request.URL.Path
-			if strings.HasPrefix(path, "/v0/management/") || path == "/v0/management" || strings.HasPrefix(path, "/v0/resource/plugins/") || path == "/management.html" {
+			if strings.HasPrefix(path, "/v0/management/") || path == "/v0/management" || strings.HasPrefix(path, "/v0/resource/plugins/") || path == "/management.html" || path == "/manage" || strings.HasPrefix(path, "/manage/") || strings.HasPrefix(path, "/assets/") {
 				c.Next()
 				return
 			}
@@ -422,6 +422,9 @@ func (s *Server) setupRoutes() {
 	s.engine.HEAD("/healthz", healthzHandler)
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.GET("/manage", s.serveManagementControlPanel)
+	s.engine.GET("/manage/*path", s.serveManagementAssetOrFallback)
+	s.engine.GET("/assets/*path", s.serveManagementAsset)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -918,6 +921,37 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	}
 
 	c.File(filePath)
+}
+
+func (s *Server) serveManagementAssetOrFallback(c *gin.Context) {
+	assetPath := strings.TrimPrefix(c.Param("path"), "/")
+	if strings.TrimSpace(assetPath) == "" || !s.serveManagementAssetPath(c, assetPath) {
+		s.serveManagementControlPanel(c)
+	}
+}
+
+func (s *Server) serveManagementAsset(c *gin.Context) {
+	assetPath := "assets/" + strings.TrimPrefix(c.Param("path"), "/")
+	if !s.serveManagementAssetPath(c, assetPath) {
+		c.AbortWithStatus(http.StatusNotFound)
+	}
+}
+
+func (s *Server) serveManagementAssetPath(c *gin.Context, relativePath string) bool {
+	cfg := s.cfg
+	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
+		return false
+	}
+	filePath, ok := managementasset.AssetPath(s.configFilePath, relativePath)
+	if !ok || strings.TrimSpace(filePath) == "" {
+		return false
+	}
+	info, err := os.Stat(filePath)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	c.File(filePath)
+	return true
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {

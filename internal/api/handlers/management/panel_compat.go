@@ -1005,8 +1005,43 @@ func (h *Handler) GetAuthFileGroupTrend(c *gin.Context) {
 func (h *Handler) GetAuthFileTrend(c *gin.Context) {
 	days := positiveQueryInt(c, "days", 7)
 	hours := positiveQueryInt(c, "hours", 5)
-	c.JSON(http.StatusOK, gin.H{
-		"auth_index":          c.Query("auth_index"),
+	authIndex := strings.TrimSpace(c.Query("auth_index"))
+	payload := emptyAuthFileTrendPayload(authIndex, days, hours)
+	if authIndex == "" {
+		c.JSON(http.StatusOK, payload)
+		return
+	}
+	db, ok := h.usageDB()
+	if !ok {
+		c.JSON(http.StatusOK, payload)
+		return
+	}
+	defer func() { _ = db.Close() }()
+	if !dbTableExists(db, "request_logs") {
+		c.JSON(http.StatusOK, payload)
+		return
+	}
+
+	filters := usageFilters{Days: days, AuthIndexes: []string{authIndex}}
+	totals := queryUsageTotals(db, filters)
+	payload["request_total"] = totals.Total
+	payload["daily_usage"] = queryAuthFileDailyUsage(db, filters)
+
+	cycleStart := time.Now().UTC().AddDate(0, 0, -days)
+	payload["cycle_start"] = cycleStart.Format(time.RFC3339)
+	payload["cycle_request_total"] = totals.Total
+
+	hourlyFilters := usageFilters{
+		AuthIndexes: []string{authIndex},
+		Start:       time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339),
+	}
+	payload["hourly_usage"] = queryAuthFileHourlyUsage(db, hourlyFilters)
+	c.JSON(http.StatusOK, payload)
+}
+
+func emptyAuthFileTrendPayload(authIndex string, days, hours int) gin.H {
+	return gin.H{
+		"auth_index":          authIndex,
 		"days":                days,
 		"hours":               hours,
 		"request_total":       0,
@@ -1015,7 +1050,51 @@ func (h *Handler) GetAuthFileTrend(c *gin.Context) {
 		"daily_usage":         []gin.H{},
 		"hourly_usage":        []gin.H{},
 		"quota_series":        []gin.H{},
-	})
+	}
+}
+
+func queryAuthFileDailyUsage(db *sql.DB, filters usageFilters) []gin.H {
+	if !dbTableExists(db, "request_logs") {
+		return []gin.H{}
+	}
+	cols := requestLogColumns(db)
+	whereSQL, args := filters.whereClause(db)
+	rows, err := db.Query("SELECT date("+usageColumnExpr(cols, "timestamp", "datetime('now')")+") as d, count(*) FROM request_logs WHERE "+whereSQL+" GROUP BY d ORDER BY d", args...)
+	if err != nil || rows == nil {
+		return []gin.H{}
+	}
+	defer func() { _ = rows.Close() }()
+	out := []gin.H{}
+	for rows.Next() {
+		var date string
+		var requests int64
+		if rows.Scan(&date, &requests) == nil {
+			out = append(out, gin.H{"date": date, "requests": requests})
+		}
+	}
+	return out
+}
+
+func queryAuthFileHourlyUsage(db *sql.DB, filters usageFilters) []gin.H {
+	if !dbTableExists(db, "request_logs") {
+		return []gin.H{}
+	}
+	cols := requestLogColumns(db)
+	whereSQL, args := filters.whereClause(db)
+	rows, err := db.Query("SELECT strftime('%Y-%m-%d %H:00', "+usageColumnExpr(cols, "timestamp", "datetime('now')")+"), count(*) FROM request_logs WHERE "+whereSQL+" GROUP BY 1 ORDER BY 1", args...)
+	if err != nil || rows == nil {
+		return []gin.H{}
+	}
+	defer func() { _ = rows.Close() }()
+	out := []gin.H{}
+	for rows.Next() {
+		var hour string
+		var requests int64
+		if rows.Scan(&hour, &requests) == nil {
+			out = append(out, gin.H{"hour": hour, "requests": requests})
+		}
+	}
+	return out
 }
 
 func (h *Handler) ReconcileQuota(c *gin.Context) {

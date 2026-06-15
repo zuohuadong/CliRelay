@@ -4,7 +4,10 @@ package management
 
 import (
 	"context"
+<<<<<<< HEAD
 	"crypto/sha256"
+=======
+>>>>>>> upstream/main
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
@@ -22,6 +25,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -59,6 +63,7 @@ type Handler struct {
 	pluginStoreHTTPClient  pluginstore.HTTPDoer
 	pluginReleaseCacheMu   sync.Mutex
 	pluginReleaseCache     map[string]pluginReleaseCacheEntry
+<<<<<<< HEAD
 	imageTasksMu           sync.Mutex
 	imageGenerationTasks   map[string]*imageGenerationTestTask
 	startTime              time.Time
@@ -69,6 +74,8 @@ func (h *Handler) shareToken() string {
 		return ""
 	}
 	return strings.TrimSpace(h.cfg.RemoteManagement.ShareToken)
+=======
+>>>>>>> upstream/main
 }
 
 // NewHandler creates a new management handler instance.
@@ -183,6 +190,27 @@ func (h *Handler) reloadConfigAfterManagementSave(ctx context.Context, cfg *conf
 	}
 }
 
+<<<<<<< HEAD
+=======
+func (h *Handler) reloadConfigAfterManagementSaveAsync(ctx context.Context, cfg *config.Config) {
+	if h == nil || cfg == nil {
+		return
+	}
+	reloadCtx := context.Background()
+	if ctx != nil {
+		reloadCtx = context.WithoutCancel(ctx)
+	}
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.WithField("panic", recovered).Error("management: async config reload panicked")
+			}
+		}()
+		h.reloadConfigAfterManagementSave(reloadCtx, cfg)
+	}()
+}
+
+>>>>>>> upstream/main
 // SetLocalPassword configures the runtime-local password accepted for localhost requests.
 func (h *Handler) SetLocalPassword(password string) { h.localPassword = password }
 

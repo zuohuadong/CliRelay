@@ -24,8 +24,12 @@ var aiAPIPrefixes = []string{
 	"/v1/videos",
 	"/v1/messages",
 	"/v1/responses",
+	"/openai/v1/videos",
 	"/v1beta/models/",
+<<<<<<< HEAD
 	"/api/provider/",
+=======
+>>>>>>> upstream/main
 	"/backend-api/codex/",
 }
 

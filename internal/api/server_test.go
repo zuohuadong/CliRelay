@@ -92,6 +92,17 @@ func TestHealthz(t *testing.T) {
 	})
 }
 
+func TestNewServerInitializesAuthManagerRuntimeConfig(t *testing.T) {
+	server := newTestServer(t)
+
+	if server.handlers == nil || server.handlers.AuthManager == nil {
+		t.Fatalf("expected auth manager")
+	}
+	if got := server.handlers.AuthManager.Config(); got != server.cfg {
+		t.Fatalf("auth manager config = %p, want server cfg %p", got, server.cfg)
+	}
+}
+
 func TestManagementResponseExposesPluginSupportHeaderForCORS(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 

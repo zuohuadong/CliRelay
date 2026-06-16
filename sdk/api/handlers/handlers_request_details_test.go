@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
@@ -135,5 +136,50 @@ func TestGetRequestDetails_ImageModelReturns503(t *testing.T) {
 	msg := errMsg.Error.Error()
 	if !strings.Contains(msg, "/v1/images/generations") || !strings.Contains(msg, "/v1/images/edits") {
 		t.Fatalf("unexpected error message: %q", msg)
+	}
+}
+
+func TestGetRequestDetails_AppendsConfiguredOpenAICompatAliasProviders(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient("test-request-details-codex", "codex", []*registry.ModelInfo{{ID: "gpt-5.3-codex"}})
+	modelRegistry.RegisterClient("test-request-details-bigmodel", "bigmodel-coding", []*registry.ModelInfo{{ID: "gpt-5.3-codex"}})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient("test-request-details-codex")
+		modelRegistry.UnregisterClient("test-request-details-bigmodel")
+	})
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		AstronCodeAPIKey: []internalconfig.OpenAICompatibility{{
+			Models: []internalconfig.OpenAICompatibilityModel{{Name: "astron-code-latest", Alias: "gpt-5.3-codex"}},
+		}},
+		BigModelCodingAPIKey: []internalconfig.OpenAICompatibility{{
+			Models: []internalconfig.OpenAICompatibilityModel{{Name: "glm-5.2", Alias: "gpt-5.3-codex"}},
+		}},
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{{
+			Name:   "custom-coding",
+			Models: []internalconfig.OpenAICompatibilityModel{{Name: "custom-upstream", Alias: "gpt-5.3-codex"}},
+		}},
+	})
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+
+	providers, model, errMsg := handler.getRequestDetails("gpt-5.3-codex")
+	if errMsg != nil {
+		t.Fatalf("getRequestDetails() error = %v", errMsg)
+	}
+	if model != "gpt-5.3-codex" {
+		t.Fatalf("model = %q, want gpt-5.3-codex", model)
+	}
+	want := []string{"bigmodel-coding", "codex", "astron-code", "custom-coding"}
+	if !reflect.DeepEqual(providers, want) {
+		t.Fatalf("providers = %v, want %v", providers, want)
+	}
+
+	providers, _, errMsg = handler.getRequestDetails("gpt-5.3-codex(high)")
+	if errMsg != nil {
+		t.Fatalf("getRequestDetails() suffixed error = %v", errMsg)
+	}
+	if !reflect.DeepEqual(providers, want) {
+		t.Fatalf("suffixed providers = %v, want %v", providers, want)
 	}
 }

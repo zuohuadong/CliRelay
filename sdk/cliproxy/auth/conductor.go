@@ -453,6 +453,24 @@ func (m *Manager) SetConfig(cfg *internalconfig.Config) {
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 }
 
+// Config returns the latest runtime config snapshot used by request-time routing.
+func (m *Manager) Config() *internalconfig.Config {
+	if m == nil {
+		return nil
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	return cfg
+}
+
+// ConfiguredAliasProviders returns provider keys declared by runtime config for modelName.
+func (m *Manager) ConfiguredAliasProviders(modelName string) []string {
+	cfg := m.Config()
+	if cfg == nil {
+		return nil
+	}
+	return cfg.OpenAICompatibilityAliasProviders(modelName)
+}
+
 // HomeEnabled reports whether the home control plane integration is enabled in the runtime config.
 func (m *Manager) HomeEnabled() bool {
 	if m == nil {

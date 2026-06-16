@@ -1380,6 +1380,7 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	}
 
 	providers = util.GetProviderName(baseModel)
+	providers = h.appendConfiguredAliasProviders(providers, baseModel)
 	// Fallback: if baseModel has no provider but differs from resolvedModelName,
 	// try using the full model name. This handles edge cases where custom models
 	// may be registered with their full suffixed name (e.g., "my-model(8192)").
@@ -1387,6 +1388,7 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	// custom model registrations that include thinking suffixes.
 	if len(providers) == 0 && baseModel != resolvedModelName {
 		providers = util.GetProviderName(resolvedModelName)
+		providers = h.appendConfiguredAliasProviders(providers, resolvedModelName)
 	}
 
 	if len(providers) == 0 {
@@ -1396,6 +1398,31 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	// The thinking suffix is preserved in the model name itself, so no
 	// metadata-based configuration passing is needed.
 	return providers, resolvedModelName, nil
+}
+
+func (h *BaseAPIHandler) appendConfiguredAliasProviders(providers []string, modelName string) []string {
+	if h == nil || h.AuthManager == nil || strings.TrimSpace(modelName) == "" {
+		return providers
+	}
+	seen := make(map[string]struct{}, len(providers)+3)
+	for _, provider := range providers {
+		key := strings.TrimSpace(strings.ToLower(provider))
+		if key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	for _, provider := range h.AuthManager.ConfiguredAliasProviders(modelName) {
+		provider = strings.TrimSpace(strings.ToLower(provider))
+		if provider == "" {
+			continue
+		}
+		if _, ok := seen[provider]; ok {
+			continue
+		}
+		seen[provider] = struct{}{}
+		providers = append(providers, provider)
+	}
+	return providers
 }
 
 func routeModelBaseName(model string) string {

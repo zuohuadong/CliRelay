@@ -158,6 +158,28 @@ func TestSanitizeAstronCodeAddsGLM51Alias(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibilityAliasProvidersIsConfigDriven(t *testing.T) {
+	cfg := &Config{
+		BigModelCodingAPIKey: []OpenAICompatibility{{
+			Models: []OpenAICompatibilityModel{{Name: "glm-5.2", Alias: "gpt-5.3-codex"}},
+		}},
+		AstronCodeAPIKey: []OpenAICompatibility{{
+			Models: []OpenAICompatibilityModel{{Name: "astron-code-latest", Alias: "gpt-5.3-codex"}},
+		}},
+		OpenAICompatibility: []OpenAICompatibility{
+			{Name: "custom-coding", Models: []OpenAICompatibilityModel{{Name: "custom-upstream", Alias: "gpt-5.3-codex"}}},
+			{Name: "disabled-coding", Disabled: true, Models: []OpenAICompatibilityModel{{Name: "disabled-upstream", Alias: "gpt-5.3-codex"}}},
+			{Name: "other-coding", Models: []OpenAICompatibilityModel{{Name: "other-upstream", Alias: "other-model"}}},
+		},
+	}
+
+	providers := cfg.OpenAICompatibilityAliasProviders("gpt-5.3-codex")
+	want := []string{DefaultBigModelCodingProviderName, DefaultAstronCodeProviderName, "custom-coding"}
+	if strings.Join(providers, ",") != strings.Join(want, ",") {
+		t.Fatalf("providers = %v, want %v", providers, want)
+	}
+}
+
 func hasModelAlias(models []OpenAICompatibilityModel, name, alias string) bool {
 	for _, model := range models {
 		if model.Name == name && model.Alias == alias {

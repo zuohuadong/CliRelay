@@ -786,6 +786,54 @@ type OpenAICompatibilityModel struct {
 func (m OpenAICompatibilityModel) GetName() string  { return m.Name }
 func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
 
+// OpenAICompatibilityAliasProviders returns configured OpenAI-compatible providers
+// whose model list declares modelName as either an alias or an upstream model.
+func (cfg *Config) OpenAICompatibilityAliasProviders(modelName string) []string {
+	if cfg == nil {
+		return nil
+	}
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return nil
+	}
+	providers := make([]string, 0, 4)
+	seen := make(map[string]struct{})
+	appendEntries := func(defaultProvider string, entries []OpenAICompatibility) {
+		for i := range entries {
+			entry := entries[i]
+			if entry.Disabled || !openAICompatibilityModelsSupportName(entry.Models, modelName) {
+				continue
+			}
+			provider := strings.TrimSpace(entry.Name)
+			if provider == "" {
+				provider = defaultProvider
+			}
+			provider = strings.TrimSpace(strings.ToLower(provider))
+			if provider == "" {
+				continue
+			}
+			if _, ok := seen[provider]; ok {
+				continue
+			}
+			seen[provider] = struct{}{}
+			providers = append(providers, provider)
+		}
+	}
+	appendEntries(DefaultBigModelCodingProviderName, cfg.BigModelCodingAPIKey)
+	appendEntries(DefaultAstronCodeProviderName, cfg.AstronCodeAPIKey)
+	appendEntries("", cfg.OpenAICompatibility)
+	return providers
+}
+
+func openAICompatibilityModelsSupportName(models []OpenAICompatibilityModel, modelName string) bool {
+	for _, model := range models {
+		if strings.EqualFold(strings.TrimSpace(model.Alias), modelName) || strings.EqualFold(strings.TrimSpace(model.Name), modelName) {
+			return true
+		}
+	}
+	return false
+}
+
 const (
 	DefaultBigModelCodingProviderName = "bigmodel-coding"
 	DefaultBigModelCodingBaseURL      = "https://open.bigmodel.cn/api/coding/paas/v4"

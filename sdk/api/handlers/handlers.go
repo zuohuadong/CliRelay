@@ -502,7 +502,7 @@ func setServiceTierMetadata(meta map[string]any, rawJSON []byte) {
 
 // headersFromContext extracts the original HTTP request headers from the gin context
 // embedded in the provided context. This allows session affinity selectors to read
-// client-provided session headers.
+// client headers like X-Amp-Thread-Id.
 func headersFromContext(ctx context.Context) http.Header {
 	if ctx == nil {
 		return nil
@@ -871,11 +871,8 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
-<<<<<<< HEAD
 	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
-=======
->>>>>>> upstream/main
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
@@ -1007,11 +1004,8 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
-<<<<<<< HEAD
 	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
-=======
->>>>>>> upstream/main
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
@@ -1035,11 +1029,8 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 	opts.Metadata = reqMeta
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, modelName, req, opts, execOptions.SkipInterceptorPluginID)
-<<<<<<< HEAD
 	maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
 	bootstrapRetries := 0
-=======
->>>>>>> upstream/main
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	for err != nil && bootstrapRetries < maxBootstrapRetries && streamBootstrapRetryEligible(err) {
 		bootstrapRetries++

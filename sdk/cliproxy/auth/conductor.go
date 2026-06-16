@@ -1257,14 +1257,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		execReq := req
 		execReq.Model = execModel
 		execOpts := opts
-<<<<<<< HEAD
 		var errCompress error
 		execReq, execOpts, errCompress = m.maybeCompressRequest(ctx, provider, routeModel, execModel, execReq, execOpts)
 		if errCompress != nil {
 			return nil, errCompress
 		}
-=======
->>>>>>> upstream/main
 		execReq, execOpts = applyRequestAfterAuthInterceptor(ctx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
 		if errStream != nil {
@@ -1717,9 +1714,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	}
 	if lastErr != nil {
 		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
-			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
-				return cliproxyexecutor.Response{}, errCredits
-			} else if ok {
+			if resp, ok := m.tryAntigravityCreditsExecute(ctx, req, opts); ok {
 				return resp, nil
 			}
 		}
@@ -1785,9 +1780,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	}
 	if lastErr != nil {
 		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
-			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
-				return nil, errCredits
-			} else if ok {
+			if result, ok := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); ok {
 				return result, nil
 			}
 		}
@@ -1957,14 +1950,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execReq := req
 			execReq.Model = upstreamModel
 			execOpts := opts
-<<<<<<< HEAD
 			var errCompress error
 			execReq, execOpts, errCompress = m.maybeCompressRequest(execCtx, provider, routeModel, upstreamModel, execReq, execOpts)
 			if errCompress != nil {
 				return cliproxyexecutor.Response{}, errCompress
 			}
-=======
->>>>>>> upstream/main
 			execReq, execOpts = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
@@ -4490,7 +4480,7 @@ func (m *Manager) pickNextViaHome(ctx context.Context, model string, opts clipro
 		switch strings.ToLower(code) {
 		case "model_not_found":
 			status = http.StatusNotFound
-		case "authentication_error", "unauthorized", "no_credentials", "invalid_credential":
+		case "authentication_error", "unauthorized":
 			status = http.StatusUnauthorized
 		}
 		return nil, nil, "", &Error{Code: code, Message: msg, HTTPStatus: status}
@@ -4573,13 +4563,15 @@ func requestedModelFromMetadata(metadata map[string]any, fallback string) string
 	return fallback
 }
 
-func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, routeModel string, opts cliproxyexecutor.Options) ([]creditsCandidateEntry, error) {
+func (m *Manager) findAllAntigravityCreditsCandidateAuths(routeModel string, opts cliproxyexecutor.Options) []creditsCandidateEntry {
 	if m == nil {
-		return nil, nil
+		return nil
 	}
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	var candidates []creditsCandidateEntry
 	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var known []creditsCandidateEntry
+	var unknown []creditsCandidateEntry
 	for _, auth := range m.auths {
 		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
 			continue
@@ -4598,29 +4590,24 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, r
 		if !ok {
 			continue
 		}
-		candidates = append(candidates, creditsCandidateEntry{
-			auth:     auth.Clone(),
-			executor: executor,
-			provider: providerKey,
-		})
-	}
-	m.mu.RUnlock()
 
-	var known []creditsCandidateEntry
-	var unknown []creditsCandidateEntry
-	for _, candidate := range candidates {
-		hint, okHint, errHint := GetAntigravityCreditsHintRequired(ctx, candidate.auth.ID)
-		if errHint != nil {
-			return nil, antigravityCreditsKVUnavailableError(errHint)
-		}
+		hint, okHint := GetAntigravityCreditsHint(auth.ID)
 		if okHint && hint.Known {
 			if !hint.Available {
 				continue
 			}
-			known = append(known, candidate)
+			known = append(known, creditsCandidateEntry{
+				auth:     auth.Clone(),
+				executor: executor,
+				provider: providerKey,
+			})
 			continue
 		}
-		unknown = append(unknown, candidate)
+		unknown = append(unknown, creditsCandidateEntry{
+			auth:     auth.Clone(),
+			executor: executor,
+			provider: providerKey,
+		})
 	}
 	sort.Slice(known, func(i, j int) bool {
 		return known[i].auth.ID < known[j].auth.ID
@@ -4628,7 +4615,7 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, r
 	sort.Slice(unknown, func(i, j int) bool {
 		return unknown[i].auth.ID < unknown[j].auth.ID
 	})
-	return append(known, unknown...), nil
+	return append(known, unknown...)
 }
 
 type creditsCandidateEntry struct {
@@ -4678,15 +4665,12 @@ func shouldAttemptAntigravityCreditsFallback(m *Manager, lastErr error, provider
 	}
 }
 
-func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, bool, error) {
+func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, bool) {
 	routeModel := req.Model
-	candidates, errCandidates := m.findAllAntigravityCreditsCandidateAuths(ctx, routeModel, opts)
-	if errCandidates != nil {
-		return cliproxyexecutor.Response{}, false, errCandidates
-	}
+	candidates := m.findAllAntigravityCreditsCandidateAuths(routeModel, opts)
 	for _, c := range candidates {
 		if ctx.Err() != nil {
-			return cliproxyexecutor.Response{}, false, nil
+			return cliproxyexecutor.Response{}, false
 		}
 		creditsCtx := WithAntigravityCredits(ctx)
 		if rt := m.roundTripperFor(c.auth); rt != nil {
@@ -4723,21 +4707,18 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 				continue
 			}
 			m.MarkResult(creditsCtx, result)
-			return resp, true, nil
+			return resp, true
 		}
 	}
-	return cliproxyexecutor.Response{}, false, nil
+	return cliproxyexecutor.Response{}, false
 }
 
-func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, bool, error) {
+func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, bool) {
 	routeModel := req.Model
-	candidates, errCandidates := m.findAllAntigravityCreditsCandidateAuths(ctx, routeModel, opts)
-	if errCandidates != nil {
-		return nil, false, errCandidates
-	}
+	candidates := m.findAllAntigravityCreditsCandidateAuths(routeModel, opts)
 	for _, c := range candidates {
 		if ctx.Err() != nil {
-			return nil, false, nil
+			return nil, false
 		}
 		creditsCtx := WithAntigravityCredits(ctx)
 		if rt := m.roundTripperFor(c.auth); rt != nil {
@@ -4759,16 +4740,9 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		if errStream != nil {
 			continue
 		}
-		return result, true, nil
+		return result, true
 	}
-	return nil, false, nil
-}
-
-func antigravityCreditsKVUnavailableError(cause error) error {
-	if cause == nil {
-		return &Error{Code: "home_kv_unavailable", Message: "home kv store unavailable", HTTPStatus: http.StatusServiceUnavailable}
-	}
-	return &Error{Code: "home_kv_unavailable", Message: "home kv store unavailable: " + cause.Error(), HTTPStatus: http.StatusServiceUnavailable}
+	return nil, false
 }
 
 func (m *Manager) persist(ctx context.Context, auth *Auth) error {
@@ -4776,9 +4750,6 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 		return nil
 	}
 	if shouldSkipPersist(ctx) {
-		return nil
-	}
-	if IsConfigAPIKeyAuth(auth) {
 		return nil
 	}
 	if auth.Attributes != nil {

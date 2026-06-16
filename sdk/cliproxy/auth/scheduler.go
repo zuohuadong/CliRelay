@@ -251,7 +251,7 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 	providerKey := strings.ToLower(strings.TrimSpace(provider))
 	modelKey := canonicalModelKey(model)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	preferWebsocket := cliproxyexecutor.DownstreamWebsocket(ctx) && providerPrefersWebsocketTransport(providerKey) && pinnedAuthID == ""
+	preferWebsocket := cliproxyexecutor.DownstreamWebsocket(ctx) && providerKey == "codex" && pinnedAuthID == ""
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -284,15 +284,6 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 		return picked, nil
 	}
 	return nil, shard.unavailableErrorLocked(provider, model, predicate)
-}
-
-func providerPrefersWebsocketTransport(providerKey string) bool {
-	switch strings.ToLower(strings.TrimSpace(providerKey)) {
-	case "codex", "xai":
-		return true
-	default:
-		return false
-	}
 }
 
 // pickMixed returns the next auth and provider for a mixed-provider request.

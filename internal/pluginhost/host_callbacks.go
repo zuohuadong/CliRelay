@@ -296,6 +296,7 @@ func (h *Host) callHostModelExecute(ctx context.Context, request []byte) ([]byte
 	})
 }
 
+<<<<<<< HEAD
 func (h *Host) callHostModelExecuteStream(ctx context.Context, request []byte) ([]byte, error) {
 	var req rpcHostModelExecutionRequest
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
@@ -378,6 +379,8 @@ func (h *Host) callHostModelStreamClose(request []byte) ([]byte, error) {
 	return marshalRPCResult(rpcEmptyResponse{})
 }
 
+=======
+>>>>>>> upstream/main
 func modelExecutionRequestFromPlugin(req pluginapi.HostModelExecutionRequest, skipPluginID string) handlers.ModelExecutionRequest {
 	return handlers.ModelExecutionRequest{
 		EntryProtocol:           req.EntryProtocol,
@@ -389,6 +392,7 @@ func modelExecutionRequestFromPlugin(req pluginapi.HostModelExecutionRequest, sk
 		Query:                   cloneValues(req.Query),
 		Alt:                     req.Alt,
 		SkipInterceptorPluginID: skipPluginID,
+		SkipRouterPluginID:      skipPluginID,
 	}
 }
 

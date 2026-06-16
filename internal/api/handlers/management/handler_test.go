@@ -92,7 +92,6 @@ func TestAuthenticateManagementKey_ConcurrentFailuresDeduplicated(t *testing.T) 
 }
 
 func TestMiddlewareSetsSupportPluginHeader(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	h := &Handler{
 		cfg:            &config.Config{},

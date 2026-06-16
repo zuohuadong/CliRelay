@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/multimodaladapter"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -81,6 +82,22 @@ func (e *OpenAICompatExecutor) HttpRequest(ctx context.Context, auth *cliproxyau
 	return httpClient.Do(httpReq)
 }
 
+func (e *OpenAICompatExecutor) applyMultimodalAdapter(ctx context.Context, payload []byte, model, protocol, requestedModel string) ([]byte, error) {
+	if e.cfg == nil {
+		return payload, nil
+	}
+	out, _, err := multimodaladapter.Apply(ctx, payload, multimodaladapter.Route{
+		RequestedModel:   requestedModel,
+		UpstreamProvider: e.Identifier(),
+		UpstreamModel:    thinking.ParseSuffix(model).ModelName,
+		Protocol:         protocol,
+	}, e.cfg.MultimodalAdapters)
+	if err != nil {
+		return payload, err
+	}
+	return out, nil
+}
+
 func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	if endpointPath := openAICompatImageEndpointPath(opts); endpointPath != "" {
 		return e.executeImages(ctx, auth, req, opts, endpointPath)
@@ -117,14 +134,20 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
 	}
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	var originalTranslated []byte
 	var translated []byte
 	if imagePassthrough {
 		translated = e.overrideModel(req.Payload, baseModel)
 	} else {
 		originalPayload := originalPayloadSource
+		adaptedPayload, errAdapt := e.applyMultimodalAdapter(ctx, req.Payload, baseModel, from.String(), requestedModel)
+		if errAdapt != nil {
+			err = errAdapt
+			return resp, err
+		}
 		originalTranslated = sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
-		translated = sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
+		translated = sdktranslator.TranslateRequest(from, to, baseModel, adaptedPayload, opts.Stream)
 
 		translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
 		if err != nil {
@@ -138,7 +161,6 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		}
 	}
 
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 	if opts.Alt == "responses/compact" {
@@ -344,9 +366,15 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
 	}
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	adaptedPayload, errAdapt := e.applyMultimodalAdapter(ctx, req.Payload, baseModel, from.String(), requestedModel)
+	if errAdapt != nil {
+		err = errAdapt
+		return nil, err
+	}
 	originalPayload := originalPayloadSource
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
-	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
+	translated := sdktranslator.TranslateRequest(from, to, baseModel, adaptedPayload, true)
 
 	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -359,7 +387,6 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		}
 	}
 
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 

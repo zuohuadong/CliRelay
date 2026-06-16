@@ -136,6 +136,38 @@ disable-image-generation: false
 # Must start with "gpt-" (case-insensitive). If unset or invalid, defaults to "gpt-5.4-mini".
 # gpt-image-2-base-model: "gpt-5.4-mini"
 
+# Convert image/file/video inputs into text before sending them to matched text-model routes.
+# Leave requested-models/upstream-models empty in a rule to match all models for the selected
+# provider/protocol. Image generation endpoints still use their native /v1/images paths.
+# multimodal-adapters:
+#   enabled: true
+#   default-action: extract
+#   unavailable-action: reject
+#   inject-as: visual_context
+#   max-media-items: 4
+#   max-output-bytes: 12000
+#   rules:
+#     - name: text-model-image-context
+#       match:
+#         upstream-providers:
+#           - openai-compatibility
+#           - bigmodel-coding
+#         protocols:
+#           - openai-response
+#           - openai
+#       extractor: vision-mcp
+#       action: extract
+#   extractors:
+#     - name: vision-mcp
+#       type: mcp
+#       command: npx
+#       args:
+#         - -y
+#         - "@your-org/vision-mcp-server"
+#       tool-name: describe_image
+#       prompt: Describe the image accurately and concisely for a downstream text model.
+#       timeout-seconds: 60
+
 # Core auth auto-refresh worker pool size (OAuth/file-based auth token refresh).
 # When > 0, overrides the default worker count (16).
 # auth-auto-refresh-workers: 16

@@ -164,6 +164,114 @@ func TestBigModelCodingExecutorInjectsOfficialMCPTools(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatExecutorAppliesConfiguredMultimodalAdapterForTextModel(t *testing.T) {
+	var extractorBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read extractor body: %v", err)
+		}
+		extractorBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"The image shows a generic text-model error screen."}`))
+	}))
+	defer server.Close()
+
+	enabled := true
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{
+		SDKConfig: config.SDKConfig{MultimodalAdapters: config.MultimodalAdaptersConfig{
+			Enabled:       &enabled,
+			DefaultAction: "extract",
+			InjectAs:      "visual_context",
+			Rules: []config.MultimodalAdapterRule{
+				{
+					Name:      "text-model-vision",
+					Extractor: "vision",
+					Match: config.MultimodalAdapterMatch{
+						RequestedModels:   []string{"client-text-model"},
+						UpstreamProviders: []string{"openai-compatibility"},
+						UpstreamModels:    []string{"provider-text-model"},
+						Protocols:         []string{"openai-response"},
+					},
+				},
+			},
+			Extractors: []config.MultimodalExtractorConfig{
+				{Name: "vision", Type: "http", Endpoint: server.URL},
+			},
+		}},
+	})
+	payload := []byte(`{"model":"client-text-model","input":[{"role":"user","content":[{"type":"input_text","text":"what is shown?"},{"type":"input_image","image_url":"https://example.com/screenshot.png"}]}]}`)
+
+	out, err := executor.applyMultimodalAdapter(context.Background(), payload, "provider-text-model", "openai-response", "client-text-model")
+	if err != nil {
+		t.Fatalf("applyMultimodalAdapter error: %v", err)
+	}
+	if extractorBody == "" || !strings.Contains(extractorBody, "screenshot.png") {
+		t.Fatalf("extractor body = %q, want image ref", extractorBody)
+	}
+	body := string(out)
+	if strings.Contains(body, "input_image") || strings.Contains(body, "image_url") {
+		t.Fatalf("media was not stripped: %s", body)
+	}
+	if !strings.Contains(body, "visual_context") || !strings.Contains(body, "text-model error screen") {
+		t.Fatalf("visual context was not injected: %s", body)
+	}
+}
+
+func TestBigModelCodingExecutorAppliesConfiguredMultimodalAdapterForGLM52(t *testing.T) {
+	var extractorBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read extractor body: %v", err)
+		}
+		extractorBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"The image shows a red error dialog."}`))
+	}))
+	defer server.Close()
+
+	enabled := true
+	executor := NewBigModelCodingExecutor(&config.Config{
+		SDKConfig: config.SDKConfig{MultimodalAdapters: config.MultimodalAdaptersConfig{
+			Enabled:       &enabled,
+			DefaultAction: "extract",
+			InjectAs:      "visual_context",
+			Rules: []config.MultimodalAdapterRule{
+				{
+					Name:      "configured-codex-vision",
+					Extractor: "vision",
+					Match: config.MultimodalAdapterMatch{
+						RequestedModels:   []string{"gpt-5.3-codex"},
+						UpstreamProviders: []string{"bigmodel-coding"},
+						UpstreamModels:    []string{"glm-5.2"},
+						Protocols:         []string{"openai-response"},
+					},
+				},
+			},
+			Extractors: []config.MultimodalExtractorConfig{
+				{Name: "vision", Type: "http", Endpoint: server.URL},
+			},
+		}},
+	})
+	payload := []byte(`{"model":"gpt-5.3-codex","input":[{"role":"user","content":[{"type":"input_text","text":"what is shown?"},{"type":"input_image","image_url":"https://example.com/screenshot.png"}]}]}`)
+
+	out, err := executor.applyMultimodalAdapter(context.Background(), payload, "glm-5.2", "openai-response", "gpt-5.3-codex")
+	if err != nil {
+		t.Fatalf("applyMultimodalAdapter error: %v", err)
+	}
+	if extractorBody == "" || !strings.Contains(extractorBody, "screenshot.png") {
+		t.Fatalf("extractor body = %q, want image ref", extractorBody)
+	}
+	body := string(out)
+	if strings.Contains(body, "input_image") || strings.Contains(body, "image_url") {
+		t.Fatalf("media was not stripped: %s", body)
+	}
+	if !strings.Contains(body, "visual_context") || !strings.Contains(body, "red error dialog") {
+		t.Fatalf("visual context was not injected: %s", body)
+	}
+}
+
 func TestOpenAICompatExecutorDoesNotInjectBigModelCodingMCPToolsByDefault(t *testing.T) {
 	payload := []byte(`{"model":"glm-5.1","messages":[{"role":"user","content":"hello"}]}`)
 

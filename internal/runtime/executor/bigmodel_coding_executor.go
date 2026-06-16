@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/multimodaladapter"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -372,22 +371,6 @@ func (e *BigModelCodingExecutor) ExecuteStream(ctx context.Context, auth *clipro
 		reporter.EnsurePublished(ctx)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
-}
-
-func (e *BigModelCodingExecutor) applyMultimodalAdapter(ctx context.Context, payload []byte, model, protocol, requestedModel string) ([]byte, error) {
-	if !e.isGLM51(model) || e.cfg == nil {
-		return payload, nil
-	}
-	out, _, err := multimodaladapter.Apply(ctx, payload, multimodaladapter.Route{
-		RequestedModel:   requestedModel,
-		UpstreamProvider: e.Identifier(),
-		UpstreamModel:    thinking.ParseSuffix(model).ModelName,
-		Protocol:         protocol,
-	}, e.cfg.MultimodalAdapters)
-	if err != nil {
-		return payload, err
-	}
-	return out, nil
 }
 
 func (e *BigModelCodingExecutor) injectOfficialMCPTools(payload []byte, model, apiKey string) ([]byte, error) {

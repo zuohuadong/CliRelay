@@ -20,9 +20,74 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+<<<<<<< HEAD
+=======
+func waitForAsyncReload(t *testing.T, reloads <-chan *config.Config) *config.Config {
+	t.Helper()
+	select {
+	case cfg := <-reloads:
+		return cfg
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for async config reload")
+		return nil
+	}
+}
+
+func waitForReloadDone(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for config reload hook to finish")
+	}
+}
+
+func captureConfigReload(h *Handler) (<-chan *config.Config, <-chan struct{}) {
+	reloads := make(chan *config.Config, 1)
+	done := make(chan struct{})
+	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) {
+		defer close(done)
+		reloads <- cfg
+	})
+	return reloads, done
+}
+
+func TestConfigReloadGenerationSkipsOlderSnapshot(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg: &config.Config{
+			Plugins: config.PluginsConfig{
+				Configs: map[string]config.PluginInstanceConfig{
+					"sample": pluginConfigFromYAML(t, "enabled: true\nmode: old\n"),
+				},
+			},
+		},
+	}
+	reloadedModes := make([]string, 0, 1)
+	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) {
+		reloadedModes = append(reloadedModes, pluginRawScalarValue(t, cfg.Plugins.Configs["sample"], "mode"))
+	})
+
+	h.mu.Lock()
+	older := h.reloadSnapshotConfigLocked()
+	item := h.cfg.Plugins.Configs["sample"]
+	setPluginRawScalarValue(t, &item.Raw, "mode", "new")
+	h.cfg.Plugins.Configs["sample"] = item
+	newer := h.reloadSnapshotConfigLocked()
+	h.mu.Unlock()
+
+	h.reloadConfigAfterManagementSave(context.Background(), newer)
+	h.reloadConfigAfterManagementSave(context.Background(), older)
+
+	if len(reloadedModes) != 1 || reloadedModes[0] != "new" {
+		t.Fatalf("reloaded modes = %#v, want only new snapshot", reloadedModes)
+	}
+}
+
+>>>>>>> upstream/main
 func TestListPluginsIncludesScannedAndConfiguredPlugins(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 
 	pluginsDir := writeManagementPluginFile(t, "scanned")
 	disabled := false
@@ -95,7 +160,7 @@ func TestListPluginsIncludesScannedAndConfiguredPlugins(t *testing.T) {
 			t.Fatalf("unregistered plugin entry has runtime fields: %#v", item)
 		}
 	}
-	if got, ok := entries["scanned"]; !ok || got.Configured || !got.Enabled || got.EffectiveEnabled || got.Path == "" {
+	if got, ok := entries["scanned"]; !ok || got.Configured || got.Enabled || got.EffectiveEnabled || got.Path == "" {
 		t.Fatalf("scanned entry = %#v, exists=%v", got, ok)
 	}
 	if got, ok := entries["configured-only"]; !ok || !got.Configured || got.Enabled || got.EffectiveEnabled || got.Path != "" {
@@ -105,7 +170,6 @@ func TestListPluginsIncludesScannedAndConfiguredPlugins(t *testing.T) {
 
 func TestGetPluginConfigReturnsPreservedRawConfig(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -162,7 +226,6 @@ options:
 
 func TestGetPluginConfigReturnsEmptyObjectForKnownUnconfiguredPlugin(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 
 	pluginsDir := writeManagementPluginFile(t, "scanned")
 	h := &Handler{
@@ -195,7 +258,6 @@ func TestGetPluginConfigReturnsEmptyObjectForKnownUnconfiguredPlugin(t *testing.
 
 func TestGetPluginConfigReturnsNotFoundForUnknownPlugin(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 
 	h := &Handler{
 		cfg:            &config.Config{},
@@ -216,7 +278,6 @@ func TestGetPluginConfigReturnsNotFoundForUnknownPlugin(t *testing.T) {
 
 func TestPatchPluginEnabledUpdatesOnlyPluginConfig(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -229,6 +290,7 @@ func TestPatchPluginEnabledUpdatesOnlyPluginConfig(t *testing.T) {
 		},
 		configFilePath: writeTestConfigFile(t),
 	}
+	reloads, reloadDone := captureConfigReload(h)
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -240,6 +302,21 @@ func TestPatchPluginEnabledUpdatesOnlyPluginConfig(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	cfgSnapshot := waitForAsyncReload(t, reloads)
+	waitForReloadDone(t, reloadDone)
+	if cfgSnapshot == h.cfg {
+		t.Fatalf("reload config = handler config %p, want independent snapshot", h.cfg)
+	}
+	if cfgSnapshot.Plugins.Enabled {
+		t.Fatal("snapshot global Plugins.Enabled changed to true")
+	}
+	snapshotItem := cfgSnapshot.Plugins.Configs["sample"]
+	if snapshotItem.Enabled == nil || !*snapshotItem.Enabled {
+		t.Fatalf("snapshot sample enabled = %#v, want true", snapshotItem.Enabled)
+	}
+	if raw := marshalPluginRaw(t, snapshotItem); !strings.Contains(raw, "mode: safe") {
+		t.Fatalf("snapshot raw config lost custom field:\n%s", raw)
 	}
 	if h.cfg.Plugins.Enabled {
 		t.Fatal("global Plugins.Enabled changed to true")
@@ -254,9 +331,71 @@ func TestPatchPluginEnabledUpdatesOnlyPluginConfig(t *testing.T) {
 	}
 }
 
+func TestPatchPluginEnabledReloadSnapshotRawImmutability(t *testing.T) {
+	t.Parallel()
+	h := &Handler{
+		cfg: &config.Config{
+			Plugins: config.PluginsConfig{
+				Configs: map[string]config.PluginInstanceConfig{
+					"sample": pluginConfigFromYAML(t, "enabled: false\nmode: first\n"),
+				},
+			},
+		},
+		configFilePath: writeTestConfigFile(t),
+	}
+	reloads := make(chan *config.Config, 1)
+	releaseReload := make(chan struct{})
+	reloadDone := make(chan struct{})
+	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) {
+		defer close(reloadDone)
+		reloads <- cfg
+		<-releaseReload
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Params = gin.Params{{Key: "id", Value: "sample"}}
+	c.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/plugins/sample/enabled", strings.NewReader(`{"enabled":true}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchPluginEnabled(c)
+
+	if rec.Code != http.StatusOK {
+		close(releaseReload)
+		waitForReloadDone(t, reloadDone)
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	cfgSnapshot := waitForAsyncReload(t, reloads)
+
+	h.mu.Lock()
+	item := h.cfg.Plugins.Configs["sample"]
+	setPluginRawScalarValue(t, &item.Raw, "mode", "second")
+	h.cfg.Plugins.Configs["sample"] = item
+	h.mu.Unlock()
+
+	if cfgSnapshot == h.cfg {
+		t.Fatalf("reload config = handler config %p, want independent snapshot", h.cfg)
+	}
+	snapshotItem := cfgSnapshot.Plugins.Configs["sample"]
+	if snapshotItem.Enabled == nil || !*snapshotItem.Enabled {
+		t.Fatalf("snapshot sample enabled = %#v, want true", snapshotItem.Enabled)
+	}
+	if got := pluginRawScalarValue(t, snapshotItem, "mode"); got != "first" {
+		t.Fatalf("snapshot raw mode = %q, want first", got)
+	}
+	h.mu.Lock()
+	handlerItem := h.cfg.Plugins.Configs["sample"]
+	h.mu.Unlock()
+	if got := pluginRawScalarValue(t, handlerItem, "mode"); got != "second" {
+		t.Fatalf("handler raw mode = %q, want second", got)
+	}
+
+	close(releaseReload)
+	waitForReloadDone(t, reloadDone)
+}
+
 func TestPutPluginConfigReplacesPluginConfig(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -292,7 +431,6 @@ func TestPutPluginConfigReplacesPluginConfig(t *testing.T) {
 
 func TestPatchPluginConfigMergesAndDeletesFields(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -328,7 +466,6 @@ func TestPatchPluginConfigMergesAndDeletesFields(t *testing.T) {
 
 func TestDeletePluginRemovesDiscoveredFileAndConfig(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 
 	pluginsDir := writeManagementPluginFile(t, "sample")
 	h := &Handler{
@@ -342,12 +479,22 @@ func TestDeletePluginRemovesDiscoveredFileAndConfig(t *testing.T) {
 		},
 		configFilePath: writeTestConfigFile(t),
 	}
+<<<<<<< HEAD
 	reloads := 0
 	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) {
 		reloads++
 		if cfg != h.cfg {
 			t.Fatalf("reload config = %p, want handler config %p", cfg, h.cfg)
 		}
+=======
+	reloads := make(chan *config.Config, 1)
+	releaseReload := make(chan struct{})
+	reloadDone := make(chan struct{})
+	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) {
+		defer close(reloadDone)
+		reloads <- cfg
+		<-releaseReload
+>>>>>>> upstream/main
 	})
 
 	path, errPath := pluginFilePath(pluginsDir, "sample")
@@ -374,14 +521,28 @@ func TestDeletePluginRemovesDiscoveredFileAndConfig(t *testing.T) {
 	if _, errStat := os.Stat(path); !os.IsNotExist(errStat) {
 		t.Fatalf("plugin file stat error = %v, want not exist", errStat)
 	}
+<<<<<<< HEAD
 	if reloads != 1 {
 		t.Fatalf("reloads = %d, want 1", reloads)
+=======
+	cfgSnapshot := waitForAsyncReload(t, reloads)
+	if cfgSnapshot == h.cfg {
+		close(releaseReload)
+		waitForReloadDone(t, reloadDone)
+		t.Fatalf("reload config = handler config %p, want independent snapshot", h.cfg)
+>>>>>>> upstream/main
 	}
+	if _, ok := cfgSnapshot.Plugins.Configs["sample"]; ok {
+		close(releaseReload)
+		waitForReloadDone(t, reloadDone)
+		t.Fatal("snapshot plugin config still exists after delete")
+	}
+	close(releaseReload)
+	waitForReloadDone(t, reloadDone)
 }
 
 func TestDeletePluginReturnsNotFoundForUnknownPlugin(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 
 	h := &Handler{
 		cfg:            &config.Config{},
@@ -493,4 +654,26 @@ func marshalPluginRaw(t *testing.T, item config.PluginInstanceConfig) string {
 		t.Fatalf("marshal plugin raw: %v", errMarshal)
 	}
 	return string(data)
+}
+
+func pluginRawScalarValue(t *testing.T, item config.PluginInstanceConfig, key string) string {
+	t.Helper()
+	for i := 0; i+1 < len(item.Raw.Content); i += 2 {
+		if item.Raw.Content[i] != nil && item.Raw.Content[i].Value == key && item.Raw.Content[i+1] != nil {
+			return item.Raw.Content[i+1].Value
+		}
+	}
+	t.Fatalf("plugin raw missing scalar key %q", key)
+	return ""
+}
+
+func setPluginRawScalarValue(t *testing.T, node *yaml.Node, key, value string) {
+	t.Helper()
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i] != nil && node.Content[i].Value == key && node.Content[i+1] != nil {
+			node.Content[i+1].Value = value
+			return
+		}
+	}
+	t.Fatalf("plugin raw missing scalar key %q", key)
 }

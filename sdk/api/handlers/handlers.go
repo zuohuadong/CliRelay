@@ -1010,13 +1010,9 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 		return nil, nil, errMsg
 	}
 	reqMeta := requestExecutionMetadata(ctx)
-<<<<<<< HEAD
-	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
+	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
-=======
-	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
->>>>>>> upstream/main
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
@@ -1366,13 +1362,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture, execOptions.SkipInterceptorPluginID),
 	}
 	opts.Metadata = reqMeta
-<<<<<<< HEAD
-	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, modelName, req, opts, execOptions.SkipInterceptorPluginID)
+	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, originalRequestedModel, req, opts, execOptions.SkipInterceptorPluginID)
 	maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
 	bootstrapRetries := 0
-=======
-	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, originalRequestedModel, req, opts, execOptions.SkipInterceptorPluginID)
->>>>>>> upstream/main
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	for err != nil && bootstrapRetries < maxBootstrapRetries && streamBootstrapRetryEligible(err) {
 		bootstrapRetries++
@@ -1747,7 +1739,6 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	return providers, resolvedModelName, nil
 }
 
-<<<<<<< HEAD
 func (h *BaseAPIHandler) appendConfiguredAliasProviders(providers []string, modelName string) []string {
 	if h == nil || h.AuthManager == nil || strings.TrimSpace(modelName) == "" {
 		return providers
@@ -1771,7 +1762,8 @@ func (h *BaseAPIHandler) appendConfiguredAliasProviders(providers []string, mode
 		providers = append(providers, provider)
 	}
 	return providers
-=======
+}
+
 func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageModel bool) *interfaces.ErrorMessage {
 	baseModel := strings.TrimSpace(thinking.ParseSuffix(modelName).ModelName)
 	if baseModel == "" {
@@ -1784,7 +1776,6 @@ func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageMode
 		}
 	}
 	return nil
->>>>>>> upstream/main
 }
 
 func routeModelBaseName(model string) string {

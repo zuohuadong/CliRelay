@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -20,8 +21,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-<<<<<<< HEAD
-=======
 func waitForAsyncReload(t *testing.T, reloads <-chan *config.Config) *config.Config {
 	t.Helper()
 	select {
@@ -85,7 +84,6 @@ func TestConfigReloadGenerationSkipsOlderSnapshot(t *testing.T) {
 	}
 }
 
->>>>>>> upstream/main
 func TestListPluginsIncludesScannedAndConfiguredPlugins(t *testing.T) {
 	t.Parallel()
 
@@ -479,14 +477,6 @@ func TestDeletePluginRemovesDiscoveredFileAndConfig(t *testing.T) {
 		},
 		configFilePath: writeTestConfigFile(t),
 	}
-<<<<<<< HEAD
-	reloads := 0
-	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) {
-		reloads++
-		if cfg != h.cfg {
-			t.Fatalf("reload config = %p, want handler config %p", cfg, h.cfg)
-		}
-=======
 	reloads := make(chan *config.Config, 1)
 	releaseReload := make(chan struct{})
 	reloadDone := make(chan struct{})
@@ -494,7 +484,6 @@ func TestDeletePluginRemovesDiscoveredFileAndConfig(t *testing.T) {
 		defer close(reloadDone)
 		reloads <- cfg
 		<-releaseReload
->>>>>>> upstream/main
 	})
 
 	path, errPath := pluginFilePath(pluginsDir, "sample")
@@ -521,16 +510,11 @@ func TestDeletePluginRemovesDiscoveredFileAndConfig(t *testing.T) {
 	if _, errStat := os.Stat(path); !os.IsNotExist(errStat) {
 		t.Fatalf("plugin file stat error = %v, want not exist", errStat)
 	}
-<<<<<<< HEAD
-	if reloads != 1 {
-		t.Fatalf("reloads = %d, want 1", reloads)
-=======
 	cfgSnapshot := waitForAsyncReload(t, reloads)
 	if cfgSnapshot == h.cfg {
 		close(releaseReload)
 		waitForReloadDone(t, reloadDone)
 		t.Fatalf("reload config = handler config %p, want independent snapshot", h.cfg)
->>>>>>> upstream/main
 	}
 	if _, ok := cfgSnapshot.Plugins.Configs["sample"]; ok {
 		close(releaseReload)

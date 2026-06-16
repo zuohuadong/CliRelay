@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -40,37 +41,6 @@ const attemptMaxIdleTime = 2 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
-<<<<<<< HEAD
-	cfg                    *config.Config
-	configFilePath         string
-	mu                     sync.Mutex
-	attemptsMu             sync.Mutex
-	failedAttempts         map[string]*attemptInfo // keyed by client IP
-	authManager            *coreauth.Manager
-	tokenStore             coreauth.Store
-	localPassword          string
-	allowRemoteOverride    bool
-	envSecret              string
-	logDir                 string
-	postAuthHook           coreauth.PostAuthHook
-	postAuthPersistHook    coreauth.PostAuthHook
-	pluginHost             *pluginhost.Host
-	configReloadHook       func(context.Context, *config.Config)
-	pluginStoreRegistryURL string
-	pluginStoreHTTPClient  pluginstore.HTTPDoer
-	pluginReleaseCacheMu   sync.Mutex
-	pluginReleaseCache     map[string]pluginReleaseCacheEntry
-	imageTasksMu           sync.Mutex
-	imageGenerationTasks   map[string]*imageGenerationTestTask
-	startTime              time.Time
-}
-
-func (h *Handler) shareToken() string {
-	if h == nil || h.cfg == nil {
-		return ""
-	}
-	return strings.TrimSpace(h.cfg.RemoteManagement.ShareToken)
-=======
 	cfg                     *config.Config
 	configFilePath          string
 	mu                      sync.Mutex
@@ -93,12 +63,21 @@ func (h *Handler) shareToken() string {
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
 	pluginReleaseCacheMu    sync.Mutex
 	pluginReleaseCache      map[string]pluginReleaseCacheEntry
+	imageTasksMu            sync.Mutex
+	imageGenerationTasks    map[string]*imageGenerationTestTask
+	startTime               time.Time
 }
 
 type configReloadSnapshot struct {
 	cfg        *config.Config
 	generation uint64
->>>>>>> upstream/main
+}
+
+func (h *Handler) shareToken() string {
+	if h == nil || h.cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(h.cfg.RemoteManagement.ShareToken)
 }
 
 // NewHandler creates a new management handler instance.
@@ -249,8 +228,6 @@ func (h *Handler) reloadConfigAfterManagementSave(ctx context.Context, snapshot 
 	h.mu.Unlock()
 }
 
-<<<<<<< HEAD
-=======
 // reloadConfigAfterManagementSaveAsync reloads from an independent config snapshot.
 // Callers must pass a full Config clone captured immediately after a successful save.
 func (h *Handler) reloadConfigAfterManagementSaveAsync(ctx context.Context, snapshot configReloadSnapshot) {
@@ -271,7 +248,6 @@ func (h *Handler) reloadConfigAfterManagementSaveAsync(ctx context.Context, snap
 	}()
 }
 
->>>>>>> upstream/main
 // SetLocalPassword configures the runtime-local password accepted for localhost requests.
 func (h *Handler) SetLocalPassword(password string) { h.localPassword = password }
 

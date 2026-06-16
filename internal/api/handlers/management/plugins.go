@@ -372,11 +372,7 @@ func (h *Handler) DeletePlugin(c *gin.Context) {
 	cfgSnapshot := h.reloadSnapshotConfigLocked()
 	h.mu.Unlock()
 
-<<<<<<< HEAD
-	h.reloadConfigAfterManagementSave(c.Request.Context(), reloadCfg)
-=======
 	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), cfgSnapshot)
->>>>>>> upstream/main
 	c.JSON(http.StatusOK, gin.H{
 		"status":             "deleted",
 		"id":                 htmlsanitize.String(id),

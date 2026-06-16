@@ -743,6 +743,15 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/openai-compatibility", s.mgmt.PatchOpenAICompat)
 		mgmt.DELETE("/openai-compatibility", s.mgmt.DeleteOpenAICompat)
 
+		mgmt.GET("/api-key-entries", s.mgmt.GetAPIKeyEntries)
+		mgmt.PUT("/api-key-entries", s.mgmt.PutAPIKeyEntries)
+		mgmt.PATCH("/api-key-entries", s.mgmt.PatchAPIKeyEntries)
+		mgmt.DELETE("/api-key-entries", s.mgmt.DeleteAPIKeyEntries)
+		mgmt.GET("/api-key-permission-profiles", s.mgmt.GetAPIKeyPermissionProfiles)
+		mgmt.PUT("/api-key-permission-profiles", s.mgmt.PutAPIKeyPermissionProfiles)
+		mgmt.GET("/ccswitch-import-configs", s.mgmt.GetCCSwitchImportConfigs)
+		mgmt.PUT("/ccswitch-import-configs", s.mgmt.PutCCSwitchImportConfigs)
+
 		mgmt.GET("/vertex-api-key", s.mgmt.GetVertexCompatKeys)
 		mgmt.PUT("/vertex-api-key", s.mgmt.PutVertexCompatKeys)
 		mgmt.PATCH("/vertex-api-key", s.mgmt.PatchVertexCompatKey)

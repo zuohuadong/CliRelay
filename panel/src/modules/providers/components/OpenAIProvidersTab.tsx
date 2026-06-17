@@ -68,7 +68,7 @@ export function OpenAIProvidersTab({
       actions={
         <Button variant="primary" size="sm" onClick={() => openOpenAIEditor(null)}>
           <Plus size={14} />
-          {addLabel ?? t("providers.add_provider")}
+          {addLabel ?? t("providers.add_openai_provider")}
         </Button>
       }
     >

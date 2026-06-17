@@ -3017,7 +3017,6 @@
     "openai_compatible": "OpenAI compatible providers",
     "no_openai_providers": "No OpenAI providers",
     "add_new": "Add new",
-    "add_provider": "Add provider",
     "no_openai_desc": "Click Add provider to create your first configuration.",
     "refresh": "Refresh",
     "export_json": "Export JSON",
@@ -3299,7 +3298,8 @@
     "callback_browser_address_hint": "After authorizing in the browser, the browser address bar contains the callback URL. Copy the full URL and submit it below.",
     "project_placeholder": "Project ID(Optional)",
     "vertex_title": "Vertex Credential Import",
-    "iflow_title": "iFlow Cookie Auth",
+    "iflow_title": "iFlow OAuth",
+    "iflow_cookie_title": "iFlow Cookie Auth",
     "provider_fallback": "OAuth",
     "authorization_proxy": "Authorization Proxy",
     "authorization_proxy_hint": "Optional. Leave empty to use the deployed server's local network egress.",
@@ -3369,6 +3369,14 @@
       "qwen": {
         "title": "Qwen OAuth",
         "hint": "If supported by the server, the auth file is saved automatically."
+      },
+      "iflow": {
+        "title": "iFlow OAuth",
+        "hint": "Start the iFlow authorization flow and let the server save the auth file automatically."
+      },
+      "xai": {
+        "title": "xAI OAuth",
+        "hint": "Use this for Grok / xAI OAuth login."
       }
     }
   },

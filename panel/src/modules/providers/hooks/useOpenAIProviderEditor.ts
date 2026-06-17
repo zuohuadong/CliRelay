@@ -208,7 +208,15 @@ export function useOpenAIProviderEditor({
         });
       }
     },
-    [notify, openaiProviders, refreshAll, setOpenaiProviders, saveProviders, startRefreshTransition, t],
+    [
+      notify,
+      openaiProviders,
+      refreshAll,
+      setOpenaiProviders,
+      saveProviders,
+      startRefreshTransition,
+      t,
+    ],
   );
 
   const toggleOpenAIProviderEnabled = useCallback(
@@ -239,7 +247,15 @@ export function useOpenAIProviderEditor({
         });
       }
     },
-    [notify, openaiProviders, refreshAll, setOpenaiProviders, saveProviders, startRefreshTransition, t],
+    [
+      notify,
+      openaiProviders,
+      refreshAll,
+      setOpenaiProviders,
+      saveProviders,
+      startRefreshTransition,
+      t,
+    ],
   );
 
   const discoverModels = useCallback(async () => {
@@ -296,19 +312,21 @@ export function useOpenAIProviderEditor({
       return;
     }
 
-    const current = openaiDraft.modelEntries;
-    const seen = new Set(current.map((model) => model.name.trim().toLowerCase()).filter(Boolean));
-    const merged = [...current];
-    for (const model of picked) {
-      const key = model.id.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      merged.push({ ...createEmptyModelEntry(), name: model.id });
-    }
-
-    setOpenaiDraft((prev) => ({ ...prev, modelEntries: merged }));
+    setOpenaiDraft((prev) => {
+      const seen = new Set(
+        prev.modelEntries.map((model) => model.name.trim().toLowerCase()).filter(Boolean),
+      );
+      const merged = [...prev.modelEntries];
+      for (const model of picked) {
+        const key = model.id.trim().toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        merged.push({ ...createEmptyModelEntry(), name: model.id });
+      }
+      return { ...prev, modelEntries: merged };
+    });
     notify({ type: "success", message: t("providers.models_merged") });
-  }, [discoverSelected, discoveredModels, notify, openaiDraft.modelEntries, t]);
+  }, [discoverSelected, discoveredModels, notify, t]);
 
   return {
     editOpenAIOpen,

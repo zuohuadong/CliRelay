@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -87,6 +88,24 @@ func (h *Handler) RequestQwenToken(c *gin.Context) {
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
+}
+
+func (h *Handler) RequestIFlowTokenOrCookie(c *gin.Context) {
+	if c.Request.Method == http.MethodPost {
+		body, errRead := io.ReadAll(c.Request.Body)
+		if errRead == nil {
+			c.Request.Body = io.NopCloser(strings.NewReader(string(body)))
+			var payload struct {
+				Cookie string `json:"cookie"`
+			}
+			if len(body) > 0 && json.Unmarshal(body, &payload) == nil && strings.TrimSpace(payload.Cookie) != "" {
+				h.RequestIFlowCookieToken(c)
+				return
+			}
+		}
+	}
+
+	h.RequestIFlowToken(c)
 }
 
 func (h *Handler) RequestIFlowToken(c *gin.Context) {

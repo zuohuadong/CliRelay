@@ -12,3 +12,12 @@ playwright-report/
 .sisyphus/
 .agentflow/
 .helloagents/
+progress.md
+tasks.md
+servers.local.md
+.mailbox/
+.agents/state/
+.agents/automations/
+AGENTS.md
+CLAUDE.md
+.zed/CONVENTIONS.md

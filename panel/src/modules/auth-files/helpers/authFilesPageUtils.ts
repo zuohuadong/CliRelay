@@ -32,6 +32,8 @@ export type OAuthDialogTab =
   | "gemini-cli"
   | "kimi"
   | "qwen"
+  | "iflow-cookie"
+  | "xai"
   | "iflow"
   | "vertex";
 
@@ -62,8 +64,10 @@ export const AUTH_FILE_TYPE_FILTERS = [
   "claude",
   "antigravity",
   "gemini-cli",
+  "aistudio",
   "kimi",
   "qwen",
+  "xai",
   "iflow",
   "vertex",
 ];

@@ -47,6 +47,16 @@ const PROVIDERS: { id: OAuthProvider; titleKey: string; hintKey: string }[] = [
   },
   { id: "kimi", titleKey: "oauth.providers.kimi.title", hintKey: "oauth.providers.kimi.hint" },
   { id: "qwen", titleKey: "oauth.providers.qwen.title", hintKey: "oauth.providers.qwen.hint" },
+  {
+    id: "iflow",
+    titleKey: "oauth.providers.iflow.title",
+    hintKey: "oauth.providers.iflow.hint",
+  },
+  {
+    id: "xai",
+    titleKey: "oauth.providers.xai.title",
+    hintKey: "oauth.providers.xai.hint",
+  },
 ];
 
 const PROVIDER_TAB_IDS = PROVIDERS.map((p) => p.id);
@@ -79,7 +89,7 @@ const extractCallbackState = (redirectUrl: string): string => {
   }
 };
 
-type TabValue = OAuthProvider | "iflow" | "vertex";
+type TabValue = OAuthProvider | "iflow-cookie" | "vertex";
 
 export function OAuthLoginDialog({
   open,
@@ -567,7 +577,7 @@ export function OAuthLoginDialog({
                 </TabsTrigger>
               );
             })}
-            <TabsTrigger value="iflow">{t("oauth.iflow_title")}</TabsTrigger>
+            <TabsTrigger value="iflow-cookie">{t("oauth.iflow_cookie_title")}</TabsTrigger>
             <TabsTrigger value="vertex">{t("oauth.vertex_title")}</TabsTrigger>
           </TabsList>
 
@@ -591,9 +601,9 @@ export function OAuthLoginDialog({
             </TabsContent>
           ))}
 
-          <TabsContent value="iflow" className="mt-4">
+          <TabsContent value="iflow-cookie" className="mt-4">
             <Card
-              title={t("oauth.iflow_title")}
+              title={t("oauth.iflow_cookie_title")}
               description={iflowHint}
               actions={
                 <Button

@@ -1,16 +1,29 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ProvidersPage } from "@/modules/providers/ProvidersPage";
 import { ThemeProvider } from "@/modules/ui/ThemeProvider";
 import { ToastProvider } from "@/modules/ui/ToastProvider";
+import type { ApiCallResult } from "@/lib/http/types";
 
 const mocks = vi.hoisted(() => ({
+  apiCallRequest: vi.fn(
+    async (_payload: unknown): Promise<ApiCallResult> => ({
+      statusCode: 200,
+      header: {},
+      bodyText: "",
+      body: null,
+    }),
+  ),
+  getBigModelCodingProviders: vi.fn(async () => []),
+  getAstronCodeProviders: vi.fn(async () => []),
   getGeminiKeys: vi.fn(async () => []),
   getClaudeConfigs: vi.fn(async () => []),
   getCodexConfigs: vi.fn(async () => []),
+  getOpenCodeGoConfigs: vi.fn(async () => []),
   getVertexConfigs: vi.fn(async () => []),
+  getBedrockConfigs: vi.fn(async () => []),
   getOpenAIProviders: vi.fn(async () => []),
   saveCodexConfigs: vi.fn(async (_configs: unknown[]) => ({})),
   saveOpenAIProviders: vi.fn(async (_configs: unknown[]) => ({})),
@@ -24,12 +37,20 @@ vi.mock("@/lib/http/apis", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/http/apis")>();
   return {
     ...mod,
+    apiCallApi: {
+      ...mod.apiCallApi,
+      request: mocks.apiCallRequest,
+    },
     providersApi: {
       ...mod.providersApi,
+      getBigModelCodingProviders: mocks.getBigModelCodingProviders,
+      getAstronCodeProviders: mocks.getAstronCodeProviders,
       getGeminiKeys: mocks.getGeminiKeys,
       getClaudeConfigs: mocks.getClaudeConfigs,
       getCodexConfigs: mocks.getCodexConfigs,
+      getOpenCodeGoConfigs: mocks.getOpenCodeGoConfigs,
       getVertexConfigs: mocks.getVertexConfigs,
+      getBedrockConfigs: mocks.getBedrockConfigs,
       getOpenAIProviders: mocks.getOpenAIProviders,
       saveCodexConfigs: mocks.saveCodexConfigs,
       saveOpenAIProviders: mocks.saveOpenAIProviders,
@@ -65,10 +86,15 @@ describe("ProvidersPage openai tab", () => {
   });
 
   beforeEach(() => {
+    mocks.apiCallRequest.mockReset();
+    mocks.getBigModelCodingProviders.mockReset();
+    mocks.getAstronCodeProviders.mockReset();
     mocks.getGeminiKeys.mockReset();
     mocks.getClaudeConfigs.mockReset();
     mocks.getCodexConfigs.mockReset();
+    mocks.getOpenCodeGoConfigs.mockReset();
     mocks.getVertexConfigs.mockReset();
+    mocks.getBedrockConfigs.mockReset();
     mocks.getOpenAIProviders.mockReset();
     mocks.saveCodexConfigs.mockReset();
     mocks.saveOpenAIProviders.mockReset();
@@ -77,10 +103,20 @@ describe("ProvidersPage openai tab", () => {
     mocks.channelGroupsList.mockReset();
     mocks.proxiesList.mockReset();
 
+    mocks.apiCallRequest.mockImplementation(async () => ({
+      statusCode: 200,
+      header: {},
+      bodyText: "",
+      body: null,
+    }));
+    mocks.getBigModelCodingProviders.mockImplementation(async () => []);
+    mocks.getAstronCodeProviders.mockImplementation(async () => []);
     mocks.getGeminiKeys.mockImplementation(async () => []);
     mocks.getClaudeConfigs.mockImplementation(async () => []);
     mocks.getCodexConfigs.mockImplementation(async () => []);
+    mocks.getOpenCodeGoConfigs.mockImplementation(async () => []);
     mocks.getVertexConfigs.mockImplementation(async () => []);
+    mocks.getBedrockConfigs.mockImplementation(async () => []);
     mocks.saveCodexConfigs.mockImplementation(async () => ({}));
     mocks.saveOpenAIProviders.mockImplementation(async () => ({}));
     mocks.apiKeyEntriesList.mockImplementation(async () => []);
@@ -286,9 +322,66 @@ describe("ProvidersPage openai tab", () => {
         }),
       ]);
     });
-    expect(mocks.saveOpenAIProviders.mock.calls[0]?.[0]?.[0]).not.toHaveProperty(
-      "apiKeyEntries",
+    expect(mocks.saveOpenAIProviders.mock.calls[0]?.[0]?.[0]).not.toHaveProperty("apiKeyEntries");
+  });
+
+  test("merges fetched OpenAI Compatible models into the editable model list", async () => {
+    const user = userEvent.setup();
+    const provider = {
+      name: "OpenAI Main",
+      baseUrl: "https://example.com/v1",
+      apiKeyEntries: [{ apiKey: "sk-openai-provider-1234567890" }],
+      models: [{ name: "gpt-4.1" }],
+    } as any;
+    mocks.getOpenAIProviders.mockImplementation(async () => [provider] as any);
+    mocks.apiCallRequest.mockImplementation(async () => ({
+      statusCode: 200,
+      header: {},
+      bodyText: "",
+      body: {
+        data: [{ id: "gpt-4.1", owned_by: "openai" }, { id: "gpt-4o" }, { id: "gpt-4o-mini" }],
+      },
+    }));
+
+    render(
+      <MemoryRouter initialEntries={["/ai-providers/openai"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/ai-providers/*" element={<ProvidersPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
     );
+
+    expect(await screen.findByText("OpenAI Main")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Edit/ }));
+    expect(await screen.findByText("Edit OpenAI-compatible provider")).toBeInTheDocument();
+    const modal = screen.getByRole("dialog");
+
+    await user.click(within(modal).getByRole("button", { name: /Fetch \/models/i }));
+    await waitFor(() => expect(mocks.apiCallRequest).toHaveBeenCalledTimes(1));
+    expect(await within(modal).findByText(/Found 3 models/i)).toBeInTheDocument();
+
+    await user.click(within(modal).getByRole("button", { name: /Select none/i }));
+    expect(within(modal).getByText(/0 selected/i)).toBeInTheDocument();
+    await user.click(within(modal).getByRole("button", { name: /Select all/i }));
+    await user.click(within(modal).getByRole("button", { name: /Merge selected/i }));
+
+    expect(await within(modal).findByDisplayValue("gpt-4o")).toBeInTheDocument();
+    expect(await within(modal).findByDisplayValue("gpt-4o-mini")).toBeInTheDocument();
+
+    await user.click(within(modal).getByRole("button", { name: /Save/ }));
+
+    await waitFor(() => {
+      expect(mocks.saveOpenAIProviders).toHaveBeenCalledWith([
+        expect.objectContaining({
+          name: "OpenAI Main",
+          models: [{ name: "gpt-4.1" }, { name: "gpt-4o" }, { name: "gpt-4o-mini" }],
+        }),
+      ]);
+    });
   });
 
   test("preserves disable-cooling when saving an OpenAI Compatible provider", async () => {

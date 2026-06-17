@@ -51,6 +51,16 @@ const PROVIDERS: { id: OAuthProvider; titleKey: string; hintKey: string }[] = [
   },
   { id: "kimi", titleKey: "oauth.providers.kimi.title", hintKey: "oauth.providers.kimi.hint" },
   { id: "qwen", titleKey: "oauth.providers.qwen.title", hintKey: "oauth.providers.qwen.hint" },
+  {
+    id: "iflow",
+    titleKey: "oauth.providers.iflow.title",
+    hintKey: "oauth.providers.iflow.hint",
+  },
+  {
+    id: "xai",
+    titleKey: "oauth.providers.xai.title",
+    hintKey: "oauth.providers.xai.hint",
+  },
 ];
 
 const getErrorMessage = (err: unknown): string => {

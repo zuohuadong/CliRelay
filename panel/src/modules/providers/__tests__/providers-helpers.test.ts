@@ -122,6 +122,14 @@ describe("providers helpers", () => {
     ).toEqual([{ id: "gpt-4.1", owned_by: "openai" }, { id: "gpt-4o-mini" }]);
   });
 
+  test("normalizes discovered models from json response text", () => {
+    expect(
+      normalizeDiscoveredModels(
+        JSON.stringify({ data: [{ id: "gpt-4o" }, { name: "gpt-4o-mini" }] }),
+      ),
+    ).toEqual([{ id: "gpt-4o" }, { id: "gpt-4o-mini" }]);
+  });
+
   test("normalizes usage sources and matches raw plus masked api key candidates", () => {
     const masked = maskApiKey("sk-openai-provider-1234567890");
     const normalized = normalizeUsageSourceId("sk-openai-provider-1234567890", maskApiKey);

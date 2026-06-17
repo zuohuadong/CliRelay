@@ -426,6 +426,17 @@ func (s *Server) setupRoutes() {
 	s.engine.GET("/manage", s.serveManagementControlPanel)
 	s.engine.GET("/manage/*path", s.serveManagementAssetOrFallback)
 	s.engine.GET("/assets/*path", s.serveManagementAsset)
+	publicUsage := s.engine.Group("/v0/management/public/usage")
+	{
+		publicUsage.GET("", s.mgmt.GetPublicUsageSummary)
+		publicUsage.POST("", s.mgmt.GetPublicUsageSummary)
+		publicUsage.GET("/logs", s.mgmt.GetPublicUsageLogs)
+		publicUsage.POST("/logs", s.mgmt.GetPublicUsageLogs)
+		publicUsage.GET("/chart-data", s.mgmt.GetPublicUsageChartData)
+		publicUsage.POST("/chart-data", s.mgmt.GetPublicUsageChartData)
+		publicUsage.GET("/logs/:id/content", s.mgmt.GetPublicUsageLogContent)
+		publicUsage.POST("/logs/:id/content", s.mgmt.GetPublicUsageLogContent)
+	}
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -434,7 +445,15 @@ func (s *Server) setupRoutes() {
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
-	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(
+		AuthMiddleware(s.accessManager),
+		middleware.APIKeyConcurrencyMiddleware(),
+		middleware.APIKeyQuotaMiddleware(),
+		middleware.APIKeyRateLimitMiddleware(),
+		middleware.APIKeyModelAccessMiddleware(),
+		middleware.APIKeyChannelAccessMiddleware(),
+		middleware.APIKeySystemPromptMiddleware(),
+	)
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -454,7 +473,15 @@ func (s *Server) setupRoutes() {
 	}
 
 	openaiV1 := s.engine.Group("/openai/v1")
-	openaiV1.Use(AuthMiddleware(s.accessManager))
+	openaiV1.Use(
+		AuthMiddleware(s.accessManager),
+		middleware.APIKeyConcurrencyMiddleware(),
+		middleware.APIKeyQuotaMiddleware(),
+		middleware.APIKeyRateLimitMiddleware(),
+		middleware.APIKeyModelAccessMiddleware(),
+		middleware.APIKeyChannelAccessMiddleware(),
+		middleware.APIKeySystemPromptMiddleware(),
+	)
 	{
 		openaiV1.POST("/videos", openaiHandlers.VideosCreate)
 		openaiV1.GET("/videos/:video_id/content", openaiHandlers.VideosContent)
@@ -463,7 +490,15 @@ func (s *Server) setupRoutes() {
 
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
-	codexDirect.Use(AuthMiddleware(s.accessManager))
+	codexDirect.Use(
+		AuthMiddleware(s.accessManager),
+		middleware.APIKeyConcurrencyMiddleware(),
+		middleware.APIKeyQuotaMiddleware(),
+		middleware.APIKeyRateLimitMiddleware(),
+		middleware.APIKeyModelAccessMiddleware(),
+		middleware.APIKeyChannelAccessMiddleware(),
+		middleware.APIKeySystemPromptMiddleware(),
+	)
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
@@ -472,7 +507,14 @@ func (s *Server) setupRoutes() {
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
-	v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(
+		AuthMiddleware(s.accessManager),
+		middleware.APIKeyConcurrencyMiddleware(),
+		middleware.APIKeyQuotaMiddleware(),
+		middleware.APIKeyRateLimitMiddleware(),
+		middleware.APIKeyModelAccessMiddleware(),
+		middleware.APIKeyChannelAccessMiddleware(),
+	)
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
@@ -481,7 +523,12 @@ func (s *Server) setupRoutes() {
 
 	// MCP proxy routes
 	mcp := s.engine.Group("/mcp")
-	mcp.Use(AuthMiddleware(s.accessManager))
+	mcp.Use(
+		AuthMiddleware(s.accessManager),
+		middleware.APIKeyConcurrencyMiddleware(),
+		middleware.APIKeyQuotaMiddleware(),
+		middleware.APIKeyRateLimitMiddleware(),
+	)
 	{
 		mcp.Any("/zai/:server", s.proxyZAIMCP)
 		mcp.Any("/zai/:server/*path", s.proxyZAIMCP)
@@ -636,12 +683,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
 		mgmt.GET("/auto-update/enabled", s.mgmt.GetAutoUpdateEnabled)
 		mgmt.PUT("/auto-update/enabled", s.mgmt.PutAutoUpdateEnabled)
-		mgmt.GET("/auto-update/channel", s.mgmt.GetAutoUpdateChannel)
-		mgmt.PUT("/auto-update/channel", s.mgmt.PutAutoUpdateChannel)
-		mgmt.GET("/update/current", s.mgmt.GetCurrentUpdateState)
-		mgmt.GET("/update/check", s.mgmt.CheckUpdate)
-		mgmt.GET("/update/progress", s.mgmt.GetUpdateProgress)
-		mgmt.POST("/update/apply", s.mgmt.ApplyUpdate)
 		mgmt.GET("/plugins", s.mgmt.ListPlugins)
 		mgmt.GET("/plugin-store", s.mgmt.ListPluginStore)
 		mgmt.POST("/plugin-store/:id/install", s.mgmt.InstallPluginFromStore)
@@ -671,14 +712,18 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 		mgmt.PATCH("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 
+		mgmt.GET("/auto-update/channel", s.mgmt.GetAutoUpdateChannel)
+		mgmt.PUT("/auto-update/channel", s.mgmt.PutAutoUpdateChannel)
+		mgmt.PATCH("/auto-update/channel", s.mgmt.PutAutoUpdateChannel)
+		mgmt.GET("/update/current", s.mgmt.GetCurrentUpdateState)
+		mgmt.GET("/update/check", s.mgmt.CheckUpdate)
+		mgmt.GET("/update/progress", s.mgmt.GetUpdateProgress)
+		mgmt.POST("/update/apply", s.mgmt.ApplyUpdate)
+
 		mgmt.GET("/proxy-url", s.mgmt.GetProxyURL)
 		mgmt.PUT("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.PATCH("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
-		mgmt.GET("/proxy-pool", s.mgmt.GetProxyPool)
-		mgmt.PUT("/proxy-pool", s.mgmt.PutProxyPool)
-		mgmt.POST("/proxy-pool/check", s.mgmt.CheckProxyPool)
-
 		mgmt.POST("/api-call", s.mgmt.APICall)
 
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)
@@ -693,6 +738,12 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/api-keys", s.mgmt.PutAPIKeys)
 		mgmt.PATCH("/api-keys", s.mgmt.PatchAPIKeys)
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
+		mgmt.GET("/api-key-entries", s.mgmt.GetAPIKeyEntries)
+		mgmt.PUT("/api-key-entries", s.mgmt.PutAPIKeyEntries)
+		mgmt.PATCH("/api-key-entries", s.mgmt.PatchAPIKeyEntries)
+		mgmt.DELETE("/api-key-entries", s.mgmt.DeleteAPIKeyEntries)
+		mgmt.GET("/api-key-permission-profiles", s.mgmt.GetAPIKeyPermissionProfiles)
+		mgmt.PUT("/api-key-permission-profiles", s.mgmt.PutAPIKeyPermissionProfiles)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 
@@ -700,6 +751,26 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/gemini-api-key", s.mgmt.PutGeminiKeys)
 		mgmt.PATCH("/gemini-api-key", s.mgmt.PatchGeminiKey)
 		mgmt.DELETE("/gemini-api-key", s.mgmt.DeleteGeminiKey)
+		mgmt.GET("/opencode-go-api-key", s.mgmt.GetOpenCodeGoKeys)
+		mgmt.PUT("/opencode-go-api-key", s.mgmt.PutOpenCodeGoKeys)
+		mgmt.PATCH("/opencode-go-api-key", s.mgmt.PutOpenCodeGoKeys)
+		mgmt.DELETE("/opencode-go-api-key", s.mgmt.DeleteOpenCodeGoKey)
+		mgmt.GET("/bigmodel-coding-api-key", s.mgmt.GetBigModelCodingKeys)
+		mgmt.PUT("/bigmodel-coding-api-key", s.mgmt.PutBigModelCodingKeys)
+		mgmt.PATCH("/bigmodel-coding-api-key", s.mgmt.PatchBigModelCodingKey)
+		mgmt.DELETE("/bigmodel-coding-api-key", s.mgmt.DeleteBigModelCodingKey)
+		mgmt.GET("/astron-code-api-key", s.mgmt.GetAstronCodeKeys)
+		mgmt.PUT("/astron-code-api-key", s.mgmt.PutAstronCodeKeys)
+		mgmt.PATCH("/astron-code-api-key", s.mgmt.PatchAstronCodeKey)
+		mgmt.DELETE("/astron-code-api-key", s.mgmt.DeleteAstronCodeKey)
+		mgmt.GET("/bedrock-api-key", s.mgmt.GetBedrockKeys)
+		mgmt.PUT("/bedrock-api-key", s.mgmt.PutBedrockKeys)
+		mgmt.PATCH("/bedrock-api-key", s.mgmt.PutBedrockKeys)
+		mgmt.DELETE("/bedrock-api-key", s.mgmt.DeleteBedrockKey)
+		mgmt.GET("/iflow-api-key", s.mgmt.GetIFlowKeys)
+		mgmt.PUT("/iflow-api-key", s.mgmt.PutIFlowKeys)
+		mgmt.PATCH("/iflow-api-key", s.mgmt.PatchIFlowKey)
+		mgmt.DELETE("/iflow-api-key", s.mgmt.DeleteIFlowKey)
 
 		mgmt.GET("/logs", s.mgmt.GetLogs)
 		mgmt.DELETE("/logs", s.mgmt.DeleteLogs)
@@ -727,6 +798,17 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/routing/strategy", s.mgmt.GetRoutingStrategy)
 		mgmt.PUT("/routing/strategy", s.mgmt.PutRoutingStrategy)
 		mgmt.PATCH("/routing/strategy", s.mgmt.PutRoutingStrategy)
+		mgmt.GET("/routing-config", s.mgmt.GetRoutingConfig)
+		mgmt.PUT("/routing-config", s.mgmt.PutRoutingConfig)
+		mgmt.GET("/proxy-pool", s.mgmt.GetProxyPool)
+		mgmt.PUT("/proxy-pool", s.mgmt.PutProxyPool)
+		mgmt.POST("/proxy-pool/check", s.mgmt.CheckProxyPool)
+		mgmt.GET("/channel-groups", s.mgmt.GetChannelGroups)
+		mgmt.GET("/ccswitch-import-configs", s.mgmt.GetCCSwitchImportConfigs)
+		mgmt.PUT("/ccswitch-import-configs", s.mgmt.PutCCSwitchImportConfigs)
+		mgmt.GET("/identity-fingerprint", s.mgmt.GetIdentityFingerprint)
+		mgmt.PUT("/identity-fingerprint", s.mgmt.PutIdentityFingerprint)
+		mgmt.PATCH("/identity-fingerprint", s.mgmt.PatchIdentityFingerprint)
 
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)
@@ -742,15 +824,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/openai-compatibility", s.mgmt.PutOpenAICompat)
 		mgmt.PATCH("/openai-compatibility", s.mgmt.PatchOpenAICompat)
 		mgmt.DELETE("/openai-compatibility", s.mgmt.DeleteOpenAICompat)
-
-		mgmt.GET("/api-key-entries", s.mgmt.GetAPIKeyEntries)
-		mgmt.PUT("/api-key-entries", s.mgmt.PutAPIKeyEntries)
-		mgmt.PATCH("/api-key-entries", s.mgmt.PatchAPIKeyEntries)
-		mgmt.DELETE("/api-key-entries", s.mgmt.DeleteAPIKeyEntries)
-		mgmt.GET("/api-key-permission-profiles", s.mgmt.GetAPIKeyPermissionProfiles)
-		mgmt.PUT("/api-key-permission-profiles", s.mgmt.PutAPIKeyPermissionProfiles)
-		mgmt.GET("/ccswitch-import-configs", s.mgmt.GetCCSwitchImportConfigs)
-		mgmt.PUT("/ccswitch-import-configs", s.mgmt.PutCCSwitchImportConfigs)
 
 		mgmt.GET("/vertex-api-key", s.mgmt.GetVertexCompatKeys)
 		mgmt.PUT("/vertex-api-key", s.mgmt.PutVertexCompatKeys)
@@ -768,13 +841,23 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/oauth-model-alias", s.mgmt.DeleteOAuthModelAlias)
 
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
+		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
+		mgmt.GET("/auth-files/page", s.mgmt.ServeAuthFilesPage)
+		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
 		mgmt.GET("/models", s.mgmt.GetModels)
 		mgmt.GET("/model-configs", s.mgmt.GetModelConfigs)
 		mgmt.GET("/model-owner-presets", s.mgmt.GetModelOwnerPresets)
 		mgmt.PUT("/model-owner-presets", s.mgmt.PutModelOwnerPresets)
-		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
+		mgmt.GET("/model-path-availability", s.mgmt.GetModelPathAvailability)
+		mgmt.GET("/models/configured-availability", s.mgmt.GetConfiguredModelAvailability)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
-		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
+		mgmt.GET("/model-openrouter-sync", s.mgmt.GetOpenRouterSync)
+		mgmt.PUT("/model-openrouter-sync", s.mgmt.PutOpenRouterSync)
+		mgmt.POST("/model-openrouter-sync/run", s.mgmt.RunOpenRouterSync)
+		mgmt.GET("/model-prices", s.mgmt.GetModelPrices)
+		mgmt.PUT("/model-prices/:model", s.mgmt.PutModelPrice)
+		mgmt.DELETE("/model-prices/:model", s.mgmt.DeleteModelPrice)
+		mgmt.POST("/model-prices/refresh", s.mgmt.RefreshModelPrices)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
@@ -786,6 +869,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/gemini-cli-auth-url", s.mgmt.RequestGeminiCLIToken)
 		mgmt.GET("/antigravity-auth-url", s.mgmt.RequestAntigravityToken)
 		mgmt.GET("/kimi-auth-url", s.mgmt.RequestKimiToken)
+		mgmt.GET("/qwen-auth-url", s.mgmt.RequestQwenToken)
+		mgmt.GET("/iflow-auth-url", s.mgmt.RequestIFlowToken)
+		mgmt.POST("/iflow-auth-url", s.mgmt.RequestIFlowTokenOrCookie)
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
@@ -919,33 +1005,113 @@ func (s *Server) pluginResourceNoRoute(c *gin.Context) {
 }
 
 func (s *Server) serveManagementControlPanel(c *gin.Context) {
-	cfg := s.cfg
-	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
-		c.AbortWithStatus(http.StatusNotFound)
+	if !s.ensureManagementControlPanel(c) {
 		return
 	}
+
 	filePath := managementasset.FilePath(s.configFilePath)
 	if strings.TrimSpace(filePath) == "" {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
 
+	s.servePanelHTML(c, filePath)
+}
+
+func (s *Server) serveManagementControlPanelAsset(c *gin.Context) {
+	if !s.ensureManagementControlPanel(c) {
+		return
+	}
+
+	requestedPath := strings.TrimPrefix(c.Param("filepath"), "/")
+	if requestedPath == "" {
+		s.servePanelHTML(c, managementasset.FilePath(s.configFilePath))
+		return
+	}
+
+	filePath, ok := managementasset.AssetPath(s.configFilePath, requestedPath)
+	if !ok {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	info, err := os.Stat(filePath)
+	if err == nil && !info.IsDir() {
+		c.File(filePath)
+		return
+	}
+	if err != nil && !os.IsNotExist(err) {
+		log.WithError(err).Error("failed to stat management control panel asset")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	if strings.HasPrefix(requestedPath, "assets/") {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	s.servePanelHTML(c, managementasset.FilePath(s.configFilePath))
+}
+
+const panelTokenInjectionScript = `<script>(function(){var p=new URLSearchParams(window.location.search);var t=p.get('token');if(t){try{var a={apiBase:window.location.origin,managementKey:t,rememberPassword:true,expiresAt:Date.now()+720*60*60*1000};localStorage.setItem('code-proxy-admin-auth',JSON.stringify(a));p.delete('token');var s=p.toString();history.replaceState({},'',window.location.pathname+(s?'?'+s:'')+window.location.hash)}catch(e){}}})();</script>`
+
+func (s *Server) servePanelHTML(c *gin.Context, filePath string) {
+	token := c.Query("token")
+	if token == "" {
+		c.File(filePath)
+		return
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		log.WithError(err).Error("failed to read management control panel HTML")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	html := string(data)
+	inject := panelTokenInjectionScript
+	idx := strings.Index(html, "</head>")
+	if idx >= 0 {
+		html = html[:idx] + inject + html[idx:]
+	} else {
+		html = inject + html
+	}
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.String(http.StatusOK, html)
+}
+
+func (s *Server) ensureManagementControlPanel(c *gin.Context) bool {
+	cfg := s.cfg
+	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
+		c.AbortWithStatus(http.StatusNotFound)
+		return false
+	}
+	filePath := managementasset.FilePath(s.configFilePath)
+	if strings.TrimSpace(filePath) == "" {
+		c.AbortWithStatus(http.StatusNotFound)
+		return false
+	}
+
 	if _, err := os.Stat(filePath); err != nil {
 		if os.IsNotExist(err) {
-			// Synchronously ensure management.html is available with a detached context.
+			// Synchronously ensure the panel asset is available with a detached context.
 			// Control panel bootstrap should not be canceled by client disconnects.
 			if !managementasset.EnsureLatestManagementHTML(context.Background(), managementasset.StaticDir(s.configFilePath), cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository) {
 				c.AbortWithStatus(http.StatusNotFound)
-				return
+				return false
 			}
 		} else {
 			log.WithError(err).Error("failed to stat management control panel asset")
 			c.AbortWithStatus(http.StatusInternalServerError)
-			return
+			return false
 		}
 	}
 
-	c.File(filePath)
+	return true
 }
 
 func (s *Server) serveManagementAssetOrFallback(c *gin.Context) {

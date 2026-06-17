@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,28 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
+
+type testAccessProvider struct {
+	key      string
+	metadata map[string]string
+}
+
+func (p testAccessProvider) Identifier() string { return "test-access-provider" }
+
+func (p testAccessProvider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.Result, *sdkaccess.AuthError) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if token == "" {
+		return nil, sdkaccess.NewNoCredentialsError()
+	}
+	if token != p.key {
+		return nil, sdkaccess.NewInvalidCredentialError()
+	}
+	metadata := make(map[string]string, len(p.metadata))
+	for key, value := range p.metadata {
+		metadata[key] = value
+	}
+	return &sdkaccess.Result{Provider: p.Identifier(), Principal: token, Metadata: metadata}, nil
+}
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
@@ -179,12 +202,21 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 		t.Fatalf("missing key status = %d, want %d body=%s", missingKeyRR.Code, http.StatusUnauthorized, missingKeyRR.Body.String())
 	}
 
-	summaryReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage?count=2", nil)
-	summaryReq.Header.Set("Authorization", "Bearer test-management-key")
-	summaryRR := httptest.NewRecorder()
-	server.engine.ServeHTTP(summaryRR, summaryReq)
-	if summaryRR.Code != http.StatusOK {
-		t.Fatalf("usage summary status = %d, want %d body=%s", summaryRR.Code, http.StatusOK, summaryRR.Body.String())
+	usageReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage?count=2", nil)
+	usageReq.Header.Set("Authorization", "Bearer test-management-key")
+	usageRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(usageRR, usageReq)
+	if usageRR.Code != http.StatusOK {
+		t.Fatalf("usage summary status = %d, want %d body=%s", usageRR.Code, http.StatusOK, usageRR.Body.String())
+	}
+	var usagePayload struct {
+		Usage map[string]any `json:"usage"`
+	}
+	if errUnmarshal := json.Unmarshal(usageRR.Body.Bytes(), &usagePayload); errUnmarshal != nil {
+		t.Fatalf("unmarshal usage summary: %v body=%s", errUnmarshal, usageRR.Body.String())
+	}
+	if usagePayload.Usage == nil {
+		t.Fatalf("usage summary payload missing usage object: body=%s", usageRR.Body.String())
 	}
 
 	authReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=2", nil)
@@ -216,6 +248,86 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 
 	if remaining := redisqueue.PopOldest(1); len(remaining) != 0 {
 		t.Fatalf("remaining queue = %q, want empty", remaining)
+	}
+}
+
+func TestManagementRoutesRestoredAfterMerge(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/v0/management/dashboard-summary"},
+		{http.MethodGet, "/v0/management/system-stats"},
+		{http.MethodGet, "/v0/management/api-key-entries"},
+		{http.MethodGet, "/v0/management/api-key-permission-profiles"},
+		{http.MethodGet, "/v0/management/routing-config"},
+		{http.MethodGet, "/v0/management/proxy-pool"},
+		{http.MethodGet, "/v0/management/channel-groups"},
+		{http.MethodGet, "/v0/management/identity-fingerprint"},
+		{http.MethodGet, "/v0/management/models"},
+		{http.MethodGet, "/v0/management/model-openrouter-sync"},
+		{http.MethodGet, "/v0/management/model-prices"},
+		{http.MethodGet, "/v0/management/image-generation/channels"},
+		{http.MethodGet, "/v0/management/usage"},
+		{http.MethodGet, "/v0/management/public/usage"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.path, func(t *testing.T) {
+			req := httptest.NewRequest(route.method, route.path, nil)
+			req.Header.Set("Authorization", "Bearer test-management-key")
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+			if rr.Code == http.StatusNotFound {
+				t.Fatalf("%s %s returned 404; body=%s", route.method, route.path, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestManagePanelRoutesRestoredAfterMerge(t *testing.T) {
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/manage", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusFound && rr.Code != http.StatusOK {
+		t.Fatalf("/manage status = %d, want %d or %d body=%s", rr.Code, http.StatusFound, http.StatusOK, rr.Body.String())
+	}
+	if rr.Code == http.StatusFound && rr.Header().Get("Location") != "/manage/" {
+		got := rr.Header().Get("Location")
+		t.Fatalf("/manage Location = %q, want /manage/", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/manage/", nil)
+	rr = httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code == http.StatusNotFound {
+		t.Fatalf("/manage/ returned 404; body=%s", rr.Body.String())
+	}
+}
+
+func TestOpenAIV1RoutesApplyAPIKeyModelAccessMiddleware(t *testing.T) {
+	server := newTestServer(t)
+	server.accessManager.SetProviders([]sdkaccess.Provider{testAccessProvider{
+		key:      "limited-key",
+		metadata: map[string]string{"allowed-models": "allowed-model"},
+	}})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"blocked-model","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer limited-key")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "model_not_allowed") {
+		t.Fatalf("expected model_not_allowed response, body=%s", rr.Body.String())
 	}
 }
 

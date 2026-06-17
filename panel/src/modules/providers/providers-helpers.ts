@@ -64,6 +64,15 @@ export const normalizeDiscoveredModels = (
   payload: unknown,
 ): { id: string; owned_by?: string }[] => {
   if (!payload) return [];
+  if (typeof payload === "string") {
+    const trimmed = payload.trim();
+    if (!trimmed) return [];
+    try {
+      return normalizeDiscoveredModels(JSON.parse(trimmed));
+    } catch {
+      return [];
+    }
+  }
   const isRecord = (v: unknown): v is Record<string, unknown> =>
     v !== null && typeof v === "object" && !Array.isArray(v);
   const root = isRecord(payload) ? payload : null;

@@ -787,8 +787,7 @@ export function AuthFilesFilesTab({
                         key === "all"
                           ? filterCounts.total
                           : (filterCounts.counts[normalizedKey] ?? 0);
-                      const label =
-                        key === "all" ? t("auth_files.all") : resolveProviderLabel(key);
+                      const label = key === "all" ? t("auth_files.all") : resolveProviderLabel(key);
                       const countClass = active
                         ? "bg-black/[0.06] text-[#18181B] dark:bg-white/12 dark:text-white"
                         : "bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-white/70";
@@ -996,8 +995,10 @@ export function AuthFilesFilesTab({
                       codex: "codex",
                       "gemini-cli": "gemini-cli",
                       iflow: "iflow",
+                      "iflow-cookie": "iflow-cookie",
                       kimi: "kimi",
                       qwen: "qwen",
+                      xai: "xai",
                       vertex: "vertex",
                     };
                     const oauthTab = oauthTabByFilter[normalized] ?? "codex";

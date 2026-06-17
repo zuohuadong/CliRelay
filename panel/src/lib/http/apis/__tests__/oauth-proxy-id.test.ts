@@ -43,6 +43,51 @@ describe("OAuth proxy id serialization", () => {
     });
   });
 
+  test("starts xAI authorization on the xai-auth-url endpoint with webui flag", async () => {
+    const { oauthApi } = await import("@/lib/http/apis/oauth");
+    getMock.mockResolvedValue({ url: "https://auth.example", state: "state-xai" });
+
+    await oauthApi.startAuth("xai");
+
+    expect(getMock).toHaveBeenCalledWith("/xai-auth-url", {
+      params: { is_webui: true },
+    });
+  });
+
+  test("starts Qwen authorization on the qwen-auth-url endpoint", async () => {
+    const { oauthApi } = await import("@/lib/http/apis/oauth");
+    getMock.mockResolvedValue({ url: "https://auth.example", state: "state-qwen" });
+
+    await oauthApi.startAuth("qwen");
+
+    expect(getMock).toHaveBeenCalledWith("/qwen-auth-url", {
+      params: {},
+    });
+  });
+
+  test("starts iFlow OAuth with POST and webui flag", async () => {
+    const { oauthApi } = await import("@/lib/http/apis/oauth");
+    postMock.mockResolvedValue({ url: "https://auth.example", state: "state-iflow" });
+
+    await oauthApi.startAuth("iflow", { proxyId: "hk" });
+
+    expect(postMock).toHaveBeenCalledWith("/iflow-auth-url", undefined, {
+      params: { is_webui: true, proxy_id: "hk" },
+    });
+  });
+
+  test("submits xAI callback with provider xai", async () => {
+    const { oauthApi } = await import("@/lib/http/apis/oauth");
+    postMock.mockResolvedValue({ status: "ok" });
+
+    await oauthApi.submitCallback("xai", "https://callback.example?code=abc");
+
+    expect(postMock).toHaveBeenCalledWith("/oauth-callback", {
+      provider: "xai",
+      redirect_url: "https://callback.example?code=abc",
+    });
+  });
+
   test("passes proxy_id when importing iFlow Cookie auth", async () => {
     const { oauthApi } = await import("@/lib/http/apis/oauth");
     postMock.mockResolvedValue({ status: "ok" });

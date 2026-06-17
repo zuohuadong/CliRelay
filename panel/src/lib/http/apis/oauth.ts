@@ -6,7 +6,14 @@ import type {
   OAuthStartResponse,
 } from "@/lib/http/types";
 
-const WEBUI_SUPPORTED: OAuthProvider[] = ["codex", "anthropic", "antigravity", "gemini-cli"];
+const WEBUI_SUPPORTED: OAuthProvider[] = [
+  "codex",
+  "anthropic",
+  "antigravity",
+  "gemini-cli",
+  "iflow",
+  "xai",
+];
 const CALLBACK_PROVIDER_MAP: Partial<Record<OAuthProvider, string>> = {
   "gemini-cli": "gemini",
 };
@@ -32,7 +39,11 @@ export const oauthApi = {
     if (proxyId) {
       params.proxy_id = proxyId;
     }
-    return apiClient.get<OAuthStartResponse>(`/${provider}-auth-url`, { params });
+    const path = `/${provider}-auth-url`;
+    if (provider === "iflow") {
+      return apiClient.post<OAuthStartResponse>(path, undefined, { params });
+    }
+    return apiClient.get<OAuthStartResponse>(path, { params });
   },
   getAuthStatus: (state: string) =>
     apiClient.get<{ status: "ok" | "wait" | "error"; error?: string }>("/get-auth-status", {

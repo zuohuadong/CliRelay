@@ -84,8 +84,42 @@ describe("AuthFilesPage OAuth login dialog", () => {
     expect(scoped.getByText("Add OAuth Login")).toBeInTheDocument();
     expect(scoped.getByRole("tab", { name: "Codex OAuth" })).toBeInTheDocument();
     expect(scoped.getByRole("tab", { name: "Anthropic OAuth" })).toBeInTheDocument();
+    expect(scoped.getByRole("tab", { name: "Qwen OAuth" })).toBeInTheDocument();
+    expect(scoped.getByRole("tab", { name: "iFlow OAuth" })).toBeInTheDocument();
+    expect(scoped.getByRole("tab", { name: "xAI OAuth" })).toBeInTheDocument();
     expect(scoped.getByRole("tab", { name: "iFlow Cookie Auth" })).toBeInTheDocument();
     expect(scoped.getByRole("tab", { name: "Vertex Credential Import" })).toBeInTheDocument();
+  });
+
+  test("starts iFlow OAuth from its provider tab", async () => {
+    const user = userEvent.setup();
+    mocks.startAuth.mockResolvedValueOnce({
+      url: "https://iflow.example/oauth",
+      state: "iflow-state",
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Add OAuth Login" }));
+
+    const dialog = await screen.findByRole("dialog");
+    const scoped = within(dialog);
+    await user.click(scoped.getByRole("tab", { name: "iFlow OAuth" }));
+    await user.click(scoped.getByRole("button", { name: "Start authorization" }));
+
+    await waitFor(() => {
+      expect(mocks.startAuth).toHaveBeenCalledWith("iflow", {});
+    });
   });
 
   test("places the authorization proxy selector below the OAuth provider tabs", async () => {

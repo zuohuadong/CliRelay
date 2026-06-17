@@ -2366,7 +2366,6 @@
     "astron_code_channel_hint": "例如 Astron Code 主渠道（必填）",
     "test_model": "测试模型：",
     "add_new": "新增",
-    "add_provider": "添加提供商",
     "no_openai_desc": "点击添加提供商开始配置。",
     "refresh": "刷新",
     "export_json": "导出 JSON",
@@ -3445,7 +3444,8 @@
     "callback_browser_address_hint": "在浏览器中完成授权登录后，浏览器地址栏中的地址就是回调 URL。请复制完整地址并在下方提交。",
     "project_placeholder": "项目 ID（可选）",
     "vertex_title": "Vertex 凭证导入",
-    "iflow_title": "iFlow Cookie 认证",
+    "iflow_title": "iFlow OAuth",
+    "iflow_cookie_title": "iFlow Cookie 认证",
     "provider_fallback": "OAuth",
     "authorization_proxy": "授权代理",
     "authorization_proxy_hint": "可选。留空则使用部署服务器的本机网络出口。",
@@ -3515,6 +3515,14 @@
       "qwen": {
         "title": "Qwen OAuth",
         "hint": "如果服务端支持，会自动保存认证文件。"
+      },
+      "iflow": {
+        "title": "iFlow OAuth",
+        "hint": "启动 iFlow 授权流程后，服务端会自动保存认证文件。"
+      },
+      "xai": {
+        "title": "xAI OAuth",
+        "hint": "用于 Grok / xAI OAuth 登录。"
       }
     }
   },

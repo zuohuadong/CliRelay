@@ -70,3 +70,10 @@ _bmad-output/*
 .DS_Store
 ._*
 .gocache/
+progress.md
+tasks.md
+servers.local.md
+.mailbox/
+.agents/state/
+.agents/automations/
+.zed/CONVENTIONS.md

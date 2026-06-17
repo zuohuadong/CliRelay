@@ -220,7 +220,15 @@ export interface BedrockProviderConfig extends ProviderSimpleConfig {
   forceGlobal?: boolean;
 }
 
-export type OAuthProvider = "codex" | "anthropic" | "antigravity" | "gemini-cli" | "kimi" | "qwen";
+export type OAuthProvider =
+  | "codex"
+  | "anthropic"
+  | "antigravity"
+  | "gemini-cli"
+  | "kimi"
+  | "qwen"
+  | "iflow"
+  | "xai";
 
 export interface OAuthStartResponse {
   url: string;

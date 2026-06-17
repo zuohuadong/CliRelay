@@ -391,6 +391,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				break
 			}
 
+			requestJSON = sanitizeResponsesInputToolCallNames(requestJSON)
 			requestJSON = repairResponsesWebsocketToolCalls(downstreamSessionKey, requestJSON)
 			requestJSON = dedupeResponsesWebsocketInputItemsByID(requestJSON)
 			updatedLastRequest = bytes.Clone(requestJSON)

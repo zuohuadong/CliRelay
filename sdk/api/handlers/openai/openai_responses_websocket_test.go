@@ -968,6 +968,45 @@ func TestRepairResponsesWebsocketToolCallsDropsFunctionCallWithEmptyName(t *test
 	}
 }
 
+func TestSanitizeResponsesInputToolCallNamesDropsEmptyNameAndOutput(t *testing.T) {
+	raw := []byte(`{"input":[{"type":"message","id":"msg-1"},{"type":"function_call","id":"fc-1","call_id":"call-1","name":"","arguments":"{}"},{"type":"function_call_output","id":"out-1","call_id":"call-1","output":"ok"},{"type":"function_call","id":"fc-2","call_id":"call-2","name":"exec_command","arguments":"{}"},{"type":"function_call_output","id":"out-2","call_id":"call-2","output":"done"}]}`)
+
+	sanitized := sanitizeResponsesInputToolCallNames(raw)
+
+	items := gjson.GetBytes(sanitized, "input").Array()
+	if len(items) != 3 {
+		t.Fatalf("sanitized input len = %d, want 3: %s", len(items), sanitized)
+	}
+	if items[0].Get("id").String() != "msg-1" || items[1].Get("call_id").String() != "call-2" || items[2].Get("call_id").String() != "call-2" {
+		t.Fatalf("unexpected sanitized input: %s", sanitized)
+	}
+	if strings.Contains(string(sanitized), `"name":""`) || strings.Contains(string(sanitized), `"call_id":"call-1"`) {
+		t.Fatalf("invalid empty-name call leaked through: %s", sanitized)
+	}
+}
+
+func TestNormalizeResponsesWebsocketPreviousResponseIDSanitizesEmptyNameToolCall(t *testing.T) {
+	lastRequest := []byte(`{"model":"test-model","stream":true,"input":[{"type":"message","id":"msg-1","role":"user"}]}`)
+	raw := []byte(`{"type":"response.create","previous_response_id":"resp_1","input":[{"type":"function_call","id":"fc-1","call_id":"call-1","name":"","arguments":"{}"},{"type":"function_call_output","id":"out-1","call_id":"call-1","output":"ok"},{"type":"message","id":"msg-2","role":"user"}]}`)
+
+	normalized, _, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, nil, true, true)
+	if errMsg != nil {
+		t.Fatalf("unexpected error: %v", errMsg.Error)
+	}
+	normalized = sanitizeResponsesInputToolCallNames(normalized)
+
+	items := gjson.GetBytes(normalized, "input").Array()
+	if len(items) != 1 {
+		t.Fatalf("sanitized input len = %d, want 1: %s", len(items), normalized)
+	}
+	if items[0].Get("id").String() != "msg-2" {
+		t.Fatalf("unexpected sanitized incremental input: %s", normalized)
+	}
+	if strings.Contains(string(normalized), `"name":""`) || strings.Contains(string(normalized), `"call_id":"call-1"`) {
+		t.Fatalf("empty-name tool call leaked through: %s", normalized)
+	}
+}
+
 func TestRepairResponsesWebsocketToolCallsInsertsCachedCallForOrphanOutput(t *testing.T) {
 	outputCache := newWebsocketToolOutputCache(time.Minute, 10)
 	callCache := newWebsocketToolOutputCache(time.Minute, 10)

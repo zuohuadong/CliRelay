@@ -77,3 +77,4 @@ servers.local.md
 .agents/state/
 .agents/automations/
 .zed/CONVENTIONS.md
+.agents/goal-forge/runs/

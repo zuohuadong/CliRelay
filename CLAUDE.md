@@ -8,7 +8,7 @@ You are acting within the `agent-team-config` framework. Please adhere to the fo
 4. **No Secrets**: Never hardcode API keys or secrets in logs or code.
 5. **No Scope Reduction**: Do not silently reduce the scope of the task if you find it complex. Stop and ask the user.
 6. **Verify First**: Verify changes via tests or building before declaring a task done. Use checklist conventions in `progress.md` where applicable.
-7. **Delegation Gate（默认启动子代理）**: 有任务时默认启动子代理执行（`agent-team subagent dispatch <role> "<prompt>"`），主进程负责审查。标准流程：explorer → executor → verifier → orchestrator 裁决。低风险简单任务可跳过但必须记录 `safe_skip_reason`。Design deliverables should go through `/design-review` or an equivalent Goal Forge review.
+7. **Delegation Gate（默认启动子代理）**: 实现、修复、测试、部署、重构、PR/MR、任务自动化等行动型请求都视为任务，必须先做 Delegation Decision，再改文件。默认主进程拆解，子代理执行或独立验证，主进程最终审查裁决；中/高风险、多文件、多 subsystem、架构/API/数据/状态机/迁移/安全/权限/计费/生产配置、根因不明、不熟悉区域、UI/E2E 行为、需要外部核验或需要审查自己完成声明时，使用 explorer → executor → verifier → orchestrator PASS/FAIL。低风险单文件且验收清楚的任务可由主进程直接实现，但完成前仍必须派发独立 verifier；完全跳过子代理只允许纯解释/只读/简单命令/格式化/纯文档，并必须记录 `safe_skip_reason`。子代理模型按当前 runtime 可用性选择：Codex runtime 默认 `gpt-5.3-codex`；Claude Code runtime 使用当前可用或项目配置的 Claude 模型，不要硬填 Codex-only 模型；只有高风险仲裁、生产/安全/数据/不可逆决策或 reviewer 分歧才升级到对应 runtime 的最高推理模型，并记录 `escalation_reason`。Design deliverables should go through `/design-review`; when `.agents/goal-forge/` exists and a sibling `goal-forge` checkout is available, use `agent-team goal-forge init . "<goal>"` and record `goal_forge.run_dir` in the Task Contract.
 
 ## Task Automation
 

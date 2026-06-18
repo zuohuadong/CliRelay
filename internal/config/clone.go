@@ -44,8 +44,13 @@ func cloneRuntimeValue(v reflect.Value) reflect.Value {
 		out := reflect.New(v.Type()).Elem()
 		for i := 0; i < v.NumField(); i++ {
 			dst := out.Field(i)
+<<<<<<< HEAD
 			if !dst.CanSet() || !v.Field(i).CanInterface() {
 				continue
+=======
+			if !dst.CanSet() {
+				return v
+>>>>>>> upstream/main
 			}
 			dst.Set(cloneRuntimeValue(v.Field(i)))
 		}

@@ -532,6 +532,8 @@ func (s *Server) setupRoutes() {
 		middleware.APIKeyRateLimitMiddleware(),
 	)
 	{
+		mcp.Any("/custom/:server", s.proxyConfiguredMCP)
+		mcp.Any("/custom/:server/*path", s.proxyConfiguredMCP)
 		mcp.Any("/zai/:server", s.proxyZAIMCP)
 		mcp.Any("/zai/:server/*path", s.proxyZAIMCP)
 	}

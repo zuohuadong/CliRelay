@@ -83,6 +83,50 @@ func (s *Server) proxyZAIMCP(c *gin.Context) {
 	}
 }
 
+func (s *Server) proxyConfiguredMCP(c *gin.Context) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	if c.Request.Method == http.MethodOptions {
+		c.Status(http.StatusNoContent)
+		return
+	}
+	targetURL, headers, ok := s.configuredMCPProxyTarget(c.Param("server"), c.Param("path"), c.Request.URL.RawQuery)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "unsupported MCP server"})
+		return
+	}
+
+	upstreamReq, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, targetURL, c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid MCP proxy request"})
+		return
+	}
+	copyMCPProxyRequestHeaders(upstreamReq.Header, c.Request.Header)
+	applyConfiguredMCPProxyHeaders(upstreamReq.Header, headers)
+	upstreamReq.Host = ""
+
+	resp, err := http.DefaultClient.Do(upstreamReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream MCP request failed"})
+		return
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			// The response body is already being streamed to the client.
+		}
+	}()
+
+	copyMCPProxyResponseHeaders(c.Writer.Header(), resp.Header)
+	c.Status(resp.StatusCode)
+	if _, errCopy := io.Copy(c.Writer, resp.Body); errCopy != nil {
+		return
+	}
+	if flusher, okFlush := c.Writer.(http.Flusher); okFlush {
+		flusher.Flush()
+	}
+}
+
 func zaiMCPProxyTarget(serverName, extraPath, rawQuery string) (string, bool) {
 	serverName = strings.ToLower(strings.TrimSpace(serverName))
 	baseURL := strings.TrimSpace(zaiMCPServerURLs[serverName])
@@ -91,6 +135,42 @@ func zaiMCPProxyTarget(serverName, extraPath, rawQuery string) (string, bool) {
 	}
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
+		return "", false
+	}
+	extraPath = strings.TrimSpace(extraPath)
+	if extraPath != "" && extraPath != "/" {
+		parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + strings.TrimLeft(extraPath, "/")
+	}
+	if rawQuery != "" {
+		parsed.RawQuery = rawQuery
+	}
+	return parsed.String(), true
+}
+
+func (s *Server) configuredMCPProxyTarget(serverName, extraPath, rawQuery string) (string, map[string]string, bool) {
+	serverName = strings.ToLower(strings.TrimSpace(serverName))
+	if serverName == "" || s == nil || s.cfg == nil {
+		return "", nil, false
+	}
+	for _, upstream := range s.cfg.MCPProxy.Servers {
+		if upstream.Disabled {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(upstream.Name)) != serverName {
+			continue
+		}
+		targetURL, ok := mcpProxyTargetURL(upstream.BaseURL, extraPath, rawQuery)
+		if !ok {
+			return "", nil, false
+		}
+		return targetURL, upstream.Headers, true
+	}
+	return "", nil, false
+}
+
+func mcpProxyTargetURL(baseURL, extraPath, rawQuery string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", false
 	}
 	extraPath = strings.TrimSpace(extraPath)
@@ -163,6 +243,20 @@ func copyMCPProxyRequestHeaders(dst, src http.Header) {
 	}
 	if strings.TrimSpace(dst.Get("Accept")) == "" {
 		dst.Set("Accept", "application/json, text/event-stream")
+	}
+}
+
+func applyConfiguredMCPProxyHeaders(dst http.Header, headers map[string]string) {
+	for key, value := range headers {
+		if isMCPProxyHopByHopHeader(key) {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		dst.Set(key, value)
 	}
 }
 

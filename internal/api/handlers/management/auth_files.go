@@ -27,11 +27,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
-<<<<<<< HEAD
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
-=======
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
->>>>>>> upstream/main
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"

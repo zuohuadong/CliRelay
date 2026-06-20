@@ -404,7 +404,6 @@ func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 func TestConfigSynthesizer_BigModelCoding(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	ctx := &SynthesisContext{
@@ -417,18 +416,6 @@ func TestConfigSynthesizer_BigModelCoding(t *testing.T) {
 					},
 					Models: []config.OpenAICompatibilityModel{
 						{Name: "glm-5.1", Alias: "gpt-5.3-codex"},
-=======
-func TestConfigSynthesizer_OpenAICompat_UsesNamespacedProviderKey(t *testing.T) {
-	synth := NewConfigSynthesizer()
-	ctx := &SynthesisContext{
-		Config: &config.Config{
-			OpenAICompatibility: []config.OpenAICompatibility{
-				{
-					Name:    "kimi",
-					BaseURL: "https://kimi-compatible.example.com/v1",
-					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-						{APIKey: "test-key"},
->>>>>>> upstream/main
 					},
 				},
 			},
@@ -445,7 +432,6 @@ func TestConfigSynthesizer_OpenAICompat_UsesNamespacedProviderKey(t *testing.T) 
 		t.Fatalf("expected 1 auth, got %d", len(auths))
 	}
 	auth := auths[0]
-<<<<<<< HEAD
 	if auth.Provider != "bigmodel-coding" {
 		t.Fatalf("provider = %q, want bigmodel-coding", auth.Provider)
 	}
@@ -496,7 +482,35 @@ func TestConfigSynthesizer_AstronCode(t *testing.T) {
 	}
 	if auth.ProxyURL != "http://proxy.local:8080" {
 		t.Fatalf("proxy_url = %q", auth.ProxyURL)
-=======
+	}
+}
+
+func TestConfigSynthesizer_OpenAICompat_UsesNamespacedProviderKey(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:    "kimi",
+					BaseURL: "https://kimi-compatible.example.com/v1",
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "test-key"},
+					},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	auth := auths[0]
 	if auth.Provider != "openai-compatible-kimi" {
 		t.Fatalf("provider = %q, want openai-compatible-kimi", auth.Provider)
 	}
@@ -505,7 +519,6 @@ func TestConfigSynthesizer_AstronCode(t *testing.T) {
 	}
 	if auth.Attributes["compat_name"] != "kimi" {
 		t.Fatalf("compat_name = %q, want kimi", auth.Attributes["compat_name"])
->>>>>>> upstream/main
 	}
 }
 
@@ -751,11 +764,7 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 		providers[a.Provider] = true
 	}
 
-<<<<<<< HEAD
-	expected := []string{"gemini", "claude", "codex", "bigmodel-coding", "compat", "vertex"}
-=======
-	expected := []string{"gemini", "claude", "codex", "openai-compatible-compat", "vertex"}
->>>>>>> upstream/main
+	expected := []string{"gemini", "claude", "codex", "bigmodel-coding", "openai-compatible-compat", "vertex"}
 	for _, p := range expected {
 		if !providers[p] {
 			t.Errorf("expected provider %s not found", p)

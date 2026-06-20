@@ -1261,10 +1261,6 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 		forceReplaceAuths: true,
 		auths:             auths,
 	})
-<<<<<<< HEAD
-	ctx := context.Background()
-	s.registerConfigAPIKeyAuths(ctx, newCfg)
-=======
 	ctx := coreauth.WithSkipPersist(context.Background())
 	if synthesizeConfigAuths {
 		s.registerConfigAPIKeyAuths(ctx, newCfg)
@@ -1274,7 +1270,6 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 			log.Warnf("failed to restore cooldown state after config update: %v", errRestoreCooldown)
 		}
 	}
->>>>>>> upstream/main
 	s.syncPluginRuntime(ctx)
 }
 

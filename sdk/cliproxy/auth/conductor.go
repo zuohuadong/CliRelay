@@ -1055,13 +1055,35 @@ func openAICompatProviderKey(auth *Auth) string {
 	}
 	if auth.Attributes != nil {
 		if providerKey := strings.TrimSpace(auth.Attributes["provider_key"]); providerKey != "" {
+			if dedicatedKey, ok := dedicatedOpenAICompatibleProviderKey(providerKey); ok {
+				return dedicatedKey
+			}
 			return util.OpenAICompatibleProviderKey(providerKey)
 		}
 		if compatName := strings.TrimSpace(auth.Attributes["compat_name"]); compatName != "" {
+			if dedicatedKey, ok := dedicatedOpenAICompatibleProviderKey(compatName); ok {
+				return dedicatedKey
+			}
 			return util.OpenAICompatibleProviderKey(compatName)
 		}
 	}
+	if dedicatedKey, ok := dedicatedOpenAICompatibleProviderKey(auth.Provider); ok {
+		return dedicatedKey
+	}
 	return util.OpenAICompatibleProviderKey(auth.Provider)
+}
+
+func dedicatedOpenAICompatibleProviderKey(name string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case internalconfig.DefaultBigModelCodingProviderName:
+		return internalconfig.DefaultBigModelCodingProviderName, true
+	case internalconfig.DefaultAstronCodeProviderName:
+		return internalconfig.DefaultAstronCodeProviderName, true
+	case "opencode-go":
+		return "opencode-go", true
+	default:
+		return "", false
+	}
 }
 
 func openAICompatModelPoolKey(auth *Auth, requestedModel string) string {
@@ -5773,6 +5795,9 @@ func executorKeyFromAuth(auth *Auth) string {
 		if compatName != "" {
 			if providerKey == "" {
 				providerKey = compatName
+			}
+			if dedicatedKey, ok := dedicatedOpenAICompatibleProviderKey(providerKey); ok {
+				return dedicatedKey
 			}
 			return util.OpenAICompatibleProviderKey(providerKey)
 		}

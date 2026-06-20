@@ -344,15 +344,11 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		// Responses/WebSocket protocol still requires response.completed.
 		if (st.CompletionPending || st.Started) && !st.CompletedEmitted {
 			st.CompletedEmitted = true
-<<<<<<< HEAD
 			nextSeq := func() int { st.Seq++; return st.Seq }
 			out := make([][]byte, 0, 4)
 			appendPendingResponsesDoneEvents(&out, st, nextSeq)
-			out = append(out, buildResponsesCompletedEvent(st, requestRawJSON, nextSeq))
+			out = append(out, buildResponsesCompletedEvent(st, requestForNamespace, nextSeq))
 			return out
-=======
-			return [][]byte{buildResponsesCompletedEvent(st, requestForNamespace, func() int { st.Seq++; return st.Seq })}
->>>>>>> upstream/main
 		}
 		return [][]byte{}
 	}

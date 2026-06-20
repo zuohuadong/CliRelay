@@ -123,7 +123,6 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DefersMessageUntil
 	}
 }
 
-<<<<<<< HEAD
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesRequestUserInputTool(t *testing.T) {
 	raw := []byte(`{
 		"tools": [
@@ -137,7 +136,9 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesRequestUs
 	}
 	if got := gjson.GetBytes(out, "tools.0.function.parameters.type").String(); got != "object" {
 		t.Fatalf("tools.0.function.parameters.type = %q, want object", got)
-=======
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesReasoningToAssistantMessage(t *testing.T) {
 	raw := []byte(`{
 		"input": [
@@ -340,6 +341,5 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesInputImag
 	}
 	if got := gjson.GetBytes(out, "messages.0.content.0.image_url.detail").String(); got != "high" {
 		t.Fatalf("messages.0.content.0.image_url.detail = %q, want high; output=%s", got, out)
->>>>>>> upstream/main
 	}
 }

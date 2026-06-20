@@ -1011,11 +1011,8 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
-<<<<<<< HEAD
 	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
-=======
->>>>>>> upstream/main
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
@@ -1366,11 +1363,8 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 	opts.Metadata = reqMeta
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, originalRequestedModel, req, opts, execOptions.SkipInterceptorPluginID)
-<<<<<<< HEAD
 	maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
 	bootstrapRetries := 0
-=======
->>>>>>> upstream/main
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	for err != nil && bootstrapRetries < maxBootstrapRetries && streamBootstrapRetryEligible(err) {
 		bootstrapRetries++
@@ -1745,7 +1739,6 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	return providers, resolvedModelName, nil
 }
 
-<<<<<<< HEAD
 func (h *BaseAPIHandler) appendConfiguredAliasProviders(providers []string, modelName string) []string {
 	if h == nil || h.AuthManager == nil || strings.TrimSpace(modelName) == "" {
 		return providers
@@ -1771,18 +1764,12 @@ func (h *BaseAPIHandler) appendConfiguredAliasProviders(providers []string, mode
 	return providers
 }
 
-=======
->>>>>>> upstream/main
 func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageModel bool) *interfaces.ErrorMessage {
 	baseModel := strings.TrimSpace(thinking.ParseSuffix(modelName).ModelName)
 	if baseModel == "" {
 		baseModel = strings.TrimSpace(modelName)
 	}
-<<<<<<< HEAD
-	if strings.EqualFold(routeModelBaseName(baseModel), "gpt-image-2") && !allowImageModel {
-=======
 	if isOpenAIImageOnlyModel(baseModel) && !allowImageModel {
->>>>>>> upstream/main
 		return &interfaces.ErrorMessage{
 			StatusCode: http.StatusServiceUnavailable,
 			Error:      fmt.Errorf("model %s is only supported on /v1/images/generations and /v1/images/edits", routeModelBaseName(baseModel)),
@@ -1791,8 +1778,6 @@ func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageMode
 	return nil
 }
 
-<<<<<<< HEAD
-=======
 func isOpenAIImageOnlyModel(model string) bool {
 	switch strings.ToLower(strings.TrimSpace(routeModelBaseName(model))) {
 	case "gpt-image-1.5", "gpt-image-2":
@@ -1802,7 +1787,6 @@ func isOpenAIImageOnlyModel(model string) bool {
 	}
 }
 
->>>>>>> upstream/main
 func routeModelBaseName(model string) string {
 	model = strings.TrimSpace(model)
 	if idx := strings.LastIndex(model, "/"); idx >= 0 && idx < len(model)-1 {

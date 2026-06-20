@@ -63,18 +63,14 @@ type Handler struct {
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
 	pluginReleaseCacheMu    sync.Mutex
 	pluginReleaseCache      map[string]pluginReleaseCacheEntry
-<<<<<<< HEAD
 	imageTasksMu            sync.Mutex
 	imageGenerationTasks    map[string]*imageGenerationTestTask
 	startTime               time.Time
-=======
->>>>>>> upstream/main
 }
 
 type configReloadSnapshot struct {
 	cfg        *config.Config
 	generation uint64
-<<<<<<< HEAD
 }
 
 func (h *Handler) shareToken() string {
@@ -82,8 +78,6 @@ func (h *Handler) shareToken() string {
 		return ""
 	}
 	return strings.TrimSpace(h.cfg.RemoteManagement.ShareToken)
-=======
->>>>>>> upstream/main
 }
 
 // NewHandler creates a new management handler instance.
@@ -455,7 +449,13 @@ func (h *Handler) persistLocked(c *gin.Context) bool {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		return false
 	}
+	snapshot := h.reloadSnapshotConfigLocked()
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	var reqCtx context.Context
+	if c != nil && c.Request != nil {
+		reqCtx = c.Request.Context()
+	}
+	h.reloadConfigAfterManagementSaveAsync(reqCtx, snapshot)
 	return true
 }
 

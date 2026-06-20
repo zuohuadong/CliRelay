@@ -477,7 +477,7 @@ func TestProxyConfiguredMCPStandaloneRouteRequiresClientAuthAndForwardsMCP(t *te
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp/custom/devspace/sessions?cursor=1", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	req.Header.Set("Authorization", "Bearer downstream-client-key")
+	req.Header.Set("Authorization", "Bearer test-key")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Protocol-Version", "2025-06-18")
 	rec := httptest.NewRecorder()

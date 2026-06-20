@@ -29,9 +29,10 @@ type SDKConfig struct {
 	// default base model ("gpt-5.4-mini") is used.
 	GPTImage2BaseModel string `yaml:"gpt-image-2-base-model,omitempty" json:"gpt-image-2-base-model,omitempty"`
 
-	// EnableGeminiCLIEndpoint controls whether Gemini CLI internal endpoints (/v1internal:*) are enabled.
-	// Default is false for safety; when false, /v1internal:* requests are rejected.
-	EnableGeminiCLIEndpoint bool `yaml:"enable-gemini-cli-endpoint" json:"enable-gemini-cli-endpoint"`
+	// VideoResultAuthCacheTTL controls how long video IDs stay pinned to the credential
+	// that created them. Accepts duration strings like "30m" or "3h".
+	// Empty or invalid values use the default 3h.
+	VideoResultAuthCacheTTL string `yaml:"video-result-auth-cache-ttl,omitempty" json:"video-result-auth-cache-ttl,omitempty"`
 
 	// ForceModelPrefix requires explicit model prefixes (e.g., "teamA/gemini-3-pro-preview")
 	// to target prefixed credentials. When false, unprefixed model requests may use prefixed

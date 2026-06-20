@@ -1,9 +1,12 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
-func TestParseConfigBytesSanitizesMCPProxyServers(t *testing.T) {
-	cfg, err := ParseConfigBytes([]byte(`
+const mcpProxySanitizeYAML = `
 mcp-proxy:
   servers:
     - name: " DevSpace "
@@ -17,10 +20,32 @@ mcp-proxy:
       base-url: "http://127.0.0.1:7678/mcp"
     - name: "bad"
       base-url: "://bad"
-`))
+`
+
+func TestParseConfigBytesSanitizesMCPProxyServers(t *testing.T) {
+	cfg, err := ParseConfigBytes([]byte(mcpProxySanitizeYAML))
 	if err != nil {
 		t.Fatalf("ParseConfigBytes: %v", err)
 	}
+	assertSingleSanitizedMCPProxyServer(t, cfg)
+}
+
+func TestLoadConfigOptionalSanitizesMCPProxyServers(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(mcpProxySanitizeYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfigOptional(configPath, false)
+	if err != nil {
+		t.Fatalf("LoadConfigOptional: %v", err)
+	}
+	assertSingleSanitizedMCPProxyServer(t, cfg)
+}
+
+func assertSingleSanitizedMCPProxyServer(t *testing.T, cfg *Config) {
+	t.Helper()
+
 	if len(cfg.MCPProxy.Servers) != 1 {
 		t.Fatalf("servers = %#v, want one sanitized entry", cfg.MCPProxy.Servers)
 	}

@@ -2246,7 +2246,6 @@ func allStaticModelInfos() []*registry.ModelInfo {
 	models = append(models, registry.GetClaudeModels()...)
 	models = append(models, registry.GetGeminiModels()...)
 	models = append(models, registry.GetGeminiVertexModels()...)
-	models = append(models, registry.GetGeminiCLIModels()...)
 	models = append(models, registry.GetAIStudioModels()...)
 	models = append(models, registry.GetCodexProModels()...)
 	models = append(models, registry.GetKimiModels()...)

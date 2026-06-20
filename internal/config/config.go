@@ -142,6 +142,9 @@ type Config struct {
 	// IdentityFingerprint controls provider-specific upstream identity headers.
 	IdentityFingerprint IdentityFingerprintConfig `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
 
+	// MCPProxy exposes configured MCP upstream servers through the authenticated /mcp gateway.
+	MCPProxy MCPProxyConfig `yaml:"mcp-proxy,omitempty" json:"mcp-proxy,omitempty"`
+
 	// ProxyPool stores reusable outbound proxies that can be referenced by providers and auth files.
 	ProxyPool []ProxyPoolEntry `yaml:"proxy-pool,omitempty" json:"proxy-pool,omitempty"`
 
@@ -200,6 +203,17 @@ type Config struct {
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
 	legacyMigrationPending bool `yaml:"-" json:"-"`
+}
+
+type MCPProxyConfig struct {
+	Servers []MCPProxyServerConfig `yaml:"servers,omitempty" json:"servers,omitempty"`
+}
+
+type MCPProxyServerConfig struct {
+	Name     string            `yaml:"name" json:"name"`
+	Disabled bool              `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+	BaseURL  string            `yaml:"base-url" json:"base-url"`
+	Headers  map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 }
 
 // PluginsConfig holds dynamic plugin system settings.

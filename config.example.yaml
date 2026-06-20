@@ -119,6 +119,18 @@ max-retry-interval: 30
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
 disable-cooling: false
 
+# MCP reverse proxy servers exposed through the authenticated /mcp gateway.
+# Example DevSpace endpoint: clients call /mcp/custom/devspace, while CliRelay
+# forwards to the local DevSpace MCP server. This is a tool gateway, not an LLM
+# model upstream.
+# mcp-proxy:
+#   servers:
+#     - name: "devspace"
+#       disabled: false
+#       base-url: "http://127.0.0.1:7676/mcp"
+#       headers:
+#         X-Custom-Header: "custom-value"
+
 # When true, globally disable Claude request cloaking (the Claude Code CLI disguise and
 # system prompt replacement), so the original system prompt is passed through to Claude as-is.
 # Individual credentials can still override this: a claude-api-key entry via its "cloak.mode",

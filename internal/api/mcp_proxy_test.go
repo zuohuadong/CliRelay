@@ -438,6 +438,101 @@ func TestAstronModelRequestAndZAIMCPRouteUseSeparateProviders(t *testing.T) {
 	}
 }
 
+func TestProxyConfiguredMCPStandaloneRouteRequiresClientAuthAndForwardsMCP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var gotPath string
+	var gotQuery string
+	var gotBody string
+	var gotHeaders http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		gotHeaders = r.Header.Clone()
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Mcp-Session-Id", "devspace-session")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"open_workspace"}]}}`))
+	}))
+	defer upstream.Close()
+
+	cfg := newMCPProxyRouteTestConfig(t)
+	cfg.MCPProxy.Servers = []config.MCPProxyServerConfig{{
+		Name:    "devspace",
+		BaseURL: upstream.URL + "/mcp",
+		Headers: map[string]string{
+			"Authorization": "Bearer upstream-devspace-token",
+			"X-Devspace":    "enabled",
+		},
+	}}
+	manager := coreauth.NewManager(nil, nil, nil)
+	server := newMCPProxyRouteTestServer(t, cfg, manager)
+
+	unauthorizedReq := httptest.NewRequest(http.MethodPost, "/mcp/custom/devspace", strings.NewReader(`{}`))
+	unauthorizedRec := httptest.NewRecorder()
+	server.engine.ServeHTTP(unauthorizedRec, unauthorizedReq)
+	if unauthorizedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing client auth status = %d, body=%s", unauthorizedRec.Code, unauthorizedRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/custom/devspace/sessions?cursor=1", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Header.Set("Authorization", "Bearer downstream-client-key")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Protocol-Version", "2025-06-18")
+	rec := httptest.NewRecorder()
+	server.engine.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/mcp/sessions" {
+		t.Fatalf("upstream path = %q", gotPath)
+	}
+	if gotQuery != "cursor=1" {
+		t.Fatalf("upstream query = %q", gotQuery)
+	}
+	if gotBody != `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` {
+		t.Fatalf("upstream body = %q", gotBody)
+	}
+	if got := gotHeaders.Get("Authorization"); got != "Bearer upstream-devspace-token" {
+		t.Fatalf("upstream Authorization = %q", got)
+	}
+	if got := gotHeaders.Get("X-Devspace"); got != "enabled" {
+		t.Fatalf("upstream X-Devspace = %q", got)
+	}
+	if got := gotHeaders.Get("Mcp-Protocol-Version"); got != "2025-06-18" {
+		t.Fatalf("upstream Mcp-Protocol-Version = %q", got)
+	}
+	if got := rec.Header().Get("Mcp-Session-Id"); got != "devspace-session" {
+		t.Fatalf("response Mcp-Session-Id = %q", got)
+	}
+	if !strings.Contains(rec.Body.String(), `"open_workspace"`) {
+		t.Fatalf("response missing MCP tool name: %s", rec.Body.String())
+	}
+}
+
+func TestProxyConfiguredMCPRejectsUnsupportedServer(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := newMCPProxyRouteTestConfig(t)
+	cfg.MCPProxy.Servers = []config.MCPProxyServerConfig{{
+		Name:     "disabled-devspace",
+		BaseURL:  "http://127.0.0.1:7676/mcp",
+		Disabled: true,
+	}}
+	server := newMCPProxyRouteTestServer(t, cfg, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/custom/devspace", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rec := httptest.NewRecorder()
+	server.engine.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func newMCPProxyRouteTestConfig(t *testing.T) *config.Config {
 	t.Helper()
 

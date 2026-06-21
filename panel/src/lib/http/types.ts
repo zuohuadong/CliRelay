@@ -84,6 +84,20 @@ export interface AuthFileItem extends TagDisplayFields {
   subscriptionRemainingMinutes?: number;
   subscription_expired?: boolean;
   subscriptionExpired?: boolean;
+  token_health?: "ok" | "warning" | "critical" | "expired" | "disabled" | string;
+  tokenHealth?: "ok" | "warning" | "critical" | "expired" | "disabled" | string;
+  token_expires_at?: string;
+  tokenExpiresAt?: string;
+  token_expires_at_ms?: number;
+  tokenExpiresAtMs?: number;
+  token_last_refresh?: string;
+  tokenLastRefresh?: string;
+  token_last_refresh_ms?: number;
+  tokenLastRefreshMs?: number;
+  token_seconds_left?: number;
+  tokenSecondsLeft?: number;
+  token_days_left?: number;
+  tokenDaysLeft?: number;
   [key: string]: unknown;
 }
 

@@ -5,6 +5,7 @@ import {
   CalendarClock,
   Download,
   Eye,
+  KeyRound,
   Loader2,
   RefreshCw,
   Tags,
@@ -75,6 +76,20 @@ const RESTRICTION_TONE_CLASSES = {
   warning:
     "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/15 dark:text-amber-200",
   neutral:
+    "border-slate-200 bg-slate-50 text-slate-700 dark:border-white/10 dark:bg-white/[0.08] dark:text-white/70",
+} as const;
+
+const TOKEN_HEALTH_TONE_CLASSES: Record<string, string> = {
+  ok: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/15 dark:text-emerald-200",
+  warning:
+    "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/15 dark:text-amber-200",
+  critical:
+    "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-500/20 dark:bg-rose-500/15 dark:text-rose-200",
+  expired:
+    "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-500/20 dark:bg-rose-500/15 dark:text-rose-200",
+  disabled:
+    "border-slate-200 bg-slate-50 text-slate-700 dark:border-white/10 dark:bg-white/[0.08] dark:text-white/70",
+  unknown:
     "border-slate-200 bg-slate-50 text-slate-700 dark:border-white/10 dark:bg-white/[0.08] dark:text-white/70",
 } as const;
 
@@ -321,6 +336,57 @@ export function useAuthFilesFilesPresentation({
       );
     },
     [nowMs, t],
+  );
+
+  const renderTokenHealthBadge = useCallback(
+    (file: AuthFileItem): ReactNode | null => {
+      const rawHealth = String(file.token_health ?? file.tokenHealth ?? "").trim().toLowerCase();
+      if (!rawHealth) return null;
+      const health = TOKEN_HEALTH_TONE_CLASSES[rawHealth] ? rawHealth : "unknown";
+      const expiresAtMs = Number(file.token_expires_at_ms ?? file.tokenExpiresAtMs);
+      const lastRefreshMs = Number(file.token_last_refresh_ms ?? file.tokenLastRefreshMs);
+      const secondsLeft = Number(file.token_seconds_left ?? file.tokenSecondsLeft);
+      const daysLeft = Number(file.token_days_left ?? file.tokenDaysLeft);
+      const remainingLabel =
+        Number.isFinite(daysLeft) && daysLeft >= 1
+          ? t("auth_files.token_health_remaining_days", { days: Math.floor(daysLeft) })
+          : Number.isFinite(secondsLeft) && secondsLeft > 0
+            ? t("auth_files.token_health_remaining_hours", {
+                hours: Math.max(1, Math.ceil(secondsLeft / 3600)),
+              })
+            : "";
+      const parts = [
+        Number.isFinite(expiresAtMs) && expiresAtMs > 0
+          ? t("auth_files.token_health_expires_at", {
+              time: new Date(expiresAtMs).toLocaleString(),
+            })
+          : "",
+        Number.isFinite(lastRefreshMs) && lastRefreshMs > 0
+          ? t("auth_files.token_health_last_refresh", {
+              time: new Date(lastRefreshMs).toLocaleString(),
+            })
+          : "",
+        remainingLabel ? t("auth_files.token_health_remaining", { time: remainingLabel }) : "",
+      ].filter(Boolean);
+
+      return (
+        <HoverTooltip content={parts.join(" · ") || t("auth_files.token_health_unknown")}>
+          <span
+            className={[
+              "inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold tabular-nums",
+              TOKEN_HEALTH_TONE_CLASSES[health],
+            ].join(" ")}
+          >
+            <KeyRound size={11} className="shrink-0" />
+            <span className="min-w-0 truncate">{t(`auth_files.token_health_${health}`)}</span>
+            {remainingLabel && health !== "expired" ? (
+              <span className="shrink-0 opacity-80">{remainingLabel}</span>
+            ) : null}
+          </span>
+        </HoverTooltip>
+      );
+    },
+    [t],
   );
 
   const formatQuotaResetTextCompact = useCallback(
@@ -610,6 +676,15 @@ export function useAuthFilesFilesPresentation({
           ),
       },
       {
+        key: "token",
+        label: t("auth_files.col_token"),
+        width: "w-44",
+        render: (file) =>
+          renderTokenHealthBadge(file) ?? (
+            <span className="text-xs text-slate-400 dark:text-white/40">--</span>
+          ),
+      },
+      {
         key: "size",
         label: t("auth_files.file_size"),
         width: "w-24",
@@ -895,6 +970,7 @@ export function useAuthFilesFilesPresentation({
     refreshQuota,
     renderRestrictionBadges,
     renderSubscriptionBadge,
+    renderTokenHealthBadge,
     selectCurrentPage,
     selectablePageNames.length,
     selectedFileNameSet,

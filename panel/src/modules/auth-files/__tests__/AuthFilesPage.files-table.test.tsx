@@ -2225,6 +2225,49 @@ describe("AuthFilesPage files table", () => {
     expect(screen.getByText(/5d left/)).toBeInTheDocument();
   });
 
+  test("shows codex token health in table", async () => {
+    useTableFilesView();
+    const expiresAt = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+    const lastRefresh = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    mocks.list.mockImplementation(async () => ({
+      files: [
+        {
+          name: "codex-pro.json",
+          label: "Codex Pro",
+          account_type: "oauth",
+          type: "codex",
+          size: 1024,
+          modified: Date.now(),
+          disabled: false,
+          token_health: "warning",
+          token_expires_at: expiresAt.toISOString(),
+          token_expires_at_ms: expiresAt.getTime(),
+          token_last_refresh: lastRefresh.toISOString(),
+          token_last_refresh_ms: lastRefresh.getTime(),
+          token_seconds_left: 2 * 24 * 60 * 60,
+          token_days_left: 2,
+        },
+      ],
+    }));
+
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Codex Pro")).toBeInTheDocument();
+    expect(screen.getByText("Token")).toBeInTheDocument();
+    expect(screen.getByText("Soon")).toBeInTheDocument();
+    expect(screen.getByText("2d")).toBeInTheDocument();
+  });
+
   test("saves subscription start and period from the auth fields editor", async () => {
     mocks.list.mockImplementation(async () => ({
       files: [

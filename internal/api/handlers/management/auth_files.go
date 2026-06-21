@@ -412,6 +412,14 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 				emailValue := gjson.GetBytes(data, "email").String()
 				fileData["type"] = typeValue
 				fileData["email"] = emailValue
+				var metadata map[string]any
+				if errUnmarshal := json.Unmarshal(data, &metadata); errUnmarshal == nil {
+					disabled, disabledOK := metadata["disabled"].(bool)
+					if disabledOK {
+						fileData["disabled"] = disabled
+					}
+					addAuthFileTokenHealth(fileData, typeValue, metadata, disabled, time.Now())
+				}
 				if projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String()); projectID != "" {
 					fileData["project_id"] = projectID
 				}
@@ -525,6 +533,12 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if !auth.LastRefreshedAt.IsZero() {
 		entry["last_refresh"] = auth.LastRefreshedAt
 	}
+	if auth.Metadata != nil {
+		if lastRefresh, ok := extractLastRefreshTimestamp(auth.Metadata); ok && !lastRefresh.IsZero() {
+			entry["last_refresh"] = lastRefresh
+		}
+	}
+	addAuthFileTokenHealth(entry, auth.Provider, auth.Metadata, auth.Disabled, time.Now())
 	if !auth.NextRetryAfter.IsZero() {
 		entry["next_retry_after"] = auth.NextRetryAfter
 	}
@@ -582,6 +596,53 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		entry["websockets"] = websockets
 	}
 	return entry
+}
+
+func addAuthFileTokenHealth(entry gin.H, provider string, metadata map[string]any, disabled bool, now time.Time) {
+	if entry == nil || metadata == nil {
+		return
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider != "codex" {
+		return
+	}
+	auth := &coreauth.Auth{Metadata: metadata}
+	expiresAt, ok := auth.ExpirationTime()
+	if !ok {
+		return
+	}
+	expiresAt = expiresAt.UTC()
+	if now.IsZero() {
+		now = time.Now()
+	}
+	now = now.UTC()
+	secondsLeft := int64(expiresAt.Sub(now).Seconds())
+	daysLeft := secondsLeft / int64(24*time.Hour/time.Second)
+	if secondsLeft < 0 {
+		daysLeft = -(((-secondsLeft) + int64(24*time.Hour/time.Second) - 1) / int64(24*time.Hour/time.Second))
+	}
+
+	health := "ok"
+	switch {
+	case disabled:
+		health = "disabled"
+	case !expiresAt.After(now):
+		health = "expired"
+	case expiresAt.Sub(now) <= 24*time.Hour:
+		health = "critical"
+	case expiresAt.Sub(now) <= 72*time.Hour:
+		health = "warning"
+	}
+
+	entry["token_health"] = health
+	entry["token_expires_at"] = expiresAt
+	entry["token_expires_at_ms"] = expiresAt.UnixMilli()
+	entry["token_seconds_left"] = secondsLeft
+	entry["token_days_left"] = daysLeft
+	if lastRefresh, ok := extractLastRefreshTimestamp(metadata); ok && !lastRefresh.IsZero() {
+		entry["token_last_refresh"] = lastRefresh.UTC()
+		entry["token_last_refresh_ms"] = lastRefresh.UTC().UnixMilli()
+	}
 }
 
 func authWebsocketsValue(auth *coreauth.Auth) (bool, bool) {

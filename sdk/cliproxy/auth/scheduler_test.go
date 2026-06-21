@@ -964,6 +964,94 @@ func TestManager_PickNextMixed_SkipsProvidersWithoutExecutors(t *testing.T) {
 	}
 }
 
+func TestManager_PickNextFastPath_ContextLengthExhaustionReportsSpecificError(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["openai-compatible-gemini"] = schedulerTestExecutor{}
+	manager.SetConfig(&internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{
+			{
+				Name: "gemini",
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "tiny-model", ContextLength: 1},
+				},
+			},
+		},
+	})
+	auth := &Auth{
+		ID:       "fast-path-context-auth-single",
+		Provider: "openai-compatible-gemini",
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"provider_key": "openai-compatible-gemini",
+			"compat_name":  "gemini",
+		},
+	}
+	if manager.routeAwareSelectionRequired(auth, "tiny-model") {
+		t.Fatalf("routeAwareSelectionRequired() = true, test must cover scheduler fast path")
+	}
+	registerSchedulerModels(t, "openai-compatible-gemini", "tiny-model", auth.ID)
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("Register(auth) error = %v", errRegister)
+	}
+
+	_, _, errPick := manager.pickNext(context.Background(), "openai-compatible-gemini", "tiny-model", cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: int64(10)},
+	}, map[string]struct{}{})
+	var authErr *Error
+	if !errors.As(errPick, &authErr) {
+		t.Fatalf("pickNext() error = %T %v, want auth error", errPick, errPick)
+	}
+	if authErr.Code != "upstream_model_unavailable" {
+		t.Fatalf("pickNext() error code = %q, want upstream_model_unavailable: %v", authErr.Code, errPick)
+	}
+}
+
+func TestManager_PickNextMixedFastPath_ContextLengthExhaustionReportsSpecificError(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["openai-compatible-gemini"] = schedulerTestExecutor{}
+	manager.SetConfig(&internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{
+			{
+				Name: "gemini",
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "tiny-model", ContextLength: 1},
+				},
+			},
+		},
+	})
+	auth := &Auth{
+		ID:       "fast-path-context-auth-mixed",
+		Provider: "openai-compatible-gemini",
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"provider_key": "openai-compatible-gemini",
+			"compat_name":  "gemini",
+		},
+	}
+	if manager.routeAwareSelectionRequired(auth, "tiny-model") {
+		t.Fatalf("routeAwareSelectionRequired() = true, test must cover scheduler fast path")
+	}
+	registerSchedulerModels(t, "openai-compatible-gemini", "tiny-model", auth.ID)
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("Register(auth) error = %v", errRegister)
+	}
+
+	_, _, _, errPick := manager.pickNextMixed(context.Background(), []string{"openai-compatible-gemini"}, "tiny-model", cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: int64(10)},
+	}, map[string]struct{}{})
+	var authErr *Error
+	if !errors.As(errPick, &authErr) {
+		t.Fatalf("pickNextMixed() error = %T %v, want auth error", errPick, errPick)
+	}
+	if authErr.Code != "upstream_model_unavailable" {
+		t.Fatalf("pickNextMixed() error code = %q, want upstream_model_unavailable: %v", authErr.Code, errPick)
+	}
+}
+
 func TestManager_SchedulerTracksMarkResultCooldownAndRecovery(t *testing.T) {
 	t.Parallel()
 

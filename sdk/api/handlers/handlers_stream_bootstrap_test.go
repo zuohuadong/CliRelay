@@ -595,6 +595,39 @@ func TestExecuteWithAuthManager_ContextLengthFallsBackFromAstronToBigModel(t *te
 	}
 }
 
+func TestExecuteWithAuthManager_ContextLengthExhaustionReportsSpecificError(t *testing.T) {
+	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
+	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("x", 4096) + `"}`)
+
+	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
+	if errMsg == nil {
+		t.Fatalf("ExecuteWithAuthManager() body = %q, want error", string(body))
+	}
+	var authErr *coreauth.Error
+	if !errors.As(errMsg.Error, &authErr) {
+		t.Fatalf("error = %T %v, want core auth error", errMsg.Error, errMsg.Error)
+	}
+	if authErr.Code != "upstream_model_unavailable" {
+		t.Fatalf("error code = %q, want upstream_model_unavailable: %+v", authErr.Code, errMsg)
+	}
+	msg := errMsg.Error.Error()
+	if !strings.Contains(msg, "no executable upstream model available") ||
+		!strings.Contains(msg, "provider=") ||
+		!strings.Contains(msg, "model=gpt-5.3-codex") ||
+		!strings.Contains(msg, "candidates=") {
+		t.Fatalf("error message = %q, want sanitized provider/model context", msg)
+	}
+	if models := codex.Models(); len(models) != 0 {
+		t.Fatalf("codex should be skipped by request policy, got calls for %v", models)
+	}
+	if models := astron.Models(); len(models) != 0 {
+		t.Fatalf("astron should be skipped when context-length is exceeded, got calls for %v", models)
+	}
+	if models := bigmodel.Models(); len(models) != 0 {
+		t.Fatalf("bigmodel should not be called when all configured upstream models are too small, got calls for %v", models)
+	}
+}
+
 func TestExecuteWithAuthManager_GenericOpenAICompatPreExecutionFilterReportsSpecificError(t *testing.T) {
 	handler, manager, executor := newGenericOpenAICompatRoutingPolicyHandler(t)
 	auth, ok := manager.GetByID("custom-auth")

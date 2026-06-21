@@ -4392,6 +4392,14 @@ func shouldRetrySchedulerPick(err error) bool {
 	return authErr.Code == "auth_not_found" || authErr.Code == "auth_unavailable"
 }
 
+func isSchedulerExhaustionError(err error) bool {
+	var authErr *Error
+	if !errors.As(err, &authErr) || authErr == nil {
+		return false
+	}
+	return authErr.Code == "auth_not_found" || authErr.Code == "auth_unavailable"
+}
+
 func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) bool {
 	if auth == nil || strings.TrimSpace(routeModel) == "" {
 		return false
@@ -4435,6 +4443,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		}
 	}
 	registryRef := registry.GetGlobalRegistry()
+	var lastFilterErr *Error
 	for _, candidate := range m.auths {
 		if candidate == nil || executorKeyFromAuth(candidate) != provider || candidate.Disabled {
 			continue
@@ -4456,6 +4465,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		upstreamModel = m.applyAPIKeyModelAlias(candidate, upstreamModel)
 		if !authHasConfiguredContextCapacity(m, runtimeConfig, candidate, opts, model) {
 			logEntryWithRequestID(ctx).Tracef("context length skipped auth=%s provider=%s model=%s upstreamModel=%s", candidate.ID, provider, model, upstreamModel)
+			lastFilterErr = noExecutableUpstreamModelError(ctx, provider, model, m.executionModelCandidatesForCapacityCheck(candidate, model))
 			continue
 		}
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, candidate, opts, model, provider, upstreamModel); blocked {
@@ -4464,6 +4474,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 				if policyErr.action == requestPolicyActionReject {
 					m.mu.RUnlock()
 					return nil, nil, policyErr
+				}
+				if lastFilterErr == nil {
+					lastFilterErr = noExecutableUpstreamModelError(ctx, provider, model, m.executionModelCandidatesForCapacityCheck(candidate, model))
 				}
 			}
 			continue
@@ -4476,6 +4489,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
+		if lastFilterErr != nil {
+			return nil, nil, lastFilterErr
+		}
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	available, errAvailable := m.availableAuthsForRouteModel(candidates, provider, model, time.Now())
@@ -4541,6 +4557,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	var lastFilterErr *Error
 	for {
 		selected, errPick := m.scheduler.pickSingle(ctx, provider, model, opts, tried)
 		if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
@@ -4548,9 +4565,15 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 			selected, errPick = m.scheduler.pickSingle(ctx, provider, model, opts, tried)
 		}
 		if errPick != nil {
+			if lastFilterErr != nil && isSchedulerExhaustionError(errPick) {
+				return nil, nil, lastFilterErr
+			}
 			return nil, nil, errPick
 		}
 		if selected == nil {
+			if lastFilterErr != nil {
+				return nil, nil, lastFilterErr
+			}
 			return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 		}
 		if disallowFreeAuth && isFreeCodexAuth(selected) {
@@ -4565,6 +4588,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		upstreamModel = m.applyOAuthModelAlias(selected, upstreamModel)
 		upstreamModel = m.applyAPIKeyModelAlias(selected, upstreamModel)
 		if !authHasConfiguredContextCapacity(m, runtimeConfig, selected, opts, model) {
+			lastFilterErr = noExecutableUpstreamModelError(ctx, provider, model, m.executionModelCandidatesForCapacityCheck(selected, model))
 			if tried == nil {
 				tried = make(map[string]struct{})
 			}
@@ -4574,6 +4598,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, selected, opts, model, provider, upstreamModel); blocked {
 			if policyErr != nil && policyErr.action == requestPolicyActionReject {
 				return nil, nil, policyErr
+			}
+			if policyErr != nil && lastFilterErr == nil {
+				lastFilterErr = noExecutableUpstreamModelError(ctx, provider, model, m.executionModelCandidatesForCapacityCheck(selected, model))
 			}
 			if tried == nil {
 				tried = make(map[string]struct{})
@@ -4631,6 +4658,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		}
 	}
 	registryRef := registry.GetGlobalRegistry()
+	var lastFilterErr *Error
 	for _, candidate := range m.auths {
 		if candidate == nil || candidate.Disabled {
 			continue
@@ -4673,6 +4701,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		}
 		if !authHasConfiguredContextCapacity(m, runtimeConfig, candidate, opts, model) {
 			logEntryWithRequestID(ctx).Tracef("context length skipped auth=%s provider=%s model=%s upstreamModel=%s", candidate.ID, providerKey, model, upstreamModel)
+			lastFilterErr = noExecutableUpstreamModelError(ctx, providerKey, model, m.executionModelCandidatesForCapacityCheck(candidate, model))
 			continue
 		}
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, candidate, opts, model, providerKey, upstreamModel); blocked {
@@ -4681,6 +4710,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 				if policyErr.action == requestPolicyActionReject {
 					m.mu.RUnlock()
 					return nil, nil, "", policyErr
+				}
+				if lastFilterErr == nil {
+					lastFilterErr = noExecutableUpstreamModelError(ctx, providerKey, model, m.executionModelCandidatesForCapacityCheck(candidate, model))
 				}
 			}
 			continue
@@ -4693,6 +4725,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
+		if lastFilterErr != nil {
+			return nil, nil, "", lastFilterErr
+		}
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	available, errAvailable := m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
@@ -4791,6 +4826,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	}
 
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	var lastFilterErr *Error
 	for {
 		selected, providerKey, errPick := m.scheduler.pickMixed(ctx, eligibleProviders, model, opts, tried)
 		if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
@@ -4798,9 +4834,15 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			selected, providerKey, errPick = m.scheduler.pickMixed(ctx, eligibleProviders, model, opts, tried)
 		}
 		if errPick != nil {
+			if lastFilterErr != nil && isSchedulerExhaustionError(errPick) {
+				return nil, nil, "", lastFilterErr
+			}
 			return nil, nil, "", errPick
 		}
 		if selected == nil {
+			if lastFilterErr != nil {
+				return nil, nil, "", lastFilterErr
+			}
 			return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 		}
 		if disallowFreeAuth && isFreeCodexAuth(selected) {
@@ -4815,6 +4857,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		upstreamModel = m.applyOAuthModelAlias(selected, upstreamModel)
 		upstreamModel = m.applyAPIKeyModelAlias(selected, upstreamModel)
 		if !authHasConfiguredContextCapacity(m, runtimeConfig, selected, opts, model) {
+			lastFilterErr = noExecutableUpstreamModelError(ctx, providerKey, model, m.executionModelCandidatesForCapacityCheck(selected, model))
 			if tried == nil {
 				tried = make(map[string]struct{})
 			}
@@ -4825,6 +4868,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			logEntryWithRequestID(ctx).Tracef("pickNextMixed: request-policy blocked auth=%s provider=%s upstreamModel=%s policy=%s reason=%s", selected.ID, providerKey, upstreamModel, policyErr.policy, policyErr.reason)
 			if policyErr != nil && policyErr.action == requestPolicyActionReject {
 				return nil, nil, "", policyErr
+			}
+			if policyErr != nil && lastFilterErr == nil {
+				lastFilterErr = noExecutableUpstreamModelError(ctx, providerKey, model, m.executionModelCandidatesForCapacityCheck(selected, model))
 			}
 			if tried == nil {
 				tried = make(map[string]struct{})

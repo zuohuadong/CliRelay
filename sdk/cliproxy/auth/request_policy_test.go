@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -985,6 +986,126 @@ func TestManagerExecute_CodexSparkAliasPreferenceAndGuard(t *testing.T) {
 	}
 	if calls := astron.Calls(); len(calls) != 1 {
 		t.Fatalf("astron calls after oversized request = %v, want one previous call only", calls)
+	}
+}
+
+func TestManagerExecute_CodexSparkSkipUsesBigModelExecutablePoolWhenAliasStateBlocked(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	codex := &requestPolicyTestExecutor{id: "codex"}
+	bigmodel := &requestPolicyTestExecutor{id: "bigmodel-coding"}
+	manager.RegisterExecutor(codex)
+	manager.RegisterExecutor(bigmodel)
+
+	cfg := &internalconfig.Config{
+		BigModelCodingAPIKey: []internalconfig.OpenAICompatibility{
+			{
+				Name: "bigmodel-coding",
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "glm-5.1", Alias: "gpt-5.3-codex", ContextLength: 220000},
+					{Name: "glm-5.2", Alias: "gpt-5.3-codex", ContextLength: 1048576},
+				},
+			},
+		},
+		OAuthModelAlias: map[string][]internalconfig.OAuthModelAlias{
+			"codex": {
+				{Name: "gpt-5.3-codex-spark", Alias: "gpt-5.3-codex", Fork: true},
+			},
+		},
+		ProviderPreferences: []internalconfig.ProviderPreference{
+			{
+				Name: "prefer-codex-spark",
+				Match: internalconfig.ProviderPreferenceMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"codex"},
+					UpstreamModels:    []string{"gpt-5.3-codex-spark"},
+				},
+				Priority: 500,
+			},
+			{
+				Name: "prefer-bigmodel",
+				Match: internalconfig.ProviderPreferenceMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"bigmodel-coding"},
+				},
+				Priority: 100,
+			},
+		},
+		RequestPolicies: []internalconfig.RequestPolicy{
+			{
+				Name: "codex-spark-128k-guard",
+				Match: internalconfig.RequestPolicyMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"codex"},
+					UpstreamModels:    []string{"gpt-5.3-codex-spark"},
+				},
+				Limits:    internalconfig.RequestPolicyLimits{MaxRequestBytes: 128000},
+				OverLimit: internalconfig.RequestPolicyOverLimit{Action: "skip-channel"},
+			},
+		},
+	}
+	manager.SetConfig(cfg)
+	manager.SetOAuthModelAlias(cfg.OAuthModelAlias)
+
+	codexAuth := &Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+			"plan_type": "plus",
+		},
+	}
+	bigmodelAuth := &Auth{
+		ID:       "bigmodel-auth",
+		Provider: "bigmodel-coding",
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"api_key":      "bigmodel-key",
+			"provider_key": "bigmodel-coding",
+			"compat_name":  "bigmodel-coding",
+		},
+		ModelStates: map[string]*ModelState{
+			"gpt-5.3-codex": {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: time.Now().Add(time.Hour),
+			},
+			"glm-5.1": {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: time.Now().Add(time.Hour),
+			},
+		},
+	}
+	for _, auth := range []*Auth{codexAuth, bigmodelAuth} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+		authID := auth.ID
+		t.Cleanup(func() {
+			registry.GetGlobalRegistry().UnregisterClient(authID)
+		})
+	}
+	registry.GetGlobalRegistry().RegisterClient("codex-auth", "codex", []*registry.ModelInfo{{ID: "gpt-5.3-codex-spark", Name: "gpt-5.3-codex-spark"}})
+	registry.GetGlobalRegistry().RegisterClient("bigmodel-auth", "bigmodel-coding", []*registry.ModelInfo{{ID: "gpt-5.3-codex", Name: "gpt-5.3-codex"}})
+
+	_, err := manager.Execute(context.Background(), []string{"codex", "bigmodel-coding"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex","input":"large subagent prompt"}`),
+	}, cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: 154735},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if calls := codex.Calls(); len(calls) != 0 {
+		t.Fatalf("codex calls = %v, want none", calls)
+	}
+	if calls := bigmodel.Calls(); len(calls) != 1 || calls[0] != "bigmodel-auth" {
+		t.Fatalf("bigmodel calls = %v, want [bigmodel-auth]", calls)
+	}
+	if models := bigmodel.Models(); len(models) != 1 || models[0] != "glm-5.2" {
+		t.Fatalf("bigmodel models = %v, want [glm-5.2]", models)
 	}
 }
 

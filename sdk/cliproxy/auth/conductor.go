@@ -1369,6 +1369,19 @@ func configuredOpenAICompatModelContextLength(cfg *internalconfig.Config, auth *
 	return 0, false
 }
 
+func (m *Manager) routeModelAvailability(auth *Auth, routeModel string, now time.Time) (bool, blockReason, time.Time) {
+	if auth == nil {
+		return false, blockReasonOther, time.Time{}
+	}
+	candidates := m.executionModelCandidatesForCapacityCheck(auth, routeModel)
+	if len(candidates) > 1 {
+		return true, blockReasonNone, time.Time{}
+	}
+	checkModel := m.selectionModelForAuth(auth, routeModel)
+	blocked, reason, next := isAuthBlockedForModel(auth, checkModel, now)
+	return !blocked, reason, next
+}
+
 func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
 	if len(auths) == 0 {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
@@ -1378,9 +1391,8 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 	cooldownCount := 0
 	var earliest time.Time
 	for _, candidate := range auths {
-		checkModel := m.selectionModelForAuth(candidate, routeModel)
-		blocked, reason, next := isAuthBlockedForModel(candidate, checkModel, now)
-		if !blocked {
+		available, reason, next := m.routeModelAvailability(candidate, routeModel, now)
+		if available {
 			priority := authPriority(candidate)
 			availableByPriority[priority] = append(availableByPriority[priority], candidate)
 			continue

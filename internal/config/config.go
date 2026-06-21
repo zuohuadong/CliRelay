@@ -887,7 +887,7 @@ func (cfg *Config) OpenAICompatibilityAliasProviders(modelName string) []string 
 	}
 	providers := make([]string, 0, 4)
 	seen := make(map[string]struct{})
-	appendEntries := func(defaultProvider string, entries []OpenAICompatibility) {
+	appendEntries := func(defaultProvider string, entries []OpenAICompatibility, genericOpenAICompat bool) {
 		for i := range entries {
 			entry := entries[i]
 			if entry.Disabled || !openAICompatibilityModelsSupportName(entry.Models, modelName) {
@@ -898,6 +898,9 @@ func (cfg *Config) OpenAICompatibilityAliasProviders(modelName string) []string 
 				provider = defaultProvider
 			}
 			provider = strings.TrimSpace(strings.ToLower(provider))
+			if genericOpenAICompat {
+				provider = openAICompatibleProviderKey(provider)
+			}
 			if provider == "" {
 				continue
 			}
@@ -908,10 +911,21 @@ func (cfg *Config) OpenAICompatibilityAliasProviders(modelName string) []string 
 			providers = append(providers, provider)
 		}
 	}
-	appendEntries(DefaultBigModelCodingProviderName, cfg.BigModelCodingAPIKey)
-	appendEntries(DefaultAstronCodeProviderName, cfg.AstronCodeAPIKey)
-	appendEntries("", cfg.OpenAICompatibility)
+	appendEntries(DefaultBigModelCodingProviderName, cfg.BigModelCodingAPIKey, false)
+	appendEntries(DefaultAstronCodeProviderName, cfg.AstronCodeAPIKey, false)
+	appendEntries("", cfg.OpenAICompatibility, true)
 	return providers
+}
+
+func openAICompatibleProviderKey(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" || name == "openai-compatibility" || strings.HasPrefix(name, "openai-compatible-") {
+		if name == "" {
+			return "openai-compatibility"
+		}
+		return name
+	}
+	return "openai-compatible-" + name
 }
 
 func openAICompatibilityModelsSupportName(models []OpenAICompatibilityModel, modelName string) bool {

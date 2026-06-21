@@ -174,7 +174,7 @@ func TestOpenAICompatibilityAliasProvidersIsConfigDriven(t *testing.T) {
 	}
 
 	providers := cfg.OpenAICompatibilityAliasProviders("gpt-5.3-codex")
-	want := []string{DefaultBigModelCodingProviderName, DefaultAstronCodeProviderName, "custom-coding"}
+	want := []string{DefaultBigModelCodingProviderName, DefaultAstronCodeProviderName, "openai-compatible-custom-coding"}
 	if strings.Join(providers, ",") != strings.Join(want, ",") {
 		t.Fatalf("providers = %v, want %v", providers, want)
 	}

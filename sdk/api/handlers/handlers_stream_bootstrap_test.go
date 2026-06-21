@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
@@ -379,6 +380,11 @@ func (e *routePolicyExecutor) Models() []string {
 }
 
 func newContextRoutingPolicyHandler(t *testing.T) (*BaseAPIHandler, *routePolicyExecutor, *routePolicyExecutor, *routePolicyExecutor) {
+	handler, _, codex, astron, bigmodel := newContextRoutingPolicyHandlerWithManager(t)
+	return handler, codex, astron, bigmodel
+}
+
+func newContextRoutingPolicyHandlerWithManager(t *testing.T) (*BaseAPIHandler, *coreauth.Manager, *routePolicyExecutor, *routePolicyExecutor, *routePolicyExecutor) {
 	t.Helper()
 
 	manager := coreauth.NewManager(nil, nil, nil)
@@ -498,7 +504,51 @@ func newContextRoutingPolicyHandler(t *testing.T) (*BaseAPIHandler, *routePolicy
 		}(auth.ID))
 	}
 
-	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager), codex, astron, bigmodel
+	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager), manager, codex, astron, bigmodel
+}
+
+func newGenericOpenAICompatRoutingPolicyHandler(t *testing.T) (*BaseAPIHandler, *coreauth.Manager, *routePolicyExecutor) {
+	t.Helper()
+
+	const (
+		compatName = "custom-coding"
+		provider   = "openai-compatible-custom-coding"
+	)
+	manager := coreauth.NewManager(nil, nil, nil)
+	executor := &routePolicyExecutor{id: provider}
+	manager.RegisterExecutor(executor)
+	cfg := &internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{
+			{
+				Name:    compatName,
+				BaseURL: "https://example.invalid/v1",
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "custom-small", Alias: "gpt-5.3-codex", ContextLength: 512},
+					{Name: "custom-large", Alias: "gpt-5.3-codex", ContextLength: 2048},
+				},
+			},
+		},
+	}
+	manager.SetConfig(cfg)
+
+	auth := &coreauth.Auth{
+		ID:       "custom-auth",
+		Provider: provider,
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"api_key":      "test-custom-key",
+			"auth_kind":    "api_key",
+			"provider_key": provider,
+			"compat_name":  compatName,
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("manager.Register(%s): %v", auth.ID, err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.3-codex"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+
+	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager), manager, executor
 }
 
 func TestExecuteWithAuthManager_RequestBytesPolicyFallsBackFromCodexSparkToAstron(t *testing.T) {
@@ -542,6 +592,47 @@ func TestExecuteWithAuthManager_ContextLengthFallsBackFromAstronToBigModel(t *te
 	}
 	if models := bigmodel.Models(); len(models) != 1 || models[0] != "glm-5.2" {
 		t.Fatalf("bigmodel models = %v, want [glm-5.2]", models)
+	}
+}
+
+func TestExecuteWithAuthManager_GenericOpenAICompatPreExecutionFilterReportsSpecificError(t *testing.T) {
+	handler, manager, executor := newGenericOpenAICompatRoutingPolicyHandler(t)
+	auth, ok := manager.GetByID("custom-auth")
+	if !ok {
+		t.Fatalf("custom-auth not registered")
+	}
+	auth.ModelStates = map[string]*coreauth.ModelState{
+		"custom-large": {
+			Status:         coreauth.StatusActive,
+			Unavailable:    true,
+			NextRetryAfter: time.Now().Add(30 * time.Minute),
+		},
+	}
+	if _, err := manager.Update(context.Background(), auth); err != nil {
+		t.Fatalf("manager.Update(custom-auth): %v", err)
+	}
+
+	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("x", 768) + `"}`)
+	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
+	if errMsg == nil {
+		t.Fatalf("ExecuteWithAuthManager() body = %q, want error", string(body))
+	}
+	var authErr *coreauth.Error
+	if !errors.As(errMsg.Error, &authErr) {
+		t.Fatalf("error = %T %v, want core auth error", errMsg.Error, errMsg.Error)
+	}
+	if authErr.Code != "upstream_model_unavailable" {
+		t.Fatalf("error code = %q, want upstream_model_unavailable: %+v", authErr.Code, errMsg)
+	}
+	msg := errMsg.Error.Error()
+	if !strings.Contains(msg, "no executable upstream model available") {
+		t.Fatalf("error message = %q, want executable upstream model detail", msg)
+	}
+	if !strings.Contains(msg, "provider=openai-compatible-custom-coding") || !strings.Contains(msg, "model=gpt-5.3-codex") {
+		t.Fatalf("error message = %q, want sanitized provider/model detail", msg)
+	}
+	if models := executor.Models(); len(models) != 0 {
+		t.Fatalf("generic openai-compatible executor should not be called when all upstream models are filtered, got calls for %v", models)
 	}
 }
 

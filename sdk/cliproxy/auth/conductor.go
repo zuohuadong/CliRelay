@@ -1268,19 +1268,42 @@ func (m *Manager) filterExecutionModels(cfg *internalconfig.Config, auth *Auth, 
 	return out
 }
 
-func (m *Manager) preparedExecutionModels(auth *Auth, routeModel string, opts cliproxyexecutor.Options) ([]string, bool) {
+func (m *Manager) preparedExecutionModelsWithCandidates(auth *Auth, routeModel string, opts cliproxyexecutor.Options) ([]string, []string, bool) {
 	candidates := m.executionModelCandidates(auth, routeModel)
 	pooled := len(candidates) > 1
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	if cfg == nil {
 		cfg = &internalconfig.Config{}
 	}
-	return m.filterExecutionModels(cfg, auth, routeModel, candidates, pooled, opts), pooled
+	return m.filterExecutionModels(cfg, auth, routeModel, candidates, pooled, opts), candidates, pooled
+}
+
+func (m *Manager) preparedExecutionModels(auth *Auth, routeModel string, opts cliproxyexecutor.Options) ([]string, bool) {
+	models, _, pooled := m.preparedExecutionModelsWithCandidates(auth, routeModel, opts)
+	return models, pooled
 }
 
 func (m *Manager) prepareExecutionModels(auth *Auth, routeModel string) []string {
 	models, _ := m.preparedExecutionModels(auth, routeModel, cliproxyexecutor.Options{})
 	return models
+}
+
+func noExecutableUpstreamModelError(ctx context.Context, provider, routeModel string, candidates []string) *Error {
+	provider = strings.TrimSpace(provider)
+	routeModel = strings.TrimSpace(routeModel)
+	candidates = dedupeStrings(candidates)
+	logEntryWithRequestID(ctx).Debugf("no executable upstream model available provider=%s model=%s candidates=%v", provider, routeModel, candidates)
+
+	message := fmt.Sprintf("no executable upstream model available (provider=%s, model=%s", provider, routeModel)
+	if len(candidates) > 0 {
+		message += ", candidates=" + strings.Join(candidates, ",")
+	}
+	message += ")"
+	return &Error{
+		Code:       "upstream_model_unavailable",
+		Message:    message,
+		HTTPStatus: http.StatusServiceUnavailable,
+	}
 }
 
 func requestFitsConfiguredModelContext(cfg *internalconfig.Config, auth *Auth, opts cliproxyexecutor.Options, upstreamModel string) bool {
@@ -2476,8 +2499,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 
-		models, pooled := m.preparedExecutionModels(auth, routeModel, opts)
+		models, candidates, pooled := m.preparedExecutionModelsWithCandidates(auth, routeModel, opts)
 		if len(models) == 0 {
+			lastErr = noExecutableUpstreamModelError(ctx, provider, routeModel, candidates)
+			if homeMode {
+				homeAuthCount++
+			}
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
@@ -2586,8 +2613,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 
-		models, pooled := m.preparedExecutionModels(auth, routeModel, opts)
+		models, candidates, pooled := m.preparedExecutionModelsWithCandidates(auth, routeModel, opts)
 		if len(models) == 0 {
+			lastErr = noExecutableUpstreamModelError(ctx, provider, routeModel, candidates)
+			if homeMode {
+				homeAuthCount++
+			}
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
@@ -2689,8 +2720,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
-		models, pooled := m.preparedExecutionModels(auth, routeModel, opts)
+		models, candidates, pooled := m.preparedExecutionModelsWithCandidates(auth, routeModel, opts)
 		if len(models) == 0 {
+			lastErr = noExecutableUpstreamModelError(ctx, provider, routeModel, candidates)
+			if homeMode {
+				homeAuthCount++
+			}
 			continue
 		}
 		attempted[auth.ID] = struct{}{}

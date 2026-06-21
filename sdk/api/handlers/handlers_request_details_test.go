@@ -170,7 +170,7 @@ func TestGetRequestDetails_AppendsConfiguredOpenAICompatAliasProviders(t *testin
 	if model != "gpt-5.3-codex" {
 		t.Fatalf("model = %q, want gpt-5.3-codex", model)
 	}
-	want := []string{"bigmodel-coding", "codex", "astron-code", "custom-coding"}
+	want := []string{"bigmodel-coding", "codex", "astron-code", "openai-compatible-custom-coding"}
 	if !reflect.DeepEqual(providers, want) {
 		t.Fatalf("providers = %v, want %v", providers, want)
 	}

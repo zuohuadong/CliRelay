@@ -962,6 +962,7 @@ func cooldownReason(statusMessage string, quota QuotaState, lastErr *Error) stri
 		}
 	}
 	return ""
+<<<<<<< HEAD
 }
 
 // Config returns the latest runtime config snapshot used by request-time routing.
@@ -980,6 +981,8 @@ func (m *Manager) ConfiguredAliasProviders(modelName string) []string {
 		return nil
 	}
 	return cfg.OpenAICompatibilityAliasProviders(modelName)
+=======
+>>>>>>> upstream/main
 }
 
 // HomeEnabled reports whether the home control plane integration is enabled in the runtime config.
@@ -1055,6 +1058,7 @@ func openAICompatProviderKey(auth *Auth) string {
 	}
 	if auth.Attributes != nil {
 		if providerKey := strings.TrimSpace(auth.Attributes["provider_key"]); providerKey != "" {
+<<<<<<< HEAD
 			if dedicatedKey, ok := dedicatedOpenAICompatibleProviderKey(providerKey); ok {
 				return dedicatedKey
 			}
@@ -1084,6 +1088,15 @@ func dedicatedOpenAICompatibleProviderKey(name string) (string, bool) {
 	default:
 		return "", false
 	}
+=======
+			return util.OpenAICompatibleProviderKey(providerKey)
+		}
+		if compatName := strings.TrimSpace(auth.Attributes["compat_name"]); compatName != "" {
+			return util.OpenAICompatibleProviderKey(compatName)
+		}
+	}
+	return util.OpenAICompatibleProviderKey(auth.Provider)
+>>>>>>> upstream/main
 }
 
 func openAICompatModelPoolKey(auth *Auth, requestedModel string) string {
@@ -5499,6 +5512,9 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 			return nil
 		}
 	}
+	if IsPluginVirtualAuth(auth) {
+		return nil
+	}
 	// Skip persistence when metadata is absent (e.g., runtime-only auths).
 	if auth.Metadata == nil {
 		return nil
@@ -5919,9 +5935,12 @@ func executorKeyFromAuth(auth *Auth) string {
 			if providerKey == "" {
 				providerKey = compatName
 			}
+<<<<<<< HEAD
 			if dedicatedKey, ok := dedicatedOpenAICompatibleProviderKey(providerKey); ok {
 				return dedicatedKey
 			}
+=======
+>>>>>>> upstream/main
 			return util.OpenAICompatibleProviderKey(providerKey)
 		}
 	}

@@ -795,9 +795,12 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 			if providerKey == "" {
 				providerKey = compatName
 			}
+<<<<<<< HEAD
 			if dedicated, okDedicated := dedicatedOpenAICompatProviderKey(providerKey, compatName, a.Provider); okDedicated {
 				return dedicated, compatName, true
 			}
+=======
+>>>>>>> upstream/main
 			return util.OpenAICompatibleProviderKey(providerKey), compatName, true
 		}
 	}
@@ -807,6 +810,7 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 		if providerKey == "" {
 			providerKey = "openai-compatibility"
 		}
+<<<<<<< HEAD
 		if dedicated, okDedicated := dedicatedOpenAICompatProviderKey(providerKey, compatName); okDedicated {
 			return dedicated, compatName, true
 		}
@@ -820,6 +824,9 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 	}
 	if strings.EqualFold(strings.TrimSpace(a.Provider), "opencode-go") {
 		return "opencode-go", "opencode-go", true
+=======
+		return util.OpenAICompatibleProviderKey(providerKey), compatName, true
+>>>>>>> upstream/main
 	}
 	return "", "", false
 }
@@ -887,6 +894,24 @@ func (s *Service) hasNativeOpenAICompatExecutorConfig(a *coreauth.Auth, provider
 		}
 	}
 	return false
+}
+
+func (s *Service) unregisterOpenAICompatExecutor(providerKey string) {
+	if s == nil || s.coreManager == nil {
+		return
+	}
+	providerKey = strings.ToLower(strings.TrimSpace(providerKey))
+	if providerKey == "" {
+		return
+	}
+	existing, okExecutor := s.coreManager.Executor(providerKey)
+	if !okExecutor || existing == nil {
+		return
+	}
+	if _, okOpenAICompat := existing.(*executor.OpenAICompatExecutor); !okOpenAICompat {
+		return
+	}
+	s.coreManager.UnregisterExecutor(providerKey)
 }
 
 func (s *Service) ensureExecutorsForAuth(a *coreauth.Auth) {
@@ -1033,6 +1058,7 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		if s.pluginHost != nil &&
 			s.pluginHost.HasExecutorCandidateProvider(providerKey) &&
 			!s.hasNativeOpenAICompatExecutorConfig(a, providerKey) {
+			s.unregisterOpenAICompatExecutor(providerKey)
 			return
 		}
 		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(providerKey, s.cfg))
@@ -1272,6 +1298,8 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 		s.coreManager.SetConfig(newCfg)
 		s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
 	}
+	ctx := coreauth.WithSkipPersist(context.Background())
+	s.syncPluginRuntimeConfig(ctx)
 	var auths []*coreauth.Auth
 	if s.coreManager != nil {
 		auths = s.coreManager.List()
@@ -1281,7 +1309,10 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 		forceReplaceAuths: true,
 		auths:             auths,
 	})
+<<<<<<< HEAD
 	ctx := coreauth.WithSkipPersist(context.Background())
+=======
+>>>>>>> upstream/main
 	if synthesizeConfigAuths {
 		s.registerConfigAPIKeyAuths(ctx, newCfg)
 	}
@@ -1290,7 +1321,18 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 			log.Warnf("failed to restore cooldown state after config update: %v", errRestoreCooldown)
 		}
 	}
+<<<<<<< HEAD
 	s.syncPluginRuntime(ctx)
+=======
+	s.syncPluginModelRuntime(ctx)
+}
+
+func (s *Service) reloadConfigFromWatcher() bool {
+	if s == nil || s.watcher == nil {
+		return false
+	}
+	return s.watcher.ReloadConfigIfChanged()
+>>>>>>> upstream/main
 }
 
 func (s *Service) reloadConfigFromWatcher() bool {

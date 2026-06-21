@@ -149,6 +149,7 @@ func TestRegisterExecutorForAuth_OpenAICompatUsesNamespacedProviderKey(t *testin
 	}
 }
 
+<<<<<<< HEAD
 func TestRegisterExecutorForAuth_DedicatedOpenAICompatKeepsNativeProviderKey(t *testing.T) {
 	service := &Service{
 		cfg:         &config.Config{},
@@ -197,6 +198,8 @@ func TestRegisterExecutorForAuth_DedicatedOpenAICompatKeepsNativeProviderKey(t *
 	}
 }
 
+=======
+>>>>>>> upstream/main
 func openAICompatKimiAuth() *coreauth.Auth {
 	return &coreauth.Auth{
 		ID:       "compat-kimi",

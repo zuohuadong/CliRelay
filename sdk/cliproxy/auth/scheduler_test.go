@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -1006,6 +1007,11 @@ func TestManager_PickNextFastPath_ContextLengthExhaustionReportsSpecificError(t 
 	if authErr.Code != "upstream_model_unavailable" {
 		t.Fatalf("pickNext() error code = %q, want upstream_model_unavailable: %v", authErr.Code, errPick)
 	}
+	msg := authErr.Error()
+	if !strings.Contains(msg, "request_bytes=10") ||
+		!strings.Contains(msg, "candidate_context_lengths=tiny-model:1") {
+		t.Fatalf("pickNext() error = %q, want request/context diagnostics", msg)
+	}
 }
 
 func TestManager_PickNextMixedFastPath_ContextLengthExhaustionReportsSpecificError(t *testing.T) {
@@ -1049,6 +1055,11 @@ func TestManager_PickNextMixedFastPath_ContextLengthExhaustionReportsSpecificErr
 	}
 	if authErr.Code != "upstream_model_unavailable" {
 		t.Fatalf("pickNextMixed() error code = %q, want upstream_model_unavailable: %v", authErr.Code, errPick)
+	}
+	msg := authErr.Error()
+	if !strings.Contains(msg, "request_bytes=10") ||
+		!strings.Contains(msg, "candidate_context_lengths=tiny-model:1") {
+		t.Fatalf("pickNextMixed() error = %q, want request/context diagnostics", msg)
 	}
 }
 

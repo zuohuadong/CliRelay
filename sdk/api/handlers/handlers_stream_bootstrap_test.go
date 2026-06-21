@@ -614,8 +614,12 @@ func TestExecuteWithAuthManager_ContextLengthExhaustionReportsSpecificError(t *t
 	if !strings.Contains(msg, "no executable upstream model available") ||
 		!strings.Contains(msg, "provider=") ||
 		!strings.Contains(msg, "model=gpt-5.3-codex") ||
-		!strings.Contains(msg, "candidates=") {
-		t.Fatalf("error message = %q, want sanitized provider/model context", msg)
+		!strings.Contains(msg, "request_bytes=") ||
+		!strings.Contains(msg, "candidates=") ||
+		!strings.Contains(msg, "candidate_context_lengths=") ||
+		!strings.Contains(msg, "glm-5.2:2048") ||
+		!strings.Contains(msg, "glm-5.1:512") {
+		t.Fatalf("error message = %q, want sanitized provider/model/request/context context", msg)
 	}
 	if models := codex.Models(); len(models) != 0 {
 		t.Fatalf("codex should be skipped by request policy, got calls for %v", models)

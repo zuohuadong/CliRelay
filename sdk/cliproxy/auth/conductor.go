@@ -1288,15 +1288,23 @@ func (m *Manager) prepareExecutionModels(auth *Auth, routeModel string) []string
 	return models
 }
 
-func noExecutableUpstreamModelError(ctx context.Context, provider, routeModel string, candidates []string) *Error {
+func noExecutableUpstreamModelError(ctx context.Context, cfg *internalconfig.Config, auth *Auth, opts cliproxyexecutor.Options, provider, routeModel string, candidates []string) *Error {
 	provider = strings.TrimSpace(provider)
 	routeModel = strings.TrimSpace(routeModel)
 	candidates = dedupeStrings(candidates)
-	logEntryWithRequestID(ctx).Debugf("no executable upstream model available provider=%s model=%s candidates=%v", provider, routeModel, candidates)
+	requestBytes, hasRequestBytes := requestBytesFromMetadata(opts.Metadata)
+	contextDiagnostics := candidateContextLengthDiagnostics(cfg, auth, candidates)
+	logEntryWithRequestID(ctx).Debugf("no executable upstream model available provider=%s model=%s request_bytes=%d candidates=%v candidate_context_lengths=%v", provider, routeModel, requestBytes, candidates, contextDiagnostics)
 
 	message := fmt.Sprintf("no executable upstream model available (provider=%s, model=%s", provider, routeModel)
+	if hasRequestBytes && requestBytes > 0 {
+		message += ", request_bytes=" + strconv.FormatInt(requestBytes, 10)
+	}
 	if len(candidates) > 0 {
 		message += ", candidates=" + strings.Join(candidates, ",")
+	}
+	if len(contextDiagnostics) > 0 {
+		message += ", candidate_context_lengths=" + strings.Join(contextDiagnostics, ",")
 	}
 	message += ")"
 	return &Error{
@@ -1304,6 +1312,25 @@ func noExecutableUpstreamModelError(ctx context.Context, provider, routeModel st
 		Message:    message,
 		HTTPStatus: http.StatusServiceUnavailable,
 	}
+}
+
+func candidateContextLengthDiagnostics(cfg *internalconfig.Config, auth *Auth, candidates []string) []string {
+	if cfg == nil || auth == nil || len(candidates) == 0 {
+		return nil
+	}
+	diagnostics := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		contextLength, ok := configuredOpenAICompatModelContextLength(cfg, auth, candidate)
+		if !ok || contextLength <= 0 {
+			continue
+		}
+		diagnostics = append(diagnostics, fmt.Sprintf("%s:%d", candidate, contextLength))
+	}
+	return diagnostics
 }
 
 func requestFitsConfiguredModelContext(cfg *internalconfig.Config, auth *Auth, opts cliproxyexecutor.Options, upstreamModel string) bool {
@@ -2513,7 +2540,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 
 		models, candidates, pooled := m.preparedExecutionModelsWithCandidates(auth, routeModel, opts)
 		if len(models) == 0 {
-			lastErr = noExecutableUpstreamModelError(ctx, provider, routeModel, candidates)
+			runtimeConfig, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+			lastErr = noExecutableUpstreamModelError(ctx, runtimeConfig, auth, opts, provider, routeModel, candidates)
 			if homeMode {
 				homeAuthCount++
 			}
@@ -2627,7 +2655,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 
 		models, candidates, pooled := m.preparedExecutionModelsWithCandidates(auth, routeModel, opts)
 		if len(models) == 0 {
-			lastErr = noExecutableUpstreamModelError(ctx, provider, routeModel, candidates)
+			runtimeConfig, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+			lastErr = noExecutableUpstreamModelError(ctx, runtimeConfig, auth, opts, provider, routeModel, candidates)
 			if homeMode {
 				homeAuthCount++
 			}
@@ -2734,7 +2763,8 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		models, candidates, pooled := m.preparedExecutionModelsWithCandidates(auth, routeModel, opts)
 		if len(models) == 0 {
-			lastErr = noExecutableUpstreamModelError(ctx, provider, routeModel, candidates)
+			runtimeConfig, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+			lastErr = noExecutableUpstreamModelError(ctx, runtimeConfig, auth, opts, provider, routeModel, candidates)
 			if homeMode {
 				homeAuthCount++
 			}
@@ -4465,7 +4495,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		upstreamModel = m.applyAPIKeyModelAlias(candidate, upstreamModel)
 		if !authHasConfiguredContextCapacity(m, runtimeConfig, candidate, opts, model) {
 			logEntryWithRequestID(ctx).Tracef("context length skipped auth=%s provider=%s model=%s upstreamModel=%s", candidate.ID, provider, model, upstreamModel)
-			lastFilterErr = noExecutableUpstreamModelError(ctx, provider, model, m.executionModelCandidatesForCapacityCheck(candidate, model))
+			lastFilterErr = noExecutableUpstreamModelError(ctx, runtimeConfig, candidate, opts, provider, model, m.executionModelCandidatesForCapacityCheck(candidate, model))
 			continue
 		}
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, candidate, opts, model, provider, upstreamModel); blocked {
@@ -4476,7 +4506,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 					return nil, nil, policyErr
 				}
 				if lastFilterErr == nil {
-					lastFilterErr = noExecutableUpstreamModelError(ctx, provider, model, m.executionModelCandidatesForCapacityCheck(candidate, model))
+					lastFilterErr = noExecutableUpstreamModelError(ctx, runtimeConfig, candidate, opts, provider, model, m.executionModelCandidatesForCapacityCheck(candidate, model))
 				}
 			}
 			continue
@@ -4588,7 +4618,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		upstreamModel = m.applyOAuthModelAlias(selected, upstreamModel)
 		upstreamModel = m.applyAPIKeyModelAlias(selected, upstreamModel)
 		if !authHasConfiguredContextCapacity(m, runtimeConfig, selected, opts, model) {
-			lastFilterErr = noExecutableUpstreamModelError(ctx, provider, model, m.executionModelCandidatesForCapacityCheck(selected, model))
+			lastFilterErr = noExecutableUpstreamModelError(ctx, runtimeConfig, selected, opts, provider, model, m.executionModelCandidatesForCapacityCheck(selected, model))
 			if tried == nil {
 				tried = make(map[string]struct{})
 			}
@@ -4600,7 +4630,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 				return nil, nil, policyErr
 			}
 			if policyErr != nil && lastFilterErr == nil {
-				lastFilterErr = noExecutableUpstreamModelError(ctx, provider, model, m.executionModelCandidatesForCapacityCheck(selected, model))
+				lastFilterErr = noExecutableUpstreamModelError(ctx, runtimeConfig, selected, opts, provider, model, m.executionModelCandidatesForCapacityCheck(selected, model))
 			}
 			if tried == nil {
 				tried = make(map[string]struct{})
@@ -4701,7 +4731,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		}
 		if !authHasConfiguredContextCapacity(m, runtimeConfig, candidate, opts, model) {
 			logEntryWithRequestID(ctx).Tracef("context length skipped auth=%s provider=%s model=%s upstreamModel=%s", candidate.ID, providerKey, model, upstreamModel)
-			lastFilterErr = noExecutableUpstreamModelError(ctx, providerKey, model, m.executionModelCandidatesForCapacityCheck(candidate, model))
+			lastFilterErr = noExecutableUpstreamModelError(ctx, runtimeConfig, candidate, opts, providerKey, model, m.executionModelCandidatesForCapacityCheck(candidate, model))
 			continue
 		}
 		if blocked, policyErr := requestPolicyDecision(runtimeConfig, candidate, opts, model, providerKey, upstreamModel); blocked {
@@ -4712,7 +4742,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 					return nil, nil, "", policyErr
 				}
 				if lastFilterErr == nil {
-					lastFilterErr = noExecutableUpstreamModelError(ctx, providerKey, model, m.executionModelCandidatesForCapacityCheck(candidate, model))
+					lastFilterErr = noExecutableUpstreamModelError(ctx, runtimeConfig, candidate, opts, providerKey, model, m.executionModelCandidatesForCapacityCheck(candidate, model))
 				}
 			}
 			continue
@@ -4857,7 +4887,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		upstreamModel = m.applyOAuthModelAlias(selected, upstreamModel)
 		upstreamModel = m.applyAPIKeyModelAlias(selected, upstreamModel)
 		if !authHasConfiguredContextCapacity(m, runtimeConfig, selected, opts, model) {
-			lastFilterErr = noExecutableUpstreamModelError(ctx, providerKey, model, m.executionModelCandidatesForCapacityCheck(selected, model))
+			lastFilterErr = noExecutableUpstreamModelError(ctx, runtimeConfig, selected, opts, providerKey, model, m.executionModelCandidatesForCapacityCheck(selected, model))
 			if tried == nil {
 				tried = make(map[string]struct{})
 			}
@@ -4870,7 +4900,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 				return nil, nil, "", policyErr
 			}
 			if policyErr != nil && lastFilterErr == nil {
-				lastFilterErr = noExecutableUpstreamModelError(ctx, providerKey, model, m.executionModelCandidatesForCapacityCheck(selected, model))
+				lastFilterErr = noExecutableUpstreamModelError(ctx, runtimeConfig, selected, opts, providerKey, model, m.executionModelCandidatesForCapacityCheck(selected, model))
 			}
 			if tried == nil {
 				tried = make(map[string]struct{})

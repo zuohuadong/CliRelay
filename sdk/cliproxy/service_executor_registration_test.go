@@ -149,6 +149,54 @@ func TestRegisterExecutorForAuth_OpenAICompatUsesNamespacedProviderKey(t *testin
 	}
 }
 
+func TestRegisterExecutorForAuth_DedicatedOpenAICompatKeepsNativeProviderKey(t *testing.T) {
+	service := &Service{
+		cfg:         &config.Config{},
+		coreManager: coreauth.NewManager(nil, nil, nil),
+	}
+
+	service.registerExecutorsForAuths([]*coreauth.Auth{
+		{
+			ID:       "bigmodel-config-auth",
+			Provider: "bigmodel-coding",
+			Attributes: map[string]string{
+				"compat_name":  "bigmodel-coding",
+				"provider_key": "bigmodel-coding",
+			},
+		},
+		{
+			ID:       "astron-config-auth",
+			Provider: "astron-code",
+			Attributes: map[string]string{
+				"compat_name":  "astron-code",
+				"provider_key": "astron-code",
+			},
+		},
+	}, true)
+
+	bigModelExecutor, okBigModel := service.coreManager.Executor("bigmodel-coding")
+	if !okBigModel {
+		t.Fatal("expected native bigmodel-coding executor")
+	}
+	if _, ok := bigModelExecutor.(*runtimeexecutor.BigModelCodingExecutor); !ok {
+		t.Fatalf("bigmodel executor type = %T, want *executor.BigModelCodingExecutor", bigModelExecutor)
+	}
+	if _, ok := service.coreManager.Executor("openai-compatible-bigmodel-coding"); ok {
+		t.Fatal("did not expect generic openai-compatible-bigmodel-coding executor")
+	}
+
+	astronExecutor, okAstron := service.coreManager.Executor("astron-code")
+	if !okAstron {
+		t.Fatal("expected native astron-code executor")
+	}
+	if _, ok := astronExecutor.(*runtimeexecutor.AstronCodeExecutor); !ok {
+		t.Fatalf("astron executor type = %T, want *executor.AstronCodeExecutor", astronExecutor)
+	}
+	if _, ok := service.coreManager.Executor("openai-compatible-astron-code"); ok {
+		t.Fatal("did not expect generic openai-compatible-astron-code executor")
+	}
+}
+
 func openAICompatKimiAuth() *coreauth.Auth {
 	return &coreauth.Auth{
 		ID:       "compat-kimi",

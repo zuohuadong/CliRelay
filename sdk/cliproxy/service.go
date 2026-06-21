@@ -795,6 +795,9 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 			if providerKey == "" {
 				providerKey = compatName
 			}
+			if dedicated, okDedicated := dedicatedOpenAICompatProviderKey(providerKey, compatName, a.Provider); okDedicated {
+				return dedicated, compatName, true
+			}
 			return util.OpenAICompatibleProviderKey(providerKey), compatName, true
 		}
 	}
@@ -803,6 +806,9 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 		providerKey = compatName
 		if providerKey == "" {
 			providerKey = "openai-compatibility"
+		}
+		if dedicated, okDedicated := dedicatedOpenAICompatProviderKey(providerKey, compatName); okDedicated {
+			return dedicated, compatName, true
 		}
 		return util.OpenAICompatibleProviderKey(providerKey), compatName, true
 	}
@@ -816,6 +822,20 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 		return "opencode-go", "opencode-go", true
 	}
 	return "", "", false
+}
+
+func dedicatedOpenAICompatProviderKey(values ...string) (string, bool) {
+	for _, value := range values {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "bigmodel-coding":
+			return "bigmodel-coding", true
+		case "astron-code":
+			return "astron-code", true
+		case "opencode-go":
+			return "opencode-go", true
+		}
+	}
+	return "", false
 }
 
 func (s *Service) hasNativeOpenAICompatExecutorConfig(a *coreauth.Auth, providerKey string) bool {

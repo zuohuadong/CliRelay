@@ -159,8 +159,6 @@ func TestFileSynthesizer_Synthesize_IgnoresGeminiProviderFile(t *testing.T) {
 	}
 	if len(auths) != 0 {
 		t.Fatalf("expected Gemini auth file to be ignored, got %d auths", len(auths))
-<<<<<<< HEAD
-=======
 	}
 }
 
@@ -207,7 +205,6 @@ func TestSynthesizeAuthFileExpandsPluginMultiAuths(t *testing.T) {
 	auths := SynthesizeAuthFile(ctx, fullPath, raw)
 	if len(auths) != 2 {
 		t.Fatalf("SynthesizeAuthFile() len = %d, want two plugin auths", len(auths))
->>>>>>> upstream/main
 	}
 	if firstIndex, secondIndex := auths[0].EnsureIndex(), auths[1].EnsureIndex(); firstIndex == "" || firstIndex == secondIndex {
 		t.Fatalf("auth indexes = %q/%q, want distinct non-empty indexes", firstIndex, secondIndex)

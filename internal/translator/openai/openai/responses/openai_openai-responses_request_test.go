@@ -123,7 +123,6 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DefersMessageUntil
 	}
 }
 
-<<<<<<< HEAD
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesRequestUserInputTool(t *testing.T) {
 	raw := []byte(`{
 		"tools": [
@@ -140,8 +139,6 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesRequestUs
 	}
 }
 
-=======
->>>>>>> upstream/main
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesReasoningToAssistantMessage(t *testing.T) {
 	raw := []byte(`{
 		"input": [

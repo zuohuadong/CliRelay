@@ -78,11 +78,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	t, _ := metadata["type"].(string)
 	provider := strings.ToLower(strings.TrimSpace(t))
 	if provider == "gemini" {
-<<<<<<< HEAD
-		return nil
-=======
 		provider = "gemini-cli"
->>>>>>> upstream/main
 	}
 	if ctx.PluginAuthParser != nil {
 		auths, handled, errParse := parsePluginFileAuths(ctx.PluginAuthParser, pluginapi.AuthParseRequest{
@@ -98,12 +94,6 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			}
 			perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 			perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
-<<<<<<< HEAD
-			coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
-			ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
-			coreauth.ApplyCustomHeadersFromMetadata(auth)
-			return []*coreauth.Auth{auth}
-=======
 			for index, auth := range auths {
 				if auth == nil {
 					continue
@@ -123,7 +113,6 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
 			}
 			return auths
->>>>>>> upstream/main
 		}
 	}
 	if provider == "" || provider == "gemini-cli" {
@@ -220,34 +209,6 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	return []*coreauth.Auth{a}
 }
 
-<<<<<<< HEAD
-// extractOAuthModelAliasesFromMetadata reads per-account model aliases from OAuth JSON metadata.
-// Supports both "model_aliases" and "model-aliases" keys.
-func extractOAuthModelAliasesFromMetadata(metadata map[string]any) []config.OAuthModelAlias {
-	if metadata == nil {
-		return nil
-	}
-	raw, ok := metadata["model_aliases"]
-	if !ok {
-		raw, ok = metadata["model-aliases"]
-	}
-	if !ok || raw == nil {
-		return nil
-	}
-	data, errMarshal := json.Marshal(raw)
-	if errMarshal != nil {
-		return nil
-	}
-	var aliases []config.OAuthModelAlias
-	if errUnmarshal := json.Unmarshal(data, &aliases); errUnmarshal != nil {
-		return nil
-	}
-	cfg := config.Config{
-		OAuthModelAlias: map[string][]config.OAuthModelAlias{
-			"auth": aliases,
-		},
-	}
-=======
 func parsePluginFileAuths(parser PluginAuthParser, req pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
 	if parser == nil {
 		return nil, false, nil
@@ -302,7 +263,6 @@ func extractOAuthModelAliasesFromMetadata(metadata map[string]any) []config.OAut
 			"auth": aliases,
 		},
 	}
->>>>>>> upstream/main
 	cfg.SanitizeOAuthModelAlias()
 	return cfg.OAuthModelAlias["auth"]
 }

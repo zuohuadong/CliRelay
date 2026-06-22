@@ -403,14 +403,11 @@ func APIKeyFromContext(ctx context.Context) string {
 
 func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {
 	if auth != nil {
-<<<<<<< HEAD
 		if auth.Attributes != nil {
 			if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
 				return key
 			}
 		}
-=======
->>>>>>> upstream/main
 		provider := strings.TrimSpace(auth.Provider)
 		if strings.EqualFold(provider, "vertex") {
 			if auth.Metadata != nil {

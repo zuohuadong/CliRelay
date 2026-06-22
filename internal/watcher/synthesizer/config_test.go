@@ -404,7 +404,6 @@ func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 func TestConfigSynthesizer_BigModelCoding(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	ctx := &SynthesisContext{
@@ -486,8 +485,6 @@ func TestConfigSynthesizer_AstronCode(t *testing.T) {
 	}
 }
 
-=======
->>>>>>> upstream/main
 func TestConfigSynthesizer_OpenAICompat_UsesNamespacedProviderKey(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	ctx := &SynthesisContext{
@@ -767,11 +764,7 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 		providers[a.Provider] = true
 	}
 
-<<<<<<< HEAD
 	expected := []string{"gemini", "claude", "codex", "bigmodel-coding", "openai-compatible-compat", "vertex"}
-=======
-	expected := []string{"gemini", "claude", "codex", "openai-compatible-compat", "vertex"}
->>>>>>> upstream/main
 	for _, p := range expected {
 		if !providers[p] {
 			t.Errorf("expected provider %s not found", p)

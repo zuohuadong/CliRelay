@@ -795,12 +795,9 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 			if providerKey == "" {
 				providerKey = compatName
 			}
-<<<<<<< HEAD
 			if dedicated, okDedicated := dedicatedOpenAICompatProviderKey(providerKey, compatName, a.Provider); okDedicated {
 				return dedicated, compatName, true
 			}
-=======
->>>>>>> upstream/main
 			return util.OpenAICompatibleProviderKey(providerKey), compatName, true
 		}
 	}
@@ -810,7 +807,6 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 		if providerKey == "" {
 			providerKey = "openai-compatibility"
 		}
-<<<<<<< HEAD
 		if dedicated, okDedicated := dedicatedOpenAICompatProviderKey(providerKey, compatName); okDedicated {
 			return dedicated, compatName, true
 		}
@@ -824,9 +820,6 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 	}
 	if strings.EqualFold(strings.TrimSpace(a.Provider), "opencode-go") {
 		return "opencode-go", "opencode-go", true
-=======
-		return util.OpenAICompatibleProviderKey(providerKey), compatName, true
->>>>>>> upstream/main
 	}
 	return "", "", false
 }
@@ -1309,10 +1302,6 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 		forceReplaceAuths: true,
 		auths:             auths,
 	})
-<<<<<<< HEAD
-	ctx := coreauth.WithSkipPersist(context.Background())
-=======
->>>>>>> upstream/main
 	if synthesizeConfigAuths {
 		s.registerConfigAPIKeyAuths(ctx, newCfg)
 	}
@@ -1321,18 +1310,7 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 			log.Warnf("failed to restore cooldown state after config update: %v", errRestoreCooldown)
 		}
 	}
-<<<<<<< HEAD
 	s.syncPluginRuntime(ctx)
-=======
-	s.syncPluginModelRuntime(ctx)
-}
-
-func (s *Service) reloadConfigFromWatcher() bool {
-	if s == nil || s.watcher == nil {
-		return false
-	}
-	return s.watcher.ReloadConfigIfChanged()
->>>>>>> upstream/main
 }
 
 func (s *Service) reloadConfigFromWatcher() bool {

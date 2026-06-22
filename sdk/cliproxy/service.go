@@ -848,7 +848,6 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 	return "", "", false
 }
 
-<<<<<<< HEAD
 func dedicatedOpenAICompatProviderKey(values ...string) (string, bool) {
 	for _, value := range values {
 		switch strings.ToLower(strings.TrimSpace(value)) {
@@ -861,7 +860,8 @@ func dedicatedOpenAICompatProviderKey(values ...string) (string, bool) {
 		}
 	}
 	return "", false
-=======
+}
+
 type openAICompatibilityRegistrationCache struct {
 	byName map[string]*openAICompatibilityRegistrationEntry
 }
@@ -916,7 +916,6 @@ func (c *openAICompatibilityRegistrationCache) lookup(compatName string) (*openA
 	}
 	entry, ok := c.byName[strings.ToLower(strings.TrimSpace(compatName))]
 	return entry, ok
->>>>>>> upstream/main
 }
 
 func (s *Service) hasNativeOpenAICompatExecutorConfig(a *coreauth.Auth, providerKey string) bool {
@@ -1091,7 +1090,6 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		if compatProviderKey == "" {
 			compatProviderKey = "openai-compatibility"
 		}
-<<<<<<< HEAD
 		if strings.EqualFold(compatProviderKey, "bigmodel-coding") {
 			s.coreManager.RegisterExecutor(executor.NewBigModelCodingExecutor(s.cfg))
 			return
@@ -1103,14 +1101,13 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		if strings.EqualFold(compatProviderKey, "opencode-go") {
 			s.coreManager.RegisterExecutor(executor.NewOpenCodeGoExecutor(s.cfg))
 			return
-=======
+		}
 		if !forceReplace {
 			if existingExecutor, hasExecutor := s.coreManager.Executor(compatProviderKey); hasExecutor {
 				if _, isOpenAICompatExecutor := existingExecutor.(*executor.OpenAICompatExecutor); isOpenAICompatExecutor {
 					return
 				}
 			}
->>>>>>> upstream/main
 		}
 		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(compatProviderKey, s.cfg))
 		return

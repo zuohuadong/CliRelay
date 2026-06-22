@@ -95,12 +95,7 @@ func TestCodexWebsocketsExecutePreservesPreviousResponseIDUpstream(t *testing.T)
 
 func TestCodexWebsocketsExecuteStreamSurfacesResponseFailedWithoutWaitingForCompleted(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-<<<<<<< HEAD
-=======
 	capturedPayload := make(chan []byte, 1)
-	delta := []byte(`{"type":"response.output_text.delta","delta":"hello"}`)
-	completed := []byte(`{"type":"response.completed","response":{"id":"resp-1","output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
->>>>>>> upstream/main
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -108,29 +103,17 @@ func TestCodexWebsocketsExecuteStreamSurfacesResponseFailedWithoutWaitingForComp
 		}
 		defer func() { _ = conn.Close() }()
 
-<<<<<<< HEAD
-		if _, _, err := conn.ReadMessage(); err != nil {
-			t.Fatalf("read upstream websocket message: %v", err)
-		}
-
-		failed := []byte(`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"Rate limit reached."}}}`)
-		if errWrite := conn.WriteMessage(websocket.TextMessage, failed); errWrite != nil {
-			t.Fatalf("write failed websocket message: %v", errWrite)
-=======
 		_, payload, errRead := conn.ReadMessage()
 		if errRead != nil {
 			t.Errorf("read upstream websocket message: %v", errRead)
 			return
 		}
 		capturedPayload <- bytes.Clone(payload)
-		if errWrite := conn.WriteMessage(websocket.TextMessage, delta); errWrite != nil {
-			t.Errorf("write delta websocket message: %v", errWrite)
+
+		failed := []byte(`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"Rate limit reached."}}}`)
+		if errWrite := conn.WriteMessage(websocket.TextMessage, failed); errWrite != nil {
+			t.Errorf("write failed websocket message: %v", errWrite)
 			return
-		}
-		if errWrite := conn.WriteMessage(websocket.TextMessage, completed); errWrite != nil {
-			t.Errorf("write completed websocket message: %v", errWrite)
-			return
->>>>>>> upstream/main
 		}
 	}))
 	defer server.Close()
@@ -139,11 +122,7 @@ func TestCodexWebsocketsExecuteStreamSurfacesResponseFailedWithoutWaitingForComp
 	auth := &cliproxyauth.Auth{ID: "auth-1", Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
 	req := cliproxyexecutor.Request{
 		Model:   "gpt-5-codex",
-<<<<<<< HEAD
-		Payload: []byte(`{"model":"gpt-5-codex","input":"hello","stream":true}`),
-=======
 		Payload: []byte(`{"model":"prolite/gpt-5-codex","input":[{"type":"message","role":"user","content":"hello"}]}`),
->>>>>>> upstream/main
 	}
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("codex")}
 

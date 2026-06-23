@@ -2,6 +2,11 @@ name: Update codex-tui version
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Optional @openai/codex version to apply; defaults to npm latest.
+        required: false
+        type: string
   schedule:
     # GitHub cron is UTC; 10:00 UTC = 18:00 Beijing time
     - cron: '0 10 * * *'
@@ -40,7 +45,12 @@ jobs:
         run: |
           set -euo pipefail
           BEFORE="$(grep -oP 'DefaultCodexFingerprintVersion\s+=\s+"\K[^"]+' internal/config/config.go)"
-          bash scripts/update-codex-version.sh
+          TARGET_VERSION="${{ github.event.inputs.version || '' }}"
+          if [ -n "${TARGET_VERSION}" ]; then
+            bash scripts/update-codex-version.sh "${TARGET_VERSION}"
+          else
+            bash scripts/update-codex-version.sh
+          fi
           AFTER="$(grep -oP 'DefaultCodexFingerprintVersion\s+=\s+"\K[^"]+' internal/config/config.go)"
 
           if [ "$BEFORE" = "$AFTER" ]; then

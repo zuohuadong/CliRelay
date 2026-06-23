@@ -25,8 +25,16 @@ current_version() {
 
 latest_npm_version() {
     curl -fsS 'https://registry.npmjs.org/@openai/codex/latest' \
-        | sed -n 's/.*"version"\s*:\s*"\([^"]*\)".*/\1/p' \
+        | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
         | head -1
+}
+
+replace_literal() {
+    local file="$1"
+    local old="$2"
+    local new="$3"
+
+    SEARCH="$old" REPLACEMENT="$new" perl -0pi -e 's/\Q$ENV{SEARCH}\E/$ENV{REPLACEMENT}/g' "$file"
 }
 
 # ── Determine target version ─────────────────────────────────────────────────
@@ -61,11 +69,20 @@ NEW_UA="codex-tui/${NEW_VERSION} (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-
 # ── Update source files ─────────────────────────────────────────────────────
 
 # 1. internal/config/config.go — default fingerprint constants
-sed -i '' "s|${OLD_UA}|${NEW_UA}|g" "$REPO_ROOT/internal/config/config.go"
-sed -i '' "s|DefaultCodexFingerprintVersion       = \"${CUR_VERSION}\"|DefaultCodexFingerprintVersion       = \"${NEW_VERSION}\"|" "$REPO_ROOT/internal/config/config.go"
+replace_literal \
+    "$REPO_ROOT/internal/config/config.go" \
+    "$OLD_UA" \
+    "$NEW_UA"
+replace_literal \
+    "$REPO_ROOT/internal/config/config.go" \
+    "DefaultCodexFingerprintVersion       = \"${CUR_VERSION}\"" \
+    "DefaultCodexFingerprintVersion       = \"${NEW_VERSION}\""
 
 # 2. internal/runtime/executor/codex_executor.go — fallback User-Agent constant
-sed -i '' "s|${OLD_UA}|${NEW_UA}|g" "$REPO_ROOT/internal/runtime/executor/codex_executor.go"
+replace_literal \
+    "$REPO_ROOT/internal/runtime/executor/codex_executor.go" \
+    "$OLD_UA" \
+    "$NEW_UA"
 
 # 3. Test files — update all version and User-Agent references
 for f in \
@@ -74,11 +91,9 @@ for f in \
     "$REPO_ROOT/internal/api/mcp_proxy_test.go" \
     "$REPO_ROOT/internal/runtime/executor/openai_compat_executor_compact_test.go"; do
     [ -f "$f" ] || continue
-    sed -i '' "s|${OLD_UA}|${NEW_UA}|g" "$f"
-    # Bare version strings in test assertions (e.g. "0.135.0")
-    # Be careful to only replace the exact version number, not substrings in other contexts.
-    # We match it as a standalone quoted string.
-    sed -i '' "s|\"${CUR_VERSION}\"|\"${NEW_VERSION}\"|g" "$f"
+    replace_literal "$f" "$OLD_UA" "$NEW_UA"
+    # Bare version references in assertions and failure messages.
+    replace_literal "$f" "$CUR_VERSION" "$NEW_VERSION"
 done
 
 # ── Format & verify ─────────────────────────────────────────────────────────

@@ -26,7 +26,6 @@ for removed_model in sora-2; do
   stale_hits="$(git grep -n -i -F "${removed_model}" -- \
     ':!progress.md' \
     ':!.mailbox/**' \
-    ':!scripts/sync-safety-check.sh' \
     ':!**/*_test.go' \
     ':!**/*.test.ts' \
     ':!**/*.test.tsx' \

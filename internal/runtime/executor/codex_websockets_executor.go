@@ -861,7 +861,15 @@ func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecuto
 
 	var cache helps.CodexCache
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
+<<<<<<< HEAD
 		if cached, ok, _ := codexClaudeCodePromptCache(context.Background(), req); ok {
+=======
+		cached, ok, errCache := helps.ClaudeCodePromptCache(ctx, req.Model, req.Payload, nil)
+		if errCache != nil {
+			return nil, nil, errCache
+		}
+		if ok {
+>>>>>>> upstream/main
 			cache = cached
 		}
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {

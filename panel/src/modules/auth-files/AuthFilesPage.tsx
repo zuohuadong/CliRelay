@@ -229,11 +229,13 @@ export function AuthFilesPage() {
     uploading,
     deletingAll,
     statusUpdating,
+    codexFastModeUpdating,
     tagSavingByName,
     downloadAuthFile,
     handleUpload,
     handleDeleteSelection,
     setFileEnabled,
+    setCodexFastMode,
     saveAuthFileTags,
   } = useAuthFilesFileActions({
     loadAll,
@@ -523,6 +525,8 @@ export function AuthFilesPage() {
     openTagsEditor: (file) => setTagsEditorFileName(file.name),
     statusUpdating,
     setFileEnabled,
+    codexFastModeUpdating,
+    setCodexFastMode,
     usageIndex,
   });
 
@@ -592,7 +596,9 @@ export function AuthFilesPage() {
             resolveQuotaCardSlots={resolveQuotaCardSlots}
             refreshQuota={refreshQuota}
             setFileEnabled={setFileEnabled}
+            setCodexFastMode={setCodexFastMode}
             statusUpdating={statusUpdating}
+            codexFastModeUpdating={codexFastModeUpdating}
             usageIndex={usageIndex}
             resolveAuthFileStats={resolveAuthFileStats}
             toggleFileSelection={toggleFileSelection}

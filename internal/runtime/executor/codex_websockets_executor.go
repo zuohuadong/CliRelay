@@ -225,6 +225,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
 	clientBody := body
 	var identityState codexIdentityConfuseState
+	body = applyCodexFastModeServiceTier(auth, body)
 	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, body)
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
@@ -451,6 +452,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
 	clientBody := body
 	var identityState codexIdentityConfuseState
+	body = applyCodexFastModeServiceTier(auth, body)
 	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, userPayload, body)
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)

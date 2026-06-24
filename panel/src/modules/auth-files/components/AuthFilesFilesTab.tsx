@@ -16,6 +16,7 @@ import {
   SlidersHorizontal,
   Tags,
   Upload,
+  Zap,
 } from "lucide-react";
 import type { AuthFileItem } from "@/lib/http/types";
 import { Button, buttonClassName } from "@/modules/ui/Button";
@@ -520,7 +521,9 @@ interface AuthFilesFilesTabProps {
   ) => { id: string; label: string; item: QuotaItem | null }[];
   refreshQuota: (file: AuthFileItem, provider: QuotaProvider) => Promise<void>;
   setFileEnabled: (file: AuthFileItem, enabled: boolean) => Promise<void>;
+  setCodexFastMode: (file: AuthFileItem, enabled: boolean) => Promise<void>;
   statusUpdating: Record<string, boolean>;
+  codexFastModeUpdating: Record<string, boolean>;
   usageIndex: UsageIndex;
   resolveAuthFileStats: (
     file: AuthFileItem,
@@ -597,7 +600,9 @@ export function AuthFilesFilesTab({
   resolveQuotaCardSlots,
   refreshQuota,
   setFileEnabled,
+  setCodexFastMode,
   statusUpdating,
+  codexFastModeUpdating,
   usageIndex,
   resolveAuthFileStats,
   toggleFileSelection,
@@ -1157,6 +1162,8 @@ export function AuthFilesFilesTab({
                   const fileDisabled = Boolean(file.disabled);
                   const fileSelected = selectedFileNameSet.has(file.name);
                   const typeKey = resolveFileType(file);
+                  const isCodexFile = typeKey === "codex";
+                  const codexFastModeEnabled = Boolean(file.codex_fast_mode ?? file.codexFastMode);
                   const badgeClass = TYPE_BADGE_CLASSES[typeKey] ?? TYPE_BADGE_CLASSES.unknown;
                   const displayTitle = resolveAuthFileDisplayName(file) || String(file.name || "");
                   const provider = resolveQuotaProvider(file);
@@ -1318,6 +1325,27 @@ export function AuthFilesFilesTab({
 
                       <div className="mt-auto flex items-center justify-between gap-2 pt-3">
                         <div className="inline-flex items-center gap-1">
+                          {isCodexFile && !runtimeOnly ? (
+                            <HoverTooltip
+                              content={t(
+                                "auth_files.codex_fast_mode_hint",
+                                "Codex fast mode uses the priority service tier and may consume more quota.",
+                              )}
+                            >
+                              <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-1.5 py-1 dark:border-white/10">
+                                <Zap size={14} className="text-amber-500" aria-hidden="true" />
+                                <ToggleSwitch
+                                  ariaLabel={t("auth_files.codex_fast_mode", "Fast mode")}
+                                  checked={codexFastModeEnabled}
+                                  onCheckedChange={(enabled) =>
+                                    void setCodexFastMode(file, enabled)
+                                  }
+                                  disabled={Boolean(codexFastModeUpdating[file.name])}
+                                />
+                              </span>
+                            </HoverTooltip>
+                          ) : null}
+
                           {provider ? (
                             <HoverTooltip content={t("common.refresh")}>
                               <Button

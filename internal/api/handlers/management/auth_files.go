@@ -597,6 +597,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if websockets, ok := authWebsocketsValue(auth); ok {
 		entry["websockets"] = websockets
 	}
+	if codexFastMode, ok := authCodexFastModeValue(auth); ok {
+		entry["codex_fast_mode"] = codexFastMode
+	}
 	return entry
 }
 
@@ -645,6 +648,40 @@ func addAuthFileTokenHealth(entry gin.H, provider string, metadata map[string]an
 		entry["token_last_refresh"] = lastRefresh.UTC()
 		entry["token_last_refresh_ms"] = lastRefresh.UTC().UnixMilli()
 	}
+}
+
+func authCodexFastModeValue(auth *coreauth.Auth) (bool, bool) {
+	if auth == nil {
+		return false, false
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return false, false
+	}
+	if auth.Attributes != nil {
+		if raw := strings.TrimSpace(auth.Attributes["codex_fast_mode"]); raw != "" {
+			parsed, errParse := strconv.ParseBool(raw)
+			if errParse == nil {
+				return parsed, true
+			}
+		}
+	}
+	if auth.Metadata == nil {
+		return false, true
+	}
+	raw, ok := auth.Metadata["codex_fast_mode"]
+	if !ok || raw == nil {
+		return false, true
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v, true
+	case string:
+		parsed, errParse := strconv.ParseBool(strings.TrimSpace(v))
+		if errParse == nil {
+			return parsed, true
+		}
+	}
+	return false, true
 }
 
 func authWebsocketsValue(auth *coreauth.Auth) (bool, bool) {
@@ -1657,6 +1694,9 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["websockets"]; ok {
 		syncAuthFileWebsocketsAttribute(auth)
 	}
+	if _, ok := touchedRoots["codex_fast_mode"]; ok {
+		syncAuthFileCodexFastModeAttribute(auth)
+	}
 	if _, ok := touchedRoots["disabled"]; ok {
 		syncAuthFileDisabledState(auth)
 	}
@@ -1805,6 +1845,21 @@ func syncAuthFileWebsocketsAttribute(auth *coreauth.Auth) {
 		return
 	}
 	auth.Attributes["websockets"] = strconv.FormatBool(websockets)
+}
+
+func syncAuthFileCodexFastModeAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	fastMode, ok := authFileBoolValue(auth.Metadata["codex_fast_mode"])
+	if !ok {
+		delete(auth.Attributes, "codex_fast_mode")
+		return
+	}
+	auth.Attributes["codex_fast_mode"] = strconv.FormatBool(fastMode)
 }
 
 func authFileBoolValue(value any) (bool, bool) {

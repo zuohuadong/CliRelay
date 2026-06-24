@@ -251,6 +251,47 @@ async function fetchOwnerPresets(): Promise<ModelOwnerPreset[]> {
   return normalizeOwnerPresetResponse(await apiClient.get("/model-owner-presets"));
 }
 
+// 后端 model_prices 表里的单条定价记录（GET /model-prices 返回格式）。
+interface ModelPriceEntry {
+  model: string;
+  mode: ModelPricingMode;
+  input_price_per_million: number;
+  output_price_per_million: number;
+  cached_price_per_million: number;
+  price_per_call: number;
+}
+
+// 从后端 model_prices 表加载所有已配置定价。后端是定价的单一事实源，
+// usage 成本计算也读这张表，因此 manage/models 必须复用它，
+// 而不是写入不存在的 /model-configs 定价端点。
+async function fetchModelPrices(): Promise<Map<string, ModelPricing>> {
+  const payload = await apiClient.get<{ data?: ModelPriceEntry[] }>("/model-prices");
+  const rows = Array.isArray(payload?.data) ? payload.data : [];
+  const map = new Map<string, ModelPricing>();
+  for (const row of rows) {
+    const id = String(row?.model ?? "").trim();
+    if (!id) continue;
+    map.set(id, {
+      mode: row.mode === "call" ? "call" : "token",
+      inputPricePerMillion: Number(row.input_price_per_million) || 0,
+      outputPricePerMillion: Number(row.output_price_per_million) || 0,
+      cachedPricePerMillion: Number(row.cached_price_per_million) || 0,
+      pricePerCall: Number(row.price_per_call) || 0,
+    });
+  }
+  return map;
+}
+
+// 用 model_prices 覆盖模型列表里的 pricing：后端有记录就采用后端值，
+// 否则保留各来源自带的定价（多数为空）。
+function applyModelPrices(models: ModelItem[], prices: Map<string, ModelPricing>): ModelItem[] {
+  if (prices.size === 0) return models;
+  return models.map((model) => {
+    const override = prices.get(model.id);
+    return override ? { ...model, pricing: override } : model;
+  });
+}
+
 function availabilityItemToModel(item: ModelAvailabilityItem): ModelItem {
   return {
     id: item.id,
@@ -383,10 +424,21 @@ async function saveModelConfig(form: ModelFormState, scope: ModelScope) {
     throw new Error("Model ID is required");
   }
 
+  // 定价是后端 model_prices 表里持久化的，写 PUT /model-prices/:id。
+  // 该端点同时服务于 usage 成本计算，保证 manage/models 与统计口径一致。
+  const targetId = (form.originalId || payload.id).trim();
+  await apiClient.put(`/model-prices/${encodeURIComponent(targetId)}`, payload.pricing);
+
+  // 元数据（描述/启用）当前没有后端写端点：先尝试写 /model-configs，
+  // 失败时降级为乐观更新（仅本地状态生效），不阻塞定价保存成功。
   if (form.originalId) {
-    await apiClient.put(modelConfigItemPath(form.originalId, scope), payload);
+    await apiClient
+      .put(modelConfigItemPath(form.originalId, scope), payload)
+      .catch(() => undefined);
   } else {
-    await apiClient.post(modelConfigCollectionPath(scope), payload);
+    await apiClient
+      .post(modelConfigCollectionPath(scope), payload)
+      .catch(() => undefined);
   }
 
   return payloadToModel(payload, scope === "library" ? "seed" : "user");
@@ -536,14 +588,16 @@ export function ModelsPage() {
   const loadModels = useCallback(async () => {
     setLoading(true);
     try {
-      const [data, presets, availability, pathAvailability] = await Promise.all([
+      const [data, presets, availability, pathAvailability, prices] = await Promise.all([
         fetchModelConfigs(modelScope),
         fetchOwnerPresets(),
         modelScope === "active" ? loadConfiguredModelAvailability() : Promise.resolve(null),
         loadModelPathAvailability().catch(() => null),
+        fetchModelPrices().catch(() => new Map<string, ModelPricing>()),
       ]);
       const pathItems = pathAvailability?.items ?? [];
-      const visibleData = mergeConfiguredModelAvailability(data, availability, pathItems);
+      const merged = mergeConfiguredModelAvailability(data, availability, pathItems);
+      const visibleData = applyModelPrices(merged, prices);
       setModels(visibleData);
       setOwnerPresets(presets);
       setOwnerFilter((current) => {
@@ -782,7 +836,13 @@ export function ModelsPage() {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      await apiClient.delete(`/model-configs/${encodeURIComponent(deleteTarget.id)}`);
+      // 删除模型时清除其后端定价记录；元数据删除走 /model-configs（无端点则降级忽略）。
+      await apiClient
+        .delete(`/model-prices/${encodeURIComponent(deleteTarget.id)}`)
+        .catch(() => undefined);
+      await apiClient
+        .delete(`/model-configs/${encodeURIComponent(deleteTarget.id)}`)
+        .catch(() => undefined);
       setModels((prev) => prev.filter((model) => model.id !== deleteTarget.id));
       setSelectedModelIds((prev) => {
         if (!prev.has(deleteTarget.id)) return prev;
@@ -837,7 +897,13 @@ export function ModelsPage() {
     setDeleting(true);
     try {
       for (const modelId of ids) {
-        await apiClient.delete(`/model-configs/${encodeURIComponent(modelId)}`);
+        // 与单个删除一致：先清除后端定价记录，再删元数据（均降级，避免任一缺失阻塞）。
+        await apiClient
+          .delete(`/model-prices/${encodeURIComponent(modelId)}`)
+          .catch(() => undefined);
+        await apiClient
+          .delete(`/model-configs/${encodeURIComponent(modelId)}`)
+          .catch(() => undefined);
       }
       const deletedIds = new Set(ids);
       setModels((prev) => prev.filter((model) => !deletedIds.has(model.id)));

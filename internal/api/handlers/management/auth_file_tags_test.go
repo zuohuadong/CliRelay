@@ -93,6 +93,81 @@ func TestPatchAuthFileFieldsNormalizesTagsAndLabel(t *testing.T) {
 	}
 }
 
+func TestPatchAuthFileFieldsSyncsCodexFastMode(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+	authDir := t.TempDir()
+	filePath := authDir + "/codex.json"
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	record := &coreauth.Auth{
+		ID:       "codex.json",
+		FileName: "codex.json",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"path": filePath,
+		},
+		Metadata: map[string]any{
+			"type": "codex",
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+		t.Fatalf("failed to register auth record: %v", errRegister)
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+
+	body := `{"name":"codex.json","codex_fast_mode":true}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	h.PatchAuthFileFields(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	updated, ok := manager.GetByID("codex.json")
+	if !ok {
+		t.Fatal("updated auth not found")
+	}
+	if got := updated.Metadata["codex_fast_mode"]; got != true {
+		t.Fatalf("metadata codex_fast_mode = %#v, want true", got)
+	}
+	if got := updated.Attributes["codex_fast_mode"]; got != "true" {
+		t.Fatalf("attribute codex_fast_mode = %q, want true", got)
+	}
+	entry := h.buildAuthFileEntry(updated)
+	if got := entry["codex_fast_mode"]; got != true {
+		t.Fatalf("entry codex_fast_mode = %#v, want true", got)
+	}
+}
+
+func TestAuthFileEntryDefaultsCodexFastModeOff(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	auth := &coreauth.Auth{
+		ID:       "codex.json",
+		FileName: "codex.json",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"path": "/tmp/codex.json",
+		},
+		Metadata: map[string]any{
+			"type": "codex",
+		},
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, nil)
+
+	entry := h.buildAuthFileEntry(auth)
+
+	if got := entry["codex_fast_mode"]; got != false {
+		t.Fatalf("entry codex_fast_mode = %#v, want false", got)
+	}
+}
+
 func stringSliceEqual(value any, want []string) bool {
 	got, ok := value.([]string)
 	if !ok || len(got) != len(want) {

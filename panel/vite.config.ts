@@ -18,6 +18,14 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // jsdom 默认用 opaque origin，会导致 window.localStorage 抛 SecurityError，
+    // 进而在组件测试里报 "Cannot read properties of undefined (reading 'clear')"。
+    // 指定一个真实 origin 后 Storage API（localStorage/sessionStorage）即可用。
+    environmentOptions: {
+      jsdom: {
+        url: "http://localhost:3000/",
+      },
+    },
     setupFiles: ["src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
     exclude: ["e2e/**", "node_modules/**", "dist/**"],

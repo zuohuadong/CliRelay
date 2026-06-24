@@ -144,6 +144,8 @@ interface UseAuthFilesFilesPresentationOptions {
   openTagsEditor: (file: AuthFileItem) => void;
   statusUpdating: Record<string, boolean>;
   setFileEnabled: (file: AuthFileItem, enabled: boolean) => Promise<void>;
+  codexFastModeUpdating: Record<string, boolean>;
+  setCodexFastMode: (file: AuthFileItem, enabled: boolean) => Promise<void>;
   usageIndex: UsageIndex;
 }
 
@@ -168,6 +170,8 @@ export function useAuthFilesFilesPresentation({
   openTagsEditor,
   statusUpdating,
   setFileEnabled,
+  codexFastModeUpdating,
+  setCodexFastMode,
   usageIndex,
 }: UseAuthFilesFilesPresentationOptions) {
   const { t } = useTranslation();
@@ -823,9 +827,30 @@ export function useAuthFilesFilesPresentation({
           const quotaRefreshing = quotaProvider
             ? quotaByFileName[file.name]?.status === "loading"
             : false;
+          const isCodexFile = resolveFileType(file) === "codex";
+          const codexFastModeEnabled = Boolean(file.codex_fast_mode ?? file.codexFastMode);
 
           return (
             <div className="inline-flex min-w-max items-center justify-center gap-1 whitespace-nowrap">
+              {isCodexFile ? (
+                <HoverTooltip
+                  content={t(
+                    "auth_files.codex_fast_mode_hint",
+                    "Codex fast mode uses the priority service tier and may consume more quota.",
+                  )}
+                >
+                  <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-1.5 py-1 dark:border-white/10">
+                    <Zap size={14} className="text-amber-500" aria-hidden="true" />
+                    <ToggleSwitch
+                      ariaLabel={t("auth_files.codex_fast_mode", "Fast mode")}
+                      checked={codexFastModeEnabled}
+                      onCheckedChange={(enabled) => void setCodexFastMode(file, enabled)}
+                      disabled={Boolean(codexFastModeUpdating[file.name])}
+                    />
+                  </span>
+                </HoverTooltip>
+              ) : null}
+
               {quotaProvider ? (
                 <HoverTooltip content={t("common.refresh")}>
                   <Button
@@ -883,6 +908,7 @@ export function useAuthFilesFilesPresentation({
   }, [
     allPageSelected,
     checkAuthFileConnectivity,
+    codexFastModeUpdating,
     connectivityState,
     downloadAuthFile,
     formatPlanTypeLabel,
@@ -899,6 +925,7 @@ export function useAuthFilesFilesPresentation({
     selectablePageNames.length,
     selectedFileNameSet,
     setFileEnabled,
+    setCodexFastMode,
     setQuotaPreviewMode,
     somePageSelected,
     statusUpdating,

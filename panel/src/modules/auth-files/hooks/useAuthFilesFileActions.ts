@@ -39,6 +39,7 @@ export function useAuthFilesFileActions({
   const [uploading, setUploading] = useState(false);
   const [deletingAll, setDeletingAll] = useState(false);
   const [statusUpdating, setStatusUpdating] = useState<Record<string, boolean>>({});
+  const [codexFastModeUpdating, setCodexFastModeUpdating] = useState<Record<string, boolean>>({});
   const [tagSavingByName, setTagSavingByName] = useState<Record<string, boolean>>({});
 
   const downloadAuthFile = useCallback(
@@ -276,15 +277,69 @@ export function useAuthFilesFileActions({
     [notify, setDetailFile, setFiles, t],
   );
 
+  const setCodexFastMode = useCallback(
+    async (file: AuthFileItem, enabled: boolean) => {
+      const name = file.name;
+      const previous = Boolean(file.codex_fast_mode ?? file.codexFastMode);
+
+      const applyPatch = (item: AuthFileItem): AuthFileItem =>
+        item.name === name
+          ? {
+              ...item,
+              codex_fast_mode: enabled,
+              codexFastMode: enabled,
+            }
+          : item;
+      const rollbackPatch = (item: AuthFileItem): AuthFileItem =>
+        item.name === name
+          ? {
+              ...item,
+              codex_fast_mode: previous,
+              codexFastMode: previous,
+            }
+          : item;
+
+      setCodexFastModeUpdating((prev) => ({ ...prev, [name]: true }));
+      setFiles((prev) => prev.map(applyPatch));
+      setDetailFile((prev) => (prev && prev.name === name ? applyPatch(prev) : prev));
+
+      try {
+        await authFilesApi.patchFields({ name, codex_fast_mode: enabled });
+        notify({
+          type: "success",
+          message: enabled
+            ? t("auth_files.codex_fast_mode_enabled")
+            : t("auth_files.codex_fast_mode_disabled"),
+        });
+      } catch (err: unknown) {
+        setFiles((prev) => prev.map(rollbackPatch));
+        setDetailFile((prev) => (prev && prev.name === name ? rollbackPatch(prev) : prev));
+        notify({
+          type: "error",
+          message: err instanceof Error ? err.message : t("auth_files.save_failed"),
+        });
+      } finally {
+        setCodexFastModeUpdating((prev) => {
+          const next = { ...prev };
+          delete next[name];
+          return next;
+        });
+      }
+    },
+    [notify, setDetailFile, setFiles, t],
+  );
+
   return {
     uploading,
     deletingAll,
     statusUpdating,
+    codexFastModeUpdating,
     tagSavingByName,
     downloadAuthFile,
     handleUpload,
     handleDeleteSelection,
     setFileEnabled,
+    setCodexFastMode,
     saveAuthFileTags,
   };
 }

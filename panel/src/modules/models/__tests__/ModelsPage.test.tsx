@@ -538,6 +538,8 @@ describe("ModelsPage", () => {
     await userEvent.click(within(confirmDialog).getByRole("button", { name: /^delete$/i }));
 
     await waitFor(() => {
+      // 删除模型时同步清除后端定价记录。
+      expect(mocks.apiDelete).toHaveBeenCalledWith("/model-prices/seed-only-model");
       expect(mocks.apiDelete).toHaveBeenCalledWith("/model-configs/seed-only-model");
       expect(screen.queryByText("seed-only-model")).not.toBeInTheDocument();
     });
@@ -615,6 +617,7 @@ describe("ModelsPage", () => {
     await userEvent.click(within(confirmDialog).getByRole("button", { name: /^delete$/i }));
 
     await waitFor(() => {
+      expect(mocks.apiDelete).toHaveBeenCalledWith("/model-prices/seed-only-model");
       expect(mocks.apiDelete).toHaveBeenCalledWith("/model-configs/seed-only-model");
       expect(screen.queryByText("seed-only-model")).not.toBeInTheDocument();
     });
@@ -698,6 +701,11 @@ describe("ModelsPage", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => {
+      // 定价单独持久化到后端 model_prices 表（usage 成本计算的同一来源）。
+      expect(mocks.apiPut).toHaveBeenCalledWith("/model-prices/gpt-image-2", {
+        mode: "call",
+        price_per_call: 0.08,
+      });
       expect(mocks.apiPut).toHaveBeenCalledWith("/model-configs/gpt-image-2", {
         id: "gpt-image-2-hd",
         owned_by: "openai",

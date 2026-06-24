@@ -67,6 +67,7 @@ type videoAuthCaptureExecutor struct {
 	requestID  string
 	contentURL string
 	authIDs    []string
+	models     []string
 }
 
 func (e *videoAuthCaptureExecutor) Identifier() string { return "xai" }
@@ -78,6 +79,7 @@ func (e *videoAuthCaptureExecutor) Execute(_ context.Context, auth *coreauth.Aut
 	}
 	e.mu.Lock()
 	e.authIDs = append(e.authIDs, authID)
+	e.models = append(e.models, req.Model)
 	e.mu.Unlock()
 
 	requestID := strings.TrimSpace(gjson.GetBytes(req.Payload, "request_id").String())
@@ -116,6 +118,14 @@ func (e *videoAuthCaptureExecutor) AuthIDs() []string {
 	return out
 }
 
+func (e *videoAuthCaptureExecutor) Models() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, len(e.models))
+	copy(out, e.models)
+	return out
+}
+
 func resetVideoAuthBindingsForTest(t *testing.T) {
 	t.Helper()
 	previous := videoAuthBindings
@@ -142,6 +152,7 @@ func newVideoAuthBindingTestHandler(t *testing.T, executor *videoAuthCaptureExec
 			t.Fatalf("manager.Register(%s): %v", authID, errRegister)
 		}
 		registry.GetGlobalRegistry().RegisterClient(authID, auth.Provider, []*registry.ModelInfo{{ID: defaultXAIVideosModel}})
+		manager.RefreshSchedulerEntry(authID)
 	}
 	t.Cleanup(func() {
 		for _, authID := range authIDs {
@@ -168,33 +179,14 @@ func TestVideosModelValidationAllowsXAIVideoModel(t *testing.T) {
 			t.Fatalf("expected %s to be supported", model)
 		}
 	}
-	if !isSupportedVideosModel("sora-2") {
-		t.Fatal("expected sora-2 to be supported by the OpenAI video wrapper")
-	}
-	if isXAIVideosModel("sora-2") {
-		t.Fatal("expected sora-2 not to be treated as a native xAI video model")
+	if isSupportedVideosModel("sora-2") {
+		t.Fatal("expected removed sora-2 model to be rejected by the OpenAI video wrapper")
 	}
 	if isSupportedVideosModel("codex/grok-imagine-video") {
 		t.Fatal("expected codex/grok-imagine-video to be rejected")
 	}
 	if isSupportedVideosModel("codex/grok-imagine-video-1.5-preview") {
 		t.Fatal("expected codex/grok-imagine-video-1.5-preview to be rejected")
-	}
-}
-
-func TestBuildXAIVideosCreateRequestMapsSoraModelToXAIBackend(t *testing.T) {
-	rawJSON := []byte(`{"model":"sora-2","prompt":"a cat playing piano","seconds":"8"}`)
-
-	req, meta, err := buildXAIVideosCreateRequest(rawJSON, "sora-2")
-	if err != nil {
-		t.Fatalf("buildXAIVideosCreateRequest() error = %v", err)
-	}
-
-	if got := gjson.GetBytes(req, "model").String(); got != defaultXAIVideosModel {
-		t.Fatalf("upstream model = %q, want %s", got, defaultXAIVideosModel)
-	}
-	if meta.Model != "sora-2" {
-		t.Fatalf("response model = %q, want sora-2", meta.Model)
 	}
 }
 
@@ -603,7 +595,7 @@ func TestVideosCreateRejectsUnsupportedModel(t *testing.T) {
 
 func TestVideosCreateInvalidSizeReturnsFailedVideoResource(t *testing.T) {
 	handler := &OpenAIAPIHandler{}
-	body := strings.NewReader(`{"model":"sora-2","prompt":"make a video","size":"1080x1920"}`)
+	body := strings.NewReader(`{"model":"grok-imagine-video","prompt":"make a video","size":"1080x1920"}`)
 
 	resp := performVideosEndpointRequest(t, http.MethodPost, openAIVideosPath, "application/json", body, handler.VideosCreate)
 
@@ -613,8 +605,8 @@ func TestVideosCreateInvalidSizeReturnsFailedVideoResource(t *testing.T) {
 	if got := gjson.GetBytes(resp.Body.Bytes(), "object").String(); got != "video" {
 		t.Fatalf("object = %q, want video", got)
 	}
-	if got := gjson.GetBytes(resp.Body.Bytes(), "model").String(); got != "sora-2" {
-		t.Fatalf("model = %q, want sora-2", got)
+	if got := gjson.GetBytes(resp.Body.Bytes(), "model").String(); got != defaultXAIVideosModel {
+		t.Fatalf("model = %q, want %s", got, defaultXAIVideosModel)
 	}
 	if got := gjson.GetBytes(resp.Body.Bytes(), "status").String(); got != "failed" {
 		t.Fatalf("status = %q, want failed", got)
@@ -661,6 +653,165 @@ func TestXAIVideosNativeRejectsInvalidJSON(t *testing.T) {
 	}
 	if got := gjson.GetBytes(resp.Body.Bytes(), "error.type").String(); got != "invalid_request_error" {
 		t.Fatalf("error type = %q, want invalid_request_error", got)
+	}
+}
+
+func TestVideosCreateBindsRetrieveToSelectedAuth(t *testing.T) {
+	resetVideoAuthBindingsForTest(t)
+	executor := &videoAuthCaptureExecutor{requestID: "video-openai-bound"}
+	handler := newVideoAuthBindingTestHandler(t, executor)
+
+	createResp := performVideosEndpointRequest(t, http.MethodPost, openAIVideosPath, "application/json", strings.NewReader(`{"model":"grok-imagine-video","prompt":"make a video"}`), handler.VideosCreate)
+	if createResp.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d: %s", createResp.Code, http.StatusOK, createResp.Body.String())
+	}
+	videoID := gjson.GetBytes(createResp.Body.Bytes(), "id").String()
+	if videoID != executor.requestID {
+		t.Fatalf("created video id = %q, want %q", videoID, executor.requestID)
+	}
+	if got := gjson.GetBytes(createResp.Body.Bytes(), "model").String(); got != defaultXAIVideosModel {
+		t.Fatalf("created model = %q, want %s", got, defaultXAIVideosModel)
+	}
+
+	retrieveResp := performVideosRouteRequest(t, http.MethodGet, openAIVideosPath+"/:video_id", openAIVideosPath+"/"+videoID, "", nil, handler.VideosRetrieve)
+	if retrieveResp.Code != http.StatusOK {
+		t.Fatalf("retrieve status = %d, want %d: %s", retrieveResp.Code, http.StatusOK, retrieveResp.Body.String())
+	}
+
+	authIDs := executor.AuthIDs()
+	if len(authIDs) != 2 {
+		t.Fatalf("authIDs = %v, want two calls", authIDs)
+	}
+	if authIDs[1] != authIDs[0] {
+		t.Fatalf("retrieve auth = %q, want create auth %q; sequence=%v", authIDs[1], authIDs[0], authIDs)
+	}
+}
+
+func TestXAIVideosNativeCreateBindsRetrieveToSelectedAuth(t *testing.T) {
+	resetVideoAuthBindingsForTest(t)
+	executor := &videoAuthCaptureExecutor{requestID: "video-xai-bound"}
+	handler := newVideoAuthBindingTestHandler(t, executor)
+
+	createResp := performVideosEndpointRequest(t, http.MethodPost, xaiVideosGenerationsAPI, "application/json", strings.NewReader(`{"model":"grok-imagine-video","prompt":"make a video"}`), handler.XAIVideosGenerations)
+	if createResp.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d: %s", createResp.Code, http.StatusOK, createResp.Body.String())
+	}
+	videoID := gjson.GetBytes(createResp.Body.Bytes(), "request_id").String()
+	if videoID != executor.requestID {
+		t.Fatalf("created request_id = %q, want %q", videoID, executor.requestID)
+	}
+
+	retrieveResp := performVideosRouteRequest(t, http.MethodGet, videosPath+"/:request_id", videosPath+"/"+videoID, "", nil, handler.XAIVideosRetrieve)
+	if retrieveResp.Code != http.StatusOK {
+		t.Fatalf("retrieve status = %d, want %d: %s", retrieveResp.Code, http.StatusOK, retrieveResp.Body.String())
+	}
+
+	authIDs := executor.AuthIDs()
+	if len(authIDs) != 2 {
+		t.Fatalf("authIDs = %v, want two calls", authIDs)
+	}
+	if authIDs[1] != authIDs[0] {
+		t.Fatalf("retrieve auth = %q, want create auth %q; sequence=%v", authIDs[1], authIDs[0], authIDs)
+	}
+}
+
+func TestXAIVideosNativeRetrieveUsesBoundModel(t *testing.T) {
+	resetVideoAuthBindingsForTest(t)
+	executor := &videoAuthCaptureExecutor{requestID: "video-xai-preview-bound"}
+	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
+	manager.RegisterExecutor(executor)
+
+	authModels := []struct {
+		authID string
+		model  string
+	}{
+		{authID: "video-xai-preview-default-auth", model: defaultXAIVideosModel},
+		{authID: "video-xai-preview-auth", model: xaiVideos15PreviewModel},
+	}
+	for _, entry := range authModels {
+		auth := &coreauth.Auth{
+			ID:       entry.authID,
+			Provider: "xai",
+			Status:   coreauth.StatusActive,
+		}
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("manager.Register(%s): %v", entry.authID, errRegister)
+		}
+		registry.GetGlobalRegistry().RegisterClient(entry.authID, auth.Provider, []*registry.ModelInfo{{ID: entry.model}})
+		manager.RefreshSchedulerEntry(entry.authID)
+	}
+	t.Cleanup(func() {
+		for _, entry := range authModels {
+			registry.GetGlobalRegistry().UnregisterClient(entry.authID)
+		}
+	})
+
+	base := apihandlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	handler := NewOpenAIAPIHandler(base)
+
+	createResp := performVideosEndpointRequest(t, http.MethodPost, xaiVideosGenerationsAPI, "application/json", strings.NewReader(`{"model":"grok-imagine-video-1.5-preview","prompt":"make a video"}`), handler.XAIVideosGenerations)
+	if createResp.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d: %s", createResp.Code, http.StatusOK, createResp.Body.String())
+	}
+	videoID := gjson.GetBytes(createResp.Body.Bytes(), "request_id").String()
+	if videoID != executor.requestID {
+		t.Fatalf("created request_id = %q, want %q", videoID, executor.requestID)
+	}
+
+	retrieveResp := performVideosRouteRequest(t, http.MethodGet, videosPath+"/:request_id", videosPath+"/"+videoID, "", nil, handler.XAIVideosRetrieve)
+	if retrieveResp.Code != http.StatusOK {
+		t.Fatalf("retrieve status = %d, want %d: %s", retrieveResp.Code, http.StatusOK, retrieveResp.Body.String())
+	}
+
+	authIDs := executor.AuthIDs()
+	if len(authIDs) != 2 {
+		t.Fatalf("authIDs = %v, want two calls", authIDs)
+	}
+	if authIDs[0] != "video-xai-preview-auth" || authIDs[1] != authIDs[0] {
+		t.Fatalf("authIDs = %v, want both calls to use video-xai-preview-auth", authIDs)
+	}
+	models := executor.Models()
+	if len(models) != 2 {
+		t.Fatalf("models = %v, want two calls", models)
+	}
+	if models[0] != xaiVideos15PreviewModel || models[1] != xaiVideos15PreviewModel {
+		t.Fatalf("models = %v, want both calls to use %s", models, xaiVideos15PreviewModel)
+	}
+	binding, ok := videoAuthBindings.getBinding(videoID)
+	if !ok {
+		t.Fatal("video auth binding was not stored")
+	}
+	if binding.authID != "video-xai-preview-auth" || binding.model != xaiVideos15PreviewModel {
+		t.Fatalf("binding = {authID:%q model:%q}, want {authID:%q model:%q}", binding.authID, binding.model, "video-xai-preview-auth", xaiVideos15PreviewModel)
+	}
+}
+
+func TestVideoAuthBindingTTLUsesConfig(t *testing.T) {
+	base := apihandlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{VideoResultAuthCacheTTL: "45m"}, nil)
+	handler := NewOpenAIAPIHandler(base)
+	if got := handler.videoAuthBindingTTL(); got != 45*time.Minute {
+		t.Fatalf("videoAuthBindingTTL() = %v, want 45m", got)
+	}
+
+	base = apihandlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{VideoResultAuthCacheTTL: "invalid"}, nil)
+	handler = NewOpenAIAPIHandler(base)
+	if got := handler.videoAuthBindingTTL(); got != defaultVideoAuthBindingTTL {
+		t.Fatalf("invalid videoAuthBindingTTL() = %v, want %v", got, defaultVideoAuthBindingTTL)
+	}
+}
+
+func TestVideoAuthBindingStoreExpiresEntries(t *testing.T) {
+	store := newVideoAuthBindingStore()
+	store.entries["video-expired"] = videoAuthBinding{
+		authID:    "auth-expired",
+		expiresAt: time.Now().Add(-time.Second),
+	}
+
+	if authID, ok := store.get("video-expired"); ok {
+		t.Fatalf("expired binding returned authID=%q", authID)
+	}
+	if _, exists := store.entries["video-expired"]; exists {
+		t.Fatal("expired binding was not removed")
 	}
 }
 

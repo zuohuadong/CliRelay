@@ -503,7 +503,7 @@ func TestApplyCodexWebsocketHeadersUsesCanonicalAccountHeader(t *testing.T) {
 func TestApplyCodexPromptCacheHeadersSetsSessionIDAndLegacyConversation(t *testing.T) {
 	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: []byte(`{"prompt_cache_key":"cache-1"}`)}
 
-	_, headers := applyCodexPromptCacheHeaders("openai-response", req, []byte(`{"model":"gpt-5-codex"}`))
+	_, headers := applyCodexPromptCacheHeaders(context.Background(), "openai-response", req, []byte(`{"model":"gpt-5-codex"}`))
 
 	if got := headerValueCaseInsensitive(headers, "session_id"); got != "" {
 		t.Fatalf("session_id = %q, want empty", got)
@@ -577,8 +577,8 @@ func TestApplyCodexPromptCacheHeadersClaudeUsesClaudeCodeSessionID(t *testing.T)
 		}`),
 	}
 
-	firstBody, firstHeaders := applyCodexPromptCacheHeaders("claude", firstReq, []byte(`{"model":"gpt-5-codex"}`))
-	secondBody, secondHeaders := applyCodexPromptCacheHeaders("claude", secondReq, []byte(`{"model":"gpt-5-codex"}`))
+	firstBody, firstHeaders := applyCodexPromptCacheHeaders(context.Background(), "claude", firstReq, []byte(`{"model":"gpt-5-codex"}`))
+	secondBody, secondHeaders := applyCodexPromptCacheHeaders(context.Background(), "claude", secondReq, []byte(`{"model":"gpt-5-codex"}`))
 
 	firstKey := gjson.GetBytes(firstBody, "prompt_cache_key").String()
 	secondKey := gjson.GetBytes(secondBody, "prompt_cache_key").String()
@@ -602,7 +602,7 @@ func TestApplyCodexPromptCacheHeadersClaudeRejectsBareUserID(t *testing.T) {
 		Payload: []byte(`{"metadata":{"user_id":"same-user-across-chats"},"messages":[{"role":"user","content":[{"type":"text","text":"first"}]}]}`),
 	}
 
-	body, headers := applyCodexPromptCacheHeaders("claude", req, []byte(`{"model":"gpt-5-codex"}`))
+	body, headers := applyCodexPromptCacheHeaders(context.Background(), "claude", req, []byte(`{"model":"gpt-5-codex"}`))
 
 	if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != "" {
 		t.Fatalf("bare metadata.user_id must not create websocket prompt_cache_key, got %q; body=%s", got, string(body))
@@ -629,7 +629,7 @@ func TestApplyCodexWebsocketHeadersIdentityConfuseRemapsPromptCacheKey(t *testin
 		Payload: []byte(`{"prompt_cache_key":"cache-ws-1","client_metadata":{"x-codex-installation-id":"install-ws-1"}}`),
 	}
 
-	body, headers := applyCodexPromptCacheHeaders("openai-response", req, []byte(`{"model":"gpt-5-codex"}`))
+	body, headers := applyCodexPromptCacheHeaders(context.Background(), "openai-response", req, []byte(`{"model":"gpt-5-codex"}`))
 	body, identityState := applyCodexIdentityConfuseBody(cfg, auth, req.Payload, body)
 	ctx := contextWithGinHeaders(map[string]string{
 		"X-Codex-Turn-Metadata": `{"prompt_cache_key":"cache-ws-1","turn_id":"turn-ws-1","window_id":"cache-ws-1:0"}`,

@@ -179,33 +179,14 @@ func TestVideosModelValidationAllowsXAIVideoModel(t *testing.T) {
 			t.Fatalf("expected %s to be supported", model)
 		}
 	}
-	if !isSupportedVideosModel("sora-2") {
-		t.Fatal("expected sora-2 to be supported by the OpenAI video wrapper")
-	}
-	if isXAIVideosModel("sora-2") {
-		t.Fatal("expected sora-2 not to be treated as a native xAI video model")
+	if isSupportedVideosModel("sora-2") {
+		t.Fatal("expected removed sora-2 model to be rejected by the OpenAI video wrapper")
 	}
 	if isSupportedVideosModel("codex/grok-imagine-video") {
 		t.Fatal("expected codex/grok-imagine-video to be rejected")
 	}
 	if isSupportedVideosModel("codex/grok-imagine-video-1.5-preview") {
 		t.Fatal("expected codex/grok-imagine-video-1.5-preview to be rejected")
-	}
-}
-
-func TestBuildXAIVideosCreateRequestMapsSoraModelToXAIBackend(t *testing.T) {
-	rawJSON := []byte(`{"model":"sora-2","prompt":"a cat playing piano","seconds":"8"}`)
-
-	req, meta, err := buildXAIVideosCreateRequest(rawJSON, "sora-2")
-	if err != nil {
-		t.Fatalf("buildXAIVideosCreateRequest() error = %v", err)
-	}
-
-	if got := gjson.GetBytes(req, "model").String(); got != defaultXAIVideosModel {
-		t.Fatalf("upstream model = %q, want %s", got, defaultXAIVideosModel)
-	}
-	if meta.Model != "sora-2" {
-		t.Fatalf("response model = %q, want sora-2", meta.Model)
 	}
 }
 
@@ -614,7 +595,7 @@ func TestVideosCreateRejectsUnsupportedModel(t *testing.T) {
 
 func TestVideosCreateInvalidSizeReturnsFailedVideoResource(t *testing.T) {
 	handler := &OpenAIAPIHandler{}
-	body := strings.NewReader(`{"model":"sora-2","prompt":"make a video","size":"1080x1920"}`)
+	body := strings.NewReader(`{"model":"grok-imagine-video","prompt":"make a video","size":"1080x1920"}`)
 
 	resp := performVideosEndpointRequest(t, http.MethodPost, openAIVideosPath, "application/json", body, handler.VideosCreate)
 
@@ -624,8 +605,8 @@ func TestVideosCreateInvalidSizeReturnsFailedVideoResource(t *testing.T) {
 	if got := gjson.GetBytes(resp.Body.Bytes(), "object").String(); got != "video" {
 		t.Fatalf("object = %q, want video", got)
 	}
-	if got := gjson.GetBytes(resp.Body.Bytes(), "model").String(); got != "sora-2" {
-		t.Fatalf("model = %q, want sora-2", got)
+	if got := gjson.GetBytes(resp.Body.Bytes(), "model").String(); got != defaultXAIVideosModel {
+		t.Fatalf("model = %q, want %s", got, defaultXAIVideosModel)
 	}
 	if got := gjson.GetBytes(resp.Body.Bytes(), "status").String(); got != "failed" {
 		t.Fatalf("status = %q, want failed", got)
@@ -675,14 +656,12 @@ func TestXAIVideosNativeRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
-=======
 func TestVideosCreateBindsRetrieveToSelectedAuth(t *testing.T) {
 	resetVideoAuthBindingsForTest(t)
 	executor := &videoAuthCaptureExecutor{requestID: "video-openai-bound"}
 	handler := newVideoAuthBindingTestHandler(t, executor)
 
-	createResp := performVideosEndpointRequest(t, http.MethodPost, openAIVideosPath, "application/json", strings.NewReader(`{"model":"sora-2","prompt":"make a video"}`), handler.VideosCreate)
+	createResp := performVideosEndpointRequest(t, http.MethodPost, openAIVideosPath, "application/json", strings.NewReader(`{"model":"grok-imagine-video","prompt":"make a video"}`), handler.VideosCreate)
 	if createResp.Code != http.StatusOK {
 		t.Fatalf("create status = %d, want %d: %s", createResp.Code, http.StatusOK, createResp.Body.String())
 	}
@@ -836,7 +815,6 @@ func TestVideoAuthBindingStoreExpiresEntries(t *testing.T) {
 	}
 }
 
->>>>>>> upstream/main
 func TestVideosCreateFormRequest(t *testing.T) {
 	rawJSON, err := videosCreateRequestFromFormContext("model=grok-imagine-video&prompt=make+a+video&seconds=4&size=720x1280&input_reference%5Bimage_url%5D=https%3A%2F%2Fexample.com%2Fa.png")
 	if err != nil {

@@ -1282,9 +1282,13 @@ func (m *Manager) preparedExecutionModels(auth *Auth, routeModel string, opts cl
 	return models, pooled
 }
 
-func (m *Manager) preparedExecutionModelsWithAlias(auth *Auth, routeModel string) ([]string, bool, OAuthModelAliasResult) {
+func (m *Manager) preparedExecutionModelsWithAlias(auth *Auth, routeModel string, opts cliproxyexecutor.Options) ([]string, []string, bool, OAuthModelAliasResult) {
 	candidates, pooled, aliasResult := m.executionModelCandidatesWithAlias(auth, routeModel)
-	return m.filterExecutionModels(auth, routeModel, candidates, pooled), pooled, aliasResult
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil {
+		cfg = &internalconfig.Config{}
+	}
+	return m.filterExecutionModels(cfg, auth, routeModel, candidates, pooled, opts), candidates, pooled, aliasResult
 }
 
 func (m *Manager) executionModelCandidatesWithAlias(auth *Auth, routeModel string) ([]string, bool, OAuthModelAliasResult) {
@@ -1323,7 +1327,6 @@ func (m *Manager) prepareExecutionModels(auth *Auth, routeModel string) []string
 	return models
 }
 
-<<<<<<< HEAD
 func noExecutableUpstreamModelError(ctx context.Context, cfg *internalconfig.Config, auth *Auth, opts cliproxyexecutor.Options, provider, routeModel string, candidates []string) *Error {
 	provider = strings.TrimSpace(provider)
 	routeModel = strings.TrimSpace(routeModel)
@@ -1443,7 +1446,8 @@ func (m *Manager) routeModelAvailability(auth *Auth, routeModel string, now time
 	checkModel := m.selectionModelForAuth(auth, routeModel)
 	blocked, reason, next := isAuthBlockedForModel(auth, checkModel, now)
 	return !blocked, reason, next
-=======
+}
+
 func rewriteForceMappedResponse(resp *cliproxyexecutor.Response, aliasResult OAuthModelAliasResult) {
 	if resp == nil || !aliasResult.ForceMapping || strings.TrimSpace(aliasResult.OriginalAlias) == "" {
 		return
@@ -1473,7 +1477,6 @@ func finishForceMappedStreamChunks(rewriter *StreamRewriter) []byte {
 		return nil
 	}
 	return rewriter.Finish()
->>>>>>> upstream/main
 }
 
 func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
@@ -1975,7 +1978,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			continue
 		}
 		if cliproxyexecutor.DownstreamWebsocket(ctx) && !shouldProbeDownstreamWebsocketBootstrap(provider) {
-			return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, nil, streamResult.Chunks), nil
+			return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, nil, streamResult.Chunks, aliasResult), nil
 		}
 
 		buffered, closed, bootstrapErr := readStreamBootstrap(ctx, streamResult.Chunks)
@@ -2646,11 +2649,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 
-<<<<<<< HEAD
-		models, candidates, pooled := m.preparedExecutionModelsWithCandidates(auth, routeModel, opts)
-=======
-		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel)
->>>>>>> upstream/main
+		models, candidates, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel, opts)
 		if len(models) == 0 {
 			runtimeConfig, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 			lastErr = noExecutableUpstreamModelError(ctx, runtimeConfig, auth, opts, provider, routeModel, candidates)
@@ -2766,11 +2765,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 
-<<<<<<< HEAD
-		models, candidates, pooled := m.preparedExecutionModelsWithCandidates(auth, routeModel, opts)
-=======
-		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel)
->>>>>>> upstream/main
+		models, candidates, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel, opts)
 		if len(models) == 0 {
 			runtimeConfig, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 			lastErr = noExecutableUpstreamModelError(ctx, runtimeConfig, auth, opts, provider, routeModel, candidates)
@@ -2879,11 +2874,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
-<<<<<<< HEAD
-		models, candidates, pooled := m.preparedExecutionModelsWithCandidates(auth, routeModel, opts)
-=======
-		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel)
->>>>>>> upstream/main
+		models, candidates, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel, opts)
 		if len(models) == 0 {
 			runtimeConfig, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 			lastErr = noExecutableUpstreamModelError(ctx, runtimeConfig, auth, opts, provider, routeModel, candidates)
@@ -5570,12 +5561,8 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 				continue
 			}
 			m.MarkResult(creditsCtx, result)
-<<<<<<< HEAD
-			return resp, true
-=======
 			rewriteForceMappedResponse(&resp, aliasResult)
-			return resp, true, nil
->>>>>>> upstream/main
+			return resp, true
 		}
 	}
 	return cliproxyexecutor.Response{}, false

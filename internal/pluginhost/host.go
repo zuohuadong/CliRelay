@@ -466,7 +466,10 @@ func (h *Host) pluginIdentityCurrent(id string, path string, version string) boo
 		return false
 	}
 	path = cleanPluginPath(path)
-	if path == "" || h.activePluginPaths[id] != path {
+	if path == "" {
+		return true
+	}
+	if h.activePluginPaths[id] != path {
 		return false
 	}
 	activePathVersion, okVersion := h.pluginFileVersions[path]

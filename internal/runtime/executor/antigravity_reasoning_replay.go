@@ -403,6 +403,29 @@ func antigravityReplayPartWritePath(payload []byte, contentIndex int, partIndex 
 	return partsPath + ".0"
 }
 
+func appendAntigravityReplayPart(payload []byte, contentIndex int, part map[string]any) ([]byte, bool) {
+	partsPath := fmt.Sprintf("request.contents.%d.parts", contentIndex)
+	parts := gjson.GetBytes(payload, partsPath)
+	if !parts.IsArray() {
+		updated, err := sjson.SetBytes(payload, partsPath, []any{part})
+		return updated, err == nil
+	}
+
+	arr := parts.Array()
+	out := make([]any, 0, len(arr)+1)
+	for _, existing := range arr {
+		var decoded any
+		if err := json.Unmarshal([]byte(existing.Raw), &decoded); err != nil {
+			return payload, false
+		}
+		out = append(out, decoded)
+	}
+	out = append(out, part)
+
+	updated, err := sjson.SetBytes(payload, partsPath, out)
+	return updated, err == nil
+}
+
 func insertAntigravityReasoningReplayItems(payload []byte, items [][]byte) ([]byte, bool) {
 	out := payload
 	changed := false
@@ -422,10 +445,16 @@ func insertAntigravityReasoningReplayItems(payload []byte, items [][]byte) ([]by
 				if strings.TrimSpace(gjson.GetBytes(out, path).String()) != "" {
 					continue
 				}
+				updated, err := sjson.SetBytes(out, path, sig)
+				if err != nil {
+					continue
+				}
+				out = updated
+				changed = true
+				continue
 			}
-			path := antigravityReplayPartWritePath(out, ci, pi) + ".thoughtSignature"
-			updated, err := sjson.SetBytes(out, path, sig)
-			if err != nil {
+			updated, ok := appendAntigravityReplayPart(out, ci, map[string]any{"thoughtSignature": sig})
+			if !ok {
 				continue
 			}
 			out = updated

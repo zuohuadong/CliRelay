@@ -30,8 +30,8 @@ const (
 	xaiVideosGenerationsAPI  = "/v1/videos/generations"
 	xaiVideosEditsAPI        = "/v1/videos/edits"
 	xaiVideosExtensionsAPI   = "/v1/videos/extensions"
-	defaultOpenAIVideosModel = "sora-2"
 	defaultXAIVideosModel    = "grok-imagine-video"
+	defaultOpenAIVideosModel = defaultXAIVideosModel
 	xaiVideos15PreviewModel  = "grok-imagine-video-1.5-preview"
 	xaiVideosHandlerType     = "openai-video"
 	defaultVideosSeconds     = "4"
@@ -155,14 +155,8 @@ func isXAIVideosModel(model string) bool {
 	return prefix == "" || prefix == "xai" || prefix == "x-ai" || prefix == "grok"
 }
 
-func isSoraVideosModel(model string) bool {
-	_, baseModel := imagesModelParts(model)
-	baseModel = strings.ToLower(strings.TrimSpace(baseModel))
-	return baseModel == defaultOpenAIVideosModel || strings.HasPrefix(baseModel, defaultOpenAIVideosModel+"-")
-}
-
 func isSupportedVideosModel(model string) bool {
-	return isXAIVideosModel(model) || isSoraVideosModel(model)
+	return isXAIVideosModel(model)
 }
 
 func rejectUnsupportedVideosModel(c *gin.Context, model string) bool {
@@ -193,9 +187,6 @@ func rejectUnsupportedNativeVideosModel(c *gin.Context, model string) bool {
 }
 
 func canonicalXAIVideosModel(model string) string {
-	if isSoraVideosModel(model) {
-		return defaultXAIVideosModel
-	}
 	switch videosModelBase(model) {
 	case defaultXAIVideosModel:
 		return defaultXAIVideosModel
@@ -206,11 +197,6 @@ func canonicalXAIVideosModel(model string) string {
 }
 
 func responseVideosModel(model string) string {
-	_, baseModel := imagesModelParts(model)
-	baseModel = strings.TrimSpace(baseModel)
-	if isSoraVideosModel(baseModel) {
-		return baseModel
-	}
 	return canonicalXAIVideosModel(model)
 }
 

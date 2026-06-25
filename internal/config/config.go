@@ -677,13 +677,11 @@ type ClaudeModel struct {
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
 
-<<<<<<< HEAD
 	// Priority preserves management-panel model ordering metadata.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
-=======
+
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
->>>>>>> upstream/main
 }
 
 func (m ClaudeModel) GetName() string       { return m.Name }
@@ -737,13 +735,11 @@ type CodexModel struct {
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
 
-<<<<<<< HEAD
 	// Priority preserves management-panel model ordering metadata.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
-=======
+
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
->>>>>>> upstream/main
 }
 
 func (m CodexModel) GetName() string       { return m.Name }
@@ -793,13 +789,11 @@ type GeminiModel struct {
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
 
-<<<<<<< HEAD
 	// Priority preserves management-panel model ordering metadata.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
-=======
+
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
->>>>>>> upstream/main
 }
 
 func (m GeminiModel) GetName() string       { return m.Name }
@@ -872,16 +866,14 @@ type OpenAICompatibilityModel struct {
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
 
-<<<<<<< HEAD
 	// Priority preserves management-panel model ordering metadata.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
 	// TestModel stores the model used by the management panel for model checks.
 	TestModel string `yaml:"test-model,omitempty" json:"test-model,omitempty"`
-=======
+
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
->>>>>>> upstream/main
 
 	// Image marks this model as callable through /v1/images/generations and /v1/images/edits.
 	Image bool `yaml:"image,omitempty" json:"image,omitempty"`

@@ -51,13 +51,11 @@ type VertexCompatModel struct {
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
 
-<<<<<<< HEAD
 	// Priority preserves management-panel model ordering metadata.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
-=======
+
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
->>>>>>> upstream/main
 }
 
 func (m VertexCompatModel) GetName() string       { return m.Name }

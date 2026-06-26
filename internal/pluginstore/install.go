@@ -22,6 +22,9 @@ type InstallOptions struct {
 	PluginsDir string
 	GOOS       string
 	GOARCH     string
+	// VersionedTarget stores new plugin artifacts as id-v<version>.<ext>.
+	// Existing runtime-selected files are still reused for in-place updates.
+	VersionedTarget bool
 	// PluginLoaded reports whether the plugin's dynamic library is currently
 	// loaded by the running host. Windows installs are rejected only when they
 	// would overwrite an existing target file while it returns true.
@@ -48,7 +51,7 @@ func (c Client) Install(ctx context.Context, plugin Plugin, options InstallOptio
 		return InstallResult{}, errValidate
 	}
 	options = normalizeInstallOptions(options)
-	if loadedPluginInstallBlocked(options) {
+	if !options.VersionedTarget && loadedPluginInstallBlocked(options) {
 		return InstallResult{}, ErrLoadedPluginLocked
 	}
 	release, errRelease := c.FetchLatestRelease(ctx, plugin)
@@ -169,7 +172,7 @@ func InstallArchive(archiveData []byte, plugin Plugin, options InstallOptions) (
 			return InstallResult{}, fmt.Errorf("prepare plugin write: %w", errBeforeWrite)
 		}
 	}
-	if loadedPluginInstallBlocked(options) {
+	if loadedPluginInstallBlocked(options) && (!options.VersionedTarget || overwritten) {
 		return InstallResult{}, ErrLoadedPluginLocked
 	}
 	if errWrite := writeFileAtomic(targetPath, libraryData, mode); errWrite != nil {
@@ -188,7 +191,11 @@ func installTargetPath(options InstallOptions, id string, version string) (strin
 	if !validPluginVersion(version) {
 		return "", fmt.Errorf("invalid plugin version %q", version)
 	}
-	defaultPath := filepath.Join(options.PluginsDir, options.GOOS, options.GOARCH, id+pluginExtension(options.GOOS))
+	targetName := id + pluginExtension(options.GOOS)
+	if options.VersionedTarget {
+		targetName = versionedPluginFileName(id, version, options.GOOS)
+	}
+	defaultPath := filepath.Join(options.PluginsDir, options.GOOS, options.GOARCH, targetName)
 	if options.GOOS != runtime.GOOS || options.GOARCH != runtime.GOARCH {
 		return defaultPath, nil
 	}

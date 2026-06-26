@@ -202,10 +202,11 @@ func installManifest(ctx context.Context, client sdkpluginstore.Client, manifest
 		return pluginRuntime != nil && pluginRuntime.PluginBusy(id)
 	}
 	result, errInstall := client.InstallManifest(ctx, manifest, sdkpluginstore.InstallOptions{
-		PluginsDir:   root,
-		GOOS:         platform.GOOS,
-		GOARCH:       platform.GOARCH,
-		PluginLoaded: pluginIsBusy,
+		PluginsDir:      root,
+		GOOS:            platform.GOOS,
+		GOARCH:          platform.GOARCH,
+		VersionedTarget: true,
+		PluginLoaded:    pluginIsBusy,
 	})
 	if errInstall != nil {
 		return sdkpluginstore.InstallResult{}, fmt.Errorf("home plugins: install %s: %w", id, errInstall)

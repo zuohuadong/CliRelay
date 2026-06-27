@@ -330,8 +330,8 @@ type CodexHeaderDefaults struct {
 }
 
 const (
-	DefaultCodexFingerprintUserAgent     = "codex-tui/0.142.2 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.142.2)"
-	DefaultCodexFingerprintVersion       = "0.142.2"
+	DefaultCodexFingerprintUserAgent     = "codex-tui/0.142.3 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.142.3)"
+	DefaultCodexFingerprintVersion       = "0.142.3"
 	DefaultCodexFingerprintOriginator    = "codex-tui"
 	DefaultCodexFingerprintWebsocketBeta = "responses_websockets=2026-02-06"
 	DefaultCodexFingerprintSessionMode   = "per-request"

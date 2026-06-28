@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -659,7 +661,14 @@ func callMCPExtractor(ctx context.Context, refs []mediaRef, extractor config.Mul
 	}
 	out := make([]string, 0, len(refs))
 	for i, ref := range refs {
-		args := buildToolArgs(tool, ref, extractor.Prompt)
+		prepared, cleanup, errPrepare := prepareMCPMediaRef(callCtx, ref)
+		if errPrepare != nil {
+			return nil, errPrepare
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+		args := buildToolArgs(tool, prepared, extractor.Prompt)
 		text, errCall := client.callTool(callCtx, tool.Name, args)
 		if errCall != nil {
 			return nil, errCall
@@ -671,11 +680,79 @@ func callMCPExtractor(ctx context.Context, refs []mediaRef, extractor config.Mul
 	return out, nil
 }
 
+func prepareMCPMediaRef(ctx context.Context, ref mediaRef) (mediaRef, func(), error) {
+	if !isRemoteHTTPRef(ref.URL) {
+		return ref, nil, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ref.URL, nil)
+	if err != nil {
+		return ref, nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ref, nil, fmt.Errorf("multimodal adapter MCP media download failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ref, nil, fmt.Errorf("multimodal adapter MCP media download returned status %d", resp.StatusCode)
+	}
+	file, err := os.CreateTemp("", "clirelay-mcp-media-*"+mcpMediaExtension(ref.URL, resp.Header.Get("Content-Type")))
+	if err != nil {
+		return ref, nil, err
+	}
+	limit := int64(32 << 20)
+	written, copyErr := io.Copy(file, io.LimitReader(resp.Body, limit+1))
+	closeErr := file.Close()
+	if copyErr != nil {
+		_ = os.Remove(file.Name())
+		return ref, nil, copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(file.Name())
+		return ref, nil, closeErr
+	}
+	if written > limit {
+		_ = os.Remove(file.Name())
+		return ref, nil, fmt.Errorf("multimodal adapter MCP media download exceeds %d bytes", limit)
+	}
+	prepared := ref
+	prepared.URL = file.Name()
+	return prepared, func() { _ = os.Remove(file.Name()) }, nil
+}
+
+func isRemoteHTTPRef(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
+}
+
+func mcpMediaExtension(rawURL, contentType string) string {
+	switch {
+	case strings.Contains(contentType, "png"):
+		return ".png"
+	case strings.Contains(contentType, "jpeg"), strings.Contains(contentType, "jpg"):
+		return ".jpg"
+	case strings.Contains(contentType, "gif"):
+		return ".gif"
+	case strings.Contains(contentType, "webp"):
+		return ".webp"
+	}
+	parsed, err := url.Parse(rawURL)
+	if err == nil {
+		ext := strings.ToLower(filepath.Ext(parsed.Path))
+		switch ext {
+		case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+			return ext
+		}
+	}
+	return ".bin"
+}
+
 type mcpClient struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	reader *bufio.Reader
-	nextID int
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	reader    *bufio.Reader
+	nextID    int
+	transport string
 }
 
 type mcpTool struct {
@@ -711,7 +788,7 @@ func startMCP(ctx context.Context, extractor config.MultimodalExtractorConfig) (
 	if err = cmd.Start(); err != nil {
 		return nil, err
 	}
-	client := &mcpClient{cmd: cmd, stdin: stdin, reader: bufio.NewReader(stdout), nextID: 1}
+	client := &mcpClient{cmd: cmd, stdin: stdin, reader: bufio.NewReader(stdout), nextID: 1, transport: mcpTransport(extractor)}
 	if _, err = client.request(ctx, "initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]any{},
@@ -725,6 +802,18 @@ func startMCP(ctx context.Context, extractor config.MultimodalExtractorConfig) (
 	}
 	_ = client.notify(ctx, "notifications/initialized", map[string]any{})
 	return client, nil
+}
+
+func mcpTransport(extractor config.MultimodalExtractorConfig) string {
+	for _, key := range []string{"MCP_TRANSPORT", "mcp_transport", "transport"} {
+		if value := strings.ToLower(strings.TrimSpace(extractor.Env[key])); value != "" {
+			switch value {
+			case "jsonl", "json-lines", "line", "line-json":
+				return "jsonl"
+			}
+		}
+	}
+	return "content-length"
 }
 
 func (c *mcpClient) listTools(ctx context.Context) ([]mcpTool, error) {
@@ -900,6 +989,10 @@ func (c *mcpClient) write(msg map[string]any) error {
 	if err != nil {
 		return err
 	}
+	if strings.EqualFold(c.transport, "jsonl") {
+		_, err = fmt.Fprintf(c.stdin, "%s\n", data)
+		return err
+	}
 	_, err = fmt.Fprintf(c.stdin, "Content-Length: %d\r\n\r\n%s", len(data), data)
 	return err
 }
@@ -923,6 +1016,9 @@ func (c *mcpClient) read(ctx context.Context) (map[string]any, error) {
 }
 
 func (c *mcpClient) readOne() (map[string]any, error) {
+	if strings.EqualFold(c.transport, "jsonl") {
+		return c.readOneJSONL()
+	}
 	contentLength := -1
 	for {
 		line, err := c.reader.ReadString('\n')
@@ -956,6 +1052,24 @@ func (c *mcpClient) readOne() (map[string]any, error) {
 		return nil, err
 	}
 	return msg, nil
+}
+
+func (c *mcpClient) readOneJSONL() (map[string]any, error) {
+	for {
+		line, err := c.reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var msg map[string]any
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			continue
+		}
+		return msg, nil
+	}
 }
 
 func (c *mcpClient) close() {

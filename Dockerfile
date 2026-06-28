@@ -39,6 +39,11 @@ RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.V
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal:9.6
 
+RUN microdnf module enable -y nodejs:20 \
+    && microdnf install -y nodejs npm \
+    && npm install -g @z_ai/mcp-server@0.1.4 \
+    && microdnf clean all
+
 RUN mkdir /CLIProxyAPI
 
 COPY --from=builder /app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI

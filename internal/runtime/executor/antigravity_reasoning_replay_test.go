@@ -118,7 +118,11 @@ func TestPrepareAntigravityGeminiReasoningReplayPayloadAppendsStaleThoughtSignat
 	internalcache.ClearAntigravityReasoningReplayCache()
 	t.Cleanup(internalcache.ClearAntigravityReasoningReplayCache)
 
+<<<<<<< HEAD
 	item := []byte(`{"type":"thought_signature","contentIndex":8,"partIndex":3,"thoughtSignature":"sig-text-123456789"}`)
+=======
+	item := []byte(`{"type":"thought_signature","contentIndex":8,"partIndex":3,"thoughtSignature":"stale-thought-sig-ok12"}`)
+>>>>>>> upstream/main
 	internalcache.CacheAntigravityReasoningReplayItems("gemini-3-flash-agent", "session:sess-stale-text", [][]byte{item})
 
 	payload := []byte(`{"sessionId":"sess-stale-text","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]},{"role":"model","parts":[{"text":"visible answer"}]},{"role":"user","parts":[{"text":"next"}]}]}}`)
@@ -139,8 +143,13 @@ func TestPrepareAntigravityGeminiReasoningReplayPayloadAppendsStaleThoughtSignat
 	if got := parts[0].Get("text").String(); got != "visible answer" {
 		t.Fatalf("text part = %q, want visible answer; body=%s", got, out)
 	}
+<<<<<<< HEAD
 	if got := parts[1].Get("thoughtSignature").String(); got != "sig-text-123456789" {
 		t.Fatalf("thoughtSignature = %q, want sig-text-123456789; body=%s", got, out)
+=======
+	if got := parts[1].Get("thoughtSignature").String(); got != "stale-thought-sig-ok12" {
+		t.Fatalf("thoughtSignature = %q, want stale-thought-sig-ok12; body=%s", got, out)
+>>>>>>> upstream/main
 	}
 }
 

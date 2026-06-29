@@ -278,6 +278,11 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	var lastRequest []byte
 	lastResponseOutput := []byte("[]")
 	pinnedAuthID := ""
+<<<<<<< HEAD
+=======
+	lastAttemptedAuthID := ""
+	passthroughModelName := ""
+>>>>>>> upstream/main
 	sessionAuthByID := func(authID string) (*coreauth.Auth, bool) {
 		if h == nil || h.AuthManager == nil {
 			return nil, false
@@ -313,6 +318,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		wsTimelineLog.BeginRequest()
 		wsTimelineLog.Append("request", payload, time.Now())
 
+<<<<<<< HEAD
 		for replayAttempt := 0; replayAttempt < 2; replayAttempt++ {
 			allowIncrementalInputWithPreviousResponseID := false
 			if pinnedAuthID != "" {
@@ -329,6 +335,30 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			if forceTranscriptReplayNextRequest {
 				allowIncrementalInputWithPreviousResponseID = false
 			}
+=======
+		requestModelName := strings.TrimSpace(gjson.GetBytes(payload, "model").String())
+		if requestModelName == "" {
+			requestModelName = passthroughModelName
+		}
+		if requestModelName == "" {
+			requestModelName = strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
+		}
+		useUpstreamWebsocketPassthrough := h.responsesWebsocketUsesUpstreamWebsocketPassthrough(requestModelName)
+		allowIncrementalInputWithPreviousResponseID := false
+		allowCompactionReplayBypass := false
+		if !useUpstreamWebsocketPassthrough {
+			// Downstream websocket with CPA-mediated upstream (HTTP/SSE) always uses merged
+			// transcript replay. Incremental previous_response_id is reserved for end-to-end
+			// upstream websocket passthrough only.
+			if pinnedAuthID != "" {
+				if pinnedAuth, ok := sessionAuthByID(pinnedAuthID); ok && pinnedAuth != nil {
+					allowCompactionReplayBypass = responsesWebsocketAuthSupportsCompactionReplay(pinnedAuth)
+				}
+			} else {
+				allowCompactionReplayBypass = h.websocketUpstreamSupportsCompactionReplayForModel(requestModelName)
+			}
+		}
+>>>>>>> upstream/main
 
 			allowCompactionReplayBypass := false
 			if pinnedAuthID != "" {
@@ -403,12 +433,61 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				forceTranscriptReplayNextRequest = false
 			}
 
+<<<<<<< HEAD
 			modelName := gjson.GetBytes(requestJSON, "model").String()
 			cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 			cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
 			cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
 			if pinnedAuthID != "" {
 				cliCtx = handlers.WithPinnedAuthID(cliCtx, pinnedAuthID)
+=======
+		modelName := gjson.GetBytes(requestJSON, "model").String()
+		cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+		cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
+		cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
+		if pinnedAuthID != "" {
+			cliCtx = handlers.WithPinnedAuthID(cliCtx, pinnedAuthID)
+		} else {
+			cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
+				authID = strings.TrimSpace(authID)
+				if authID == "" || h == nil || h.AuthManager == nil {
+					return
+				}
+				lastAttemptedAuthID = authID
+				selectedAuth, ok := sessionAuthByID(authID)
+				if !ok || selectedAuth == nil {
+					return
+				}
+				if websocketUpstreamSupportsIncrementalInput(selectedAuth.Attributes, selectedAuth.Metadata) {
+					pinnedAuthID = authID
+				}
+			})
+		}
+		dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
+
+		completedOutput, completedResponseID, completedPendingToolCallIDs, forwardErrMsg, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, wsTimelineLog, passthroughSessionID)
+		if errForward != nil {
+			wsTerminateErr = errForward
+			log.Warnf("responses websocket: forward failed id=%s error=%v", passthroughSessionID, errForward)
+			return
+		}
+		if forwardErrMsg == nil && !useUpstreamWebsocketPassthrough && lastAttemptedAuthID != "" {
+			if selectedAuth, ok := sessionAuthByID(lastAttemptedAuthID); ok && selectedAuth != nil {
+				if websocketUpstreamSupportsIncrementalInput(selectedAuth.Attributes, selectedAuth.Metadata) {
+					pinnedAuthID = lastAttemptedAuthID
+				} else if pinnedAuthID != "" {
+					if pinnedAuth, ok := sessionAuthByID(pinnedAuthID); ok && pinnedAuth != nil && websocketUpstreamSupportsIncrementalInput(pinnedAuth.Attributes, pinnedAuth.Metadata) {
+						pinnedAuthID = lastAttemptedAuthID
+					}
+				}
+			}
+		}
+		if shouldReleaseResponsesWebsocketPinnedAuth(forwardErrMsg) {
+			pinnedAuthID = ""
+			forceTranscriptReplayNextRequest = true
+			if useUpstreamWebsocketPassthrough {
+				passthroughModelName = ""
+>>>>>>> upstream/main
 			} else {
 				cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 					authID = strings.TrimSpace(authID)
@@ -1421,11 +1500,29 @@ func shouldReleaseResponsesWebsocketPinnedAuth(errMsg *interfaces.ErrorMessage) 
 		}
 	}
 	switch status {
-	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusTooManyRequests:
+	case http.StatusUnauthorized,
+		http.StatusPaymentRequired,
+		http.StatusForbidden,
+		http.StatusTooManyRequests,
+		http.StatusRequestTimeout,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
 		return true
 	default:
-		return false
 	}
+	if errMsg.Error != nil {
+		msg := strings.ToLower(errMsg.Error.Error())
+		switch {
+		case strings.Contains(msg, "stream closed before response.completed"),
+			strings.Contains(msg, "previous_response_not_found"),
+			strings.Contains(msg, "ws_failed"),
+			strings.Contains(msg, "upstream stream closed before first payload"),
+			strings.Contains(msg, "empty_stream"):
+			return true
+		}
+	}
+	return false
 }
 
 func responseCompletedOutputFromPayload(payload []byte) []byte {

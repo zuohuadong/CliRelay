@@ -3011,20 +3011,7 @@ func TestMapExecutorStreamChunksExitsWhenContextCanceledWithoutDownstreamConsume
 
 func newHostWithRecords(records ...capabilityRecord) *Host {
 	host := New()
-<<<<<<< HEAD
-	for index := range records {
-		if strings.TrimSpace(records[index].path) == "" {
-			records[index].path = "/tmp/pluginhost-test/" + strings.TrimSpace(records[index].id)
-		}
-	}
-	sortRecords(records)
-	host.mu.Lock()
-	host.rebuildActivePluginMapsLocked(records)
-	host.mu.Unlock()
-	host.snapshot.Store(&Snapshot{enabled: true, records: records})
-=======
 	setHostSnapshotForTest(host, true, records...)
->>>>>>> upstream/main
 	return host
 }
 

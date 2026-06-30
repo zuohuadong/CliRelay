@@ -51,7 +51,6 @@ type openAICompatibilityAPIKeyWithAuthIndex struct {
 }
 
 type openAICompatibilityWithAuthIndex struct {
-<<<<<<< HEAD
 	Name                string                                   `json:"name"`
 	Priority            int                                      `json:"priority,omitempty"`
 	Disabled            bool                                     `json:"disabled"`
@@ -67,18 +66,6 @@ type openAICompatibilityWithAuthIndex struct {
 	Success             int64                                    `json:"success"`
 	Failed              int64                                    `json:"failed"`
 	RecentRequests      []coreauth.RecentRequestBucket           `json:"recent_requests,omitempty"`
-=======
-	Name           string                                   `json:"name"`
-	Priority       int                                      `json:"priority,omitempty"`
-	Disabled       bool                                     `json:"disabled"`
-	Prefix         string                                   `json:"prefix,omitempty"`
-	BaseURL        string                                   `json:"base-url"`
-	APIKeyEntries  []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
-	Models         []config.OpenAICompatibilityModel        `json:"models,omitempty"`
-	Headers        map[string]string                        `json:"headers,omitempty"`
-	DisableCooling bool                                     `json:"disable-cooling,omitempty"`
-	AuthIndex      string                                   `json:"auth-index,omitempty"`
->>>>>>> upstream/main
 }
 
 type authUsageSnapshot struct {
@@ -294,7 +281,6 @@ func (h *Handler) openAICompatibilityEntriesWithAuthIndex(entriesFn func() []con
 		idKind := fmt.Sprintf("%s:%s", idKindPrefix, providerName)
 
 		response := openAICompatibilityWithAuthIndex{
-<<<<<<< HEAD
 			Name:                entry.Name,
 			Priority:            entry.Priority,
 			Disabled:            entry.Disabled,
@@ -306,17 +292,6 @@ func (h *Handler) openAICompatibilityEntriesWithAuthIndex(entriesFn func() []con
 			IdentityFingerprint: entry.IdentityFingerprint,
 			DisableCooling:      entry.DisableCooling,
 			AuthIndex:           "",
-=======
-			Name:           entry.Name,
-			Priority:       entry.Priority,
-			Disabled:       entry.Disabled,
-			Prefix:         entry.Prefix,
-			BaseURL:        entry.BaseURL,
-			Models:         entry.Models,
-			Headers:        entry.Headers,
-			DisableCooling: entry.DisableCooling,
-			AuthIndex:      "",
->>>>>>> upstream/main
 		}
 		if len(entry.APIKeyEntries) == 0 {
 			id, _ := idGen.Next(idKind, entry.BaseURL)

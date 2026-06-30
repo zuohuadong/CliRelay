@@ -31,8 +31,6 @@ plugins: {}
 	}
 }
 
-<<<<<<< HEAD
-=======
 func TestParseConfigBytes_PluginStoreSources(t *testing.T) {
 	cfg, errParse := ParseConfigBytes([]byte(`
 plugins:
@@ -80,7 +78,6 @@ plugins:
 	}
 }
 
->>>>>>> upstream/main
 func TestParseConfigBytes_PluginInstanceEmptyRawYAML(t *testing.T) {
 	cfg, errParse := ParseConfigBytes([]byte(`
 plugins:

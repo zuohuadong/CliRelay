@@ -486,7 +486,6 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 }
 func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	type openAICompatPatch struct {
-<<<<<<< HEAD
 		Name                *string                             `json:"name"`
 		Prefix              *string                             `json:"prefix"`
 		Priority            *int                                `json:"priority"`
@@ -498,16 +497,6 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		Headers             *map[string]string                  `json:"headers"`
 		IdentityFingerprint *string                             `json:"identity-fingerprint"`
 		DisableCooling      *bool                               `json:"disable-cooling"`
-=======
-		Name           *string                             `json:"name"`
-		Prefix         *string                             `json:"prefix"`
-		Disabled       *bool                               `json:"disabled"`
-		DisableCooling *bool                               `json:"disable-cooling"`
-		BaseURL        *string                             `json:"base-url"`
-		APIKeyEntries  *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
-		Models         *[]config.OpenAICompatibilityModel  `json:"models"`
-		Headers        *map[string]string                  `json:"headers"`
->>>>>>> upstream/main
 	}
 	var body struct {
 		Name  *string            `json:"name"`

@@ -384,11 +384,7 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 	contents := gjson.GetBytes(out, "contents")
 	if contents.Exists() && contents.IsArray() {
 		arr := contents.Array()
-<<<<<<< HEAD
-		if len(arr) > 0 && arr[len(arr)-1].Get("role").String() == "model" && !geminiContentHasThoughtPart(arr[len(arr)-1]) {
-=======
 		if len(arr) > 0 && shouldStripTrailingOpenAIResponsesModelPrefill(arr[len(arr)-1]) {
->>>>>>> upstream/main
 			out, _ = sjson.DeleteBytes(out, fmt.Sprintf("contents.%d", len(arr)-1))
 		}
 	}
@@ -482,22 +478,6 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 	return result
 }
 
-<<<<<<< HEAD
-func geminiContentHasThoughtPart(content gjson.Result) bool {
-	parts := content.Get("parts")
-	if !parts.Exists() || !parts.IsArray() {
-		return false
-	}
-	hasThought := false
-	parts.ForEach(func(_, part gjson.Result) bool {
-		if part.Get("thought").Bool() || strings.TrimSpace(part.Get("thoughtSignature").String()) != "" {
-			hasThought = true
-			return false
-		}
-		return true
-	})
-	return hasThought
-=======
 func shouldStripTrailingOpenAIResponsesModelPrefill(lastContent gjson.Result) bool {
 	if lastContent.Get("role").String() != "model" {
 		return false
@@ -507,7 +487,7 @@ func shouldStripTrailingOpenAIResponsesModelPrefill(lastContent gjson.Result) bo
 		return false
 	}
 	for _, part := range parts.Array() {
-		if part.Get("thought").Bool() {
+		if part.Get("thought").Bool() || strings.TrimSpace(part.Get("thoughtSignature").String()) != "" {
 			return false
 		}
 	}
@@ -604,7 +584,6 @@ func buildOpenAIResponsesReasoningModelContent(thoughtText, visibleText, signatu
 	thought, _ = sjson.SetBytes(thought, "thoughtSignature", signature)
 	modelContent, _ = sjson.SetRawBytes(modelContent, "parts.-1", thought)
 	return modelContent
->>>>>>> upstream/main
 }
 
 func openAIResponsesGeminiThoughtSignature(rawSignature string) string {

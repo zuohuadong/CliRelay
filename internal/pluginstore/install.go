@@ -21,7 +21,8 @@ type InstallOptions struct {
 	PluginsDir string
 	GOOS       string
 	GOARCH     string
-	// VersionedTarget stores new plugin artifacts as id-v<version>.<ext>.
+	// VersionedTarget is kept for callers that require explicit versioned
+	// artifacts; new installs already use versioned names by default.
 	// Existing runtime-selected files are still reused for in-place updates.
 	VersionedTarget bool
 	// PluginLoaded reports whether the plugin's dynamic library is currently
@@ -52,14 +53,9 @@ func (c Client) Install(ctx context.Context, plugin Plugin, options InstallOptio
 		return InstallResult{}, errValidate
 	}
 	options = normalizeInstallOptions(options)
-<<<<<<< HEAD
-	if !options.VersionedTarget && loadedPluginInstallBlocked(options) {
-		return InstallResult{}, ErrLoadedPluginLocked
-=======
 	if PluginInstallType(plugin) == InstallTypeDirect {
 		plugin.Version = normalizeVersion(plugin.Version)
 		return c.InstallDirect(ctx, plugin, plugin.Install, options)
->>>>>>> upstream/main
 	}
 	release, errRelease := c.FetchLatestRelease(ctx, plugin)
 	if errRelease != nil {
@@ -296,12 +292,12 @@ func InstallArchive(archiveData []byte, plugin Plugin, options InstallOptions) (
 	}
 	// Re-check immediately before replacing an existing file: the same version
 	// may have been loaded while the archive was being downloaded and verified.
-	if options.BeforeWrite != nil {
+	if overwritten && options.BeforeWrite != nil {
 		if errBeforeWrite := options.BeforeWrite(); errBeforeWrite != nil {
 			return InstallResult{}, fmt.Errorf("prepare plugin write: %w", errBeforeWrite)
 		}
 	}
-	if loadedPluginInstallBlocked(options) && (!options.VersionedTarget || overwritten) {
+	if overwritten && loadedPluginInstallBlocked(options) {
 		return InstallResult{}, ErrLoadedPluginLocked
 	}
 	if errWrite := writeFileAtomic(targetPath, libraryData, mode); errWrite != nil {
@@ -320,10 +316,7 @@ func installTargetPath(options InstallOptions, id string, version string) (strin
 	if !validPluginVersion(version) {
 		return "", fmt.Errorf("invalid plugin version %q", version)
 	}
-	targetName := id + pluginExtension(options.GOOS)
-	if options.VersionedTarget {
-		targetName = versionedPluginFileName(id, version, options.GOOS)
-	}
+	targetName := versionedPluginFileName(id, version, options.GOOS)
 	defaultPath := filepath.Join(options.PluginsDir, options.GOOS, options.GOARCH, targetName)
 	if options.GOOS != runtime.GOOS || options.GOARCH != runtime.GOARCH {
 		return defaultPath, nil

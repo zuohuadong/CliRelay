@@ -2118,8 +2118,6 @@ func TestResponsesWebsocketPrewarmHandledLocallyForSSEUpstream(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
-=======
 func TestResponsesWebsocketMergesTranscriptForNonPassthroughUpstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -2268,7 +2266,6 @@ func TestResponsesWebsocketDoesNotInjectPreviousResponseIDWhenPendingToolOutputM
 	}
 }
 
->>>>>>> upstream/main
 func TestResponsesWebsocketStripsGenerateWhenWebsocketAttemptFallsBackToHTTP(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -2554,7 +2551,6 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterQuotaError(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 func TestResponsesWebsocketRetriesPreviousResponseNotFoundWithTranscriptReplay(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -2564,7 +2560,71 @@ func TestResponsesWebsocketRetriesPreviousResponseNotFoundWithTranscriptReplay(t
 
 	auth := &coreauth.Auth{
 		ID:         "auth-replay",
-=======
+		Provider:   executor.Identifier(),
+		Status:     coreauth.StatusActive,
+		Attributes: map[string]string{"websockets": "true"},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "replay-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Fatalf("close websocket: %v", errClose)
+		}
+	}()
+
+	requests := []string{
+		`{"type":"response.create","model":"replay-model","input":[{"type":"message","id":"msg-1"}]}`,
+		`{"type":"response.create","previous_response_id":"resp_missing","input":[{"type":"message","id":"msg-2"}]}`,
+	}
+	for i := range requests {
+		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(requests[i])); errWrite != nil {
+			t.Fatalf("write websocket message %d: %v", i+1, errWrite)
+		}
+		_, payload, errReadMessage := conn.ReadMessage()
+		if errReadMessage != nil {
+			t.Fatalf("read websocket message %d: %v", i+1, errReadMessage)
+		}
+		if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+			t.Fatalf("message %d payload type = %s, want %s: %s", i+1, got, wsEventTypeCompleted, payload)
+		}
+	}
+
+	payloads := executor.Payloads()
+	if len(payloads) != 3 {
+		t.Fatalf("upstream payload count = %d, want 3", len(payloads))
+	}
+	if got := gjson.GetBytes(payloads[1], "previous_response_id").String(); got != "resp_missing" {
+		t.Fatalf("second payload previous_response_id = %q, want resp_missing: %s", got, payloads[1])
+	}
+	if gjson.GetBytes(payloads[2], "previous_response_id").Exists() {
+		t.Fatalf("replay payload must drop previous_response_id: %s", payloads[2])
+	}
+	replayInput := gjson.GetBytes(payloads[2], "input").Raw
+	if !strings.Contains(replayInput, `"id":"msg-1"`) || !strings.Contains(replayInput, `"id":"msg-2"`) {
+		t.Fatalf("replay input missing expected transcript items: %s", replayInput)
+	}
+}
+
 func TestShouldReleaseResponsesWebsocketPinnedAuth(t *testing.T) {
 	cases := []struct {
 		name string
@@ -2671,20 +2731,10 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterStreamClosed408(t *testing.T) 
 
 	authA := &coreauth.Auth{
 		ID:         "auth-a",
->>>>>>> upstream/main
 		Provider:   executor.Identifier(),
 		Status:     coreauth.StatusActive,
 		Attributes: map[string]string{"websockets": "true"},
 	}
-<<<<<<< HEAD
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatalf("Register auth: %v", err)
-	}
-
-	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "replay-model"}})
-	t.Cleanup(func() {
-		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
-=======
 	if _, err := manager.Register(context.Background(), authA); err != nil {
 		t.Fatalf("Register auth A: %v", err)
 	}
@@ -2703,7 +2753,6 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterStreamClosed408(t *testing.T) 
 	t.Cleanup(func() {
 		registry.GetGlobalRegistry().UnregisterClient(authA.ID)
 		registry.GetGlobalRegistry().UnregisterClient(authB.ID)
->>>>>>> upstream/main
 	})
 
 	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
@@ -2726,71 +2775,36 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterStreamClosed408(t *testing.T) 
 	}()
 
 	requests := []string{
-<<<<<<< HEAD
-		`{"type":"response.create","model":"replay-model","input":[{"type":"message","id":"msg-1"}]}`,
-		`{"type":"response.create","previous_response_id":"resp_missing","input":[{"type":"message","id":"msg-2"}]}`,
-	}
-=======
 		`{"type":"response.create","model":"stream-model","input":[{"type":"message","id":"msg-1"}]}`,
 		`{"type":"response.create","previous_response_id":"resp-auth-a-1","input":[{"type":"message","id":"msg-2"}]}`,
 		`{"type":"response.create","previous_response_id":"resp-auth-a-1","input":[{"type":"message","id":"msg-3"}]}`,
 	}
-	wantTypes := []string{wsEventTypeCompleted, wsEventTypeError, wsEventTypeCompleted}
->>>>>>> upstream/main
+	wantTypes := []string{wsEventTypeCompleted, wsEventTypeCompleted, wsEventTypeCompleted}
 	for i := range requests {
 		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(requests[i])); errWrite != nil {
 			t.Fatalf("write websocket message %d: %v", i+1, errWrite)
 		}
-<<<<<<< HEAD
-=======
 		if i == 1 {
-			gotError := false
 			for {
 				_, payload, errReadMessage := conn.ReadMessage()
 				if errReadMessage != nil {
 					t.Fatalf("read websocket message %d: %v", i+1, errReadMessage)
 				}
 				got := gjson.GetBytes(payload, "type").String()
-				if got == wsEventTypeError {
-					if int(gjson.GetBytes(payload, "status").Int()) != http.StatusRequestTimeout {
-						t.Fatalf("stream-closed payload status = %d, want %d: %s", gjson.GetBytes(payload, "status").Int(), http.StatusRequestTimeout, payload)
-					}
-					gotError = true
-					break
+				if got != wsEventTypeCompleted {
+					continue
 				}
-				if got == wsEventTypeCompleted {
-					t.Fatalf("message %d unexpectedly completed: %s", i+1, payload)
+				if gotCode := gjson.GetBytes(payload, "response.metadata.error_code").String(); gotCode != "request_timeout" {
+					t.Fatalf("stream-closed payload error_code = %q, want request_timeout: %s", gotCode, payload)
 				}
-			}
-			if !gotError {
-				t.Fatalf("message %d did not return stream-closed error", i+1)
+				break
 			}
 			continue
 		}
->>>>>>> upstream/main
 		_, payload, errReadMessage := conn.ReadMessage()
 		if errReadMessage != nil {
 			t.Fatalf("read websocket message %d: %v", i+1, errReadMessage)
 		}
-<<<<<<< HEAD
-		if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
-			t.Fatalf("message %d payload type = %s, want %s: %s", i+1, got, wsEventTypeCompleted, payload)
-		}
-	}
-
-	payloads := executor.Payloads()
-	if len(payloads) != 3 {
-		t.Fatalf("upstream payload count = %d, want 3", len(payloads))
-	}
-	if got := gjson.GetBytes(payloads[1], "previous_response_id").String(); got != "resp_missing" {
-		t.Fatalf("second payload previous_response_id = %q, want resp_missing: %s", got, payloads[1])
-	}
-	if gjson.GetBytes(payloads[2], "previous_response_id").Exists() {
-		t.Fatalf("replay payload must drop previous_response_id: %s", payloads[2])
-	}
-	replayInput := gjson.GetBytes(payloads[2], "input").Raw
-	if !strings.Contains(replayInput, `"id":"msg-1"`) || !strings.Contains(replayInput, `"id":"msg-2"`) {
-=======
 		if got := gjson.GetBytes(payload, "type").String(); got != wantTypes[i] {
 			t.Fatalf("message %d payload type = %s, want %s: %s", i+1, got, wantTypes[i], payload)
 		}
@@ -2812,7 +2826,6 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterStreamClosed408(t *testing.T) 
 	}
 	replayInput := gjson.GetBytes(replayPayload, "input").Raw
 	if !strings.Contains(replayInput, `"id":"msg-1"`) || !strings.Contains(replayInput, `"id":"msg-3"`) {
->>>>>>> upstream/main
 		t.Fatalf("replay input missing expected transcript items: %s", replayInput)
 	}
 }

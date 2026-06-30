@@ -333,8 +333,8 @@ type CodexHeaderDefaults struct {
 }
 
 const (
-	DefaultCodexFingerprintUserAgent     = "codex-tui/0.142.3 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.142.3)"
-	DefaultCodexFingerprintVersion       = "0.142.3"
+	DefaultCodexFingerprintUserAgent     = "codex-tui/0.142.4 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.142.4)"
+	DefaultCodexFingerprintVersion       = "0.142.4"
 	DefaultCodexFingerprintOriginator    = "codex-tui"
 	DefaultCodexFingerprintWebsocketBeta = "responses_websockets=2026-02-06"
 	DefaultCodexFingerprintSessionMode   = "per-request"
@@ -1494,8 +1494,6 @@ func (cfg *Config) NormalizePluginsConfig() {
 	if cfg.Plugins.Dir == "" {
 		cfg.Plugins.Dir = "plugins"
 	}
-<<<<<<< HEAD
-=======
 	if len(cfg.Plugins.StoreSources) > 0 {
 		sources := make([]string, 0, len(cfg.Plugins.StoreSources))
 		for _, source := range cfg.Plugins.StoreSources {
@@ -1508,7 +1506,6 @@ func (cfg *Config) NormalizePluginsConfig() {
 		cfg.Plugins.StoreSources = sources
 	}
 	cfg.Plugins.StoreAuth = sdkpluginstore.NormalizeAuthConfigs(cfg.Plugins.StoreAuth)
->>>>>>> upstream/main
 	if cfg.Plugins.Configs == nil {
 		cfg.Plugins.Configs = map[string]PluginInstanceConfig{}
 	}

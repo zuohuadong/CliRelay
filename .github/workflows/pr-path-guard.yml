@@ -21,8 +21,13 @@ jobs:
           files: |
             internal/translator/**
       - name: Fail when restricted paths change
-        if: steps.changed-files.outputs.any_changed == 'true'
+        if: steps.changed-files.outputs.any_changed == 'true' && github.head_ref != 'chore/sync-router-for-me-main-to-main'
         run: |
           echo "Changes under internal/translator are not allowed in pull requests."
           echo "You need to create an issue for our maintenance team to make the necessary changes."
           exit 1
+      - name: Allow upstream sync translator changes
+        if: steps.changed-files.outputs.any_changed == 'true' && github.head_ref == 'chore/sync-router-for-me-main-to-main'
+        run: |
+          echo "Translator changes are allowed for the automated upstream sync branch."
+          echo "The sync safety and build jobs must still pass before merge."

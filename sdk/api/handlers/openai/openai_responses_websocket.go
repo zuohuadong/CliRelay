@@ -1421,11 +1421,29 @@ func shouldReleaseResponsesWebsocketPinnedAuth(errMsg *interfaces.ErrorMessage) 
 		}
 	}
 	switch status {
-	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusTooManyRequests:
+	case http.StatusUnauthorized,
+		http.StatusPaymentRequired,
+		http.StatusForbidden,
+		http.StatusTooManyRequests,
+		http.StatusRequestTimeout,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
 		return true
 	default:
-		return false
 	}
+	if errMsg.Error != nil {
+		msg := strings.ToLower(errMsg.Error.Error())
+		switch {
+		case strings.Contains(msg, "stream closed before response.completed"),
+			strings.Contains(msg, "previous_response_not_found"),
+			strings.Contains(msg, "ws_failed"),
+			strings.Contains(msg, "upstream stream closed before first payload"),
+			strings.Contains(msg, "empty_stream"):
+			return true
+		}
+	}
+	return false
 }
 
 func responseCompletedOutputFromPayload(payload []byte) []byte {

@@ -73,8 +73,12 @@ jobs:
               print(f"  {path}: {key}")
             sys.exit(1)
           PY
+      - name: Sync safety guard
+        run: ./scripts/sync-safety-check.sh
       - name: Vet
         run: go vet ./...
+      - name: Test
+        run: go test ./...
       - name: Build
         run: |
           go build -o test-output ./cmd/server

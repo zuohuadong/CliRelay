@@ -121,6 +121,106 @@ func TestAstronCodeExecutorNormalizesWebSearchPreviewTool(t *testing.T) {
 	}
 }
 
+func TestAstronCodeExecutorDropsOrphanToolMessages(t *testing.T) {
+	executor := NewAstronCodeExecutor(&config.Config{})
+	payload := []byte(`{
+		"model":"astron-code-latest",
+		"messages":[
+			{"role":"user","content":"hi"},
+			{"role":"tool","tool_call_id":"call_missing","content":"not found"},
+			{"role":"user","content":"continue"}
+		]
+	}`)
+
+	out, err := executor.normalizeAstronPayload(payload, "astron-code-latest")
+	if err != nil {
+		t.Fatalf("normalizeAstronPayload error: %v", err)
+	}
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 2 {
+		t.Fatalf("messages len = %d, want 2: %s", len(messages), out)
+	}
+	for i, msg := range messages {
+		if got := msg.Get("role").String(); got == "tool" {
+			t.Fatalf("messages.%d should not be orphan tool message: %s", i, out)
+		}
+	}
+}
+
+func TestAstronCodeExecutorDropsUnansweredAssistantToolCalls(t *testing.T) {
+	executor := NewAstronCodeExecutor(&config.Config{})
+	payload := []byte(`{
+		"model":"astron-code-latest",
+		"messages":[
+			{"role":"user","content":"hi"},
+			{"role":"assistant","content":"","tool_calls":[{"id":"call_missing","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+			{"role":"user","content":"continue"}
+		]
+	}`)
+
+	out, err := executor.normalizeAstronPayload(payload, "astron-code-latest")
+	if err != nil {
+		t.Fatalf("normalizeAstronPayload error: %v", err)
+	}
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 2 {
+		t.Fatalf("messages len = %d, want 2: %s", len(messages), out)
+	}
+	for i, msg := range messages {
+		if msg.Get("tool_calls").Exists() {
+			t.Fatalf("messages.%d should not keep unanswered tool_calls: %s", i, out)
+		}
+	}
+}
+
+func TestAstronCodeExecutorPreservesCompleteToolExchange(t *testing.T) {
+	executor := NewAstronCodeExecutor(&config.Config{})
+	payload := []byte(`{
+		"model":"astron-code-latest",
+		"messages":[
+			{"role":"user","content":"hi"},
+			{"role":"assistant","content":"","tool_calls":[{"id":"call_ok","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_ok","content":"result"},
+			{"role":"user","content":"continue"}
+		]
+	}`)
+
+	out, err := executor.normalizeAstronPayload(payload, "astron-code-latest")
+	if err != nil {
+		t.Fatalf("normalizeAstronPayload error: %v", err)
+	}
+	if got := gjson.GetBytes(out, "messages.1.tool_calls.0.id").String(); got != "call_ok" {
+		t.Fatalf("complete assistant tool call was not preserved: %s", out)
+	}
+	if got := gjson.GetBytes(out, "messages.2.tool_call_id").String(); got != "call_ok" {
+		t.Fatalf("complete tool result was not preserved: %s", out)
+	}
+}
+
+func TestAstronCodeExecutorDoesNotTreatPriorOrphanToolAsAnswer(t *testing.T) {
+	executor := NewAstronCodeExecutor(&config.Config{})
+	payload := []byte(`{
+		"model":"astron-code-latest",
+		"messages":[
+			{"role":"tool","tool_call_id":"call_late","content":"prior orphan"},
+			{"role":"assistant","content":"","tool_calls":[{"id":"call_late","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+			{"role":"user","content":"continue"}
+		]
+	}`)
+
+	out, err := executor.normalizeAstronPayload(payload, "astron-code-latest")
+	if err != nil {
+		t.Fatalf("normalizeAstronPayload error: %v", err)
+	}
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 1 {
+		t.Fatalf("messages len = %d, want 1: %s", len(messages), out)
+	}
+	if got := messages[0].Get("role").String(); got != "user" {
+		t.Fatalf("remaining message role = %q, want user: %s", got, out)
+	}
+}
+
 func TestBigModelCodingExecutorInjectsOfficialMCPTools(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

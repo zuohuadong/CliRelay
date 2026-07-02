@@ -392,6 +392,7 @@ func (e *AstronCodeExecutor) normalizeAstronPayload(payload []byte, model string
 	}
 
 	finish := func(payload []byte) ([]byte, error) {
+		payload = normalizeAstronToolMessageHistory(payload)
 		payload = normalizeAstronWebSearchTools(payload)
 		payload = normalizeAstronRequiredToolChoice(payload)
 		payload = e.normalizeAstronToolParallelism(payload)
@@ -548,6 +549,126 @@ func normalizeAstronWebSearchTools(payload []byte) []byte {
 		return payload
 	}
 	return out
+}
+
+func normalizeAstronToolMessageHistory(payload []byte) []byte {
+	var root map[string]any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return payload
+	}
+	messages, ok := root["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		return payload
+	}
+
+	availableToolResults := make(map[string]int)
+	for _, item := range messages {
+		msg, ok := item.(map[string]any)
+		if !ok || !strings.EqualFold(strings.TrimSpace(fmt.Sprint(msg["role"])), "tool") {
+			continue
+		}
+		id := strings.TrimSpace(fmt.Sprint(msg["tool_call_id"]))
+		if id == "" {
+			id = strings.TrimSpace(fmt.Sprint(msg["call_id"]))
+		}
+		if id != "" {
+			availableToolResults[id]++
+		}
+	}
+
+	changed := false
+	pendingToolCalls := make(map[string]int)
+	kept := make([]any, 0, len(messages))
+	for _, item := range messages {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			kept = append(kept, item)
+			continue
+		}
+
+		role := strings.ToLower(strings.TrimSpace(fmt.Sprint(msg["role"])))
+		switch role {
+		case "assistant":
+			toolCalls, ok := msg["tool_calls"].([]any)
+			if !ok || len(toolCalls) == 0 {
+				kept = append(kept, msg)
+				continue
+			}
+			filtered := make([]any, 0, len(toolCalls))
+			for _, tc := range toolCalls {
+				tcMap, ok := tc.(map[string]any)
+				if !ok {
+					continue
+				}
+				id := strings.TrimSpace(fmt.Sprint(tcMap["id"]))
+				if id == "" || availableToolResults[id] <= 0 {
+					changed = true
+					continue
+				}
+				filtered = append(filtered, tcMap)
+				pendingToolCalls[id]++
+				availableToolResults[id]--
+			}
+			if len(filtered) == 0 {
+				delete(msg, "tool_calls")
+				changed = true
+				if astronMessageHasContent(msg) {
+					kept = append(kept, msg)
+				}
+				continue
+			}
+			if len(filtered) != len(toolCalls) {
+				msg["tool_calls"] = filtered
+				changed = true
+			}
+			kept = append(kept, msg)
+		case "tool":
+			id := strings.TrimSpace(fmt.Sprint(msg["tool_call_id"]))
+			if id == "" {
+				id = strings.TrimSpace(fmt.Sprint(msg["call_id"]))
+				if id != "" {
+					msg["tool_call_id"] = id
+					changed = true
+				}
+			}
+			if id != "" && availableToolResults[id] > 0 {
+				availableToolResults[id]--
+			}
+			if id == "" || pendingToolCalls[id] <= 0 {
+				changed = true
+				continue
+			}
+			pendingToolCalls[id]--
+			kept = append(kept, msg)
+		default:
+			kept = append(kept, msg)
+		}
+	}
+
+	if !changed {
+		return payload
+	}
+	root["messages"] = kept
+	out, err := json.Marshal(root)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+func astronMessageHasContent(msg map[string]any) bool {
+	content, ok := msg["content"]
+	if !ok || content == nil {
+		return false
+	}
+	switch v := content.(type) {
+	case string:
+		return strings.TrimSpace(v) != ""
+	case []any:
+		return len(v) > 0
+	default:
+		return true
+	}
 }
 
 func (e *AstronCodeExecutor) normalizeAstronToolParallelism(payload []byte) []byte {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -85,6 +86,8 @@ type selectedRule struct {
 	extractor         config.MultimodalExtractorConfig
 	extractorName     string
 }
+
+const mcpMediaMaxBytes = int64(32 << 20)
 
 // Apply converts media inputs into textual context after the concrete upstream route is known.
 func Apply(ctx context.Context, raw []byte, route Route, cfg config.MultimodalAdaptersConfig) ([]byte, Report, error) {
@@ -674,13 +677,16 @@ func callMCPExtractor(ctx context.Context, refs []mediaRef, extractor config.Mul
 			return nil, errCall
 		}
 		if strings.TrimSpace(text) != "" {
-			out = append(out, fmt.Sprintf("Visual input %d (%s: %s):\n%s", i+1, ref.Kind, ref.URL, strings.TrimSpace(text)))
+			out = append(out, fmt.Sprintf("Visual input %d (%s: %s):\n%s", i+1, ref.Kind, describeMediaRef(ref), strings.TrimSpace(text)))
 		}
 	}
 	return out, nil
 }
 
 func prepareMCPMediaRef(ctx context.Context, ref mediaRef) (mediaRef, func(), error) {
+	if isDataURLRef(ref.URL) {
+		return prepareMCPDataURLRef(ref)
+	}
 	if !isRemoteHTTPRef(ref.URL) {
 		return ref, nil, nil
 	}
@@ -700,8 +706,7 @@ func prepareMCPMediaRef(ctx context.Context, ref mediaRef) (mediaRef, func(), er
 	if err != nil {
 		return ref, nil, err
 	}
-	limit := int64(32 << 20)
-	written, copyErr := io.Copy(file, io.LimitReader(resp.Body, limit+1))
+	written, copyErr := io.Copy(file, io.LimitReader(resp.Body, mcpMediaMaxBytes+1))
 	closeErr := file.Close()
 	if copyErr != nil {
 		_ = os.Remove(file.Name())
@@ -711,18 +716,95 @@ func prepareMCPMediaRef(ctx context.Context, ref mediaRef) (mediaRef, func(), er
 		_ = os.Remove(file.Name())
 		return ref, nil, closeErr
 	}
-	if written > limit {
+	if written > mcpMediaMaxBytes {
 		_ = os.Remove(file.Name())
-		return ref, nil, fmt.Errorf("multimodal adapter MCP media download exceeds %d bytes", limit)
+		return ref, nil, fmt.Errorf("multimodal adapter MCP media download exceeds %d bytes", mcpMediaMaxBytes)
 	}
 	prepared := ref
 	prepared.URL = file.Name()
 	return prepared, func() { _ = os.Remove(file.Name()) }, nil
 }
 
+func prepareMCPDataURLRef(ref mediaRef) (mediaRef, func(), error) {
+	mediaType, payload, err := parseBase64DataURL(ref.URL)
+	if err != nil {
+		return ref, nil, err
+	}
+	if base64.StdEncoding.DecodedLen(len(payload)) > int(mcpMediaMaxBytes) {
+		return ref, nil, fmt.Errorf("multimodal adapter MCP media data URL exceeds %d bytes", mcpMediaMaxBytes)
+	}
+	data, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		data, err = base64.RawStdEncoding.DecodeString(payload)
+	}
+	if err != nil {
+		return ref, nil, fmt.Errorf("multimodal adapter MCP media data URL base64 decode failed: %w", err)
+	}
+	if int64(len(data)) > mcpMediaMaxBytes {
+		return ref, nil, fmt.Errorf("multimodal adapter MCP media data URL exceeds %d bytes", mcpMediaMaxBytes)
+	}
+	file, err := os.CreateTemp("", "clirelay-mcp-media-*"+mcpMediaExtension("", mediaType))
+	if err != nil {
+		return ref, nil, err
+	}
+	if _, err = file.Write(data); err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return ref, nil, err
+	}
+	if err = file.Close(); err != nil {
+		_ = os.Remove(file.Name())
+		return ref, nil, err
+	}
+	prepared := ref
+	prepared.URL = file.Name()
+	return prepared, func() { _ = os.Remove(file.Name()) }, nil
+}
+
+func parseBase64DataURL(value string) (string, string, error) {
+	value = strings.TrimSpace(value)
+	header, payload, ok := strings.Cut(value, ",")
+	if !ok || !strings.HasPrefix(strings.ToLower(header), "data:") {
+		return "", "", fmt.Errorf("multimodal adapter MCP media data URL is invalid")
+	}
+	if !strings.Contains(strings.ToLower(header), ";base64") {
+		return "", "", fmt.Errorf("multimodal adapter MCP media data URL is not base64 encoded")
+	}
+	mediaType := strings.TrimSpace(strings.TrimPrefix(header, "data:"))
+	if semi := strings.Index(mediaType, ";"); semi >= 0 {
+		mediaType = mediaType[:semi]
+	}
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	payload = strings.TrimSpace(payload)
+	if unescaped, err := url.PathUnescape(payload); err == nil {
+		payload = unescaped
+	}
+	if payload == "" {
+		return "", "", fmt.Errorf("multimodal adapter MCP media data URL has empty payload")
+	}
+	return mediaType, payload, nil
+}
+
 func isRemoteHTTPRef(value string) bool {
 	value = strings.TrimSpace(value)
 	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
+}
+
+func isDataURLRef(value string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "data:")
+}
+
+func describeMediaRef(ref mediaRef) string {
+	if isDataURLRef(ref.URL) {
+		mediaType, payload, err := parseBase64DataURL(ref.URL)
+		if err == nil {
+			return fmt.Sprintf("inline %s data URL (%d base64 bytes)", mediaType, len(payload))
+		}
+		return "inline data URL"
+	}
+	return ref.URL
 }
 
 func mcpMediaExtension(rawURL, contentType string) string {

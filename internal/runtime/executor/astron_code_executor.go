@@ -791,10 +791,20 @@ func ensureAstronToolCallIDs(line []byte, seq *astronToolCallIDSeq) []byte {
 		if !ok {
 			continue
 		}
+		filtered := make([]any, 0, len(tcs))
 		for toolOffset, tc := range tcs {
 			tcMap, ok := tc.(map[string]any)
 			if !ok {
+				filtered = append(filtered, tc)
 				continue
+			}
+			// 上游可能返回 function.name 为空的 tool_call，直接丢弃避免客户端报错
+			// 流式传输中，后续帧可能没有 "name" 字段（只有 "arguments" 字段），因此仅在 "name" 键存在且为空时才丢弃
+			if fnMap, ok := tcMap["function"].(map[string]any); ok {
+				if nameVal, nameExists := fnMap["name"]; nameExists && astronJSONString(nameVal) == "" {
+					modified = true
+					continue
+				}
 			}
 			toolIndex := astronJSONIndex(tcMap["index"], toolOffset)
 			if id := astronJSONString(tcMap["id"]); id == "" {
@@ -803,6 +813,10 @@ func ensureAstronToolCallIDs(line []byte, seq *astronToolCallIDSeq) []byte {
 			} else {
 				seq.idFor(choiceIndex, toolIndex, id)
 			}
+			filtered = append(filtered, tcMap)
+		}
+		if len(filtered) != len(tcs) {
+			delta["tool_calls"] = filtered
 		}
 	}
 	if !modified {
@@ -846,16 +860,30 @@ func ensureAstronNonStreamToolCallIDs(body []byte) []byte {
 		if !ok {
 			continue
 		}
+		filtered := make([]any, 0, len(tcs))
 		for toolOffset, tc := range tcs {
 			tcMap, ok := tc.(map[string]any)
 			if !ok {
+				filtered = append(filtered, tc)
 				continue
+			}
+			// 上游可能返回 function.name 为空的 tool_call，直接丢弃避免客户端报错
+			// 仅在 "name" 键存在且值为空字符串时才丢弃，若不含 "name" 键则保留
+			if fnMap, ok := tcMap["function"].(map[string]any); ok {
+				if nameVal, nameExists := fnMap["name"]; nameExists && astronJSONString(nameVal) == "" {
+					modified = true
+					continue
+				}
 			}
 			toolIndex := astronJSONIndex(tcMap["index"], toolOffset)
 			if id := astronJSONString(tcMap["id"]); id == "" {
 				tcMap["id"] = fmt.Sprintf("call_astron_%d_%d", choiceIndex, toolIndex)
 				modified = true
 			}
+			filtered = append(filtered, tcMap)
+		}
+		if len(filtered) != len(tcs) {
+			msg["tool_calls"] = filtered
 		}
 	}
 	if !modified {

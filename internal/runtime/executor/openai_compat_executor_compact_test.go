@@ -442,6 +442,37 @@ func TestAstronCodeExecutorGeneratesDistinctNonStreamToolCallIDs(t *testing.T) {
 		t.Fatalf("synthetic ids should be distinct, got %q", firstID)
 	}
 }
+func TestAstronCodeExecutorDropsStreamingToolCallsWithEmptyName(t *testing.T) {
+	seq := &astronToolCallIDSeq{}
+	input := []byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"read","arguments":"{}"}},{"index":1,"type":"function","function":{"name":"","arguments":"{}"}},{"index":2,"type":"function","function":{"name":"glob","arguments":"{}"}}]}}]}`)
+	out := ensureAstronToolCallIDs(input, seq)
+	tcs := gjson.Get(strings.TrimSpace(strings.TrimPrefix(string(out), "data:")), "choices.0.delta.tool_calls").Array()
+	if len(tcs) != 2 {
+		t.Fatalf("expected 2 tool_calls after dropping empty-name one, got %d: %s", len(tcs), out)
+	}
+	if got := tcs[0].Get("function.name").String(); got != "read" {
+		t.Fatalf("first tool_call name = %q, want read", got)
+	}
+	if got := tcs[1].Get("function.name").String(); got != "glob" {
+		t.Fatalf("second tool_call name = %q, want glob", got)
+	}
+}
+
+func TestAstronCodeExecutorDropsNonStreamToolCallsWithEmptyName(t *testing.T) {
+	input := []byte(`{"choices":[{"index":0,"message":{"tool_calls":[{"type":"function","function":{"name":"read","arguments":"{}"}},{"type":"function","function":{"name":"","arguments":"{}"}}]}}]}`)
+	body := ensureAstronNonStreamToolCallIDs(input)
+	tcs := gjson.GetBytes(body, "choices.0.message.tool_calls").Array()
+	if len(tcs) != 1 {
+		t.Fatalf("expected 1 tool_call after dropping empty-name one, got %d: %s", len(tcs), body)
+	}
+	if got := tcs[0].Get("function.name").String(); got != "read" {
+		t.Fatalf("remaining tool_call name = %q, want read", got)
+	}
+	if id := tcs[0].Get("id").String(); id == "" {
+		t.Fatalf("remaining tool_call should have synthetic id: %s", body)
+	}
+}
+
 
 func TestBigModelCodingExecutorDoesNotSetToolStreamForNonStreamingTools(t *testing.T) {
 	executor := NewBigModelCodingExecutor(&config.Config{})

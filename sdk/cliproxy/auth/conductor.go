@@ -1360,6 +1360,7 @@ func (m *Manager) resolveAPIKeyModelAliasWithResult(auth *Auth, requestedModel s
 	}
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
 	var models []modelAliasEntry
+	defaultForceMapping := false
 	switch provider {
 	case "gemini":
 		if entry := resolveGeminiAPIKeyConfig(cfg, auth); entry != nil {
@@ -1387,6 +1388,7 @@ func (m *Manager) resolveAPIKeyModelAliasWithResult(auth *Auth, requestedModel s
 		if compatName != "" || strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") {
 			if entry := resolveOpenAICompatConfig(cfg, providerKey, compatName, auth.Provider); entry != nil {
 				models = asModelAliasEntries(entry.Models)
+				defaultForceMapping = true
 			}
 		}
 	}
@@ -1396,6 +1398,12 @@ func (m *Manager) resolveAPIKeyModelAliasWithResult(auth *Auth, requestedModel s
 	result := resolveModelAliasResultFromConfigModels(requestedModel, models)
 	if strings.TrimSpace(result.UpstreamModel) == "" {
 		return OAuthModelAliasResult{UpstreamModel: requestedModel}
+	}
+	if defaultForceMapping && !result.ForceMapping && !strings.EqualFold(strings.TrimSpace(result.UpstreamModel), requestedModel) {
+		result.ForceMapping = true
+		if strings.TrimSpace(result.OriginalAlias) == "" {
+			result.OriginalAlias = requestedModel
+		}
 	}
 	return result
 }
@@ -2010,6 +2018,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			}
 		}
 		if tail := finishForceMappedStreamChunks(rewriter); len(tail) > 0 {
+			rewriter = nil
 			tailChunk := cliproxyexecutor.StreamChunk{Payload: tail}
 			if !emit(tailChunk) {
 				return

@@ -10,6 +10,7 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/tidwall/gjson"
 )
 
 const openAICompatPoolProviderKey = "openai-compatible-pool"
@@ -321,6 +322,66 @@ func TestManagerExecute_OpenAICompatAliasPoolForceMappingRotatesAndRewritesRespo
 		if payloads[i] != wantPayloads[i] {
 			t.Fatalf("payload %d = %s, want %s", i, payloads[i], wantPayloads[i])
 		}
+	}
+}
+
+func TestManagerExecute_OpenAICompatAliasRewritesResponseModelByDefault(t *testing.T) {
+	alias := "deepseek-v4-pro"
+	upstreamModel := "xopdeepseekv4pro"
+	executor := &openAICompatPoolExecutor{
+		id: openAICompatPoolProviderKey,
+		executePayloads: map[string][]byte{
+			upstreamModel: []byte(`{"id":"chatcmpl-live","object":"chat.completion","model":"xopdeepseekv4pro","choices":[]}`),
+		},
+	}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: upstreamModel, Alias: alias},
+	}, executor)
+
+	resp, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	got := string(resp.Payload)
+	if !strings.Contains(got, `"model":"`+alias+`"`) {
+		t.Fatalf("payload = %s, want response model rewritten to alias %q", got, alias)
+	}
+	if strings.Contains(got, upstreamModel) {
+		t.Fatalf("payload leaked upstream model %q: %s", upstreamModel, got)
+	}
+}
+
+func TestManagerExecuteStream_OpenAICompatAliasRewritesResponseModelByDefault(t *testing.T) {
+	alias := "deepseek-v4-pro"
+	upstreamModel := "xopdeepseekv4pro"
+	executor := &openAICompatPoolExecutor{
+		id: openAICompatPoolProviderKey,
+		streamPayloads: map[string][]cliproxyexecutor.StreamChunk{
+			upstreamModel: {{
+				Payload: []byte(`{"id":"chatcmpl-live","object":"chat.completion.chunk","model":"xopdeepseekv4pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]},"finish_reason":null}]}`),
+			}},
+		},
+	}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: upstreamModel, Alias: alias},
+	}, executor)
+
+	streamResult, err := m.ExecuteStream(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("execute stream: %v", err)
+	}
+
+	got := readOpenAICompatStreamPayload(t, streamResult)
+	if !strings.Contains(got, `"model":"`+alias+`"`) {
+		t.Fatalf("stream payload = %s, want response model rewritten to alias %q", got, alias)
+	}
+	if strings.Contains(got, upstreamModel) {
+		t.Fatalf("stream payload leaked upstream model %q: %s", upstreamModel, got)
+	}
+	toolCall := gjson.Parse(got).Get("choices.0.delta.tool_calls.0.function")
+	if toolCall.Get("name").String() != "get_weather" || toolCall.Get("arguments").String() != `{"city":"北京"}` {
+		t.Fatalf("stream payload corrupted tool call fields: %s", got)
 	}
 }
 

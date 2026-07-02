@@ -259,12 +259,20 @@ func (r *StreamRewriter) Finish() []byte {
 	if len(r.pendingBuf) == 0 {
 		return nil
 	}
-	buf := make([]byte, len(r.pendingBuf)+2)
-	copy(buf, r.pendingBuf)
-	buf[len(r.pendingBuf)] = '\n'
-	buf[len(r.pendingBuf)+1] = '\n'
-	buf = normalizeGluedSSEEvents(buf)
+	pending := r.pendingBuf
 	r.pendingBuf = nil
+	trimmed := bytes.TrimSpace(pending)
+	if len(trimmed) > 0 && trimmed[0] == '{' && gjson.ValidBytes(trimmed) {
+		return rewriteModelInResponse(trimmed, r.options.RewriteModel)
+	}
+	if !bytes.Contains(pending, []byte("data:")) && !bytes.Contains(pending, []byte("event:")) {
+		return pending
+	}
+	buf := make([]byte, len(pending)+2)
+	copy(buf, pending)
+	buf[len(pending)] = '\n'
+	buf[len(pending)+1] = '\n'
+	buf = normalizeGluedSSEEvents(buf)
 	out := r.RewriteChunk(buf)
 	if len(r.pendingBuf) > 0 {
 		tail := rewriteSSEPayloadLines(r.pendingBuf, r.options.RewriteModel)

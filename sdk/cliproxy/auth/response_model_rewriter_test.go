@@ -63,6 +63,17 @@ func TestStreamRewriter_Finish_FlushesCodexResponsesEventChunk(t *testing.T) {
 	}
 }
 
+func TestStreamRewriter_FinishPreservesOpaquePayload(t *testing.T) {
+	rewriter := NewStreamRewriter(StreamRewriteOptions{RewriteModel: "deepseek-v4-pro"})
+
+	if got := rewriter.RewriteChunk([]byte("glm-5")); got != nil {
+		t.Fatalf("opaque chunk should buffer until finish, got %q", string(got))
+	}
+	if got := string(rewriter.Finish()); got != "glm-5" {
+		t.Fatalf("finish payload = %q, want opaque payload unchanged", got)
+	}
+}
+
 func TestStreamRewriter_RewriteChunk_CodexResponsesLineChunks(t *testing.T) {
 	rewriter := NewStreamRewriter(StreamRewriteOptions{RewriteModel: "gpt-5.4-fast"})
 	lines := [][]byte{

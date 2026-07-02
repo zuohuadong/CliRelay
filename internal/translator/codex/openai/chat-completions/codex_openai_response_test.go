@@ -2,6 +2,7 @@ package chat_completions
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -197,5 +198,171 @@ func TestConvertCodexResponseToOpenAI_NonStreamMultiMessageEmptyTrailingKeepsCon
 	}
 	if got.String() != "the real answer" {
 		t.Fatalf("expected content %q, got %q; resp=%s", "the real answer", got.String(), string(out))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_StreamCustomToolCallAnnounced(t *testing.T) {
+	ctx := context.Background()
+	var param any
+
+	out := ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.output_item.added","item":{"type":"custom_tool_call","call_id":"call_123","name":"apply_patch"}}`), &param)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(out))
+	}
+
+	if got := gjson.GetBytes(out[0], "choices.0.delta.tool_calls.0.id").String(); got != "call_123" {
+		t.Fatalf("tool call id = %q, want call_123; chunk=%s", got, string(out[0]))
+	}
+	if got := gjson.GetBytes(out[0], "choices.0.delta.tool_calls.0.function.name").String(); got != "apply_patch" {
+		t.Fatalf("tool call name = %q, want apply_patch; chunk=%s", got, string(out[0]))
+	}
+	if got := gjson.GetBytes(out[0], "choices.0.delta.tool_calls.0.function.arguments").String(); got != "" {
+		t.Fatalf("arguments = %q, want empty announcement; chunk=%s", got, string(out[0]))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_StreamCustomToolCallInputDelta(t *testing.T) {
+	ctx := context.Background()
+	var param any
+
+	ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.output_item.added","item":{"type":"custom_tool_call","call_id":"call_123","name":"apply_patch"}}`), &param)
+	out := ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.custom_tool_call_input.delta","delta":"{\"cmd\":\"x\"}"}`), &param)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(out))
+	}
+
+	if got := gjson.GetBytes(out[0], "choices.0.delta.tool_calls.0.function.arguments").String(); got != `{"cmd":"x"}` {
+		t.Fatalf("arguments delta = %q, want JSON string; chunk=%s", got, string(out[0]))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_StreamCustomToolCallInputDoneFallback(t *testing.T) {
+	ctx := context.Background()
+	var param any
+
+	ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.output_item.added","item":{"type":"custom_tool_call","call_id":"call_123","name":"apply_patch"}}`), &param)
+	out := ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.custom_tool_call_input.done","input":"{\"cmd\":\"x\"}"}`), &param)
+	if len(out) != 1 {
+		t.Fatalf("expected fallback arguments chunk, got %d", len(out))
+	}
+
+	if got := gjson.GetBytes(out[0], "choices.0.delta.tool_calls.0.function.arguments").String(); got != `{"cmd":"x"}` {
+		t.Fatalf("arguments fallback = %q, want JSON string; chunk=%s", got, string(out[0]))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_StreamCustomToolCallDoneSuppressedAfterAnnounce(t *testing.T) {
+	ctx := context.Background()
+	var param any
+
+	ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.output_item.added","item":{"type":"custom_tool_call","call_id":"call_123","name":"apply_patch"}}`), &param)
+	out := ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","call_id":"call_123","name":"apply_patch","input":"{\"cmd\":\"x\"}"}}`), &param)
+	if len(out) != 0 {
+		t.Fatalf("expected output_item.done to be suppressed after announcement, got %d chunks: %s", len(out), string(out[0]))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_StreamCustomToolCallDoneFallbackNoAnnounce(t *testing.T) {
+	ctx := context.Background()
+	var param any
+
+	out := ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","call_id":"call_123","name":"apply_patch","input":"{\"cmd\":\"x\"}"}}`), &param)
+	if len(out) != 1 {
+		t.Fatalf("expected fallback tool call chunk, got %d", len(out))
+	}
+
+	if got := gjson.GetBytes(out[0], "choices.0.delta.tool_calls.0.id").String(); got != "call_123" {
+		t.Fatalf("tool call id = %q, want call_123; chunk=%s", got, string(out[0]))
+	}
+	if got := gjson.GetBytes(out[0], "choices.0.delta.tool_calls.0.function.arguments").String(); got != `{"cmd":"x"}` {
+		t.Fatalf("arguments fallback = %q, want JSON string; chunk=%s", got, string(out[0]))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_StreamCustomToolCallFinishReason(t *testing.T) {
+	ctx := context.Background()
+	var param any
+
+	out := ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.completed","response":{"status":"completed","stop_reason":"custom_tool_call"}}`), &param)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(out))
+	}
+
+	if got := gjson.GetBytes(out[0], "choices.0.finish_reason").String(); got != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls; chunk=%s", got, string(out[0]))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_NonStreamCustomToolCall(t *testing.T) {
+	ctx := context.Background()
+
+	raw := []byte(`{"type":"response.completed","response":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.4","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"type":"custom_tool_call","call_id":"call_123","name":"apply_patch","input":"{\"cmd\":\"x\"}"}]}}`)
+	out := ConvertCodexResponseToOpenAINonStream(ctx, "gpt-5.4", nil, nil, raw, nil)
+
+	if got := gjson.GetBytes(out, "choices.0.message.tool_calls.0.id").String(); got != "call_123" {
+		t.Fatalf("tool call id = %q, want call_123; payload=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "choices.0.message.tool_calls.0.function.arguments").String(); got != `{"cmd":"x"}` {
+		t.Fatalf("arguments = %q, want JSON string; payload=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "choices.0.finish_reason").String(); got != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls; payload=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "usage.total_tokens").Int(); got != 3 {
+		t.Fatalf("usage.total_tokens = %d, want 3; payload=%s", got, string(out))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_StreamNormalizesChatCompletionID(t *testing.T) {
+	ctx := context.Background()
+	var param any
+
+	ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.created","response":{"id":"resp_abc123","created_at":1700000000,"model":"gpt-5.4"}}`), &param)
+	out := ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.output_text.delta","delta":"hello"}`), &param)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(out))
+	}
+
+	if got := gjson.GetBytes(out[0], "id").String(); got != "chatcmpl-abc123" {
+		t.Fatalf("id = %q, want chatcmpl-abc123; chunk=%s", got, string(out[0]))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_NonStreamNormalizesChatCompletionID(t *testing.T) {
+	ctx := context.Background()
+
+	raw := []byte(`{"type":"response.completed","response":{"id":"resp-xyz789","created_at":1700000000,"model":"gpt-5.4","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}`)
+	out := ConvertCodexResponseToOpenAINonStream(ctx, "gpt-5.4", nil, nil, raw, nil)
+
+	if got := gjson.GetBytes(out, "id").String(); got != "chatcmpl-xyz789" {
+		t.Fatalf("id = %q, want chatcmpl-xyz789; payload=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "usage.total_tokens").Int(); got != 3 {
+		t.Fatalf("usage.total_tokens = %d, want 3; payload=%s", got, string(out))
+	}
+}
+
+func TestNormalizeChatCompletionID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "resp underscore", in: "resp_abc123", want: "chatcmpl-abc123"},
+		{name: "resp dash", in: "resp-xyz789", want: "chatcmpl-xyz789"},
+		{name: "already normalized", in: "chatcmpl-ok", want: "chatcmpl-ok"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeChatCompletionID(tc.in); got != tc.want {
+				t.Fatalf("normalizeChatCompletionID(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	for _, in := range []string{"", "chatcmpl-", "!!!"} {
+		got := normalizeChatCompletionID(in)
+		if !strings.HasPrefix(got, "chatcmpl-") || got == "chatcmpl-" {
+			t.Fatalf("normalizeChatCompletionID(%q) fallback = %q, want non-empty chatcmpl-*", in, got)
+		}
 	}
 }

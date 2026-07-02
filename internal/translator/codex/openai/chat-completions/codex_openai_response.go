@@ -9,7 +9,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -17,7 +19,8 @@ import (
 )
 
 var (
-	dataTag = []byte("data:")
+	dataTag                 = []byte("data:")
+	chatCompletionIDCounter uint64
 )
 
 // ConvertCliToOpenAIParams holds parameters for response conversion.
@@ -28,6 +31,7 @@ type ConvertCliToOpenAIParams struct {
 	FunctionCallIndex         int
 	HasReceivedArgumentsDelta bool
 	HasToolCallAnnounced      bool
+	IsCustomToolCall          bool
 	LastImageHashByItemID     map[string][32]byte
 }
 
@@ -54,6 +58,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 			FunctionCallIndex:         -1,
 			HasReceivedArgumentsDelta: false,
 			HasToolCallAnnounced:      false,
+			IsCustomToolCall:          false,
 			LastImageHashByItemID:     make(map[string][32]byte),
 		}
 	}
@@ -71,7 +76,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 	typeResult := rootResult.Get("type")
 	dataType := typeResult.String()
 	if dataType == "response.created" {
-		(*param).(*ConvertCliToOpenAIParams).ResponseID = rootResult.Get("response.id").String()
+		(*param).(*ConvertCliToOpenAIParams).ResponseID = normalizeChatCompletionID(rootResult.Get("response.id").String())
 		(*param).(*ConvertCliToOpenAIParams).CreatedAt = rootResult.Get("response.created_at").Int()
 		(*param).(*ConvertCliToOpenAIParams).Model = rootResult.Get("response.model").String()
 		if (*param).(*ConvertCliToOpenAIParams).LastImageHashByItemID == nil {
@@ -93,6 +98,9 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 	template, _ = sjson.SetBytes(template, "created", (*param).(*ConvertCliToOpenAIParams).CreatedAt)
 
 	// Extract and set the response ID.
+	if (*param).(*ConvertCliToOpenAIParams).ResponseID == "" {
+		(*param).(*ConvertCliToOpenAIParams).ResponseID = normalizeChatCompletionID("")
+	}
 	template, _ = sjson.SetBytes(template, "id", (*param).(*ConvertCliToOpenAIParams).ResponseID)
 
 	// Extract and set usage metadata (token counts).
@@ -166,7 +174,8 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		template, _ = sjson.SetBytes(template, "choices.0.native_finish_reason", nativeFinishReason)
 	} else if dataType == "response.output_item.added" {
 		itemResult := rootResult.Get("item")
-		if !itemResult.Exists() || itemResult.Get("type").String() != "function_call" {
+		itemType := itemResult.Get("type").String()
+		if !itemResult.Exists() || (itemType != "function_call" && itemType != "custom_tool_call") {
 			return [][]byte{}
 		}
 
@@ -174,6 +183,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		(*param).(*ConvertCliToOpenAIParams).FunctionCallIndex++
 		(*param).(*ConvertCliToOpenAIParams).HasReceivedArgumentsDelta = false
 		(*param).(*ConvertCliToOpenAIParams).HasToolCallAnnounced = true
+		(*param).(*ConvertCliToOpenAIParams).IsCustomToolCall = itemType == "custom_tool_call"
 
 		functionCallItemTemplate := []byte(`{"index":0,"id":"","type":"function","function":{"name":"","arguments":""}}`)
 		functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "index", (*param).(*ConvertCliToOpenAIParams).FunctionCallIndex)
@@ -192,7 +202,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallItemTemplate)
 
-	} else if dataType == "response.function_call_arguments.delta" {
+	} else if dataType == "response.function_call_arguments.delta" || dataType == "response.custom_tool_call_input.delta" {
 		(*param).(*ConvertCliToOpenAIParams).HasReceivedArgumentsDelta = true
 
 		deltaValue := rootResult.Get("delta").String()
@@ -203,7 +213,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallItemTemplate)
 
-	} else if dataType == "response.function_call_arguments.done" {
+	} else if dataType == "response.function_call_arguments.done" || dataType == "response.custom_tool_call_input.done" {
 		if (*param).(*ConvertCliToOpenAIParams).HasReceivedArgumentsDelta {
 			// Arguments were already streamed via delta events; nothing to emit.
 			return [][]byte{}
@@ -211,6 +221,9 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 
 		// Fallback: no delta events were received, emit the full arguments as a single chunk.
 		fullArgs := rootResult.Get("arguments").String()
+		if dataType == "response.custom_tool_call_input.done" || (*param).(*ConvertCliToOpenAIParams).IsCustomToolCall {
+			fullArgs = rootResult.Get("input").String()
+		}
 		functionCallItemTemplate := []byte(`{"index":0,"function":{"arguments":""}}`)
 		functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "index", (*param).(*ConvertCliToOpenAIParams).FunctionCallIndex)
 		functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "function.arguments", fullArgs)
@@ -259,18 +272,20 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 			template, _ = sjson.SetRawBytes(template, "choices.0.delta.images.-1", imagePayload)
 			return [][]byte{template}
 		}
-		if itemType != "function_call" {
+		if itemType != "function_call" && itemType != "custom_tool_call" {
 			return [][]byte{}
 		}
 
 		if (*param).(*ConvertCliToOpenAIParams).HasToolCallAnnounced {
 			// Tool call was already announced via output_item.added; skip emission.
 			(*param).(*ConvertCliToOpenAIParams).HasToolCallAnnounced = false
+			(*param).(*ConvertCliToOpenAIParams).IsCustomToolCall = false
 			return [][]byte{}
 		}
 
 		// Fallback path: model skipped output_item.added, so emit complete tool call now.
 		(*param).(*ConvertCliToOpenAIParams).FunctionCallIndex++
+		(*param).(*ConvertCliToOpenAIParams).IsCustomToolCall = itemType == "custom_tool_call"
 
 		functionCallItemTemplate := []byte(`{"index":0,"id":"","type":"function","function":{"name":"","arguments":""}}`)
 		functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "index", (*param).(*ConvertCliToOpenAIParams).FunctionCallIndex)
@@ -286,7 +301,11 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		}
 		functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "function.name", name)
 
-		functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "function.arguments", itemResult.Get("arguments").String())
+		arguments := itemResult.Get("arguments").String()
+		if itemType == "custom_tool_call" {
+			arguments = itemResult.Get("input").String()
+		}
+		functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "function.arguments", arguments)
 		template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallItemTemplate)
 
@@ -337,9 +356,7 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 	}
 
 	// Extract and set the response ID.
-	if idResult := responseResult.Get("id"); idResult.Exists() {
-		template, _ = sjson.SetBytes(template, "id", idResult.String())
-	}
+	template, _ = sjson.SetBytes(template, "id", normalizeChatCompletionID(responseResult.Get("id").String()))
 
 	// Extract and set usage metadata (token counts).
 	if usageResult := responseResult.Get("usage"); usageResult.Exists() {
@@ -399,7 +416,7 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 						}
 					}
 				}
-			case "function_call":
+			case "function_call", "custom_tool_call":
 				// Handle function call content
 				functionCallTemplate := []byte(`{"id":"","type":"function","function":{"name":"","arguments":""}}`)
 
@@ -416,7 +433,11 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 					functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.name", n)
 				}
 
-				if argsResult := outputItem.Get("arguments"); argsResult.Exists() {
+				argsKey := "arguments"
+				if outputType == "custom_tool_call" {
+					argsKey = "input"
+				}
+				if argsResult := outputItem.Get(argsKey); argsResult.Exists() {
 					functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.arguments", argsResult.String())
 				}
 
@@ -497,7 +518,7 @@ func codexOpenAIFinishReason(responseResult gjson.Result, hasToolCalls bool) (st
 		return "length", reason
 	case "content_filter", "refusal":
 		return "content_filter", reason
-	case "tool_use", "tool_calls", "function_call":
+	case "tool_use", "tool_calls", "function_call", "custom_tool_call":
 		return "tool_calls", reason
 	case "stop_sequence":
 		return "stop", reason
@@ -535,6 +556,57 @@ func buildReverseMapFromOriginalOpenAI(original []byte) map[string]string {
 		}
 	}
 	return rev
+}
+
+func normalizeChatCompletionID(upstreamID string) string {
+	id := strings.TrimSpace(upstreamID)
+	switch {
+	case strings.HasPrefix(id, "chatcmpl-"):
+		if suffix := sanitizeChatCompletionIDSuffix(strings.TrimPrefix(id, "chatcmpl-")); suffix != "" {
+			return "chatcmpl-" + suffix
+		}
+	case strings.HasPrefix(id, "resp_"):
+		if suffix := sanitizeChatCompletionIDSuffix(strings.TrimPrefix(id, "resp_")); suffix != "" {
+			return "chatcmpl-" + suffix
+		}
+	case strings.HasPrefix(id, "resp-"):
+		if suffix := sanitizeChatCompletionIDSuffix(strings.TrimPrefix(id, "resp-")); suffix != "" {
+			return "chatcmpl-" + suffix
+		}
+	default:
+		if suffix := sanitizeChatCompletionIDSuffix(id); suffix != "" {
+			return "chatcmpl-" + suffix
+		}
+	}
+	return fallbackChatCompletionID()
+}
+
+func sanitizeChatCompletionIDSuffix(id string) string {
+	var b strings.Builder
+	lastWasDash := false
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+			lastWasDash = false
+		case r == '-':
+			if b.Len() > 0 && !lastWasDash {
+				b.WriteByte('-')
+				lastWasDash = true
+			}
+		default:
+			if b.Len() > 0 && !lastWasDash {
+				b.WriteByte('-')
+				lastWasDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func fallbackChatCompletionID() string {
+	counter := atomic.AddUint64(&chatCompletionIDCounter, 1)
+	return "chatcmpl-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatUint(counter, 36)
 }
 
 func mimeTypeFromCodexOutputFormat(outputFormat string) string {

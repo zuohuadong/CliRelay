@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -124,6 +125,7 @@ func (h *OpenAIAPIHandler) ChatCompletions(c *gin.Context) {
 		rawJSON = responsesconverter.ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName, rawJSON, stream)
 		stream = gjson.GetBytes(rawJSON, "stream").Bool()
 	}
+	rawJSON = sanitizeChatCompletionsToolMessageHistory(rawJSON)
 
 	if stream {
 		h.handleStreamingResponse(c, rawJSON)
@@ -146,6 +148,138 @@ func shouldTreatAsResponsesFormat(rawJSON []byte) bool {
 		return true
 	}
 	return false
+}
+
+func sanitizeChatCompletionsToolMessageHistory(payload []byte) []byte {
+	var root map[string]any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return payload
+	}
+	messages, ok := root["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		return payload
+	}
+
+	availableToolResults := make(map[string]int)
+	for _, item := range messages {
+		msg, ok := item.(map[string]any)
+		if !ok || !strings.EqualFold(strings.TrimSpace(fmt.Sprint(msg["role"])), "tool") {
+			continue
+		}
+		id := chatCompletionStringField(msg, "tool_call_id")
+		if id == "" {
+			id = chatCompletionStringField(msg, "call_id")
+		}
+		if id != "" {
+			availableToolResults[id]++
+		}
+	}
+
+	changed := false
+	pendingToolCalls := make(map[string]int)
+	kept := make([]any, 0, len(messages))
+	for _, item := range messages {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			kept = append(kept, item)
+			continue
+		}
+
+		role := strings.ToLower(strings.TrimSpace(fmt.Sprint(msg["role"])))
+		switch role {
+		case "assistant":
+			toolCalls, ok := msg["tool_calls"].([]any)
+			if !ok || len(toolCalls) == 0 {
+				kept = append(kept, msg)
+				continue
+			}
+			filtered := make([]any, 0, len(toolCalls))
+			for _, toolCall := range toolCalls {
+				toolCallMap, ok := toolCall.(map[string]any)
+				if !ok {
+					changed = true
+					continue
+				}
+				id := chatCompletionStringField(toolCallMap, "id")
+				if id == "" || availableToolResults[id] <= 0 {
+					changed = true
+					continue
+				}
+				filtered = append(filtered, toolCallMap)
+				pendingToolCalls[id]++
+				availableToolResults[id]--
+			}
+			if len(filtered) == 0 {
+				delete(msg, "tool_calls")
+				changed = true
+				if chatCompletionMessageHasContent(msg) {
+					kept = append(kept, msg)
+				}
+				continue
+			}
+			if len(filtered) != len(toolCalls) {
+				msg["tool_calls"] = filtered
+				changed = true
+			}
+			kept = append(kept, msg)
+		case "tool":
+			id := chatCompletionStringField(msg, "tool_call_id")
+			if id == "" {
+				id = chatCompletionStringField(msg, "call_id")
+				if id != "" {
+					msg["tool_call_id"] = id
+					changed = true
+				}
+			}
+			if id != "" && availableToolResults[id] > 0 {
+				availableToolResults[id]--
+			}
+			if id == "" || pendingToolCalls[id] <= 0 {
+				changed = true
+				continue
+			}
+			pendingToolCalls[id]--
+			kept = append(kept, msg)
+		default:
+			kept = append(kept, msg)
+		}
+	}
+
+	if !changed {
+		return payload
+	}
+	root["messages"] = kept
+	out, err := json.Marshal(root)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+func chatCompletionStringField(msg map[string]any, key string) string {
+	if msg == nil {
+		return ""
+	}
+	value, ok := msg[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func chatCompletionMessageHasContent(msg map[string]any) bool {
+	content, ok := msg["content"]
+	if !ok || content == nil {
+		return false
+	}
+	switch v := content.(type) {
+	case string:
+		return strings.TrimSpace(v) != ""
+	case []any:
+		return len(v) > 0
+	default:
+		return true
+	}
 }
 
 // Completions handles the /v1/completions endpoint.

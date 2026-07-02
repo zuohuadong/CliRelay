@@ -222,6 +222,102 @@ func repairResponsesWebsocketToolCalls(sessionKey string, payload []byte) []byte
 	return repairResponsesWebsocketToolCallsWithCaches(defaultWebsocketToolOutputCache, defaultWebsocketToolCallCache, sessionKey, payload)
 }
 
+func sanitizeResponsesInputToolCallNames(payload []byte) []byte {
+	input := gjson.GetBytes(payload, "input")
+	if !input.Exists() || !input.IsArray() {
+		return payload
+	}
+
+	sanitizedInput, errSanitize := sanitizeResponsesToolCallNamesArray(input.Raw)
+	if errSanitize != nil || sanitizedInput == "" || sanitizedInput == input.Raw {
+		return payload
+	}
+	updated, errSet := sjson.SetRawBytes(payload, "input", []byte(sanitizedInput))
+	if errSet != nil {
+		return payload
+	}
+	return updated
+}
+
+func sanitizeResponsesInputToolCallHistory(payload []byte) []byte {
+	input := gjson.GetBytes(payload, "input")
+	if !input.Exists() || !input.IsArray() {
+		return payload
+	}
+
+	outputCache := newWebsocketToolOutputCache(time.Minute, len(input.Array())+1)
+	callCache := newWebsocketToolOutputCache(time.Minute, len(input.Array())+1)
+	sanitizedInput, errSanitize := repairResponsesToolCallsArray(outputCache, callCache, "sanitize-responses-input", input.Raw, false)
+	if errSanitize != nil || sanitizedInput == "" || sanitizedInput == input.Raw {
+		return payload
+	}
+	updated, errSet := sjson.SetRawBytes(payload, "input", []byte(sanitizedInput))
+	if errSet != nil {
+		return payload
+	}
+	return updated
+}
+
+func sanitizeResponsesToolCallNamesArray(rawArray string) (string, error) {
+	rawArray = strings.TrimSpace(rawArray)
+	if rawArray == "" {
+		return "[]", nil
+	}
+
+	var items []json.RawMessage
+	if errUnmarshal := json.Unmarshal([]byte(rawArray), &items); errUnmarshal != nil {
+		return "", errUnmarshal
+	}
+
+	validCallIDs := make(map[string]struct{}, len(items))
+	invalidCallIDs := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if len(item) == 0 {
+			continue
+		}
+		itemType := strings.TrimSpace(gjson.GetBytes(item, "type").String())
+		if !isResponsesToolCallType(itemType) {
+			continue
+		}
+		callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
+		if callID == "" || !responsesToolCallHasValidName(item) {
+			if callID != "" {
+				invalidCallIDs[callID] = struct{}{}
+			}
+			continue
+		}
+		validCallIDs[callID] = struct{}{}
+	}
+
+	filtered := make([]json.RawMessage, 0, len(items))
+	for _, item := range items {
+		if len(item) == 0 {
+			continue
+		}
+		itemType := strings.TrimSpace(gjson.GetBytes(item, "type").String())
+		switch {
+		case isResponsesToolCallType(itemType):
+			if strings.TrimSpace(gjson.GetBytes(item, "call_id").String()) == "" || !responsesToolCallHasValidName(item) {
+				continue
+			}
+		case isResponsesToolCallOutputType(itemType):
+			callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
+			if _, invalid := invalidCallIDs[callID]; invalid {
+				if _, valid := validCallIDs[callID]; !valid {
+					continue
+				}
+			}
+		}
+		filtered = append(filtered, item)
+	}
+
+	out, errMarshal := json.Marshal(filtered)
+	if errMarshal != nil {
+		return "", errMarshal
+	}
+	return string(out), nil
+}
+
 func repairResponsesWebsocketToolCallsWithCache(cache *websocketToolOutputCache, sessionKey string, payload []byte) []byte {
 	return repairResponsesWebsocketToolCallsWithCaches(cache, nil, sessionKey, payload)
 }
@@ -279,7 +375,7 @@ func repairResponsesToolCallsArray(outputCache, callCache *websocketToolOutputCa
 			outputCache.record(sessionKey, callID, item)
 		case isResponsesToolCallType(itemType):
 			callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
-			if callID == "" {
+			if callID == "" || !responsesToolCallHasValidName(item) {
 				continue
 			}
 			callPresent[callID] = struct{}{}
@@ -334,8 +430,8 @@ func repairResponsesToolCallsArray(outputCache, callCache *websocketToolOutputCa
 		}
 
 		callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
-		if callID == "" {
-			// Upstream rejects tool calls without a call_id; drop it.
+		if callID == "" || !responsesToolCallHasValidName(item) {
+			// Upstream rejects tool calls without a call_id or name; drop it.
 			continue
 		}
 
@@ -391,6 +487,9 @@ func recordResponsesWebsocketToolCallsFromPayloadWithCache(cache *websocketToolO
 			if callID == "" {
 				continue
 			}
+			if !responsesToolCallHasValidName(json.RawMessage(item.Raw)) {
+				continue
+			}
 			cache.record(sessionKey, callID, json.RawMessage(item.Raw))
 		}
 	case "response.output_item.added", "response.output_item.done":
@@ -405,8 +504,15 @@ func recordResponsesWebsocketToolCallsFromPayloadWithCache(cache *websocketToolO
 		if callID == "" {
 			return
 		}
+		if !responsesToolCallHasValidName(json.RawMessage(item.Raw)) {
+			return
+		}
 		cache.record(sessionKey, callID, json.RawMessage(item.Raw))
 	}
+}
+
+func responsesToolCallHasValidName(item json.RawMessage) bool {
+	return strings.TrimSpace(gjson.GetBytes(item, "name").String()) != ""
 }
 
 func isResponsesToolCallType(itemType string) bool {

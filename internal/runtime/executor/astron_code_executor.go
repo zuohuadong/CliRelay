@@ -755,6 +755,13 @@ func (s *astronToolCallIDSeq) idFor(choiceIndex, toolIndex int, preferred string
 	return generated
 }
 
+func (s *astronToolCallIDSeq) existingID(choiceIndex, toolIndex int) string {
+	if s == nil || s.ids == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.ids[fmt.Sprintf("%d:%d", choiceIndex, toolIndex)])
+}
+
 func ensureAstronToolCallIDs(line []byte, seq *astronToolCallIDSeq) []byte {
 	if !bytes.HasPrefix(line, []byte("data:")) {
 		return line
@@ -798,20 +805,33 @@ func ensureAstronToolCallIDs(line []byte, seq *astronToolCallIDSeq) []byte {
 				filtered = append(filtered, tc)
 				continue
 			}
-			// 上游可能返回 function.name 为空的 tool_call，直接丢弃避免客户端报错
-			// 流式传输中，后续帧可能没有 "name" 字段（只有 "arguments" 字段），因此仅在 "name" 键存在且为空时才丢弃
+			hasNonEmptyName := false
+			hasArguments := false
+			// 上游可能返回 function.name 为空的 tool_call，直接丢弃避免客户端报错。
+			// 流式传输中，参数增量帧通常没有 "name" 字段，因此只处理显式空 name。
 			if fnMap, ok := tcMap["function"].(map[string]any); ok {
-				if nameVal, nameExists := fnMap["name"]; nameExists && astronJSONString(nameVal) == "" {
-					modified = true
-					continue
+				if nameVal, nameExists := fnMap["name"]; nameExists {
+					if astronJSONString(nameVal) == "" {
+						modified = true
+						continue
+					}
+					hasNonEmptyName = true
 				}
+				hasArguments = astronJSONString(fnMap["arguments"]) != ""
 			}
 			toolIndex := astronJSONIndex(tcMap["index"], toolOffset)
 			if id := astronJSONString(tcMap["id"]); id == "" {
-				tcMap["id"] = seq.idFor(choiceIndex, toolIndex, "")
-				modified = true
+				if hasNonEmptyName || seq.existingID(choiceIndex, toolIndex) == "" && !hasArguments {
+					tcMap["id"] = seq.idFor(choiceIndex, toolIndex, "")
+					modified = true
+				}
 			} else {
-				seq.idFor(choiceIndex, toolIndex, id)
+				if hasNonEmptyName || seq.existingID(choiceIndex, toolIndex) == "" {
+					seq.idFor(choiceIndex, toolIndex, id)
+				} else if hasArguments {
+					delete(tcMap, "id")
+					modified = true
+				}
 			}
 			filtered = append(filtered, tcMap)
 		}

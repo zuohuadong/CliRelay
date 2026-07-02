@@ -415,7 +415,7 @@ func TestBigModelCodingExecutorNormalizesThinkingAndToolParallelism(t *testing.T
 	}
 }
 
-func TestAstronCodeExecutorReusesSyntheticStreamingToolCallIDs(t *testing.T) {
+func TestAstronCodeExecutorDoesNotRepeatStreamingToolCallIDOnArgumentDeltas(t *testing.T) {
 	seq := &astronToolCallIDSeq{}
 	first := ensureAstronToolCallIDs([]byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"read","arguments":""}}]}}]}`), seq)
 	second := ensureAstronToolCallIDs([]byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"file\":\"README.md\"}"}}]}}]}`), seq)
@@ -425,8 +425,8 @@ func TestAstronCodeExecutorReusesSyntheticStreamingToolCallIDs(t *testing.T) {
 	if firstID == "" {
 		t.Fatalf("first synthetic id is empty: %s", first)
 	}
-	if secondID != firstID {
-		t.Fatalf("second synthetic id = %q, want %q", secondID, firstID)
+	if secondID != "" {
+		t.Fatalf("argument delta should not repeat synthetic id, got %q: %s", secondID, second)
 	}
 }
 
@@ -472,7 +472,6 @@ func TestAstronCodeExecutorDropsNonStreamToolCallsWithEmptyName(t *testing.T) {
 		t.Fatalf("remaining tool_call should have synthetic id: %s", body)
 	}
 }
-
 
 func TestBigModelCodingExecutorDoesNotSetToolStreamForNonStreamingTools(t *testing.T) {
 	executor := NewBigModelCodingExecutor(&config.Config{})

@@ -239,6 +239,25 @@ func sanitizeResponsesInputToolCallNames(payload []byte) []byte {
 	return updated
 }
 
+func sanitizeResponsesInputToolCallHistory(payload []byte) []byte {
+	input := gjson.GetBytes(payload, "input")
+	if !input.Exists() || !input.IsArray() {
+		return payload
+	}
+
+	outputCache := newWebsocketToolOutputCache(time.Minute, len(input.Array())+1)
+	callCache := newWebsocketToolOutputCache(time.Minute, len(input.Array())+1)
+	sanitizedInput, errSanitize := repairResponsesToolCallsArray(outputCache, callCache, "sanitize-responses-input", input.Raw, false)
+	if errSanitize != nil || sanitizedInput == "" || sanitizedInput == input.Raw {
+		return payload
+	}
+	updated, errSet := sjson.SetRawBytes(payload, "input", []byte(sanitizedInput))
+	if errSet != nil {
+		return payload
+	}
+	return updated
+}
+
 func sanitizeResponsesToolCallNamesArray(rawArray string) (string, error) {
 	rawArray = strings.TrimSpace(rawArray)
 	if rawArray == "" {

@@ -524,7 +524,7 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 	if h.rejectUnconfiguredModel(c, modelName) {
 		return
 	}
-	rawJSON = sanitizeResponsesInputToolCallNames(rawJSON)
+	rawJSON = sanitizeResponsesInputToolCallHistory(sanitizeResponsesInputToolCallNames(rawJSON))
 
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")
@@ -552,7 +552,7 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 	if h.rejectUnconfiguredModel(c, modelName) {
 		return
 	}
-	rawJSON = sanitizeResponsesInputToolCallNames(rawJSON)
+	rawJSON = sanitizeResponsesInputToolCallHistory(sanitizeResponsesInputToolCallNames(rawJSON))
 
 	streamResult := gjson.GetBytes(rawJSON, "stream")
 	if streamResult.Type == gjson.True {

@@ -971,7 +971,7 @@ func TestRepairResponsesWebsocketToolCallsDropsFunctionCallWithEmptyName(t *test
 func TestSanitizeResponsesInputToolCallNamesDropsEmptyNameAndOutput(t *testing.T) {
 	raw := []byte(`{"input":[{"type":"message","id":"msg-1"},{"type":"function_call","id":"fc-1","call_id":"call-1","name":"","arguments":"{}"},{"type":"function_call_output","id":"out-1","call_id":"call-1","output":"ok"},{"type":"function_call","id":"fc-2","call_id":"call-2","name":"exec_command","arguments":"{}"},{"type":"function_call_output","id":"out-2","call_id":"call-2","output":"done"}]}`)
 
-	sanitized := sanitizeResponsesInputToolCallNames(raw)
+	sanitized := sanitizeResponsesInputToolCallHistory(sanitizeResponsesInputToolCallNames(raw))
 
 	items := gjson.GetBytes(sanitized, "input").Array()
 	if len(items) != 3 {
@@ -982,6 +982,23 @@ func TestSanitizeResponsesInputToolCallNamesDropsEmptyNameAndOutput(t *testing.T
 	}
 	if strings.Contains(string(sanitized), `"name":""`) || strings.Contains(string(sanitized), `"call_id":"call-1"`) {
 		t.Fatalf("invalid empty-name call leaked through: %s", sanitized)
+	}
+}
+
+func TestSanitizeResponsesInputToolCallNamesDropsUnpairedToolHistory(t *testing.T) {
+	raw := []byte(`{"input":[{"type":"message","id":"msg-1"},{"type":"function_call_output","id":"out-orphan","call_id":"call-orphan","output":"missing call"},{"type":"function_call","id":"fc-unanswered","call_id":"call-unanswered","name":"exec_command","arguments":"{}"},{"type":"function_call","id":"fc-ok","call_id":"call-ok","name":"exec_command","arguments":"{}"},{"type":"function_call_output","id":"out-ok","call_id":"call-ok","output":"done"},{"type":"message","id":"msg-2"}]}`)
+
+	sanitized := sanitizeResponsesInputToolCallHistory(sanitizeResponsesInputToolCallNames(raw))
+
+	items := gjson.GetBytes(sanitized, "input").Array()
+	if len(items) != 4 {
+		t.Fatalf("sanitized input len = %d, want 4: %s", len(items), sanitized)
+	}
+	if items[0].Get("id").String() != "msg-1" || items[1].Get("call_id").String() != "call-ok" || items[2].Get("call_id").String() != "call-ok" || items[3].Get("id").String() != "msg-2" {
+		t.Fatalf("unexpected sanitized input: %s", sanitized)
+	}
+	if strings.Contains(string(sanitized), "call-orphan") || strings.Contains(string(sanitized), "call-unanswered") {
+		t.Fatalf("unpaired tool history leaked through: %s", sanitized)
 	}
 }
 

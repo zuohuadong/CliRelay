@@ -353,6 +353,8 @@ nonstream-keepalive-interval: 0
 #     prefix: "test" # optional: require calls like "test/kimi-k2" to target this provider's credentials
 #     base-url: "https://openrouter.ai/api/v1" # The base URL of the provider.
 #     disable-cooling: false # optional: per-provider override for auth/model cooldown scheduling
+#     request-retry: 3 # optional: override global request-retry for this provider's synthesized auths
+#     transient-error-cooldown-seconds: 1 # optional: shorten 408/500/502/503/504 retry cooldowns for this provider
 #     headers:
 #       X-Custom-Header: "custom-value"
 #     api-key-entries:
@@ -377,6 +379,19 @@ nonstream-keepalive-interval: 0
 #         alias: "claude-opus-4.66"
 #       - name: "kimi-k2.5"
 #         alias: "claude-opus-4.66"
+
+# Astron Code uses the same OpenAI-compatible provider fields in the dedicated `astron-code` section.
+# A short transient cooldown keeps upstream 503/system-busy retries from turning into minute-long stream init waits.
+# astron-code:
+#   - base-url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
+#     request-retry: 3
+#     transient-error-cooldown-seconds: 1
+#     api-key-entries:
+#       - api-key: "astron-key-1"
+#       - api-key: "astron-key-2"
+#     models:
+#       - name: "xopdeepseekv4pro"
+#         alias: "deepseek-v4-pro"
 
 # Vertex API keys (Vertex-compatible endpoints, base-url is optional)
 # vertex-api-key:

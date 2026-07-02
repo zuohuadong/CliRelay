@@ -568,6 +568,21 @@ func (a *Auth) RequestRetryOverride() (int, bool) {
 	return 0, false
 }
 
+// TransientErrorCooldownSecondsOverride returns the auth scoped transient-error cooldown override when present.
+func (a *Auth) TransientErrorCooldownSecondsOverride() (int, bool) {
+	if a == nil || a.Metadata == nil {
+		return 0, false
+	}
+	for _, key := range []string{"transient_error_cooldown_seconds", "transient-error-cooldown-seconds"} {
+		if val, ok := a.Metadata[key]; ok {
+			if parsed, okParse := parseIntAny(val); okParse {
+				return parsed, true
+			}
+		}
+	}
+	return 0, false
+}
+
 func parseBoolAny(val any) (bool, bool) {
 	switch typed := val.(type) {
 	case bool:

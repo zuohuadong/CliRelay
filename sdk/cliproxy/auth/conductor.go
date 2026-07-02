@@ -147,6 +147,19 @@ func providerCoolingDisabledForAuth(auth *Auth, cfg *internalconfig.Config) bool
 
 func nextTransientErrorRetryAfter(now time.Time) time.Time {
 	seconds := transientErrorCooldownSeconds.Load()
+	return nextTransientErrorRetryAfterWithSeconds(now, seconds)
+}
+
+func nextTransientErrorRetryAfterForAuth(auth *Auth, now time.Time) time.Time {
+	if auth != nil {
+		if seconds, ok := auth.TransientErrorCooldownSecondsOverride(); ok {
+			return nextTransientErrorRetryAfterWithSeconds(now, int64(seconds))
+		}
+	}
+	return nextTransientErrorRetryAfter(now)
+}
+
+func nextTransientErrorRetryAfterWithSeconds(now time.Time, seconds int64) time.Time {
 	if seconds < 0 {
 		return time.Time{}
 	}
@@ -3968,7 +3981,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							if disableCooling {
 								state.NextRetryAfter = time.Time{}
 							} else {
-								state.NextRetryAfter = nextTransientErrorRetryAfter(now)
+								state.NextRetryAfter = nextTransientErrorRetryAfterForAuth(auth, now)
 							}
 						default:
 							state.NextRetryAfter = time.Time{}
@@ -4480,7 +4493,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		if disableCooling {
 			auth.NextRetryAfter = time.Time{}
 		} else {
-			auth.NextRetryAfter = nextTransientErrorRetryAfter(now)
+			auth.NextRetryAfter = nextTransientErrorRetryAfterForAuth(auth, now)
 		}
 	default:
 		if auth.StatusMessage == "" {

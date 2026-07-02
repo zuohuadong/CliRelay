@@ -20,6 +20,22 @@ func NewConfigSynthesizer() *ConfigSynthesizer {
 	return &ConfigSynthesizer{}
 }
 
+func addOpenAICompatibilityRetryMetadata(compat *config.OpenAICompatibility, metadata map[string]any) {
+	if compat == nil || metadata == nil {
+		return
+	}
+	if compat.RequestRetry != nil {
+		retry := *compat.RequestRetry
+		if retry < 0 {
+			retry = 0
+		}
+		metadata["request_retry"] = retry
+	}
+	if compat.TransientErrorCooldownSeconds != nil {
+		metadata["transient_error_cooldown_seconds"] = *compat.TransientErrorCooldownSeconds
+	}
+}
+
 // Synthesize generates Auth entries from config API keys.
 func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, error) {
 	out := make([]*coreauth.Auth, 0, 32)
@@ -92,6 +108,7 @@ func (s *ConfigSynthesizer) synthesizeBigModelCoding(ctx *SynthesisContext) []*c
 			if disableCooling {
 				metadata["disable_cooling"] = true
 			}
+			addOpenAICompatibilityRetryMetadata(compat, metadata)
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
@@ -134,6 +151,7 @@ func (s *ConfigSynthesizer) synthesizeBigModelCoding(ctx *SynthesisContext) []*c
 			if disableCooling {
 				metadata["disable_cooling"] = true
 			}
+			addOpenAICompatibilityRetryMetadata(compat, metadata)
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
@@ -206,6 +224,7 @@ func (s *ConfigSynthesizer) synthesizeAstronCode(ctx *SynthesisContext) []*corea
 			if disableCooling {
 				metadata["disable_cooling"] = true
 			}
+			addOpenAICompatibilityRetryMetadata(compat, metadata)
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
@@ -248,6 +267,7 @@ func (s *ConfigSynthesizer) synthesizeAstronCode(ctx *SynthesisContext) []*corea
 			if disableCooling {
 				metadata["disable_cooling"] = true
 			}
+			addOpenAICompatibilityRetryMetadata(compat, metadata)
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
@@ -554,6 +574,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if disableCooling {
 				metadata["disable_cooling"] = true
 			}
+			addOpenAICompatibilityRetryMetadata(compat, metadata)
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
@@ -597,6 +618,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if disableCooling {
 				metadata["disable_cooling"] = true
 			}
+			addOpenAICompatibilityRetryMetadata(compat, metadata)
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}

@@ -840,6 +840,12 @@ type OpenAICompatibility struct {
 
 	// DisableCooling disables auth/model cooldown scheduling for this provider when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// RequestRetry overrides the global request-retry count for auths synthesized from this provider.
+	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+
+	// TransientErrorCooldownSeconds overrides transient 408/500/502/503/504 cooldowns for this provider.
+	TransientErrorCooldownSeconds *int `yaml:"transient-error-cooldown-seconds,omitempty" json:"transient-error-cooldown-seconds,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.

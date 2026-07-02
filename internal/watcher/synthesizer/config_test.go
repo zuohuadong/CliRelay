@@ -445,11 +445,15 @@ func TestConfigSynthesizer_BigModelCoding(t *testing.T) {
 
 func TestConfigSynthesizer_AstronCode(t *testing.T) {
 	synth := NewConfigSynthesizer()
+	requestRetry := 3
+	transientCooldown := 1
 	ctx := &SynthesisContext{
 		Config: &config.Config{
 			AstronCodeAPIKey: []config.OpenAICompatibility{
 				{
-					BaseURL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+					BaseURL:                       "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+					RequestRetry:                  &requestRetry,
+					TransientErrorCooldownSeconds: &transientCooldown,
 					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
 						{APIKey: "astron-key", ProxyURL: "http://proxy.local:8080"},
 					},
@@ -482,6 +486,12 @@ func TestConfigSynthesizer_AstronCode(t *testing.T) {
 	}
 	if auth.ProxyURL != "http://proxy.local:8080" {
 		t.Fatalf("proxy_url = %q", auth.ProxyURL)
+	}
+	if got, ok := auth.Metadata["request_retry"].(int); !ok || got != 3 {
+		t.Fatalf("request_retry metadata = %#v, want 3", auth.Metadata["request_retry"])
+	}
+	if got, ok := auth.Metadata["transient_error_cooldown_seconds"].(int); !ok || got != 1 {
+		t.Fatalf("transient_error_cooldown_seconds metadata = %#v, want 1", auth.Metadata["transient_error_cooldown_seconds"])
 	}
 }
 

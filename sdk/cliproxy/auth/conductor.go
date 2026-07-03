@@ -2216,6 +2216,10 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 			if entry := resolveVertexAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 			}
+		case "bedrock":
+			if entry := resolveBedrockAPIKeyConfig(cfg, auth); entry != nil {
+				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
+			}
 		default:
 			// OpenAI-compat uses config selection from auth.Attributes.
 			providerKey := ""
@@ -2668,6 +2672,8 @@ func requestToFormat(provider string, executor ProviderExecutor, req cliproxyexe
 	case "xai":
 		return sdktranslator.FormatCodex
 	case "claude":
+		return sdktranslator.FormatClaude
+	case "bedrock":
 		return sdktranslator.FormatClaude
 	case "gemini", "vertex", "aistudio":
 		return sdktranslator.FormatGemini
@@ -3469,6 +3475,13 @@ func resolveVertexAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internal
 		return nil
 	}
 	return resolveAPIKeyConfig(cfg.VertexCompatAPIKey, auth)
+}
+
+func resolveBedrockAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.BedrockKey {
+	if cfg == nil {
+		return nil
+	}
+	return resolveAPIKeyConfig(cfg.BedrockKey, auth)
 }
 
 func resolveUpstreamModelForGeminiAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {

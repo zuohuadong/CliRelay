@@ -102,6 +102,21 @@ func ComputeOpenCodeGoModelsHash(models []config.OpenCodeGoModel) string {
 	return hashJoined(keys)
 }
 
+// ComputeBedrockModelsHash returns a stable hash for Bedrock model aliases.
+func ComputeBedrockModelsHash(models []config.BedrockModel) string {
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return hashJoined(keys)
+}
+
 // ComputeExcludedModelsHash returns a normalized hash for excluded model lists.
 func ComputeExcludedModelsHash(excluded []string) string {
 	if len(excluded) == 0 {

@@ -29,6 +29,8 @@ type OpenAICompatibilityAPIKey = internalconfig.OpenAICompatibilityAPIKey
 type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
 type OpenCodeGoKey = internalconfig.OpenCodeGoKey
 type OpenCodeGoModel = internalconfig.OpenCodeGoModel
+type BedrockKey = internalconfig.BedrockKey
+type BedrockModel = internalconfig.BedrockModel
 
 type TLS = internalconfig.TLSConfig
 

@@ -55,12 +55,98 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeAstronCode(ctx)...)
 	// OpenCode Go API Keys
 	out = append(out, s.synthesizeOpenCodeGo(ctx)...)
+	// Bedrock
+	out = append(out, s.synthesizeBedrock(ctx)...)
 	// OpenAI-compat
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
 	out = append(out, s.synthesizeVertexCompat(ctx)...)
 
 	return out, nil
+}
+
+// synthesizeBedrock creates Auth entries for AWS Bedrock Runtime credentials.
+func (s *ConfigSynthesizer) synthesizeBedrock(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+
+	const providerName = "bedrock"
+	out := make([]*coreauth.Auth, 0, len(cfg.BedrockKey))
+	for i := range cfg.BedrockKey {
+		entry := cfg.BedrockKey[i]
+		authMode := strings.ToLower(strings.TrimSpace(entry.AuthMode))
+		var credential string
+		if authMode == "api-key" {
+			credential = strings.TrimSpace(entry.APIKey)
+			if credential == "" {
+				continue
+			}
+		} else {
+			credential = strings.TrimSpace(entry.AccessKeyID) + "|" + strings.TrimSpace(entry.SecretAccessKey)
+			if strings.TrimSpace(entry.AccessKeyID) == "" || strings.TrimSpace(entry.SecretAccessKey) == "" {
+				continue
+			}
+		}
+		prefix := strings.TrimSpace(entry.Prefix)
+		region := strings.TrimSpace(entry.Region)
+		if region == "" {
+			region = config.DefaultBedrockRegion
+		}
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		if pid := strings.TrimSpace(entry.ProxyID); pid != "" {
+			if resolved := cfg.ResolveProxyURL(pid, ""); resolved != "" {
+				proxyURL = resolved
+			}
+		}
+		id, token := idGen.Next("bedrock:credential", authMode, credential, region, base, proxyURL)
+		attrs := map[string]string{
+			"source":       fmt.Sprintf("config:bedrock[%s]", token),
+			"provider_key": providerName,
+			"compat_name":  providerName,
+			"auth_mode":    authMode,
+			"region":       region,
+		}
+		if base != "" {
+			attrs["base_url"] = base
+		}
+		if authMode == "api-key" {
+			attrs["api_key"] = strings.TrimSpace(entry.APIKey)
+		} else {
+			attrs["access_key_id"] = strings.TrimSpace(entry.AccessKeyID)
+			attrs["secret_access_key"] = strings.TrimSpace(entry.SecretAccessKey)
+			if strings.TrimSpace(entry.SessionToken) != "" {
+				attrs["session_token"] = strings.TrimSpace(entry.SessionToken)
+			}
+		}
+		if entry.ForceGlobal {
+			attrs["force_global"] = "true"
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		if hash := diff.ComputeBedrockModelsHash(entry.Models); hash != "" {
+			attrs["models_hash"] = hash
+		}
+		if hash := diff.ComputeExcludedModelsHash(entry.ExcludedModels); hash != "" {
+			attrs["excluded_models_hash"] = hash
+		}
+		addConfigHeadersToAttrs(entry.Headers, attrs)
+		a := &coreauth.Auth{
+			ID:         id,
+			Provider:   providerName,
+			Label:      providerName,
+			Prefix:     prefix,
+			Status:     coreauth.StatusActive,
+			ProxyURL:   proxyURL,
+			Attributes: attrs,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // synthesizeBigModelCoding creates Auth entries for Zhipu Coding Plan.

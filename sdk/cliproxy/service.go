@@ -1128,6 +1128,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
 	case "xai":
 		s.coreManager.RegisterExecutor(executor.NewXAIExecutor(s.cfg))
+	case "bedrock":
+		s.coreManager.RegisterExecutor(executor.NewBedrockExecutor(s.cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {
@@ -2122,6 +2124,17 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			}
 		}
 		models = applyExcludedModels(models, excluded)
+	case "bedrock":
+		models = registry.GetBedrockModels()
+		if entry := s.resolveConfigBedrockKey(a); entry != nil {
+			if len(entry.Models) > 0 {
+				models = buildBedrockConfigModels(entry)
+			}
+			if authKind == "apikey" {
+				excluded = entry.ExcludedModels
+			}
+		}
+		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
 		if s.cfg != nil {
@@ -2624,6 +2637,58 @@ func buildOpenCodeGoConfigModels(entry *config.OpenCodeGoKey) []*ModelInfo {
 		return nil
 	}
 	return buildConfigModels(entry.Models, "opencode", "opencode-go")
+}
+
+func (s *Service) resolveConfigBedrockKey(auth *coreauth.Auth) *config.BedrockKey {
+	if auth == nil || s.cfg == nil {
+		return nil
+	}
+	var attrAPIKey, attrAccessKey, attrRegion, attrBase string
+	if auth.Attributes != nil {
+		attrAPIKey = strings.TrimSpace(auth.Attributes["api_key"])
+		attrAccessKey = strings.TrimSpace(auth.Attributes["access_key_id"])
+		attrRegion = strings.TrimSpace(auth.Attributes["region"])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+	}
+	for i := range s.cfg.BedrockKey {
+		entry := &s.cfg.BedrockKey[i]
+		cfgAPIKey := strings.TrimSpace(entry.APIKey)
+		cfgAccessKey := strings.TrimSpace(entry.AccessKeyID)
+		cfgRegion := strings.TrimSpace(entry.Region)
+		cfgBase := strings.TrimSpace(entry.BaseURL)
+		// api-key mode: match on api key + region/base
+		if cfgAPIKey != "" && attrAPIKey != "" && strings.EqualFold(cfgAPIKey, attrAPIKey) {
+			if matchBedrockAttrs(cfgRegion, attrRegion, cfgBase, attrBase) {
+				return entry
+			}
+			continue
+		}
+		// sigv4 mode: match on access key id + region/base
+		if cfgAccessKey != "" && attrAccessKey != "" && strings.EqualFold(cfgAccessKey, attrAccessKey) {
+			if matchBedrockAttrs(cfgRegion, attrRegion, cfgBase, attrBase) {
+				return entry
+			}
+			continue
+		}
+	}
+	return nil
+}
+
+func matchBedrockAttrs(cfgRegion, attrRegion, cfgBase, attrBase string) bool {
+	if cfgRegion != "" && attrRegion != "" && !strings.EqualFold(cfgRegion, attrRegion) {
+		return false
+	}
+	if cfgBase != "" && attrBase != "" && !strings.EqualFold(cfgBase, attrBase) {
+		return false
+	}
+	return true
+}
+
+func buildBedrockConfigModels(entry *config.BedrockKey) []*ModelInfo {
+	if entry == nil || len(entry.Models) == 0 {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "anthropic", "bedrock")
 }
 
 func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*ModelInfo {

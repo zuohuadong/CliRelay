@@ -28,6 +28,7 @@ type staticModelsJSON struct {
 	Kimi        []*ModelInfo `json:"kimi"`
 	Antigravity []*ModelInfo `json:"antigravity"`
 	XAI         []*ModelInfo `json:"xai"`
+	Bedrock     []*ModelInfo `json:"bedrock"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -78,6 +79,11 @@ func GetKimiModels() []*ModelInfo {
 // GetAntigravityModels returns the standard Antigravity model definitions.
 func GetAntigravityModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Antigravity)
+}
+
+// GetBedrockModels returns the standard AWS Bedrock model definitions.
+func GetBedrockModels() []*ModelInfo {
+	return cloneModelInfos(getModels().Bedrock)
 }
 
 // GetOpenCodeGoModels returns the standard OpenCode Go plan model definitions.
@@ -360,6 +366,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.Kimi,
 		data.Antigravity,
 		data.XAI,
+		data.Bedrock,
 	}
 	for _, models := range allModels {
 		for _, m := range models {

@@ -175,6 +175,39 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_CompletedOnDoneWi
 	}
 }
 
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_UsesReasoningFallback(t *testing.T) {
+	t.Parallel()
+
+	request := []byte(`{"model":"deepseek-v4-pro"}`)
+	lines := []string{
+		`data: {"id":"resp_reasoning","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","reasoning":"先分析问题","content":null},"finish_reason":null}]}`,
+		`data: {"id":"resp_reasoning","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"content":"结论"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`,
+		`data: [DONE]`,
+	}
+
+	var param any
+	var sawReasoningDelta bool
+	var completedData gjson.Result
+	for _, line := range lines {
+		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "model", request, request, []byte(line), &param) {
+			event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+			if event == "response.reasoning_summary_text.delta" && data.Get("delta").String() == "先分析问题" {
+				sawReasoningDelta = true
+			}
+			if event == "response.completed" {
+				completedData = data
+			}
+		}
+	}
+
+	if !sawReasoningDelta {
+		t.Fatal("expected reasoning fallback field to emit response.reasoning_summary_text.delta")
+	}
+	if got := completedData.Get("response.output.0.summary.0.text").String(); got != "先分析问题" {
+		t.Fatalf("completed reasoning summary = %q, want 先分析问题", got)
+	}
+}
+
 func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ToolCallCompletesOnDoneWithoutFinishReason(t *testing.T) {
 	t.Parallel()
 

@@ -299,6 +299,62 @@ func applyAntigravityFetchedModelCapabilities(models []*ModelInfo, hints antigra
 	return models
 }
 
+func mergeAntigravityFetchedModels(staticModels, fetchedModels []*ModelInfo, hints antigravityModelCapabilityHints) []*ModelInfo {
+	if len(staticModels) == 0 {
+		return filterRegisterableAntigravityFetchedModels(fetchedModels)
+	}
+	models := applyAntigravityFetchedModelCapabilities(staticModels, hints)
+	staticIDs := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if id := normalizeAntigravityFetchedModelID(model.ID); id != "" {
+			staticIDs[id] = struct{}{}
+		}
+	}
+	for _, model := range fetchedModels {
+		if model == nil {
+			continue
+		}
+		modelID := normalizeAntigravityFetchedModelID(model.ID)
+		if modelID == "" {
+			continue
+		}
+		if _, exists := staticIDs[modelID]; exists {
+			continue
+		}
+		if !isRegisterableAntigravityFetchedModel(modelID) {
+			continue
+		}
+		models = append(models, model)
+		staticIDs[modelID] = struct{}{}
+	}
+	return models
+}
+
+func filterRegisterableAntigravityFetchedModels(models []*ModelInfo) []*ModelInfo {
+	out := make([]*ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if isRegisterableAntigravityFetchedModel(normalizeAntigravityFetchedModelID(model.ID)) {
+			out = append(out, model)
+		}
+	}
+	return out
+}
+
+func isRegisterableAntigravityFetchedModel(modelID string) bool {
+	switch normalizeAntigravityFetchedModelID(modelID) {
+	case "gemini-3.1-pro-high":
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizeAntigravityFetchedModelID(modelID string) string {
 	return strings.ToLower(strings.TrimSpace(modelID))
 }

@@ -154,11 +154,16 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 						"maxTokens": 1,
 						"maxOutputTokens": 2
 					},
+					"gemini-3.1-pro-high": {
+						"displayName": "Gemini 3.1 Pro (High)",
+						"maxTokens": 1048576,
+						"maxOutputTokens": 65535
+					},
 					"fetched-only-search-model": {
 						"displayName": "Fetched Only Search Model"
 					}
 				},
-				"webSearchModelIds": ["gemini-3.1-flash-lite", "fetched-only-search-model"]
+				"webSearchModelIds": ["gemini-3.1-flash-lite", "gemini-3.1-pro-high", "fetched-only-search-model"]
 			}`))
 	}))
 	defer server.Close()
@@ -196,7 +201,7 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 		}
 	}
 
-	var webSearchModel, agentModel, staticOnlyModel, fetchedOnlyModel *internalregistry.ModelInfo
+	var webSearchModel, highModel, agentModel, staticOnlyModel, fetchedOnlyModel *internalregistry.ModelInfo
 	for _, model := range models {
 		if model == nil {
 			continue
@@ -204,6 +209,8 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 		switch strings.TrimSpace(model.ID) {
 		case "gemini-3.1-flash-lite":
 			webSearchModel = model
+		case "gemini-3.1-pro-high":
+			highModel = model
 		case "gemini-3-flash-agent":
 			agentModel = model
 		case "gpt-oss-120b-medium":
@@ -224,6 +231,12 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 	}
 	if webSearchModel.ContextLength != staticWebSearchModel.ContextLength || webSearchModel.MaxCompletionTokens != staticWebSearchModel.MaxCompletionTokens {
 		t.Fatalf("static token limits should be preserved, got=%#v static=%#v", webSearchModel, staticWebSearchModel)
+	}
+	if highModel == nil {
+		t.Fatal("expected fetched gemini-3.1-pro-high to be registered")
+	}
+	if !highModel.SupportsWebSearch {
+		t.Fatal("expected fetched gemini-3.1-pro-high to support web search")
 	}
 	if agentModel == nil {
 		t.Fatal("expected gemini-3-flash-agent to be registered")

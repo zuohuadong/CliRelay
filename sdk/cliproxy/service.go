@@ -2026,11 +2026,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = applyExcludedModels(models, excluded)
 	case "antigravity":
 		fetched := s.fetchAntigravityModelsForAuth(ctx, a)
-		models = fetched.Models
-		if len(models) == 0 {
-			models = registry.GetAntigravityModels()
-			models = applyAntigravityFetchedModelCapabilities(models, fetched.Hints)
-		}
+		models = mergeAntigravityFetchedModels(registry.GetAntigravityModels(), fetched.Models, fetched.Hints)
 		models = applyExcludedModels(models, excluded)
 	case "claude":
 		models = registry.GetClaudeModels()
@@ -2116,20 +2112,16 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
 	case "opencode-go":
-		log.Debugf("registerModelsForAuth: opencode-go auth=%s, OpenCodeGoKey count=%d", a.ID, len(s.cfg.OpenCodeGoKey))
-		for i := range s.cfg.OpenCodeGoKey {
-			entry := &s.cfg.OpenCodeGoKey[i]
-			ms := buildOpenCodeGoConfigModels(entry)
-			log.Debugf("registerModelsForAuth: opencode-go entry[%d] models count=%d, models=%v", i, len(ms), ms)
-			if len(ms) > 0 {
-				s.registerResolvedModelsForAuth(a, "opencode-go", applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
-			} else {
-				GlobalModelRegistry().UnregisterClient(a.ID)
+		models = registry.GetOpenCodeGoModels()
+		if entry := s.resolveConfigOpenCodeGoKey(a); entry != nil {
+			if len(entry.Models) > 0 {
+				models = buildOpenCodeGoConfigModels(entry)
 			}
-			return
+			if authKind == "apikey" {
+				excluded = entry.ExcludedModels
+			}
 		}
-		GlobalModelRegistry().UnregisterClient(a.ID)
-		return
+		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
 		if s.cfg != nil {
@@ -2631,7 +2623,7 @@ func buildOpenCodeGoConfigModels(entry *config.OpenCodeGoKey) []*ModelInfo {
 	if entry == nil || len(entry.Models) == 0 {
 		return nil
 	}
-	return buildConfigModels(entry.Models, "opencode-go", "openai-compatibility")
+	return buildConfigModels(entry.Models, "opencode", "opencode-go")
 }
 
 func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*ModelInfo {

@@ -80,6 +80,48 @@ func GetAntigravityModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Antigravity)
 }
 
+// GetOpenCodeGoModels returns the standard OpenCode Go plan model definitions.
+func GetOpenCodeGoModels() []*ModelInfo {
+	definitions := []struct {
+		id          string
+		displayName string
+	}{
+		{"minimax-m3", "MiniMax M3"},
+		{"minimax-m2.7", "MiniMax M2.7"},
+		{"minimax-m2.5", "MiniMax M2.5"},
+		{"kimi-k2.7-code", "Kimi K2.7 Code"},
+		{"kimi-k2.6", "Kimi K2.6"},
+		{"kimi-k2.5", "Kimi K2.5"},
+		{"glm-5.2", "GLM 5.2"},
+		{"glm-5.1", "GLM 5.1"},
+		{"glm-5", "GLM 5"},
+		{"deepseek-v4-pro", "DeepSeek V4 Pro"},
+		{"deepseek-v4-flash", "DeepSeek V4 Flash"},
+		{"qwen3.7-max", "Qwen3.7 Max"},
+		{"qwen3.7-plus", "Qwen3.7 Plus"},
+		{"qwen3.6-plus", "Qwen3.6 Plus"},
+		{"qwen3.5-plus", "Qwen3.5 Plus"},
+		{"mimo-v2-pro", "MiMo V2 Pro"},
+		{"mimo-v2-omni", "MiMo V2 Omni"},
+		{"mimo-v2.5-pro", "MiMo V2.5 Pro"},
+		{"mimo-v2.5", "MiMo V2.5"},
+		{"hy3-preview", "HY3 Preview"},
+	}
+
+	models := make([]*ModelInfo, 0, len(definitions))
+	for _, definition := range definitions {
+		models = append(models, &ModelInfo{
+			ID:          definition.id,
+			Object:      "model",
+			Created:     1781751220,
+			OwnedBy:     "opencode",
+			Type:        "opencode-go",
+			DisplayName: definition.displayName,
+		})
+	}
+	return models
+}
+
 // AntigravityWebSearchModelFor returns the Antigravity model that should run a
 // native web search request for modelID.
 func AntigravityWebSearchModelFor(modelID string) string {

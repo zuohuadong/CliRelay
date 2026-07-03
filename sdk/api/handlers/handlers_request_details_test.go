@@ -184,14 +184,14 @@ func TestGetRequestDetails_AppendsConfiguredOpenAICompatAliasProviders(t *testin
 	}
 }
 
-func TestGetRequestDetails_RecognizesCodexClientCatalogModel(t *testing.T) {
-	modelRegistry := registry.GetGlobalRegistry()
-	modelRegistry.RegisterClient("test-request-details-codex-gpt52", "codex", registry.GetCodexProModels())
-	t.Cleanup(func() {
-		modelRegistry.UnregisterClient("test-request-details-codex-gpt52")
+func TestGetRequestDetails_UsesConfiguredOAuthAliasProvider(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		OAuthModelAlias: map[string][]internalconfig.OAuthModelAlias{
+			"antigravity": {{Name: "gemini-3.1-pro-high", Alias: "gpt-5.2"}},
+		},
 	})
-
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
 	providers, model, errMsg := handler.getRequestDetails("gpt-5.2")
 	if errMsg != nil {
 		t.Fatalf("getRequestDetails() error = %v", errMsg)
@@ -199,7 +199,7 @@ func TestGetRequestDetails_RecognizesCodexClientCatalogModel(t *testing.T) {
 	if model != "gpt-5.2" {
 		t.Fatalf("model = %q, want gpt-5.2", model)
 	}
-	if !reflect.DeepEqual(providers, []string{"codex"}) {
-		t.Fatalf("providers = %v, want [codex]", providers)
+	if !reflect.DeepEqual(providers, []string{"antigravity"}) {
+		t.Fatalf("providers = %v, want [antigravity]", providers)
 	}
 }

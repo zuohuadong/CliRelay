@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -941,6 +942,44 @@ func (cfg *Config) OpenAICompatibilityAliasProviders(modelName string) []string 
 	appendEntries(DefaultBigModelCodingProviderName, cfg.BigModelCodingAPIKey, false)
 	appendEntries(DefaultAstronCodeProviderName, cfg.AstronCodeAPIKey, false)
 	appendEntries("", cfg.OpenAICompatibility, true)
+	return providers
+}
+
+func (cfg *Config) OAuthModelAliasProviders(modelName string) []string {
+	if cfg == nil || len(cfg.OAuthModelAlias) == 0 {
+		return nil
+	}
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return nil
+	}
+
+	providers := make([]string, 0, len(cfg.OAuthModelAlias))
+	seen := make(map[string]struct{}, len(cfg.OAuthModelAlias))
+	channels := make([]string, 0, len(cfg.OAuthModelAlias))
+	for channel := range cfg.OAuthModelAlias {
+		channels = append(channels, channel)
+	}
+	sort.Strings(channels)
+
+	for _, channel := range channels {
+		aliases := cfg.OAuthModelAlias[channel]
+		provider := strings.ToLower(strings.TrimSpace(channel))
+		if provider == "" {
+			continue
+		}
+		for _, entry := range aliases {
+			if !strings.EqualFold(strings.TrimSpace(entry.Alias), modelName) {
+				continue
+			}
+			if _, exists := seen[provider]; exists {
+				break
+			}
+			seen[provider] = struct{}{}
+			providers = append(providers, provider)
+			break
+		}
+	}
 	return providers
 }
 

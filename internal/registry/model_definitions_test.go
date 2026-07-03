@@ -2,14 +2,6 @@ package registry
 
 import "testing"
 
-func TestCodexModelsIncludeListedClientCatalogSlugs(t *testing.T) {
-	models := GetCodexProModels()
-
-	if !hasModelInfoID(models, "gpt-5.2") {
-		t.Fatal("expected listed Codex client catalog model gpt-5.2 in Codex provider models")
-	}
-}
-
 func TestWithXAIBuiltinsIncludesVideoPreviewModel(t *testing.T) {
 	models := WithXAIBuiltins(nil)
 

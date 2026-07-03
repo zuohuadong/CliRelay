@@ -114,7 +114,6 @@ func GetXAIModels() []*ModelInfo {
 // not depend on remote models.json updates. Built-ins replace any matching IDs
 // already present in the provided slice.
 func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
-	models = appendMissingModelInfos(models, getCodexClientListedModelInfos()...)
 	return upsertModelInfos(models, codexBuiltinImage15ModelInfo(), codexBuiltinImageModelInfo())
 }
 
@@ -252,41 +251,6 @@ func upsertModelInfos(models []*ModelInfo, extras ...*ModelInfo) []*ModelInfo {
 
 	filtered = append(filtered, extraList...)
 	return filtered
-}
-
-func appendMissingModelInfos(models []*ModelInfo, extras ...*ModelInfo) []*ModelInfo {
-	if len(extras) == 0 {
-		return models
-	}
-
-	seen := make(map[string]struct{}, len(models)+len(extras))
-	for _, model := range models {
-		if model == nil {
-			continue
-		}
-		id := strings.ToLower(strings.TrimSpace(model.ID))
-		if id != "" {
-			seen[id] = struct{}{}
-		}
-	}
-
-	out := models
-	for _, extra := range extras {
-		if extra == nil {
-			continue
-		}
-		id := strings.TrimSpace(extra.ID)
-		if id == "" {
-			continue
-		}
-		key := strings.ToLower(id)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, cloneModelInfo(extra))
-	}
-	return out
 }
 
 // cloneModelInfos returns a shallow copy of the slice with each element deep-cloned.

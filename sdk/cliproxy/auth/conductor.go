@@ -992,7 +992,9 @@ func (m *Manager) ConfiguredAliasProviders(modelName string) []string {
 	if cfg == nil {
 		return nil
 	}
-	return cfg.OpenAICompatibilityAliasProviders(modelName)
+	providers := cfg.OAuthModelAliasProviders(modelName)
+	providers = append(providers, cfg.OpenAICompatibilityAliasProviders(modelName)...)
+	return providers
 }
 
 // HomeEnabled reports whether the home control plane integration is enabled in the runtime config.

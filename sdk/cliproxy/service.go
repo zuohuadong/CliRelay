@@ -2025,8 +2025,12 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = registry.GetAIStudioModels()
 		models = applyExcludedModels(models, excluded)
 	case "antigravity":
-		models = registry.GetAntigravityModels()
-		models = applyAntigravityFetchedModelCapabilities(models, s.fetchAntigravityModelCapabilityHintsForAuth(ctx, a))
+		fetched := s.fetchAntigravityModelsForAuth(ctx, a)
+		models = fetched.Models
+		if len(models) == 0 {
+			models = registry.GetAntigravityModels()
+			models = applyAntigravityFetchedModelCapabilities(models, fetched.Hints)
+		}
 		models = applyExcludedModels(models, excluded)
 	case "claude":
 		models = registry.GetClaudeModels()

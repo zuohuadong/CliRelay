@@ -49,6 +49,7 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	endpoint := "/chat/completions"
 	imagePassthrough := false
 	compactPassthrough := false
+	useResponsesEndpoint := auth != nil && auth.Attributes != nil && auth.Attributes["response_endpoint"] == "true"
 	switch opts.Alt {
 	case "responses/compact":
 		compactPassthrough = true
@@ -58,6 +59,11 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	case "images/edits":
 		endpoint = "/images/edits"
 		imagePassthrough = true
+	default:
+		if useResponsesEndpoint {
+			to = sdktranslator.FormatOpenAIResponse
+			endpoint = "/responses"
+		}
 	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -99,9 +105,11 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 				translated = updated
 			}
 		}
-		translated, err = e.normalizeAstronPayload(translated, baseModel)
-		if err != nil {
-			return resp, err
+		if !useResponsesEndpoint {
+			translated, err = e.normalizeAstronPayload(translated, baseModel)
+			if err != nil {
+				return resp, err
+			}
 		}
 	}
 
@@ -206,6 +214,10 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
+	useResponsesEndpoint := auth != nil && auth.Attributes != nil && auth.Attributes["response_endpoint"] == "true"
+	if useResponsesEndpoint {
+		to = sdktranslator.FormatOpenAIResponse
+	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
@@ -233,12 +245,18 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
-	translated, err = e.normalizeAstronPayload(translated, baseModel)
-	if err != nil {
-		return nil, err
+	if !useResponsesEndpoint {
+		translated, err = e.normalizeAstronPayload(translated, baseModel)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
+	streamEndpoint := "/chat/completions"
+	if useResponsesEndpoint {
+		streamEndpoint = "/responses"
+	}
+	url := strings.TrimSuffix(baseURL, "/") + streamEndpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
 	if err != nil {
 		return nil, err
@@ -313,7 +331,11 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			if detail, ok := helps.ParseOpenAIStreamUsage(line); ok {
+			if useResponsesEndpoint {
+				if detail, ok := helps.ParseCodexUsage(jsonPayloadFromDataLine(line)); ok {
+					reporter.Publish(ctx, detail)
+				}
+			} else if detail, ok := helps.ParseOpenAIStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
 			}
 			trimmedLine := bytes.TrimSpace(line)
@@ -345,7 +367,10 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 				continue
 			}
 			sawSSEData = true
-			normalizedLine := ensureAstronToolCallIDs(bytes.Clone(trimmedLine), tcIDSeq)
+			normalizedLine := trimmedLine
+			if !useResponsesEndpoint {
+				normalizedLine = ensureAstronToolCallIDs(bytes.Clone(trimmedLine), tcIDSeq)
+			}
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, normalizedLine, &param)
 			for i := range chunks {
 				select {
@@ -937,4 +962,13 @@ func astronJSONIndex(v any, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+// jsonPayloadFromDataLine extracts the JSON payload from a "data: ..." SSE line.
+func jsonPayloadFromDataLine(line []byte) []byte {
+	idx := bytes.IndexByte(line, ':')
+	if idx < 0 {
+		return nil
+	}
+	return bytes.TrimSpace(line[idx+1:])
 }

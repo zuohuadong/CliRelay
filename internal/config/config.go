@@ -847,6 +847,9 @@ type OpenAICompatibility struct {
 
 	// TransientErrorCooldownSeconds overrides transient 408/500/502/503/504 cooldowns for this provider.
 	TransientErrorCooldownSeconds *int `yaml:"transient-error-cooldown-seconds,omitempty" json:"transient-error-cooldown-seconds,omitempty"`
+
+	// ResponseEndpoint routes requests to /responses (OpenAI Responses API) instead of /chat/completions.
+	ResponseEndpoint bool `yaml:"response-endpoint,omitempty" json:"response-endpoint,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.

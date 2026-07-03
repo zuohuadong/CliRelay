@@ -234,6 +234,9 @@ func (s *ConfigSynthesizer) synthesizeAstronCode(ctx *SynthesisContext) []*corea
 			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash
 			}
+			if compat.ResponseEndpoint {
+				attrs["response_endpoint"] = "true"
+			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			addConfigHeadersToAttrs(entry.Headers, attrs)
 			a := &coreauth.Auth{

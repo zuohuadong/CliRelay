@@ -2,6 +2,14 @@ package registry
 
 import "testing"
 
+func TestCodexModelsIncludeListedClientCatalogSlugs(t *testing.T) {
+	models := GetCodexProModels()
+
+	if !hasModelInfoID(models, "gpt-5.2") {
+		t.Fatal("expected listed Codex client catalog model gpt-5.2 in Codex provider models")
+	}
+}
+
 func TestWithXAIBuiltinsIncludesVideoPreviewModel(t *testing.T) {
 	models := WithXAIBuiltins(nil)
 
@@ -47,4 +55,13 @@ func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing
 	if got := AntigravityWebSearchModelFor("unknown-model"); got != "" {
 		t.Fatalf("unknown model should not get Antigravity web search model, got %q", got)
 	}
+}
+
+func hasModelInfoID(models []*ModelInfo, id string) bool {
+	for _, model := range models {
+		if model != nil && model.ID == id {
+			return true
+		}
+	}
+	return false
 }

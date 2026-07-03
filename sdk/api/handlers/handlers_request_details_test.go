@@ -183,3 +183,23 @@ func TestGetRequestDetails_AppendsConfiguredOpenAICompatAliasProviders(t *testin
 		t.Fatalf("suffixed providers = %v, want %v", providers, want)
 	}
 }
+
+func TestGetRequestDetails_RecognizesCodexClientCatalogModel(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient("test-request-details-codex-gpt52", "codex", registry.GetCodexProModels())
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient("test-request-details-codex-gpt52")
+	})
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	providers, model, errMsg := handler.getRequestDetails("gpt-5.2")
+	if errMsg != nil {
+		t.Fatalf("getRequestDetails() error = %v", errMsg)
+	}
+	if model != "gpt-5.2" {
+		t.Fatalf("model = %q, want gpt-5.2", model)
+	}
+	if !reflect.DeepEqual(providers, []string{"codex"}) {
+		t.Fatalf("providers = %v, want [codex]", providers)
+	}
+}

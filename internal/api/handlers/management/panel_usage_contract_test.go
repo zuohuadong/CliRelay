@@ -377,6 +377,7 @@ func TestRFC3339TimestampDayFilterAccuracy(t *testing.T) {
 	recent := now.Add(-1 * time.Hour).Format(time.RFC3339Nano)
 	boundary := now.Add(-25 * time.Hour).Format(time.RFC3339Nano)
 	old := now.Add(-8 * 24 * time.Hour).Format(time.RFC3339Nano)
+	future := now.Add(6 * time.Hour).Format(time.RFC3339Nano)
 
 	_, err = db.Exec(`CREATE TABLE request_logs (
 		id INTEGER PRIMARY KEY, timestamp TEXT NOT NULL, api_key TEXT NOT NULL DEFAULT '',
@@ -391,7 +392,7 @@ func TestRFC3339TimestampDayFilterAccuracy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create table: %v", err)
 	}
-	_, err = db.Exec(`INSERT INTO request_logs (id, timestamp, total_tokens) VALUES (1, ?, 100), (2, ?, 200), (3, ?, 300)`, recent, boundary, old)
+	_, err = db.Exec(`INSERT INTO request_logs (id, timestamp, total_tokens) VALUES (1, ?, 100), (2, ?, 200), (3, ?, 300), (4, ?, 400)`, recent, boundary, old, future)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -423,6 +424,14 @@ func TestRFC3339TimestampDayFilterAccuracy(t *testing.T) {
 	}
 	stats30 := payload["stats"].(map[string]any)
 	if stats30["total"].(float64) != 3 {
-		t.Fatalf("days=30 should include all records, got total=%v", stats30["total"])
+		t.Fatalf("days=30 should include past records and exclude future records, got total=%v", stats30["total"])
+	}
+
+	status, payload = performUsageContractRequest(t, http.MethodGet, "/v0/management/usage/logs?days=30", nil, nil, h.GetUsageLogs)
+	if status != http.StatusOK {
+		t.Fatalf("usage logs status = %d", status)
+	}
+	if total := payload["total"].(float64); total != 3 {
+		t.Fatalf("usage logs should exclude future records, got total=%v", total)
 	}
 }

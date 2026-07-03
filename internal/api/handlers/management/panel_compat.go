@@ -1344,6 +1344,8 @@ func (f usageFilters) whereClause(db *sql.DB) (string, []any) {
 	if f.End != "" && cols["timestamp"] {
 		parts = append(parts, "datetime(timestamp) <= datetime(?)")
 		args = append(args, f.End)
+	} else if (f.Days > 0 || f.Start != "") && cols["timestamp"] {
+		parts = append(parts, "datetime(timestamp) <= datetime('now')")
 	}
 	if f.Model != "" && cols["model"] {
 		parts = append(parts, "model = ?")

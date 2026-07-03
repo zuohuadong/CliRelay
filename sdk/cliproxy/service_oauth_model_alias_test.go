@@ -91,6 +91,33 @@ func TestApplyOAuthModelAlias_ForkAddsMultipleAliases(t *testing.T) {
 	}
 }
 
+func TestApplyOAuthModelAlias_AddsAliasWhenSourceModelMissing(t *testing.T) {
+	cfg := &config.Config{
+		OAuthModelAlias: map[string][]config.OAuthModelAlias{
+			"antigravity": {
+				{Name: "gemini-3.1-pro-high", Alias: "gpt-5.2", Fork: true},
+			},
+		},
+	}
+	models := []*ModelInfo{
+		{ID: "gemini-3.1-pro-low", Name: "models/gemini-3.1-pro-low"},
+	}
+
+	out := applyOAuthModelAlias(cfg, "antigravity", "oauth", models)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(out))
+	}
+	if out[0].ID != "gemini-3.1-pro-low" {
+		t.Fatalf("expected original model id %q, got %q", "gemini-3.1-pro-low", out[0].ID)
+	}
+	if out[1].ID != "gpt-5.2" {
+		t.Fatalf("expected configured alias id %q, got %q", "gpt-5.2", out[1].ID)
+	}
+	if out[1].Name != "models/gpt-5.2" {
+		t.Fatalf("expected configured alias name %q, got %q", "models/gpt-5.2", out[1].Name)
+	}
+}
+
 func TestApplyOAuthModelAlias_PluginProvider(t *testing.T) {
 	cfg := &config.Config{
 		OAuthModelAlias: map[string][]config.OAuthModelAlias{

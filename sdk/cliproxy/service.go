@@ -2783,6 +2783,7 @@ func oauthModelAliasesForAuth(cfg *config.Config, channel string, attributes map
 
 func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*ModelInfo) []*ModelInfo {
 	type aliasEntry struct {
+		name  string
 		alias string
 		fork  bool
 	}
@@ -2798,7 +2799,7 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 			continue
 		}
 		key := strings.ToLower(name)
-		forward[key] = append(forward[key], aliasEntry{alias: alias, fork: aliases[i].Fork})
+		forward[key] = append(forward[key], aliasEntry{name: name, alias: alias, fork: aliases[i].Fork})
 	}
 	if len(forward) == 0 {
 		return models
@@ -2806,6 +2807,7 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 
 	out := make([]*ModelInfo, 0, len(models))
 	seen := make(map[string]struct{}, len(models))
+	matchedSources := make(map[string]struct{}, len(forward))
 	for _, model := range models {
 		if model == nil {
 			continue
@@ -2824,6 +2826,7 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 			out = append(out, model)
 			continue
 		}
+		matchedSources[key] = struct{}{}
 
 		keepOriginal := false
 		for _, entry := range entries {
@@ -2868,6 +2871,28 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 			}
 			seen[key] = struct{}{}
 			out = append(out, model)
+		}
+	}
+	for sourceKey, entries := range forward {
+		if _, matched := matchedSources[sourceKey]; matched {
+			continue
+		}
+		for _, entry := range entries {
+			mappedID := strings.TrimSpace(entry.alias)
+			if mappedID == "" {
+				continue
+			}
+			aliasKey := strings.ToLower(mappedID)
+			if _, exists := seen[aliasKey]; exists {
+				continue
+			}
+			seen[aliasKey] = struct{}{}
+			out = append(out, &ModelInfo{
+				ID:      mappedID,
+				Object:  "model",
+				Name:    "models/" + mappedID,
+				Version: mappedID,
+			})
 		}
 	}
 	return out

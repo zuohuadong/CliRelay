@@ -99,6 +99,7 @@ export const providersApi = {
           typeof priorityRaw === "number" && Number.isFinite(priorityRaw) ? priorityRaw : undefined;
         const testModel = normalizeString(item["test-model"] ?? item.testModel) ?? undefined;
         const disableCooling = item["disable-cooling"] === true;
+        const responseEndpoint = item["response-endpoint"] === true;
         return {
           name,
           ...(disabled ? { disabled } : {}),
@@ -110,6 +111,7 @@ export const providersApi = {
           ...(priority !== undefined ? { priority } : {}),
           ...(testModel ? { testModel } : {}),
           ...(disableCooling ? { disableCooling } : {}),
+          ...(responseEndpoint ? { responseEndpoint } : {}),
         };
       })
       .filter(Boolean) as OpenAIProvider[];

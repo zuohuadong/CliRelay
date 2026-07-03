@@ -62,6 +62,7 @@ type openAICompatibilityWithAuthIndex struct {
 	Headers             map[string]string                        `json:"headers,omitempty"`
 	IdentityFingerprint string                                   `json:"identity-fingerprint,omitempty"`
 	DisableCooling      bool                                     `json:"disable-cooling,omitempty"`
+	ResponseEndpoint    bool                                     `json:"response-endpoint,omitempty"`
 	AuthIndex           string                                   `json:"auth-index,omitempty"`
 	Success             int64                                    `json:"success"`
 	Failed              int64                                    `json:"failed"`
@@ -291,6 +292,7 @@ func (h *Handler) openAICompatibilityEntriesWithAuthIndex(entriesFn func() []con
 			Headers:             entry.Headers,
 			IdentityFingerprint: entry.IdentityFingerprint,
 			DisableCooling:      entry.DisableCooling,
+			ResponseEndpoint:    entry.ResponseEndpoint,
 			AuthIndex:           "",
 		}
 		if len(entry.APIKeyEntries) == 0 {

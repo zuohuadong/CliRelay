@@ -212,6 +212,7 @@ export type OpenAIDraft = {
   priorityText: string;
   testModel: string;
   disableCooling: boolean;
+  responseEndpoint: boolean;
   apiKeyEntries: {
     apiKey: string;
     disabled: boolean;
@@ -232,6 +233,7 @@ export const buildOpenAIDraft = (input?: OpenAIProvider | null): OpenAIDraft => 
   priorityText: input?.priority !== undefined ? String(input.priority) : "",
   testModel: input?.testModel ?? "",
   disableCooling: input?.disableCooling === true,
+  responseEndpoint: input?.responseEndpoint === true,
   apiKeyEntries:
     Array.isArray(input?.apiKeyEntries) && input.apiKeyEntries.length
       ? input.apiKeyEntries.map((entry, idx) => ({

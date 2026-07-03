@@ -210,6 +210,7 @@ export interface OpenAIProvider {
   priority?: number;
   testModel?: string;
   disableCooling?: boolean;
+  responseEndpoint?: boolean;
 }
 
 export interface ProviderSimpleConfig {

@@ -206,6 +206,26 @@ export function OpenAIProviderModal({
           </div>
         </div>
 
+        <div className="flex flex-wrap items-center gap-4 border-t border-slate-200/60 pt-5 dark:border-neutral-800/60">
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              checked={openaiDraft.responseEndpoint}
+              ariaLabel={t("providers.response_endpoint")}
+              onCheckedChange={(enabled) => {
+                setOpenaiDraft((prev) => ({ ...prev, responseEndpoint: enabled }));
+              }}
+            />
+            <div>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                {t("providers.response_endpoint")}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-white/55">
+                {t("providers.response_endpoint_hint")}
+              </p>
+            </div>
+          </div>
+        </div>
+
         <div className="border-t border-slate-200/60 pt-5 dark:border-neutral-800/60">
           <KeyValueInputList
             title={t("providers.provider_headers")}

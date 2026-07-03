@@ -60,6 +60,7 @@ func (h *Handler) PatchAstronCodeKey(c *gin.Context) {
 		Headers             *map[string]string                  `json:"headers"`
 		IdentityFingerprint *string                             `json:"identity-fingerprint"`
 		DisableCooling      *bool                               `json:"disable-cooling"`
+		ResponseEndpoint   *bool                               `json:"response-endpoint"`
 	}
 	var body struct {
 		Value *astronCodePatch `json:"value"`
@@ -119,6 +120,9 @@ func (h *Handler) PatchAstronCodeKey(c *gin.Context) {
 	}
 	if body.Value.DisableCooling != nil {
 		entry.DisableCooling = *body.Value.DisableCooling
+	}
+	if body.Value.ResponseEndpoint != nil {
+		entry.ResponseEndpoint = *body.Value.ResponseEndpoint
 	}
 	normalizeAstronCodeEntry(&entry)
 	if targetIndex >= 0 {
@@ -230,6 +234,7 @@ func decodeAstronCodePayload(data []byte) ([]config.OpenAICompatibility, bool) {
 		Prefix           string                             `json:"prefix"`
 		TestModel        string                             `json:"test-model"`
 		DisableCooling   bool                               `json:"disable-cooling"`
+		ResponseEndpoint bool                               `json:"response-endpoint"`
 	}
 	if err := json.Unmarshal(data, &wrapped); err != nil {
 		return nil, false
@@ -255,6 +260,7 @@ func decodeAstronCodePayload(data []byte) ([]config.OpenAICompatibility, bool) {
 		entry.Prefix = strings.TrimSpace(wrapped.Prefix)
 		entry.TestModel = strings.TrimSpace(wrapped.TestModel)
 		entry.DisableCooling = wrapped.DisableCooling
+		entry.ResponseEndpoint = wrapped.ResponseEndpoint
 		return []config.OpenAICompatibility{entry}, true
 	}
 }

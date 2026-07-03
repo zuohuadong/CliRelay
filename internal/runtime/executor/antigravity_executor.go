@@ -58,7 +58,7 @@ const (
 	antigravityCreditsHintRefreshTimeout   = 5 * time.Second
 	antigravityShortQuotaCooldownThreshold = 5 * time.Minute
 	antigravityInstantRetryThreshold       = 3 * time.Second
-	// systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
+	systemInstruction                      = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
 )
 
 type antigravity429Category string
@@ -2260,7 +2260,11 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 			payloadStr, _ = sjson.Delete(payloadStr, "request.generationConfig.maxOutputTokens")
 		}
 
-		payloadStrBytes := applyAntigravityNativeSignatureReplayIfNeeded(modelName, []byte(payloadStr))
+		payloadStrBytes := []byte(payloadStr)
+		if useAntigravitySchema {
+			payloadStrBytes = injectAntigravitySchemaSystemInstruction(payloadStrBytes)
+		}
+		payloadStrBytes = applyAntigravityNativeSignatureReplayIfNeeded(modelName, payloadStrBytes)
 		bodyReader = bytes.NewReader(payloadStrBytes)
 		if e.cfg != nil && e.cfg.RequestLog {
 			payloadLog = append([]byte(nil), payloadStrBytes...)
@@ -2272,25 +2276,15 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 			payload, _ = sjson.DeleteBytes(payload, "request.generationConfig.maxOutputTokens")
 		}
 
+		if useAntigravitySchema {
+			payload = injectAntigravitySchemaSystemInstruction(payload)
+		}
 		payload = applyAntigravityNativeSignatureReplayIfNeeded(modelName, payload)
 		bodyReader = bytes.NewReader(payload)
 		if e.cfg != nil && e.cfg.RequestLog {
 			payloadLog = append([]byte(nil), payload...)
 		}
 	}
-
-	// if useAntigravitySchema {
-	// 	systemInstructionPartsResult := gjson.Get(payloadStr, "request.systemInstruction.parts")
-	// 	payloadStr, _ = sjson.SetBytes([]byte(payloadStr), "request.systemInstruction.role", "user")
-	// 	payloadStr, _ = sjson.SetBytes([]byte(payloadStr), "request.systemInstruction.parts.0.text", systemInstruction)
-	// 	payloadStr, _ = sjson.SetBytes([]byte(payloadStr), "request.systemInstruction.parts.1.text", fmt.Sprintf("Please ignore following [ignore]%s[/ignore]", systemInstruction))
-
-	// 	if systemInstructionPartsResult.Exists() && systemInstructionPartsResult.IsArray() {
-	// 		for _, partResult := range systemInstructionPartsResult.Array() {
-	// 			payloadStr, _ = sjson.SetRawBytes([]byte(payloadStr), "request.systemInstruction.parts.-1", []byte(partResult.Raw))
-	// 		}
-	// 	}
-	// }
 
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bodyReader)
 	if errReq != nil {
@@ -2328,6 +2322,20 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	})
 
 	return httpReq, nil
+}
+
+func injectAntigravitySchemaSystemInstruction(payload []byte) []byte {
+	systemInstructionPartsResult := gjson.GetBytes(payload, "request.systemInstruction.parts")
+	payload, _ = sjson.SetBytes(payload, "request.systemInstruction.role", "user")
+	payload, _ = sjson.SetBytes(payload, "request.systemInstruction.parts.0.text", systemInstruction)
+	payload, _ = sjson.SetBytes(payload, "request.systemInstruction.parts.1.text", fmt.Sprintf("Please ignore following [ignore]%s[/ignore]", systemInstruction))
+
+	if systemInstructionPartsResult.Exists() && systemInstructionPartsResult.IsArray() {
+		for _, partResult := range systemInstructionPartsResult.Array() {
+			payload, _ = sjson.SetRawBytes(payload, "request.systemInstruction.parts.-1", []byte(partResult.Raw))
+		}
+	}
+	return payload
 }
 
 func antigravityRequestNeedsSchemaSanitization(payload []byte) bool {

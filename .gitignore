@@ -13,6 +13,7 @@ logs/*
 conv/*
 temp/*
 refs/*
+/data/
 verify-report-*.txt
 plugins/*
 examples/plugin/bin/*
@@ -80,3 +81,4 @@ servers.local.md
 .agents/automations/
 .zed/CONVENTIONS.md
 .agents/goal-forge/runs/
+CODEBUDDY.md

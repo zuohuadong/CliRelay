@@ -113,7 +113,7 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 		}
 	}
 
-	url := strings.TrimSuffix(baseURL, "/") + endpoint
+	url := astronCodeEndpointURL(baseURL, endpoint, useResponsesEndpoint)
 	requestBody := translated
 	contentType := "application/json"
 	if opts.Alt == "images/edits" && imageEditPayloadHasUploads(translated) {
@@ -256,7 +256,7 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 	if useResponsesEndpoint {
 		streamEndpoint = "/responses"
 	}
-	url := strings.TrimSuffix(baseURL, "/") + streamEndpoint
+	url := astronCodeEndpointURL(baseURL, streamEndpoint, useResponsesEndpoint)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
 	if err != nil {
 		return nil, err
@@ -971,4 +971,15 @@ func jsonPayloadFromDataLine(line []byte) []byte {
 		return nil
 	}
 	return bytes.TrimSpace(line[idx+1:])
+}
+
+// astronCodeEndpointURL builds the upstream request URL for Astron Code.
+// iFlytek serves the Responses API under /v1 instead of the /v2 base path
+// used for chat completions, so swap the version prefix when needed.
+func astronCodeEndpointURL(baseURL, endpoint string, useResponses bool) string {
+	base := strings.TrimSuffix(baseURL, "/")
+	if useResponses {
+		base = strings.Replace(base, "/v2", "/v1", 1)
+	}
+	return base + endpoint
 }

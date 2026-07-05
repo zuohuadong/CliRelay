@@ -41,13 +41,34 @@ go run ./cmd/clirelay-video create -prompt "8 秒竖屏视频" -wait -output out
 
 ## Codex MCP 配置
 
-构建二进制：
+推荐直接连接服务端 HTTP MCP，不需要在用户机器上安装 `clirelay-tools`：
+
+```toml
+[mcp_servers.clirelay]
+url = "https://cliapi.example.com/mcp"
+bearer_token_env_var = "CLIRELAY_API_KEY"
+```
+
+然后在本机环境变量中放入 CliRelay API Key：
+
+```bash
+export CLIRELAY_API_KEY="你的 CliRelay API Key"
+```
+
+服务端 MCP 可用工具：
+
+- `clirelay_video_models`：列出视频模型。
+- `clirelay_video_create`：创建视频任务，可设置 `wait=true` 等待完成。
+- `clirelay_video_status`：查询任务状态和 `video_url`。
+- `clirelay_video_download`：返回鉴权下载 URL 和当前状态。远程 MCP 运行在 CliRelay 服务端，不能直接写入用户本机文件。
+
+本地调试或需要直接写本机文件时，可以使用 stdio MCP。先构建二进制：
 
 ```bash
 go build -o ./bin/clirelay-tools ./cmd/clirelay-tools
 ```
 
-在 Codex 的 MCP 配置中加入 stdio server：
+再在 Codex 的 MCP 配置中加入 stdio server：
 
 ```toml
 [mcp_servers.clirelay_tools]
@@ -56,15 +77,8 @@ args = ["mcp"]
 env = { CLIRELAY_BASE_URL = "https://cliapi.example.com", CLIRELAY_API_KEY = "你的 CliRelay API Key", CLIRELAY_VIDEO_MODEL = "agnes-video-v2.0" }
 ```
 
-可用工具：
-
-- `clirelay_video_models`：列出视频模型。
-- `clirelay_video_create`：创建视频任务，可设置 `wait=true` 等待完成。
-- `clirelay_video_status`：查询任务状态和 `video_url`。
-- `clirelay_video_download`：下载完成的视频到本地路径。
-
 在 Codex 中可以直接说：
 
-> 用这段文案生成一个 8 秒 9:16 的视频，完成后下载到 `out.mp4`。
+> 用这段文案生成一个 8 秒 9:16 的视频，完成后给我下载链接。
 
-Codex 会通过 MCP 工具创建任务、轮询状态并下载结果。
+Codex 会通过 MCP 工具创建任务、轮询状态并返回可下载结果。需要直接保存到本机文件时，使用本地 stdio MCP 或 CLI。

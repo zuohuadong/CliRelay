@@ -88,6 +88,17 @@ func (c *Client) DefaultModel() string {
 	return c.model
 }
 
+func (c *Client) VideoContentURL(videoID string) string {
+	if c == nil {
+		return ""
+	}
+	videoID = strings.TrimSpace(videoID)
+	if videoID == "" {
+		return ""
+	}
+	return c.baseURL + "/openai/v1/videos/" + url.PathEscape(videoID) + "/content"
+}
+
 func (c *Client) ListVideoModels(ctx context.Context) ([]map[string]any, error) {
 	payload, err := c.doJSON(ctx, http.MethodGet, "/v1/models", nil)
 	if err != nil {

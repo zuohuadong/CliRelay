@@ -134,10 +134,11 @@ save-cooldown-status: false
 # Set to 0 to keep the legacy 60-second cooldown; set to -1 to disable transient error cooldowns.
 transient-error-cooldown-seconds: 0
 
-# MCP reverse proxy servers exposed through the authenticated /mcp gateway.
-# Example DevSpace endpoint: clients call /mcp/custom/devspace, while CliRelay
-# forwards to the local DevSpace MCP server. This is a tool gateway, not an LLM
-# model upstream.
+# MCP endpoints are exposed through the authenticated /mcp gateway. The root
+# /mcp endpoint serves CliRelay's native tools such as video generation. Custom
+# reverse-proxy servers stay under /mcp/custom/<name>; for example, clients call
+# /mcp/custom/devspace while CliRelay forwards to the local DevSpace MCP server.
+# This is a tool gateway, not an LLM model upstream.
 # mcp-proxy:
 #   servers:
 #     - name: "devspace"

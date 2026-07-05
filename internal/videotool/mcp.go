@@ -12,9 +12,10 @@ import (
 )
 
 type MCPServer struct {
-	Client *Client
-	In     io.Reader
-	Out    io.Writer
+	Client     *Client
+	In         io.Reader
+	Out        io.Writer
+	RemoteHTTP bool
 }
 
 type rpcRequest struct {
@@ -61,22 +62,30 @@ func (s *MCPServer) Run(ctx context.Context) error {
 			}
 			return err
 		}
-		var req rpcRequest
-		if err := json.Unmarshal(raw, &req); err != nil {
+		resp, ok := s.HandleJSONRPC(ctx, raw)
+		if !ok {
 			continue
-		}
-		if len(req.ID) == 0 {
-			continue
-		}
-		result, rpcErr := s.handle(ctx, req)
-		resp := rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: result, Error: rpcErr}
-		if rpcErr != nil {
-			resp.Result = nil
 		}
 		if err := writeMCPFrame(s.Out, resp); err != nil {
 			return err
 		}
 	}
+}
+
+func (s *MCPServer) HandleJSONRPC(ctx context.Context, raw []byte) (rpcResponse, bool) {
+	var req rpcRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return rpcResponse{JSONRPC: "2.0", Error: &rpcError{Code: -32700, Message: "parse error"}}, true
+	}
+	if len(req.ID) == 0 {
+		return rpcResponse{}, false
+	}
+	result, rpcErr := s.handle(ctx, req)
+	resp := rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: result, Error: rpcErr}
+	if rpcErr != nil {
+		resp.Result = nil
+	}
+	return resp, true
 }
 
 func (s *MCPServer) handle(ctx context.Context, req rpcRequest) (any, *rpcError) {
@@ -93,7 +102,7 @@ func (s *MCPServer) handle(ctx context.Context, req rpcRequest) (any, *rpcError)
 			},
 		}, nil
 	case "tools/list":
-		return map[string]any{"tools": videoTools()}, nil
+		return map[string]any{"tools": videoTools(s.RemoteHTTP)}, nil
 	case "tools/call":
 		var params toolCallParams
 		if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -152,6 +161,24 @@ func (s *MCPServer) callTool(ctx context.Context, params toolCallParams) (any, *
 		out, err := s.Client.GetVideo(ctx, stringArg(args, "video_id"))
 		return toolJSON(out, err)
 	case "clirelay_video_download":
+		if s.RemoteHTTP {
+			videoID := stringArg(args, "video_id")
+			if videoID == "" {
+				return toolJSON(nil, fmt.Errorf("video_id is required"))
+			}
+			out, err := s.Client.GetVideo(ctx, videoID)
+			if err != nil {
+				return toolJSON(nil, err)
+			}
+			download := map[string]any{
+				"video_id":             videoID,
+				"download_url":         s.Client.VideoContentURL(videoID),
+				"authorization":        "Use the same Bearer token configured for this MCP server.",
+				"remote_mcp_note":      "Remote MCP runs on the CliRelay server and cannot write files directly to the user's local machine.",
+				"current_video_status": out,
+			}
+			return toolJSON(download, nil)
+		}
 		out, err := s.Client.DownloadVideo(ctx, stringArg(args, "video_id"), stringArg(args, "output_path"))
 		return toolJSON(out, err)
 	default:
@@ -159,7 +186,18 @@ func (s *MCPServer) callTool(ctx context.Context, params toolCallParams) (any, *
 	}
 }
 
-func videoTools() []map[string]any {
+func videoTools(remoteHTTP bool) []map[string]any {
+	downloadDescription := "Download a completed video to a local file path."
+	downloadProperties := map[string]any{
+		"video_id":    stringSchema("Video id returned by create."),
+		"output_path": stringSchema("Local output path. Defaults to <video_id>.mp4."),
+	}
+	if remoteHTTP {
+		downloadDescription = "Return the authenticated download URL and current status for a completed video. Remote MCP cannot write directly to the user's local filesystem."
+		downloadProperties = map[string]any{
+			"video_id": stringSchema("Video id returned by create."),
+		}
+	}
 	return []map[string]any{
 		{
 			"name":        "clirelay_video_models",
@@ -190,11 +228,8 @@ func videoTools() []map[string]any {
 		},
 		{
 			"name":        "clirelay_video_download",
-			"description": "Download a completed video to a local file path.",
-			"inputSchema": objectSchema(map[string]any{
-				"video_id":    stringSchema("Video id returned by create."),
-				"output_path": stringSchema("Local output path. Defaults to <video_id>.mp4."),
-			}, []string{"video_id"}),
+			"description": downloadDescription,
+			"inputSchema": objectSchema(downloadProperties, []string{"video_id"}),
 		},
 	}
 }

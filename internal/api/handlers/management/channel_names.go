@@ -182,6 +182,18 @@ func collectKnownChannelsWithPolicy(cfg *config.Config, auths []*coreauth.Auth, 
 				return nil, err
 			}
 		}
+		for _, entry := range cfg.AgnesAPIKey {
+			if strings.TrimSpace(entry.BaseURL) == "" {
+				continue
+			}
+			name := entry.Name
+			if name == "" {
+				name = "agnes"
+			}
+			if err := addKnownChannelWithPolicy(known, name, name, "Agnes config", failOnConflict); err != nil {
+				return nil, err
+			}
+		}
 		for _, entry := range cfg.VertexCompatAPIKey {
 			if strings.TrimSpace(entry.APIKey) == "" {
 				continue

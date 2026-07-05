@@ -176,6 +176,11 @@ type Config struct {
 	// is configured on the iFlytek platform side.
 	AstronCodeAPIKey []OpenAICompatibility `yaml:"astron-code,omitempty" json:"astron-code,omitempty"`
 
+	// AgnesAPIKey defines Sapiens Agnes multi-modal provider configurations.
+	// Chat and image use OpenAI-compatible endpoints; video keeps Agnes native
+	// asynchronous task retrieval semantics.
+	AgnesAPIKey []OpenAICompatibility `yaml:"agnes,omitempty" json:"agnes,omitempty"`
+
 	// DisableClaudeCloakMode globally disables Claude request cloaking when true.
 	// Cloaking disguises requests as the official Claude Code CLI and replaces the
 	// system prompt. When true, every Claude credential defaults to no cloaking
@@ -962,6 +967,7 @@ func (cfg *Config) OpenAICompatibilityAliasProviders(modelName string) []string 
 	}
 	appendEntries(DefaultBigModelCodingProviderName, cfg.BigModelCodingAPIKey, false)
 	appendEntries(DefaultAstronCodeProviderName, cfg.AstronCodeAPIKey, false)
+	appendEntries(DefaultAgnesProviderName, cfg.AgnesAPIKey, false)
 	appendEntries("", cfg.OpenAICompatibility, true)
 	return providers
 }
@@ -1035,6 +1041,12 @@ const (
 	DefaultAstronCodeModel        = "astron-code-latest"
 	DefaultAstronCodeAlias        = "gpt-5.3-codex"
 	DefaultAstronCodeGLMAlias     = DefaultBigModelCodingModel
+
+	DefaultAgnesProviderName = "agnes"
+	DefaultAgnesBaseURL      = "https://apihub.agnes-ai.com/v1"
+	DefaultAgnesChatModel    = "agnes-2.0-flash"
+	DefaultAgnesImageModel   = "agnes-image-2.1-flash"
+	DefaultAgnesVideoModel   = "agnes-video-v2.0"
 )
 
 // RequestPolicy defines a generic pre-execution policy for matching requests and channels.
@@ -1261,6 +1273,12 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Sanitize Astron Code providers.
 	cfg.SanitizeAstronCode()
+
+	// Move Agnes entries out of the generic OpenAI compatibility pool.
+	cfg.MigrateAgnesFromOpenAICompatibility()
+
+	// Sanitize Agnes providers.
+	cfg.SanitizeAgnes()
 
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
@@ -1796,6 +1814,22 @@ func (cfg *Config) MigrateAstronCodeFromOpenAICompatibility() {
 	cfg.OpenAICompatibility = nextCompat
 }
 
+func (cfg *Config) MigrateAgnesFromOpenAICompatibility() {
+	if cfg == nil || len(cfg.OpenAICompatibility) == 0 {
+		return
+	}
+	nextCompat := make([]OpenAICompatibility, 0, len(cfg.OpenAICompatibility))
+	for i := range cfg.OpenAICompatibility {
+		entry := cfg.OpenAICompatibility[i]
+		if isAgnesOpenAICompatibilityEntry(entry) {
+			cfg.AgnesAPIKey = append(cfg.AgnesAPIKey, entry)
+			continue
+		}
+		nextCompat = append(nextCompat, entry)
+	}
+	cfg.OpenAICompatibility = nextCompat
+}
+
 func (cfg *Config) SanitizeAstronCode() {
 	if cfg == nil {
 		return
@@ -1828,6 +1862,66 @@ func ensureAstronCodeModels(models []OpenAICompatibilityModel) []OpenAICompatibi
 	for i := range models {
 		models[i].Name = strings.TrimSpace(models[i].Name)
 		models[i].Alias = strings.TrimSpace(models[i].Alias)
+	}
+	return models
+}
+
+func (cfg *Config) SanitizeAgnes() {
+	if cfg == nil || len(cfg.AgnesAPIKey) == 0 {
+		return
+	}
+	out := make([]OpenAICompatibility, 0, len(cfg.AgnesAPIKey))
+	for i := range cfg.AgnesAPIKey {
+		e := cfg.AgnesAPIKey[i]
+		e.Name = DefaultAgnesProviderName
+		e.Prefix = normalizeModelPrefix(e.Prefix)
+		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		if e.BaseURL == "" {
+			e.BaseURL = DefaultAgnesBaseURL
+		}
+		e.TestModel = strings.TrimSpace(e.TestModel)
+		if e.TestModel == "" {
+			e.TestModel = DefaultAgnesChatModel
+		}
+		e.Headers = NormalizeHeaders(e.Headers)
+		e.IdentityFingerprint = strings.ToLower(strings.TrimSpace(e.IdentityFingerprint))
+		e.Models = ensureAgnesModels(e.Models)
+		out = append(out, e)
+	}
+	cfg.AgnesAPIKey = out
+}
+
+func isAgnesOpenAICompatibilityEntry(entry OpenAICompatibility) bool {
+	name := strings.ToLower(strings.TrimSpace(entry.Name))
+	if name == DefaultAgnesProviderName || name == "agnes-ai" {
+		return true
+	}
+	baseURL := strings.ToLower(strings.TrimSpace(entry.BaseURL))
+	return strings.Contains(baseURL, "agnes-ai.com")
+}
+
+func ensureAgnesModels(models []OpenAICompatibilityModel) []OpenAICompatibilityModel {
+	if len(models) == 0 {
+		return nil
+	}
+	for i := range models {
+		models[i].Name = strings.TrimSpace(models[i].Name)
+		models[i].Alias = strings.TrimSpace(models[i].Alias)
+		modelID := models[i].Name
+		if modelID == "" {
+			modelID = models[i].Alias
+			models[i].Name = modelID
+		}
+		if models[i].Alias == "" {
+			models[i].Alias = modelID
+		}
+		baseModel := strings.ToLower(strings.TrimSpace(modelID))
+		switch {
+		case strings.HasPrefix(baseModel, "agnes-image-"):
+			models[i].Image = true
+		case strings.HasPrefix(baseModel, "agnes-video-"):
+			models[i].Video = true
+		}
 	}
 	return models
 }

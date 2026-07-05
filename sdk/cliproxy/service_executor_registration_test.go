@@ -84,6 +84,7 @@ func TestRegisterAvailableExecutors(t *testing.T) {
 		"antigravity",
 		"kimi",
 		"xai",
+		"agnes",
 		"openai-compatibility",
 		"plugin-provider",
 	}
@@ -172,6 +173,14 @@ func TestRegisterExecutorForAuth_DedicatedOpenAICompatKeepsNativeProviderKey(t *
 				"provider_key": "astron-code",
 			},
 		},
+		{
+			ID:       "agnes-config-auth",
+			Provider: "agnes",
+			Attributes: map[string]string{
+				"compat_name":  "agnes",
+				"provider_key": "agnes",
+			},
+		},
 	}, true)
 
 	bigModelExecutor, okBigModel := service.coreManager.Executor("bigmodel-coding")
@@ -194,6 +203,17 @@ func TestRegisterExecutorForAuth_DedicatedOpenAICompatKeepsNativeProviderKey(t *
 	}
 	if _, ok := service.coreManager.Executor("openai-compatible-astron-code"); ok {
 		t.Fatal("did not expect generic openai-compatible-astron-code executor")
+	}
+
+	agnesExecutor, okAgnes := service.coreManager.Executor("agnes")
+	if !okAgnes {
+		t.Fatal("expected dedicated agnes executor")
+	}
+	if _, ok := agnesExecutor.(*runtimeexecutor.OpenAICompatExecutor); !ok {
+		t.Fatalf("agnes executor type = %T, want *executor.OpenAICompatExecutor", agnesExecutor)
+	}
+	if _, ok := service.coreManager.Executor("openai-compatible-agnes"); ok {
+		t.Fatal("did not expect generic openai-compatible-agnes executor")
 	}
 }
 

@@ -55,9 +55,10 @@ type xaiVideoCreateMetadata struct {
 }
 
 type videoAuthBinding struct {
-	authID    string
-	model     string
-	expiresAt time.Time
+	authID          string
+	model           string
+	upstreamVideoID string
+	expiresAt       time.Time
 }
 
 type videoAuthBindingStore struct {
@@ -76,6 +77,10 @@ func (s *videoAuthBindingStore) set(videoID string, authID string, ttl time.Dura
 }
 
 func (s *videoAuthBindingStore) setWithModel(videoID string, authID string, model string, ttl time.Duration) {
+	s.setWithModelAndUpstream(videoID, authID, model, "", ttl)
+}
+
+func (s *videoAuthBindingStore) setWithModelAndUpstream(videoID string, authID string, model string, upstreamVideoID string, ttl time.Duration) {
 	if s == nil {
 		return
 	}
@@ -91,9 +96,10 @@ func (s *videoAuthBindingStore) setWithModel(videoID string, authID string, mode
 	s.mu.Lock()
 	s.cleanupExpiredLocked(now)
 	s.entries[videoID] = videoAuthBinding{
-		authID:    authID,
-		model:     strings.TrimSpace(model),
-		expiresAt: now.Add(ttl),
+		authID:          authID,
+		model:           strings.TrimSpace(model),
+		upstreamVideoID: strings.TrimSpace(upstreamVideoID),
+		expiresAt:       now.Add(ttl),
 	}
 	s.mu.Unlock()
 }
@@ -286,16 +292,44 @@ func videoIDFromPayload(payload []byte) string {
 	return videoID
 }
 
+func videoBindingIDsFromPayload(payload []byte) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, 4)
+	for _, path := range []string{"request_id", "id", "task_id", "video_id"} {
+		value := strings.TrimSpace(gjson.GetBytes(payload, path).String())
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func upstreamVideoIDFromPayload(payload []byte) string {
+	if videoID := strings.TrimSpace(gjson.GetBytes(payload, "video_id").String()); videoID != "" {
+		return videoID
+	}
+	return videoIDFromPayload(payload)
+}
+
 func (h *OpenAIAPIHandler) bindVideoAuthIDFromPayload(payload []byte, authID string) {
 	h.bindVideoAuthIDAndModelFromPayload(payload, authID, strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
 }
 
 func (h *OpenAIAPIHandler) bindVideoAuthIDAndModelFromPayload(payload []byte, authID string, model string) {
-	videoID := videoIDFromPayload(payload)
-	if videoID == "" {
+	videoIDs := videoBindingIDsFromPayload(payload)
+	if len(videoIDs) == 0 {
 		return
 	}
-	videoAuthBindings.setWithModel(videoID, authID, canonicalVideoBindingModel(model), h.videoAuthBindingTTL())
+	upstreamVideoID := upstreamVideoIDFromPayload(payload)
+	canonicalModel := canonicalVideoBindingModel(model)
+	for _, videoID := range videoIDs {
+		videoAuthBindings.setWithModelAndUpstream(videoID, authID, canonicalModel, upstreamVideoID, h.videoAuthBindingTTL())
+	}
 }
 
 func (h *OpenAIAPIHandler) bindVideoAuthID(videoID string, authID string, model string) {
@@ -316,6 +350,22 @@ func (h *OpenAIAPIHandler) modelWithVideoAuthBinding(videoID string, fallbackMod
 		}
 	}
 	return fallbackModel
+}
+
+func (h *OpenAIAPIHandler) payloadWithVideoAuthBinding(rawJSON []byte, videoID string) []byte {
+	binding, ok := videoAuthBindings.getBinding(videoID)
+	if !ok {
+		return rawJSON
+	}
+	if !isOpenAICompatVideosModel(binding.model) {
+		return rawJSON
+	}
+	upstreamVideoID := strings.TrimSpace(binding.upstreamVideoID)
+	if upstreamVideoID == "" || upstreamVideoID == videoID {
+		return rawJSON
+	}
+	rawJSON, _ = sjson.SetBytes(rawJSON, "video_id", upstreamVideoID)
+	return rawJSON
 }
 
 func canonicalVideoBindingModel(model string) string {
@@ -784,6 +834,7 @@ func (h *OpenAIAPIHandler) VideosRetrieve(c *gin.Context) {
 	selectedAuthID := ""
 	cliCtx = h.contextWithVideoAuthBinding(cliCtx, videoID)
 	executionModel := h.modelWithVideoAuthBinding(videoID, defaultXAIVideosModel)
+	payload = h.payloadWithVideoAuthBinding(payload, videoID)
 	cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 		selectedAuthID = authID
 	})
@@ -847,6 +898,7 @@ func (h *OpenAIAPIHandler) VideosContent(c *gin.Context) {
 	selectedAuthID := ""
 	cliCtx = h.contextWithVideoAuthBinding(cliCtx, videoID)
 	executionModel := h.modelWithVideoAuthBinding(videoID, defaultXAIVideosModel)
+	payload = h.payloadWithVideoAuthBinding(payload, videoID)
 	cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 		selectedAuthID = authID
 	})

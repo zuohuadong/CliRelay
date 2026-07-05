@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -284,6 +285,7 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 	}
 	reporter.SetTranslatedReasoningEffort(payload, "openai")
 
+	endpointPath = openAICompatVideoProviderEndpointPath(opts, endpointPath, payload, baseModel, auth)
 	url := strings.TrimSuffix(baseURL, "/") + endpointPath
 	method := openAICompatPassthroughMethod(opts, endpointPath)
 	var requestBody io.Reader = bytes.NewReader(payload)
@@ -1032,10 +1034,47 @@ func openAICompatVideoEndpointPath(opts cliproxyexecutor.Options) string {
 }
 
 func openAICompatPassthroughMethod(opts cliproxyexecutor.Options, endpointPath string) string {
-	if opts.SourceFormat.String() == openAICompatVideoHandlerType && strings.Contains(endpointPath, "/videos/") {
+	if opts.SourceFormat.String() == openAICompatVideoHandlerType && (strings.Contains(endpointPath, "/videos/") || strings.Contains(endpointPath, "/agnesapi")) {
 		return http.MethodGet
 	}
 	return http.MethodPost
+}
+
+func openAICompatVideoProviderEndpointPath(opts cliproxyexecutor.Options, endpointPath string, payload []byte, model string, auth *cliproxyauth.Auth) string {
+	if opts.SourceFormat.String() != openAICompatVideoHandlerType {
+		return endpointPath
+	}
+	if !strings.Contains(endpointPath, "/videos/") {
+		return endpointPath
+	}
+	if !isAgnesOpenAICompatVideo(model, auth) {
+		return endpointPath
+	}
+	videoID := strings.TrimSpace(gjson.GetBytes(payload, "video_id").String())
+	if videoID == "" {
+		return endpointPath
+	}
+	return "/agnesapi?video_id=" + url.QueryEscape(videoID)
+}
+
+func isAgnesOpenAICompatVideo(model string, auth *cliproxyauth.Auth) bool {
+	model = strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
+	if strings.Contains(model, "agnes-video") {
+		return true
+	}
+	if auth == nil {
+		return false
+	}
+	label := strings.ToLower(strings.TrimSpace(auth.Label))
+	if label == "agnes" || strings.Contains(label, "agnes") {
+		return true
+	}
+	for _, key := range []string{"compat_name", "provider_key"} {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(auth.Attributes[key])), "agnes") {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizedOpenAICompatEndpointPath(path string) string {

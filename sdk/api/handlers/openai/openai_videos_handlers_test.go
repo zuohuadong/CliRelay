@@ -144,7 +144,7 @@ func (e *openAICompatVideoCaptureExecutor) Execute(_ context.Context, auth *core
 	e.sourceFormat = opts.SourceFormat.String()
 	e.mu.Unlock()
 
-	payload := []byte(`{"id":"video_agnes_123","object":"video","model":"` + req.Model + `","status":"queued","progress":0,"metadata":{"auth_id":"` + authID + `"}}`)
+	payload := []byte(`{"id":"task_agnes_123","task_id":"task_agnes_123","video_id":"video_agnes_123","object":"video","model":"` + req.Model + `","status":"queued","progress":0,"metadata":{"auth_id":"` + authID + `"}}`)
 	return coreexecutor.Response{Payload: payload}, nil
 }
 
@@ -791,8 +791,8 @@ func TestVideosCreateOpenAICompatVideoPassthrough(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusOK, resp.Body.String())
 	}
-	if got := gjson.GetBytes(resp.Body.Bytes(), "id").String(); got != "video_agnes_123" {
-		t.Fatalf("id = %q, want video_agnes_123", got)
+	if got := gjson.GetBytes(resp.Body.Bytes(), "id").String(); got != "task_agnes_123" {
+		t.Fatalf("id = %q, want task_agnes_123", got)
 	}
 	if got := gjson.GetBytes(resp.Body.Bytes(), "model").String(); got != "agnes-video-v2.0" {
 		t.Fatalf("model = %q, want agnes-video-v2.0", got)
@@ -807,8 +807,11 @@ func TestVideosCreateOpenAICompatVideoPassthrough(t *testing.T) {
 	if got := executor.SourceFormat(); got != xaiVideosHandlerType {
 		t.Fatalf("source format = %q, want %s", got, xaiVideosHandlerType)
 	}
-	if binding, ok := videoAuthBindings.getBinding("video_agnes_123"); !ok || binding.authID != authID || binding.model != "agnes-video-v2.0" {
-		t.Fatalf("binding = %+v ok=%v, want auth/model binding", binding, ok)
+	if binding, ok := videoAuthBindings.getBinding("task_agnes_123"); !ok || binding.authID != authID || binding.model != "agnes-video-v2.0" || binding.upstreamVideoID != "video_agnes_123" {
+		t.Fatalf("task binding = %+v ok=%v, want auth/model/upstream video binding", binding, ok)
+	}
+	if binding, ok := videoAuthBindings.getBinding("video_agnes_123"); !ok || binding.authID != authID || binding.model != "agnes-video-v2.0" || binding.upstreamVideoID != "video_agnes_123" {
+		t.Fatalf("video binding = %+v ok=%v, want auth/model/upstream video binding", binding, ok)
 	}
 }
 

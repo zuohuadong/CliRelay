@@ -1080,6 +1080,52 @@ func TestOpenAICompatExecutorVideosContentRetrievesVideoMetadata(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatExecutorAgnesVideosRetrieveUsesAgnesAPI(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"task_123","video_id":"video_abc","object":"video","status":"completed","progress":100,"video_url":"https://example.com/video.mp4"}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{
+		Label: "agnes",
+		Attributes: map[string]string{
+			"base_url":    server.URL + "/v1",
+			"api_key":     "test",
+			"compat_name": "agnes",
+		},
+	}
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "agnes-video-v2.0",
+		Payload: []byte(`{"request_id":"task_123","video_id":"video_abc"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-video"),
+		Stream:       false,
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestPathMetadataKey: "/openai/v1/videos/task_123",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotMethod != http.MethodGet {
+		t.Fatalf("method = %q, want GET", gotMethod)
+	}
+	if gotPath != "/v1/agnesapi" {
+		t.Fatalf("path = %q, want %q", gotPath, "/v1/agnesapi")
+	}
+	if gotQuery != "video_id=video_abc" {
+		t.Fatalf("query = %q, want video_id=video_abc", gotQuery)
+	}
+}
+
 func TestOpenAICompatExecutorImagesGenerationsStreamsUpstream(t *testing.T) {
 	var gotPath string
 	var gotBody []byte

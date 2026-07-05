@@ -304,6 +304,10 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 			provided = strings.TrimSpace(c.Query("token"))
 		}
 
+		if h.handleAPIKeyBillingSelfAccess(c, provided) {
+			return
+		}
+
 		allowed, statusCode, errMsg := h.AuthenticateManagementKey(clientIP, localClient, provided)
 		if !allowed {
 			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
@@ -311,6 +315,36 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+func (h *Handler) handleAPIKeyBillingSelfAccess(c *gin.Context, managementKey string) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	if c.Request.Method != http.MethodGet || c.Request.URL.Path != "/v0/management/api-key-billing" {
+		return false
+	}
+	if strings.TrimSpace(managementKey) != "" {
+		return false
+	}
+
+	apiKey := strings.TrimSpace(c.Query("api_key"))
+	if apiKey == "" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing api_key"})
+		return true
+	}
+	entry, found := h.apiKeyBillingEntry(apiKey)
+	if !found {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
+		return true
+	}
+	if entry.Disabled {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "api key disabled"})
+		return true
+	}
+
+	c.Next()
+	return true
 }
 
 // AuthenticateManagementKey verifies the provided management key for the given client.

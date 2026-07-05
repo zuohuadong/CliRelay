@@ -313,6 +313,46 @@ func TestManagementRoutesRestoredAfterMerge(t *testing.T) {
 	}
 }
 
+func TestAPIKeyBillingAllowsSelfServiceWithValidAPIKey(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/api-key-billing?api_key=test-key", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var payload struct {
+		APIKey       string         `json:"api_key"`
+		CurrentCycle map[string]any `json:"current_cycle"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, rr.Body.String())
+	}
+	if payload.APIKey != "test-key" {
+		t.Fatalf("api_key = %q, want test-key", payload.APIKey)
+	}
+	if payload.CurrentCycle == nil {
+		t.Fatalf("current_cycle missing: %s", rr.Body.String())
+	}
+}
+
+func TestAPIKeyBillingRejectsSelfServiceWithInvalidAPIKey(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/api-key-billing?api_key=missing-key", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+	}
+}
+
 func TestManagePanelRoutesRestoredAfterMerge(t *testing.T) {
 	server := newTestServer(t)
 

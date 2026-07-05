@@ -930,13 +930,8 @@ func (h *Handler) GetAPIKeyBilling(c *gin.Context) {
 
 	entry := panelAPIKeyEntry{Key: apiKey}
 	if h != nil {
-		if entries, _ := h.currentAPIKeyEntries(); len(entries) > 0 {
-			for _, candidate := range entries {
-				if strings.TrimSpace(candidate.Key) == apiKey {
-					entry = candidate
-					break
-				}
-			}
+		if foundEntry, ok := h.apiKeyBillingEntry(apiKey); ok {
+			entry = foundEntry
 		}
 	}
 
@@ -963,6 +958,20 @@ func (h *Handler) GetAPIKeyBilling(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, apiKeyBillingPayload(apiKey, entry, limit, currentStart, currentEnd, current, history))
+}
+
+func (h *Handler) apiKeyBillingEntry(apiKey string) (panelAPIKeyEntry, bool) {
+	apiKey = strings.TrimSpace(apiKey)
+	if h == nil || apiKey == "" {
+		return panelAPIKeyEntry{}, false
+	}
+	entries, _ := h.currentAPIKeyEntries()
+	for _, candidate := range entries {
+		if strings.TrimSpace(candidate.Key) == apiKey {
+			return candidate, true
+		}
+	}
+	return panelAPIKeyEntry{}, false
 }
 
 func apiKeyBillingPayload(apiKey string, entry panelAPIKeyEntry, limit float64, currentStart, currentEnd time.Time, current usageTotals, history []gin.H) gin.H {

@@ -158,6 +158,53 @@ func TestSanitizeAstronCodeAddsGLM51Alias(t *testing.T) {
 	}
 }
 
+func TestParseConfigBytesMigratesLegacyAgnesEntry(t *testing.T) {
+	cfg, err := ParseConfigBytes([]byte(`
+openai-compatibility:
+  - name: agnes-ai
+    base-url: https://apihub.agnes-ai.com/v1/
+    api-key-entries:
+      - api-key: sk-agnes
+    models:
+      - name: agnes-2.0-flash
+        alias: agnes-2.0-flash
+      - name: agnes-image-2.1-flash
+        alias: agnes-image-2.1-flash
+      - name: agnes-video-v2.0
+        alias: agnes-video-v2.0
+  - name: openrouter
+    base-url: https://openrouter.ai/api/v1
+    models:
+      - name: openai/gpt-oss
+        alias: gpt-oss
+`))
+	if err != nil {
+		t.Fatalf("ParseConfigBytes() error = %v", err)
+	}
+	if len(cfg.AgnesAPIKey) != 1 {
+		t.Fatalf("agnes len = %d, want 1", len(cfg.AgnesAPIKey))
+	}
+	entry := cfg.AgnesAPIKey[0]
+	if entry.Name != DefaultAgnesProviderName {
+		t.Fatalf("name = %q, want %q", entry.Name, DefaultAgnesProviderName)
+	}
+	if entry.BaseURL != "https://apihub.agnes-ai.com/v1/" {
+		t.Fatalf("base-url = %q", entry.BaseURL)
+	}
+	if entry.TestModel != DefaultAgnesChatModel {
+		t.Fatalf("test-model = %q, want %q", entry.TestModel, DefaultAgnesChatModel)
+	}
+	if !entry.Models[1].Image {
+		t.Fatalf("image model was not marked image: %#v", entry.Models[1])
+	}
+	if !entry.Models[2].Video {
+		t.Fatalf("video model was not marked video: %#v", entry.Models[2])
+	}
+	if len(cfg.OpenAICompatibility) != 1 || cfg.OpenAICompatibility[0].Name != "openrouter" {
+		t.Fatalf("openai-compatibility = %#v", cfg.OpenAICompatibility)
+	}
+}
+
 func TestOpenAICompatibilityAliasProvidersIsConfigDriven(t *testing.T) {
 	cfg := &Config{
 		BigModelCodingAPIKey: []OpenAICompatibility{{
@@ -165,6 +212,9 @@ func TestOpenAICompatibilityAliasProvidersIsConfigDriven(t *testing.T) {
 		}},
 		AstronCodeAPIKey: []OpenAICompatibility{{
 			Models: []OpenAICompatibilityModel{{Name: "astron-code-latest", Alias: "gpt-5.3-codex"}},
+		}},
+		AgnesAPIKey: []OpenAICompatibility{{
+			Models: []OpenAICompatibilityModel{{Name: "agnes-2.0-flash", Alias: "gpt-5.3-codex"}},
 		}},
 		OpenAICompatibility: []OpenAICompatibility{
 			{Name: "custom-coding", Models: []OpenAICompatibilityModel{{Name: "custom-upstream", Alias: "gpt-5.3-codex"}}},
@@ -174,7 +224,7 @@ func TestOpenAICompatibilityAliasProvidersIsConfigDriven(t *testing.T) {
 	}
 
 	providers := cfg.OpenAICompatibilityAliasProviders("gpt-5.3-codex")
-	want := []string{DefaultBigModelCodingProviderName, DefaultAstronCodeProviderName, "openai-compatible-custom-coding"}
+	want := []string{DefaultBigModelCodingProviderName, DefaultAstronCodeProviderName, DefaultAgnesProviderName, "openai-compatible-custom-coding"}
 	if strings.Join(providers, ",") != strings.Join(want, ",") {
 		t.Fatalf("providers = %v, want %v", providers, want)
 	}

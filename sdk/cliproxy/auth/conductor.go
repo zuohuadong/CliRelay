@@ -3565,6 +3565,13 @@ func resolveOpenAICompatConfig(cfg *internalconfig.Config, providerKey, compatNa
 			}
 			break
 		}
+		if strings.EqualFold(strings.TrimSpace(candidate), internalconfig.DefaultAgnesProviderName) ||
+			strings.EqualFold(strings.TrimSpace(candidate), "agnes-ai") {
+			if entry := resolveAgnesConfig(cfg); entry != nil {
+				return entry
+			}
+			break
+		}
 	}
 	for i := range cfg.OpenAICompatibility {
 		compat := &cfg.OpenAICompatibility[i]
@@ -3599,6 +3606,19 @@ func resolveAstronCodeConfig(cfg *internalconfig.Config) *internalconfig.OpenAIC
 	}
 	for i := range cfg.AstronCodeAPIKey {
 		entry := &cfg.AstronCodeAPIKey[i]
+		if !entry.Disabled {
+			return entry
+		}
+	}
+	return nil
+}
+
+func resolveAgnesConfig(cfg *internalconfig.Config) *internalconfig.OpenAICompatibility {
+	if cfg == nil {
+		return nil
+	}
+	for i := range cfg.AgnesAPIKey {
+		entry := &cfg.AgnesAPIKey[i]
 		if !entry.Disabled {
 			return entry
 		}

@@ -77,6 +77,9 @@ func SetChannelBillingMultipliersFromConfig(cfg *config.Config) {
 		for _, entry := range cfg.AstronCodeAPIKey {
 			setBillingMultiplier(next.byChannel, simpleChannelName(entry.Name, config.DefaultAstronCodeProviderName), entry.BillingMultiplier)
 		}
+		for _, entry := range cfg.AgnesAPIKey {
+			setBillingMultiplier(next.byChannel, simpleChannelName(entry.Name, config.DefaultAgnesProviderName), entry.BillingMultiplier)
+		}
 	}
 	billingMultiplierMu.Lock()
 	billingMultiplierSnapshot = next

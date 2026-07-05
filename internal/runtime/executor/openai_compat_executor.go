@@ -1070,7 +1070,8 @@ func isAgnesOpenAICompatVideo(model string, auth *cliproxyauth.Auth) bool {
 		return true
 	}
 	for _, key := range []string{"compat_name", "provider_key"} {
-		if strings.Contains(strings.ToLower(strings.TrimSpace(auth.Attributes[key])), "agnes") {
+		value := strings.ToLower(strings.TrimSpace(auth.Attributes[key]))
+		if value == "agnes" || value == "agnes-ai" {
 			return true
 		}
 	}
@@ -1221,6 +1222,17 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 	}
 	if v := strings.TrimSpace(auth.Provider); v != "" {
 		candidates = append(candidates, v)
+	}
+	for _, candidate := range candidates {
+		if strings.EqualFold(strings.TrimSpace(candidate), config.DefaultAgnesProviderName) ||
+			strings.EqualFold(strings.TrimSpace(candidate), "agnes-ai") {
+			for i := range e.cfg.AgnesAPIKey {
+				compat := &e.cfg.AgnesAPIKey[i]
+				if !compat.Disabled {
+					return compat
+				}
+			}
+		}
 	}
 	for i := range e.cfg.OpenAICompatibility {
 		compat := &e.cfg.OpenAICompatibility[i]

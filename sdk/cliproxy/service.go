@@ -840,6 +840,9 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 	if strings.EqualFold(strings.TrimSpace(a.Provider), "astron-code") {
 		return "astron-code", "astron-code", true
 	}
+	if strings.EqualFold(strings.TrimSpace(a.Provider), "agnes") {
+		return "agnes", "agnes", true
+	}
 	if strings.EqualFold(strings.TrimSpace(a.Provider), "opencode-go") {
 		return "opencode-go", "opencode-go", true
 	}
@@ -853,6 +856,8 @@ func dedicatedOpenAICompatProviderKey(values ...string) (string, bool) {
 			return "bigmodel-coding", true
 		case "astron-code":
 			return "astron-code", true
+		case "agnes", "agnes-ai":
+			return "agnes", true
 		case "opencode-go":
 			return "opencode-go", true
 		}
@@ -876,32 +881,40 @@ func (s *Service) newOpenAICompatibilityRegistrationCache() *openAICompatibility
 	s.cfgMu.RLock()
 	cfg := s.cfg
 	s.cfgMu.RUnlock()
-	if cfg == nil || len(cfg.OpenAICompatibility) == 0 {
+	if cfg == nil || (len(cfg.OpenAICompatibility) == 0 && len(cfg.AgnesAPIKey) == 0) {
 		return nil
 	}
 
 	cache := &openAICompatibilityRegistrationCache{
-		byName: make(map[string]*openAICompatibilityRegistrationEntry, len(cfg.OpenAICompatibility)),
+		byName: make(map[string]*openAICompatibilityRegistrationEntry, len(cfg.OpenAICompatibility)+len(cfg.AgnesAPIKey)),
 	}
-	for i := range cfg.OpenAICompatibility {
-		compat := &cfg.OpenAICompatibility[i]
-		if compat.Disabled {
-			continue
-		}
-		compatName := strings.TrimSpace(compat.Name)
-		key := strings.ToLower(compatName)
-		if _, exists := cache.byName[key]; exists {
-			continue
-		}
-		providerName := strings.ToLower(compatName)
-		if providerName == "" {
-			providerName = "openai-compatibility"
-		}
-		cache.byName[key] = &openAICompatibilityRegistrationEntry{
-			providerKey: util.OpenAICompatibleProviderKey(providerName),
-			models:      buildOpenAICompatibilityConfigModels(compat),
+	addCompatEntries := func(entries []config.OpenAICompatibility, dedicatedProviderKey string) {
+		for i := range entries {
+			compat := &entries[i]
+			if compat.Disabled {
+				continue
+			}
+			compatName := strings.TrimSpace(compat.Name)
+			key := strings.ToLower(compatName)
+			if _, exists := cache.byName[key]; exists {
+				continue
+			}
+			providerName := strings.ToLower(compatName)
+			if providerName == "" {
+				providerName = "openai-compatibility"
+			}
+			providerKey := util.OpenAICompatibleProviderKey(providerName)
+			if dedicatedProviderKey != "" {
+				providerKey = dedicatedProviderKey
+			}
+			cache.byName[key] = &openAICompatibilityRegistrationEntry{
+				providerKey: providerKey,
+				models:      buildOpenAICompatibilityConfigModels(compat),
+			}
 		}
 	}
+	addCompatEntries(cfg.OpenAICompatibility, "")
+	addCompatEntries(cfg.AgnesAPIKey, "agnes")
 	if len(cache.byName) == 0 {
 		return nil
 	}
@@ -960,6 +973,17 @@ func (s *Service) hasNativeOpenAICompatExecutorConfig(a *coreauth.Auth, provider
 		}
 		for _, candidate := range candidates {
 			if candidate != "" && candidate == name {
+				return true
+			}
+		}
+	}
+	for i := range s.cfg.AgnesAPIKey {
+		entry := &s.cfg.AgnesAPIKey[i]
+		if entry.Disabled {
+			continue
+		}
+		for _, candidate := range candidates {
+			if candidate == "agnes" || candidate == "agnes-ai" {
 				return true
 			}
 		}
@@ -1029,6 +1053,7 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"antigravity",
 		"kimi",
 		"xai",
+		"agnes",
 		"openai-compatibility",
 	}
 	auths := make([]*coreauth.Auth, 0, len(providers))
@@ -1037,8 +1062,8 @@ func baselineExecutorAuths() []*coreauth.Auth {
 			ID:       provider,
 			Provider: provider,
 		}
-		if provider == "openai-compatibility" {
-			auth.Attributes = map[string]string{"compat_name": "openai-compatibility"}
+		if provider == "openai-compatibility" || provider == "agnes" {
+			auth.Attributes = map[string]string{"compat_name": provider, "provider_key": provider}
 		}
 		auths = append(auths, auth)
 	}
@@ -2112,6 +2137,27 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			return
 		}
 		log.Warnf("registerModelsForAuth: no astron-code entry found for auth=%s, unregistering", a.ID)
+		GlobalModelRegistry().UnregisterClient(a.ID)
+		return
+	case "agnes":
+		log.Debugf("registerModelsForAuth: agnes auth=%s, AgnesAPIKey count=%d", a.ID, len(s.cfg.AgnesAPIKey))
+		for i := range s.cfg.AgnesAPIKey {
+			entry := &s.cfg.AgnesAPIKey[i]
+			if entry.Disabled {
+				log.Debugf("registerModelsForAuth: agnes entry[%d] is disabled", i)
+				continue
+			}
+			ms := buildOpenAICompatibilityConfigModels(entry)
+			log.Debugf("registerModelsForAuth: agnes entry[%d] models count=%d, models=%v", i, len(ms), ms)
+			if len(ms) > 0 {
+				s.registerResolvedModelsForAuth(a, "agnes", applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
+			} else {
+				log.Warnf("registerModelsForAuth: agnes entry[%d] has no models, unregistering auth=%s", i, a.ID)
+				GlobalModelRegistry().UnregisterClient(a.ID)
+			}
+			return
+		}
+		log.Warnf("registerModelsForAuth: no agnes entry found for auth=%s, unregistering", a.ID)
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
 	case "opencode-go":

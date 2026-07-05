@@ -89,6 +89,8 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeMCPProxy()
 	cfg.MigrateBigModelCodingFromOpenAICompatibility()
 	cfg.SanitizeBigModelCoding()
+	cfg.MigrateAgnesFromOpenAICompatibility()
+	cfg.SanitizeAgnes()
 	cfg.SanitizeOpenAICompatibility()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()

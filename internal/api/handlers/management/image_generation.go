@@ -448,6 +448,7 @@ func configuredOpenAICompatImageChannels(cfg *config.Config) []imageGenerationCh
 	appendCompat("openai-compatibility", cfg.OpenAICompatibility)
 	appendCompat("bigmodel-coding", cfg.BigModelCodingAPIKey)
 	appendCompat("astron-code", cfg.AstronCodeAPIKey)
+	appendCompat("agnes", cfg.AgnesAPIKey)
 	return channels
 }
 

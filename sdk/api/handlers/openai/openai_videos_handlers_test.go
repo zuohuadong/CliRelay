@@ -126,6 +126,60 @@ func (e *videoAuthCaptureExecutor) Models() []string {
 	return out
 }
 
+type openAICompatVideoCaptureExecutor struct {
+	mu           sync.Mutex
+	payloads     [][]byte
+	sourceFormat string
+}
+
+func (e *openAICompatVideoCaptureExecutor) Identifier() string { return "openai-compatibility" }
+
+func (e *openAICompatVideoCaptureExecutor) Execute(_ context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
+	authID := ""
+	if auth != nil {
+		authID = auth.ID
+	}
+	e.mu.Lock()
+	e.payloads = append(e.payloads, append([]byte(nil), req.Payload...))
+	e.sourceFormat = opts.SourceFormat.String()
+	e.mu.Unlock()
+
+	payload := []byte(`{"id":"video_agnes_123","object":"video","model":"` + req.Model + `","status":"queued","progress":0,"metadata":{"auth_id":"` + authID + `"}}`)
+	return coreexecutor.Response{Payload: payload}, nil
+}
+
+func (e *openAICompatVideoCaptureExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	return nil, &coreauth.Error{Code: "not_implemented", Message: "ExecuteStream not implemented"}
+}
+
+func (e *openAICompatVideoCaptureExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *openAICompatVideoCaptureExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
+}
+
+func (e *openAICompatVideoCaptureExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, &coreauth.Error{Code: "not_implemented", Message: "HttpRequest not implemented"}
+}
+
+func (e *openAICompatVideoCaptureExecutor) Payloads() [][]byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([][]byte, len(e.payloads))
+	for i := range e.payloads {
+		out[i] = append([]byte(nil), e.payloads[i]...)
+	}
+	return out
+}
+
+func (e *openAICompatVideoCaptureExecutor) SourceFormat() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.sourceFormat
+}
+
 func resetVideoAuthBindingsForTest(t *testing.T) {
 	t.Helper()
 	previous := videoAuthBindings
@@ -179,14 +233,52 @@ func TestVideosModelValidationAllowsXAIVideoModel(t *testing.T) {
 			t.Fatalf("expected %s to be supported", model)
 		}
 	}
-	if isSupportedVideosModel("sora-2") {
-		t.Fatal("expected removed sora-2 model to be rejected by the OpenAI video wrapper")
+	if !isSupportedVideosModel("sora-2") {
+		t.Fatal("expected sora-2 to be supported by the OpenAI video wrapper")
+	}
+	if isXAIVideosModel("sora-2") {
+		t.Fatal("expected sora-2 not to be treated as a native xAI video model")
 	}
 	if isSupportedVideosModel("codex/grok-imagine-video") {
 		t.Fatal("expected codex/grok-imagine-video to be rejected")
 	}
 	if isSupportedVideosModel("codex/grok-imagine-video-1.5-preview") {
 		t.Fatal("expected codex/grok-imagine-video-1.5-preview to be rejected")
+	}
+}
+
+func TestVideosModelValidationAllowsOpenAICompatVideoModels(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	clientID := "test-openai-compat-video-model-validation"
+	modelRegistry.RegisterClient(clientID, "openai-compatibility", []*registry.ModelInfo{
+		{ID: "agnes-video-v2.0", Object: "model", OwnedBy: "agnes", Type: registry.OpenAIVideoModelType},
+		{ID: "agnes-2.0-flash", Object: "model", OwnedBy: "agnes", Type: "openai-compatibility"},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(clientID)
+	})
+
+	if !isSupportedVideosModel("agnes-video-v2.0") {
+		t.Fatal("expected configured openai-compatibility video model to be supported")
+	}
+	if isSupportedVideosModel("agnes-2.0-flash") {
+		t.Fatal("expected non-video openai-compatibility model to be rejected")
+	}
+}
+
+func TestBuildXAIVideosCreateRequestMapsSoraModelToXAIBackend(t *testing.T) {
+	rawJSON := []byte(`{"model":"sora-2","prompt":"a cat playing piano","seconds":"8"}`)
+
+	req, meta, err := buildXAIVideosCreateRequest(rawJSON, "sora-2")
+	if err != nil {
+		t.Fatalf("buildXAIVideosCreateRequest() error = %v", err)
+	}
+
+	if got := gjson.GetBytes(req, "model").String(); got != defaultXAIVideosModel {
+		t.Fatalf("model = %q, want %s", got, defaultXAIVideosModel)
+	}
+	if meta.Model != defaultXAIVideosModel || meta.UpstreamModel != defaultXAIVideosModel {
+		t.Fatalf("meta models = %q/%q, want %s", meta.Model, meta.UpstreamModel, defaultXAIVideosModel)
 	}
 }
 
@@ -326,6 +418,28 @@ func TestBuildVideosRetrieveAPIResponseFromXAI(t *testing.T) {
 	}
 }
 
+func TestBuildVideosRetrieveAPIResponseFromOpenAICompatVideoURL(t *testing.T) {
+	payload := []byte(`{"id":"video_agnes_123","object":"video","model":"agnes-video-v2.0","status":"completed","progress":100,"duration":8,"video_url":"https://example.com/agnes.mp4"}`)
+
+	out, err := buildVideosRetrieveAPIResponseFromXAI("video_agnes_123", payload, defaultOpenAIVideosModel)
+	if err != nil {
+		t.Fatalf("buildVideosRetrieveAPIResponseFromXAI() error = %v", err)
+	}
+
+	if got := gjson.GetBytes(out, "model").String(); got != "agnes-video-v2.0" {
+		t.Fatalf("model = %q, want agnes-video-v2.0", got)
+	}
+	if got := gjson.GetBytes(out, "status").String(); got != "completed" {
+		t.Fatalf("status = %q, want completed", got)
+	}
+	if got := gjson.GetBytes(out, "seconds").Int(); got != 8 {
+		t.Fatalf("seconds = %d, want 8; body=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "video_url").String(); got != "https://example.com/agnes.mp4" {
+		t.Fatalf("video_url = %q", got)
+	}
+}
+
 func TestBuildVideosRetrieveAPIResponseFromXAINormalizesTopLevelError(t *testing.T) {
 	payload := []byte(`{"code":"invalid-argument","error":"1080p video resolution is not available for your team."}`)
 
@@ -376,6 +490,18 @@ func TestXAIVideoContentURLFromPayload(t *testing.T) {
 	}
 	if got != "https://vidgen.x.ai/video.mp4" {
 		t.Fatalf("url = %q, want https://vidgen.x.ai/video.mp4", got)
+	}
+}
+
+func TestXAIVideoContentURLFromPayloadAcceptsOpenAICompatVideoURL(t *testing.T) {
+	payload := []byte(`{"status":"completed","video_url":"https://example.com/agnes.mp4"}`)
+
+	got, err := xaiVideoContentURLFromPayload(payload)
+	if err != nil {
+		t.Fatalf("xaiVideoContentURLFromPayload() error = %v", err)
+	}
+	if got != "https://example.com/agnes.mp4" {
+		t.Fatalf("url = %q, want https://example.com/agnes.mp4", got)
 	}
 }
 
@@ -684,6 +810,58 @@ func TestVideosCreateBindsRetrieveToSelectedAuth(t *testing.T) {
 	}
 	if authIDs[1] != authIDs[0] {
 		t.Fatalf("retrieve auth = %q, want create auth %q; sequence=%v", authIDs[1], authIDs[0], authIDs)
+	}
+}
+
+func TestVideosCreateOpenAICompatVideoPassthrough(t *testing.T) {
+	resetVideoAuthBindingsForTest(t)
+	modelRegistry := registry.GetGlobalRegistry()
+	authID := "video-agnes-auth"
+	modelRegistry.RegisterClient(authID, "openai-compatibility", []*registry.ModelInfo{
+		{ID: "agnes-video-v2.0", Object: "model", OwnedBy: "agnes", Type: registry.OpenAIVideoModelType},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(authID)
+	})
+
+	executor := &openAICompatVideoCaptureExecutor{}
+	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
+	manager.RegisterExecutor(executor)
+	auth := &coreauth.Auth{
+		ID:       authID,
+		Provider: "openai-compatibility",
+		Status:   coreauth.StatusActive,
+	}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("manager.Register() error = %v", errRegister)
+	}
+	manager.RefreshSchedulerEntry(authID)
+
+	base := apihandlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	handler := NewOpenAIAPIHandler(base)
+
+	resp := performVideosEndpointRequest(t, http.MethodPost, openAIVideosPath, "application/json", strings.NewReader(`{"model":"agnes-video-v2.0","prompt":"make a video"}`), handler.VideosCreate)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if got := gjson.GetBytes(resp.Body.Bytes(), "id").String(); got != "video_agnes_123" {
+		t.Fatalf("id = %q, want video_agnes_123", got)
+	}
+	if got := gjson.GetBytes(resp.Body.Bytes(), "model").String(); got != "agnes-video-v2.0" {
+		t.Fatalf("model = %q, want agnes-video-v2.0", got)
+	}
+	payloads := executor.Payloads()
+	if len(payloads) != 1 {
+		t.Fatalf("payload count = %d, want 1", len(payloads))
+	}
+	if got := gjson.GetBytes(payloads[0], "model").String(); got != "agnes-video-v2.0" {
+		t.Fatalf("upstream payload model = %q, want agnes-video-v2.0; body=%s", got, string(payloads[0]))
+	}
+	if got := executor.SourceFormat(); got != xaiVideosHandlerType {
+		t.Fatalf("source format = %q, want %s", got, xaiVideosHandlerType)
+	}
+	if binding, ok := videoAuthBindings.getBinding("video_agnes_123"); !ok || binding.authID != authID || binding.model != "agnes-video-v2.0" {
+		t.Fatalf("binding = %+v ok=%v, want auth/model binding", binding, ok)
 	}
 }
 

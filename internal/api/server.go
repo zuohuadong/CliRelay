@@ -706,6 +706,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 		mgmt.PATCH("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 
+		mgmt.GET("/billing-multipliers", s.mgmt.GetBillingMultipliers)
+		mgmt.PUT("/billing-multipliers", s.mgmt.PutBillingMultipliers)
+		mgmt.PATCH("/billing-multipliers", s.mgmt.PutBillingMultipliers)
+
 		mgmt.GET("/auto-update/channel", s.mgmt.GetAutoUpdateChannel)
 		mgmt.PUT("/auto-update/channel", s.mgmt.PutAutoUpdateChannel)
 		mgmt.PATCH("/auto-update/channel", s.mgmt.PutAutoUpdateChannel)

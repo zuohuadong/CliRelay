@@ -46,6 +46,18 @@ const readNumber = (obj: Record<string, unknown> | null, ...keys: string[]): num
   return null;
 };
 
+const readRecord = (
+  obj: Record<string, unknown> | null,
+  ...keys: string[]
+): Record<string, unknown> | null => {
+  if (!obj) return null;
+  for (const key of keys) {
+    const value = obj[key];
+    if (isRecord(value)) return value;
+  }
+  return null;
+};
+
 const normalizeUpdateChannel = (value: string) => {
   const channel = value.trim().toLowerCase();
   return channel === "dev" ? channel : "main";
@@ -74,25 +86,36 @@ export function RuntimeConfigPanel() {
   const [requestRetry, setRequestRetry] = useState("0");
   const [logsMaxTotalSizeMb, setLogsMaxTotalSizeMb] = useState("0");
   const [routingStrategy, setRoutingStrategy] = useState("round-robin");
+  const [billingMultipliers, setBillingMultipliers] = useState<Record<string, number>>({});
+  const [antigravityBillingMultiplier, setAntigravityBillingMultiplier] = useState("");
 
   const [baselineText, setBaselineText] = useState({
     proxyUrl: "",
     requestRetry: "0",
     logsMaxTotalSizeMb: "0",
     routingStrategy: "round-robin",
+    antigravityBillingMultiplier: "",
   });
 
   const loadRuntimeConfig = useCallback(async () => {
     setLoading(true);
     try {
-      const [config, logsLimit, forcePrefix, strategy, autoUpdate, autoUpdateChannelValue] =
-        await Promise.all([
+      const [
+        config,
+        logsLimit,
+        forcePrefix,
+        strategy,
+        autoUpdate,
+        autoUpdateChannelValue,
+        multipliers,
+      ] = await Promise.all([
           configApi.getConfig(),
           configApi.getLogsMaxTotalSizeMb().catch(() => 0),
           configApi.getForceModelPrefix().catch(() => false),
           configApi.getRoutingStrategy().catch(() => "round-robin"),
           configApi.getAutoUpdateEnabled().catch(() => true),
           configApi.getAutoUpdateChannel().catch(() => "main"),
+          configApi.getBillingMultipliers().catch(() => ({})),
         ]);
 
       const record = isRecord(config) ? (config as Record<string, unknown>) : null;
@@ -117,6 +140,26 @@ export function RuntimeConfigPanel() {
       setLogsMaxTotalSizeMb(String(logsLimit ?? 0));
       setForceModelPrefixEnabled(Boolean(forcePrefix));
       setRoutingStrategy(typeof strategy === "string" ? strategy : "round-robin");
+      const configMultipliers = readRecord(record, "billing-multipliers", "billingMultipliers");
+      const mergedMultipliers = {
+        ...(configMultipliers
+          ? Object.fromEntries(
+              Object.entries(configMultipliers)
+                .map(([channel, value]) => [channel.trim().toLowerCase(), Number(value)] as const)
+                .filter(
+                  ([channel, value]) => channel && Number.isFinite(value) && value > 0,
+                ),
+            )
+          : {}),
+        ...multipliers,
+      };
+      setBillingMultipliers(mergedMultipliers);
+      const antigravityMultiplier = mergedMultipliers.antigravity;
+      const antigravityMultiplierText =
+        typeof antigravityMultiplier === "number" && antigravityMultiplier > 0
+          ? String(antigravityMultiplier)
+          : "";
+      setAntigravityBillingMultiplier(antigravityMultiplierText);
       setAutoUpdateEnabled(Boolean(autoUpdate));
       setAutoUpdateChannel(
         normalizeUpdateChannel(
@@ -129,6 +172,7 @@ export function RuntimeConfigPanel() {
         requestRetry: retry !== null ? String(retry) : "0",
         logsMaxTotalSizeMb: String(logsLimit ?? 0),
         routingStrategy: typeof strategy === "string" ? strategy : "round-robin",
+        antigravityBillingMultiplier: antigravityMultiplierText,
       });
     } catch (err: unknown) {
       notify({
@@ -191,13 +235,18 @@ export function RuntimeConfigPanel() {
     proxyUrl.trim() !== baselineText.proxyUrl.trim() ||
     requestRetry.trim() !== baselineText.requestRetry.trim() ||
     logsMaxTotalSizeMb.trim() !== baselineText.logsMaxTotalSizeMb.trim() ||
-    routingStrategy.trim() !== baselineText.routingStrategy.trim();
+    routingStrategy.trim() !== baselineText.routingStrategy.trim() ||
+    antigravityBillingMultiplier.trim() !==
+      baselineText.antigravityBillingMultiplier.trim();
 
   const saveRuntimeText = useCallback(async () => {
     const trimmedProxy = proxyUrl.trim();
     const retryParsed = Number(requestRetry.trim());
     const logsParsed = Number(logsMaxTotalSizeMb.trim());
     const trimmedStrategy = routingStrategy.trim();
+    const trimmedAntigravityMultiplier = antigravityBillingMultiplier.trim();
+    const antigravityMultiplier =
+      trimmedAntigravityMultiplier !== "" ? Number(trimmedAntigravityMultiplier) : null;
 
     if (!Number.isFinite(retryParsed) || retryParsed < 0) {
       notify({ type: "error", message: t("config_page.retry_non_negative") });
@@ -209,6 +258,13 @@ export function RuntimeConfigPanel() {
     }
     if (!trimmedStrategy) {
       notify({ type: "error", message: t("config_page.routing_required") });
+      return;
+    }
+    if (
+      antigravityMultiplier !== null &&
+      (!Number.isFinite(antigravityMultiplier) || antigravityMultiplier <= 0)
+    ) {
+      notify({ type: "error", message: t("config_page.billing_multiplier_positive") });
       return;
     }
 
@@ -230,6 +286,19 @@ export function RuntimeConfigPanel() {
         await configApi.updateRoutingStrategy(trimmedStrategy);
       }
 
+      if (
+        trimmedAntigravityMultiplier !==
+        baselineText.antigravityBillingMultiplier.trim()
+      ) {
+        const nextMultipliers = { ...billingMultipliers };
+        if (antigravityMultiplier === null || antigravityMultiplier === 1) {
+          delete nextMultipliers.antigravity;
+        } else {
+          nextMultipliers.antigravity = antigravityMultiplier;
+        }
+        await configApi.updateBillingMultipliers(nextMultipliers);
+      }
+
       notify({ type: "success", message: t("config_page.toast_updated") });
       startTransition(() => void loadRuntimeConfig());
     } catch (err: unknown) {
@@ -244,6 +313,9 @@ export function RuntimeConfigPanel() {
     baselineText.proxyUrl,
     baselineText.requestRetry,
     baselineText.routingStrategy,
+    baselineText.antigravityBillingMultiplier,
+    antigravityBillingMultiplier,
+    billingMultipliers,
     loadRuntimeConfig,
     logsMaxTotalSizeMb,
     notify,
@@ -454,6 +526,23 @@ export function RuntimeConfigPanel() {
                     ? t("config_page.config_loaded")
                     : t("config_page.config_not_loaded"),
                 })}
+              </p>
+            </div>
+          </Card>
+
+          <Card
+            title={t("config_page.customer_billing")}
+            description={t("config_page.customer_billing_desc")}
+          >
+            <div className="space-y-3">
+              <TextInput
+                value={antigravityBillingMultiplier}
+                onChange={(e) => setAntigravityBillingMultiplier(e.currentTarget.value)}
+                placeholder={t("config_page.antigravity_billing_multiplier_placeholder")}
+                inputMode="decimal"
+              />
+              <p className="text-xs text-slate-600 dark:text-white/65">
+                {t("config_page.antigravity_billing_multiplier_hint")}
               </p>
             </div>
           </Card>

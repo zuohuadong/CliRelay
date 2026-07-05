@@ -50,6 +50,9 @@ type channelBillingMultipliers struct {
 func SetChannelBillingMultipliersFromConfig(cfg *config.Config) {
 	next := channelBillingMultipliers{byChannel: map[string]float64{}}
 	if cfg != nil {
+		for channel, multiplier := range cfg.BillingMultipliers {
+			setBillingMultiplier(next.byChannel, channel, multiplier)
+		}
 		for _, entry := range cfg.GeminiKey {
 			setBillingMultiplier(next.byChannel, simpleChannelName(entry.Prefix, "gemini"), entry.BillingMultiplier)
 		}

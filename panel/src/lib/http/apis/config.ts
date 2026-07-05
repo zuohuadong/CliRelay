@@ -2,6 +2,22 @@ import { apiClient } from "@/lib/http/client";
 
 export const configApi = {
   getConfig: () => apiClient.get<Record<string, unknown>>("/config"),
+  getBillingMultipliers: async (): Promise<Record<string, number>> => {
+    const data = await apiClient.get<Record<string, unknown>>("/billing-multipliers");
+    const raw = data?.["billing-multipliers"] ?? data?.billingMultipliers;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const result: Record<string, number> = {};
+    for (const [channel, value] of Object.entries(raw)) {
+      const normalizedChannel = channel.trim().toLowerCase();
+      const multiplier = Number(value);
+      if (normalizedChannel && Number.isFinite(multiplier) && multiplier > 0) {
+        result[normalizedChannel] = multiplier;
+      }
+    }
+    return result;
+  },
+  updateBillingMultipliers: (value: Record<string, number>) =>
+    apiClient.put("/billing-multipliers", { value }),
 
   updateDebug: (enabled: boolean) => apiClient.put("/debug", { value: enabled }),
   updateProxyUrl: (proxyUrl: string) => apiClient.put("/proxy-url", { value: proxyUrl }),

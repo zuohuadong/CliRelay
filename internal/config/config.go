@@ -122,6 +122,9 @@ type Config struct {
 
 	AntigravitySignatureBypassStrict *bool `yaml:"antigravity-signature-bypass-strict,omitempty" json:"antigravity-signature-bypass-strict,omitempty"`
 
+	// BillingMultipliers maps channel/provider names to customer-facing cost multipliers.
+	BillingMultipliers map[string]float64 `yaml:"billing-multipliers,omitempty" json:"billing-multipliers,omitempty"`
+
 	// GeminiKey defines Gemini API key configurations with optional routing overrides.
 	GeminiKey []GeminiKey `yaml:"gemini-api-key" json:"gemini-api-key"`
 

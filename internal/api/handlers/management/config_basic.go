@@ -263,6 +263,49 @@ func (h *Handler) PutRequestRetry(c *gin.Context) {
 	h.updateIntField(c, func(v int) { h.cfg.RequestRetry = v })
 }
 
+// BillingMultipliers
+func (h *Handler) GetBillingMultipliers(c *gin.Context) {
+	multipliers := make(map[string]float64, len(h.cfg.BillingMultipliers))
+	for channel, multiplier := range h.cfg.BillingMultipliers {
+		normalized := strings.ToLower(strings.TrimSpace(channel))
+		if normalized == "" || multiplier <= 0 {
+			continue
+		}
+		multipliers[normalized] = multiplier
+	}
+	c.JSON(200, gin.H{"billing-multipliers": multipliers})
+}
+
+func (h *Handler) PutBillingMultipliers(c *gin.Context) {
+	var body struct {
+		Value map[string]float64 `json:"value"`
+	}
+	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+
+	next := make(map[string]float64, len(body.Value))
+	for channel, multiplier := range body.Value {
+		normalized := strings.ToLower(strings.TrimSpace(channel))
+		if normalized == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "channel name is required"})
+			return
+		}
+		if multiplier <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "billing multiplier must be greater than 0"})
+			return
+		}
+		next[normalized] = multiplier
+	}
+	if len(next) == 0 {
+		h.cfg.BillingMultipliers = nil
+	} else {
+		h.cfg.BillingMultipliers = next
+	}
+	h.persist(c)
+}
+
 // Max retry interval
 func (h *Handler) GetMaxRetryInterval(c *gin.Context) {
 	c.JSON(200, gin.H{"max-retry-interval": h.cfg.MaxRetryInterval})

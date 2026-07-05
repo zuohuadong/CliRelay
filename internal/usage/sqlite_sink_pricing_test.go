@@ -98,6 +98,48 @@ func TestSqliteSinkAppliesChannelBillingMultiplier(t *testing.T) {
 	}
 }
 
+func TestSqliteSinkAppliesGlobalChannelBillingMultiplier(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_usage.db")
+	defaultSink.SetPath(dbPath)
+	SetChannelBillingMultipliersFromConfig(&config.Config{
+		BillingMultipliers: map[string]float64{
+			"antigravity": 0.2,
+		},
+	})
+	t.Cleanup(func() {
+		SetChannelBillingMultipliersFromConfig(nil)
+	})
+
+	db := getDB()
+	if db == nil {
+		t.Fatal("expected non-nil db")
+	}
+	EnsureModelPricesTable(db)
+	if err := SetModelPrice(ModelPriceRow{
+		Model:           "gemini-3-flash",
+		Mode:            "token",
+		InputPricePerM:  1,
+		OutputPricePerM: 1,
+	}); err != nil {
+		t.Fatalf("SetModelPrice: %v", err)
+	}
+
+	defaultSink.HandleUsage(context.Background(), coreusage.Record{
+		Provider: "antigravity",
+		Model:    "gemini-3-flash",
+		Detail:   coreusage.Detail{InputTokens: 1000, OutputTokens: 1000, TotalTokens: 2000},
+	})
+
+	var cost float64
+	if err := db.QueryRow(`SELECT cost FROM request_logs ORDER BY id DESC LIMIT 1`).Scan(&cost); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	expected := 0.0004
+	if cost < expected-0.0000001 || cost > expected+0.0000001 {
+		t.Fatalf("cost = %f, want %f", cost, expected)
+	}
+}
+
 func TestSqliteSinkFailedRequestHasZeroCost(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test_usage.db")
 	defaultSink.SetPath(dbPath)

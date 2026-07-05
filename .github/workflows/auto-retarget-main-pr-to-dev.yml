@@ -42,11 +42,15 @@ jobs:
             }
 
             try {
-              await github.rest.repos.getBranch({
+              const target = await github.rest.repos.getBranch({
                 owner,
                 repo,
                 branch: desiredBase,
               });
+              if (target.data?.name !== desiredBase) {
+                core.notice(`Target branch ${desiredBase} resolved to ${target.data?.name}; leaving PR #${prNumber} on ${baseRef}.`);
+                return;
+              }
             } catch (error) {
               if (error.status === 404) {
                 core.notice(`Target branch ${desiredBase} does not exist; leaving PR #${prNumber} on ${baseRef}.`);

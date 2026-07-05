@@ -183,5 +183,70 @@ func TestSeedOfficialModelPricesPreservesOperatorEdits(t *testing.T) {
 	}
 }
 
+func TestSeedOfficialModelPricesRefreshesUnpricedRows(t *testing.T) {
+	db := newTestPricesDB(t)
+	modelPricesSeedingMu.Lock()
+	modelPricesSeededDone = false
+	modelPricesSeedingMu.Unlock()
+
+	if err := SetModelPrice(ModelPriceRow{Model: "codex-auto-review", Mode: "token"}); err != nil {
+		t.Fatalf("SetModelPrice codex-auto-review: %v", err)
+	}
+	if err := SetModelPrice(ModelPriceRow{Model: "agnes-2.0-flash", Mode: "token"}); err != nil {
+		t.Fatalf("SetModelPrice agnes-2.0-flash: %v", err)
+	}
+	if err := SetModelPrice(ModelPriceRow{Model: "glm-4.7-flash", Mode: "token", InputPricePerM: 99}); err != nil {
+		t.Fatalf("SetModelPrice glm-4.7-flash: %v", err)
+	}
+
+	SeedOfficialModelPrices(db)
+
+	codex := GetModelPrice("codex-auto-review")
+	if codex == nil || codex.InputPricePerM != 1.25 || codex.OutputPricePerM != 10 || codex.CachedPricePerM != 0.125 {
+		t.Fatalf("codex-auto-review price = %#v", codex)
+	}
+	agnes := GetModelPrice("agnes-2.0-flash")
+	if agnes == nil || agnes.InputPricePerM != 0.005 || agnes.OutputPricePerM != 0.015 || agnes.CachedPricePerM != 0.0005 {
+		t.Fatalf("agnes-2.0-flash price = %#v", agnes)
+	}
+	custom := GetModelPrice("glm-4.7-flash")
+	if custom == nil || custom.InputPricePerM != 99 {
+		t.Fatalf("nonzero operator price overwritten: %#v", custom)
+	}
+}
+
+func TestOfficialModelPricesCoverVisibleUnpricedModels(t *testing.T) {
+	want := map[string]ModelPriceRow{
+		"agnes-1.5-flash":            {Mode: "token", InputPricePerM: 0.005, OutputPricePerM: 0.015, CachedPricePerM: 0.0005},
+		"agnes-2.0-flash":            {Mode: "token", InputPricePerM: 0.005, OutputPricePerM: 0.015, CachedPricePerM: 0.0005},
+		"agnes-image-2.0-flash":      {Mode: "token", InputPricePerM: 0.01, OutputPricePerM: 0.03, CachedPricePerM: 0.001},
+		"agnes-image-2.1-flash":      {Mode: "token", InputPricePerM: 0.01, OutputPricePerM: 0.03, CachedPricePerM: 0.001},
+		"agnes-video-v2.0":           {Mode: "token", InputPricePerM: 0.02, OutputPricePerM: 0.06, CachedPricePerM: 0.002},
+		"codex-auto-review":          {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
+		"gemini-3.1-pro":             {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
+		"gemini-3.1-pro-high":        {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
+		"gemini-3.5-flash-extra-low": {Mode: "token", InputPricePerM: 0.15, OutputPricePerM: 0.6, CachedPricePerM: 0.0375},
+		"glm-4.7-flash":              {Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+	}
+
+	got := make(map[string]ModelPriceRow, len(officialModelPrices))
+	for _, row := range officialModelPrices {
+		got[row.Model] = row
+	}
+	for model, expected := range want {
+		row, ok := got[model]
+		if !ok {
+			t.Fatalf("missing price seed for visible unpriced model %s", model)
+		}
+		if seedMode(row) != expected.Mode ||
+			row.InputPricePerM != expected.InputPricePerM ||
+			row.OutputPricePerM != expected.OutputPricePerM ||
+			row.CachedPricePerM != expected.CachedPricePerM ||
+			row.PricePerCall != expected.PricePerCall {
+			t.Fatalf("%s price = %#v, want %#v", model, row, expected)
+		}
+	}
+}
+
 // p is a tiny helper to take the address of a float64 literal.
 func p(v float64) *float64 { return &v }

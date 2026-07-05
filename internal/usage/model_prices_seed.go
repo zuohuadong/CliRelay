@@ -28,6 +28,7 @@ var officialModelPrices = []ModelPriceRow{
 	{Model: "gpt-5.1-codex-max", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
 	{Model: "gpt-5.1", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
 	{Model: "gpt-5", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
+	{Model: "codex-auto-review", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
 	{Model: "gpt-4.1", Mode: "token", InputPricePerM: 2.5, OutputPricePerM: 10, CachedPricePerM: 0.625},
 	{Model: "gpt-4.1-mini", Mode: "token", InputPricePerM: 0.4, OutputPricePerM: 1.6, CachedPricePerM: 0.1},
 	{Model: "gpt-4o", Mode: "token", InputPricePerM: 2.5, OutputPricePerM: 10, CachedPricePerM: 1.25},
@@ -60,17 +61,21 @@ var officialModelPrices = []ModelPriceRow{
 	{Model: "gemini-3-pro", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
 	{Model: "gemini-3-pro-high", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
 	{Model: "gemini-3-pro-low", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
+	{Model: "gemini-3.1-pro", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
 	{Model: "gemini-3.1-pro-preview", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
+	{Model: "gemini-3.1-pro-high", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
 	{Model: "gemini-3.1-pro-low", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
 	{Model: "gemini-3-flash-preview", Mode: "token", InputPricePerM: 0.15, OutputPricePerM: 0.6, CachedPricePerM: 0.0375},
 	{Model: "gemini-3-flash", Mode: "token", InputPricePerM: 0.15, OutputPricePerM: 0.6, CachedPricePerM: 0.0375},
 	{Model: "gemini-3-flash-agent", Mode: "token", InputPricePerM: 0.15, OutputPricePerM: 0.6, CachedPricePerM: 0.0375},
 	{Model: "gemini-3.1-flash-lite-preview", Mode: "token", InputPricePerM: 0.075, OutputPricePerM: 0.3, CachedPricePerM: 0.01875},
 	{Model: "gemini-3.1-flash-lite", Mode: "token", InputPricePerM: 0.075, OutputPricePerM: 0.3, CachedPricePerM: 0.01875},
+	{Model: "gemini-3.1-flash-image", Mode: "call", PricePerCall: 0.00056},
 	{Model: "gemini-3.1-flash-image-preview", Mode: "token", InputPricePerM: 0.35, OutputPricePerM: 1.05, CachedPricePerM: 0.0875},
 	{Model: "gemini-3-pro-image-preview", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
 	{Model: "gemini-3.5-flash", Mode: "token", InputPricePerM: 0.15, OutputPricePerM: 0.6, CachedPricePerM: 0.0375},
 	{Model: "gemini-3.5-flash-low", Mode: "token", InputPricePerM: 0.15, OutputPricePerM: 0.6, CachedPricePerM: 0.0375},
+	{Model: "gemini-3.5-flash-extra-low", Mode: "token", InputPricePerM: 0.15, OutputPricePerM: 0.6, CachedPricePerM: 0.0375},
 	{Model: "gemini-2.5-pro", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
 	{Model: "gemini-2.5-flash", Mode: "token", InputPricePerM: 0.15, OutputPricePerM: 0.6, CachedPricePerM: 0.0375},
 	{Model: "gemini-2.5-flash-image", Mode: "token", InputPricePerM: 0.35, OutputPricePerM: 1.05, CachedPricePerM: 0.0875},
@@ -99,7 +104,15 @@ var officialModelPrices = []ModelPriceRow{
 	{Model: "gpt-oss-120b-medium", Mode: "token", InputPricePerM: 0.15, OutputPricePerM: 0.6, CachedPricePerM: 0.0375},
 	{Model: "gemini-pro-agent", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
 
+	// --- Agnes OpenAI-compatible models observed in configured auth metadata ---
+	{Model: "agnes-1.5-flash", Mode: "token", InputPricePerM: 0.005, OutputPricePerM: 0.015, CachedPricePerM: 0.0005},
+	{Model: "agnes-2.0-flash", Mode: "token", InputPricePerM: 0.005, OutputPricePerM: 0.015, CachedPricePerM: 0.0005},
+	{Model: "agnes-image-2.0-flash", Mode: "token", InputPricePerM: 0.01, OutputPricePerM: 0.03, CachedPricePerM: 0.001},
+	{Model: "agnes-image-2.1-flash", Mode: "token", InputPricePerM: 0.01, OutputPricePerM: 0.03, CachedPricePerM: 0.001},
+	{Model: "agnes-video-v2.0", Mode: "token", InputPricePerM: 0.02, OutputPricePerM: 0.06, CachedPricePerM: 0.002},
+
 	// --- BigModel / Zhipu GLM (bigmodel-coding channel, upstream) ---
+	{Model: "glm-4.7-flash", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
 	{Model: "glm-5", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
 	{Model: "glm-5.1", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
 	{Model: "glm-5.2", Mode: "token", InputPricePerM: 0.8, OutputPricePerM: 2.4, CachedPricePerM: 0.08},
@@ -125,9 +138,6 @@ var officialModelPrices = []ModelPriceRow{
 	{Model: "nano-banana-fast", Mode: "call", PricePerCall: 0.02},
 	{Model: "xopglmv47flash", Mode: "call", PricePerCall: 0.02},
 	{Model: "xsparkx2flash", Mode: "call", PricePerCall: 0.02},
-
-	// --- Codex internal auto-review (no direct token cost) ---
-	{Model: "codex-auto-review", Mode: "token", InputPricePerM: 0, OutputPricePerM: 0, CachedPricePerM: 0},
 }
 
 var (
@@ -152,32 +162,63 @@ func SeedOfficialModelPrices(db *sql.DB) {
 	EnsureModelPricesTable(db)
 	now := time.Now().UTC().Format(time.RFC3339)
 	inserted := 0
+	refreshed := 0
 	for _, row := range officialModelPrices {
 		model := strings.TrimSpace(row.Model)
 		if model == "" {
 			continue
 		}
-		var existing string
-		_ = db.QueryRow(`SELECT model FROM model_prices WHERE model = ?`, model).Scan(&existing)
-		if existing != "" {
+		var existing ModelPriceRow
+		err := db.QueryRow(`SELECT model, mode, input_price_per_m, output_price_per_m, cached_price_per_m, price_per_call, updated_at FROM model_prices WHERE model = ?`, model).Scan(
+			&existing.Model, &existing.Mode, &existing.InputPricePerM, &existing.OutputPricePerM, &existing.CachedPricePerM, &existing.PricePerCall, &existing.UpdatedAt,
+		)
+		if err == nil {
+			if isUnpricedSeedPrice(existing) && !isUnpricedSeedPrice(row) {
+				_, errUpdate := db.Exec(`UPDATE model_prices SET mode=?, input_price_per_m=?, output_price_per_m=?, cached_price_per_m=?, price_per_call=?, updated_at=? WHERE model=?`,
+					seedMode(row), row.InputPricePerM, row.OutputPricePerM, row.CachedPricePerM, row.PricePerCall, now, model)
+				if errUpdate != nil {
+					log.Warnf("usage: refresh unpriced model price for %s: %v", model, errUpdate)
+					continue
+				}
+				refreshed++
+			}
 			continue // operator may have customized; never overwrite
 		}
-		mode := strings.TrimSpace(row.Mode)
-		if mode == "" {
-			mode = "token"
+		if err != sql.ErrNoRows {
+			log.Warnf("usage: lookup model price for %s: %v", model, err)
+			continue
 		}
-		_, err := db.Exec(`INSERT INTO model_prices (model, mode, input_price_per_m, output_price_per_m, cached_price_per_m, price_per_call, updated_at)
+		_, errInsert := db.Exec(`INSERT INTO model_prices (model, mode, input_price_per_m, output_price_per_m, cached_price_per_m, price_per_call, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			model, mode, row.InputPricePerM, row.OutputPricePerM, row.CachedPricePerM, row.PricePerCall, now)
-		if err != nil {
-			log.Warnf("usage: seed model price for %s: %v", model, err)
+			model, seedMode(row), row.InputPricePerM, row.OutputPricePerM, row.CachedPricePerM, row.PricePerCall, now)
+		if errInsert != nil {
+			log.Warnf("usage: seed model price for %s: %v", model, errInsert)
 			continue
 		}
 		inserted++
 	}
-	if inserted > 0 {
-		log.Infof("usage: seeded %d official model price entries", inserted)
+	if inserted > 0 || refreshed > 0 {
+		log.Infof("usage: seeded official model price entries (inserted=%d refreshed=%d)", inserted, refreshed)
 	}
 	invalidateModelPricesCache()
 	modelPricesSeededDone = true
+}
+
+func seedMode(row ModelPriceRow) string {
+	mode := strings.TrimSpace(row.Mode)
+	if mode == "" {
+		return "token"
+	}
+	return mode
+}
+
+func isUnpricedSeedPrice(row ModelPriceRow) bool {
+	mode := seedMode(row)
+	if mode == "call" {
+		return row.PricePerCall == 0
+	}
+	return row.InputPricePerM == 0 &&
+		row.OutputPricePerM == 0 &&
+		row.CachedPricePerM == 0 &&
+		row.PricePerCall == 0
 }

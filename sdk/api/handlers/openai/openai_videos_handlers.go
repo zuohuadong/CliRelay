@@ -654,6 +654,8 @@ func buildVideosRetrieveAPIResponseFromXAI(videoID string, payload []byte, fallb
 	}
 	if videoURL := strings.TrimSpace(gjson.GetBytes(payload, "video.url").String()); videoURL != "" {
 		out, _ = sjson.SetBytes(out, "video_url", videoURL)
+	} else if videoURL := strings.TrimSpace(gjson.GetBytes(payload, "url").String()); videoURL != "" {
+		out, _ = sjson.SetBytes(out, "video_url", videoURL)
 	}
 	out = setOpenAIVideoErrorFromXAI(out, payload)
 	return out, nil
@@ -711,11 +713,14 @@ func markOpenAIVideoFailed(out []byte) []byte {
 func xaiVideoContentURLFromPayload(payload []byte) (string, error) {
 	rawURL := strings.TrimSpace(gjson.GetBytes(payload, "video.url").String())
 	if rawURL == "" {
-		return "", fmt.Errorf("xAI video response did not include video.url")
+		rawURL = strings.TrimSpace(gjson.GetBytes(payload, "url").String())
+	}
+	if rawURL == "" {
+		return "", fmt.Errorf("video response did not include video.url or url")
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed == nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return "", fmt.Errorf("xAI video response included invalid video.url")
+		return "", fmt.Errorf("video response included invalid video URL")
 	}
 	return rawURL, nil
 }

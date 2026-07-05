@@ -415,6 +415,19 @@ func TestBuildVideosRetrieveAPIResponseFromAgnesTopLevelURL(t *testing.T) {
 	}
 }
 
+func TestBuildVideosRetrieveAPIResponseFromAgnesRemixedURL(t *testing.T) {
+	payload := []byte(`{"object":"video","id":"video_agnes_123","model":"agnes-video-v2.0","status":"completed","progress":100,"seconds":"5.0","remixed_from_video_id":"https://platform-outputs.agnes-ai.space/videos/agnes-video-v2.0/video_agnes_123.mp4"}`)
+
+	out, err := buildVideosRetrieveAPIResponseFromXAI("task_agnes_123", payload, "agnes-video-v2.0")
+	if err != nil {
+		t.Fatalf("buildVideosRetrieveAPIResponseFromXAI() error = %v", err)
+	}
+
+	if got := gjson.GetBytes(out, "video_url").String(); got != "https://platform-outputs.agnes-ai.space/videos/agnes-video-v2.0/video_agnes_123.mp4" {
+		t.Fatalf("video_url = %q", got)
+	}
+}
+
 func TestBuildVideosRetrieveAPIResponseFromXAINormalizesTopLevelError(t *testing.T) {
 	payload := []byte(`{"code":"invalid-argument","error":"1080p video resolution is not available for your team."}`)
 
@@ -470,6 +483,18 @@ func TestXAIVideoContentURLFromPayload(t *testing.T) {
 
 func TestXAIVideoContentURLFromTopLevelURL(t *testing.T) {
 	payload := []byte(`{"status":"completed","url":"https://platform-outputs.agnes-ai.space/videos/agnes-video-v2.0/video_agnes_123.mp4"}`)
+
+	got, err := xaiVideoContentURLFromPayload(payload)
+	if err != nil {
+		t.Fatalf("xaiVideoContentURLFromPayload() error = %v", err)
+	}
+	if got != "https://platform-outputs.agnes-ai.space/videos/agnes-video-v2.0/video_agnes_123.mp4" {
+		t.Fatalf("url = %q", got)
+	}
+}
+
+func TestXAIVideoContentURLFromRemixedURL(t *testing.T) {
+	payload := []byte(`{"status":"completed","remixed_from_video_id":"https://platform-outputs.agnes-ai.space/videos/agnes-video-v2.0/video_agnes_123.mp4"}`)
 
 	got, err := xaiVideoContentURLFromPayload(payload)
 	if err != nil {

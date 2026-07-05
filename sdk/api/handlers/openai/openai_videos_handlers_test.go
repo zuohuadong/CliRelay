@@ -928,6 +928,20 @@ func TestVideoAuthBindingTTLUsesConfig(t *testing.T) {
 	}
 }
 
+func TestVideoAuthBindingPreservesUpstreamVideoID(t *testing.T) {
+	store := newVideoAuthBindingStore()
+	store.setWithModelAndUpstream("task_123", "auth-1", "agnes-video-v2.0", "video_abc", time.Hour)
+	store.setWithModel("task_123", "auth-1", "agnes-video-v2.0", time.Hour)
+
+	binding, ok := store.getBinding("task_123")
+	if !ok {
+		t.Fatal("binding was not stored")
+	}
+	if binding.upstreamVideoID != "video_abc" {
+		t.Fatalf("upstreamVideoID = %q, want video_abc", binding.upstreamVideoID)
+	}
+}
+
 func TestVideoAuthBindingStoreExpiresEntries(t *testing.T) {
 	store := newVideoAuthBindingStore()
 	store.entries["video-expired"] = videoAuthBinding{

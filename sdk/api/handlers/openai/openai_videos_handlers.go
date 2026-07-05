@@ -95,6 +95,11 @@ func (s *videoAuthBindingStore) setWithModelAndUpstream(videoID string, authID s
 	now := time.Now()
 	s.mu.Lock()
 	s.cleanupExpiredLocked(now)
+	if upstreamVideoID == "" {
+		if current, exists := s.entries[videoID]; exists {
+			upstreamVideoID = current.upstreamVideoID
+		}
+	}
 	s.entries[videoID] = videoAuthBinding{
 		authID:          authID,
 		model:           strings.TrimSpace(model),

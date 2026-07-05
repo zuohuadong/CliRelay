@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -155,8 +156,13 @@ func isXAIVideosModel(model string) bool {
 	return prefix == "" || prefix == "xai" || prefix == "x-ai" || prefix == "grok"
 }
 
+func isOpenAICompatVideosModel(model string) bool {
+	info := registry.LookupModelInfo(strings.TrimSpace(model))
+	return info != nil && info.Type == registry.OpenAIVideoModelType
+}
+
 func isSupportedVideosModel(model string) bool {
-	return isXAIVideosModel(model)
+	return isXAIVideosModel(model) || isOpenAICompatVideosModel(model)
 }
 
 func rejectUnsupportedVideosModel(c *gin.Context, model string) bool {
@@ -289,11 +295,11 @@ func (h *OpenAIAPIHandler) bindVideoAuthIDAndModelFromPayload(payload []byte, au
 	if videoID == "" {
 		return
 	}
-	videoAuthBindings.setWithModel(videoID, authID, canonicalXAIVideosModel(model), h.videoAuthBindingTTL())
+	videoAuthBindings.setWithModel(videoID, authID, canonicalVideoBindingModel(model), h.videoAuthBindingTTL())
 }
 
 func (h *OpenAIAPIHandler) bindVideoAuthID(videoID string, authID string, model string) {
-	videoAuthBindings.setWithModel(videoID, authID, canonicalXAIVideosModel(model), h.videoAuthBindingTTL())
+	videoAuthBindings.setWithModel(videoID, authID, canonicalVideoBindingModel(model), h.videoAuthBindingTTL())
 }
 
 func (h *OpenAIAPIHandler) contextWithVideoAuthBinding(ctx context.Context, videoID string) context.Context {
@@ -310,6 +316,13 @@ func (h *OpenAIAPIHandler) modelWithVideoAuthBinding(videoID string, fallbackMod
 		}
 	}
 	return fallbackModel
+}
+
+func canonicalVideoBindingModel(model string) string {
+	if isOpenAICompatVideosModel(model) {
+		return strings.TrimSpace(model)
+	}
+	return canonicalXAIVideosModel(model)
 }
 
 func buildXAIVideosCreateRequest(rawJSON []byte, model string) ([]byte, xaiVideoCreateMetadata, error) {
@@ -682,6 +695,11 @@ func (h *OpenAIAPIHandler) VideosCreate(c *gin.Context) {
 		return
 	}
 
+	if isOpenAICompatVideosModel(videoModel) {
+		h.collectOpenAICompatVideosCreate(c, rawJSON, videoModel)
+		return
+	}
+
 	xaiReq, meta, err := buildXAIVideosCreateRequest(rawJSON, videoModel)
 	if err != nil {
 		writeVideosFailedError(c, http.StatusBadRequest, videoModel, "invalid_request_error", fmt.Sprintf("Invalid request: %v", err))
@@ -973,6 +991,33 @@ func (h *OpenAIAPIHandler) collectXAIVideosNative(c *gin.Context, rawJSON []byte
 	} else {
 		h.bindVideoAuthID(videoID, selectedAuthID, executionModel)
 	}
+	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	_, _ = c.Writer.Write(resp)
+	cliCancel(nil)
+}
+
+func (h *OpenAIAPIHandler) collectOpenAICompatVideosCreate(c *gin.Context, rawJSON []byte, model string) {
+	c.Header("Content-Type", "application/json")
+
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	selectedAuthID := ""
+	cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
+		selectedAuthID = authID
+	})
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, xaiVideosHandlerType, model, rawJSON, "")
+	stopKeepAlive()
+	if errMsg != nil {
+		h.WriteErrorResponse(c, errMsg)
+		if errMsg.Error != nil {
+			cliCancel(errMsg.Error)
+		} else {
+			cliCancel(nil)
+		}
+		return
+	}
+
+	h.bindVideoAuthIDAndModelFromPayload(resp, selectedAuthID, model)
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(resp)
 	cliCancel(nil)

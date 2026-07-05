@@ -31,9 +31,14 @@ import (
 
 const (
 	openAICompatImageHandlerType            = "openai-image"
+	openAICompatVideoHandlerType            = "openai-video"
 	openAICompatImagesGenerationsPath       = "/images/generations"
 	openAICompatImagesEditsPath             = "/images/edits"
 	openAICompatDefaultImageEndpoint        = openAICompatImagesGenerationsPath
+	openAICompatVideosPath                  = "/videos"
+	openAICompatVideoGenerationsPath        = "/video/generations"
+	openAICompatVideosGenerationsPath       = "/videos/generations"
+	openAICompatDefaultVideoEndpoint        = openAICompatVideosPath
 	openAICompatMultipartMemory       int64 = 32 << 20
 )
 
@@ -100,6 +105,9 @@ func (e *OpenAICompatExecutor) applyMultimodalAdapter(ctx context.Context, paylo
 
 func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	if endpointPath := openAICompatImageEndpointPath(opts); endpointPath != "" {
+		return e.executeImages(ctx, auth, req, opts, endpointPath)
+	}
+	if endpointPath := openAICompatVideoEndpointPath(opts); endpointPath != "" {
 		return e.executeImages(ctx, auth, req, opts, endpointPath)
 	}
 
@@ -995,6 +1003,37 @@ func openAICompatImageEndpointPath(opts cliproxyexecutor.Options) string {
 		return openAICompatImagesGenerationsPath
 	}
 	return openAICompatDefaultImageEndpoint
+}
+
+func openAICompatVideoEndpointPath(opts cliproxyexecutor.Options) string {
+	if opts.SourceFormat.String() != openAICompatVideoHandlerType {
+		return ""
+	}
+	path := normalizedOpenAICompatEndpointPath(helps.PayloadRequestPath(opts))
+	if strings.HasSuffix(path, "/video/generations") {
+		return openAICompatVideoGenerationsPath
+	}
+	if strings.HasSuffix(path, "/videos/generations") {
+		return openAICompatVideosGenerationsPath
+	}
+	if strings.Contains(path, "/videos/") {
+		return strings.TrimPrefix(path, "/v1")
+	}
+	return openAICompatDefaultVideoEndpoint
+}
+
+func normalizedOpenAICompatEndpointPath(path string) string {
+	path = strings.TrimSpace(path)
+	for _, prefix := range []string{"/openai/v1", "/v1"} {
+		if strings.HasPrefix(path, prefix) {
+			path = strings.TrimPrefix(path, prefix)
+			if path == "" {
+				return "/"
+			}
+			return path
+		}
+	}
+	return path
 }
 
 func prepareOpenAICompatImagesPayload(payload []byte, model string, contentType string, stream bool) ([]byte, string, error) {

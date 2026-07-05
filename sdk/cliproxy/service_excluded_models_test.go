@@ -77,6 +77,7 @@ func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
 					BaseURL: "https://example.com/v1",
 					Models: []config.OpenAICompatibilityModel{
 						{Name: "upstream-image", Alias: "compat-image", Image: true},
+						{Name: "upstream-video", Alias: "compat-video", Video: true},
 						{Name: "upstream-chat", Alias: "compat-chat"},
 					},
 				},
@@ -104,6 +105,7 @@ func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
 
 	models := modelRegistry.GetModelsForClient(auth.ID)
 	var imageModel *internalregistry.ModelInfo
+	var videoModel *internalregistry.ModelInfo
 	var chatModel *internalregistry.ModelInfo
 	for _, model := range models {
 		if model == nil {
@@ -112,6 +114,8 @@ func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
 		switch strings.TrimSpace(model.ID) {
 		case "compat-image":
 			imageModel = model
+		case "compat-video":
+			videoModel = model
 		case "compat-chat":
 			chatModel = model
 		}
@@ -124,6 +128,15 @@ func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
 	}
 	if imageModel.Thinking != nil {
 		t.Fatalf("image model thinking = %+v, want nil", imageModel.Thinking)
+	}
+	if videoModel == nil {
+		t.Fatal("expected compat-video to be registered")
+	}
+	if videoModel.Type != internalregistry.OpenAIVideoModelType {
+		t.Fatalf("video model type = %q, want %q", videoModel.Type, internalregistry.OpenAIVideoModelType)
+	}
+	if videoModel.Thinking != nil {
+		t.Fatalf("video model thinking = %+v, want nil", videoModel.Thinking)
 	}
 	if chatModel == nil {
 		t.Fatal("expected compat-chat to be registered")

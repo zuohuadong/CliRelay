@@ -83,7 +83,29 @@ func GetAntigravityModels() []*ModelInfo {
 
 // GetBedrockModels returns the standard AWS Bedrock model definitions.
 func GetBedrockModels() []*ModelInfo {
-	return cloneModelInfos(getModels().Bedrock)
+	models := cloneModelInfos(getModels().Bedrock)
+	if len(models) > 0 {
+		return models
+	}
+	return cloneModelInfos(defaultBedrockModels)
+}
+
+var defaultBedrockModels = []*ModelInfo{
+	{
+		ID:                  "claude-sonnet-4-5",
+		Object:              "model",
+		Created:             1759104000,
+		OwnedBy:             "anthropic",
+		Type:                "bedrock",
+		DisplayName:         "Claude Sonnet 4.5 (Bedrock)",
+		ContextLength:       200000,
+		MaxCompletionTokens: 64000,
+		Thinking: &ThinkingSupport{
+			Min:         1024,
+			Max:         128000,
+			ZeroAllowed: true,
+		},
+	},
 }
 
 // GetOpenCodeGoModels returns the standard OpenCode Go plan model definitions.

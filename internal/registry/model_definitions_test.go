@@ -17,6 +17,27 @@ func TestWithXAIBuiltinsIncludesVideoPreviewModel(t *testing.T) {
 	t.Fatalf("expected xAI builtin model %s", xaiBuiltinVideo15PreviewModelID)
 }
 
+func TestGetBedrockModelsFallsBackWhenCatalogSectionIsEmpty(t *testing.T) {
+	modelsCatalogStore.mu.Lock()
+	previous := modelsCatalogStore.data
+	modelsCatalogStore.data = &staticModelsJSON{}
+	modelsCatalogStore.mu.Unlock()
+	t.Cleanup(func() {
+		modelsCatalogStore.mu.Lock()
+		modelsCatalogStore.data = previous
+		modelsCatalogStore.mu.Unlock()
+	})
+
+	models := GetBedrockModels()
+	if !hasModelInfoID(models, "claude-sonnet-4-5") {
+		t.Fatalf("expected fallback Bedrock model, got %+v", models)
+	}
+	models[0].ID = "mutated"
+	if hasModelInfoID(GetBedrockModels(), "mutated") {
+		t.Fatal("fallback Bedrock models should be cloned")
+	}
+}
+
 func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing.T) {
 	registryRef := GetGlobalRegistry()
 	registryRef.RegisterClient("test-antigravity-websearch-route", "antigravity", []*ModelInfo{

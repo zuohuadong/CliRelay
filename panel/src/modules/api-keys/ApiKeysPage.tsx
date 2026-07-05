@@ -59,6 +59,26 @@ function appendRoutePath(baseUrl: string, path: string): string {
   return `${normalizedBase}${normalizedPath}`;
 }
 
+const numberFromForm = (value: string) => {
+  const parsed = Number.parseFloat(value.trim());
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+};
+
+const toDateTimeLocalValue = (value: string | undefined) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.trim();
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+};
+
+const billingAnchorFromForm = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const date = new Date(trimmed);
+  return Number.isNaN(date.getTime()) ? trimmed : date.toISOString();
+};
+
 async function copyTextToClipboard(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);
@@ -107,6 +127,7 @@ export function ApiKeysPage() {
     usageViewKey,
     usageViewName,
     usageLoading,
+    usageBilling,
     usageTotalCount,
     usageCurrentPage,
     usagePageSize,
@@ -272,6 +293,8 @@ export function ApiKeysPage() {
       const newEntry: ApiKeyEntry = {
         key: form.key.trim(),
         name: form.name.trim(),
+        "monthly-spending-limit": numberFromForm(form.monthlySpendingLimit),
+        "billing-cycle-anchor": billingAnchorFromForm(form.billingCycleAnchor),
         "created-at": new Date().toISOString(),
       };
       const profiledEntry = applyApiKeyPermissionProfile(
@@ -303,6 +326,8 @@ export function ApiKeysPage() {
       dailyLimit: entry["daily-limit"]?.toString() || "",
       totalQuota: entry["total-quota"]?.toString() || "",
       spendingLimit: entry["spending-limit"]?.toString() || "",
+      monthlySpendingLimit: entry["monthly-spending-limit"]?.toString() || "",
+      billingCycleAnchor: toDateTimeLocalValue(entry["billing-cycle-anchor"]),
       concurrencyLimit: entry["concurrency-limit"]?.toString() || "",
       rpmLimit: entry["rpm-limit"]?.toString() || "",
       tpmLimit: entry["tpm-limit"]?.toString() || "",
@@ -335,12 +360,16 @@ export function ApiKeysPage() {
         value: {
           ...(newKey !== originalKey ? { key: newKey } : {}),
           name: form.name.trim(),
+          "monthly-spending-limit": numberFromForm(form.monthlySpendingLimit),
+          "billing-cycle-anchor": billingAnchorFromForm(form.billingCycleAnchor),
           ...(form.permissionProfileId === CUSTOM_PERMISSION_PROFILE_ID
             ? {
                 "permission-profile-id": entries[editIndex]["permission-profile-id"] ?? "",
                 "daily-limit": entries[editIndex]["daily-limit"] ?? 0,
                 "total-quota": entries[editIndex]["total-quota"] ?? 0,
                 "spending-limit": entries[editIndex]["spending-limit"] ?? 0,
+                "monthly-spending-limit": numberFromForm(form.monthlySpendingLimit),
+                "billing-cycle-anchor": billingAnchorFromForm(form.billingCycleAnchor),
                 "concurrency-limit": entries[editIndex]["concurrency-limit"] ?? 0,
                 "rpm-limit": entries[editIndex]["rpm-limit"] ?? 0,
                 "tpm-limit": entries[editIndex]["tpm-limit"] ?? 0,
@@ -563,7 +592,7 @@ export function ApiKeysPage() {
             rowHeight={44}
             height="h-[calc(100dvh-260px)] max-h-[70vh]"
             minHeight="min-h-[320px]"
-            minWidth="min-w-[1820px]"
+            minWidth="min-w-[1970px]"
             caption={t("api_keys_page.table_caption")}
             emptyText={t("api_keys_page.no_api_keys")}
             rowClassName={(row) => (row.disabled ? "opacity-50" : "")}
@@ -629,6 +658,7 @@ export function ApiKeysPage() {
         fetchUsageLogs={fetchUsageLogs}
         usagePageSize={usagePageSize}
         usageLoading={usageLoading}
+        usageBilling={usageBilling}
         usageLastUpdatedText={usageLastUpdatedText}
         usageChannelGroupQuery={usageChannelGroupQuery}
         setUsageChannelGroupQuery={setUsageChannelGroupQuery}

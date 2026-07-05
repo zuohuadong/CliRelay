@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
@@ -100,6 +101,24 @@ func APIKeyQuotaMiddleware() gin.HandlerFunc {
 							"message": "spending limit exceeded for this API key",
 							"type":    "quota_exceeded",
 							"code":    "spending_limit_exceeded",
+						},
+					})
+					return
+				}
+			}
+		}
+
+		if monthlySpendingLimitStr, ok := metadata["monthly-spending-limit"]; ok {
+			monthlySpendingLimit, _ := strconv.ParseFloat(monthlySpendingLimitStr, 64)
+			if monthlySpendingLimit > 0 {
+				cycleStart, cycleEnd := usage.CurrentMonthlyBillingCycle(metadata["billing-cycle-anchor"], time.Now().UTC())
+				_, _, cost := usage.APIKeyUsageBetween(apiKey, cycleStart, cycleEnd)
+				if cost >= monthlySpendingLimit {
+					c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+						"error": map[string]any{
+							"message": "monthly spending limit exceeded for this API key",
+							"type":    "quota_exceeded",
+							"code":    "monthly_spending_limit_exceeded",
 						},
 					})
 					return

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { usageApi } from "@/lib/http/apis";
 import type { ApiKeyEntry } from "@/lib/http/apis/api-keys";
-import type { UsageLogItem } from "@/lib/http/apis/usage";
+import type { ApiKeyBillingResponse, UsageLogItem } from "@/lib/http/apis/usage";
 import { useToast } from "@/modules/ui/ToastProvider";
 import {
   buildRequestLogsColumns,
@@ -46,6 +46,7 @@ export function useApiKeyUsageView({
   const [usageViewName, setUsageViewName] = useState("");
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageRawItems, setUsageRawItems] = useState<UsageLogItem[]>([]);
+  const [usageBilling, setUsageBilling] = useState<ApiKeyBillingResponse | null>(null);
   const [usageTotalCount, setUsageTotalCount] = useState(0);
   const [usageCurrentPage, setUsageCurrentPage] = useState(1);
   const [usagePageSize, setUsagePageSize] = useState(DEFAULT_REQUEST_LOG_PAGE_SIZE);
@@ -123,17 +124,21 @@ export function useApiKeyUsageView({
 
       try {
         const channelQuery = buildUsageChannelQuery(usageChannelQuery, usageChannelGroupQuery);
-        const result = await usageApi.getUsageLogs({
-          page,
-          size,
-          days: usageTimeRange,
-          api_key: usageViewKey,
-          model: usageModelQuery || undefined,
-          channel: channelQuery || undefined,
-          status: usageStatusFilter || undefined,
-        });
+        const [result, billing] = await Promise.all([
+          usageApi.getUsageLogs({
+            page,
+            size,
+            days: usageTimeRange,
+            api_key: usageViewKey,
+            model: usageModelQuery || undefined,
+            channel: channelQuery || undefined,
+            status: usageStatusFilter || undefined,
+          }),
+          usageApi.getApiKeyBilling(usageViewKey).catch(() => null),
+        ]);
 
         setUsageRawItems(result.items ?? []);
+        setUsageBilling(billing);
         setUsageTotalCount(result.total ?? 0);
         setUsageCurrentPage(page);
         setUsageFilterOptions({
@@ -166,6 +171,7 @@ export function useApiKeyUsageView({
 
   const resetUsageViewState = useCallback(() => {
     setUsageRawItems([]);
+    setUsageBilling(null);
     setUsageTotalCount(0);
     setUsageCurrentPage(1);
     setUsagePageSize(DEFAULT_REQUEST_LOG_PAGE_SIZE);
@@ -252,6 +258,7 @@ export function useApiKeyUsageView({
     usageViewKey,
     usageViewName,
     usageLoading,
+    usageBilling,
     usageTotalCount,
     usageCurrentPage,
     usagePageSize,

@@ -31,6 +31,8 @@ type panelAPIKeyEntry struct {
 	DailyLimit           int      `json:"daily-limit,omitempty"`
 	TotalQuota           int      `json:"total-quota,omitempty"`
 	SpendingLimit        float64  `json:"spending-limit,omitempty"`
+	MonthlySpendingLimit float64  `json:"monthly-spending-limit,omitempty"`
+	BillingCycleAnchor   string   `json:"billing-cycle-anchor,omitempty"`
 	ConcurrencyLimit     int      `json:"concurrency-limit,omitempty"`
 	RPMLimit             int      `json:"rpm-limit,omitempty"`
 	TPMLimit             int      `json:"tpm-limit,omitempty"`
@@ -917,6 +919,112 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 	}
 	defer func() { _ = db.Close() }()
 	c.JSON(http.StatusOK, buildUsageLogsPayload(db, usageFiltersFromQuery(c), false))
+}
+
+func (h *Handler) GetAPIKeyBilling(c *gin.Context) {
+	apiKey := strings.TrimSpace(c.Query("api_key"))
+	if apiKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing api_key"})
+		return
+	}
+
+	entry := panelAPIKeyEntry{Key: apiKey}
+	if h != nil {
+		if entries, _ := h.currentAPIKeyEntries(); len(entries) > 0 {
+			for _, candidate := range entries {
+				if strings.TrimSpace(candidate.Key) == apiKey {
+					entry = candidate
+					break
+				}
+			}
+		}
+	}
+
+	now := time.Now().UTC()
+	currentStart, currentEnd := usage.CurrentMonthlyBillingCycle(entry.BillingCycleAnchor, now)
+	limit := entry.MonthlySpendingLimit
+
+	db, ok := h.usageDB()
+	if !ok {
+		c.JSON(http.StatusOK, apiKeyBillingPayload(apiKey, entry, limit, currentStart, currentEnd, usageTotals{}, nil))
+		return
+	}
+	defer func() { _ = db.Close() }()
+
+	current := queryAPIKeyBillingTotals(db, apiKey, currentStart, currentEnd)
+	history := make([]gin.H, 0, 6)
+	start := currentStart
+	end := currentEnd
+	for i := 0; i < 6; i++ {
+		totals := queryAPIKeyBillingTotals(db, apiKey, start, end)
+		history = append(history, apiKeyBillingCyclePayload(limit, start, end, totals))
+		end = start
+		start = start.AddDate(0, -1, 0)
+	}
+
+	c.JSON(http.StatusOK, apiKeyBillingPayload(apiKey, entry, limit, currentStart, currentEnd, current, history))
+}
+
+func apiKeyBillingPayload(apiKey string, entry panelAPIKeyEntry, limit float64, currentStart, currentEnd time.Time, current usageTotals, history []gin.H) gin.H {
+	if history == nil {
+		history = []gin.H{}
+	}
+	return gin.H{
+		"api_key":                  apiKey,
+		"name":                     entry.Name,
+		"monthly_spending_limit":   limit,
+		"billing_cycle_anchor":     strings.TrimSpace(entry.BillingCycleAnchor),
+		"current_cycle":            apiKeyBillingCyclePayload(limit, currentStart, currentEnd, current),
+		"history":                  history,
+		"billing_cycle_mode":       "monthly",
+		"billing_cycle_owner":      "api_key",
+		"billing_cycle_owner_note": "This v7 compatibility build stores the billing anchor on the API key entry.",
+	}
+}
+
+func apiKeyBillingCyclePayload(limit float64, start, end time.Time, totals usageTotals) gin.H {
+	remaining := 0.0
+	if limit > 0 {
+		remaining = limit - totals.TotalCost
+		if remaining < 0 {
+			remaining = 0
+		}
+	}
+	return gin.H{
+		"start":         start.UTC().Format(time.RFC3339),
+		"end":           end.UTC().Format(time.RFC3339),
+		"request_count": totals.Total,
+		"success_count": totals.Success,
+		"failed_count":  totals.Failed,
+		"total_tokens":  totals.TotalTokens,
+		"total_cost":    totals.TotalCost,
+		"limit":         limit,
+		"remaining":     remaining,
+		"exceeded":      limit > 0 && totals.TotalCost >= limit,
+	}
+}
+
+func queryAPIKeyBillingTotals(db *sql.DB, apiKey string, start, end time.Time) usageTotals {
+	if db == nil || !dbTableExists(db, "request_logs") {
+		return usageTotals{}
+	}
+	cols := requestLogColumns(db)
+	if !cols["api_key"] || !cols["timestamp"] {
+		return usageTotals{}
+	}
+	row := db.QueryRow(`
+		SELECT count(*),
+		       coalesce(sum(case when `+usageColumnExpr(cols, "failed", "0")+`=0 then 1 else 0 end),0),
+		       coalesce(sum(case when `+usageColumnExpr(cols, "failed", "0")+`!=0 then 1 else 0 end),0),
+		       coalesce(sum(`+usageColumnExpr(cols, "total_tokens", "0")+`),0),
+		       coalesce(sum(case when `+usageColumnExpr(cols, "failed", "0")+`=0 then `+usageColumnExpr(cols, "cost", "0")+` else 0 end),0)
+		FROM request_logs
+		WHERE api_key = ? AND timestamp >= ? AND timestamp < ?`,
+		apiKey, start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano),
+	)
+	var totals usageTotals
+	_ = row.Scan(&totals.Total, &totals.Success, &totals.Failed, &totals.TotalTokens, &totals.TotalCost)
+	return totals
 }
 
 func (h *Handler) GetPublicUsageLogs(c *gin.Context) {
@@ -2003,7 +2111,7 @@ func (h *Handler) apiKeyEntriesFromDB() ([]panelAPIKeyEntry, bool) {
 	if apiKeysDBHasColumn(db, "permission_profile_id") {
 		selectPermissionProfile = "permission_profile_id"
 	}
-	rows, err := db.Query(`select key, name, disabled, daily_limit, total_quota, spending_limit, concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, ` + selectPermissionProfile + ` from api_keys order by created_at, key`)
+	rows, err := db.Query(`select key, name, disabled, daily_limit, total_quota, spending_limit, monthly_spending_limit, billing_cycle_anchor, concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, ` + selectPermissionProfile + ` from api_keys order by created_at, key`)
 	if err != nil {
 		return nil, false
 	}
@@ -2021,6 +2129,8 @@ func (h *Handler) apiKeyEntriesFromDB() ([]panelAPIKeyEntry, bool) {
 			&entry.DailyLimit,
 			&entry.TotalQuota,
 			&entry.SpendingLimit,
+			&entry.MonthlySpendingLimit,
+			&entry.BillingCycleAnchor,
 			&entry.ConcurrencyLimit,
 			&entry.RPMLimit,
 			&entry.TPMLimit,
@@ -2065,6 +2175,8 @@ func (h *Handler) replaceAPIKeyEntriesInDB(entries []panelAPIKeyEntry) error {
 		daily_limit integer not null default 0,
 		total_quota integer not null default 0,
 		spending_limit real not null default 0,
+		monthly_spending_limit real not null default 0,
+		billing_cycle_anchor text not null default '',
 		concurrency_limit integer not null default 0,
 		rpm_limit integer not null default 0,
 		tpm_limit integer not null default 0,
@@ -2088,9 +2200,9 @@ func (h *Handler) replaceAPIKeyEntriesInDB(entries []panelAPIKeyEntry) error {
 		return err
 	}
 	stmt, err := tx.Prepare(`insert into api_keys (
-		key, name, disabled, daily_limit, total_quota, spending_limit, concurrency_limit, rpm_limit, tpm_limit,
+		key, name, disabled, daily_limit, total_quota, spending_limit, monthly_spending_limit, billing_cycle_anchor, concurrency_limit, rpm_limit, tpm_limit,
 		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at, permission_profile_id
-	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -2121,6 +2233,8 @@ func (h *Handler) replaceAPIKeyEntriesInDB(entries []panelAPIKeyEntry) error {
 			entry.DailyLimit,
 			entry.TotalQuota,
 			entry.SpendingLimit,
+			entry.MonthlySpendingLimit,
+			strings.TrimSpace(entry.BillingCycleAnchor),
 			entry.ConcurrencyLimit,
 			entry.RPMLimit,
 			entry.TPMLimit,

@@ -67,6 +67,44 @@ export function ApiKeyFormFields({
           {t("api_keys_page.form_permission_profile_desc")}
         </p>
       </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-white/80">
+            {t("api_keys_page.form_monthly_spending_limit")}
+          </label>
+          <TextInput
+            type="number"
+            min="0"
+            step="0.01"
+            value={form.monthlySpendingLimit}
+            onChange={(e) =>
+              setForm((prev) => ({ ...prev, monthlySpendingLimit: e.target.value }))
+            }
+            placeholder={t("api_keys_page.form_unlimited_hint")}
+          />
+          <p className="mt-1 text-xs text-slate-400 dark:text-white/40">
+            {t("api_keys_page.form_monthly_spending_limit_desc")}
+          </p>
+        </div>
+
+        <div>
+          <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-white/80">
+            {t("api_keys_page.form_billing_cycle_anchor")}
+          </label>
+          <TextInput
+            type="datetime-local"
+            value={form.billingCycleAnchor}
+            onChange={(e) =>
+              setForm((prev) => ({ ...prev, billingCycleAnchor: e.target.value }))
+            }
+            placeholder="2026-07-18T10:30"
+          />
+          <p className="mt-1 text-xs text-slate-400 dark:text-white/40">
+            {t("api_keys_page.form_billing_cycle_anchor_desc")}
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

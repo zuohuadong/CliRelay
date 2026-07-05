@@ -21,6 +21,8 @@ type APIKeyRow struct {
 	DailyLimit           int      `json:"daily-limit,omitempty"`
 	TotalQuota           int      `json:"total-quota,omitempty"`
 	SpendingLimit        float64  `json:"spending-limit,omitempty"`
+	MonthlySpendingLimit float64  `json:"monthly-spending-limit,omitempty"`
+	BillingCycleAnchor   string   `json:"billing-cycle-anchor,omitempty"`
 	ConcurrencyLimit     int      `json:"concurrency-limit,omitempty"`
 	RPMLimit             int      `json:"rpm-limit,omitempty"`
 	TPMLimit             int      `json:"tpm-limit,omitempty"`
@@ -41,6 +43,8 @@ var apiKeysTableColumns = []struct {
 	{"daily_limit", "integer not null default 0"},
 	{"total_quota", "integer not null default 0"},
 	{"spending_limit", "real not null default 0"},
+	{"monthly_spending_limit", "real not null default 0"},
+	{"billing_cycle_anchor", "text not null default ''"},
 	{"concurrency_limit", "integer not null default 0"},
 	{"rpm_limit", "integer not null default 0"},
 	{"tpm_limit", "integer not null default 0"},
@@ -66,6 +70,8 @@ func initAPIKeysTable(db *sql.DB) {
 		daily_limit integer not null default 0,
 		total_quota integer not null default 0,
 		spending_limit real not null default 0,
+		monthly_spending_limit real not null default 0,
+		billing_cycle_anchor text not null default '',
 		concurrency_limit integer not null default 0,
 		rpm_limit integer not null default 0,
 		tpm_limit integer not null default 0,
@@ -122,7 +128,7 @@ func ListAPIKeys() []APIKeyRow {
 		selectPermissionProfile = "permission_profile_id"
 	}
 
-	rows, err := db.Query(`select key, name, disabled, daily_limit, total_quota, spending_limit, concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, ` + selectPermissionProfile + ` from api_keys order by created_at, key`)
+	rows, err := db.Query(`select key, name, disabled, daily_limit, total_quota, spending_limit, monthly_spending_limit, billing_cycle_anchor, concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, ` + selectPermissionProfile + ` from api_keys order by created_at, key`)
 	if err != nil {
 		log.Errorf("usage: list api keys: %v", err)
 		return nil
@@ -137,6 +143,7 @@ func ListAPIKeys() []APIKeyRow {
 		if errScan := rows.Scan(
 			&r.Key, &r.Name, &disabled,
 			&r.DailyLimit, &r.TotalQuota, &r.SpendingLimit,
+			&r.MonthlySpendingLimit, &r.BillingCycleAnchor,
 			&r.ConcurrencyLimit, &r.RPMLimit, &r.TPMLimit,
 			&modelsRaw, &channelsRaw, &groupsRaw,
 			&r.SystemPrompt, &r.CreatedAt, &r.PermissionProfileID,
@@ -190,6 +197,100 @@ func APIKeyTotalUsage(apiKey string) (requestCount int, tokenCount int, cost flo
 		log.Errorf("usage: query total usage for api key: %v", err)
 	}
 	return
+}
+
+func APIKeyUsageBetween(apiKey string, start, end time.Time) (requestCount int, tokenCount int, cost float64) {
+	db := getDB()
+	if db == nil {
+		return 0, 0, 0
+	}
+	start = start.UTC()
+	end = end.UTC()
+	if end.IsZero() || !end.After(start) {
+		end = timeNowUTC()
+	}
+	err := db.QueryRow(`
+		SELECT COALESCE(COUNT(*),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost),0)
+		FROM request_logs
+		WHERE api_key = ? AND timestamp >= ? AND timestamp < ? AND failed = 0`,
+		strings.TrimSpace(apiKey), start.Format(time.RFC3339Nano), end.Format(time.RFC3339Nano),
+	).Scan(&requestCount, &tokenCount, &cost)
+	if err != nil && err != sql.ErrNoRows {
+		log.Errorf("usage: query billing-cycle usage for api key: %v", err)
+	}
+	return
+}
+
+func CurrentMonthlyBillingCycle(anchorRaw string, now time.Time) (time.Time, time.Time) {
+	now = now.UTC()
+	if now.IsZero() {
+		now = timeNowUTC()
+	}
+	anchor, err := parseBillingCycleAnchor(anchorRaw)
+	if err != nil || anchor.IsZero() {
+		start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+		return start, start.AddDate(0, 1, 0)
+	}
+	if now.Before(anchor) {
+		return anchor, addMonthsClamped(anchor, 1)
+	}
+	months := (now.Year()-anchor.Year())*12 + int(now.Month()-anchor.Month())
+	start := addMonthsClamped(anchor, months)
+	for start.After(now) {
+		months--
+		start = addMonthsClamped(anchor, months)
+	}
+	end := addMonthsClamped(anchor, months+1)
+	for !end.After(now) {
+		months++
+		start = end
+		end = addMonthsClamped(anchor, months+1)
+	}
+	return start, end
+}
+
+func parseBillingCycleAnchor(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, sql.ErrNoRows
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return ts.UTC(), nil
+	}
+	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+		return ts.UTC(), nil
+	}
+	if ts, err := time.Parse("2006-01-02T15:04", raw); err == nil {
+		return ts.UTC(), nil
+	}
+	if ts, err := time.Parse("2006-01-02", raw); err == nil {
+		return ts.UTC(), nil
+	}
+	return time.Time{}, sql.ErrNoRows
+}
+
+func addMonthsClamped(anchor time.Time, months int) time.Time {
+	anchor = anchor.UTC()
+	year := anchor.Year()
+	month := int(anchor.Month()) + months
+	for month > 12 {
+		year++
+		month -= 12
+	}
+	for month < 1 {
+		year--
+		month += 12
+	}
+	day := anchor.Day()
+	maxDay := daysInMonth(year, time.Month(month))
+	if day > maxDay {
+		day = maxDay
+	}
+	return time.Date(year, time.Month(month), day, anchor.Hour(), anchor.Minute(), anchor.Second(), anchor.Nanosecond(), time.UTC)
+}
+
+func daysInMonth(year int, month time.Month) int {
+	return time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
 }
 
 func APIKeyRPMCount(apiKey string) int {

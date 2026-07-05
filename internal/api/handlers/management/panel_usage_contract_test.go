@@ -346,6 +346,38 @@ func TestAuthFileTrendUsesRequestLogsByAuthIndex(t *testing.T) {
 	}
 }
 
+func TestAPIKeyBillingReturnsCurrentCycleAndHistory(t *testing.T) {
+	h := newUsageContractTestHandler(t)
+	_, _ = h.currentAPIKeyEntries()
+	db, ok := h.openAPIKeysDB()
+	if !ok {
+		t.Fatal("open api keys db")
+	}
+	anchor := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
+	if _, err := db.Exec(`update api_keys set monthly_spending_limit = ?, billing_cycle_anchor = ? where key = ?`, 1.0, anchor, "sk-a"); err != nil {
+		t.Fatalf("update api key billing fields: %v", err)
+	}
+	_ = db.Close()
+
+	status, payload := performUsageContractRequest(t, http.MethodGet, "/v0/management/api-key-billing?api_key=sk-a", nil, nil, h.GetAPIKeyBilling)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	current := payload["current_cycle"].(map[string]any)
+	if current["request_count"].(float64) != 2 || current["success_count"].(float64) != 1 {
+		t.Fatalf("unexpected current cycle counts: %#v", current)
+	}
+	if current["total_cost"].(float64) != 0.12 || current["remaining"].(float64) != 0.88 {
+		t.Fatalf("unexpected current cycle cost: %#v", current)
+	}
+	if payload["monthly_spending_limit"].(float64) != 1.0 || payload["billing_cycle_anchor"].(string) != anchor {
+		t.Fatalf("unexpected billing metadata: %#v", payload)
+	}
+	if len(payload["history"].([]any)) == 0 {
+		t.Fatalf("history should be populated: %#v", payload)
+	}
+}
+
 func TestPublicUsageSummaryContract(t *testing.T) {
 	h := newUsageContractTestHandler(t)
 	status, payload := performUsageContractRequest(t, http.MethodPost, "/v0/management/public/usage", []byte(`{"api_key":"sk-a","days":7}`), nil, h.GetPublicUsageSummary)

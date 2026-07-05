@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
@@ -49,6 +50,49 @@ func TestSqliteSinkComputesCostFromActualModel(t *testing.T) {
 	}
 	// input: 1000/1M * 0.5 = 0.0005, output: 500/1M * 1.5 = 0.00075 => 0.00125
 	expected := 0.00125
+	if cost < expected-0.0000001 || cost > expected+0.0000001 {
+		t.Fatalf("cost = %f, want %f", cost, expected)
+	}
+}
+
+func TestSqliteSinkAppliesChannelBillingMultiplier(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_usage.db")
+	defaultSink.SetPath(dbPath)
+	SetChannelBillingMultipliersFromConfig(&config.Config{
+		BigModelCodingAPIKey: []config.OpenAICompatibility{{
+			Name:              config.DefaultBigModelCodingProviderName,
+			BillingMultiplier: 0.5,
+		}},
+	})
+	t.Cleanup(func() {
+		SetChannelBillingMultipliersFromConfig(nil)
+	})
+
+	db := getDB()
+	if db == nil {
+		t.Fatal("expected non-nil db")
+	}
+	EnsureModelPricesTable(db)
+	if err := SetModelPrice(ModelPriceRow{
+		Model:           "glm-5.1",
+		Mode:            "token",
+		InputPricePerM:  1,
+		OutputPricePerM: 1,
+	}); err != nil {
+		t.Fatalf("SetModelPrice: %v", err)
+	}
+
+	defaultSink.HandleUsage(context.Background(), coreusage.Record{
+		Provider: config.DefaultBigModelCodingProviderName,
+		Model:    "glm-5.1",
+		Detail:   coreusage.Detail{InputTokens: 1000, OutputTokens: 1000, TotalTokens: 2000},
+	})
+
+	var cost float64
+	if err := db.QueryRow(`SELECT cost FROM request_logs ORDER BY id DESC LIMIT 1`).Scan(&cost); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	expected := 0.001
 	if cost < expected-0.0000001 || cost > expected+0.0000001 {
 		t.Fatalf("cost = %f, want %f", cost, expected)
 	}

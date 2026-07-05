@@ -1662,6 +1662,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	internalusage.RegisterSQLiteSink(internalusage.SQLiteDBPathForConfig(s.configPath))
+	internalusage.SetChannelBillingMultipliersFromConfig(s.cfg)
 	usage.StartDefault(ctx)
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {

@@ -103,6 +103,7 @@ export type ProviderKeyDraft = {
   sessionToken: string;
   region: string;
   forceGlobal: boolean;
+  billingMultiplierText: string;
   prefix: string;
   baseUrl: string;
   proxyUrl: string;
@@ -192,6 +193,8 @@ export const buildProviderKeyDraft = (
     sessionToken: bedrockInput?.sessionToken ?? "",
     region: bedrockInput?.region ?? "us-east-1",
     forceGlobal: bedrockInput?.forceGlobal ?? false,
+    billingMultiplierText:
+      input?.billingMultiplier !== undefined ? String(input.billingMultiplier) : "",
     prefix: input?.prefix ?? "",
     baseUrl: input?.baseUrl ?? "",
     proxyUrl: input?.proxyUrl ?? "",
@@ -208,6 +211,7 @@ export type OpenAIDraft = {
   disabled: boolean;
   baseUrl: string;
   prefix: string;
+  billingMultiplierText: string;
   headersEntries: KeyValueEntry[];
   priorityText: string;
   testModel: string;
@@ -229,6 +233,8 @@ export const buildOpenAIDraft = (input?: OpenAIProvider | null): OpenAIDraft => 
   disabled: input?.disabled === true,
   baseUrl: input?.baseUrl ?? "",
   prefix: input?.prefix ?? "",
+  billingMultiplierText:
+    input?.billingMultiplier !== undefined ? String(input.billingMultiplier) : "",
   headersEntries: recordToKeyValueEntries(input?.headers),
   priorityText: input?.priority !== undefined ? String(input.priority) : "",
   testModel: input?.testModel ?? "",

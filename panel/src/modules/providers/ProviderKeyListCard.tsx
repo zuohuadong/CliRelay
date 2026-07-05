@@ -190,6 +190,11 @@ export function ProviderKeyListCard({
                         {t("providers.models_label")}: {models.length} ·{" "}
                         {t("providers.excluded_models_label")}: {excludedModels.length} ·{" "}
                         {t("providers.headers_optional")}: {headerEntries.length} ·{" "}
+                        {t("providers.billing_multiplier_label")}:{" "}
+                        {item.billingMultiplier && item.billingMultiplier !== 1
+                          ? `${item.billingMultiplier}x`
+                          : "1x"}{" "}
+                        ·{" "}
                         {t("providers.success_stats", { count: stats.success })} ·{" "}
                         {t("providers.failed_stats", { count: stats.failure })}
                       </p>

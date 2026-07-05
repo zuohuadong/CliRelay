@@ -152,6 +152,32 @@ export const createApiKeyColumns = ({
     ),
   },
   {
+    key: "monthlySpendingLimit",
+    label: t("api_keys_page.col_monthly_spending_limit"),
+    width: "w-[148px] min-w-[148px]",
+    cellClassName: "whitespace-nowrap text-slate-700 dark:text-white/70",
+    headerRender: () => (
+      <HoverTooltip
+        content={t("api_keys_page.monthly_spending_limit_help")}
+        className="inline-flex items-center gap-1"
+      >
+        <span>{t("api_keys_page.col_monthly_spending_limit")}</span>
+        <Info size={12} className="text-slate-400 dark:text-white/40" />
+      </HoverTooltip>
+    ),
+    render: (row) => (
+      <span className="inline-flex items-center gap-1">
+        {!row["monthly-spending-limit"] ? (
+          <>
+            <InfinityIcon size={14} className="text-green-500" /> {t("api_keys_page.unlimited")}
+          </>
+        ) : (
+          formatApiKeySpendingLimit(row["monthly-spending-limit"])
+        )}
+      </span>
+    ),
+  },
+  {
     key: "rpmLimit",
     label: "RPM",
     width: "w-[108px] min-w-[108px]",

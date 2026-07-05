@@ -119,6 +119,16 @@ export function useProviderKeyEditor({
     }
 
     const headers = keyValueEntriesToRecord(keyDraft.headersEntries);
+    const billingMultiplierText = keyDraft.billingMultiplierText.trim();
+    const billingMultiplier =
+      billingMultiplierText !== "" ? Number(billingMultiplierText) : undefined;
+    if (
+      billingMultiplier !== undefined &&
+      (!Number.isFinite(billingMultiplier) || billingMultiplier <= 0)
+    ) {
+      setKeyDraftError(t("providers.billing_multiplier_error"));
+      return null;
+    }
     const excludedModels = keyDraft.excludedModelsText.trim()
       ? excludedModelsFromText(keyDraft.excludedModelsText)
       : undefined;
@@ -135,6 +145,9 @@ export function useProviderKeyEditor({
       apiKey:
         editKeyType === "bedrock" && keyDraft.authMode === "sigv4" ? bedrockAccessKeyId : apiKey,
       name,
+      ...(billingMultiplier !== undefined && billingMultiplier !== 1
+        ? { billingMultiplier }
+        : {}),
       ...(keyDraft.prefix.trim() ? { prefix: keyDraft.prefix.trim() } : {}),
       ...(!isOpenCodeGo && keyDraft.baseUrl.trim() ? { baseUrl: keyDraft.baseUrl.trim() } : {}),
       ...(keyDraft.proxyUrl.trim() ? { proxyUrl: keyDraft.proxyUrl.trim() } : {}),

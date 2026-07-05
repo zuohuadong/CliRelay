@@ -163,7 +163,7 @@ export function OpenAIProviderModal({
           </div>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
+        <div className="grid gap-3 md:grid-cols-4">
           <div className="space-y-2">
             <p className="text-sm font-semibold text-slate-900 dark:text-white">
               {t("providers.prefix_optional")}
@@ -190,6 +190,23 @@ export function OpenAIProviderModal({
               placeholder={t("providers.priority_placeholder")}
               inputMode="numeric"
             />
+          </div>
+          <div className="space-y-2">
+            <p className="text-sm font-semibold text-slate-900 dark:text-white">
+              {t("providers.billing_multiplier_label")}
+            </p>
+            <TextInput
+              value={openaiDraft.billingMultiplierText}
+              onChange={(e) => {
+                const value = e.currentTarget.value;
+                setOpenaiDraft((prev) => ({ ...prev, billingMultiplierText: value }));
+              }}
+              placeholder={t("providers.billing_multiplier_placeholder")}
+              inputMode="decimal"
+            />
+            <p className="text-xs text-slate-500 dark:text-white/55">
+              {t("providers.billing_multiplier_hint")}
+            </p>
           </div>
           <div className="space-y-2">
             <p className="text-sm font-semibold text-slate-900 dark:text-white">

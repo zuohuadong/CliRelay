@@ -50,6 +50,8 @@ func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 			dailyLimit:           row.DailyLimit,
 			totalQuota:           row.TotalQuota,
 			spendingLimit:        row.SpendingLimit,
+			monthlySpendingLimit: row.MonthlySpendingLimit,
+			billingCycleAnchor:   row.BillingCycleAnchor,
 			concurrencyLimit:     row.ConcurrencyLimit,
 			rpmLimit:             row.RPMLimit,
 			tpmLimit:             row.TPMLimit,
@@ -78,6 +80,8 @@ type keyConfig struct {
 	dailyLimit           int
 	totalQuota           int
 	spendingLimit        float64
+	monthlySpendingLimit float64
+	billingCycleAnchor   string
 	concurrencyLimit     int
 	rpmLimit             int
 	tpmLimit             int
@@ -172,6 +176,12 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 			}
 			if kc.spendingLimit > 0 {
 				metadata["spending-limit"] = fmt.Sprintf("%f", kc.spendingLimit)
+			}
+			if kc.monthlySpendingLimit > 0 {
+				metadata["monthly-spending-limit"] = fmt.Sprintf("%f", kc.monthlySpendingLimit)
+			}
+			if strings.TrimSpace(kc.billingCycleAnchor) != "" {
+				metadata["billing-cycle-anchor"] = strings.TrimSpace(kc.billingCycleAnchor)
 			}
 			if kc.systemPrompt != "" {
 				metadata["system-prompt"] = kc.systemPrompt

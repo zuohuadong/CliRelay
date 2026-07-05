@@ -53,6 +53,7 @@ func (h *Handler) PatchAstronCodeKey(c *gin.Context) {
 		Prefix              *string                             `json:"prefix"`
 		Priority            *int                                `json:"priority"`
 		Disabled            *bool                               `json:"disabled"`
+		BillingMultiplier   *float64                            `json:"billing-multiplier"`
 		BaseURL             *string                             `json:"base-url"`
 		TestModel           *string                             `json:"test-model"`
 		APIKeyEntries       *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
@@ -60,7 +61,7 @@ func (h *Handler) PatchAstronCodeKey(c *gin.Context) {
 		Headers             *map[string]string                  `json:"headers"`
 		IdentityFingerprint *string                             `json:"identity-fingerprint"`
 		DisableCooling      *bool                               `json:"disable-cooling"`
-		ResponseEndpoint   *bool                               `json:"response-endpoint"`
+		ResponseEndpoint    *bool                               `json:"response-endpoint"`
 	}
 	var body struct {
 		Value *astronCodePatch `json:"value"`
@@ -99,6 +100,9 @@ func (h *Handler) PatchAstronCodeKey(c *gin.Context) {
 	}
 	if body.Value.Disabled != nil {
 		entry.Disabled = *body.Value.Disabled
+	}
+	if body.Value.BillingMultiplier != nil {
+		entry.BillingMultiplier = *body.Value.BillingMultiplier
 	}
 	if body.Value.BaseURL != nil {
 		entry.BaseURL = strings.TrimSpace(*body.Value.BaseURL)

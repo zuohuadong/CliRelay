@@ -73,6 +73,16 @@ export function useOpenAIProviderEditor({
     }
 
     const headers = keyValueEntriesToRecord(openaiDraft.headersEntries);
+    const billingMultiplierText = openaiDraft.billingMultiplierText.trim();
+    const billingMultiplier =
+      billingMultiplierText !== "" ? Number(billingMultiplierText) : undefined;
+    if (
+      billingMultiplier !== undefined &&
+      (!Number.isFinite(billingMultiplier) || billingMultiplier <= 0)
+    ) {
+      setOpenaiDraftError(t("providers.billing_multiplier_error"));
+      return null;
+    }
     const priorityText = openaiDraft.priorityText.trim();
     const priority = priorityText !== "" ? Number(priorityText) : undefined;
     if (priority !== undefined && !Number.isFinite(priority)) {
@@ -108,6 +118,9 @@ export function useOpenAIProviderEditor({
     return {
       name,
       ...(openaiDraft.disabled ? { disabled: true } : {}),
+      ...(billingMultiplier !== undefined && billingMultiplier !== 1
+        ? { billingMultiplier }
+        : {}),
       baseUrl,
       ...(openaiDraft.prefix.trim() ? { prefix: openaiDraft.prefix.trim() } : {}),
       ...(headers ? { headers } : {}),

@@ -395,6 +395,26 @@ export function ProviderKeyModal({
             </SectionCard>
 
             <SectionCard>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                {t("providers.billing_multiplier_label")}
+              </p>
+              <div className="mt-2 max-w-xs">
+                <TextInput
+                  value={keyDraft.billingMultiplierText}
+                  onChange={(e) => {
+                    const value = e.currentTarget.value;
+                    setKeyDraft((prev) => ({ ...prev, billingMultiplierText: value }));
+                  }}
+                  placeholder={t("providers.billing_multiplier_placeholder")}
+                  inputMode="decimal"
+                />
+              </div>
+              <p className="mt-2 text-xs text-slate-500 dark:text-white/55">
+                {t("providers.billing_multiplier_hint")}
+              </p>
+            </SectionCard>
+
+            <SectionCard>
               <ToggleSwitch
                 label={t("providers.enable")}
                 description={

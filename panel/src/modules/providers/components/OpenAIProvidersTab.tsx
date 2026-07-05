@@ -207,6 +207,13 @@ export function OpenAIProvidersTab({
                         {t("providers.models_label")}: {provider.models?.length ?? 0}
                       </span>
                       <span>·</span>
+                      <span>
+                        {t("providers.billing_multiplier_label")}:{" "}
+                        {provider.billingMultiplier && provider.billingMultiplier !== 1
+                          ? `${provider.billingMultiplier}x`
+                          : "1x"}
+                      </span>
+                      <span>·</span>
                       <span>{t("providers.success_stats", { count: stats.success })}</span>
                       <span>·</span>
                       <span>{t("providers.failed_stats", { count: stats.failure })}</span>

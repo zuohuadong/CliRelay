@@ -34,6 +34,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
@@ -336,6 +337,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 	applySignatureCacheConfig(nil, cfg)
+	internalusage.SetChannelBillingMultipliersFromConfig(cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
@@ -737,6 +739,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/api-key-entries", s.mgmt.DeleteAPIKeyEntries)
 		mgmt.GET("/api-key-permission-profiles", s.mgmt.GetAPIKeyPermissionProfiles)
 		mgmt.PUT("/api-key-permission-profiles", s.mgmt.PutAPIKeyPermissionProfiles)
+		mgmt.GET("/api-key-billing", s.mgmt.GetAPIKeyBilling)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 
@@ -1895,6 +1898,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	}
 
 	applySignatureCacheConfig(oldCfg, cfg)
+	internalusage.SetChannelBillingMultipliersFromConfig(cfg)
 
 	if s.handlers != nil && s.handlers.AuthManager != nil {
 		s.handlers.AuthManager.SetConfig(cfg)

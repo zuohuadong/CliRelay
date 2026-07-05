@@ -147,12 +147,13 @@ func (h *Handler) PutGeminiKeys(c *gin.Context) {
 }
 func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	type geminiKeyPatch struct {
-		APIKey         *string            `json:"api-key"`
-		Prefix         *string            `json:"prefix"`
-		BaseURL        *string            `json:"base-url"`
-		ProxyURL       *string            `json:"proxy-url"`
-		Headers        *map[string]string `json:"headers"`
-		ExcludedModels *[]string          `json:"excluded-models"`
+		APIKey            *string            `json:"api-key"`
+		Prefix            *string            `json:"prefix"`
+		BillingMultiplier *float64           `json:"billing-multiplier"`
+		BaseURL           *string            `json:"base-url"`
+		ProxyURL          *string            `json:"proxy-url"`
+		Headers           *map[string]string `json:"headers"`
+		ExcludedModels    *[]string          `json:"excluded-models"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -199,6 +200,9 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
+	}
+	if body.Value.BillingMultiplier != nil {
+		entry.BillingMultiplier = *body.Value.BillingMultiplier
 	}
 	if body.Value.BaseURL != nil {
 		entry.BaseURL = strings.TrimSpace(*body.Value.BaseURL)
@@ -309,6 +313,7 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	type claudeKeyPatch struct {
 		APIKey                  *string               `json:"api-key"`
 		Prefix                  *string               `json:"prefix"`
+		BillingMultiplier       *float64              `json:"billing-multiplier"`
 		BaseURL                 *string               `json:"base-url"`
 		ProxyURL                *string               `json:"proxy-url"`
 		Models                  *[]config.ClaudeModel `json:"models"`
@@ -352,6 +357,9 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
+	}
+	if body.Value.BillingMultiplier != nil {
+		entry.BillingMultiplier = *body.Value.BillingMultiplier
 	}
 	if body.Value.BaseURL != nil {
 		entry.BaseURL = strings.TrimSpace(*body.Value.BaseURL)
@@ -490,6 +498,7 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		Prefix              *string                             `json:"prefix"`
 		Priority            *int                                `json:"priority"`
 		Disabled            *bool                               `json:"disabled"`
+		BillingMultiplier   *float64                            `json:"billing-multiplier"`
 		BaseURL             *string                             `json:"base-url"`
 		TestModel           *string                             `json:"test-model"`
 		APIKeyEntries       *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
@@ -553,6 +562,9 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	}
 	if body.Value.Disabled != nil {
 		entry.Disabled = *body.Value.Disabled
+	}
+	if body.Value.BillingMultiplier != nil {
+		entry.BillingMultiplier = *body.Value.BillingMultiplier
 	}
 	if body.Value.DisableCooling != nil {
 		entry.DisableCooling = *body.Value.DisableCooling
@@ -665,13 +677,14 @@ func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 }
 func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	type vertexCompatPatch struct {
-		APIKey         *string                     `json:"api-key"`
-		Prefix         *string                     `json:"prefix"`
-		BaseURL        *string                     `json:"base-url"`
-		ProxyURL       *string                     `json:"proxy-url"`
-		Headers        *map[string]string          `json:"headers"`
-		Models         *[]config.VertexCompatModel `json:"models"`
-		ExcludedModels *[]string                   `json:"excluded-models"`
+		APIKey            *string                     `json:"api-key"`
+		Prefix            *string                     `json:"prefix"`
+		BillingMultiplier *float64                    `json:"billing-multiplier"`
+		BaseURL           *string                     `json:"base-url"`
+		ProxyURL          *string                     `json:"proxy-url"`
+		Headers           *map[string]string          `json:"headers"`
+		Models            *[]config.VertexCompatModel `json:"models"`
+		ExcludedModels    *[]string                   `json:"excluded-models"`
 	}
 	var body struct {
 		Index *int               `json:"index"`
@@ -718,6 +731,9 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
+	}
+	if body.Value.BillingMultiplier != nil {
+		entry.BillingMultiplier = *body.Value.BillingMultiplier
 	}
 	if body.Value.BaseURL != nil {
 		trimmed := strings.TrimSpace(*body.Value.BaseURL)
@@ -1021,13 +1037,14 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 }
 func (h *Handler) PatchCodexKey(c *gin.Context) {
 	type codexKeyPatch struct {
-		APIKey         *string              `json:"api-key"`
-		Prefix         *string              `json:"prefix"`
-		BaseURL        *string              `json:"base-url"`
-		ProxyURL       *string              `json:"proxy-url"`
-		Models         *[]config.CodexModel `json:"models"`
-		Headers        *map[string]string   `json:"headers"`
-		ExcludedModels *[]string            `json:"excluded-models"`
+		APIKey            *string              `json:"api-key"`
+		Prefix            *string              `json:"prefix"`
+		BillingMultiplier *float64             `json:"billing-multiplier"`
+		BaseURL           *string              `json:"base-url"`
+		ProxyURL          *string              `json:"proxy-url"`
+		Models            *[]config.CodexModel `json:"models"`
+		Headers           *map[string]string   `json:"headers"`
+		ExcludedModels    *[]string            `json:"excluded-models"`
 	}
 	var body struct {
 		Index *int           `json:"index"`
@@ -1065,6 +1082,9 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
+	}
+	if body.Value.BillingMultiplier != nil {
+		entry.BillingMultiplier = *body.Value.BillingMultiplier
 	}
 	if body.Value.BaseURL != nil {
 		trimmed := strings.TrimSpace(*body.Value.BaseURL)

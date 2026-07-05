@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -18,8 +19,10 @@ import (
 )
 
 var (
-	defaultSink      = &sqliteSink{}
-	registerSinkOnce sync.Once
+	defaultSink               = &sqliteSink{}
+	registerSinkOnce          sync.Once
+	billingMultiplierSnapshot = channelBillingMultipliers{byChannel: map[string]float64{}}
+	billingMultiplierMu       sync.RWMutex
 )
 
 // RegisterSQLiteSink stores runtime usage records in the management usage database.
@@ -37,6 +40,83 @@ func SQLiteDBPathForConfig(configPath string) string {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(configPath), "data", "usage.db")
+}
+
+type channelBillingMultipliers struct {
+	byChannel map[string]float64
+}
+
+// SetChannelBillingMultipliersFromConfig refreshes the runtime channel pricing snapshot.
+func SetChannelBillingMultipliersFromConfig(cfg *config.Config) {
+	next := channelBillingMultipliers{byChannel: map[string]float64{}}
+	if cfg != nil {
+		for _, entry := range cfg.GeminiKey {
+			setBillingMultiplier(next.byChannel, simpleChannelName(entry.Prefix, "gemini"), entry.BillingMultiplier)
+		}
+		for _, entry := range cfg.ClaudeKey {
+			setBillingMultiplier(next.byChannel, simpleChannelName(entry.Prefix, "claude"), entry.BillingMultiplier)
+		}
+		for _, entry := range cfg.CodexKey {
+			setBillingMultiplier(next.byChannel, simpleChannelName(entry.Prefix, "codex"), entry.BillingMultiplier)
+		}
+		for _, entry := range cfg.OpenCodeGoKey {
+			setBillingMultiplier(next.byChannel, entry.Name, entry.BillingMultiplier)
+		}
+		for _, entry := range cfg.BedrockKey {
+			setBillingMultiplier(next.byChannel, entry.Name, entry.BillingMultiplier)
+		}
+		for _, entry := range cfg.VertexCompatAPIKey {
+			setBillingMultiplier(next.byChannel, simpleChannelName(entry.Prefix, "vertex"), entry.BillingMultiplier)
+		}
+		for _, entry := range cfg.OpenAICompatibility {
+			setBillingMultiplier(next.byChannel, entry.Name, entry.BillingMultiplier)
+		}
+		for _, entry := range cfg.BigModelCodingAPIKey {
+			setBillingMultiplier(next.byChannel, simpleChannelName(entry.Name, config.DefaultBigModelCodingProviderName), entry.BillingMultiplier)
+		}
+		for _, entry := range cfg.AstronCodeAPIKey {
+			setBillingMultiplier(next.byChannel, simpleChannelName(entry.Name, config.DefaultAstronCodeProviderName), entry.BillingMultiplier)
+		}
+	}
+	billingMultiplierMu.Lock()
+	billingMultiplierSnapshot = next
+	billingMultiplierMu.Unlock()
+}
+
+func setBillingMultiplier(target map[string]float64, channel string, multiplier float64) {
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	if channel == "" || multiplier <= 0 {
+		return
+	}
+	target[channel] = multiplier
+}
+
+func simpleChannelName(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		return value
+	}
+	return fallback
+}
+
+func billingMultiplierForRecord(record coreusage.Record) float64 {
+	candidates := []string{
+		record.Provider,
+		record.Source,
+		record.AuthType,
+	}
+	billingMultiplierMu.RLock()
+	defer billingMultiplierMu.RUnlock()
+	for _, candidate := range candidates {
+		key := strings.ToLower(strings.TrimSpace(candidate))
+		if key == "" {
+			continue
+		}
+		if multiplier := billingMultiplierSnapshot.byChannel[key]; multiplier > 0 {
+			return multiplier
+		}
+	}
+	return 1
 }
 
 type sqliteSink struct {
@@ -101,6 +181,7 @@ func (s *sqliteSink) HandleUsage(ctx context.Context, record coreusage.Record) {
 	if failed == 0 {
 		requestCost = CalculateModelCostWithDB(db, modelName,
 			detail.InputTokens, detail.OutputTokens, detail.ReasoningTokens, detail.CachedTokens)
+		requestCost *= billingMultiplierForRecord(record)
 	}
 	apiKeyName := LookupAPIKeyNameWithDB(db, record.APIKey)
 
@@ -192,6 +273,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON request_logs(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_logs_api_key ON request_logs(api_key);
+CREATE INDEX IF NOT EXISTS idx_logs_api_key_timestamp ON request_logs(api_key, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_logs_model ON request_logs(model);
 CREATE INDEX IF NOT EXISTS idx_logs_failed ON request_logs(failed);
 CREATE INDEX IF NOT EXISTS idx_logs_auth_index ON request_logs(auth_index);

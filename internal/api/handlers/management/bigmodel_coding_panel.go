@@ -53,6 +53,7 @@ func (h *Handler) PatchBigModelCodingKey(c *gin.Context) {
 		Prefix              *string                             `json:"prefix"`
 		Priority            *int                                `json:"priority"`
 		Disabled            *bool                               `json:"disabled"`
+		BillingMultiplier   *float64                            `json:"billing-multiplier"`
 		BaseURL             *string                             `json:"base-url"`
 		TestModel           *string                             `json:"test-model"`
 		APIKeyEntries       *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
@@ -98,6 +99,9 @@ func (h *Handler) PatchBigModelCodingKey(c *gin.Context) {
 	}
 	if body.Value.Disabled != nil {
 		entry.Disabled = *body.Value.Disabled
+	}
+	if body.Value.BillingMultiplier != nil {
+		entry.BillingMultiplier = *body.Value.BillingMultiplier
 	}
 	if body.Value.BaseURL != nil {
 		entry.BaseURL = strings.TrimSpace(*body.Value.BaseURL)

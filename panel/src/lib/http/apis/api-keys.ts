@@ -7,6 +7,8 @@ export interface ApiKeyEntry {
   "daily-limit"?: number;
   "total-quota"?: number;
   "spending-limit"?: number;
+  "monthly-spending-limit"?: number;
+  "billing-cycle-anchor"?: string;
   "concurrency-limit"?: number;
   "rpm-limit"?: number;
   "tpm-limit"?: number;

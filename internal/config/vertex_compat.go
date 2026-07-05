@@ -37,6 +37,9 @@ type VertexCompatKey struct {
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// BillingMultiplier multiplies model-list prices when writing customer-facing usage cost.
+	BillingMultiplier float64 `yaml:"billing-multiplier,omitempty" json:"billing-multiplier,omitempty"`
 }
 
 func (k VertexCompatKey) GetAPIKey() string  { return k.APIKey }

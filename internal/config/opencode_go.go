@@ -3,17 +3,18 @@ package config
 import "strings"
 
 type OpenCodeGoKey struct {
-	Name           string            `yaml:"name,omitempty" json:"name,omitempty"`
-	Priority       int               `yaml:"priority,omitempty" json:"priority,omitempty"`
-	Prefix         string            `yaml:"prefix,omitempty" json:"prefix,omitempty"`
-	APIKey         string            `yaml:"api-key,omitempty" json:"api-key,omitempty"`
-	BaseURL        string            `yaml:"base-url,omitempty" json:"base-url,omitempty"`
-	ProxyURL       string            `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
-	ProxyID        string            `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
-	VisionModel    string            `yaml:"vision-model,omitempty" json:"vision-model,omitempty"`
-	Models         []OpenCodeGoModel `yaml:"models,omitempty" json:"models,omitempty"`
-	Headers        map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
-	ExcludedModels []string          `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+	Name              string            `yaml:"name,omitempty" json:"name,omitempty"`
+	Priority          int               `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Prefix            string            `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	APIKey            string            `yaml:"api-key,omitempty" json:"api-key,omitempty"`
+	BaseURL           string            `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+	ProxyURL          string            `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	ProxyID           string            `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+	VisionModel       string            `yaml:"vision-model,omitempty" json:"vision-model,omitempty"`
+	Models            []OpenCodeGoModel `yaml:"models,omitempty" json:"models,omitempty"`
+	Headers           map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	ExcludedModels    []string          `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+	BillingMultiplier float64           `yaml:"billing-multiplier,omitempty" json:"billing-multiplier,omitempty"`
 }
 
 type OpenCodeGoModel struct {

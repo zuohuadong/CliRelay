@@ -33,6 +33,8 @@ func TestAPIKeyEntriesFromDBUsesUsageDBMetadata(t *testing.T) {
 		daily_limit integer not null default 0,
 		total_quota integer not null default 0,
 		spending_limit real not null default 0,
+		monthly_spending_limit real not null default 0,
+		billing_cycle_anchor text not null default '',
 		concurrency_limit integer not null default 0,
 		rpm_limit integer not null default 0,
 		tpm_limit integer not null default 0,
@@ -48,10 +50,10 @@ func TestAPIKeyEntriesFromDBUsesUsageDBMetadata(t *testing.T) {
 		t.Fatalf("create table: %v", err)
 	}
 	_, err = db.Exec(`insert into api_keys (
-		key, name, disabled, daily_limit, total_quota, spending_limit, concurrency_limit, rpm_limit, tpm_limit,
+		key, name, disabled, daily_limit, total_quota, spending_limit, monthly_spending_limit, billing_cycle_anchor, concurrency_limit, rpm_limit, tpm_limit,
 		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at, permission_profile_id
-	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"sk-test", "tester", 0, 123, 456, 7.5, 2, 10, 20, `["gpt-5"]`, `["codex"]`, `["pro"]`, "system", "2026-05-17T00:00:00Z", "2026-05-17T00:00:01Z", "profile-1")
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"sk-test", "tester", 0, 123, 456, 7.5, 15.25, "2026-05-17T00:00:00Z", 2, 10, 20, `["gpt-5"]`, `["codex"]`, `["pro"]`, "system", "2026-05-17T00:00:00Z", "2026-05-17T00:00:01Z", "profile-1")
 	if err != nil {
 		t.Fatalf("insert api key: %v", err)
 	}
@@ -69,6 +71,9 @@ func TestAPIKeyEntriesFromDBUsesUsageDBMetadata(t *testing.T) {
 	got := entries[0]
 	if got.Key != "sk-test" || got.Name != "tester" || got.DailyLimit != 123 || got.ConcurrencyLimit != 2 {
 		t.Fatalf("unexpected entry: %+v", got)
+	}
+	if got.MonthlySpendingLimit != 15.25 || got.BillingCycleAnchor != "2026-05-17T00:00:00Z" {
+		t.Fatalf("billing fields = %v/%q", got.MonthlySpendingLimit, got.BillingCycleAnchor)
 	}
 	if len(got.AllowedModels) != 1 || got.AllowedModels[0] != "gpt-5" {
 		t.Fatalf("allowed models = %#v", got.AllowedModels)

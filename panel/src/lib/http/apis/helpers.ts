@@ -23,6 +23,15 @@ export const normalizeString = (value: unknown): string | null => {
   return trimmed ? trimmed : null;
 };
 
+export const normalizePositiveNumber = (value: unknown): number | undefined => {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return undefined;
+};
+
 export const normalizeHeaders = (value: unknown): Record<string, string> | undefined => {
   if (!isRecord(value)) return undefined;
   const result: Record<string, string> = {};
@@ -121,6 +130,14 @@ export const serializeProviderKey = (config: ProviderSimpleConfig) => {
   const payload: Record<string, unknown> = { "api-key": config.apiKey };
   const name = normalizeString(config.name);
   if (name) payload.name = name;
+  if (
+    typeof config.billingMultiplier === "number" &&
+    Number.isFinite(config.billingMultiplier) &&
+    config.billingMultiplier > 0 &&
+    config.billingMultiplier !== 1
+  ) {
+    payload["billing-multiplier"] = config.billingMultiplier;
+  }
   const prefix = normalizeString(config.prefix);
   if (prefix) payload.prefix = prefix;
   const baseUrl = normalizeString(config.baseUrl);
@@ -146,6 +163,14 @@ export const serializeOpenCodeGoKey = (config: ProviderSimpleConfig) => {
   const payload: Record<string, unknown> = { "api-key": config.apiKey };
   const name = normalizeString(config.name);
   if (name) payload.name = name;
+  if (
+    typeof config.billingMultiplier === "number" &&
+    Number.isFinite(config.billingMultiplier) &&
+    config.billingMultiplier > 0 &&
+    config.billingMultiplier !== 1
+  ) {
+    payload["billing-multiplier"] = config.billingMultiplier;
+  }
   const prefix = normalizeString(config.prefix);
   if (prefix) payload.prefix = prefix;
   const proxyUrl = normalizeString(config.proxyUrl);
@@ -164,6 +189,14 @@ export const serializeGeminiKey = (config: ProviderSimpleConfig) => {
   const payload: Record<string, unknown> = { "api-key": config.apiKey };
   const name = normalizeString(config.name);
   if (name) payload.name = name;
+  if (
+    typeof config.billingMultiplier === "number" &&
+    Number.isFinite(config.billingMultiplier) &&
+    config.billingMultiplier > 0 &&
+    config.billingMultiplier !== 1
+  ) {
+    payload["billing-multiplier"] = config.billingMultiplier;
+  }
   const prefix = normalizeString(config.prefix);
   if (prefix) payload.prefix = prefix;
   const baseUrl = normalizeString(config.baseUrl);
@@ -221,6 +254,14 @@ export const serializeBedrockKey = (config: BedrockProviderConfig) => {
 export const serializeOpenAIProvider = (provider: OpenAIProvider) => {
   const payload: Record<string, unknown> = { name: provider.name };
   if (provider.disabled === true) payload.disabled = true;
+  if (
+    typeof provider.billingMultiplier === "number" &&
+    Number.isFinite(provider.billingMultiplier) &&
+    provider.billingMultiplier > 0 &&
+    provider.billingMultiplier !== 1
+  ) {
+    payload["billing-multiplier"] = provider.billingMultiplier;
+  }
   const baseUrl = normalizeString(provider.baseUrl);
   if (baseUrl) payload["base-url"] = baseUrl;
   const prefix = normalizeString(provider.prefix);

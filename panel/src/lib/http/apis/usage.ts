@@ -99,6 +99,30 @@ export interface EntityStatsScope {
   sources?: string[];
 }
 
+export interface ApiKeyBillingCycle {
+  start: string;
+  end: string;
+  request_count: number;
+  success_count: number;
+  failed_count: number;
+  total_tokens: number;
+  total_cost: number;
+  limit: number;
+  remaining: number;
+  exceeded: boolean;
+}
+
+export interface ApiKeyBillingResponse {
+  api_key: string;
+  name?: string;
+  monthly_spending_limit: number;
+  billing_cycle_anchor: string;
+  billing_cycle_mode: string;
+  billing_cycle_owner: string;
+  current_cycle: ApiKeyBillingCycle;
+  history: ApiKeyBillingCycle[];
+}
+
 const appendUniqueParams = (qs: URLSearchParams, key: string, values?: string[]) => {
   const seen = new Set<string>();
   (values ?? []).forEach((value) => {
@@ -278,6 +302,33 @@ export const usageApi = {
         total_tokens: resp?.stats?.total_tokens ?? 0,
         total_cost: resp?.stats?.total_cost ?? 0,
       },
+    };
+  },
+
+  async getApiKeyBilling(apiKey: string): Promise<ApiKeyBillingResponse> {
+    const qs = new URLSearchParams({ api_key: apiKey });
+    const resp = await apiClient.get<ApiKeyBillingResponse>(`/api-key-billing?${qs.toString()}`);
+    const normalizeCycle = (cycle?: Partial<ApiKeyBillingCycle>): ApiKeyBillingCycle => ({
+      start: cycle?.start ?? "",
+      end: cycle?.end ?? "",
+      request_count: cycle?.request_count ?? 0,
+      success_count: cycle?.success_count ?? 0,
+      failed_count: cycle?.failed_count ?? 0,
+      total_tokens: cycle?.total_tokens ?? 0,
+      total_cost: cycle?.total_cost ?? 0,
+      limit: cycle?.limit ?? 0,
+      remaining: cycle?.remaining ?? 0,
+      exceeded: Boolean(cycle?.exceeded),
+    });
+    return {
+      api_key: resp?.api_key ?? apiKey,
+      name: resp?.name ?? "",
+      monthly_spending_limit: resp?.monthly_spending_limit ?? 0,
+      billing_cycle_anchor: resp?.billing_cycle_anchor ?? "",
+      billing_cycle_mode: resp?.billing_cycle_mode ?? "monthly",
+      billing_cycle_owner: resp?.billing_cycle_owner ?? "api_key",
+      current_cycle: normalizeCycle(resp?.current_cycle),
+      history: Array.isArray(resp?.history) ? resp.history.map(normalizeCycle) : [],
     };
   },
 

@@ -202,6 +202,7 @@ export interface ProviderApiKeyEntry {
 export interface OpenAIProvider {
   name: string;
   disabled?: boolean;
+  billingMultiplier?: number;
   baseUrl?: string;
   prefix?: string;
   headers?: Record<string, string>;
@@ -216,6 +217,7 @@ export interface OpenAIProvider {
 export interface ProviderSimpleConfig {
   apiKey: string;
   name?: string;
+  billingMultiplier?: number;
   prefix?: string;
   baseUrl?: string;
   proxyUrl?: string;

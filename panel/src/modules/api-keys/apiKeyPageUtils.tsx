@@ -60,6 +60,8 @@ export const makeEmptyApiKeyForm = (key = ""): ApiKeyFormValues => ({
   dailyLimit: "",
   totalQuota: "",
   spendingLimit: "",
+  monthlySpendingLimit: "",
+  billingCycleAnchor: "",
   concurrencyLimit: "",
   rpmLimit: "",
   tpmLimit: "",

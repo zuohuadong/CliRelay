@@ -9,22 +9,23 @@ const (
 )
 
 type BedrockKey struct {
-	Name            string            `yaml:"name,omitempty" json:"name,omitempty"`
-	Priority        int               `yaml:"priority,omitempty" json:"priority,omitempty"`
-	Prefix          string            `yaml:"prefix,omitempty" json:"prefix,omitempty"`
-	AuthMode        string            `yaml:"auth-mode,omitempty" json:"auth-mode,omitempty"`
-	APIKey          string            `yaml:"api-key,omitempty" json:"api-key,omitempty"`
-	AccessKeyID     string            `yaml:"access-key-id,omitempty" json:"access-key-id,omitempty"`
-	SecretAccessKey string            `yaml:"secret-access-key,omitempty" json:"secret-access-key,omitempty"`
-	SessionToken    string            `yaml:"session-token,omitempty" json:"session-token,omitempty"`
-	Region          string            `yaml:"region,omitempty" json:"region,omitempty"`
-	ForceGlobal     bool              `yaml:"force-global,omitempty" json:"force-global,omitempty"`
-	BaseURL         string            `yaml:"base-url,omitempty" json:"base-url,omitempty"`
-	ProxyURL        string            `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
-	ProxyID         string            `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
-	Models          []BedrockModel    `yaml:"models,omitempty" json:"models,omitempty"`
-	Headers         map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
-	ExcludedModels  []string          `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+	Name              string            `yaml:"name,omitempty" json:"name,omitempty"`
+	Priority          int               `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Prefix            string            `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	AuthMode          string            `yaml:"auth-mode,omitempty" json:"auth-mode,omitempty"`
+	APIKey            string            `yaml:"api-key,omitempty" json:"api-key,omitempty"`
+	AccessKeyID       string            `yaml:"access-key-id,omitempty" json:"access-key-id,omitempty"`
+	SecretAccessKey   string            `yaml:"secret-access-key,omitempty" json:"secret-access-key,omitempty"`
+	SessionToken      string            `yaml:"session-token,omitempty" json:"session-token,omitempty"`
+	Region            string            `yaml:"region,omitempty" json:"region,omitempty"`
+	ForceGlobal       bool              `yaml:"force-global,omitempty" json:"force-global,omitempty"`
+	BaseURL           string            `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+	ProxyURL          string            `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	ProxyID           string            `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+	Models            []BedrockModel    `yaml:"models,omitempty" json:"models,omitempty"`
+	Headers           map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	ExcludedModels    []string          `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+	BillingMultiplier float64           `yaml:"billing-multiplier,omitempty" json:"billing-multiplier,omitempty"`
 }
 
 func (k BedrockKey) GetAPIKey() string {

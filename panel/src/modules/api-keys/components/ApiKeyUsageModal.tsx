@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
 import { Modal } from "@/modules/ui/Modal";
+import type { ApiKeyBillingResponse, ApiKeyBillingCycle } from "@/lib/http/apis/usage";
 import { SearchableSelect } from "@/modules/ui/SearchableSelect";
 import { Select } from "@/modules/ui/Select";
 import { TableCellOverflowTooltip } from "@/modules/ui/TableCellOverflowTooltip";
@@ -25,6 +26,7 @@ export function ApiKeyUsageModal({
   fetchUsageLogs,
   usagePageSize,
   usageLoading,
+  usageBilling,
   usageLastUpdatedText,
   usageChannelGroupQuery,
   setUsageChannelGroupQuery,
@@ -54,6 +56,7 @@ export function ApiKeyUsageModal({
   fetchUsageLogs: (page: number, size: number) => Promise<void>;
   usagePageSize: number;
   usageLoading: boolean;
+  usageBilling: ApiKeyBillingResponse | null;
   usageLastUpdatedText: string;
   usageChannelGroupQuery: string;
   setUsageChannelGroupQuery: (value: string) => void;
@@ -74,6 +77,23 @@ export function ApiKeyUsageModal({
   setUsagePageSize: (size: number) => void;
 }) {
   const { t } = useTranslation();
+  const formatMoney = (value: number) =>
+    new Intl.NumberFormat("en-US", {
+      currency: "USD",
+      maximumFractionDigits: 4,
+      minimumFractionDigits: 2,
+      style: "currency",
+    }).format(Number.isFinite(value) ? value : 0);
+  const formatDate = (value: string) => {
+    if (!value) return "--";
+    try {
+      return new Date(value).toLocaleString();
+    } catch {
+      return value;
+    }
+  };
+  const billingCycle = usageBilling?.current_cycle ?? null;
+  const billingHistory = usageBilling?.history ?? [];
 
   return (
     <Modal
@@ -92,6 +112,72 @@ export function ApiKeyUsageModal({
       bodyHeightClassName="h-[80vh]"
     >
       <div className="flex h-full flex-col">
+        {billingCycle ? (
+          <div className="grid gap-2 border-b border-slate-100 px-1 pb-3 dark:border-neutral-800/60 md:grid-cols-4">
+            <BillingMetric
+              label={t("api_keys_page.billing_current_cycle")}
+              value={`${formatDate(billingCycle.start)} - ${formatDate(billingCycle.end)}`}
+            />
+            <BillingMetric
+              label={t("api_keys_page.billing_used")}
+              value={formatMoney(billingCycle.total_cost)}
+              tone={billingCycle.exceeded ? "danger" : "default"}
+            />
+            <BillingMetric
+              label={t("api_keys_page.billing_remaining")}
+              value={
+                billingCycle.limit > 0
+                  ? formatMoney(billingCycle.remaining)
+                  : t("api_keys_page.unlimited")
+              }
+            />
+            <BillingMetric
+              label={t("api_keys_page.billing_limit")}
+              value={
+                billingCycle.limit > 0 ? formatMoney(billingCycle.limit) : t("api_keys_page.unlimited")
+              }
+            />
+          </div>
+        ) : null}
+
+        {billingHistory.length > 0 ? (
+          <details className="border-b border-slate-100 px-1 py-3 dark:border-neutral-800/60">
+            <summary className="cursor-pointer text-sm font-medium text-slate-700 dark:text-white/75">
+              {t("api_keys_page.billing_history")}
+            </summary>
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[720px] text-sm">
+                <thead className="text-left text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-white/55">
+                  <tr>
+                    <th className="py-2 pr-4">{t("api_keys_page.billing_cycle")}</th>
+                    <th className="py-2 pr-4">{t("api_keys_page.billing_cost")}</th>
+                    <th className="py-2 pr-4">{t("api_keys_page.billing_requests")}</th>
+                    <th className="py-2 pr-4">{t("api_keys_page.billing_tokens")}</th>
+                    <th className="py-2 pr-4">{t("api_keys_page.billing_status")}</th>
+                  </tr>
+                </thead>
+                <tbody className="text-slate-700 dark:text-white/70">
+                  {billingHistory.map((cycle: ApiKeyBillingCycle) => (
+                    <tr key={`${cycle.start}-${cycle.end}`} className="border-t border-slate-100 dark:border-neutral-800/60">
+                      <td className="py-2 pr-4">
+                        {formatDate(cycle.start)} - {formatDate(cycle.end)}
+                      </td>
+                      <td className="py-2 pr-4">{formatMoney(cycle.total_cost)}</td>
+                      <td className="py-2 pr-4">{cycle.request_count.toLocaleString()}</td>
+                      <td className="py-2 pr-4">{cycle.total_tokens.toLocaleString()}</td>
+                      <td className="py-2 pr-4">
+                        {cycle.exceeded
+                          ? t("api_keys_page.billing_exceeded")
+                          : t("api_keys_page.billing_normal")}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        ) : null}
+
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-1 pb-3 dark:border-neutral-800/60">
           <div className="flex flex-wrap items-center gap-2">
             <RequestLogsTimeRangeSelector value={usageTimeRange} onChange={setUsageTimeRange} />
@@ -250,5 +336,29 @@ export function ApiKeyUsageModal({
         />
       </div>
     </Modal>
+  );
+}
+
+function BillingMetric({
+  label,
+  value,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  tone?: "default" | "danger";
+}) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-neutral-800 dark:bg-neutral-900/70">
+      <div className="text-xs text-slate-500 dark:text-white/45">{label}</div>
+      <div
+        className={`mt-1 truncate text-sm font-semibold ${
+          tone === "danger" ? "text-rose-600 dark:text-rose-300" : "text-slate-900 dark:text-white"
+        }`}
+        title={value}
+      >
+        {value}
+      </div>
+    </div>
   );
 }

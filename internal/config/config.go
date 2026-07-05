@@ -661,6 +661,9 @@ type ClaudeKey struct {
 	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
+	// BillingMultiplier multiplies model-list prices when writing customer-facing usage cost.
+	BillingMultiplier float64 `yaml:"billing-multiplier,omitempty" json:"billing-multiplier,omitempty"`
+
 	// Cloak configures request cloaking for non-Claude-Code clients.
 	Cloak *CloakConfig `yaml:"cloak,omitempty" json:"cloak,omitempty"`
 
@@ -726,6 +729,9 @@ type CodexKey struct {
 
 	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// BillingMultiplier multiplies model-list prices when writing customer-facing usage cost.
+	BillingMultiplier float64 `yaml:"billing-multiplier,omitempty" json:"billing-multiplier,omitempty"`
 }
 
 func (k CodexKey) GetAPIKey() string  { return k.APIKey }
@@ -780,6 +786,9 @@ type GeminiKey struct {
 
 	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// BillingMultiplier multiplies model-list prices when writing customer-facing usage cost.
+	BillingMultiplier float64 `yaml:"billing-multiplier,omitempty" json:"billing-multiplier,omitempty"`
 }
 
 func (k GeminiKey) GetAPIKey() string  { return k.APIKey }
@@ -850,6 +859,9 @@ type OpenAICompatibility struct {
 
 	// ResponseEndpoint routes requests to /responses (OpenAI Responses API) instead of /chat/completions.
 	ResponseEndpoint bool `yaml:"response-endpoint,omitempty" json:"response-endpoint,omitempty"`
+
+	// BillingMultiplier multiplies model-list prices when writing customer-facing usage cost.
+	BillingMultiplier float64 `yaml:"billing-multiplier,omitempty" json:"billing-multiplier,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.

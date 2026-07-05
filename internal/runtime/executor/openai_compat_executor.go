@@ -285,11 +285,18 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 	reporter.SetTranslatedReasoningEffort(payload, "openai")
 
 	url := strings.TrimSuffix(baseURL, "/") + endpointPath
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	method := openAICompatPassthroughMethod(opts, endpointPath)
+	var requestBody io.Reader = bytes.NewReader(payload)
+	if method == http.MethodGet {
+		requestBody = nil
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, method, url, requestBody)
 	if err != nil {
 		return resp, err
 	}
-	httpReq.Header.Set("Content-Type", contentType)
+	if method != http.MethodGet {
+		httpReq.Header.Set("Content-Type", contentType)
+	}
 	if apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
@@ -307,7 +314,7 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 	}
 	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 		URL:       url,
-		Method:    http.MethodPost,
+		Method:    method,
 		Headers:   httpReq.Header.Clone(),
 		Body:      payload,
 		Provider:  e.Identifier(),
@@ -1017,9 +1024,18 @@ func openAICompatVideoEndpointPath(opts cliproxyexecutor.Options) string {
 		return openAICompatVideosGenerationsPath
 	}
 	if strings.Contains(path, "/videos/") {
-		return strings.TrimPrefix(path, "/v1")
+		endpoint := strings.TrimPrefix(path, "/v1")
+		endpoint = strings.TrimSuffix(endpoint, "/content")
+		return endpoint
 	}
 	return openAICompatDefaultVideoEndpoint
+}
+
+func openAICompatPassthroughMethod(opts cliproxyexecutor.Options, endpointPath string) string {
+	if opts.SourceFormat.String() == openAICompatVideoHandlerType && strings.Contains(endpointPath, "/videos/") {
+		return http.MethodGet
+	}
+	return http.MethodPost
 }
 
 func normalizedOpenAICompatEndpointPath(path string) string {

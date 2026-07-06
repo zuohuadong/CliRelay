@@ -1484,16 +1484,28 @@ function billingPage(){
     },
     fmtMoney(v){
       v=Number(v)||0;
-      return '$'+v.toFixed(4);
+      return '$'+v.toFixed(2);
     },
     fmtLimit(v){
       v=Number(v)||0;
       if(v<=0) return '不限';
-      return '$'+v.toFixed(4);
+      return '$'+v.toFixed(2);
     },
     fmtInt(v){
       v=Number(v)||0;
       return v.toLocaleString('en-US');
+    },
+    fmtToken(v){
+      v=Number(v)||0;
+      return (v/1000000).toFixed(2)+'M';
+    },
+    tokenPartShare(m, key){
+      if(!m) return 0;
+      var total=Number(m.total_tokens)||0;
+      if(total<=0) return 0;
+      var value=Number(m[key])||0;
+      if(key==='output_tokens') value+=(Number(m.reasoning_tokens)||0);
+      return value/total;
     },
     fmtDate(s){
       if(!s) return '--';
@@ -1581,7 +1593,7 @@ function billingPage(){
     </div>
     <div class="card">
       <div class="label">Token</div>
-      <div class="value" x-text="fmtInt(cur.total_tokens)"></div>
+      <div class="value" x-text="fmtToken(cur.total_tokens)"></div>
       <div class="hint">
         <span class="pill" :class="exceeded?'danger':'ok'" x-text="exceeded?'已超限':'正常'"></span>
       </div>
@@ -1596,7 +1608,7 @@ function billingPage(){
   <div class="table-wrap" x-show="models.length>0">
     <table>
       <thead>
-        <tr><th>模型</th><th>次数占比</th><th>Token占比</th><th>金额占比</th><th>实际计费</th><th>估算原价</th><th>折扣</th></tr>
+        <tr><th>模型</th><th>次数占比</th><th>Token占比</th><th>金额占比</th><th>输入占比</th><th>输出占比</th><th>缓存占比</th><th>实际计费</th><th>估算原价</th><th>折扣</th></tr>
       </thead>
       <tbody>
         <template x-for="m in models" :key="m.model">
@@ -1610,12 +1622,24 @@ function billingPage(){
               <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(m.request_share)"></div></div>
             </td>
             <td class="share">
-              <div class="share-label"><span x-text="fmtInt(m.total_tokens)"></span><span x-text="fmtShare(m.token_share)"></span></div>
+              <div class="share-label"><span x-text="fmtToken(m.total_tokens)"></span><span x-text="fmtShare(m.token_share)"></span></div>
               <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(m.token_share)"></div></div>
             </td>
             <td class="share">
               <div class="share-label"><span x-text="fmtMoney(m.total_cost)"></span><span x-text="fmtShare(m.cost_share)"></span></div>
               <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(m.cost_share)"></div></div>
+            </td>
+            <td class="share">
+              <div class="share-label"><span x-text="fmtToken(m.input_tokens)"></span><span x-text="fmtShare(tokenPartShare(m,'input_tokens'))"></span></div>
+              <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(tokenPartShare(m,'input_tokens'))"></div></div>
+            </td>
+            <td class="share">
+              <div class="share-label"><span x-text="fmtToken((Number(m.output_tokens)||0)+(Number(m.reasoning_tokens)||0))"></span><span x-text="fmtShare(tokenPartShare(m,'output_tokens'))"></span></div>
+              <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(tokenPartShare(m,'output_tokens'))"></div></div>
+            </td>
+            <td class="share">
+              <div class="share-label"><span x-text="fmtToken(m.cached_tokens)"></span><span x-text="fmtShare(tokenPartShare(m,'cached_tokens'))"></span></div>
+              <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(tokenPartShare(m,'cached_tokens'))"></div></div>
             </td>
             <td x-text="fmtMoney(m.total_cost)"></td>
             <td x-text="m.has_price?fmtMoney(m.estimated_list_cost):'--'"></td>
@@ -1636,7 +1660,10 @@ function billingPage(){
         <div class="model-price" x-text="fmtPrice(m)"></div>
         <div class="mc-grid" style="margin-top:12px">
           <div class="mc-item"><div class="l">次数</div><div class="v" x-text="fmtInt(m.request_count)+' / '+fmtShare(m.request_share)"></div></div>
-          <div class="mc-item"><div class="l">Token</div><div class="v" x-text="fmtInt(m.total_tokens)+' / '+fmtShare(m.token_share)"></div></div>
+          <div class="mc-item"><div class="l">Token</div><div class="v" x-text="fmtToken(m.total_tokens)+' / '+fmtShare(m.token_share)"></div></div>
+          <div class="mc-item"><div class="l">输入占比</div><div class="v" x-text="fmtShare(tokenPartShare(m,'input_tokens'))+' / '+fmtToken(m.input_tokens)"></div></div>
+          <div class="mc-item"><div class="l">输出占比</div><div class="v" x-text="fmtShare(tokenPartShare(m,'output_tokens'))+' / '+fmtToken((Number(m.output_tokens)||0)+(Number(m.reasoning_tokens)||0))"></div></div>
+          <div class="mc-item"><div class="l">缓存占比</div><div class="v" x-text="fmtShare(tokenPartShare(m,'cached_tokens'))+' / '+fmtToken(m.cached_tokens)"></div></div>
           <div class="mc-item"><div class="l">实际计费</div><div class="v" x-text="fmtMoney(m.total_cost)"></div></div>
           <div class="mc-item"><div class="l">估算原价</div><div class="v" x-text="m.has_price?fmtMoney(m.estimated_list_cost):'--'"></div></div>
         </div>
@@ -1664,7 +1691,7 @@ function billingPage(){
             <td x-text="fmtInt(c.request_count)"></td>
             <td x-text="fmtInt(c.success_count)"></td>
             <td x-text="fmtInt(c.failed_count)"></td>
-            <td x-text="fmtInt(c.total_tokens)"></td>
+            <td x-text="fmtToken(c.total_tokens)"></td>
             <td><span class="pill" :class="c.exceeded?'danger':'ok'" x-text="c.exceeded?'已超限':'正常'"></span></td>
           </tr>
         </template>
@@ -1684,7 +1711,7 @@ function billingPage(){
           <div class="mc-item"><div class="l">请求</div><div class="v" x-text="fmtInt(c.request_count)"></div></div>
           <div class="mc-item"><div class="l">成功</div><div class="v" x-text="fmtInt(c.success_count)"></div></div>
           <div class="mc-item"><div class="l">失败</div><div class="v" x-text="fmtInt(c.failed_count)"></div></div>
-          <div class="mc-item"><div class="l">Token</div><div class="v" x-text="fmtInt(c.total_tokens)"></div></div>
+          <div class="mc-item"><div class="l">Token</div><div class="v" x-text="fmtToken(c.total_tokens)"></div></div>
         </div>
       </div>
     </template>

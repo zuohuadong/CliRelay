@@ -50,6 +50,11 @@ import (
 
 const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
 
+const (
+	apiKeyBillingRateLimitMax    = 30
+	apiKeyBillingRateLimitWindow = time.Minute
+)
+
 var corsExposedResponseHeaders = []string{
 	"X-CPA-VERSION",
 	"X-CPA-COMMIT",
@@ -76,6 +81,11 @@ type serverOptionConfig struct {
 	postAuthPersistHook  auth.PostAuthHook
 	pluginHost           *pluginhost.Host
 	configReloadHook     func(context.Context, *config.Config)
+}
+
+type routeRateLimitBucket struct {
+	windowStart time.Time
+	count       int
 }
 
 // ServerOption customises HTTP server construction.
@@ -243,6 +253,9 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
+
+	apiKeyBillingRateMu      sync.Mutex
+	apiKeyBillingRateBuckets map[string]routeRateLimitBucket
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -431,7 +444,10 @@ func (s *Server) setupRoutes() {
 	s.engine.GET("/manage", s.serveManagementControlPanel)
 	s.engine.GET("/manage/*path", s.serveManagementAssetOrFallback)
 	s.engine.GET("/assets/*path", s.serveManagementAsset)
-	publicUsage := s.engine.Group("/v0/management/public/usage")
+	s.engine.GET("/v0/management/api-key-billing", s.apiKeyBillingRateLimitMiddleware(), s.mgmt.GetPublicAPIKeyBilling)
+	publicManagement := s.engine.Group("/v0/management/public")
+	publicManagement.GET("/api-key-billing", s.apiKeyBillingRateLimitMiddleware(), s.mgmt.GetPublicAPIKeyBilling)
+	publicUsage := publicManagement.Group("/usage")
 	{
 		publicUsage.GET("", s.mgmt.GetPublicUsageSummary)
 		publicUsage.POST("", s.mgmt.GetPublicUsageSummary)
@@ -534,8 +550,6 @@ func (s *Server) setupRoutes() {
 		middleware.APIKeyRateLimitMiddleware(),
 	)
 	{
-		mcp.Any("", s.nativeMCP)
-		mcp.Any("/", s.nativeMCP)
 		mcp.Any("/custom/:server", s.proxyConfiguredMCP)
 		mcp.Any("/custom/:server/*path", s.proxyConfiguredMCP)
 		mcp.Any("/zai/:server", s.proxyZAIMCP)
@@ -653,6 +667,58 @@ func (s *Server) AttachWebsocketRoute(path string, handler http.Handler) {
 	s.engine.GET(trimmed, conditionalAuth, finalHandler)
 }
 
+func (s *Server) apiKeyBillingRateLimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil {
+			c.Next()
+			return
+		}
+		now := time.Now()
+		client := c.ClientIP()
+		if client == "" {
+			client = "unknown"
+		}
+		key := "api-key-billing|" + client
+
+		s.apiKeyBillingRateMu.Lock()
+		if s.apiKeyBillingRateBuckets == nil {
+			s.apiKeyBillingRateBuckets = make(map[string]routeRateLimitBucket)
+		}
+		for bucketKey, bucket := range s.apiKeyBillingRateBuckets {
+			if now.Sub(bucket.windowStart) >= apiKeyBillingRateLimitWindow {
+				delete(s.apiKeyBillingRateBuckets, bucketKey)
+			}
+		}
+		bucket := s.apiKeyBillingRateBuckets[key]
+		if bucket.windowStart.IsZero() || now.Sub(bucket.windowStart) >= apiKeyBillingRateLimitWindow {
+			bucket = routeRateLimitBucket{windowStart: now}
+		}
+		bucket.count++
+		s.apiKeyBillingRateBuckets[key] = bucket
+		resetAt := bucket.windowStart.Add(apiKeyBillingRateLimitWindow)
+		limited := bucket.count > apiKeyBillingRateLimitMax
+		s.apiKeyBillingRateMu.Unlock()
+
+		if limited {
+			retryAfter := int(time.Until(resetAt).Seconds())
+			if retryAfter < 1 {
+				retryAfter = 1
+			}
+			c.Header("Retry-After", strconv.Itoa(retryAfter))
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"error": map[string]any{
+					"message": "too many api key billing queries",
+					"type":    "rate_limit_exceeded",
+					"code":    "api_key_billing_rate_limited",
+				},
+			})
+			return
+		}
+
+		c.Next()
+	}
+}
+
 func (s *Server) registerManagementRoutes() {
 	if s == nil || s.engine == nil || s.mgmt == nil {
 		return
@@ -708,10 +774,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 		mgmt.PATCH("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 
-		mgmt.GET("/billing-multipliers", s.mgmt.GetBillingMultipliers)
-		mgmt.PUT("/billing-multipliers", s.mgmt.PutBillingMultipliers)
-		mgmt.PATCH("/billing-multipliers", s.mgmt.PutBillingMultipliers)
-
 		mgmt.GET("/auto-update/channel", s.mgmt.GetAutoUpdateChannel)
 		mgmt.PUT("/auto-update/channel", s.mgmt.PutAutoUpdateChannel)
 		mgmt.PATCH("/auto-update/channel", s.mgmt.PutAutoUpdateChannel)
@@ -745,7 +807,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/api-key-entries", s.mgmt.DeleteAPIKeyEntries)
 		mgmt.GET("/api-key-permission-profiles", s.mgmt.GetAPIKeyPermissionProfiles)
 		mgmt.PUT("/api-key-permission-profiles", s.mgmt.PutAPIKeyPermissionProfiles)
-		mgmt.GET("/api-key-billing", s.mgmt.GetAPIKeyBilling)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 

@@ -276,6 +276,74 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 	}
 }
 
+func TestManagementAPIKeyBillingRateLimited(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	path := "/v0/management/api-key-billing?api_key=sk-rate-limited"
+	for i := 0; i < apiKeyBillingRateLimitMax; i++ {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer test-management-key")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Fatalf("request %d was rate limited too early: body=%s", i+1, rr.Body.String())
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer test-management-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusTooManyRequests, rr.Body.String())
+	}
+	if got := rr.Header().Get("Retry-After"); got == "" {
+		t.Fatal("missing Retry-After header")
+	}
+	if !strings.Contains(rr.Body.String(), "api_key_billing_rate_limited") {
+		t.Fatalf("body = %q, want api_key_billing_rate_limited", rr.Body.String())
+	}
+}
+
+func TestAPIKeyBillingLegacyPathDoesNotRequireManagementKey(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/api-key-billing?api_key=test-key", nil)
+	req.Header.Set("Accept", "text/html")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "missing management key") {
+		t.Fatalf("legacy billing path should not require management key: %s", rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", got)
+	}
+}
+
+func TestPublicAPIKeyBillingPathDoesNotRequireManagementKey(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/public/api-key-billing?api_key=test-key", nil)
+	req.Header.Set("Accept", "text/html")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "missing management key") {
+		t.Fatalf("public billing path should not require management key: %s", rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", got)
+	}
+}
+
 func TestManagementRoutesRestoredAfterMerge(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 
@@ -287,6 +355,7 @@ func TestManagementRoutesRestoredAfterMerge(t *testing.T) {
 		{http.MethodGet, "/v0/management/dashboard-summary"},
 		{http.MethodGet, "/v0/management/system-stats"},
 		{http.MethodGet, "/v0/management/api-key-entries"},
+		{http.MethodGet, "/v0/management/api-key-billing?api_key=sk-test"},
 		{http.MethodGet, "/v0/management/api-key-permission-profiles"},
 		{http.MethodGet, "/v0/management/routing-config"},
 		{http.MethodGet, "/v0/management/proxy-pool"},
@@ -310,46 +379,6 @@ func TestManagementRoutesRestoredAfterMerge(t *testing.T) {
 				t.Fatalf("%s %s returned 404; body=%s", route.method, route.path, rr.Body.String())
 			}
 		})
-	}
-}
-
-func TestAPIKeyBillingAllowsSelfServiceWithValidAPIKey(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-
-	server := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/v0/management/api-key-billing?api_key=test-key", nil)
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
-	}
-
-	var payload struct {
-		APIKey       string         `json:"api_key"`
-		CurrentCycle map[string]any `json:"current_cycle"`
-	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode response: %v body=%s", err, rr.Body.String())
-	}
-	if payload.APIKey != "test-key" {
-		t.Fatalf("api_key = %q, want test-key", payload.APIKey)
-	}
-	if payload.CurrentCycle == nil {
-		t.Fatalf("current_cycle missing: %s", rr.Body.String())
-	}
-}
-
-func TestAPIKeyBillingRejectsSelfServiceWithInvalidAPIKey(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-
-	server := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/v0/management/api-key-billing?api_key=missing-key", nil)
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
 	}
 }
 

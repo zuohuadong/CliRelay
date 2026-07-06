@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
 	"os"
@@ -921,17 +922,19 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, buildUsageLogsPayload(db, usageFiltersFromQuery(c), false))
 }
 
-func (h *Handler) GetAPIKeyBilling(c *gin.Context) {
-	apiKey := strings.TrimSpace(c.Query("api_key"))
-	if apiKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing api_key"})
-		return
-	}
-
+// collectAPIKeyBillingPayload gathers billing data for the given API key.
+// Shared by both the management route (GetAPIKeyBilling) and the public
+// self-service route (GetPublicAPIKeyBilling).
+func (h *Handler) collectAPIKeyBillingPayload(apiKey string) gin.H {
 	entry := panelAPIKeyEntry{Key: apiKey}
 	if h != nil {
-		if foundEntry, ok := h.apiKeyBillingEntry(apiKey); ok {
-			entry = foundEntry
+		if entries, _ := h.currentAPIKeyEntries(); len(entries) > 0 {
+			for _, candidate := range entries {
+				if strings.TrimSpace(candidate.Key) == apiKey {
+					entry = candidate
+					break
+				}
+			}
 		}
 	}
 
@@ -941,8 +944,7 @@ func (h *Handler) GetAPIKeyBilling(c *gin.Context) {
 
 	db, ok := h.usageDB()
 	if !ok {
-		c.JSON(http.StatusOK, apiKeyBillingPayload(apiKey, entry, limit, currentStart, currentEnd, usageTotals{}, nil))
-		return
+		return apiKeyBillingPayload(apiKey, entry, limit, currentStart, currentEnd, usageTotals{}, nil)
 	}
 	defer func() { _ = db.Close() }()
 
@@ -957,21 +959,67 @@ func (h *Handler) GetAPIKeyBilling(c *gin.Context) {
 		start = start.AddDate(0, -1, 0)
 	}
 
-	c.JSON(http.StatusOK, apiKeyBillingPayload(apiKey, entry, limit, currentStart, currentEnd, current, history))
+	return apiKeyBillingPayload(apiKey, entry, limit, currentStart, currentEnd, current, history)
+}
+
+func (h *Handler) GetAPIKeyBilling(c *gin.Context) {
+	apiKey := strings.TrimSpace(c.Query("api_key"))
+	if apiKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing api_key"})
+		return
+	}
+
+	payload := h.collectAPIKeyBillingPayload(apiKey)
+	if wantsAPIKeyBillingHTML(c) {
+		renderAPIKeyBillingHTML(c, payload)
+		return
+	}
+	c.JSON(http.StatusOK, payload)
 }
 
 func (h *Handler) apiKeyBillingEntry(apiKey string) (panelAPIKeyEntry, bool) {
 	apiKey = strings.TrimSpace(apiKey)
-	if h == nil || apiKey == "" {
+	if apiKey == "" || h == nil {
 		return panelAPIKeyEntry{}, false
 	}
 	entries, _ := h.currentAPIKeyEntries()
-	for _, candidate := range entries {
-		if strings.TrimSpace(candidate.Key) == apiKey {
-			return candidate, true
+	if len(entries) == 0 {
+		return panelAPIKeyEntry{}, false
+	}
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Key) == apiKey {
+			return entry, true
 		}
 	}
 	return panelAPIKeyEntry{}, false
+}
+
+// GetPublicAPIKeyBilling serves the self-service billing page that only
+// requires the user's own api_key (no management token). By default it
+// returns an Alpine.js-powered HTML page for browser visits; format=json
+// falls back to the raw JSON payload.
+func (h *Handler) GetPublicAPIKeyBilling(c *gin.Context) {
+	apiKey := strings.TrimSpace(c.Query("api_key"))
+	if apiKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing api_key"})
+		return
+	}
+	entry, found := h.apiKeyBillingEntry(apiKey)
+	if !found {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
+		return
+	}
+	if entry.Disabled {
+		c.JSON(http.StatusForbidden, gin.H{"error": "api key disabled"})
+		return
+	}
+
+	payload := h.collectAPIKeyBillingPayload(apiKey)
+	if wantsAPIKeyBillingHTML(c) {
+		renderAPIKeyBillingAlpineHTML(c, payload)
+		return
+	}
+	c.JSON(http.StatusOK, payload)
 }
 
 func apiKeyBillingPayload(apiKey string, entry panelAPIKeyEntry, limit float64, currentStart, currentEnd time.Time, current usageTotals, history []gin.H) gin.H {
@@ -1034,6 +1082,435 @@ func queryAPIKeyBillingTotals(db *sql.DB, apiKey string, start, end time.Time) u
 	var totals usageTotals
 	_ = row.Scan(&totals.Total, &totals.Success, &totals.Failed, &totals.TotalTokens, &totals.TotalCost)
 	return totals
+}
+
+func wantsAPIKeyBillingHTML(c *gin.Context) bool {
+	if c == nil || c.Query("format") == "json" {
+		return false
+	}
+	if c.Query("format") == "html" {
+		return true
+	}
+	accept := strings.ToLower(strings.TrimSpace(c.GetHeader("Accept")))
+	if accept == "" {
+		return false
+	}
+	htmlIndex := strings.Index(accept, "text/html")
+	if htmlIndex < 0 {
+		return false
+	}
+	jsonIndex := strings.Index(accept, "application/json")
+	return jsonIndex < 0 || htmlIndex < jsonIndex
+}
+
+func renderAPIKeyBillingHTML(c *gin.Context, payload gin.H) {
+	apiKey, _ := payload["api_key"].(string)
+	name, _ := payload["name"].(string)
+	anchor, _ := payload["billing_cycle_anchor"].(string)
+	current, _ := payload["current_cycle"].(gin.H)
+	history, _ := payload["history"].([]gin.H)
+	if current == nil {
+		current = gin.H{}
+	}
+
+	title := "API Key 账单"
+	displayName := strings.TrimSpace(name)
+	if displayName == "" {
+		displayName = "未命名 API Key"
+	}
+	maskedKey := maskAPIKey(apiKey)
+	if maskedKey == "" {
+		maskedKey = "sk-***"
+	}
+
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.String(http.StatusOK, buildAPIKeyBillingHTML(title, displayName, maskedKey, anchor, current, history))
+}
+
+func buildAPIKeyBillingHTML(title, displayName, maskedKey, anchor string, current gin.H, history []gin.H) string {
+	used := billingFloat(current, "total_cost")
+	limit := billingFloat(current, "limit")
+	remaining := billingFloat(current, "remaining")
+	requests := billingInt(current, "request_count")
+	success := billingInt(current, "success_count")
+	failed := billingInt(current, "failed_count")
+	tokens := billingInt(current, "total_tokens")
+	exceeded, _ := current["exceeded"].(bool)
+	statusText := "正常"
+	statusClass := "ok"
+	if exceeded {
+		statusText = "已超限"
+		statusClass = "danger"
+	}
+
+	var b strings.Builder
+	b.WriteString(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>`)
+	b.WriteString(html.EscapeString(title))
+	b.WriteString(`</title><style>
+:root{color-scheme:light dark;--bg:#f5f7fb;--panel:#ffffff;--panel2:#f8fafc;--text:#111827;--muted:#64748b;--line:#e2e8f0;--accent:#0f766e;--accent2:#14b8a6;--danger:#dc2626;--ok:#16a34a;--shadow:0 24px 70px rgba(15,23,42,.12)}
+@media(prefers-color-scheme:dark){:root{--bg:#0b1120;--panel:#111827;--panel2:#172033;--text:#f8fafc;--muted:#94a3b8;--line:#263244;--shadow:0 24px 70px rgba(0,0,0,.38)}}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% 10%,rgba(20,184,166,.20),transparent 34%),linear-gradient(135deg,var(--bg),#e8eef7);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.wrap{width:min(1120px,calc(100vw - 32px));margin:0 auto;padding:48px 0}.hero{display:flex;justify-content:space-between;gap:24px;align-items:flex-end;margin-bottom:22px}.eyebrow{margin:0 0 8px;color:var(--accent);font-size:12px;font-weight:800;letter-spacing:.18em;text-transform:uppercase}.title{margin:0;font-size:clamp(30px,5vw,52px);line-height:1.02;letter-spacing:-.04em}.sub{margin:14px 0 0;color:var(--muted);font-size:15px}.badge{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:rgba(255,255,255,.52);border-radius:999px;padding:10px 14px;color:var(--muted);font-weight:700}.badge span{color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.panel{background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--line);border-radius:28px;box-shadow:var(--shadow);overflow:hidden;backdrop-filter:blur(18px)}.summary{display:grid;grid-template-columns:1.15fr repeat(3,1fr);gap:1px;background:var(--line)}.metric{background:var(--panel);padding:24px}.metric .label{color:var(--muted);font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.metric .value{margin-top:12px;font-size:30px;font-weight:850;letter-spacing:-.03em}.metric .hint{margin-top:8px;color:var(--muted);font-size:13px}.metric.hero-metric{background:linear-gradient(135deg,rgba(15,118,110,.14),rgba(20,184,166,.05)),var(--panel)}.status{display:inline-flex;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800}.status.ok{background:rgba(22,163,74,.12);color:var(--ok)}.status.danger{background:rgba(220,38,38,.12);color:var(--danger)}.bar{height:12px;border-radius:999px;background:var(--panel2);overflow:hidden;margin-top:18px}.fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:inherit}.section{padding:24px}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:12px}.section h2{margin:0;font-size:18px}.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:18px}table{width:100%;min-width:760px;border-collapse:collapse;background:var(--panel)}th,td{padding:14px 16px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.12em}td{font-size:14px}tr:last-child td{border-bottom:0}.empty{padding:28px;border:1px dashed var(--line);border-radius:18px;color:var(--muted);background:var(--panel2)}.foot{margin-top:16px;color:var(--muted);font-size:12px}@media(max-width:820px){.wrap{padding:28px 0}.hero{display:block}.badge{margin-top:18px}.summary{grid-template-columns:1fr}.metric{padding:20px}.section{padding:18px}.title{font-size:34px}.table-wrap{overflow:visible}table{min-width:0}thead{display:none}tr{display:block;border-bottom:1px solid var(--line);padding:10px 0}tr:last-child{border-bottom:0}td{display:flex;justify-content:space-between;gap:16px;border-bottom:0;padding:8px 14px;white-space:normal;text-align:right}td::before{content:attr(data-label);flex:0 0 auto;color:var(--muted);font-size:12px;font-weight:800;letter-spacing:.08em;text-align:left;text-transform:uppercase}td:first-child{display:block;text-align:left}td:first-child::before{display:block;margin-bottom:5px}}</style></head><body><main class="wrap">`)
+	fmt.Fprintf(&b, `<section class="hero"><div><p class="eyebrow">Customer billing</p><h1 class="title">%s</h1><p class="sub">按当前 API Key 的月度账期汇总消费、请求量和 Token 使用量。</p></div><div class="badge">Key <span>%s</span></div></section>`, html.EscapeString(displayName), html.EscapeString(maskedKey))
+	b.WriteString(`<section class="panel"><div class="summary">`)
+	fmt.Fprintf(&b, `<article class="metric hero-metric"><div class="label">当前账期</div><div class="value">%s</div><div class="hint">%s 至 %s</div><div class="bar"><div class="fill" style="width:%s"></div></div></article>`, html.EscapeString(formatBillingMoney(used)), html.EscapeString(formatBillingDate(billingString(current, "start"))), html.EscapeString(formatBillingDate(billingString(current, "end"))), html.EscapeString(formatBillingPercent(used, limit)))
+	fmt.Fprintf(&b, `<article class="metric"><div class="label">剩余额度</div><div class="value">%s</div><div class="hint">月限额 %s</div></article>`, html.EscapeString(formatBillingLimit(remaining, limit)), html.EscapeString(formatBillingLimit(limit, limit)))
+	fmt.Fprintf(&b, `<article class="metric"><div class="label">请求</div><div class="value">%s</div><div class="hint">%s 成功 / %s 失败</div></article>`, html.EscapeString(formatBillingInt(requests)), html.EscapeString(formatBillingInt(success)), html.EscapeString(formatBillingInt(failed)))
+	fmt.Fprintf(&b, `<article class="metric"><div class="label">Token</div><div class="value">%s</div><div class="hint"><span class="status %s">%s</span></div></article>`, html.EscapeString(formatBillingInt(tokens)), html.EscapeString(statusClass), html.EscapeString(statusText))
+	b.WriteString(`</div><div class="section"><div class="section-head"><h2>历史账期</h2>`)
+	if strings.TrimSpace(anchor) != "" {
+		fmt.Fprintf(&b, `<span class="sub">锚点：%s</span>`, html.EscapeString(formatBillingDate(anchor)))
+	}
+	b.WriteString(`</div>`)
+	if len(history) == 0 {
+		b.WriteString(`<div class="empty">暂无历史账期数据。</div>`)
+	} else {
+		b.WriteString(`<div class="table-wrap"><table><thead><tr><th>账期</th><th>消费</th><th>请求</th><th>成功</th><th>失败</th><th>Token</th><th>状态</th></tr></thead><tbody>`)
+		for _, cycle := range history {
+			cycleStatus := "正常"
+			cycleClass := "ok"
+			if exceeded, _ := cycle["exceeded"].(bool); exceeded {
+				cycleStatus = "已超限"
+				cycleClass = "danger"
+			}
+			fmt.Fprintf(&b, `<tr><td data-label="账期">%s - %s</td><td data-label="消费">%s</td><td data-label="请求">%s</td><td data-label="成功">%s</td><td data-label="失败">%s</td><td data-label="Token">%s</td><td data-label="状态"><span class="status %s">%s</span></td></tr>`,
+				html.EscapeString(formatBillingDate(billingString(cycle, "start"))),
+				html.EscapeString(formatBillingDate(billingString(cycle, "end"))),
+				html.EscapeString(formatBillingMoney(billingFloat(cycle, "total_cost"))),
+				html.EscapeString(formatBillingInt(billingInt(cycle, "request_count"))),
+				html.EscapeString(formatBillingInt(billingInt(cycle, "success_count"))),
+				html.EscapeString(formatBillingInt(billingInt(cycle, "failed_count"))),
+				html.EscapeString(formatBillingInt(billingInt(cycle, "total_tokens"))),
+				html.EscapeString(cycleClass),
+				html.EscapeString(cycleStatus),
+			)
+		}
+		b.WriteString(`</tbody></table></div>`)
+	}
+	b.WriteString(`<p class="foot">出于安全原因，此页面不展示完整 API Key，且响应不会被缓存。</p></div></section></main></body></html>`)
+	return b.String()
+}
+
+func renderAPIKeyBillingAlpineHTML(c *gin.Context, payload gin.H) {
+	apiKey, _ := payload["api_key"].(string)
+	name, _ := payload["name"].(string)
+	maskedKey := maskAPIKey(apiKey)
+	if maskedKey == "" {
+		maskedKey = "sk-***"
+	}
+	displayName := strings.TrimSpace(name)
+	if displayName == "" {
+		displayName = "API Key"
+	}
+
+	// Only expose minimal fields to the browser; never echo the full key.
+	publicPayload := gin.H{
+		"name":                   displayName,
+		"masked_key":             maskedKey,
+		"monthly_spending_limit": payload["monthly_spending_limit"],
+		"billing_cycle_anchor":   payload["billing_cycle_anchor"],
+		"current_cycle":          payload["current_cycle"],
+		"history":                payload["history"],
+	}
+
+	jsonBytes, err := json.Marshal(publicPayload)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encode billing data"})
+		return
+	}
+
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.String(http.StatusOK, buildAlpineBillingHTML(jsonBytes))
+}
+
+func buildAlpineBillingHTML(data []byte) string {
+	// JSON inside <script type="application/json"> is raw text — HTML entities are NOT decoded by browsers.
+	// Only escape < to \u003c to prevent </script> injection; JSON.parse will decode \uXXXX escapes correctly.
+	safeJSON := strings.ReplaceAll(string(data), "<", "\u003c")
+	var b strings.Builder
+	b.WriteString(`<!doctype html>
+<html lang="zh-CN" x-data="billingPage" x-init="init()" x-cloak>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API Key 账单</title>
+<style>
+[x-cloak]{display:none!important}
+:root{--bg:#0f172a;--panel:#1e293b;--panel2:#334155;--text:#f1f5f9;--muted:#94a3b8;--line:#334155;--accent:#f59e0b;--accent2:#fb923c;--danger:#ef4444;--ok:#22c55e;--shadow:0 20px 60px rgba(0,0,0,.4)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100vh;background:linear-gradient(135deg,#0f172a 0%,#1e1b4b 50%,#0f172a 100%);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:0;background:radial-gradient(circle at 80% 10%,rgba(245,158,11,.12),transparent 40%),radial-gradient(circle at 10% 90%,rgba(251,146,60,.08),transparent 40%);pointer-events:none;z-index:0}
+.wrap{position:relative;z-index:1;max-width:1100px;margin:0 auto;padding:40px 20px}
+.hero{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:28px;flex-wrap:wrap}
+.hero-left .eyebrow{font-size:11px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:var(--accent);margin-bottom:6px}
+.hero-left .title{font-size:clamp(28px,5vw,44px);font-weight:900;letter-spacing:-.03em;line-height:1.05}
+.hero-left .sub{margin-top:8px;color:var(--muted);font-size:14px}
+.badge{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:rgba(30,41,59,.8);border-radius:12px;padding:10px 16px;font-size:13px;backdrop-filter:blur(10px)}
+.badge .dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+.badge .key{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--accent);font-weight:700}
+.cards{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;gap:16px;margin-bottom:28px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:24px;position:relative;overflow:hidden;backdrop-filter:blur(10px)}
+.card.hero-card{background:linear-gradient(135deg,rgba(245,158,11,.15),rgba(251,146,60,.04)),var(--panel);border-color:rgba(245,158,11,.25)}
+.card .label{font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.card .value{font-size:clamp(24px,3.5vw,34px);font-weight:900;letter-spacing:-.02em;margin-top:10px}
+.card .hint{margin-top:6px;font-size:12px;color:var(--muted)}
+.bar{height:10px;border-radius:999px;background:var(--panel2);overflow:hidden;margin-top:14px}
+.bar .fill{height:100%;width:0;border-radius:inherit;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .8s cubic-bezier(.4,0,.2,1)}
+.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:700}
+.pill.ok{background:rgba(34,197,94,.15);color:var(--ok)}
+.pill.danger{background:rgba(239,68,68,.15);color:var(--danger)}
+.section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.section-head h2{font-size:18px;font-weight:800}
+.section-head .meta{font-size:12px;color:var(--muted)}
+.table-wrap{background:var(--panel);border:1px solid var(--line);border-radius:20px;overflow:hidden;backdrop-filter:blur(10px)}
+table{width:100%;border-collapse:collapse}
+th{padding:14px 16px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--line)}
+td{padding:14px 16px;font-size:14px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+tr:hover{background:rgba(245,158,11,.04)}
+.empty{padding:32px;text-align:center;color:var(--muted);font-size:14px}
+.foot{margin-top:20px;text-align:center;color:var(--muted);font-size:12px}
+.mobile-cards{display:none}
+@media(max-width:768px){
+.hero{flex-direction:column;align-items:flex-start}
+.cards{grid-template-columns:1fr 1fr;gap:12px}
+.card{padding:18px}
+.table-wrap{display:none}
+.mobile-cards{display:flex;flex-direction:column;gap:12px}
+.mobile-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px}
+.mobile-card .mc-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.mobile-card .mc-date{font-size:13px;font-weight:700;color:var(--accent)}
+.mobile-card .mc-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.mobile-card .mc-item .l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.mobile-card .mc-item .v{font-size:15px;font-weight:700;margin-top:2px}
+}
+@media(max-width:480px){.cards{grid-template-columns:1fr}}
+</style>
+<script type="application/json" id="billing-data">` + safeJSON + `</script>
+<script>
+function billingPage(){
+  return {
+    data:{},
+    expanded:-1,
+    init(){
+      try{
+        var el=document.getElementById('billing-data');
+        this.data=JSON.parse(el.textContent);
+      }catch(e){this.data={};}
+    },
+    fmtMoney(v){
+      v=Number(v)||0;
+      return '$'+v.toFixed(4);
+    },
+    fmtLimit(v){
+      v=Number(v)||0;
+      if(v<=0) return '不限';
+      return '$'+v.toFixed(4);
+    },
+    fmtInt(v){
+      v=Number(v)||0;
+      return v.toLocaleString('en-US');
+    },
+    fmtDate(s){
+      if(!s) return '--';
+      try{var d=new Date(s);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+      catch(e){return s;}
+    },
+    fmtPct(used,limit){
+      if(!limit||limit<=0) return 0;
+      var p=(used/limit)*100;
+      if(p<0)p=0;if(p>100)p=100;
+      return p.toFixed(1);
+    },
+    get cur(){return this.data.current_cycle||{};},
+    get hist(){return this.data.history||[];},
+    get limit(){return Number(this.data.monthly_spending_limit)||0;},
+    get used(){return Number(this.cur.total_cost)||0;},
+    get remaining(){return Number(this.cur.remaining)||0;},
+    get pct(){return this.fmtPct(this.used,this.limit);},
+    get exceeded(){return !!this.cur.exceeded;}
+  }
+}
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <section class="hero">
+    <div class="hero-left">
+      <p class="eyebrow">Billing Dashboard</p>
+      <h1 class="title" x-text="data.name||'API Key'"></h1>
+      <p class="sub">按当前 API Key 的月度账期汇总消费、请求量和 Token 使用量。</p>
+    </div>
+    <div class="badge">
+      <span class="dot"></span>
+      <span>Key</span>
+      <span class="key" x-text="data.masked_key||'sk-***'"></span>
+    </div>
+  </section>
+
+  <div class="cards">
+    <div class="card hero-card">
+      <div class="label">当前账期消费</div>
+      <div class="value" x-text="fmtMoney(used)"></div>
+      <div class="hint" x-text="fmtDate(cur.start)+' 至 '+fmtDate(cur.end)"></div>
+      <div class="bar"><div class="fill" :style="'width:'+pct+'%'"></div></div>
+    </div>
+    <div class="card">
+      <div class="label">剩余额度</div>
+      <div class="value" x-text="fmtLimit(remaining)"></div>
+      <div class="hint">月限额 <span x-text="fmtLimit(limit)"></span></div>
+    </div>
+    <div class="card">
+      <div class="label">请求量</div>
+      <div class="value" x-text="fmtInt(cur.request_count)"></div>
+      <div class="hint"><span x-text="fmtInt(cur.success_count)"></span> 成功 / <span x-text="fmtInt(cur.failed_count)"></span> 失败</div>
+    </div>
+    <div class="card">
+      <div class="label">Token</div>
+      <div class="value" x-text="fmtInt(cur.total_tokens)"></div>
+      <div class="hint">
+        <span class="pill" :class="exceeded?'danger':'ok'" x-text="exceeded?'已超限':'正常'"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <h2>历史账期</h2>
+    <span class="meta" x-show="data.billing_cycle_anchor" x-text="'锚点：'+fmtDate(data.billing_cycle_anchor)"></span>
+  </div>
+
+  <div class="table-wrap" x-show="hist.length>0">
+    <table>
+      <thead>
+        <tr><th>账期</th><th>消费</th><th>请求</th><th>成功</th><th>失败</th><th>Token</th><th>状态</th></tr>
+      </thead>
+      <tbody>
+        <template x-for="(c,i) in hist" :key="i">
+          <tr>
+            <td x-text="fmtDate(c.start)+' - '+fmtDate(c.end)"></td>
+            <td x-text="fmtMoney(c.total_cost)"></td>
+            <td x-text="fmtInt(c.request_count)"></td>
+            <td x-text="fmtInt(c.success_count)"></td>
+            <td x-text="fmtInt(c.failed_count)"></td>
+            <td x-text="fmtInt(c.total_tokens)"></td>
+            <td><span class="pill" :class="c.exceeded?'danger':'ok'" x-text="c.exceeded?'已超限':'正常'"></span></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="mobile-cards" x-show="hist.length>0">
+    <template x-for="(c,i) in hist" :key="i">
+      <div class="mobile-card">
+        <div class="mc-head">
+          <span class="mc-date" x-text="fmtDate(c.start)+' - '+fmtDate(c.end)"></span>
+          <span class="pill" :class="c.exceeded?'danger':'ok'" x-text="c.exceeded?'已超限':'正常'"></span>
+        </div>
+        <div class="mc-grid">
+          <div class="mc-item"><div class="l">消费</div><div class="v" x-text="fmtMoney(c.total_cost)"></div></div>
+          <div class="mc-item"><div class="l">请求</div><div class="v" x-text="fmtInt(c.request_count)"></div></div>
+          <div class="mc-item"><div class="l">成功</div><div class="v" x-text="fmtInt(c.success_count)"></div></div>
+          <div class="mc-item"><div class="l">失败</div><div class="v" x-text="fmtInt(c.failed_count)"></div></div>
+          <div class="mc-item"><div class="l">Token</div><div class="v" x-text="fmtInt(c.total_tokens)"></div></div>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  <div class="empty" x-show="hist.length===0">暂无历史账期数据。</div>
+
+  <p class="foot">出于安全原因，此页面不展示完整 API Key，且响应不会被缓存。</p>
+</div>
+</body>
+</html>`)
+	return b.String()
+}
+
+func billingString(payload gin.H, key string) string {
+	value, _ := payload[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func billingFloat(payload gin.H, key string) float64 {
+	switch value := payload[key].(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	case json.Number:
+		parsed, _ := value.Float64()
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func billingInt(payload gin.H, key string) int64 {
+	switch value := payload[key].(type) {
+	case int:
+		return int64(value)
+	case int64:
+		return value
+	case float64:
+		return int64(value)
+	case json.Number:
+		parsed, _ := value.Int64()
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func formatBillingMoney(value float64) string {
+	return fmt.Sprintf("$%.4f", value)
+}
+
+func formatBillingLimit(value, limit float64) string {
+	if limit <= 0 {
+		return "不限"
+	}
+	return formatBillingMoney(value)
+}
+
+func formatBillingInt(value int64) string {
+	return strconv.FormatInt(value, 10)
+}
+
+func formatBillingPercent(used, limit float64) string {
+	if limit <= 0 {
+		return "0%"
+	}
+	percent := used / limit * 100
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	return fmt.Sprintf("%.2f%%", percent)
+}
+
+func formatBillingDate(value string) string {
+	if value == "" {
+		return "--"
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return value
+	}
+	return parsed.Local().Format("2006-01-02 15:04")
 }
 
 func (h *Handler) GetPublicUsageLogs(c *gin.Context) {

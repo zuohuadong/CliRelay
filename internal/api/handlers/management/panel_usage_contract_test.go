@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -375,6 +376,96 @@ func TestAPIKeyBillingReturnsCurrentCycleAndHistory(t *testing.T) {
 	}
 	if len(payload["history"].([]any)) == 0 {
 		t.Fatalf("history should be populated: %#v", payload)
+	}
+}
+
+func TestAPIKeyBillingCanRenderBrowserHTML(t *testing.T) {
+	h := newUsageContractTestHandler(t)
+	_, _ = h.currentAPIKeyEntries()
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/api-key-billing?api_key=sk-a", nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	ctx.Request = req
+
+	h.GetAPIKeyBilling(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"API Key 账单", "Primary", "当前账期", "历史账期", "sk-***"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("HTML body missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, ">sk-a<") || strings.Contains(body, "api_key") {
+		t.Fatalf("HTML body should not expose the raw API key or JSON field names: %s", body)
+	}
+}
+
+func TestPublicAPIKeyBillingReturnsJSONByDefault(t *testing.T) {
+	h := newUsageContractTestHandler(t)
+	_, _ = h.currentAPIKeyEntries()
+
+	status, payload := performUsageContractRequest(t, http.MethodGet, "/v0/management/public/api-key-billing?api_key=sk-a", nil, nil, h.GetPublicAPIKeyBilling)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	current := payload["current_cycle"].(map[string]any)
+	if current["request_count"].(float64) != 2 {
+		t.Fatalf("unexpected request_count: %#v", current)
+	}
+	if payload["monthly_spending_limit"] == nil {
+		t.Fatalf("monthly_spending_limit should be present")
+	}
+}
+
+func TestPublicAPIKeyBillingRendersAlpineHTML(t *testing.T) {
+	h := newUsageContractTestHandler(t)
+	_, _ = h.currentAPIKeyEntries()
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/public/api-key-billing?api_key=sk-a", nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	ctx.Request = req
+
+	h.GetPublicAPIKeyBilling(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"alpinejs", "billingPage", "x-data", "sk-***"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("Alpine HTML body missing %q", want)
+		}
+	}
+	// Full API key must not appear in the HTML
+	if strings.Contains(body, "sk-a") {
+		t.Fatalf("HTML body must not contain the raw API key")
+	}
+}
+
+func TestPublicAPIKeyBillingMissingKey(t *testing.T) {
+	h := newUsageContractTestHandler(t)
+	status, _ := performUsageContractRequest(t, http.MethodGet, "/v0/management/public/api-key-billing", nil, nil, h.GetPublicAPIKeyBilling)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", status, http.StatusBadRequest)
 	}
 }
 

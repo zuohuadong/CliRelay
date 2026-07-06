@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	requestlogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -1981,6 +1982,84 @@ func TestWebsocketUpstreamSupportsIncrementalInputForModelFalseWhenMixedBackends
 	h := NewOpenAIResponsesAPIHandler(base)
 	if h.websocketUpstreamSupportsIncrementalInputForModel("gpt-5.3-codex") {
 		t.Fatalf("mixed websocket/http upstreams must replay transcript instead of preserving previous_response_id")
+	}
+}
+
+func TestResponsesWebsocketAvailableAuthsForCodexImageGenerationChatFiltersOpenAICompat(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	auths := []*coreauth.Auth{
+		{
+			ID:         "auth-codex",
+			Provider:   "codex",
+			Status:     coreauth.StatusActive,
+			Attributes: map[string]string{"websockets": "true"},
+		},
+		{
+			ID:         "auth-compat",
+			Provider:   "openai-compatible-custom-coding",
+			Status:     coreauth.StatusActive,
+			Attributes: map[string]string{"websockets": "true"},
+		},
+	}
+	for _, auth := range auths {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("Register auth %s: %v", auth.ID, err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	}
+	t.Cleanup(func() {
+		for _, auth := range auths {
+			registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+		}
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	available, modelKey := h.responsesWebsocketAvailableAuthsForModel("gpt-5.5")
+	if modelKey != "gpt-5.5" {
+		t.Fatalf("modelKey = %q, want gpt-5.5", modelKey)
+	}
+	if len(available) != 1 || available[0].ID != "auth-codex" {
+		t.Fatalf("available auths = %#v, want only codex", available)
+	}
+	if h.websocketUpstreamSupportsIncrementalInputForModel("gpt-5.5") != true {
+		t.Fatalf("expected codex-only websocket capability after filtering openai-compatible")
+	}
+}
+
+func TestResponsesWebsocketAvailableAuthsForCodexImageGenerationPassthroughAllowsOpenAICompat(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	auths := []*coreauth.Auth{
+		{
+			ID:         "auth-codex",
+			Provider:   "codex",
+			Status:     coreauth.StatusActive,
+			Attributes: map[string]string{"websockets": "true"},
+		},
+		{
+			ID:         "auth-compat",
+			Provider:   "openai-compatible-custom-coding",
+			Status:     coreauth.StatusActive,
+			Attributes: map[string]string{"websockets": "true"},
+		},
+	}
+	for _, auth := range auths {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("Register auth %s: %v", auth.ID, err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	}
+	t.Cleanup(func() {
+		for _, auth := range auths {
+			registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+		}
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{DisableImageGeneration: internalconfig.DisableImageGenerationPassthrough}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	available, _ := h.responsesWebsocketAvailableAuthsForModel("gpt-5.5")
+	if len(available) != 2 {
+		t.Fatalf("available auths = %#v, want codex and openai-compatible", available)
 	}
 }
 

@@ -631,6 +631,42 @@ func TestExecuteWithAuthManager_CodexImageGenerationDefaultKeepsCodexProvider(t 
 	}
 }
 
+func TestExecuteWithAuthManager_CodexImageGenerationDefaultFiltersDirectOpenAICompatProvider(t *testing.T) {
+	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, true)
+	registry.GetGlobalRegistry().RegisterClient("compat-auth", "openai-compatible-custom-coding", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"stream":false}`)
+
+	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
+	if errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
+	}
+	if got := string(body); got != "codex:gpt-5.5" {
+		t.Fatalf("response = %q, want codex provider", got)
+	}
+	if models := codex.Models(); len(models) != 1 || models[0] != "gpt-5.5" {
+		t.Fatalf("codex models = %v, want [gpt-5.5]", models)
+	}
+	if models := compat.Models(); len(models) != 0 {
+		t.Fatalf("direct openai-compatible provider should be filtered for default Codex image_generation chat, got %v", models)
+	}
+}
+
+func TestGetRequestDetails_CodexImageGenerationDefaultFiltersDirectOpenAICompatProvider(t *testing.T) {
+	handler, _, _ := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, true)
+	registry.GetGlobalRegistry().RegisterClient("compat-auth", "openai-compatible-custom-coding", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+
+	providers, normalizedModel, errMsg := handler.getRequestDetailsWithOptions("gpt-5.5", false)
+	if errMsg != nil {
+		t.Fatalf("getRequestDetailsWithOptions() error = %+v", errMsg)
+	}
+	if normalizedModel != "gpt-5.5" {
+		t.Fatalf("normalizedModel = %q, want gpt-5.5", normalizedModel)
+	}
+	if len(providers) != 1 || providers[0] != "codex" {
+		t.Fatalf("providers = %v, want [codex]", providers)
+	}
+}
+
 func TestExecuteWithAuthManager_CodexImageGenerationPassthroughAllowsOpenAICompatProvider(t *testing.T) {
 	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationPassthrough, false)
 	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"hi"}],"stream":false}`)

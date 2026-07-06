@@ -1718,7 +1718,7 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 		return []string{"home"}, resolvedModelName, nil
 	}
 
-	providers = util.GetProviderName(baseModel)
+	providers = h.filterProvidersForRequest(util.GetProviderName(baseModel), baseModel, allowImageModel)
 	providers = h.appendConfiguredAliasProvidersForRequest(providers, baseModel, allowImageModel)
 	// Fallback: if baseModel has no provider but differs from resolvedModelName,
 	// try using the full model name. This handles edge cases where custom models
@@ -1726,7 +1726,7 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	// Evaluated in Story 11.8: This fallback is intentionally preserved to support
 	// custom model registrations that include thinking suffixes.
 	if len(providers) == 0 && baseModel != resolvedModelName {
-		providers = util.GetProviderName(resolvedModelName)
+		providers = h.filterProvidersForRequest(util.GetProviderName(resolvedModelName), resolvedModelName, allowImageModel)
 		providers = h.appendConfiguredAliasProvidersForRequest(providers, resolvedModelName, allowImageModel)
 	}
 
@@ -1741,6 +1741,19 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 
 func (h *BaseAPIHandler) appendConfiguredAliasProviders(providers []string, modelName string) []string {
 	return h.appendConfiguredAliasProvidersForRequest(providers, modelName, false)
+}
+
+func (h *BaseAPIHandler) filterProvidersForRequest(providers []string, modelName string, allowImageModel bool) []string {
+	if !h.shouldKeepCodexImageGenerationChatOnCodex(modelName, allowImageModel) {
+		return providers
+	}
+	out := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		if strings.EqualFold(strings.TrimSpace(provider), "codex") {
+			out = append(out, provider)
+		}
+	}
+	return out
 }
 
 func (h *BaseAPIHandler) appendConfiguredAliasProvidersForRequest(providers []string, modelName string, allowImageModel bool) []string {
@@ -1772,10 +1785,17 @@ func (h *BaseAPIHandler) appendConfiguredAliasProvidersForRequest(providers []st
 }
 
 func (h *BaseAPIHandler) shouldKeepCodexImageGenerationChatOnCodex(modelName string, allowImageModel bool) bool {
+	if h == nil {
+		return ShouldKeepCodexImageGenerationChatOnCodex(nil, modelName, allowImageModel)
+	}
+	return ShouldKeepCodexImageGenerationChatOnCodex(h.Cfg, modelName, allowImageModel)
+}
+
+func ShouldKeepCodexImageGenerationChatOnCodex(cfg *config.SDKConfig, modelName string, allowImageModel bool) bool {
 	if allowImageModel {
 		return false
 	}
-	if h != nil && h.Cfg != nil && h.Cfg.DisableImageGeneration.String() != "false" {
+	if cfg != nil && cfg.DisableImageGeneration.String() != "false" {
 		return false
 	}
 	baseModel := strings.TrimSpace(thinking.ParseSuffix(modelName).ModelName)
@@ -1790,7 +1810,7 @@ func (h *BaseAPIHandler) shouldKeepCodexImageGenerationChatOnCodex(modelName str
 	case "gpt-5.5", "gpt-5.4", "gpt-5.4-mini":
 		return true
 	default:
-		return strings.HasPrefix(baseModel, "gpt-5.") && strings.Contains(baseModel, "codex") && !strings.HasSuffix(baseModel, "spark")
+		return false
 	}
 }
 

@@ -54,6 +54,7 @@ type openAICompatibilityWithAuthIndex struct {
 	Name                string                                   `json:"name"`
 	Priority            int                                      `json:"priority,omitempty"`
 	Disabled            bool                                     `json:"disabled"`
+	BillingMultiplier   float64                                  `json:"billing-multiplier,omitempty"`
 	Prefix              string                                   `json:"prefix,omitempty"`
 	BaseURL             string                                   `json:"base-url"`
 	TestModel           string                                   `json:"test-model,omitempty"`
@@ -285,6 +286,7 @@ func (h *Handler) openAICompatibilityEntriesWithAuthIndex(entriesFn func() []con
 			Name:                entry.Name,
 			Priority:            entry.Priority,
 			Disabled:            entry.Disabled,
+			BillingMultiplier:   entry.BillingMultiplier,
 			Prefix:              entry.Prefix,
 			BaseURL:             entry.BaseURL,
 			TestModel:           entry.TestModel,

@@ -551,6 +551,105 @@ func newGenericOpenAICompatRoutingPolicyHandler(t *testing.T) (*BaseAPIHandler, 
 	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager), manager, executor
 }
 
+func newCodexImageGenerationRoutingPolicyHandler(t *testing.T, disableImageGeneration internalconfig.DisableImageGenerationMode, includeCodexAuth bool) (*BaseAPIHandler, *routePolicyExecutor, *routePolicyExecutor) {
+	t.Helper()
+
+	const compatProvider = "openai-compatible-custom-coding"
+	manager := coreauth.NewManager(nil, nil, nil)
+	codex := &routePolicyExecutor{id: "codex"}
+	compat := &routePolicyExecutor{id: compatProvider}
+	manager.RegisterExecutor(codex)
+	manager.RegisterExecutor(compat)
+
+	cfg := &internalconfig.Config{
+		SDKConfig: internalconfig.SDKConfig{DisableImageGeneration: disableImageGeneration},
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{
+			{
+				Name:    "custom-coding",
+				BaseURL: "https://example.invalid/v1",
+				Models:  []internalconfig.OpenAICompatibilityModel{{Name: "custom-gpt-5-5", Alias: "gpt-5.5"}},
+			},
+		},
+	}
+	manager.SetConfig(cfg)
+
+	auths := make([]*coreauth.Auth, 0, 2)
+	if includeCodexAuth {
+		auths = append(auths, &coreauth.Auth{
+			ID:       "codex-auth",
+			Provider: "codex",
+			Status:   coreauth.StatusActive,
+			Attributes: map[string]string{
+				"auth_kind": "oauth",
+			},
+		})
+	}
+	auths = append(auths, &coreauth.Auth{
+		ID:       "compat-auth",
+		Provider: compatProvider,
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"api_key":      "test-compat-key",
+			"auth_kind":    "api_key",
+			"provider_key": compatProvider,
+			"compat_name":  "custom-coding",
+		},
+	})
+	for _, auth := range auths {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("manager.Register(%s): %v", auth.ID, err)
+		}
+		modelID := "gpt-5.5"
+		if auth.Provider == compatProvider {
+			modelID = "custom-gpt-5-5"
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: modelID}})
+		t.Cleanup(func(id string) func() {
+			return func() { registry.GetGlobalRegistry().UnregisterClient(id) }
+		}(auth.ID))
+	}
+
+	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{DisableImageGeneration: disableImageGeneration}, manager), codex, compat
+}
+
+func TestExecuteWithAuthManager_CodexImageGenerationDefaultKeepsCodexProvider(t *testing.T) {
+	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, true)
+	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"stream":false}`)
+
+	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
+	if errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
+	}
+	if got := string(body); got != "codex:gpt-5.5" {
+		t.Fatalf("response = %q, want codex provider", got)
+	}
+	if models := codex.Models(); len(models) != 1 || models[0] != "gpt-5.5" {
+		t.Fatalf("codex models = %v, want [gpt-5.5]", models)
+	}
+	if models := compat.Models(); len(models) != 0 {
+		t.Fatalf("openai-compatible alias should not be used for default Codex image_generation chat, got %v", models)
+	}
+}
+
+func TestExecuteWithAuthManager_CodexImageGenerationPassthroughAllowsOpenAICompatProvider(t *testing.T) {
+	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationPassthrough, false)
+	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"hi"}],"stream":false}`)
+
+	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
+	if errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
+	}
+	if got := string(body); got != "openai-compatible-custom-coding:custom-gpt-5-5" {
+		t.Fatalf("response = %q, want openai-compatible alias provider", got)
+	}
+	if models := codex.Models(); len(models) != 0 {
+		t.Fatalf("codex should not be used when passthrough allows alias routing, got %v", models)
+	}
+	if models := compat.Models(); len(models) != 1 || models[0] != "custom-gpt-5-5" {
+		t.Fatalf("openai-compatible models = %v, want [custom-gpt-5-5]", models)
+	}
+}
+
 func TestExecuteWithAuthManager_RequestBytesPolicyFallsBackFromCodexSparkToAstron(t *testing.T) {
 	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
 	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("x", 256) + `"}`)

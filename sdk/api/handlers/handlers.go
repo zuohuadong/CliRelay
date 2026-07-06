@@ -1719,7 +1719,7 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	}
 
 	providers = util.GetProviderName(baseModel)
-	providers = h.appendConfiguredAliasProviders(providers, baseModel)
+	providers = h.appendConfiguredAliasProvidersForRequest(providers, baseModel, allowImageModel)
 	// Fallback: if baseModel has no provider but differs from resolvedModelName,
 	// try using the full model name. This handles edge cases where custom models
 	// may be registered with their full suffixed name (e.g., "my-model(8192)").
@@ -1727,7 +1727,7 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	// custom model registrations that include thinking suffixes.
 	if len(providers) == 0 && baseModel != resolvedModelName {
 		providers = util.GetProviderName(resolvedModelName)
-		providers = h.appendConfiguredAliasProviders(providers, resolvedModelName)
+		providers = h.appendConfiguredAliasProvidersForRequest(providers, resolvedModelName, allowImageModel)
 	}
 
 	if len(providers) == 0 {
@@ -1740,7 +1740,14 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 }
 
 func (h *BaseAPIHandler) appendConfiguredAliasProviders(providers []string, modelName string) []string {
+	return h.appendConfiguredAliasProvidersForRequest(providers, modelName, false)
+}
+
+func (h *BaseAPIHandler) appendConfiguredAliasProvidersForRequest(providers []string, modelName string, allowImageModel bool) []string {
 	if h == nil || h.AuthManager == nil || strings.TrimSpace(modelName) == "" {
+		return providers
+	}
+	if h.shouldKeepCodexImageGenerationChatOnCodex(modelName, allowImageModel) {
 		return providers
 	}
 	seen := make(map[string]struct{}, len(providers)+3)
@@ -1762,6 +1769,33 @@ func (h *BaseAPIHandler) appendConfiguredAliasProviders(providers []string, mode
 		providers = append(providers, provider)
 	}
 	return providers
+}
+
+func (h *BaseAPIHandler) shouldKeepCodexImageGenerationChatOnCodex(modelName string, allowImageModel bool) bool {
+	if allowImageModel {
+		return false
+	}
+	if h != nil && h.Cfg != nil && h.Cfg.DisableImageGeneration.String() != "false" {
+		return false
+	}
+	baseModel := strings.TrimSpace(thinking.ParseSuffix(modelName).ModelName)
+	if baseModel == "" {
+		baseModel = strings.TrimSpace(modelName)
+	}
+	baseModel = strings.ToLower(routeModelBaseName(baseModel))
+	if strings.HasSuffix(baseModel, "spark") {
+		return false
+	}
+	switch baseModel {
+	case "gpt-5.5", "gpt-5.4", "gpt-5.4-mini":
+		return true
+	default:
+		return strings.HasPrefix(baseModel, "gpt-5.") && strings.Contains(baseModel, "codex") && !strings.HasSuffix(baseModel, "spark")
+	}
+}
+
+func modelRouterRequestAllowsImageModel(handlerType string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(handlerType)), "image")
 }
 
 func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageModel bool) *interfaces.ErrorMessage {
@@ -2024,6 +2058,9 @@ func modelRoutersEnabled(host PluginModelRouterHost, skipPluginID string) bool {
 
 func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
 	var decision modelRouteDecision
+	if h.shouldKeepCodexImageGenerationChatOnCodex(modelName, modelRouterRequestAllowsImageModel(handlerType)) {
+		return decision
+	}
 	host := h.modelRouterHost()
 	if host == nil || !modelRoutersEnabled(host, execOptions.SkipRouterPluginID) {
 		return decision

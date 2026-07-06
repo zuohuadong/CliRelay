@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
@@ -334,6 +335,40 @@ func TestApplyModelRouterSkipsHostsWithoutRouters(t *testing.T) {
 	}
 	if host.called {
 		t.Fatal("RouteModel was called even though detector reported no routers")
+	}
+}
+
+func TestApplyModelRouterSkipsCodexImageGenerationChatByDefault(t *testing.T) {
+	host := &handlerRouterOnlyTestHost{hasRouters: true}
+	host.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "openai-compatible-custom-coding", TargetModel: "custom-gpt-5-5"}, true
+	}
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	handler.SetModelRouterHost(host)
+
+	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"draw"}`), false, modelExecutionOptions{})
+	if got.ExecutorPluginID != "" || got.Provider != "" || got.Model != "" {
+		t.Fatalf("applyModelRouter() = %#v, want no routing decision", got)
+	}
+	if host.called {
+		t.Fatal("RouteModel was called for default Codex image_generation chat")
+	}
+}
+
+func TestApplyModelRouterAllowsCodexImageGenerationPassthrough(t *testing.T) {
+	host := &handlerRouterOnlyTestHost{hasRouters: true}
+	host.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "openai-compatible-custom-coding", TargetModel: "custom-gpt-5-5"}, true
+	}
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{DisableImageGeneration: internalconfig.DisableImageGenerationPassthrough}, nil)
+	handler.SetModelRouterHost(host)
+
+	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"hi"}`), false, modelExecutionOptions{})
+	if got.Provider != "openai-compatible-custom-coding" || got.Model != "custom-gpt-5-5" {
+		t.Fatalf("applyModelRouter() = %#v, want passthrough provider route", got)
+	}
+	if !host.called {
+		t.Fatal("RouteModel was not called when passthrough is configured")
 	}
 }
 

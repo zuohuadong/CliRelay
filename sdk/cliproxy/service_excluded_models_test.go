@@ -149,6 +149,58 @@ func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
 	}
 }
 
+func TestRegisterModelsForAuth_OpenAICompatibilityMetadataModels(t *testing.T) {
+	service := &Service{cfg: &config.Config{}}
+	auth := &coreauth.Auth{
+		ID:       "auth-openai-compat-metadata",
+		Provider: "openai-compatibility",
+		Label:    "agnes",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind":    "api_key",
+			"compat_name":  "agnes",
+			"provider_key": "agnes",
+			"base_url":     "https://example.com/v1",
+			"api_key":      "sk-test",
+		},
+		Metadata: map[string]any{
+			"models": []any{
+				map[string]any{"name": "agnes-2.0-flash", "alias": "agnes-2.0-flash"},
+				map[string]any{"name": "agnes-image-2.1-flash", "alias": "agnes-image-2.1-flash", "image": true},
+				map[string]any{"name": "agnes-video-v2.0", "alias": "agnes-video-v2.0", "video": true},
+			},
+		},
+	}
+
+	modelRegistry := internalregistry.GetGlobalRegistry()
+	modelRegistry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	models := modelRegistry.GetModelsForClient(auth.ID)
+	if len(models) != 3 {
+		t.Fatalf("models len = %d, want 3: %#v", len(models), models)
+	}
+	typesByID := map[string]string{}
+	for _, model := range models {
+		if model != nil {
+			typesByID[strings.TrimSpace(model.ID)] = model.Type
+		}
+	}
+	if typesByID["agnes-2.0-flash"] != "openai-compatibility" {
+		t.Fatalf("chat model type = %q, want openai-compatibility", typesByID["agnes-2.0-flash"])
+	}
+	if typesByID["agnes-image-2.1-flash"] != internalregistry.OpenAIImageModelType {
+		t.Fatalf("image model type = %q, want %q", typesByID["agnes-image-2.1-flash"], internalregistry.OpenAIImageModelType)
+	}
+	if typesByID["agnes-video-v2.0"] != internalregistry.OpenAIVideoModelType {
+		t.Fatalf("video model type = %q, want %q", typesByID["agnes-video-v2.0"], internalregistry.OpenAIVideoModelType)
+	}
+}
+
 func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.T) {
 	var sawFetch bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -132,6 +132,59 @@ func TestFileSynthesizer_Synthesize_ValidAuthFile(t *testing.T) {
 	}
 }
 
+func TestFileSynthesizer_Synthesize_OpenAICompatibilityProviderMetadata(t *testing.T) {
+	tempDir := t.TempDir()
+	authData := map[string]any{
+		"provider":    "openai-compatibility",
+		"compat_name": "agnes",
+		"base_url":    "https://example.com/v1",
+		"api_key":     "sk-test",
+		"models": []map[string]any{
+			{"name": "agnes-2.0-flash", "alias": "agnes-2.0-flash"},
+			{"name": "agnes-image-2.1-flash", "alias": "agnes-image-2.1-flash", "image": true},
+		},
+	}
+	data, _ := json.Marshal(authData)
+	if err := os.WriteFile(filepath.Join(tempDir, "agnes.json"), data, 0644); err != nil {
+		t.Fatalf("failed to write auth file: %v", err)
+	}
+
+	synth := NewFileSynthesizer()
+	ctx := &SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     tempDir,
+		Now:         time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	auth := auths[0]
+	if auth.Provider != "openai-compatibility" {
+		t.Fatalf("provider = %q, want openai-compatibility", auth.Provider)
+	}
+	if auth.Label != "agnes" {
+		t.Fatalf("label = %q, want agnes", auth.Label)
+	}
+	if auth.Attributes["compat_name"] != "agnes" || auth.Attributes["provider_key"] != "agnes" {
+		t.Fatalf("compat attrs = %#v", auth.Attributes)
+	}
+	if auth.Attributes["base_url"] != "https://example.com/v1" || auth.Attributes["api_key"] != "sk-test" {
+		t.Fatalf("upstream attrs = %#v", auth.Attributes)
+	}
+	if auth.Attributes["auth_kind"] != "api_key" {
+		t.Fatalf("auth_kind = %q, want api_key", auth.Attributes["auth_kind"])
+	}
+	if _, ok := auth.Metadata["models"]; !ok {
+		t.Fatalf("models metadata missing: %#v", auth.Metadata)
+	}
+}
+
 func TestFileSynthesizer_Synthesize_IgnoresGeminiProviderFile(t *testing.T) {
 	tempDir := t.TempDir()
 

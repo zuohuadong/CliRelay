@@ -5,6 +5,7 @@ package cliproxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -2271,6 +2272,15 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 				}
 			}
 			if isCompatAuth {
+				models = buildOpenAICompatibilityAuthMetadataModels(a, compatName)
+				if len(models) > 0 {
+					if providerKey == "" {
+						providerKey = "openai-compatibility"
+					}
+					models = s.appendPluginModels(providerKey, models)
+					s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+					return
+				}
 				models = s.appendPluginModels(providerKey, nil)
 				if len(models) > 0 {
 					s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
@@ -2679,6 +2689,102 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		})
 	}
 	return models
+}
+
+func buildOpenAICompatibilityAuthMetadataModels(auth *coreauth.Auth, compatName string) []*ModelInfo {
+	if auth == nil || auth.Metadata == nil {
+		return nil
+	}
+	rawModels, ok := auth.Metadata["models"]
+	if !ok {
+		return nil
+	}
+	models := normalizeOpenAICompatibilityMetadataModels(rawModels)
+	if len(models) == 0 {
+		return nil
+	}
+	compatName = strings.TrimSpace(compatName)
+	if compatName == "" && auth.Attributes != nil {
+		compatName = strings.TrimSpace(auth.Attributes["compat_name"])
+	}
+	if compatName == "" {
+		compatName = strings.TrimSpace(auth.Label)
+	}
+	return buildOpenAICompatibilityConfigModels(&config.OpenAICompatibility{
+		Name:   compatName,
+		Models: models,
+	})
+}
+
+func normalizeOpenAICompatibilityMetadataModels(raw any) []config.OpenAICompatibilityModel {
+	switch typed := raw.(type) {
+	case []config.OpenAICompatibilityModel:
+		return compactOpenAICompatibilityMetadataModels(typed)
+	case []string:
+		models := make([]config.OpenAICompatibilityModel, 0, len(typed))
+		for _, model := range typed {
+			model = strings.TrimSpace(model)
+			if model != "" {
+				models = append(models, config.OpenAICompatibilityModel{Name: model, Alias: model})
+			}
+		}
+		return models
+	case []any:
+		models := make([]config.OpenAICompatibilityModel, 0, len(typed))
+		for _, item := range typed {
+			switch value := item.(type) {
+			case string:
+				model := strings.TrimSpace(value)
+				if model != "" {
+					models = append(models, config.OpenAICompatibilityModel{Name: model, Alias: model})
+				}
+			default:
+				encoded, err := json.Marshal(value)
+				if err != nil {
+					continue
+				}
+				var model config.OpenAICompatibilityModel
+				if err := json.Unmarshal(encoded, &model); err != nil {
+					continue
+				}
+				models = append(models, model)
+			}
+		}
+		return compactOpenAICompatibilityMetadataModels(models)
+	default:
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return nil
+		}
+		var models []config.OpenAICompatibilityModel
+		if err := json.Unmarshal(encoded, &models); err == nil {
+			return compactOpenAICompatibilityMetadataModels(models)
+		}
+		var ids []string
+		if err := json.Unmarshal(encoded, &ids); err != nil {
+			return nil
+		}
+		return normalizeOpenAICompatibilityMetadataModels(ids)
+	}
+}
+
+func compactOpenAICompatibilityMetadataModels(models []config.OpenAICompatibilityModel) []config.OpenAICompatibilityModel {
+	out := make([]config.OpenAICompatibilityModel, 0, len(models))
+	for _, model := range models {
+		model.Name = strings.TrimSpace(model.Name)
+		model.Alias = strings.TrimSpace(model.Alias)
+		if model.Name == "" && model.Alias != "" {
+			model.Name = model.Alias
+		}
+		if model.Alias == "" && model.Name != "" {
+			model.Alias = model.Name
+		}
+		if model.Name == "" {
+			continue
+		}
+		out = append(out, model)
+	}
+	return out
 }
 
 func buildOpenCodeGoConfigModels(entry *config.OpenCodeGoKey) []*ModelInfo {

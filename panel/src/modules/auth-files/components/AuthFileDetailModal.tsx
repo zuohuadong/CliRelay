@@ -123,6 +123,7 @@ export function AuthFileDetailModal({
   const providerKey = normalizeProviderKey(modelsFileType);
   const detailProviderKey = detailFile ? normalizeProviderKey(resolveFileType(detailFile)) : "";
   const supportsUsageTrend = detailProviderKey === "kimi" || detailProviderKey === "codex";
+  const canShowRawContent = !supportsUsageTrend;
   const excludedModels = excluded[providerKey] ?? [];
   const canRenameChannel = detailFile ? canRenameAuthFileChannel(detailFile) : false;
   const channelBaseline = detailFile ? readAuthFileChannelName(detailFile) : "";
@@ -433,7 +434,9 @@ export function AuthFileDetailModal({
                 {supportsUsageTrend ? (
                   <TabsTrigger value="usage">{t("auth_files.detail_tab_usage")}</TabsTrigger>
                 ) : null}
-                <TabsTrigger value="content">{t("auth_files.detail_tab_json")}</TabsTrigger>
+                {canShowRawContent ? (
+                  <TabsTrigger value="content">{t("auth_files.detail_tab_json")}</TabsTrigger>
+                ) : null}
                 <TabsTrigger value="fields">{t("auth_files.detail_tab_fields")}</TabsTrigger>
                 <TabsTrigger value="models">{t("auth_files.detail_tab_models")}</TabsTrigger>
               </TabsList>
@@ -449,22 +452,24 @@ export function AuthFileDetailModal({
                 </TabsContent>
               ) : null}
 
-              <TabsContent value="content" className="pb-1">
-                {detailLoading ? (
-                  <div className="text-sm text-slate-600 dark:text-white/65">
-                    {t("common.loading_ellipsis")}
-                  </div>
-                ) : detailText ? (
-                  <pre className="overflow-auto whitespace-pre rounded-lg bg-slate-50/80 p-4 text-xs leading-relaxed text-slate-800 dark:bg-white/[0.04] dark:text-white/80">
-                    {detailText}
-                  </pre>
-                ) : (
-                  <EmptyState
-                    title={t("auth_files.content_empty")}
-                    description={t("auth_files.content_empty_desc")}
-                  />
-                )}
-              </TabsContent>
+              {canShowRawContent ? (
+                <TabsContent value="content" className="pb-1">
+                  {detailLoading ? (
+                    <div className="text-sm text-slate-600 dark:text-white/65">
+                      {t("common.loading_ellipsis")}
+                    </div>
+                  ) : detailText ? (
+                    <pre className="overflow-auto whitespace-pre rounded-lg bg-slate-50/80 p-4 text-xs leading-relaxed text-slate-800 dark:bg-white/[0.04] dark:text-white/80">
+                      {detailText}
+                    </pre>
+                  ) : (
+                    <EmptyState
+                      title={t("auth_files.content_empty")}
+                      description={t("auth_files.content_empty_desc")}
+                    />
+                  )}
+                </TabsContent>
+              ) : null}
 
               <TabsContent value="fields" className="pb-1">
                 {prefixProxyEditor.loading ? (

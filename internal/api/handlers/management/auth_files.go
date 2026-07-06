@@ -600,6 +600,11 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if codexFastMode, ok := authCodexFastModeValue(auth); ok {
 		entry["codex_fast_mode"] = codexFastMode
 	}
+	if auth.Metadata != nil {
+		if models, ok := auth.Metadata["models"]; ok {
+			entry["models"] = models
+		}
+	}
 	return entry
 }
 

@@ -619,6 +619,10 @@ func TestExecuteWithAuthManager_ContextLengthExhaustionReportsSpecificError(t *t
 		!strings.Contains(msg, "candidate_context_lengths=") {
 		t.Fatalf("error message = %q, want sanitized provider/model/request/context context", msg)
 	}
+	if !strings.Contains(msg, "astron-code-latest:512") &&
+		!strings.Contains(msg, "glm-5.2:2048") {
+		t.Fatalf("error message = %q, want concrete context-length diagnostics", msg)
+	}
 	if models := codex.Models(); len(models) != 0 {
 		t.Fatalf("codex should be skipped by request policy, got calls for %v", models)
 	}

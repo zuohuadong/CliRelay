@@ -76,6 +76,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 		return nil
 	}
 	t, _ := metadata["type"].(string)
+	if strings.TrimSpace(t) == "" {
+		t, _ = metadata["provider"].(string)
+	}
 	provider := strings.ToLower(strings.TrimSpace(t))
 	if provider == "gemini" {
 		provider = "gemini-cli"
@@ -122,6 +125,18 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	label := provider
 	if email, _ := metadata["email"].(string); email != "" {
 		label = email
+	}
+	compatName := ""
+	if provider == "openai-compatibility" {
+		compatName, _ = metadata["compat_name"].(string)
+		compatName = strings.TrimSpace(compatName)
+		if compatName == "" {
+			compatName, _ = metadata["name"].(string)
+			compatName = strings.TrimSpace(compatName)
+		}
+		if compatName != "" {
+			label = compatName
+		}
 	}
 	// Use relative path under authDir as ID to stay consistent with the file-based token store.
 	id := fullPath
@@ -175,6 +190,19 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	if provider == "openai-compatibility" {
+		if compatName != "" {
+			a.Attributes["compat_name"] = compatName
+			a.Attributes["provider_key"] = compatName
+		}
+		if baseURL, _ := metadata["base_url"].(string); strings.TrimSpace(baseURL) != "" {
+			a.Attributes["base_url"] = strings.TrimSpace(baseURL)
+		}
+		if apiKey, _ := metadata["api_key"].(string); strings.TrimSpace(apiKey) != "" {
+			a.Attributes["api_key"] = strings.TrimSpace(apiKey)
+			a.Attributes["auth_kind"] = "api_key"
+		}
+	}
 	// Read priority from auth file.
 	if rawPriority, ok := metadata["priority"]; ok {
 		switch v := rawPriority.(type) {
@@ -197,7 +225,11 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
-	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
+	authKind := "oauth"
+	if provider == "openai-compatibility" && strings.TrimSpace(a.Attributes["api_key"]) != "" {
+		authKind = "api_key"
+	}
+	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, authKind)
 	// For codex auth files, extract plan_type from the JWT id_token.
 	if provider == "codex" {
 		if idTokenRaw, ok := metadata["id_token"].(string); ok && strings.TrimSpace(idTokenRaw) != "" {

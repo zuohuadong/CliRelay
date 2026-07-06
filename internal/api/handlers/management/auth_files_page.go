@@ -716,7 +716,12 @@ function updateAddFields(){
     cf.innerHTML=
       '<label>兼容名称</label><input id="addCompatName" placeholder="例如 deepseek">'+
       '<label>Base URL</label><input id="addBaseUrl" placeholder="https://api.deepseek.com/v1">'+
-      '<label>API Key</label><textarea id="addApiKey" placeholder="sk-..."></textarea>'
+      '<label>API Key</label><textarea id="addApiKey" placeholder="sk-..."></textarea>'+
+      '<label>Models 高级配置 / 导入</label>'+
+      '<textarea id="addCompatModels" rows="8" placeholder=\'支持 JSON、/v1/models 响应或一行一个模型。示例：&#10;[{&quot;name&quot;:&quot;agnes-2.0-flash&quot;,&quot;alias&quot;:&quot;agnes-2.0-flash&quot;},{&quot;name&quot;:&quot;agnes-image-2.1-flash&quot;,&quot;alias&quot;:&quot;agnes-image-2.1-flash&quot;,&quot;image&quot;:true}]&#10;&#10;一行一个时可写：agnes-image-2.1-flash | image\'></textarea>'+
+      '<p style="color:var(--text2);font-size:12px;margin:6px 0 10px">生图/生视频能力以显式字段为准；名称猜测只作为导入辅助建议，不作为唯一事实源。</p>'+
+      '<label style="display:flex;gap:8px;align-items:center"><input id="addCompatGuessImage" type="checkbox"> 导入纯文本时按名称包含 image/img 辅助标记生图</label>'+
+      '<label style="display:flex;gap:8px;align-items:center"><input id="addDisableCooling" type="checkbox"> 禁用该通道冷却（适合非聊天模型避免误伤）</label>'
   }else{
     cf.style.display='none';cf.innerHTML='';
     if(type==='anthropic')f.innerHTML='<label>API Key</label><textarea id="addKey" placeholder="sk-ant-..."></textarea>';
@@ -730,6 +735,59 @@ function updateAddFields(){
 }
 
 function closeModal(id){var m=document.getElementById(id);if(m)m.remove()}
+
+function parseCompatModelsInput(raw,guessImage){
+  raw=(raw||'').trim();
+  if(!raw)return[];
+  function normalizeOne(item){
+    if(typeof item==='string'){
+      var text=item.trim();
+      if(!text)return null;
+      var image=false;
+      var parts=text.split('|').map(function(s){return s.trim()}).filter(function(s){return s});
+      text=parts.shift()||'';
+      for(var i=0;i<parts.length;i++){
+        var flag=parts[i].toLowerCase();
+        if(flag==='image'||flag==='img'||flag==='openai-image')image=true
+      }
+      if(guessImage&&/(^|[-_:/])(image|img)([-_:/]|$)/i.test(text))image=true;
+      var model={name:text,alias:text};
+      if(image)model.image=true;
+      return model
+    }
+    if(item&&typeof item==='object'){
+      var id=(item.id||item.name||item.model||'').toString().trim();
+      var alias=(item.alias||item.id||item.name||item.model||'').toString().trim();
+      if(!id&&!alias)return null;
+      var model={name:id||alias,alias:alias||id};
+      if(item.image===true||item.type==='openai-image')model.image=true;
+      if(guessImage&&/(^|[-_:/])(image|img)([-_:/]|$)/i.test(model.alias||model.name))model.image=true;
+      return model
+    }
+    return null
+  }
+  var parsed=null;
+  try{
+    var json=JSON.parse(raw);
+    if(Array.isArray(json))parsed=json;
+    else if(json&&Array.isArray(json.data))parsed=json.data;
+    else if(json&&Array.isArray(json.models))parsed=json.models
+  }catch(e){}
+  if(!parsed){
+    parsed=raw.split(/\r?\n|,/).map(function(s){return s.trim()}).filter(function(s){return s})
+  }
+  var out=[];
+  var seen={};
+  for(var i=0;i<parsed.length;i++){
+    var model=normalizeOne(parsed[i]);
+    if(!model)continue;
+    var key=(model.alias||model.name).toLowerCase();
+    if(seen[key])continue;
+    seen[key]=true;
+    out.push(model)
+  }
+  return out
+}
 
 async function submitAdd(){
   var type=document.getElementById('addType').value;
@@ -753,8 +811,15 @@ async function submitAdd(){
     var name=document.getElementById('addCompatName').value.trim();
     var base=document.getElementById('addBaseUrl').value.trim();
     var key=document.getElementById('addApiKey').value.trim();
+    var modelsRaw=(document.getElementById('addCompatModels')||{}).value||'';
+    var guessImage=!!((document.getElementById('addCompatGuessImage')||{}).checked);
+    var disableCooling=!!((document.getElementById('addDisableCooling')||{}).checked);
     if(!name||!base||!key){toast('所有字段必填',false);return}
-    var content=JSON.stringify({provider:"openai-compatibility",compat_name:name,base_url:base,api_key:key});
+    var models;
+    try{models=parseCompatModelsInput(modelsRaw,guessImage)}catch(e){toast('Models 配置无效: '+e.message,false);return}
+    var payload={type:"openai-compatibility",provider:"openai-compatibility",compat_name:name,base_url:base,api_key:key,models:models};
+    if(disableCooling)payload.disable_cooling=true;
+    var content=JSON.stringify(payload);
     var blob=new Blob([content],{type:'application/json'});
     var fd=new FormData();fd.append('file',blob,name+'.json');
     try{await apiUpload(fd);toast('添加成功',true);closeModal('addModal');loadData()}catch(e){toast('添加失败: '+e.message,false)}
@@ -1090,7 +1155,10 @@ function renderModelsList(container,models,f){
   if(!models.length){container.innerHTML='<div class="empty"><p>未找到模型</p></div>';return}
   var html='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
   html+='<span style="font-size:13px;color:var(--text2)">共 '+models.length+' 个模型</span>';
+  html+='<div style="display:flex;gap:8px">';
+  if(isOpenAICompatFile(f))html+='<button class="btn btn-sm" onclick="showEditCompatModelsModal(\''+escAttr(f.name||f.id)+'\')">编辑 models[]</button>';
   html+='<button class="btn btn-sm btn-primary" onclick="showImportModelsModal(\''+escAttr(f.name||f.id)+'\')">导入模型</button>';
+  html+='</div>';
   html+='</div>';
   html+='<div class="model-list">';
   for(var i=0;i<models.length;i++){
@@ -1103,6 +1171,45 @@ function renderModelsList(container,models,f){
   }
   html+='</div>';
   container.innerHTML=html
+}
+
+function isOpenAICompatFile(f){
+  if(!f)return false;
+  var provider=((f.provider||f.type||'')+'').toLowerCase();
+  return provider==='openai-compatibility'
+}
+
+function showEditCompatModelsModal(targetName){
+  var f=files.find(function(x){return(x.name||x.id)===targetName})||{};
+  var existing=f.models||[];
+  var value='';
+  try{value=JSON.stringify(existing,null,2)}catch(e){value=''}
+  var m=document.createElement('div');m.className='modal-overlay';m.id='compatModelsModal';
+  m.onclick=function(e){if(e.target===m)m.remove()};
+  m.innerHTML='<div class="modal modal-lg"><h3>编辑 models[]</h3>'+
+    '<p style="color:var(--text2);font-size:12px;margin-bottom:12px">这里是 OpenAI-compatible 通道的显式能力元数据；生图模型必须设置 <code>image:true</code>。</p>'+
+    '<textarea id="compatModelsEditor" rows="14" style="font-family:monospace" placeholder=\'[{&quot;name&quot;:&quot;upstream-model&quot;,&quot;alias&quot;:&quot;public-model&quot;,&quot;image&quot;:true}]\'>'+escHtml(value)+'</textarea>'+
+    '<label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input id="compatModelsGuessImage" type="checkbox"> 保存时按名称包含 image/img 辅助标记生图</label>'+
+    '<div class="modal-actions">'+
+    '<button class="btn" onclick="closeModal(\'compatModelsModal\')">取消</button>'+
+    '<button class="btn btn-primary" onclick="submitCompatModelsEdit(\''+escAttr(targetName)+'\')">保存</button>'+
+    '</div></div>';
+  document.body.appendChild(m)
+}
+
+async function submitCompatModelsEdit(targetName){
+  var raw=(document.getElementById('compatModelsEditor')||{}).value||'';
+  var guessImage=!!((document.getElementById('compatModelsGuessImage')||{}).checked);
+  var models;
+  try{models=parseCompatModelsInput(raw,guessImage)}catch(e){toast('Models 配置无效: '+e.message,false);return}
+  try{
+    await api('PATCH','/auth-files/fields',{name:targetName,models:models});
+    toast('保存成功',true);
+    closeModal('compatModelsModal');
+    await loadData();
+    var f=files.find(function(x){return(x.name||x.id)===targetName});
+    if(f)loadModelsForFile(f)
+  }catch(e){toast('保存失败: '+e.message,false)}
 }
 
 function showImportModelsModal(targetName){
@@ -1188,9 +1295,27 @@ async function submitImportModels(targetName){
   var selectedIds=[];
   for(var i=0;i<checks.length;i++)selectedIds.push(checks[i].getAttribute('data-id'));
   try{
-    await api('PATCH','/auth-files/fields',{name:targetName,import_models:selectedIds});
+    var target=files.find(function(x){return(x.name||x.id)===targetName});
+    if(isOpenAICompatFile(target)){
+      var existing=Array.isArray(target.models)?target.models:[];
+      var merged=parseCompatModelsInput(JSON.stringify(existing),false);
+      var seen={};
+      for(var j=0;j<merged.length;j++)seen[(merged[j].alias||merged[j].name).toLowerCase()]=true;
+      for(var k=0;k<selectedIds.length;k++){
+        var id=selectedIds[k];
+        var key=(id||'').toLowerCase();
+        if(id&&!seen[key]){
+          merged.push({name:id,alias:id});
+          seen[key]=true
+        }
+      }
+      await api('PATCH','/auth-files/fields',{name:targetName,models:merged});
+    }else{
+      await api('PATCH','/auth-files/fields',{name:targetName,import_models:selectedIds});
+    }
     toast('导入成功',true);
     closeModal('importModal');
+    await loadData();
     var f=files.find(function(x){return(x.name||x.id)===targetName});
     if(f)loadModelsForFile(f)
   }catch(e){toast('导入失败: '+e.message,false)}

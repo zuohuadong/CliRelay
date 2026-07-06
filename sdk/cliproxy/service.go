@@ -2148,6 +2148,10 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 				log.Debugf("registerModelsForAuth: agnes entry[%d] is disabled", i)
 				continue
 			}
+			if !openAICompatibilityHasEnabledAPIKey(entry) {
+				log.Warnf("registerModelsForAuth: agnes entry[%d] has no enabled api key, skipping", i)
+				continue
+			}
 			ms := buildOpenAICompatibilityConfigModels(entry)
 			log.Debugf("registerModelsForAuth: agnes entry[%d] models count=%d, models=%v", i, len(ms), ms)
 			if len(ms) > 0 {
@@ -2648,6 +2652,22 @@ func matchWildcard(pattern, value string) bool {
 type modelEntry interface {
 	GetName() string
 	GetAlias() string
+}
+
+func openAICompatibilityHasEnabledAPIKey(entry *config.OpenAICompatibility) bool {
+	if entry == nil {
+		return false
+	}
+	for i := range entry.APIKeyEntries {
+		key := &entry.APIKeyEntries[i]
+		if key.Disabled {
+			continue
+		}
+		if strings.TrimSpace(key.APIKey) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []*ModelInfo {

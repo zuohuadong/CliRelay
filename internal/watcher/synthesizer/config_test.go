@@ -754,7 +754,7 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 				{Name: "bigmodel-coding", BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"},
 			},
 			AgnesAPIKey: []config.OpenAICompatibility{
-				{Name: "agnes", BaseURL: "https://apihub.agnes-ai.com/v1"},
+				{Name: "agnes", BaseURL: "https://apihub.agnes-ai.com/v1", APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "agnes-key"}}},
 			},
 			VertexCompatAPIKey: []config.VertexCompatKey{
 				{APIKey: "vertex-key", BaseURL: "https://vertex.api"},
@@ -781,6 +781,31 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 	for _, p := range expected {
 		if !providers[p] {
 			t.Errorf("expected provider %s not found", p)
+		}
+	}
+}
+
+func TestConfigSynthesizer_AgnesRequiresAPIKeyEntry(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			AgnesAPIKey: []config.OpenAICompatibility{{
+				Name:          "agnes",
+				BaseURL:       "https://apihub.agnes-ai.com/v1",
+				APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "  "}, {APIKey: "sk-agnes", Disabled: true}},
+			}},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, auth := range auths {
+		if auth.Provider == "agnes" {
+			t.Fatalf("unexpected agnes auth without an enabled api key: %#v", auth)
 		}
 	}
 }

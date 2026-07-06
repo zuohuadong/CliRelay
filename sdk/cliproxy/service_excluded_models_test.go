@@ -201,6 +201,43 @@ func TestRegisterModelsForAuth_OpenAICompatibilityMetadataModels(t *testing.T) {
 	}
 }
 
+func TestRegisterModelsForAuth_AgnesRequiresEnabledAPIKey(t *testing.T) {
+	service := &Service{
+		cfg: &config.Config{
+			AgnesAPIKey: []config.OpenAICompatibility{{
+				Name:          "agnes",
+				BaseURL:       "https://apihub.agnes-ai.com/v1",
+				APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "  "}, {APIKey: "sk-disabled", Disabled: true}},
+				Models: []config.OpenAICompatibilityModel{
+					{Name: "agnes-video-v2.0", Alias: "agnes-video-v2.0", Video: true},
+				},
+			}},
+		},
+	}
+	auth := &coreauth.Auth{
+		ID:       "auth-agnes-without-key",
+		Provider: "agnes",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind":    "api_key",
+			"compat_name":  "agnes",
+			"provider_key": "agnes",
+		},
+	}
+
+	modelRegistry := internalregistry.GetGlobalRegistry()
+	modelRegistry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	if models := modelRegistry.GetModelsForClient(auth.ID); len(models) != 0 {
+		t.Fatalf("models len = %d, want 0 for agnes without enabled api key: %#v", len(models), models)
+	}
+}
+
 func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.T) {
 	var sawFetch bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

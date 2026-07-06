@@ -406,13 +406,15 @@ func (s *ConfigSynthesizer) synthesizeAgnes(ctx *SynthesisContext) []*coreauth.A
 		}
 		disableCooling := compat.DisableCooling
 
-		createdEntries := 0
 		for j := range compat.APIKeyEntries {
 			entry := &compat.APIKeyEntries[j]
 			if entry.Disabled {
 				continue
 			}
 			key := strings.TrimSpace(entry.APIKey)
+			if key == "" {
+				continue
+			}
 			proxyURL := strings.TrimSpace(entry.ProxyURL)
 			if pid := strings.TrimSpace(entry.ProxyID); pid != "" {
 				if resolved := cfg.ResolveProxyURL(pid, ""); resolved != "" {
@@ -453,47 +455,6 @@ func (s *ConfigSynthesizer) synthesizeAgnes(ctx *SynthesisContext) []*coreauth.A
 				Prefix:     prefix,
 				Status:     coreauth.StatusActive,
 				ProxyURL:   proxyURL,
-				Attributes: attrs,
-				Metadata:   metadata,
-				CreatedAt:  now,
-				UpdatedAt:  now,
-			}
-			if len(a.Metadata) == 0 {
-				a.Metadata = nil
-			}
-			out = append(out, a)
-			createdEntries++
-		}
-		if createdEntries == 0 {
-			idKind := fmt.Sprintf("%s:%s", providerName, providerName)
-			id, token := idGen.Next(idKind, base)
-			attrs := map[string]string{
-				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
-				"base_url":     base,
-				"compat_name":  providerName,
-				"provider_key": providerName,
-			}
-			metadata := map[string]any{}
-			if disableCooling {
-				metadata["disable_cooling"] = true
-			}
-			addOpenAICompatibilityRetryMetadata(compat, metadata)
-			if compat.Priority != 0 {
-				attrs["priority"] = strconv.Itoa(compat.Priority)
-			}
-			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
-				attrs["models_hash"] = hash
-			}
-			if compat.ResponseEndpoint {
-				attrs["response_endpoint"] = "true"
-			}
-			addConfigHeadersToAttrs(compat.Headers, attrs)
-			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   providerName,
-				Label:      providerName,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
 				Attributes: attrs,
 				Metadata:   metadata,
 				CreatedAt:  now,

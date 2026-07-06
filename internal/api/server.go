@@ -550,6 +550,10 @@ func (s *Server) setupRoutes() {
 		middleware.APIKeyRateLimitMiddleware(),
 	)
 	{
+		mcp.Any("", s.handleMCPGateway)
+		mcp.Any("/", s.handleMCPGateway)
+		mcp.Any("/video", s.handleVideoMCP)
+		mcp.Any("/video/", s.handleVideoMCP)
 		mcp.Any("/custom/:server", s.proxyConfiguredMCP)
 		mcp.Any("/custom/:server/*path", s.proxyConfiguredMCP)
 		mcp.Any("/zai/:server", s.proxyZAIMCP)

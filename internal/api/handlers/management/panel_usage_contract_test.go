@@ -485,7 +485,7 @@ func TestPublicAPIKeyBillingRendersAlpineHTML(t *testing.T) {
 		t.Fatalf("Cache-Control = %q, want no-store", got)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"alpinejs", "billingPage", "x-data", "模型明细", "次数占比", "金额占比", "输入占比", "输出占比", "缓存占比", "sk-***"} {
+	for _, want := range []string{"alpinejs", "billingPage", "x-data", "模型明细", "Token结构", "输入", "输出", "缓存", "sk-***"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("Alpine HTML body missing %q", want)
 		}

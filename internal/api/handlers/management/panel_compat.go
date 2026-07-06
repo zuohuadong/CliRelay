@@ -1435,12 +1435,18 @@ body::before{content:"";position:fixed;inset:0;background:radial-gradient(circle
 .section-head h2{font-size:18px;font-weight:800}
 .section-head .meta{font-size:12px;color:var(--muted)}
 .section-space{margin-top:28px}
-.table-wrap{background:var(--panel);border:1px solid var(--line);border-radius:20px;overflow:hidden;backdrop-filter:blur(10px)}
+.table-wrap{background:var(--panel);border:1px solid var(--line);border-radius:20px;overflow-x:auto;overflow-y:hidden;backdrop-filter:blur(10px)}
 table{width:100%;border-collapse:collapse}
 th{padding:14px 16px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--line)}
 td{padding:14px 16px;font-size:14px;border-bottom:1px solid var(--line)}
 tr:last-child td{border-bottom:0}
 tr:hover{background:rgba(245,158,11,.04)}
+.model-breakdown-table{min-width:920px;table-layout:fixed}
+.model-breakdown-table th:nth-child(1){width:22%}
+.model-breakdown-table th:nth-child(2),.model-breakdown-table th:nth-child(3),.model-breakdown-table th:nth-child(4){width:15%}
+.model-breakdown-table th:nth-child(5){width:22%}
+.model-breakdown-table th:nth-child(6){width:11%}
+.model-breakdown-table td{vertical-align:top}
 .model-cell{min-width:190px}
 .model-name{font-weight:800}
 .model-price{color:var(--muted);font-size:12px;margin-top:4px}
@@ -1448,6 +1454,13 @@ tr:hover{background:rgba(245,158,11,.04)}
 .share-label{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:12px}
 .share-track{height:6px;border-radius:999px;background:var(--panel2);overflow:hidden;margin-top:6px}
 .share-fill{height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+.money-sub{font-size:12px;color:var(--muted)}
+.token-mix{display:flex;flex-direction:column;gap:8px;min-width:180px}
+.token-row{display:grid;grid-template-columns:34px 1fr;gap:8px;align-items:center}
+.token-row-label{color:var(--muted);font-size:12px;font-weight:800}
+.token-row-main{min-width:0}
+.token-row-text{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:12px}
+.token-row-text strong{color:var(--text);font-size:12px}
 .discount.good{color:var(--ok);font-weight:800}
 .discount.neutral{color:var(--muted);font-weight:800}
 .discount.bad{color:var(--danger);font-weight:800}
@@ -1606,9 +1619,9 @@ function billingPage(){
   </div>
 
   <div class="table-wrap" x-show="models.length>0">
-    <table>
+    <table class="model-breakdown-table">
       <thead>
-        <tr><th>模型</th><th>次数占比</th><th>Token占比</th><th>金额占比</th><th>输入占比</th><th>输出占比</th><th>缓存占比</th><th>实际计费</th><th>估算原价</th><th>折扣</th></tr>
+        <tr><th>模型</th><th>次数</th><th>Token</th><th>金额</th><th>Token结构</th><th>折扣</th></tr>
       </thead>
       <tbody>
         <template x-for="m in models" :key="m.model">
@@ -1628,21 +1641,33 @@ function billingPage(){
             <td class="share">
               <div class="share-label"><span x-text="fmtMoney(m.total_cost)"></span><span x-text="fmtShare(m.cost_share)"></span></div>
               <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(m.cost_share)"></div></div>
+              <div class="money-sub" style="margin-top:6px" x-text="m.has_price?'原价 '+fmtMoney(m.estimated_list_cost):'未配置价格'"></div>
             </td>
-            <td class="share">
-              <div class="share-label"><span x-text="fmtToken(m.input_tokens)"></span><span x-text="fmtShare(tokenPartShare(m,'input_tokens'))"></span></div>
-              <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(tokenPartShare(m,'input_tokens'))"></div></div>
+            <td>
+              <div class="token-mix">
+                <div class="token-row">
+                  <div class="token-row-label">输入</div>
+                  <div class="token-row-main">
+                    <div class="token-row-text"><span x-text="fmtToken(m.input_tokens)"></span><strong x-text="fmtShare(tokenPartShare(m,'input_tokens'))"></strong></div>
+                    <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(tokenPartShare(m,'input_tokens'))"></div></div>
+                  </div>
+                </div>
+                <div class="token-row">
+                  <div class="token-row-label">输出</div>
+                  <div class="token-row-main">
+                    <div class="token-row-text"><span x-text="fmtToken((Number(m.output_tokens)||0)+(Number(m.reasoning_tokens)||0))"></span><strong x-text="fmtShare(tokenPartShare(m,'output_tokens'))"></strong></div>
+                    <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(tokenPartShare(m,'output_tokens'))"></div></div>
+                  </div>
+                </div>
+                <div class="token-row">
+                  <div class="token-row-label">缓存</div>
+                  <div class="token-row-main">
+                    <div class="token-row-text"><span x-text="fmtToken(m.cached_tokens)"></span><strong x-text="fmtShare(tokenPartShare(m,'cached_tokens'))"></strong></div>
+                    <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(tokenPartShare(m,'cached_tokens'))"></div></div>
+                  </div>
+                </div>
+              </div>
             </td>
-            <td class="share">
-              <div class="share-label"><span x-text="fmtToken((Number(m.output_tokens)||0)+(Number(m.reasoning_tokens)||0))"></span><span x-text="fmtShare(tokenPartShare(m,'output_tokens'))"></span></div>
-              <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(tokenPartShare(m,'output_tokens'))"></div></div>
-            </td>
-            <td class="share">
-              <div class="share-label"><span x-text="fmtToken(m.cached_tokens)"></span><span x-text="fmtShare(tokenPartShare(m,'cached_tokens'))"></span></div>
-              <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(tokenPartShare(m,'cached_tokens'))"></div></div>
-            </td>
-            <td x-text="fmtMoney(m.total_cost)"></td>
-            <td x-text="m.has_price?fmtMoney(m.estimated_list_cost):'--'"></td>
             <td><span class="discount" :class="discountClass(m)" x-text="fmtDiscount(m)"></span></td>
           </tr>
         </template>
@@ -1661,11 +1686,31 @@ function billingPage(){
         <div class="mc-grid" style="margin-top:12px">
           <div class="mc-item"><div class="l">次数</div><div class="v" x-text="fmtInt(m.request_count)+' / '+fmtShare(m.request_share)"></div></div>
           <div class="mc-item"><div class="l">Token</div><div class="v" x-text="fmtToken(m.total_tokens)+' / '+fmtShare(m.token_share)"></div></div>
-          <div class="mc-item"><div class="l">输入占比</div><div class="v" x-text="fmtShare(tokenPartShare(m,'input_tokens'))+' / '+fmtToken(m.input_tokens)"></div></div>
-          <div class="mc-item"><div class="l">输出占比</div><div class="v" x-text="fmtShare(tokenPartShare(m,'output_tokens'))+' / '+fmtToken((Number(m.output_tokens)||0)+(Number(m.reasoning_tokens)||0))"></div></div>
-          <div class="mc-item"><div class="l">缓存占比</div><div class="v" x-text="fmtShare(tokenPartShare(m,'cached_tokens'))+' / '+fmtToken(m.cached_tokens)"></div></div>
-          <div class="mc-item"><div class="l">实际计费</div><div class="v" x-text="fmtMoney(m.total_cost)"></div></div>
-          <div class="mc-item"><div class="l">估算原价</div><div class="v" x-text="m.has_price?fmtMoney(m.estimated_list_cost):'--'"></div></div>
+          <div class="mc-item"><div class="l">金额</div><div class="v" x-text="fmtMoney(m.total_cost)+' / '+fmtShare(m.cost_share)"></div></div>
+          <div class="mc-item"><div class="l">原价</div><div class="v" x-text="m.has_price?fmtMoney(m.estimated_list_cost):'--'"></div></div>
+        </div>
+        <div class="token-mix" style="margin-top:14px">
+          <div class="token-row">
+            <div class="token-row-label">输入</div>
+            <div class="token-row-main">
+              <div class="token-row-text"><span x-text="fmtToken(m.input_tokens)"></span><strong x-text="fmtShare(tokenPartShare(m,'input_tokens'))"></strong></div>
+              <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(tokenPartShare(m,'input_tokens'))"></div></div>
+            </div>
+          </div>
+          <div class="token-row">
+            <div class="token-row-label">输出</div>
+            <div class="token-row-main">
+              <div class="token-row-text"><span x-text="fmtToken((Number(m.output_tokens)||0)+(Number(m.reasoning_tokens)||0))"></span><strong x-text="fmtShare(tokenPartShare(m,'output_tokens'))"></strong></div>
+              <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(tokenPartShare(m,'output_tokens'))"></div></div>
+            </div>
+          </div>
+          <div class="token-row">
+            <div class="token-row-label">缓存</div>
+            <div class="token-row-main">
+              <div class="token-row-text"><span x-text="fmtToken(m.cached_tokens)"></span><strong x-text="fmtShare(tokenPartShare(m,'cached_tokens'))"></strong></div>
+              <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(tokenPartShare(m,'cached_tokens'))"></div></div>
+            </div>
+          </div>
         </div>
       </div>
     </template>

@@ -556,6 +556,8 @@ func (s *Server) setupRoutes() {
 	{
 		mcp.Any("", s.handleMCPGateway)
 		mcp.Any("/", s.handleMCPGateway)
+		mcp.Any("/image", s.handleImageMCP)
+		mcp.Any("/image/", s.handleImageMCP)
 		mcp.Any("/video", s.handleVideoMCP)
 		mcp.Any("/video/", s.handleVideoMCP)
 		mcp.Any("/custom/:server", s.proxyConfiguredMCP)

@@ -791,6 +791,49 @@ func TestAstronCodeExecutorCompactUsesChatAndWrapsResponse(t *testing.T) {
 	}
 }
 
+func TestAstronCodeExecutorResponseEndpointUsesResponsesPath(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","model":"astron-code-latest","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewAstronCodeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url":          server.URL + "/v2",
+		"api_key":           "test",
+		"response_endpoint": "true",
+	}}
+	payload := []byte(`{"model":"deepseek-v4-pro","input":[{"role":"user","content":"hi"}]}`)
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "astron-code-latest",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		OriginalRequest: payload,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	}
+	if !gjson.GetBytes(gotBody, "input").Exists() {
+		t.Fatalf("expected responses input body, got %s", string(gotBody))
+	}
+	if gjson.GetBytes(gotBody, "messages").Exists() {
+		t.Fatalf("unexpected chat messages body: %s", string(gotBody))
+	}
+	if got := gjson.GetBytes(resp.Payload, "model").String(); got != "astron-code-latest" {
+		t.Fatalf("response model = %q, want astron-code-latest; body=%s", got, string(resp.Payload))
+	}
+}
+
 func TestOpenAICompatExecutorPayloadOverrideWinsOverThinkingSuffix(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

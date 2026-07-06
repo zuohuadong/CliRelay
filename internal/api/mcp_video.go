@@ -159,7 +159,7 @@ func (s *Server) videoMCPModelList(c *gin.Context) map[string]any {
 		if modelType != registry.OpenAIVideoModelType {
 			continue
 		}
-		if !mcpVideoModelAllowed(stringMCPValue(model["id"]), allowed) {
+		if !mcpModelAllowed(stringMCPValue(model["id"]), allowed) {
 			continue
 		}
 		data = append(data, model)
@@ -263,7 +263,7 @@ func intMCPArg(args map[string]any, key string) int {
 }
 
 func validateMCPVideoModelAccess(c *gin.Context, model string) *mcpGatewayError {
-	if !mcpVideoModelAllowed(model, mcpAllowedModels(c)) {
+	if !mcpModelAllowed(model, mcpAllowedModels(c)) {
 		return &mcpGatewayError{Code: -32000, Message: "model not allowed for this API key"}
 	}
 	return nil
@@ -296,7 +296,7 @@ func mcpAllowedModels(c *gin.Context) []string {
 	return out
 }
 
-func mcpVideoModelAllowed(model string, allowed []string) bool {
+func mcpModelAllowed(model string, allowed []string) bool {
 	if len(allowed) == 0 {
 		return true
 	}

@@ -124,6 +124,18 @@ func (s *Server) mcpGatewayRoutes(c *gin.Context) []mcpRouteDescriptor {
 			Usage:       []string{"Use this route for discovery only; configure a child route URL to call concrete MCP tools."},
 		},
 		{
+			Name:        "image",
+			Path:        base + "/mcp/image",
+			Type:        "builtin",
+			Description: "Image generation and editing MCP server. Model-agnostic; defaults to gpt-image-2.",
+			Tools:       []string{"clirelay_image_models", "clirelay_image_generate", "clirelay_image_edit"},
+			Usage: append([]string{
+				"Use the model parameter to select any available image model; default is gpt-image-2.",
+				"Use direct /v1/images endpoints for streaming or partial image events.",
+			}, streamableUsage...),
+			Configured: true,
+		},
+		{
 			Name:        "video",
 			Path:        base + "/mcp/video",
 			Type:        "builtin",

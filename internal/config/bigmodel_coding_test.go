@@ -136,7 +136,7 @@ func TestSanitizeBigModelCodingAddsDefaults(t *testing.T) {
 	}
 }
 
-func TestSanitizeAstronCodeAddsGLM51Alias(t *testing.T) {
+func TestSanitizeAstronCodeDoesNotInjectAliasesForChatEndpoint(t *testing.T) {
 	cfg := &Config{AstronCodeAPIKey: []OpenAICompatibility{{APIKeyEntries: []OpenAICompatibilityAPIKey{{APIKey: "sk"}}}}}
 	cfg.SanitizeAstronCode()
 	if len(cfg.AstronCodeAPIKey) != 1 {
@@ -155,6 +155,27 @@ func TestSanitizeAstronCodeAddsGLM51Alias(t *testing.T) {
 	// Default aliases are NOT auto-injected; user must configure models explicitly.
 	if len(entry.Models) != 0 {
 		t.Fatalf("expected no auto-injected models, got %#v", entry.Models)
+	}
+}
+
+func TestSanitizeAstronCodeResponseEndpointAddsCodingAliases(t *testing.T) {
+	cfg := &Config{AstronCodeAPIKey: []OpenAICompatibility{{
+		ResponseEndpoint: true,
+		APIKeyEntries:    []OpenAICompatibilityAPIKey{{APIKey: "sk"}},
+	}}}
+	cfg.SanitizeAstronCode()
+	if len(cfg.AstronCodeAPIKey) != 1 {
+		t.Fatalf("astron-code len = %d, want 1", len(cfg.AstronCodeAPIKey))
+	}
+	models := cfg.AstronCodeAPIKey[0].Models
+	for _, alias := range []string{"gpt-5.3-codex", "deepseek-v4-pro", "deepseek-v4-flash"} {
+		if !hasModelAlias(models, DefaultAstronCodeModel, alias) {
+			t.Fatalf("missing astron response alias %q in %#v", alias, models)
+		}
+	}
+	providers := cfg.OpenAICompatibilityAliasProviders("deepseek-v4-pro")
+	if strings.Join(providers, ",") != DefaultAstronCodeProviderName {
+		t.Fatalf("providers = %v, want [%s]", providers, DefaultAstronCodeProviderName)
 	}
 }
 

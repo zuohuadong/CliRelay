@@ -70,10 +70,12 @@ func TestMCPGatewayRoutesListsZAIAndConfiguredCustomRoutes(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"https://cliapi.029555.xyz/mcp",
+		"https://cliapi.029555.xyz/mcp/image",
 		"https://cliapi.029555.xyz/mcp/video",
 		"https://cliapi.029555.xyz/mcp/zai/web-search-prime",
 		"https://cliapi.029555.xyz/mcp/zai/web-reader",
 		"https://cliapi.029555.xyz/mcp/custom/devspace",
+		"clirelay_image_generate",
 		"clirelay_video_create",
 		"web_search_prime",
 		"web_reader",
@@ -99,7 +101,7 @@ func TestMCPGatewayGETReturnsCatalog(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /mcp status = %d, body=%s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, `"routes"`) || !strings.Contains(body, `/mcp/video`) {
+	if body := rec.Body.String(); !strings.Contains(body, `"routes"`) || !strings.Contains(body, `/mcp/image`) || !strings.Contains(body, `/mcp/video`) {
 		t.Fatalf("GET /mcp response missing route catalog: %s", body)
 	}
 }

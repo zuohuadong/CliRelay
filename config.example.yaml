@@ -136,7 +136,7 @@ transient-error-cooldown-seconds: 0
 
 # MCP endpoints are exposed through the authenticated /mcp gateway. The top-level
 # /mcp endpoint is a directory for available child routes, while concrete tools
-# live under routes such as /mcp/video, /mcp/zai/<server>, and /mcp/custom/<name>.
+# live under routes such as /mcp/image, /mcp/video, /mcp/zai/<server>, and /mcp/custom/<name>.
 # Example DevSpace endpoint: clients call /mcp/custom/devspace while CliRelay
 # forwards to the local DevSpace MCP server. This is a tool gateway, not an LLM
 # model upstream.

@@ -944,11 +944,17 @@ func (h *Handler) collectAPIKeyBillingPayload(apiKey string) gin.H {
 
 	db, ok := h.usageDB()
 	if !ok {
-		return apiKeyBillingPayload(apiKey, entry, limit, currentStart, currentEnd, usageTotals{}, nil)
+		payload := apiKeyBillingPayload(apiKey, entry, limit, currentStart, currentEnd, usageTotals{}, nil)
+		payload["model_breakdown"] = []gin.H{}
+		if current, _ := payload["current_cycle"].(gin.H); current != nil {
+			current["model_breakdown"] = []gin.H{}
+		}
+		return payload
 	}
 	defer func() { _ = db.Close() }()
 
 	current := queryAPIKeyBillingTotals(db, apiKey, currentStart, currentEnd)
+	modelBreakdown := queryAPIKeyBillingModelBreakdown(db, apiKey, currentStart, currentEnd)
 	history := make([]gin.H, 0, 6)
 	start := currentStart
 	end := currentEnd
@@ -959,7 +965,12 @@ func (h *Handler) collectAPIKeyBillingPayload(apiKey string) gin.H {
 		start = start.AddDate(0, -1, 0)
 	}
 
-	return apiKeyBillingPayload(apiKey, entry, limit, currentStart, currentEnd, current, history)
+	payload := apiKeyBillingPayload(apiKey, entry, limit, currentStart, currentEnd, current, history)
+	payload["model_breakdown"] = modelBreakdown
+	if currentPayload, _ := payload["current_cycle"].(gin.H); currentPayload != nil {
+		currentPayload["model_breakdown"] = modelBreakdown
+	}
+	return payload
 }
 
 func (h *Handler) GetAPIKeyBilling(c *gin.Context) {
@@ -1082,6 +1093,160 @@ func queryAPIKeyBillingTotals(db *sql.DB, apiKey string, start, end time.Time) u
 	var totals usageTotals
 	_ = row.Scan(&totals.Total, &totals.Success, &totals.Failed, &totals.TotalTokens, &totals.TotalCost)
 	return totals
+}
+
+func queryAPIKeyBillingModelBreakdown(db *sql.DB, apiKey string, start, end time.Time) []gin.H {
+	if db == nil || !dbTableExists(db, "request_logs") {
+		return []gin.H{}
+	}
+	cols := requestLogColumns(db)
+	if !cols["api_key"] || !cols["timestamp"] || !cols["model"] {
+		return []gin.H{}
+	}
+	rows, err := db.Query(`
+		SELECT `+usageColumnExpr(cols, "model", "''")+`,
+		       count(*),
+		       coalesce(sum(case when `+usageColumnExpr(cols, "failed", "0")+`=0 then 1 else 0 end),0),
+		       coalesce(sum(case when `+usageColumnExpr(cols, "failed", "0")+`!=0 then 1 else 0 end),0),
+		       coalesce(sum(`+usageColumnExpr(cols, "input_tokens", "0")+`),0),
+		       coalesce(sum(`+usageColumnExpr(cols, "output_tokens", "0")+`),0),
+		       coalesce(sum(`+usageColumnExpr(cols, "reasoning_tokens", "0")+`),0),
+		       coalesce(sum(`+usageColumnExpr(cols, "cached_tokens", "0")+`),0),
+		       coalesce(sum(`+usageColumnExpr(cols, "total_tokens", "0")+`),0),
+		       coalesce(sum(case when `+usageColumnExpr(cols, "failed", "0")+`=0 then `+usageColumnExpr(cols, "cost", "0")+` else 0 end),0),
+		       coalesce(sum(case when `+usageColumnExpr(cols, "failed", "0")+`=0 then `+usageColumnExpr(cols, "input_tokens", "0")+` else 0 end),0),
+		       coalesce(sum(case when `+usageColumnExpr(cols, "failed", "0")+`=0 then `+usageColumnExpr(cols, "output_tokens", "0")+` else 0 end),0),
+		       coalesce(sum(case when `+usageColumnExpr(cols, "failed", "0")+`=0 then `+usageColumnExpr(cols, "reasoning_tokens", "0")+` else 0 end),0),
+		       coalesce(sum(case when `+usageColumnExpr(cols, "failed", "0")+`=0 then `+usageColumnExpr(cols, "cached_tokens", "0")+` else 0 end),0)
+		FROM request_logs
+		WHERE api_key = ? AND timestamp >= ? AND timestamp < ?
+		GROUP BY `+usageColumnExpr(cols, "model", "''")+`
+		ORDER BY 10 DESC, 9 DESC, 2 DESC
+		LIMIT 50`,
+		apiKey, start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return []gin.H{}
+	}
+	defer func() { _ = rows.Close() }()
+
+	type modelRow struct {
+		payload gin.H
+	}
+	items := make([]modelRow, 0)
+	var totalRequests, totalTokens int64
+	var totalCost float64
+	for rows.Next() {
+		var model string
+		var requests, success, failed, input, output, reasoning, cached, tokens int64
+		var billedInput, billedOutput, billedReasoning, billedCached int64
+		var actualCost float64
+		if errScan := rows.Scan(&model, &requests, &success, &failed, &input, &output, &reasoning, &cached, &tokens, &actualCost, &billedInput, &billedOutput, &billedReasoning, &billedCached); errScan != nil {
+			continue
+		}
+		model = strings.TrimSpace(model)
+		if model == "" {
+			model = "unknown"
+		}
+		price, hasPrice := apiKeyBillingModelPrice(db, model)
+		listCost := apiKeyBillingListCost(price, success, billedInput, billedOutput, billedReasoning, billedCached)
+		discountRate := 0.0
+		billingMultiplier := 0.0
+		if listCost > 0 {
+			billingMultiplier = actualCost / listCost
+			discountRate = 1 - billingMultiplier
+		}
+		item := gin.H{
+			"model":                    model,
+			"request_count":            requests,
+			"success_count":            success,
+			"failed_count":             failed,
+			"input_tokens":             input,
+			"output_tokens":            output,
+			"reasoning_tokens":         reasoning,
+			"cached_tokens":            cached,
+			"total_tokens":             tokens,
+			"total_cost":               actualCost,
+			"estimated_list_cost":      listCost,
+			"billing_multiplier":       billingMultiplier,
+			"discount_rate":            discountRate,
+			"discount_percent":         discountRate * 100,
+			"has_price":                hasPrice,
+			"price_mode":               price.Mode,
+			"input_price_per_million":  price.InputPricePerM,
+			"output_price_per_million": price.OutputPricePerM,
+			"cached_price_per_million": price.CachedPricePerM,
+			"price_per_call":           price.PricePerCall,
+		}
+		items = append(items, modelRow{payload: item})
+		totalRequests += requests
+		totalTokens += tokens
+		totalCost += actualCost
+	}
+	if errRows := rows.Err(); errRows != nil {
+		return []gin.H{}
+	}
+	out := make([]gin.H, 0, len(items))
+	for _, item := range items {
+		if totalRequests > 0 {
+			item.payload["request_share"] = float64(billingInt(item.payload, "request_count")) / float64(totalRequests)
+		} else {
+			item.payload["request_share"] = 0.0
+		}
+		if totalTokens > 0 {
+			item.payload["token_share"] = float64(billingInt(item.payload, "total_tokens")) / float64(totalTokens)
+		} else {
+			item.payload["token_share"] = 0.0
+		}
+		if totalCost > 0 {
+			item.payload["cost_share"] = billingFloat(item.payload, "total_cost") / totalCost
+		} else {
+			item.payload["cost_share"] = 0.0
+		}
+		out = append(out, item.payload)
+	}
+	return out
+}
+
+func apiKeyBillingModelPrice(db *sql.DB, model string) (usage.ModelPriceRow, bool) {
+	if db == nil || !dbTableExists(db, "model_prices") {
+		return usage.ModelPriceRow{Model: strings.TrimSpace(model), Mode: "token"}, false
+	}
+	var row usage.ModelPriceRow
+	err := db.QueryRow(`
+		SELECT model, mode, input_price_per_m, output_price_per_m, cached_price_per_m, price_per_call, updated_at
+		FROM model_prices
+		WHERE model = ?`,
+		strings.TrimSpace(model),
+	).Scan(&row.Model, &row.Mode, &row.InputPricePerM, &row.OutputPricePerM, &row.CachedPricePerM, &row.PricePerCall, &row.UpdatedAt)
+	if err != nil {
+		return usage.ModelPriceRow{Model: strings.TrimSpace(model), Mode: "token"}, false
+	}
+	if strings.TrimSpace(row.Mode) == "" {
+		row.Mode = "token"
+	}
+	return row, true
+}
+
+func apiKeyBillingListCost(price usage.ModelPriceRow, success, inputTokens, outputTokens, reasoningTokens, cachedTokens int64) float64 {
+	if price.Mode == "call" && price.PricePerCall > 0 {
+		if success < 0 {
+			success = 0
+		}
+		return float64(success) * price.PricePerCall
+	}
+	netInput := inputTokens - cachedTokens
+	if netInput < 0 {
+		netInput = inputTokens
+	}
+	inputCost := float64(netInput) / 1_000_000 * price.InputPricePerM
+	outputCost := float64(outputTokens+reasoningTokens) / 1_000_000 * price.OutputPricePerM
+	cachedCost := float64(cachedTokens) / 1_000_000 * price.CachedPricePerM
+	total := inputCost + outputCost + cachedCost
+	if total < 0 {
+		return 0
+	}
+	return total
 }
 
 func wantsAPIKeyBillingHTML(c *gin.Context) bool {
@@ -1214,6 +1379,7 @@ func renderAPIKeyBillingAlpineHTML(c *gin.Context, payload gin.H) {
 		"billing_cycle_anchor":   payload["billing_cycle_anchor"],
 		"current_cycle":          payload["current_cycle"],
 		"history":                payload["history"],
+		"model_breakdown":        payload["model_breakdown"],
 	}
 
 	jsonBytes, err := json.Marshal(publicPayload)
@@ -1268,21 +1434,33 @@ body::before{content:"";position:fixed;inset:0;background:radial-gradient(circle
 .section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
 .section-head h2{font-size:18px;font-weight:800}
 .section-head .meta{font-size:12px;color:var(--muted)}
+.section-space{margin-top:28px}
 .table-wrap{background:var(--panel);border:1px solid var(--line);border-radius:20px;overflow:hidden;backdrop-filter:blur(10px)}
 table{width:100%;border-collapse:collapse}
 th{padding:14px 16px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--line)}
 td{padding:14px 16px;font-size:14px;border-bottom:1px solid var(--line)}
 tr:last-child td{border-bottom:0}
 tr:hover{background:rgba(245,158,11,.04)}
+.model-cell{min-width:190px}
+.model-name{font-weight:800}
+.model-price{color:var(--muted);font-size:12px;margin-top:4px}
+.share{min-width:120px}
+.share-label{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:12px}
+.share-track{height:6px;border-radius:999px;background:var(--panel2);overflow:hidden;margin-top:6px}
+.share-fill{height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+.discount.good{color:var(--ok);font-weight:800}
+.discount.neutral{color:var(--muted);font-weight:800}
+.discount.bad{color:var(--danger);font-weight:800}
 .empty{padding:32px;text-align:center;color:var(--muted);font-size:14px}
 .foot{margin-top:20px;text-align:center;color:var(--muted);font-size:12px}
 .mobile-cards{display:none}
+.model-mobile-cards{display:none}
 @media(max-width:768px){
 .hero{flex-direction:column;align-items:flex-start}
 .cards{grid-template-columns:1fr 1fr;gap:12px}
 .card{padding:18px}
 .table-wrap{display:none}
-.mobile-cards{display:flex;flex-direction:column;gap:12px}
+.mobile-cards,.model-mobile-cards{display:flex;flex-direction:column;gap:12px}
 .mobile-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px}
 .mobile-card .mc-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
 .mobile-card .mc-date{font-size:13px;font-weight:700;color:var(--accent)}
@@ -1328,8 +1506,37 @@ function billingPage(){
       if(p<0)p=0;if(p>100)p=100;
       return p.toFixed(1);
     },
+    fmtShare(v){
+      v=Number(v)||0;
+      if(v<0)v=0;
+      return (v*100).toFixed(1)+'%';
+    },
+    shareWidth(v){
+      v=Number(v)||0;
+      if(v<0)v=0;if(v>1)v=1;
+      return (v*100).toFixed(1)+'%';
+    },
+    fmtPrice(m){
+      if(!m||!m.has_price) return '未配置价格';
+      if(m.price_mode==='call') return this.fmtMoney(m.price_per_call)+' / 次';
+      return 'In '+this.fmtMoney(m.input_price_per_million)+' / Out '+this.fmtMoney(m.output_price_per_million)+' / M';
+    },
+    fmtDiscount(m){
+      if(!m||!m.has_price||!m.estimated_list_cost) return '无价格';
+      var v=Number(m.discount_rate)||0;
+      if(Math.abs(v)<0.0005) return '无折扣';
+      if(v>0) return (v*100).toFixed(1)+'% off';
+      return '+'+(Math.abs(v)*100).toFixed(1)+'%';
+    },
+    discountClass(m){
+      if(!m||!m.has_price||!m.estimated_list_cost) return 'neutral';
+      var v=Number(m.discount_rate)||0;
+      if(Math.abs(v)<0.0005) return 'neutral';
+      return v>0?'good':'bad';
+    },
     get cur(){return this.data.current_cycle||{};},
     get hist(){return this.data.history||[];},
+    get models(){return this.data.model_breakdown||this.cur.model_breakdown||[];},
     get limit(){return Number(this.data.monthly_spending_limit)||0;},
     get used(){return Number(this.cur.total_cost)||0;},
     get remaining(){return Number(this.cur.remaining)||0;},
@@ -1380,6 +1587,64 @@ function billingPage(){
       </div>
     </div>
   </div>
+
+  <div class="section-head">
+    <h2>模型明细</h2>
+    <span class="meta">次数 / Token / 金额占比</span>
+  </div>
+
+  <div class="table-wrap" x-show="models.length>0">
+    <table>
+      <thead>
+        <tr><th>模型</th><th>次数占比</th><th>Token占比</th><th>金额占比</th><th>实际计费</th><th>估算原价</th><th>折扣</th></tr>
+      </thead>
+      <tbody>
+        <template x-for="m in models" :key="m.model">
+          <tr>
+            <td class="model-cell">
+              <div class="model-name" x-text="m.model"></div>
+              <div class="model-price" x-text="fmtPrice(m)"></div>
+            </td>
+            <td class="share">
+              <div class="share-label"><span x-text="fmtInt(m.request_count)+' 次'"></span><span x-text="fmtShare(m.request_share)"></span></div>
+              <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(m.request_share)"></div></div>
+            </td>
+            <td class="share">
+              <div class="share-label"><span x-text="fmtInt(m.total_tokens)"></span><span x-text="fmtShare(m.token_share)"></span></div>
+              <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(m.token_share)"></div></div>
+            </td>
+            <td class="share">
+              <div class="share-label"><span x-text="fmtMoney(m.total_cost)"></span><span x-text="fmtShare(m.cost_share)"></span></div>
+              <div class="share-track"><div class="share-fill" :style="'width:'+shareWidth(m.cost_share)"></div></div>
+            </td>
+            <td x-text="fmtMoney(m.total_cost)"></td>
+            <td x-text="m.has_price?fmtMoney(m.estimated_list_cost):'--'"></td>
+            <td><span class="discount" :class="discountClass(m)" x-text="fmtDiscount(m)"></span></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="model-mobile-cards" x-show="models.length>0">
+    <template x-for="m in models" :key="m.model">
+      <div class="mobile-card">
+        <div class="mc-head">
+          <span class="mc-date" x-text="m.model"></span>
+          <span class="discount" :class="discountClass(m)" x-text="fmtDiscount(m)"></span>
+        </div>
+        <div class="model-price" x-text="fmtPrice(m)"></div>
+        <div class="mc-grid" style="margin-top:12px">
+          <div class="mc-item"><div class="l">次数</div><div class="v" x-text="fmtInt(m.request_count)+' / '+fmtShare(m.request_share)"></div></div>
+          <div class="mc-item"><div class="l">Token</div><div class="v" x-text="fmtInt(m.total_tokens)+' / '+fmtShare(m.token_share)"></div></div>
+          <div class="mc-item"><div class="l">实际计费</div><div class="v" x-text="fmtMoney(m.total_cost)"></div></div>
+          <div class="mc-item"><div class="l">估算原价</div><div class="v" x-text="m.has_price?fmtMoney(m.estimated_list_cost):'--'"></div></div>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  <div class="empty" x-show="models.length===0">暂无模型明细。</div>
 
   <div class="section-head">
     <h2>历史账期</h2>

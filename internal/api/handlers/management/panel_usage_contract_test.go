@@ -62,6 +62,15 @@ func newUsageContractTestHandler(t *testing.T) *Handler {
 		input_content text,
 		output_content text,
 		detail_content text
+	);
+	create table model_prices (
+		model text not null primary key,
+		mode text not null default 'token',
+		input_price_per_m real not null default 0,
+		output_price_per_m real not null default 0,
+		cached_price_per_m real not null default 0,
+		price_per_call real not null default 0,
+		updated_at text not null default ''
 	);`)
 	if err != nil {
 		t.Fatalf("create usage schema: %v", err)
@@ -74,6 +83,12 @@ func newUsageContractTestHandler(t *testing.T) *Handler {
 	_, err = db.Exec(`insert into api_keys (key, name) values ('sk-a', 'Primary'), ('sk-b', 'Secondary')`)
 	if err != nil {
 		t.Fatalf("seed api keys: %v", err)
+	}
+	_, err = db.Exec(`insert into model_prices (
+		model, mode, input_price_per_m, output_price_per_m, cached_price_per_m, price_per_call, updated_at
+	) values ('gpt-5', 'token', 1000, 10000, 1000, 0, ?)`, now.Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("seed model prices: %v", err)
 	}
 	_, err = db.Exec(`insert into request_logs (
 		id, timestamp, api_key, api_key_name, model, source, channel_name, auth_index, failed,
@@ -377,6 +392,26 @@ func TestAPIKeyBillingReturnsCurrentCycleAndHistory(t *testing.T) {
 	if len(payload["history"].([]any)) == 0 {
 		t.Fatalf("history should be populated: %#v", payload)
 	}
+	models := payload["model_breakdown"].([]any)
+	if len(models) != 1 {
+		t.Fatalf("model_breakdown length = %d, want 1: %#v", len(models), models)
+	}
+	model := models[0].(map[string]any)
+	if model["model"].(string) != "gpt-5" || model["request_count"].(float64) != 2 || model["total_tokens"].(float64) != 40 {
+		t.Fatalf("unexpected model breakdown: %#v", model)
+	}
+	if model["total_cost"].(float64) != 0.12 {
+		t.Fatalf("model total_cost = %#v, want 0.12", model["total_cost"])
+	}
+	if got := model["estimated_list_cost"].(float64); got < 0.239 || got > 0.241 {
+		t.Fatalf("estimated_list_cost = %f, want about 0.24", got)
+	}
+	if got := model["discount_rate"].(float64); got < 0.49 || got > 0.51 {
+		t.Fatalf("discount_rate = %f, want about 0.5", got)
+	}
+	if model["request_share"].(float64) != 1 || model["token_share"].(float64) != 1 || model["cost_share"].(float64) != 1 {
+		t.Fatalf("unexpected model shares: %#v", model)
+	}
 }
 
 func TestAPIKeyBillingCanRenderBrowserHTML(t *testing.T) {
@@ -450,7 +485,7 @@ func TestPublicAPIKeyBillingRendersAlpineHTML(t *testing.T) {
 		t.Fatalf("Cache-Control = %q, want no-store", got)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"alpinejs", "billingPage", "x-data", "sk-***"} {
+	for _, want := range []string{"alpinejs", "billingPage", "x-data", "模型明细", "次数占比", "金额占比", "sk-***"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("Alpine HTML body missing %q", want)
 		}

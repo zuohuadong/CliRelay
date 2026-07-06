@@ -170,6 +170,7 @@ describe("providersApi OpenCode Go", () => {
               name: "OpenAI compatible API",
               disabled: true,
               "base-url": "https://example.com/v1",
+              "response-endpoint": true,
               "api-key-entries": [{ "api-key": "sk-openai" }],
             },
             oauthRow,
@@ -211,6 +212,7 @@ describe("providersApi OpenCode Go", () => {
         name: "OpenAI compatible API",
         disabled: true,
         baseUrl: "https://example.com/v1",
+        responseEndpoint: true,
         apiKeyEntries: [{ apiKey: "sk-openai" }],
       },
     ]);

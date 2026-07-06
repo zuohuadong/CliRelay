@@ -2,13 +2,12 @@ package api
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 type mcpGatewayRequest struct {
@@ -47,52 +46,11 @@ type mcpRouteDescriptor struct {
 }
 
 func (s *Server) handleMCPGateway(c *gin.Context) {
-	if c == nil || c.Request == nil {
-		return
-	}
-	if c.Request.Method == http.MethodOptions {
-		c.Status(http.StatusNoContent)
-		return
-	}
-	if c.Request.Method == http.MethodGet {
+	if c != nil && c.Request != nil && c.Request.Method == http.MethodGet {
 		c.JSON(http.StatusOK, s.mcpGatewayCatalog(c))
 		return
 	}
-	if c.Request.Method != http.MethodPost {
-		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "MCP gateway requires POST"})
-		return
-	}
-
-	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 4<<20))
-	if err != nil {
-		s.writeMCPGatewayError(c, nil, -32700, "failed to read MCP request")
-		return
-	}
-	var req mcpGatewayRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
-		s.writeMCPGatewayError(c, nil, -32700, "invalid JSON-RPC request")
-		return
-	}
-	if len(req.ID) == 0 && req.Method == "notifications/initialized" {
-		c.Status(http.StatusAccepted)
-		return
-	}
-
-	result, rpcErr := s.handleMCPGatewayMethod(c, req)
-	if rpcErr != nil {
-		s.writeMCPGatewayError(c, req.ID, rpcErr.Code, rpcErr.Message)
-		return
-	}
-	sessionID := strings.TrimSpace(c.GetHeader("Mcp-Session-Id"))
-	if sessionID == "" {
-		sessionID = uuid.NewString()
-	}
-	c.Header("Mcp-Session-Id", sessionID)
-	c.JSON(http.StatusOK, mcpGatewayResponse{
-		JSONRPC: "2.0",
-		ID:      normalizedMCPGatewayID(req.ID),
-		Result:  result,
-	})
+	s.dispatchMCPJSONRPC(c, s.handleMCPGatewayMethod)
 }
 
 func (s *Server) handleMCPGatewayMethod(c *gin.Context, req mcpGatewayRequest) (any, *mcpGatewayError) {
@@ -100,13 +58,8 @@ func (s *Server) handleMCPGatewayMethod(c *gin.Context, req mcpGatewayRequest) (
 	case "initialize":
 		return map[string]any{
 			"protocolVersion": "2025-06-18",
-			"capabilities": map[string]any{
-				"tools": map[string]any{},
-			},
-			"serverInfo": map[string]any{
-				"name":    "clirelay-mcp-directory",
-				"version": "1.0.0",
-			},
+			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"serverInfo":      map[string]any{"name": "clirelay-mcp-directory", "version": "1.0.0"},
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -156,6 +109,11 @@ func (s *Server) mcpGatewayCatalog(c *gin.Context) map[string]any {
 
 func (s *Server) mcpGatewayRoutes(c *gin.Context) []mcpRouteDescriptor {
 	base := strings.TrimRight(s.mcpGatewayExternalBaseURL(c), "/")
+	streamableUsage := []string{
+		"Configure this route as a Streamable HTTP MCP server.",
+		"Call tools/list on this route to discover available tools.",
+		"Use Authorization: Bearer <CliRelay API key>.",
+	}
 	routes := []mcpRouteDescriptor{
 		{
 			Name:        "directory",
@@ -169,40 +127,17 @@ func (s *Server) mcpGatewayRoutes(c *gin.Context) []mcpRouteDescriptor {
 			Name:        "video",
 			Path:        base + "/mcp/video",
 			Type:        "builtin",
-			Description: "Video generation MCP server.",
+			Description: "Video generation MCP server. Model-agnostic; defaults to agnes-video-v2.0.",
 			Tools:       []string{"clirelay_video_models", "clirelay_video_create", "clirelay_video_status", "clirelay_video_content_url"},
-			Usage:       []string{"Configure this route as a Streamable HTTP MCP server.", "Call tools/list on this route to discover video tools.", "Use clirelay_video_create with the model parameter to select any available video model; default is agnes-video-v2.0.", "Use Authorization: Bearer <CliRelay API key>."},
-			Configured:  true,
+			Usage: append([]string{
+				"Use the model parameter to select any available video model; default is agnes-video-v2.0.",
+			}, streamableUsage...),
+			Configured: true,
 		},
-		{
-			Name:        "zai-web-search-prime",
-			Path:        base + "/mcp/zai/web-search-prime",
-			Type:        "proxy",
-			Description: "Z.AI web_search_prime MCP server.",
-			Tools:       []string{"web_search_prime"},
-			Aliases:     []string{"web_search_prime", "search"},
-			Usage:       []string{"Configure this route as a Streamable HTTP MCP server.", "Call tools/list on this route to discover upstream tools.", "Use Authorization: Bearer <CliRelay API key>."},
-			Configured:  true,
-		},
-		{
-			Name:        "zai-web-reader",
-			Path:        base + "/mcp/zai/web-reader",
-			Type:        "proxy",
-			Description: "Z.AI web_reader MCP server.",
-			Tools:       []string{"web_reader"},
-			Aliases:     []string{"web_reader", "reader"},
-			Usage:       []string{"Configure this route as a Streamable HTTP MCP server.", "Call tools/list on this route to discover upstream tools.", "Use Authorization: Bearer <CliRelay API key>."},
-			Configured:  true,
-		},
-		{
-			Name:        "zai-zread",
-			Path:        base + "/mcp/zai/zread",
-			Type:        "proxy",
-			Description: "Z.AI zread MCP server.",
-			Tools:       []string{"zread"},
-			Usage:       []string{"Configure this route as a Streamable HTTP MCP server.", "Call tools/list on this route to discover upstream tools.", "Use Authorization: Bearer <CliRelay API key>."},
-			Configured:  true,
-		},
+	}
+
+	for _, route := range zaiMCPRouteCatalog(base, streamableUsage) {
+		routes = append(routes, route)
 	}
 
 	if s != nil && s.cfg != nil {
@@ -219,7 +154,7 @@ func (s *Server) mcpGatewayRoutes(c *gin.Context) []mcpRouteDescriptor {
 				Path:        base + "/mcp/custom/" + name,
 				Type:        "proxy",
 				Description: "Configured custom MCP proxy server.",
-				Usage:       []string{"Configure this route as a Streamable HTTP MCP server.", "Call tools/list on this route to discover upstream tools.", "Use Authorization: Bearer <CliRelay API key>."},
+				Usage:       streamableUsage,
 				Configured:  true,
 			})
 		}
@@ -229,6 +164,67 @@ func (s *Server) mcpGatewayRoutes(c *gin.Context) []mcpRouteDescriptor {
 		return routes[i].Name < routes[j].Name
 	})
 	return routes
+}
+
+func zaiMCPRouteCatalog(base string, usage []string) []mcpRouteDescriptor {
+	aliasesByURL := make(map[string][]string)
+	for alias, target := range zaiMCPServerURLs {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		aliasesByURL[target] = append(aliasesByURL[target], alias)
+	}
+
+	routes := make([]mcpRouteDescriptor, 0, len(aliasesByURL))
+	for target, aliases := range aliasesByURL {
+		sort.Strings(aliases)
+		tool := zaiMCPToolNameFromURL(target)
+		name := preferredZAIMCPRouteName(aliases, tool)
+		routes = append(routes, mcpRouteDescriptor{
+			Name:        "zai-" + name,
+			Path:        base + "/mcp/zai/" + name,
+			Type:        "proxy",
+			Description: "Z.AI " + name + " MCP server.",
+			Tools:       []string{tool},
+			Aliases:     aliases,
+			Usage:       usage,
+			Configured:  true,
+		})
+	}
+	return routes
+}
+
+func preferredZAIMCPRouteName(aliases []string, tool string) string {
+	for _, alias := range aliases {
+		if strings.Contains(alias, "-") {
+			return alias
+		}
+	}
+	for _, alias := range aliases {
+		if alias == tool {
+			return alias
+		}
+	}
+	if len(aliases) > 0 {
+		return aliases[0]
+	}
+	return tool
+}
+
+func zaiMCPToolNameFromURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := strings.TrimSpace(parts[i])
+		if part != "" && part != "mcp" {
+			return part
+		}
+	}
+	return ""
 }
 
 func (s *Server) mcpGatewayTools() []map[string]any {

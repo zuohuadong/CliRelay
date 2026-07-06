@@ -88,6 +88,22 @@ func TestMCPGatewayRoutesListsZAIAndConfiguredCustomRoutes(t *testing.T) {
 	}
 }
 
+func TestMCPGatewayGETReturnsCatalog(t *testing.T) {
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
+	rec := httptest.NewRecorder()
+	server.engine.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /mcp status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"routes"`) || !strings.Contains(body, `/mcp/video`) {
+		t.Fatalf("GET /mcp response missing route catalog: %s", body)
+	}
+}
+
 func TestMCPGatewayRouteInfoRejectsUnknownConcreteTool(t *testing.T) {
 	server := newTestServer(t)
 

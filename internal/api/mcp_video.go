@@ -1,65 +1,22 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/tidwall/gjson"
 )
 
 const defaultMCPVideoModel = "agnes-video-v2.0"
 
 func (s *Server) handleVideoMCP(c *gin.Context) {
-	if c == nil || c.Request == nil {
-		return
-	}
-	if c.Request.Method == http.MethodOptions {
-		c.Status(http.StatusNoContent)
-		return
-	}
-	if c.Request.Method != http.MethodPost {
-		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "Video MCP requires POST"})
-		return
-	}
-
-	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 4<<20))
-	if err != nil {
-		s.writeMCPGatewayError(c, nil, -32700, "failed to read MCP request")
-		return
-	}
-	var req mcpGatewayRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
-		s.writeMCPGatewayError(c, nil, -32700, "invalid JSON-RPC request")
-		return
-	}
-	if len(req.ID) == 0 && req.Method == "notifications/initialized" {
-		c.Status(http.StatusAccepted)
-		return
-	}
-
-	result, rpcErr := s.handleVideoMCPMethod(c, req)
-	if rpcErr != nil {
-		s.writeMCPGatewayError(c, req.ID, rpcErr.Code, rpcErr.Message)
-		return
-	}
-	sessionID := strings.TrimSpace(c.GetHeader("Mcp-Session-Id"))
-	if sessionID == "" {
-		sessionID = uuid.NewString()
-	}
-	c.Header("Mcp-Session-Id", sessionID)
-	c.JSON(http.StatusOK, mcpGatewayResponse{
-		JSONRPC: "2.0",
-		ID:      normalizedMCPGatewayID(req.ID),
-		Result:  result,
-	})
+	s.dispatchMCPJSONRPC(c, s.handleVideoMCPMethod)
 }
 
 func (s *Server) handleVideoMCPMethod(c *gin.Context, req mcpGatewayRequest) (any, *mcpGatewayError) {
@@ -67,13 +24,8 @@ func (s *Server) handleVideoMCPMethod(c *gin.Context, req mcpGatewayRequest) (an
 	case "initialize":
 		return map[string]any{
 			"protocolVersion": "2025-06-18",
-			"capabilities": map[string]any{
-				"tools": map[string]any{},
-			},
-			"serverInfo": map[string]any{
-				"name":    "clirelay-mcp-video",
-				"version": "1.0.0",
-			},
+			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"serverInfo":      map[string]any{"name": "clirelay-video", "version": "1.0.0"},
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -97,25 +49,18 @@ func (s *Server) callVideoMCPTool(c *gin.Context, params mcpGatewayToolCallParam
 	}
 	switch strings.TrimSpace(params.Name) {
 	case "clirelay_video_models":
-		out, err := s.mcpInternalJSON(c, http.MethodGet, "/v1/models", nil)
-		if err != nil {
-			return nil, &mcpGatewayError{Code: -32000, Message: err.Error()}
-		}
-		return mcpGatewayToolJSON(filterVideoMCPModels(out)), nil
+		return mcpGatewayToolJSON(s.videoMCPModelList(c)), nil
 	case "clirelay_video_create":
 		payload, rpcErr := buildVideoCreatePayload(args)
 		if rpcErr != nil {
 			return nil, rpcErr
 		}
-		out, err := s.mcpInternalJSON(c, http.MethodPost, "/openai/v1/videos", payload)
-		if err != nil {
-			return nil, &mcpGatewayError{Code: -32000, Message: err.Error()}
+		if rpcErr := validateMCPVideoModelAccess(c, stringMCPValue(payload["model"])); rpcErr != nil {
+			return nil, rpcErr
 		}
-		if boolMCPArg(args, "wait") {
-			out, err = s.waitVideoMCP(c, mcpVideoID(out), args)
-			if err != nil {
-				return mcpGatewayToolJSON(out), nil
-			}
+		out, rpcErr := s.videoMCPCreate(c, payload)
+		if rpcErr != nil {
+			return nil, rpcErr
 		}
 		return mcpGatewayToolJSON(out), nil
 	case "clirelay_video_status":
@@ -123,9 +68,9 @@ func (s *Server) callVideoMCPTool(c *gin.Context, params mcpGatewayToolCallParam
 		if videoID == "" {
 			return nil, &mcpGatewayError{Code: -32602, Message: "video_id is required"}
 		}
-		out, err := s.mcpInternalJSON(c, http.MethodGet, "/openai/v1/videos/"+url.PathEscape(videoID), nil)
-		if err != nil {
-			return nil, &mcpGatewayError{Code: -32000, Message: err.Error()}
+		out, rpcErr := s.videoMCPStatus(c, videoID)
+		if rpcErr != nil {
+			return nil, rpcErr
 		}
 		return mcpGatewayToolJSON(out), nil
 	case "clirelay_video_content_url":
@@ -151,17 +96,14 @@ func videoMCPTools() []map[string]any {
 		},
 		{
 			"name":        "clirelay_video_create",
-			"description": "Create a video generation task through CliRelay.",
+			"description": "Create a video generation task. Returns a video_id immediately; poll with clirelay_video_status.",
 			"inputSchema": mcpGatewayObjectSchema(map[string]any{
-				"prompt":                mcpGatewayStringSchema("Video prompt."),
-				"model":                 mcpGatewayStringSchema("Video model. Defaults to agnes-video-v2.0."),
-				"seconds":               mcpGatewayNumberSchema("Video duration in seconds."),
-				"size":                  mcpGatewayStringSchema("Video size such as 720x1280."),
-				"aspect_ratio":          mcpGatewayStringSchema("Aspect ratio such as 9:16 or 16:9."),
-				"resolution":            mcpGatewayStringSchema("Resolution such as 720p."),
-				"wait":                  mcpGatewayBoolSchema("Poll until the video reaches a terminal state."),
-				"poll_interval_seconds": mcpGatewayNumberSchema("Polling interval when wait is true."),
-				"timeout_seconds":       mcpGatewayNumberSchema("Maximum wait time when wait is true."),
+				"prompt":       mcpGatewayStringSchema("Video prompt."),
+				"model":        mcpGatewayStringSchema("Video model. Defaults to agnes-video-v2.0."),
+				"seconds":      mcpGatewayNumberSchema("Video duration in seconds."),
+				"size":         mcpGatewayStringSchema("Video size such as 720x1280."),
+				"aspect_ratio": mcpGatewayStringSchema("Aspect ratio such as 9:16 or 16:9."),
+				"resolution":   mcpGatewayStringSchema("Resolution such as 720p."),
 			}, []string{"prompt"}),
 		},
 		{
@@ -205,116 +147,104 @@ func buildVideoCreatePayload(args map[string]any) (map[string]any, *mcpGatewayEr
 	return payload, nil
 }
 
-func (s *Server) waitVideoMCP(c *gin.Context, videoID string, args map[string]any) (map[string]any, error) {
-	if strings.TrimSpace(videoID) == "" {
-		return nil, fmt.Errorf("create response did not include a video id")
-	}
-	timeout := time.Duration(intMCPArg(args, "timeout_seconds")) * time.Second
-	if timeout <= 0 {
-		timeout = 10 * time.Minute
-	}
-	interval := time.Duration(intMCPArg(args, "poll_interval_seconds")) * time.Second
-	if interval <= 0 {
-		interval = 5 * time.Second
-	}
-	deadline := time.Now().Add(timeout)
-	for {
-		out, err := s.mcpInternalJSON(c, http.MethodGet, "/openai/v1/videos/"+url.PathEscape(videoID), nil)
-		if err != nil {
-			return out, err
-		}
-		switch strings.ToLower(stringMCPValue(out["status"])) {
-		case "completed", "succeeded", "success", "done":
-			return out, nil
-		case "failed", "error", "cancelled", "canceled", "expired":
-			return out, fmt.Errorf("video generation failed: %s", stringMCPValue(out["error"]))
-		}
-		if time.Now().Add(interval).After(deadline) {
-			return out, fmt.Errorf("video generation timed out")
-		}
-		select {
-		case <-c.Request.Context().Done():
-			return out, c.Request.Context().Err()
-		case <-time.After(interval):
-		}
-	}
-}
-
-func (s *Server) mcpInternalJSON(c *gin.Context, method, path string, payload any) (map[string]any, error) {
-	var body io.Reader
-	if payload != nil {
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return nil, err
-		}
-		body = bytes.NewReader(raw)
-	}
-	req := httptest.NewRequest(method, path, body)
-	req.Header.Set("Accept", "application/json")
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if authHeader := strings.TrimSpace(c.GetHeader("Authorization")); authHeader != "" {
-		req.Header.Set("Authorization", authHeader)
-	} else if apiKey, ok := c.Get("userApiKey"); ok {
-		if key := strings.TrimSpace(fmt.Sprint(apiKey)); key != "" {
-			req.Header.Set("Authorization", "Bearer "+key)
-		}
-	}
-
-	rec := httptest.NewRecorder()
-	s.engine.ServeHTTP(rec, req)
-	raw := rec.Body.Bytes()
-	if rec.Code < 200 || rec.Code >= 300 {
-		return nil, fmt.Errorf("%s %s failed: %d: %s", method, path, rec.Code, strings.TrimSpace(string(raw)))
-	}
-	if len(raw) == 0 {
-		return map[string]any{}, nil
-	}
-	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-	return out, nil
-}
-
-func filterVideoMCPModels(payload map[string]any) map[string]any {
-	items, _ := payload["data"].([]any)
-	data := make([]any, 0, len(items))
-	for _, item := range items {
-		model, ok := item.(map[string]any)
-		if !ok {
+// videoMCPModelList returns video models from the global registry using the
+// proper type marker instead of string-matching the model name.
+func (s *Server) videoMCPModelList(c *gin.Context) map[string]any {
+	reg := registry.GetGlobalRegistry()
+	all := reg.GetAvailableModels("openai")
+	data := make([]map[string]any, 0, len(all))
+	allowed := mcpAllowedModels(c)
+	for _, model := range all {
+		modelType, _ := model["type"].(string)
+		if modelType != registry.OpenAIVideoModelType {
 			continue
 		}
-		id := strings.ToLower(strings.TrimSpace(stringMCPValue(model["id"])))
-		if id == "" {
+		if !mcpVideoModelAllowed(stringMCPValue(model["id"]), allowed) {
 			continue
 		}
-		if strings.Contains(id, "video") || id == strings.ToLower(defaultMCPVideoModel) {
-			data = append(data, model)
-		}
+		data = append(data, model)
 	}
 	return map[string]any{"object": "list", "data": data}
 }
 
-func mcpVideoID(payload map[string]any) string {
-	for _, key := range []string{"id", "request_id", "video_id"} {
-		if value := strings.TrimSpace(stringMCPValue(payload[key])); value != "" {
-			return value
-		}
+// videoMCPCreate dispatches directly to the OpenAI video handler, bypassing
+// the middleware stack to avoid double auth/billing.
+func (s *Server) videoMCPCreate(c *gin.Context, payload map[string]any) (map[string]any, *mcpGatewayError) {
+	if s.openaiHandler == nil {
+		return nil, &mcpGatewayError{Code: -32603, Message: "video handler not available"}
 	}
-	return ""
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, &mcpGatewayError{Code: -32603, Message: "failed to encode payload"}
+	}
+
+	rec := httptest.NewRecorder()
+	innerCtx, _ := gin.CreateTestContext(rec)
+	innerCtx.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/videos", strings.NewReader(string(raw)))
+	if c != nil && c.Request != nil {
+		innerCtx.Request = innerCtx.Request.WithContext(c.Request.Context())
+	}
+	innerCtx.Request.Header.Set("Content-Type", "application/json")
+	copyMCPContextValues(c, innerCtx)
+
+	s.openaiHandler.VideosCreate(innerCtx)
+
+	return parseMCPVideoResponse(rec, "create")
 }
 
-func boolMCPArg(args map[string]any, key string) bool {
-	switch value := args[key].(type) {
-	case bool:
-		return value
-	case string:
-		return strings.EqualFold(strings.TrimSpace(value), "true")
-	default:
-		return false
+// videoMCPStatus dispatches directly to the OpenAI video retrieval handler.
+func (s *Server) videoMCPStatus(c *gin.Context, videoID string) (map[string]any, *mcpGatewayError) {
+	if s.openaiHandler == nil {
+		return nil, &mcpGatewayError{Code: -32603, Message: "video handler not available"}
 	}
+
+	rec := httptest.NewRecorder()
+	innerCtx, _ := gin.CreateTestContext(rec)
+	innerCtx.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/videos/"+url.PathEscape(videoID), nil)
+	if c != nil && c.Request != nil {
+		innerCtx.Request = innerCtx.Request.WithContext(c.Request.Context())
+	}
+	innerCtx.Params = gin.Params{{Key: "video_id", Value: videoID}}
+	copyMCPContextValues(c, innerCtx)
+
+	s.openaiHandler.VideosRetrieve(innerCtx)
+
+	return parseMCPVideoResponse(rec, "status")
+}
+
+// copyMCPContextValues propagates auth context from the MCP caller into the
+// inner gin context used for direct handler dispatch.
+func copyMCPContextValues(src, dst *gin.Context) {
+	if src == nil || dst == nil {
+		return
+	}
+	if authHeader := strings.TrimSpace(src.GetHeader("Authorization")); authHeader != "" {
+		dst.Request.Header.Set("Authorization", authHeader)
+	}
+	for _, key := range []string{"userApiKey", "accessProvider", "accessMetadata"} {
+		if val, exists := src.Get(key); exists {
+			dst.Set(key, val)
+		}
+	}
+}
+
+func parseMCPVideoResponse(rec *httptest.ResponseRecorder, op string) (map[string]any, *mcpGatewayError) {
+	body := rec.Body.Bytes()
+	if rec.Code < 200 || rec.Code >= 300 {
+		errMsg := gjson.GetBytes(body, "error.message").String()
+		if errMsg == "" {
+			errMsg = fmt.Sprintf("video %s failed: HTTP %d", op, rec.Code)
+		}
+		return nil, &mcpGatewayError{Code: -32000, Message: errMsg}
+	}
+	var out map[string]any
+	if len(body) == 0 {
+		return map[string]any{}, nil
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, &mcpGatewayError{Code: -32603, Message: fmt.Sprintf("decode video %s response: %v", op, err)}
+	}
+	return out, nil
 }
 
 func intMCPArg(args map[string]any, key string) int {
@@ -330,6 +260,57 @@ func intMCPArg(args map[string]any, key string) int {
 	default:
 		return 0
 	}
+}
+
+func validateMCPVideoModelAccess(c *gin.Context, model string) *mcpGatewayError {
+	if !mcpVideoModelAllowed(model, mcpAllowedModels(c)) {
+		return &mcpGatewayError{Code: -32000, Message: "model not allowed for this API key"}
+	}
+	return nil
+}
+
+func mcpAllowedModels(c *gin.Context) []string {
+	if c == nil {
+		return nil
+	}
+	raw, exists := c.Get("accessMetadata")
+	if !exists {
+		return nil
+	}
+	metadata, ok := raw.(map[string]string)
+	if !ok {
+		return nil
+	}
+	allowedRaw := strings.TrimSpace(metadata["allowed-models"])
+	if allowedRaw == "" {
+		return nil
+	}
+	parts := strings.Split(allowedRaw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func mcpVideoModelAllowed(model string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	for _, item := range allowed {
+		item = strings.ToLower(strings.TrimSpace(item))
+		if item == model {
+			return true
+		}
+		if strings.HasSuffix(item, "*") && strings.HasPrefix(model, strings.TrimSuffix(item, "*")) {
+			return true
+		}
+	}
+	return false
 }
 
 func stringMCPValue(value any) string {

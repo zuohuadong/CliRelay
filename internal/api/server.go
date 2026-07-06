@@ -220,6 +220,9 @@ type Server struct {
 	// mcpProxyCounter is the round-robin counter for MCP proxy upstream selection.
 	mcpProxyCounter atomic.Uint64
 
+	// openaiHandler is the cached OpenAI API handler used by MCP video tools.
+	openaiHandler *openai.OpenAIAPIHandler
+
 	// configFilePath is the absolute path to the YAML config file for persistence.
 	configFilePath string
 
@@ -459,6 +462,7 @@ func (s *Server) setupRoutes() {
 		publicUsage.POST("/logs/:id/content", s.mgmt.GetPublicUsageLogContent)
 	}
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
+	s.openaiHandler = openaiHandlers
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)

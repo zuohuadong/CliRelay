@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestVideoMCPInitializeAndToolsList(t *testing.T) {
@@ -23,7 +25,7 @@ func TestVideoMCPInitializeAndToolsList(t *testing.T) {
 	if got := initRec.Header().Get("Mcp-Session-Id"); got == "" {
 		t.Fatal("initialize response missing Mcp-Session-Id")
 	}
-	if !strings.Contains(initRec.Body.String(), `"name":"clirelay-mcp-video"`) {
+	if !strings.Contains(initRec.Body.String(), `"name":"clirelay-video"`) {
 		t.Fatalf("initialize response missing server info: %s", initRec.Body.String())
 	}
 
@@ -41,6 +43,22 @@ func TestVideoMCPInitializeAndToolsList(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("tools/list missing %s: %s", want, body)
 		}
+	}
+	if strings.Contains(body, "timeout_seconds") || strings.Contains(body, "poll_interval_seconds") || strings.Contains(body, `"wait"`) {
+		t.Fatalf("tools/list must not expose server-side wait options: %s", body)
+	}
+}
+
+func TestVideoMCPGETIsNotEmptySuccess(t *testing.T) {
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/mcp/video", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
+	rec := httptest.NewRecorder()
+	server.engine.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /mcp/video status = %d, body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -66,6 +84,23 @@ func TestVideoMCPRejectsMissingPromptBeforeCreate(t *testing.T) {
 	}
 	if got := errObj["message"]; got != "prompt is required" {
 		t.Fatalf("error message = %v, body=%s", got, rec.Body.String())
+	}
+}
+
+func TestVideoMCPRejectsDisallowedModelBeforeCreate(t *testing.T) {
+	server := newTestServer(t)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("accessMetadata", map[string]string{"allowed-models": "other-video"})
+	_, rpcErr := server.callVideoMCPTool(c, mcpGatewayToolCallParams{
+		Name: "clirelay_video_create",
+		Arguments: map[string]any{
+			"prompt": "make a video",
+			"model":  "agnes-video-v2.0",
+		},
+	})
+	if rpcErr == nil || !strings.Contains(rpcErr.Message, "model not allowed") {
+		t.Fatalf("rpcErr = %#v, want model not allowed", rpcErr)
 	}
 }
 

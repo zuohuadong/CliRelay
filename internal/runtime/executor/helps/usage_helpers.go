@@ -464,11 +464,21 @@ func ParseCodexImageToolUsage(data []byte) (usage.Detail, bool) {
 }
 
 func ParseOpenAIUsage(data []byte) usage.Detail {
-	usageNode := gjson.ParseBytes(data).Get("usage")
-	if !hasOpenAIStyleUsageTokenFields(usageNode) {
+	usageNode, ok := openAIStyleUsageNode(gjson.ParseBytes(data))
+	if !ok {
 		return usage.Detail{}
 	}
 	return parseOpenAIStyleUsageNode(usageNode)
+}
+
+func openAIStyleUsageNode(root gjson.Result) (gjson.Result, bool) {
+	for _, path := range []string{"usage", "response.usage"} {
+		usageNode := root.Get(path)
+		if hasOpenAIStyleUsageTokenFields(usageNode) {
+			return usageNode, true
+		}
+	}
+	return gjson.Result{}, false
 }
 
 func hasOpenAIStyleUsageTokenFields(usageNode gjson.Result) bool {
@@ -522,8 +532,8 @@ func ParseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {
 	if len(payload) == 0 || !gjson.ValidBytes(payload) {
 		return usage.Detail{}, false
 	}
-	usageNode := gjson.GetBytes(payload, "usage")
-	if !hasOpenAIStyleUsageTokenFields(usageNode) {
+	usageNode, ok := openAIStyleUsageNode(gjson.ParseBytes(payload))
+	if !ok {
 		return usage.Detail{}, false
 	}
 	return parseOpenAIStyleUsageNode(usageNode), true

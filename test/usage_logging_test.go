@@ -68,6 +68,75 @@ func TestGeminiExecutorRecordsSuccessfulZeroUsageInQueue(t *testing.T) {
 	waitForQueuedUsageModelTotalTokens(t, "gemini", model, 0)
 }
 
+func TestOpenAICompatResponsesStreamRecordsNestedUsageInQueue(t *testing.T) {
+	model := fmt.Sprintf("gpt-5.5-usage-%d", time.Now().UnixNano())
+	source := fmt.Sprintf("openai-compatible-gpt-%d@example.com", time.Now().UnixNano())
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("path = %q, want /v1/responses", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"ok"}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"usage":{"input_tokens":8,"output_tokens":5,"total_tokens":13}}}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := runtimeexecutor.NewOpenAICompatExecutor("openai-compatible-gpt", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:             "gpt",
+			BaseURL:          server.URL + "/v1",
+			ResponseEndpoint: true,
+			Models:           []config.OpenAICompatibilityModel{{Name: model}},
+		}},
+	})
+	auth := &cliproxyauth.Auth{
+		Provider: "openai-compatible-gpt",
+		Attributes: map[string]string{
+			"api_key":           "test-upstream-key",
+			"base_url":          server.URL + "/v1",
+			"compat_name":       "gpt",
+			"provider_key":      "openai-compatible-gpt",
+			"response_endpoint": "true",
+		},
+		Metadata: map[string]any{
+			"email": source,
+		},
+	}
+
+	prevQueueEnabled := redisqueue.Enabled()
+	prevUsageEnabled := redisqueue.UsageStatisticsEnabled()
+	redisqueue.SetEnabled(false)
+	redisqueue.SetEnabled(true)
+	redisqueue.SetUsageStatisticsEnabled(true)
+	t.Cleanup(func() {
+		redisqueue.SetEnabled(false)
+		redisqueue.SetEnabled(prevQueueEnabled)
+		redisqueue.SetUsageStatisticsEnabled(prevUsageEnabled)
+	})
+
+	payload := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":true}`, model))
+	stream, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAIResponse,
+		OriginalRequest: payload,
+		Stream:          true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Err)
+		}
+	}
+
+	waitForQueuedUsageModelTotalTokens(t, "openai-compatible-gpt", model, 13)
+}
+
 func waitForQueuedUsageModelTotalTokens(t *testing.T, wantProvider, wantModel string, wantTokens int64) {
 	t.Helper()
 

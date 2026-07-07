@@ -1292,11 +1292,28 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	suppressReplayableErrors bool,
 ) ([]byte, *interfaces.ErrorMessage, bool, error) {
 	completed := false
-	sawUpstreamPayload := false
+	sawReplayBlockingPayload := false
+	pendingReplayablePayloads := make([][]byte, 0, 2)
 	outputAccumulator := newResponsesWebsocketOutputAccumulator()
 	downstreamSessionKey := ""
 	if c != nil && c.Request != nil {
 		downstreamSessionKey = websocketDownstreamSessionKey(c.Request)
+	}
+	flushPendingReplayablePayloads := func() error {
+		for _, payload := range pendingReplayablePayloads {
+			markAPIResponseTimestamp(c)
+			if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now()); errWrite != nil {
+				log.Warnf(
+					"responses websocket: downstream_out write failed id=%s event=%s error=%v",
+					sessionID,
+					websocketPayloadEventType(payload),
+					errWrite,
+				)
+				return errWrite
+			}
+		}
+		pendingReplayablePayloads = pendingReplayablePayloads[:0]
+		return nil
 	}
 
 	for {
@@ -1311,9 +1328,13 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			}
 			if errMsg != nil {
 				output := outputAccumulator.Output()
-				if suppressReplayableErrors && shouldReplayResponsesWebsocketRequest(errMsg, output, sawUpstreamPayload) {
+				if suppressReplayableErrors && shouldReplayResponsesWebsocketRequest(errMsg, output, sawReplayBlockingPayload) {
 					cancel(errMsg.Error)
 					return output, errMsg, true, nil
+				}
+				if errFlush := flushPendingReplayablePayloads(); errFlush != nil {
+					cancel(errFlush)
+					return outputAccumulator.Output(), errMsg, false, errFlush
 				}
 				h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
 				markAPIResponseTimestamp(c)
@@ -1372,6 +1393,10 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 								cancel(errBuild)
 								return output, nil, false, errBuild
 							}
+							if errFlush := flushPendingReplayablePayloads(); errFlush != nil {
+								cancel(errFlush)
+								return output, nil, false, errFlush
+							}
 							markAPIResponseTimestamp(c)
 							if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, completedPayload, time.Now()); errWrite != nil {
 								log.Warnf(
@@ -1402,9 +1427,13 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						)
 					}
 					output := outputAccumulator.Output()
-					if suppressReplayableErrors && shouldReplayResponsesWebsocketRequest(errMsg, output, sawUpstreamPayload) {
+					if suppressReplayableErrors && shouldReplayResponsesWebsocketRequest(errMsg, output, sawReplayBlockingPayload) {
 						cancel(errMsg.Error)
 						return output, errMsg, true, nil
+					}
+					if errFlush := flushPendingReplayablePayloads(); errFlush != nil {
+						cancel(errFlush)
+						return outputAccumulator.Output(), errMsg, false, errFlush
 					}
 					h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
 					markAPIResponseTimestamp(c)
@@ -1434,17 +1463,25 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			}
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
-			if len(payloads) > 0 {
-				sawUpstreamPayload = true
-			}
 			for i := range payloads {
 				recordResponsesWebsocketToolCallsFromPayload(downstreamSessionKey, payloads[i])
 				eventType := gjson.GetBytes(payloads[i], "type").String()
+				if !responsesWebsocketReplayableLifecycleEvent(eventType) {
+					sawReplayBlockingPayload = true
+				}
 				if eventType == wsEventTypeCompleted {
 					completed = true
 					outputAccumulator.SetCompleted(payloads[i])
 				} else if eventType == "response.output_item.done" {
 					outputAccumulator.AppendOutputItemDone(payloads[i])
+				}
+				if suppressReplayableErrors && !sawReplayBlockingPayload && responsesWebsocketReplayableLifecycleEvent(eventType) {
+					pendingReplayablePayloads = append(pendingReplayablePayloads, bytes.Clone(payloads[i]))
+					continue
+				}
+				if errFlush := flushPendingReplayablePayloads(); errFlush != nil {
+					cancel(errFlush)
+					return outputAccumulator.Output(), nil, false, errFlush
 				}
 				markAPIResponseTimestamp(c)
 				// log.Infof(
@@ -1803,13 +1840,22 @@ func shouldReplayResponsesWebsocketTranscript(errMsg *interfaces.ErrorMessage) b
 		strings.Contains(text, "expected an id that begins with 'resp'")
 }
 
-func shouldReplayResponsesWebsocketRequest(errMsg *interfaces.ErrorMessage, completedOutput []byte, sawUpstreamPayload bool) bool {
-	return shouldReplayResponsesWebsocketTranscript(errMsg) ||
-		shouldReplayResponsesWebsocketZeroOutputEOF(errMsg, completedOutput, sawUpstreamPayload)
+func responsesWebsocketReplayableLifecycleEvent(eventType string) bool {
+	switch eventType {
+	case "response.created", "response.in_progress":
+		return true
+	default:
+		return false
+	}
 }
 
-func shouldReplayResponsesWebsocketZeroOutputEOF(errMsg *interfaces.ErrorMessage, completedOutput []byte, sawUpstreamPayload bool) bool {
-	if errMsg == nil || sawUpstreamPayload || responsesWebsocketOutputItemCount(completedOutput) > 0 {
+func shouldReplayResponsesWebsocketRequest(errMsg *interfaces.ErrorMessage, completedOutput []byte, sawReplayBlockingPayload bool) bool {
+	return shouldReplayResponsesWebsocketTranscript(errMsg) ||
+		shouldReplayResponsesWebsocketZeroOutputEOF(errMsg, completedOutput, sawReplayBlockingPayload)
+}
+
+func shouldReplayResponsesWebsocketZeroOutputEOF(errMsg *interfaces.ErrorMessage, completedOutput []byte, sawReplayBlockingPayload bool) bool {
+	if errMsg == nil || sawReplayBlockingPayload || responsesWebsocketOutputItemCount(completedOutput) > 0 {
 		return false
 	}
 	status := errMsg.StatusCode

@@ -85,9 +85,10 @@ type websocketPreviousResponseReplayExecutor struct {
 }
 
 type websocketZeroOutputEOFReplayExecutor struct {
-	mu       sync.Mutex
-	calls    int
-	payloads [][]byte
+	mu                         sync.Mutex
+	calls                      int
+	firstCallLifecyclePayloads bool
+	payloads                   [][]byte
 }
 
 type websocketBootstrapFallbackExecutor struct {
@@ -412,8 +413,12 @@ func (e *websocketZeroOutputEOFReplayExecutor) ExecuteStream(_ context.Context, 
 	e.payloads = append(e.payloads, bytes.Clone(req.Payload))
 	e.mu.Unlock()
 
-	chunks := make(chan coreexecutor.StreamChunk, 1)
+	chunks := make(chan coreexecutor.StreamChunk, 2)
 	if call == 1 {
+		if e.firstCallLifecyclePayloads {
+			chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"response.created","response":{"id":"resp_eof_retry_1","status":"in_progress","output":[]}}`)}
+			chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"response.in_progress","response":{"id":"resp_eof_retry_1","status":"in_progress","output":[]}}`)}
+		}
 		close(chunks)
 		return &coreexecutor.StreamResult{Chunks: chunks}, nil
 	}
@@ -2840,6 +2845,69 @@ func TestResponsesWebsocketRetriesZeroOutputEOFWithTranscriptReplay(t *testing.T
 	}
 	if got := gjson.GetBytes(payloads[1], "input.0.id").String(); got != "msg-1" {
 		t.Fatalf("retry payload input id = %q, want msg-1: %s", got, payloads[1])
+	}
+}
+
+func TestResponsesWebsocketRetriesLifecycleOnlyEOFWithTranscriptReplay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &websocketZeroOutputEOFReplayExecutor{firstCallLifecyclePayloads: true}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth := &coreauth.Auth{
+		ID:         "auth-lifecycle-eof-retry",
+		Provider:   executor.Identifier(),
+		Status:     coreauth.StatusActive,
+		Attributes: map[string]string{"websockets": "true"},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "lifecycle-eof-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Fatalf("close websocket: %v", errClose)
+		}
+	}()
+
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"lifecycle-eof-model","input":[{"type":"message","id":"msg-1"}]}`)); errWrite != nil {
+		t.Fatalf("write websocket message: %v", errWrite)
+	}
+	_, payload, errReadMessage := conn.ReadMessage()
+	if errReadMessage != nil {
+		t.Fatalf("read websocket message: %v", errReadMessage)
+	}
+	if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+		t.Fatalf("first visible payload type = %s, want %s from replay: %s", got, wsEventTypeCompleted, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.metadata.error_code").String(); got != "" {
+		t.Fatalf("lifecycle-only EOF should be hidden by replay, got error_code %q: %s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.id").String(); got != "resp_eof_retry_2" {
+		t.Fatalf("response.id = %q, want retry response id; payload=%s", got, payload)
+	}
+
+	if payloads := executor.Payloads(); len(payloads) != 2 {
+		t.Fatalf("upstream payload count = %d, want 2", len(payloads))
 	}
 }
 

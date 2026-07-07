@@ -3431,6 +3431,66 @@ func TestNormalizeSubsequentRequestCompactMergesWhenCompactionReplayUnsupported(
 	}
 }
 
+func TestNormalizeSubsequentRequestDropsStaleCompactionTrigger(t *testing.T) {
+	lastRequest := []byte(`{"model":"gpt-5.4","stream":true,"input":[
+		{"type":"message","role":"user","id":"msg-1","content":"original prompt"},
+		{"type":"compaction_trigger","id":"ct-stale"}
+	]}`)
+	lastResponseOutput := []byte(`[
+		{"type":"message","role":"assistant","id":"msg-2","content":"compacted"}
+	]`)
+	raw := []byte(`{"type":"response.create","input":[
+		{"type":"message","role":"user","id":"msg-3","content":"next prompt"}
+	]}`)
+
+	normalized, _, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, false, false)
+	if errMsg != nil {
+		t.Fatalf("unexpected error: %v", errMsg.Error)
+	}
+
+	input := gjson.GetBytes(normalized, "input").Array()
+	if len(input) != 3 {
+		t.Fatalf("input len = %d, want 3 without stale compaction_trigger: %s", len(input), normalized)
+	}
+	for _, item := range input {
+		if item.Get("type").String() == "compaction_trigger" {
+			t.Fatalf("stale compaction_trigger must not be replayed before later input: %s", normalized)
+		}
+	}
+	if got := input[2].Get("id").String(); got != "msg-3" {
+		t.Fatalf("input[2].id = %q, want msg-3; payload=%s", got, normalized)
+	}
+}
+
+func TestNormalizeSubsequentRequestKeepsCurrentCompactionTriggerFinal(t *testing.T) {
+	lastRequest := []byte(`{"model":"gpt-5.4","stream":true,"input":[
+		{"type":"message","role":"user","id":"msg-1","content":"original prompt"}
+	]}`)
+	lastResponseOutput := []byte(`[
+		{"type":"message","role":"assistant","id":"msg-2","content":"answer"}
+	]`)
+	raw := []byte(`{"type":"response.create","input":[
+		{"type":"compaction_trigger","id":"ct-current"},
+		{"type":"message","role":"user","id":"msg-3","content":"include this before compacting"}
+	]}`)
+
+	normalized, _, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, false, false)
+	if errMsg != nil {
+		t.Fatalf("unexpected error: %v", errMsg.Error)
+	}
+
+	input := gjson.GetBytes(normalized, "input").Array()
+	if len(input) != 4 {
+		t.Fatalf("input len = %d, want 4: %s", len(input), normalized)
+	}
+	if got := input[2].Get("id").String(); got != "msg-3" {
+		t.Fatalf("input[2].id = %q, want msg-3 before compaction_trigger; payload=%s", got, normalized)
+	}
+	if got := input[3].Get("type").String(); got != "compaction_trigger" {
+		t.Fatalf("last input type = %q, want compaction_trigger; payload=%s", got, normalized)
+	}
+}
+
 func TestNormalizeSubsequentRequestIncrementalInputStillMerges(t *testing.T) {
 	// Normal incremental flow: user sends function_call_output (no assistant message).
 	lastRequest := []byte(`{"model":"gpt-5.4","stream":true,"input":[

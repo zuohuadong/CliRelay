@@ -506,6 +506,8 @@ func normalizeResponseCreateRequest(rawJSON []byte) ([]byte, []byte, *interfaces
 		normalized, _ = sjson.SetRawBytes(normalized, "input", []byte("[]"))
 	} else if input := gjson.GetBytes(normalized, "input"); input.Type == gjson.String {
 		normalized, _ = sjson.SetRawBytes(normalized, "input", []byte(responsesStringInputArrayRaw(input.String())))
+	} else if input.IsArray() {
+		normalized, _ = sjson.SetRawBytes(normalized, "input", []byte(inputWithCurrentCompactionTriggerFinal(input)))
 	}
 
 	modelName := strings.TrimSpace(gjson.GetBytes(normalized, "model").String())
@@ -570,6 +572,9 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 							obj["instructions"] = json.RawMessage(instructions.Raw)
 						}
 					}
+					if input := gjson.GetBytes(rawJSON, "input"); input.IsArray() {
+						obj["input"] = json.RawMessage(inputWithCurrentCompactionTriggerFinal(input))
+					}
 					if out, errMarshal := json.Marshal(obj); errMarshal == nil {
 						normalized = out
 					} else {
@@ -590,16 +595,19 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 	var mergedInput string
 	if allowCompactionReplayBypass && inputContainsFullTranscript(nextInput) {
 		log.Infof("responses websocket: full transcript detected, skipping stale merge (input items=%d)", len(nextInput.Array()))
-		mergedInput = nextInput.Raw
+		mergedInput = inputWithCurrentCompactionTriggerFinal(nextInput)
 	} else {
 		appendInputRaw := nextInput.Raw
 		if inputContainsFullTranscript(nextInput) {
 			appendInputRaw = inputWithoutCompactionItems(nextInput)
 		}
+		appendInputRaw, currentCompactionTrigger := inputWithoutCompactionTriggerItems(gjson.Parse(appendInputRaw))
 
 		existingInput := gjson.GetBytes(lastRequest, "input")
+		existingInputRaw := inputWithoutCompactionTriggerItemsOnly(gjson.Parse(responsesInputArrayRaw(existingInput)))
+		lastResponseOutputRaw := inputWithoutCompactionTriggerItemsOnly(gjson.Parse(normalizeJSONArrayRaw(lastResponseOutput)))
 		var errMerge error
-		mergedInput, errMerge = mergeJSONArrayRaw(responsesInputArrayRaw(existingInput), normalizeJSONArrayRaw(lastResponseOutput))
+		mergedInput, errMerge = mergeJSONArrayRaw(existingInputRaw, lastResponseOutputRaw)
 		if errMerge != nil {
 			return nil, lastRequest, &interfaces.ErrorMessage{
 				StatusCode: http.StatusBadRequest,
@@ -612,6 +620,15 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 			return nil, lastRequest, &interfaces.ErrorMessage{
 				StatusCode: http.StatusBadRequest,
 				Error:      fmt.Errorf("invalid request input: %w", errMerge),
+			}
+		}
+		if currentCompactionTrigger != "" {
+			mergedInput, errMerge = mergeJSONArrayRaw(mergedInput, "["+currentCompactionTrigger+"]")
+			if errMerge != nil {
+				return nil, lastRequest, &interfaces.ErrorMessage{
+					StatusCode: http.StatusBadRequest,
+					Error:      fmt.Errorf("invalid request input: %w", errMerge),
+				}
 			}
 		}
 	}
@@ -689,6 +706,9 @@ func normalizeResponseTranscriptReplacement(rawJSON []byte, lastRequest []byte) 
 	}
 	normalized, _ = sjson.DeleteBytes(normalized, "previous_response_id")
 	normalized = copyMissingResponsesRequestFields(normalized, lastRequest)
+	if input := gjson.GetBytes(normalized, "input"); input.IsArray() {
+		normalized, _ = sjson.SetRawBytes(normalized, "input", []byte(inputWithCurrentCompactionTriggerFinal(input)))
+	}
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
 	return bytes.Clone(normalized)
 }
@@ -1214,6 +1234,39 @@ func inputWithoutCompactionItems(input gjson.Result) string {
 		filtered = append(filtered, item.Raw)
 	}
 	return "[" + strings.Join(filtered, ",") + "]"
+}
+
+func inputWithCurrentCompactionTriggerFinal(input gjson.Result) string {
+	withoutTrigger, trigger := inputWithoutCompactionTriggerItems(input)
+	if trigger == "" {
+		return withoutTrigger
+	}
+	merged, err := mergeJSONArrayRaw(withoutTrigger, "["+trigger+"]")
+	if err != nil {
+		return withoutTrigger
+	}
+	return merged
+}
+
+func inputWithoutCompactionTriggerItemsOnly(input gjson.Result) string {
+	withoutTrigger, _ := inputWithoutCompactionTriggerItems(input)
+	return withoutTrigger
+}
+
+func inputWithoutCompactionTriggerItems(input gjson.Result) (string, string) {
+	if !input.IsArray() {
+		return normalizeJSONArrayRaw([]byte(input.Raw)), ""
+	}
+	filtered := make([]string, 0, len(input.Array()))
+	trigger := ""
+	for _, item := range input.Array() {
+		if item.Get("type").String() == "compaction_trigger" {
+			trigger = item.Raw
+			continue
+		}
+		filtered = append(filtered, item.Raw)
+	}
+	return "[" + strings.Join(filtered, ",") + "]", trigger
 }
 
 func normalizeJSONArrayRaw(raw []byte) string {

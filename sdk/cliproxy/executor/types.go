@@ -45,6 +45,9 @@ const RouteFallbackMetadataKey = "route_fallback"
 // DisableCooldownWaitMetadataKey skips manager-level cooldown waiting for latency-sensitive requests.
 const DisableCooldownWaitMetadataKey = "disable_cooldown_wait"
 
+// AuthSelectionModelMetadataKey overrides the model used only for auth selection.
+const AuthSelectionModelMetadataKey = "auth_selection_model"
+
 // ReasoningEffortMetadataKey stores the client-requested reasoning effort for usage logs.
 const ReasoningEffortMetadataKey = "reasoning_effort"
 

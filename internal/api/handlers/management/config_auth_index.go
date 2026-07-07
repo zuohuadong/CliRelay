@@ -151,6 +151,38 @@ func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 	return out
 }
 
+func (h *Handler) interactionsKeysWithAuthIndex() []geminiKeyWithAuthIndex {
+	if h == nil {
+		return nil
+	}
+	liveUsageByID := h.liveAuthUsageByID()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+
+	idGen := synthesizer.NewStableIDGenerator()
+	out := make([]geminiKeyWithAuthIndex, len(h.cfg.InteractionsKey))
+	for i := range h.cfg.InteractionsKey {
+		entry := h.cfg.InteractionsKey[i]
+		usage := authUsageSnapshot{}
+		if key := strings.TrimSpace(entry.APIKey); key != "" {
+			id, _ := idGen.Next("gemini-interactions:apikey", key, entry.BaseURL)
+			usage = liveUsageByID[id]
+		}
+		out[i] = geminiKeyWithAuthIndex{
+			GeminiKey:      entry,
+			AuthIndex:      usage.AuthIndex,
+			Success:        usage.Success,
+			Failed:         usage.Failed,
+			RecentRequests: cloneRecentRequestBuckets(usage.RecentRequests),
+		}
+	}
+	return out
+}
+
 func (h *Handler) claudeKeysWithAuthIndex() []claudeKeyWithAuthIndex {
 	if h == nil {
 		return nil

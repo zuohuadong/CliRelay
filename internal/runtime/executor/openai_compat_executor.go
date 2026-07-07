@@ -128,6 +128,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	to := sdktranslator.FromString("openai")
 	endpoint := "/chat/completions"
 	imagePassthrough := false
+	useResponsesEndpoint := e.useResponsesEndpoint(auth, opts)
 	switch opts.Alt {
 	case "responses/compact":
 		to = sdktranslator.FromString("openai-response")
@@ -138,6 +139,11 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	case "images/edits":
 		endpoint = "/images/edits"
 		imagePassthrough = true
+	default:
+		if useResponsesEndpoint {
+			to = sdktranslator.FromString("openai-response")
+			endpoint = "/responses"
+		}
 	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -379,6 +385,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("openai")
+	useResponsesEndpoint := e.useResponsesEndpoint(auth, opts)
+	if useResponsesEndpoint {
+		to = sdktranslator.FromString("openai-response")
+	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
@@ -407,16 +417,22 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 
-	// Request usage data in the final streaming chunk so that token statistics
-	// are captured even when the upstream is an OpenAI-compatible provider.
-	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
+	// Request usage data in the final chat-completions streaming chunk so that
+	// token statistics are captured even when the upstream is an OpenAI-compatible provider.
+	if !useResponsesEndpoint {
+		translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
+	}
 	translated, err = e.normalizeBigModelTools(translated, baseURL)
 	if err != nil {
 		return nil, err
 	}
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 
-	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
+	endpoint := "/chat/completions"
+	if useResponsesEndpoint {
+		endpoint = "/responses"
+	}
+	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
 	if err != nil {
 		return nil, err
@@ -989,6 +1005,25 @@ func (e *OpenAICompatExecutor) applyIdentityFingerprint(req *http.Request, auth 
 			}
 		}
 	}
+}
+
+func (e *OpenAICompatExecutor) useResponsesEndpoint(auth *cliproxyauth.Auth, opts cliproxyexecutor.Options) bool {
+	if opts.SourceFormat.String() != "openai-response" || opts.Alt != "" {
+		return false
+	}
+	if auth != nil && auth.Attributes != nil {
+		if strings.EqualFold(strings.TrimSpace(auth.Attributes["response_endpoint"]), "true") {
+			return true
+		}
+		if strings.EqualFold(strings.TrimSpace(auth.Attributes["identity_fingerprint"]), "codex") {
+			return true
+		}
+	}
+	compat := e.resolveCompatConfig(auth)
+	if compat == nil {
+		return false
+	}
+	return compat.ResponseEndpoint || strings.EqualFold(strings.TrimSpace(compat.IdentityFingerprint), "codex")
 }
 
 // Refresh is a no-op for API-key based compatibility providers.

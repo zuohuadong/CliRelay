@@ -738,6 +738,162 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatExecutorResponseEndpointPreservesResponsesImageGeneration(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","model":"custom-gpt-5-5","output":[{"id":"ig_1","type":"image_generation_call","output_format":"png","result":"AA=="}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatible-custom-coding", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:             "custom-coding",
+			BaseURL:          server.URL + "/v1",
+			ResponseEndpoint: true,
+			Models:           []config.OpenAICompatibilityModel{{Name: "custom-gpt-5-5", Alias: "gpt-5.5"}},
+		}},
+	})
+	auth := &cliproxyauth.Auth{Provider: "openai-compatible-custom-coding", Attributes: map[string]string{
+		"base_url":     server.URL + "/v1",
+		"api_key":      "test",
+		"compat_name":  "custom-coding",
+		"provider_key": "openai-compatible-custom-coding",
+	}}
+	payload := []byte(`{"model":"custom-gpt-5-5","input":"draw","tools":[{"type":"image_generation"}],"stream":false}`)
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "custom-gpt-5-5",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		OriginalRequest: payload,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	}
+	if !gjson.GetBytes(gotBody, "input").Exists() {
+		t.Fatalf("expected responses input body, got %s", string(gotBody))
+	}
+	if got := gjson.GetBytes(gotBody, "tools.0.type").String(); got != "image_generation" {
+		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, string(gotBody))
+	}
+	if gjson.GetBytes(gotBody, "messages").Exists() {
+		t.Fatalf("unexpected chat messages body: %s", string(gotBody))
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.0.type").String(); got != "image_generation_call" {
+		t.Fatalf("response output type = %q, want image_generation_call; body=%s", got, string(resp.Payload))
+	}
+}
+
+func TestOpenAICompatExecutorResponseEndpointStreamsResponsesImageGeneration(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.image_generation_call.partial_image\",\"item_id\":\"ig_1\",\"partial_image_b64\":\"AA==\",\"partial_image_index\":0}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatible-custom-coding", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:             "custom-coding",
+			BaseURL:          server.URL + "/v1",
+			ResponseEndpoint: true,
+			Models:           []config.OpenAICompatibilityModel{{Name: "custom-gpt-5-5", Alias: "gpt-5.5"}},
+		}},
+	})
+	auth := &cliproxyauth.Auth{Provider: "openai-compatible-custom-coding", Attributes: map[string]string{
+		"base_url":     server.URL + "/v1",
+		"api_key":      "test",
+		"compat_name":  "custom-coding",
+		"provider_key": "openai-compatible-custom-coding",
+	}}
+	payload := []byte(`{"model":"custom-gpt-5-5","input":"draw","tools":[{"type":"image_generation"}],"stream":true}`)
+	stream, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "custom-gpt-5-5",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		OriginalRequest: payload,
+		Stream:          true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Err)
+		}
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	}
+	if !gjson.GetBytes(gotBody, "input").Exists() {
+		t.Fatalf("expected responses input body, got %s", string(gotBody))
+	}
+	if got := gjson.GetBytes(gotBody, "tools.0.type").String(); got != "image_generation" {
+		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, string(gotBody))
+	}
+	if gjson.GetBytes(gotBody, "messages").Exists() || gjson.GetBytes(gotBody, "stream_options").Exists() {
+		t.Fatalf("unexpected chat-completions fields in body: %s", string(gotBody))
+	}
+}
+
+func TestOpenAICompatExecutorCodexIdentityPreservesResponsesImageGeneration(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","model":"custom-gpt-5-5","output":[{"id":"ig_1","type":"image_generation_call","output_format":"png","result":"AA=="}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatible-custom-coding", &config.Config{
+		IdentityFingerprint: config.IdentityFingerprintConfig{
+			Codex: config.CodexIdentityFingerprintConfig{Enabled: true},
+		},
+	})
+	auth := &cliproxyauth.Auth{Provider: "openai-compatible-custom-coding", Attributes: map[string]string{
+		"base_url":             server.URL + "/v1",
+		"api_key":              "test",
+		"identity_fingerprint": "codex",
+	}}
+	payload := []byte(`{"model":"custom-gpt-5-5","input":"draw","tools":[{"type":"image_generation"}],"stream":false}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "custom-gpt-5-5",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		OriginalRequest: payload,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	}
+	if got := gjson.GetBytes(gotBody, "tools.0.type").String(); got != "image_generation" {
+		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, string(gotBody))
+	}
+	if gjson.GetBytes(gotBody, "messages").Exists() {
+		t.Fatalf("unexpected chat messages body: %s", string(gotBody))
+	}
+}
+
 func TestAstronCodeExecutorCompactUsesChatAndWrapsResponse(t *testing.T) {
 	var gotPath string
 	var gotBody []byte

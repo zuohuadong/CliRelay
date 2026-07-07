@@ -84,6 +84,12 @@ type websocketPreviousResponseReplayExecutor struct {
 	payloads [][]byte
 }
 
+type websocketZeroOutputEOFReplayExecutor struct {
+	mu       sync.Mutex
+	calls    int
+	payloads [][]byte
+}
+
 type websocketBootstrapFallbackExecutor struct {
 	mu       sync.Mutex
 	authIDs  []string
@@ -384,6 +390,52 @@ func (e *websocketPreviousResponseReplayExecutor) HttpRequest(context.Context, *
 }
 
 func (e *websocketPreviousResponseReplayExecutor) Payloads() [][]byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([][]byte, len(e.payloads))
+	for i := range e.payloads {
+		out[i] = bytes.Clone(e.payloads[i])
+	}
+	return out
+}
+
+func (e *websocketZeroOutputEOFReplayExecutor) Identifier() string { return "test-provider" }
+
+func (e *websocketZeroOutputEOFReplayExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *websocketZeroOutputEOFReplayExecutor) ExecuteStream(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.mu.Lock()
+	e.calls++
+	call := e.calls
+	e.payloads = append(e.payloads, bytes.Clone(req.Payload))
+	e.mu.Unlock()
+
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	if call == 1 {
+		close(chunks)
+		return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	}
+
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp_eof_retry_%d","output":[{"type":"message","id":"out-%d"}]}}`, call, call))}
+	close(chunks)
+	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *websocketZeroOutputEOFReplayExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *websocketZeroOutputEOFReplayExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *websocketZeroOutputEOFReplayExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (e *websocketZeroOutputEOFReplayExecutor) Payloads() [][]byte {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := make([][]byte, len(e.payloads))
@@ -1315,7 +1367,7 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 		close(errCh)
 
 		timelineLog := newInMemoryWebsocketTimelineLog()
-		completedOutput, errMsg, err := (*OpenAIResponsesAPIHandler)(nil).forwardResponsesWebsocket(
+		completedOutput, errMsg, _, err := (*OpenAIResponsesAPIHandler)(nil).forwardResponsesWebsocket(
 			ctx,
 			conn,
 			func(...interface{}) {},
@@ -1402,7 +1454,7 @@ func TestForwardResponsesWebsocketSynthesizesCompletedForErrors(t *testing.T) {
 		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 		h := NewOpenAIResponsesAPIHandler(base)
 		timelineLog := newInMemoryWebsocketTimelineLog()
-		_, errMsg, err := h.forwardResponsesWebsocket(
+		_, errMsg, _, err := h.forwardResponsesWebsocket(
 			ctx,
 			conn,
 			func(...interface{}) {},
@@ -1498,7 +1550,7 @@ func TestForwardResponsesWebsocketSynthesizesCompletedForActionableEOF(t *testin
 		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 		h := NewOpenAIResponsesAPIHandler(base)
 		timelineLog := newInMemoryWebsocketTimelineLog()
-		completedOutput, errMsg, err := h.forwardResponsesWebsocket(
+		completedOutput, errMsg, _, err := h.forwardResponsesWebsocket(
 			ctx,
 			conn,
 			func(...interface{}) {},
@@ -1593,7 +1645,7 @@ func TestForwardResponsesWebsocketEmitsErrorOnEOFAfterPartialMessage(t *testing.
 		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 		h := NewOpenAIResponsesAPIHandler(base)
 		timelineLog := newInMemoryWebsocketTimelineLog()
-		completedOutput, errMsg, err := h.forwardResponsesWebsocket(
+		completedOutput, errMsg, _, err := h.forwardResponsesWebsocket(
 			ctx,
 			conn,
 			func(...interface{}) {},
@@ -1695,7 +1747,7 @@ func TestForwardResponsesWebsocketEmitsErrorOnEOFWithZeroOutput(t *testing.T) {
 		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 		h := NewOpenAIResponsesAPIHandler(base)
 		timelineLog := newInMemoryWebsocketTimelineLog()
-		completedOutput, errMsg, err := h.forwardResponsesWebsocket(
+		completedOutput, errMsg, _, err := h.forwardResponsesWebsocket(
 			ctx,
 			conn,
 			func(...interface{}) {},
@@ -1789,7 +1841,7 @@ func TestForwardResponsesWebsocketLogsAttemptedResponseOnWriteFailure(t *testing
 			return
 		}
 
-		_, _, err = (*OpenAIResponsesAPIHandler)(nil).forwardResponsesWebsocket(
+		_, _, _, err = (*OpenAIResponsesAPIHandler)(nil).forwardResponsesWebsocket(
 			ctx,
 			conn,
 			func(...interface{}) {},
@@ -2718,6 +2770,76 @@ func TestResponsesWebsocketRetriesPreviousResponseNotFoundWithTranscriptReplay(t
 	replayInput := gjson.GetBytes(payloads[2], "input").Raw
 	if !strings.Contains(replayInput, `"id":"msg-1"`) || !strings.Contains(replayInput, `"id":"msg-2"`) {
 		t.Fatalf("replay input missing expected transcript items: %s", replayInput)
+	}
+}
+
+func TestResponsesWebsocketRetriesZeroOutputEOFWithTranscriptReplay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &websocketZeroOutputEOFReplayExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth := &coreauth.Auth{
+		ID:         "auth-eof-retry",
+		Provider:   executor.Identifier(),
+		Status:     coreauth.StatusActive,
+		Attributes: map[string]string{"websockets": "true"},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "eof-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Fatalf("close websocket: %v", errClose)
+		}
+	}()
+
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"eof-model","input":[{"type":"message","id":"msg-1"}]}`)); errWrite != nil {
+		t.Fatalf("write websocket message: %v", errWrite)
+	}
+	_, payload, errReadMessage := conn.ReadMessage()
+	if errReadMessage != nil {
+		t.Fatalf("read websocket message: %v", errReadMessage)
+	}
+	if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+		t.Fatalf("payload type = %s, want %s: %s", got, wsEventTypeCompleted, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.metadata.error_code").String(); got != "" {
+		t.Fatalf("zero-output EOF should be hidden by replay, got error_code %q: %s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.id").String(); got != "resp_eof_retry_2" {
+		t.Fatalf("response.id = %q, want retry response id; payload=%s", got, payload)
+	}
+
+	payloads := executor.Payloads()
+	if len(payloads) != 2 {
+		t.Fatalf("upstream payload count = %d, want 2", len(payloads))
+	}
+	if got := gjson.GetBytes(payloads[0], "input.0.id").String(); got != "msg-1" {
+		t.Fatalf("first payload input id = %q, want msg-1: %s", got, payloads[0])
+	}
+	if got := gjson.GetBytes(payloads[1], "input.0.id").String(); got != "msg-1" {
+		t.Fatalf("retry payload input id = %q, want msg-1: %s", got, payloads[1])
 	}
 }
 

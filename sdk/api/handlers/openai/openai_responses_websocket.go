@@ -313,7 +313,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		wsTimelineLog.BeginRequest()
 		wsTimelineLog.Append("request", payload, time.Now())
 
-		for replayAttempt := 0; replayAttempt < 2; replayAttempt++ {
+		maxReplayRetries := handlers.ResponsesWebsocketReplayRetries(h.Cfg)
+		for replayAttempt := 0; replayAttempt <= maxReplayRetries; replayAttempt++ {
 			allowIncrementalInputWithPreviousResponseID := false
 			if pinnedAuthID != "" {
 				if pinnedAuth, ok := sessionAuthByID(pinnedAuthID); ok && pinnedAuth != nil {
@@ -426,13 +427,14 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
 
-			completedOutput, forwardErrMsg, shouldReplayForwardErr, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, wsTimelineLog, passthroughSessionID, replayAttempt == 0)
+			canReplayForwardErr := replayAttempt < maxReplayRetries
+			completedOutput, forwardErrMsg, shouldReplayForwardErr, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, wsTimelineLog, passthroughSessionID, canReplayForwardErr)
 			if errForward != nil {
 				wsTerminateErr = errForward
 				log.Warnf("responses websocket: forward failed id=%s error=%v", passthroughSessionID, errForward)
 				return
 			}
-			if replayAttempt == 0 && shouldReplayForwardErr {
+			if canReplayForwardErr && shouldReplayForwardErr {
 				forceTranscriptReplayNextRequest = true
 				lastRequest = previousLastRequest
 				lastResponseOutput = previousLastResponseOutput

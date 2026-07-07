@@ -96,6 +96,11 @@ type StreamingConfig struct {
 	// to allow auth rotation / transient recovery.
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+
+	// ResponsesWebsocketReplayRetries controls how many times a Responses websocket request may be replayed
+	// when the upstream closes before any response output is produced. Nil uses the server default.
+	// Set to 0 to disable these replay retries.
+	ResponsesWebsocketReplayRetries *int `yaml:"responses-websocket-replay-retries,omitempty" json:"responses-websocket-replay-retries,omitempty"`
 }
 
 // ContextRetrievalConfig controls local SQLite FTS based context reduction.

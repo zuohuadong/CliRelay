@@ -55,8 +55,10 @@ type ErrorDetail struct {
 const idempotencyKeyMetadataKey = "idempotency_key"
 
 const (
-	defaultStreamingKeepAliveSeconds = 0
-	defaultStreamingBootstrapRetries = 0
+	defaultStreamingKeepAliveSeconds       = 0
+	defaultStreamingBootstrapRetries       = 0
+	defaultResponsesWebsocketReplayRetries = 8
+	maxResponsesWebsocketReplayRetries     = 16
 	// Stream interceptor history is intentionally bounded and not configurable in the first SDK surface.
 	maxStreamInterceptorHistoryChunks = 64
 	maxStreamInterceptorHistoryBytes  = 1 << 20
@@ -246,6 +248,22 @@ func StreamingBootstrapRetries(cfg *config.SDKConfig) int {
 	}
 	if retries < 0 {
 		retries = 0
+	}
+	return retries
+}
+
+// ResponsesWebsocketReplayRetries returns how many times a Responses websocket request may be replayed
+// after upstream closes before producing response output.
+func ResponsesWebsocketReplayRetries(cfg *config.SDKConfig) int {
+	retries := defaultResponsesWebsocketReplayRetries
+	if cfg != nil && cfg.Streaming.ResponsesWebsocketReplayRetries != nil {
+		retries = *cfg.Streaming.ResponsesWebsocketReplayRetries
+	}
+	if retries < 0 {
+		return 0
+	}
+	if retries > maxResponsesWebsocketReplayRetries {
+		return maxResponsesWebsocketReplayRetries
 	}
 	return retries
 }

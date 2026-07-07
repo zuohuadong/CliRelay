@@ -91,13 +91,15 @@ func sampleCloneRuntimeConfig() *Config {
 	bypassStrict := false
 	pluginEnabled := false
 	cacheUserID := true
+	responsesWebsocketReplayRetries := 8
 
 	return &Config{
 		SDKConfig: SDKConfig{
 			APIKeys: []string{"client-key"},
 			Streaming: StreamingConfig{
-				KeepAliveSeconds: 3,
-				BootstrapRetries: 2,
+				KeepAliveSeconds:                3,
+				BootstrapRetries:                2,
+				ResponsesWebsocketReplayRetries: &responsesWebsocketReplayRetries,
 			},
 		},
 		Home: HomeConfig{

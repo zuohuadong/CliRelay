@@ -89,6 +89,7 @@ type websocketZeroOutputEOFReplayExecutor struct {
 	calls                      int
 	failCalls                  int
 	firstCallLifecyclePayloads bool
+	failPayload                []byte
 	payloads                   [][]byte
 }
 
@@ -108,6 +109,10 @@ func (e websocketPinnedFailoverStatusError) Error() string { return e.msg }
 func (e websocketPinnedFailoverStatusError) StatusCode() int { return e.status }
 
 func intPointer(v int) *int { return &v }
+
+func xunfeiBusyWebsocketErrorPayload() []byte {
+	return []byte(`{"type":"error","error":{"code":10012,"message":"Xunfei request failed with Sid: cht000d448b@dx19f3d101493ba5e452 code: 10012, msg: EngineInternalError:1105|{\"Code\":1105,\"Message\":\"The system is busy, please try again later.\"}"}}`)
+}
 
 func (e *websocketBootstrapFallbackExecutor) Identifier() string { return "test-provider" }
 
@@ -416,7 +421,7 @@ func (e *websocketZeroOutputEOFReplayExecutor) ExecuteStream(_ context.Context, 
 	e.payloads = append(e.payloads, bytes.Clone(req.Payload))
 	e.mu.Unlock()
 
-	chunks := make(chan coreexecutor.StreamChunk, 2)
+	chunks := make(chan coreexecutor.StreamChunk, 4)
 	failCalls := e.failCalls
 	if failCalls == 0 {
 		failCalls = 1
@@ -425,6 +430,9 @@ func (e *websocketZeroOutputEOFReplayExecutor) ExecuteStream(_ context.Context, 
 		if e.firstCallLifecyclePayloads {
 			chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.created","response":{"id":"resp_eof_retry_%d","status":"in_progress","output":[]}}`, call))}
 			chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.in_progress","response":{"id":"resp_eof_retry_%d","status":"in_progress","output":[]}}`, call))}
+		}
+		if len(e.failPayload) > 0 {
+			chunks <- coreexecutor.StreamChunk{Payload: bytes.Clone(e.failPayload)}
 		}
 		close(chunks)
 		return &coreexecutor.StreamResult{Chunks: chunks}, nil
@@ -3047,6 +3055,76 @@ func TestResponsesWebsocketRetriesLifecycleOnlyEOFWithConfiguredReplayLimit(t *t
 	}
 }
 
+func TestResponsesWebsocketRetriesLifecycleTransientErrorWithConfiguredReplayLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const replayRetries = 8
+	executor := &websocketZeroOutputEOFReplayExecutor{
+		failCalls:                  replayRetries,
+		firstCallLifecyclePayloads: true,
+		failPayload:                xunfeiBusyWebsocketErrorPayload(),
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth := &coreauth.Auth{
+		ID:         "auth-lifecycle-transient-error-retry-eight",
+		Provider:   executor.Identifier(),
+		Status:     coreauth.StatusActive,
+		Attributes: map[string]string{"websockets": "true"},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "lifecycle-transient-error-eight-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{
+		Streaming: sdkconfig.StreamingConfig{ResponsesWebsocketReplayRetries: intPointer(replayRetries)},
+	}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Fatalf("close websocket: %v", errClose)
+		}
+	}()
+
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"lifecycle-transient-error-eight-model","input":[{"type":"message","id":"msg-1"}]}`)); errWrite != nil {
+		t.Fatalf("write websocket message: %v", errWrite)
+	}
+	_, payload, errReadMessage := conn.ReadMessage()
+	if errReadMessage != nil {
+		t.Fatalf("read websocket message: %v", errReadMessage)
+	}
+	if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+		t.Fatalf("first visible payload type = %s, want %s after configured transient error replays: %s", got, wsEventTypeCompleted, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.metadata.error_code").String(); got != "" {
+		t.Fatalf("configured transient error replays should hide error, got error_code %q: %s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.id").String(); got != "resp_eof_retry_9" {
+		t.Fatalf("response.id = %q, want ninth attempt response id; payload=%s", got, payload)
+	}
+
+	if payloads := executor.Payloads(); len(payloads) != replayRetries+1 {
+		t.Fatalf("upstream payload count = %d, want %d", len(payloads), replayRetries+1)
+	}
+}
+
 func TestResponsesWebsocketConfiguredReplayLimitZeroDisablesLifecycleEOFReplay(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -3110,6 +3188,88 @@ func TestResponsesWebsocketConfiguredReplayLimitZeroDisablesLifecycleEOFReplay(t
 	}
 	if got := gjson.GetBytes(completedPayload, "response.metadata.error_code").String(); got != "request_timeout" {
 		t.Fatalf("error_code = %q, want request_timeout when replay disabled: %s", got, completedPayload)
+	}
+	if payloads := executor.Payloads(); len(payloads) != 1 {
+		t.Fatalf("upstream payload count = %d, want 1 when replay disabled", len(payloads))
+	}
+}
+
+func TestResponsesWebsocketConfiguredReplayLimitZeroDisablesTransientErrorReplay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &websocketZeroOutputEOFReplayExecutor{
+		failCalls:                  1,
+		firstCallLifecyclePayloads: true,
+		failPayload:                xunfeiBusyWebsocketErrorPayload(),
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth := &coreauth.Auth{
+		ID:         "auth-lifecycle-transient-error-retry-disabled",
+		Provider:   executor.Identifier(),
+		Status:     coreauth.StatusActive,
+		Attributes: map[string]string{"websockets": "true"},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "lifecycle-transient-error-disabled-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{
+		Streaming: sdkconfig.StreamingConfig{ResponsesWebsocketReplayRetries: intPointer(0)},
+	}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Fatalf("close websocket: %v", errClose)
+		}
+	}()
+
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"lifecycle-transient-error-disabled-model","input":[{"type":"message","id":"msg-1"}]}`)); errWrite != nil {
+		t.Fatalf("write websocket message: %v", errWrite)
+	}
+
+	var completedPayload []byte
+	sawErrorEvent := false
+	for i := 0; i < 6; i++ {
+		_, payload, errReadMessage := conn.ReadMessage()
+		if errReadMessage != nil {
+			t.Fatalf("read websocket message %d: %v", i+1, errReadMessage)
+		}
+		switch gjson.GetBytes(payload, "type").String() {
+		case wsEventTypeError:
+			sawErrorEvent = true
+		case wsEventTypeCompleted:
+			completedPayload = payload
+		}
+		if len(completedPayload) > 0 {
+			break
+		}
+	}
+	if !sawErrorEvent {
+		t.Fatal("expected transient upstream error event to be visible when replay is disabled")
+	}
+	if len(completedPayload) == 0 {
+		t.Fatal("did not receive terminal completed payload")
+	}
+	if got := gjson.GetBytes(completedPayload, "response.metadata.error_code").String(); got != "request_timeout" {
+		t.Fatalf("error_code = %q, want request_timeout when transient replay disabled: %s", got, completedPayload)
 	}
 	if payloads := executor.Payloads(); len(payloads) != 1 {
 		t.Fatalf("upstream payload count = %d, want 1 when replay disabled", len(payloads))

@@ -1468,6 +1468,12 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			for i := range payloads {
 				recordResponsesWebsocketToolCallsFromPayload(downstreamSessionKey, payloads[i])
 				eventType := gjson.GetBytes(payloads[i], "type").String()
+				if suppressReplayableErrors && !sawReplayBlockingPayload {
+					if replayErrMsg := replayableResponsesWebsocketPayloadError(payloads[i], outputAccumulator.Output(), sawReplayBlockingPayload); replayErrMsg != nil {
+						cancel(replayErrMsg.Error)
+						return outputAccumulator.Output(), replayErrMsg, true, nil
+					}
+				}
 				if !responsesWebsocketReplayableLifecycleEvent(eventType) {
 					sawReplayBlockingPayload = true
 				}
@@ -1853,7 +1859,8 @@ func responsesWebsocketReplayableLifecycleEvent(eventType string) bool {
 
 func shouldReplayResponsesWebsocketRequest(errMsg *interfaces.ErrorMessage, completedOutput []byte, sawReplayBlockingPayload bool) bool {
 	return shouldReplayResponsesWebsocketTranscript(errMsg) ||
-		shouldReplayResponsesWebsocketZeroOutputEOF(errMsg, completedOutput, sawReplayBlockingPayload)
+		shouldReplayResponsesWebsocketZeroOutputEOF(errMsg, completedOutput, sawReplayBlockingPayload) ||
+		shouldReplayResponsesWebsocketZeroOutputTransientError(errMsg, completedOutput, sawReplayBlockingPayload)
 }
 
 func shouldReplayResponsesWebsocketZeroOutputEOF(errMsg *interfaces.ErrorMessage, completedOutput []byte, sawReplayBlockingPayload bool) bool {
@@ -1873,6 +1880,43 @@ func shouldReplayResponsesWebsocketZeroOutputEOF(errMsg *interfaces.ErrorMessage
 	return strings.Contains(text, "stream closed before response.completed") ||
 		strings.Contains(text, "upstream stream closed before first payload") ||
 		strings.Contains(text, "empty_stream")
+}
+
+func shouldReplayResponsesWebsocketZeroOutputTransientError(errMsg *interfaces.ErrorMessage, completedOutput []byte, sawReplayBlockingPayload bool) bool {
+	if errMsg == nil || sawReplayBlockingPayload || responsesWebsocketOutputItemCount(completedOutput) > 0 {
+		return false
+	}
+	text := responsesWebsocketErrorText(errMsg)
+	return strings.Contains(text, "system is busy") ||
+		strings.Contains(text, "try again later") ||
+		strings.Contains(text, "engineinternalerror") ||
+		strings.Contains(text, "code: 10012") ||
+		strings.Contains(text, "code\":10012") ||
+		strings.Contains(text, "code 10012")
+}
+
+func replayableResponsesWebsocketPayloadError(payload []byte, completedOutput []byte, sawReplayBlockingPayload bool) *interfaces.ErrorMessage {
+	if sawReplayBlockingPayload || responsesWebsocketOutputItemCount(completedOutput) > 0 {
+		return nil
+	}
+	if gjson.GetBytes(payload, "type").String() != wsEventTypeError {
+		return nil
+	}
+	message := strings.TrimSpace(gjson.GetBytes(payload, "error.message").String())
+	if message == "" {
+		message = strings.TrimSpace(gjson.GetBytes(payload, "error").String())
+	}
+	if message == "" {
+		message = "upstream websocket error"
+	}
+	errMsg := &interfaces.ErrorMessage{
+		StatusCode: http.StatusRequestTimeout,
+		Error:      fmt.Errorf("%s", message),
+	}
+	if !shouldReplayResponsesWebsocketRequest(errMsg, completedOutput, sawReplayBlockingPayload) {
+		return nil
+	}
+	return errMsg
 }
 
 func responsesWebsocketErrorCode(errMsg *interfaces.ErrorMessage) string {

@@ -346,12 +346,79 @@ func TestApplyModelRouterSkipsCodexImageGenerationChatByDefault(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 	handler.SetModelRouterHost(host)
 
-	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"draw"}`), false, modelExecutionOptions{})
+	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"draw","tools":[{"type":"image_generation"}]}`), false, modelExecutionOptions{})
 	if got.ExecutorPluginID != "" || got.Provider != "" || got.Model != "" {
 		t.Fatalf("applyModelRouter() = %#v, want no routing decision", got)
 	}
-	if host.called {
-		t.Fatal("RouteModel was called for default Codex image_generation chat")
+	if !host.called {
+		t.Fatal("RouteModel was not called before filtering unsupported image_generation provider")
+	}
+}
+
+func TestApplyModelRouterAllowsCodexIdentityProviderForImageGeneration(t *testing.T) {
+	host := &handlerRouterOnlyTestHost{hasRouters: true}
+	host.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "openai-compatible-custom-coding", TargetModel: "custom-gpt-5-5"}, true
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{{
+			Name:                "custom-coding",
+			IdentityFingerprint: "codex",
+			Models:              []internalconfig.OpenAICompatibilityModel{{Name: "custom-gpt-5-5", Alias: "gpt-5.5"}},
+		}},
+	})
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	handler.SetModelRouterHost(host)
+
+	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"draw","tools":[{"type":"image_generation"}]}`), false, modelExecutionOptions{})
+	if got.Provider != "openai-compatible-custom-coding" || got.Model != "custom-gpt-5-5" {
+		t.Fatalf("applyModelRouter() = %#v, want codex-identity provider route", got)
+	}
+	if !host.called {
+		t.Fatal("RouteModel was not called")
+	}
+}
+
+func TestApplyModelRouterAllowsResponsesProviderForImageGeneration(t *testing.T) {
+	host := &handlerRouterOnlyTestHost{hasRouters: true}
+	host.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "openai-compatible-custom-coding", TargetModel: "custom-gpt-5-5"}, true
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{{
+			Name:             "custom-coding",
+			ResponseEndpoint: true,
+			Models:           []internalconfig.OpenAICompatibilityModel{{Name: "custom-gpt-5-5", Alias: "gpt-5.5"}},
+		}},
+	})
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	handler.SetModelRouterHost(host)
+
+	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"draw","tools":[{"type":"image_generation"}]}`), false, modelExecutionOptions{})
+	if got.Provider != "openai-compatible-custom-coding" || got.Model != "custom-gpt-5-5" {
+		t.Fatalf("applyModelRouter() = %#v, want responses-capable provider route", got)
+	}
+	if !host.called {
+		t.Fatal("RouteModel was not called")
+	}
+}
+
+func TestApplyModelRouterAllowsCodexTextChatByDefault(t *testing.T) {
+	host := &handlerRouterOnlyTestHost{hasRouters: true}
+	host.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "openai-compatible-custom-coding", TargetModel: "custom-gpt-5-5"}, true
+	}
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	handler.SetModelRouterHost(host)
+
+	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"hi"}`), false, modelExecutionOptions{})
+	if got.Provider != "openai-compatible-custom-coding" || got.Model != "custom-gpt-5-5" {
+		t.Fatalf("applyModelRouter() = %#v, want provider route", got)
+	}
+	if !host.called {
+		t.Fatal("RouteModel was not called for ordinary text chat")
 	}
 }
 
@@ -363,7 +430,7 @@ func TestApplyModelRouterAllowsCodexImageGenerationPassthrough(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{DisableImageGeneration: internalconfig.DisableImageGenerationPassthrough}, nil)
 	handler.SetModelRouterHost(host)
 
-	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"hi"}`), false, modelExecutionOptions{})
+	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"draw","tools":[{"type":"image_generation"}]}`), false, modelExecutionOptions{})
 	if got.Provider != "openai-compatible-custom-coding" || got.Model != "custom-gpt-5-5" {
 		t.Fatalf("applyModelRouter() = %#v, want passthrough provider route", got)
 	}

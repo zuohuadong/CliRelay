@@ -1985,7 +1985,7 @@ func TestWebsocketUpstreamSupportsIncrementalInputForModelFalseWhenMixedBackends
 	}
 }
 
-func TestResponsesWebsocketAvailableAuthsForCodexImageGenerationChatFiltersOpenAICompat(t *testing.T) {
+func TestResponsesWebsocketAvailableAuthsForCodexTextAllowsOpenAICompat(t *testing.T) {
 	manager := coreauth.NewManager(nil, nil, nil)
 	auths := []*coreauth.Auth{
 		{
@@ -2019,11 +2019,11 @@ func TestResponsesWebsocketAvailableAuthsForCodexImageGenerationChatFiltersOpenA
 	if modelKey != "gpt-5.5" {
 		t.Fatalf("modelKey = %q, want gpt-5.5", modelKey)
 	}
-	if len(available) != 1 || available[0].ID != "auth-codex" {
-		t.Fatalf("available auths = %#v, want only codex", available)
+	if len(available) != 2 {
+		t.Fatalf("available auths = %#v, want codex and openai-compatible", available)
 	}
 	if h.websocketUpstreamSupportsIncrementalInputForModel("gpt-5.5") != true {
-		t.Fatalf("expected codex-only websocket capability after filtering openai-compatible")
+		t.Fatalf("expected websocket capability for websocket-capable upstreams")
 	}
 }
 

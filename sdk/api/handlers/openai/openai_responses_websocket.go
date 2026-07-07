@@ -966,14 +966,8 @@ func (h *OpenAIResponsesAPIHandler) responsesWebsocketProviderSetForModel(resolv
 	parsed := thinking.ParseSuffix(resolvedModelName)
 	baseModel := strings.TrimSpace(parsed.ModelName)
 	providers := util.GetProviderName(baseModel)
-	if h != nil && h.BaseAPIHandler != nil && handlers.ShouldKeepCodexImageGenerationChatOnCodex(h.BaseAPIHandler.Cfg, baseModel, false) {
-		providers = responsesWebsocketCodexOnlyProviders(providers)
-	}
 	if len(providers) == 0 && baseModel != resolvedModelName {
 		providers = util.GetProviderName(resolvedModelName)
-		if h != nil && h.BaseAPIHandler != nil && handlers.ShouldKeepCodexImageGenerationChatOnCodex(h.BaseAPIHandler.Cfg, resolvedModelName, false) {
-			providers = responsesWebsocketCodexOnlyProviders(providers)
-		}
 	}
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
@@ -988,16 +982,6 @@ func (h *OpenAIResponsesAPIHandler) responsesWebsocketProviderSetForModel(resolv
 		modelKey = strings.TrimSpace(resolvedModelName)
 	}
 	return providerSet, modelKey
-}
-
-func responsesWebsocketCodexOnlyProviders(providers []string) []string {
-	out := make([]string, 0, len(providers))
-	for _, provider := range providers {
-		if strings.EqualFold(strings.TrimSpace(provider), "codex") {
-			out = append(out, provider)
-		}
-	}
-	return out
 }
 
 func responsesWebsocketAuthMatchesModel(auth *coreauth.Auth, providerSet map[string]struct{}, modelKey string, registryRef *registry.ModelRegistry, now time.Time) bool {

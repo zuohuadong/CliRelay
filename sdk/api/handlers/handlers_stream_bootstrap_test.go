@@ -614,7 +614,7 @@ func newCodexImageGenerationRoutingPolicyHandler(t *testing.T, disableImageGener
 
 func TestExecuteWithAuthManager_CodexImageGenerationDefaultKeepsCodexProvider(t *testing.T) {
 	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, true)
-	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"stream":false}`)
+	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"tools":[{"type":"image_generation"}],"stream":false}`)
 
 	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
 	if errMsg != nil {
@@ -634,7 +634,7 @@ func TestExecuteWithAuthManager_CodexImageGenerationDefaultKeepsCodexProvider(t 
 func TestExecuteWithAuthManager_CodexImageGenerationDefaultFiltersDirectOpenAICompatProvider(t *testing.T) {
 	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, true)
 	registry.GetGlobalRegistry().RegisterClient("compat-auth", "openai-compatible-custom-coding", []*registry.ModelInfo{{ID: "gpt-5.5"}})
-	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"stream":false}`)
+	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"tools":[{"type":"image_generation"}],"stream":false}`)
 
 	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
 	if errMsg != nil {
@@ -651,11 +651,59 @@ func TestExecuteWithAuthManager_CodexImageGenerationDefaultFiltersDirectOpenAICo
 	}
 }
 
+func TestExecuteWithAuthManager_CodexImageGenerationAllowsCodexIdentityOpenAICompatProvider(t *testing.T) {
+	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, false)
+	cfg := handler.AuthManager.Config()
+	if cfg == nil || len(cfg.OpenAICompatibility) != 1 {
+		t.Fatalf("missing openai compatibility config")
+	}
+	cfg.OpenAICompatibility[0].IdentityFingerprint = "codex"
+	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"tools":[{"type":"image_generation"}],"stream":false}`)
+
+	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
+	if errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
+	}
+	if got := string(body); got != "openai-compatible-custom-coding:custom-gpt-5-5" {
+		t.Fatalf("response = %q, want codex-identity openai-compatible alias provider", got)
+	}
+	if models := codex.Models(); len(models) != 0 {
+		t.Fatalf("codex should not be forced when codex-identity upstream can handle image_generation, got %v", models)
+	}
+	if models := compat.Models(); len(models) != 1 || models[0] != "custom-gpt-5-5" {
+		t.Fatalf("openai-compatible models = %v, want [custom-gpt-5-5]", models)
+	}
+}
+
+func TestExecuteWithAuthManager_CodexImageGenerationAllowsResponsesOpenAICompatProvider(t *testing.T) {
+	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, false)
+	cfg := handler.AuthManager.Config()
+	if cfg == nil || len(cfg.OpenAICompatibility) != 1 {
+		t.Fatalf("missing openai compatibility config")
+	}
+	cfg.OpenAICompatibility[0].ResponseEndpoint = true
+	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"tools":[{"type":"image_generation"}],"stream":false}`)
+
+	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
+	if errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
+	}
+	if got := string(body); got != "openai-compatible-custom-coding:custom-gpt-5-5" {
+		t.Fatalf("response = %q, want responses-capable openai-compatible alias provider", got)
+	}
+	if models := codex.Models(); len(models) != 0 {
+		t.Fatalf("codex should not be forced when responses upstream can handle image_generation, got %v", models)
+	}
+	if models := compat.Models(); len(models) != 1 || models[0] != "custom-gpt-5-5" {
+		t.Fatalf("openai-compatible models = %v, want [custom-gpt-5-5]", models)
+	}
+}
+
 func TestGetRequestDetails_CodexImageGenerationDefaultFiltersDirectOpenAICompatProvider(t *testing.T) {
 	handler, _, _ := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, true)
 	registry.GetGlobalRegistry().RegisterClient("compat-auth", "openai-compatible-custom-coding", []*registry.ModelInfo{{ID: "gpt-5.5"}})
 
-	providers, normalizedModel, errMsg := handler.getRequestDetailsWithOptions("gpt-5.5", false)
+	providers, normalizedModel, errMsg := handler.getRequestDetailsForRequest("gpt-5.5", false, []byte(`{"model":"gpt-5.5","tools":[{"type":"image_generation"}]}`))
 	if errMsg != nil {
 		t.Fatalf("getRequestDetailsWithOptions() error = %+v", errMsg)
 	}
@@ -667,9 +715,28 @@ func TestGetRequestDetails_CodexImageGenerationDefaultFiltersDirectOpenAICompatP
 	}
 }
 
+func TestExecuteWithAuthManager_CodexTextRequestAllowsOpenAICompatProvider(t *testing.T) {
+	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, false)
+	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"hi"}],"stream":false}`)
+
+	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
+	if errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
+	}
+	if got := string(body); got != "openai-compatible-custom-coding:custom-gpt-5-5" {
+		t.Fatalf("response = %q, want openai-compatible alias provider", got)
+	}
+	if models := codex.Models(); len(models) != 0 {
+		t.Fatalf("codex should not be used for ordinary text requests, got %v", models)
+	}
+	if models := compat.Models(); len(models) != 1 || models[0] != "custom-gpt-5-5" {
+		t.Fatalf("openai-compatible models = %v, want [custom-gpt-5-5]", models)
+	}
+}
+
 func TestExecuteWithAuthManager_CodexImageGenerationPassthroughAllowsOpenAICompatProvider(t *testing.T) {
 	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationPassthrough, false)
-	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"hi"}],"stream":false}`)
+	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"tools":[{"type":"image_generation"}],"stream":false}`)
 
 	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
 	if errMsg != nil {

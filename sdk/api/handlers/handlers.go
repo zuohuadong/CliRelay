@@ -937,7 +937,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	if routeDecision.ExecutorPluginID != "" {
 		return h.executeWithPluginExecutor(ctx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 	}
-	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, allowImageModel, routeDecision)
+	providers, normalizedModel, errMsg := h.providersForExecutionForRequest(modelName, originalRequestedModel, allowImageModel, routeDecision, rawJSON)
 	if errMsg != nil {
 		return nil, nil, errMsg
 	}
@@ -1005,7 +1005,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	if routeDecision.ExecutorPluginID != "" {
 		return h.countWithPluginExecutor(ctx, handlerType, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 	}
-	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, false, routeDecision)
+	providers, normalizedModel, errMsg := h.providersForExecutionForRequest(modelName, originalRequestedModel, false, routeDecision, rawJSON)
 	if errMsg != nil {
 		return nil, nil, errMsg
 	}
@@ -1328,7 +1328,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	if routeDecision.ExecutorPluginID != "" {
 		return h.streamWithPluginExecutor(ctx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 	}
-	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, allowImageModel, routeDecision)
+	providers, normalizedModel, errMsg := h.providersForExecutionForRequest(modelName, originalRequestedModel, allowImageModel, routeDecision, rawJSON)
 	if errMsg != nil {
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
@@ -1672,6 +1672,10 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 // router selected a built-in provider, it skips model->provider resolution and uses the router's
 // provider (with an optional target model); otherwise it falls back to the registry-based path.
 func (h *BaseAPIHandler) providersForExecution(modelName, originalRequestedModel string, allowImageModel bool, routeDecision modelRouteDecision) ([]string, string, *interfaces.ErrorMessage) {
+	return h.providersForExecutionForRequest(modelName, originalRequestedModel, allowImageModel, routeDecision, nil)
+}
+
+func (h *BaseAPIHandler) providersForExecutionForRequest(modelName, originalRequestedModel string, allowImageModel bool, routeDecision modelRouteDecision, rawJSON []byte) ([]string, string, *interfaces.ErrorMessage) {
 	if routeDecision.Provider != "" {
 		normalizedModel := originalRequestedModel
 		if routeDecision.Model != "" {
@@ -1682,10 +1686,14 @@ func (h *BaseAPIHandler) providersForExecution(modelName, originalRequestedModel
 		}
 		return []string{routeDecision.Provider}, normalizedModel, nil
 	}
-	return h.getRequestDetailsWithOptions(modelName, allowImageModel)
+	return h.getRequestDetailsForRequest(modelName, allowImageModel, rawJSON)
 }
 
 func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowImageModel bool) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
+	return h.getRequestDetailsForRequest(modelName, allowImageModel, nil)
+}
+
+func (h *BaseAPIHandler) getRequestDetailsForRequest(modelName string, allowImageModel bool, rawJSON []byte) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
 	resolvedModelName := modelName
 	initialSuffix := thinking.ParseSuffix(modelName)
 	if initialSuffix.ModelName == "auto" {
@@ -1718,16 +1726,16 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 		return []string{"home"}, resolvedModelName, nil
 	}
 
-	providers = h.filterProvidersForRequest(util.GetProviderName(baseModel), baseModel, allowImageModel)
-	providers = h.appendConfiguredAliasProvidersForRequest(providers, baseModel, allowImageModel)
+	providers = h.filterProvidersForRequest(util.GetProviderName(baseModel), baseModel, allowImageModel, rawJSON)
+	providers = h.appendConfiguredAliasProvidersForRequest(providers, baseModel, allowImageModel, rawJSON)
 	// Fallback: if baseModel has no provider but differs from resolvedModelName,
 	// try using the full model name. This handles edge cases where custom models
 	// may be registered with their full suffixed name (e.g., "my-model(8192)").
 	// Evaluated in Story 11.8: This fallback is intentionally preserved to support
 	// custom model registrations that include thinking suffixes.
 	if len(providers) == 0 && baseModel != resolvedModelName {
-		providers = h.filterProvidersForRequest(util.GetProviderName(resolvedModelName), resolvedModelName, allowImageModel)
-		providers = h.appendConfiguredAliasProvidersForRequest(providers, resolvedModelName, allowImageModel)
+		providers = h.filterProvidersForRequest(util.GetProviderName(resolvedModelName), resolvedModelName, allowImageModel, rawJSON)
+		providers = h.appendConfiguredAliasProvidersForRequest(providers, resolvedModelName, allowImageModel, rawJSON)
 	}
 
 	if len(providers) == 0 {
@@ -1740,29 +1748,27 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 }
 
 func (h *BaseAPIHandler) appendConfiguredAliasProviders(providers []string, modelName string) []string {
-	return h.appendConfiguredAliasProvidersForRequest(providers, modelName, false)
+	return h.appendConfiguredAliasProvidersForRequest(providers, modelName, false, nil)
 }
 
-func (h *BaseAPIHandler) filterProvidersForRequest(providers []string, modelName string, allowImageModel bool) []string {
-	if !h.shouldKeepCodexImageGenerationChatOnCodex(modelName, allowImageModel) {
+func (h *BaseAPIHandler) filterProvidersForRequest(providers []string, modelName string, allowImageModel bool, rawJSON []byte) []string {
+	if !h.shouldKeepCodexImageGenerationChatOnCodex(modelName, allowImageModel, rawJSON) {
 		return providers
 	}
 	out := make([]string, 0, len(providers))
 	for _, provider := range providers {
-		if strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		if h.providerSupportsCodexImageGenerationChat(provider) {
 			out = append(out, provider)
 		}
 	}
 	return out
 }
 
-func (h *BaseAPIHandler) appendConfiguredAliasProvidersForRequest(providers []string, modelName string, allowImageModel bool) []string {
+func (h *BaseAPIHandler) appendConfiguredAliasProvidersForRequest(providers []string, modelName string, allowImageModel bool, rawJSON []byte) []string {
 	if h == nil || h.AuthManager == nil || strings.TrimSpace(modelName) == "" {
 		return providers
 	}
-	if h.shouldKeepCodexImageGenerationChatOnCodex(modelName, allowImageModel) {
-		return providers
-	}
+	keepCodexImageRoute := h.shouldKeepCodexImageGenerationChatOnCodex(modelName, allowImageModel, rawJSON)
 	seen := make(map[string]struct{}, len(providers)+3)
 	for _, provider := range providers {
 		key := strings.TrimSpace(strings.ToLower(provider))
@@ -1775,6 +1781,9 @@ func (h *BaseAPIHandler) appendConfiguredAliasProvidersForRequest(providers []st
 		if provider == "" {
 			continue
 		}
+		if keepCodexImageRoute && !h.providerSupportsCodexImageGenerationChat(provider) {
+			continue
+		}
 		if _, ok := seen[provider]; ok {
 			continue
 		}
@@ -1784,18 +1793,90 @@ func (h *BaseAPIHandler) appendConfiguredAliasProvidersForRequest(providers []st
 	return providers
 }
 
-func (h *BaseAPIHandler) shouldKeepCodexImageGenerationChatOnCodex(modelName string, allowImageModel bool) bool {
-	if h == nil {
-		return ShouldKeepCodexImageGenerationChatOnCodex(nil, modelName, allowImageModel)
+func (h *BaseAPIHandler) providerSupportsCodexImageGenerationChat(provider string) bool {
+	provider = strings.TrimSpace(strings.ToLower(provider))
+	if provider == "" {
+		return false
 	}
-	return ShouldKeepCodexImageGenerationChatOnCodex(h.Cfg, modelName, allowImageModel)
+	if provider == "codex" {
+		return true
+	}
+	if h == nil || h.AuthManager == nil {
+		return false
+	}
+	for _, auth := range h.AuthManager.List() {
+		if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), provider) {
+			continue
+		}
+		if authProviderHasCodexIdentity(auth.Attributes) {
+			return true
+		}
+	}
+	cfg := h.AuthManager.Config()
+	if cfg == nil {
+		return false
+	}
+	return openAICompatibilityProviderSupportsImageGenerationChat(provider, "bigmodel-coding", cfg.BigModelCodingAPIKey, false) ||
+		openAICompatibilityProviderSupportsImageGenerationChat(provider, "astron-code", cfg.AstronCodeAPIKey, false) ||
+		openAICompatibilityProviderSupportsImageGenerationChat(provider, "agnes", cfg.AgnesAPIKey, false) ||
+		openAICompatibilityProviderSupportsImageGenerationChat(provider, "", cfg.OpenAICompatibility, true)
 }
 
-func ShouldKeepCodexImageGenerationChatOnCodex(cfg *config.SDKConfig, modelName string, allowImageModel bool) bool {
+func authProviderHasCodexIdentity(attrs map[string]string) bool {
+	if len(attrs) == 0 {
+		return false
+	}
+	for _, key := range []string{"identity_fingerprint", "identity-fingerprint"} {
+		if strings.EqualFold(strings.TrimSpace(attrs[key]), "codex") {
+			return true
+		}
+	}
+	return false
+}
+
+func openAICompatibilityProviderSupportsImageGenerationChat(provider, defaultProvider string, entries []config.OpenAICompatibility, genericOpenAICompat bool) bool {
+	for i := range entries {
+		entry := entries[i]
+		if entry.Disabled {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(entry.IdentityFingerprint), "codex") && !entry.ResponseEndpoint {
+			continue
+		}
+		entryProvider := strings.TrimSpace(strings.ToLower(entry.Name))
+		if entryProvider == "" {
+			entryProvider = strings.TrimSpace(strings.ToLower(defaultProvider))
+		}
+		if genericOpenAICompat {
+			if entryProvider != "" {
+				entryProvider = "openai-compatible-" + entryProvider
+			}
+		}
+		if entryProvider == "" {
+			continue
+		}
+		if entryProvider == provider {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *BaseAPIHandler) shouldKeepCodexImageGenerationChatOnCodex(modelName string, allowImageModel bool, rawJSON []byte) bool {
+	if h == nil {
+		return ShouldKeepCodexImageGenerationChatOnCodex(nil, modelName, allowImageModel, rawJSON)
+	}
+	return ShouldKeepCodexImageGenerationChatOnCodex(h.Cfg, modelName, allowImageModel, rawJSON)
+}
+
+func ShouldKeepCodexImageGenerationChatOnCodex(cfg *config.SDKConfig, modelName string, allowImageModel bool, rawJSON []byte) bool {
 	if allowImageModel {
 		return false
 	}
 	if cfg != nil && cfg.DisableImageGeneration.String() != "false" {
+		return false
+	}
+	if !requestUsesImageGenerationTool(rawJSON) {
 		return false
 	}
 	baseModel := strings.TrimSpace(thinking.ParseSuffix(modelName).ModelName)
@@ -1808,6 +1889,43 @@ func ShouldKeepCodexImageGenerationChatOnCodex(cfg *config.SDKConfig, modelName 
 	}
 	switch baseModel {
 	case "gpt-5.5", "gpt-5.4", "gpt-5.4-mini":
+		return true
+	default:
+		return false
+	}
+}
+
+func requestUsesImageGenerationTool(rawJSON []byte) bool {
+	if len(rawJSON) == 0 {
+		return false
+	}
+	tools := gjson.GetBytes(rawJSON, "tools")
+	if tools.IsArray() {
+		found := false
+		tools.ForEach(func(_, tool gjson.Result) bool {
+			if isImageGenerationToolType(tool.Get("type").String()) || tool.Get("image_generation").Exists() {
+				found = true
+				return false
+			}
+			return true
+		})
+		if found {
+			return true
+		}
+	}
+	toolChoice := gjson.GetBytes(rawJSON, "tool_choice")
+	if !toolChoice.Exists() {
+		return false
+	}
+	if toolChoice.Type == gjson.String {
+		return isImageGenerationToolType(toolChoice.String())
+	}
+	return isImageGenerationToolType(toolChoice.Get("type").String()) || isImageGenerationToolType(toolChoice.Get("name").String())
+}
+
+func isImageGenerationToolType(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "image_generation", "image_generation_call":
 		return true
 	default:
 		return false
@@ -2078,9 +2196,7 @@ func modelRoutersEnabled(host PluginModelRouterHost, skipPluginID string) bool {
 
 func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
 	var decision modelRouteDecision
-	if h.shouldKeepCodexImageGenerationChatOnCodex(modelName, modelRouterRequestAllowsImageModel(handlerType)) {
-		return decision
-	}
+	keepCodexImageRoute := h.shouldKeepCodexImageGenerationChatOnCodex(modelName, modelRouterRequestAllowsImageModel(handlerType), rawJSON)
 	host := h.modelRouterHost()
 	if host == nil || !modelRoutersEnabled(host, execOptions.SkipRouterPluginID) {
 		return decision
@@ -2104,7 +2220,11 @@ func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, mode
 	case pluginapi.ModelRouteTargetSelf, pluginapi.ModelRouteTargetExecutor:
 		decision.ExecutorPluginID = strings.TrimSpace(resp.Target)
 	case pluginapi.ModelRouteTargetProvider:
-		decision.Provider = strings.ToLower(strings.TrimSpace(resp.Target))
+		provider := strings.ToLower(strings.TrimSpace(resp.Target))
+		if keepCodexImageRoute && !h.providerSupportsCodexImageGenerationChat(provider) {
+			return modelRouteDecision{}
+		}
+		decision.Provider = provider
 		decision.Model = strings.TrimSpace(resp.TargetModel)
 	}
 	return decision

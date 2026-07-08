@@ -63,7 +63,9 @@ func normalizeOpenAIResponsesStreamErrorCode(status int, code string, message st
 		lowerCode == "context_too_large" ||
 		strings.Contains(lowerMessage, "context length") ||
 		strings.Contains(lowerMessage, "context_length") ||
+		strings.Contains(lowerMessage, "context window") ||
 		strings.Contains(lowerMessage, "maximum context") ||
+		strings.Contains(lowerMessage, "ran out of room") ||
 		strings.Contains(lowerMessage, "too many tokens"):
 		return "context_too_large"
 	case lowerCode == "auth_unavailable" ||
@@ -99,6 +101,8 @@ func NormalizeOpenAIResponsesStreamErrorStatus(status int, code string, message 
 
 func openAIResponsesStreamErrorType(status int, code string) string {
 	switch {
+	case code == "context_too_large" || code == "context_length_exceeded":
+		return "invalid_request_error"
 	case status == http.StatusUnauthorized || code == "invalid_api_key" || code == "auth_unavailable":
 		return "authentication_error"
 	case status == http.StatusTooManyRequests || code == "rate_limit_exceeded":

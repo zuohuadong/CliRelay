@@ -161,3 +161,32 @@ func TestBuildOpenAIResponsesResponseFailedChunkUsesCodexContextCode(t *testing.
 		t.Fatalf("response.error.type = %v, want invalid_request_error", errorPayload["type"])
 	}
 }
+
+func TestBuildOpenAIResponsesResponseFailedChunkRecognizesCodexContextWindowText(t *testing.T) {
+	errText := "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."
+	if !IsOpenAIResponsesContextWindowError(http.StatusInternalServerError, errText) {
+		t.Fatalf("expected Codex context window text to be recognized")
+	}
+	chunk := BuildOpenAIResponsesResponseFailedChunk(http.StatusInternalServerError, errText, 0)
+	var payload map[string]any
+	if err := json.Unmarshal(chunk, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	response, ok := payload["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing response object: %#v", payload["response"])
+	}
+	errorPayload, ok := response["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing response.error object: %#v", response["error"])
+	}
+	if errorPayload["code"] != "context_length_exceeded" {
+		t.Fatalf("response.error.code = %v, want context_length_exceeded", errorPayload["code"])
+	}
+	if errorPayload["type"] != "invalid_request_error" {
+		t.Fatalf("response.error.type = %v, want invalid_request_error", errorPayload["type"])
+	}
+	if errorPayload["message"] != errText {
+		t.Fatalf("response.error.message = %v, want %q", errorPayload["message"], errText)
+	}
+}

@@ -146,6 +146,14 @@ func TestNewCodexStatusErrClassifiesKnownCodexFailures(t *testing.T) {
 			wantCode:   "context_too_large",
 		},
 		{
+			name:       "plain codex context window text",
+			statusCode: http.StatusInternalServerError,
+			body:       []byte("Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."),
+			wantStatus: http.StatusInternalServerError,
+			wantType:   "invalid_request_error",
+			wantCode:   "context_too_large",
+		},
+		{
 			name:       "thinking signature",
 			statusCode: http.StatusBadRequest,
 			body:       []byte(`{"error":{"message":"Invalid signature in thinking block","type":"invalid_request_error","code":"invalid_request_error"}}`),

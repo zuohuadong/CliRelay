@@ -238,9 +238,17 @@ func codexTerminalErrorIsContextLength(body []byte) bool {
 	message := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
 	return errorCode == "context_length_exceeded" ||
 		errorCode == "context_too_large" ||
-		strings.Contains(message, "context window") ||
-		strings.Contains(message, "context length") ||
-		strings.Contains(message, "too many tokens")
+		codexErrorTextIndicatesContextLength(message)
+}
+
+func codexErrorTextIndicatesContextLength(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(text, "context length") ||
+		strings.Contains(text, "context_length") ||
+		strings.Contains(text, "context window") ||
+		strings.Contains(text, "maximum context") ||
+		strings.Contains(text, "ran out of room") ||
+		strings.Contains(text, "too many tokens")
 }
 
 // CodexExecutor is a stateless executor for Codex (OpenAI Responses API entrypoint).
@@ -1952,7 +1960,10 @@ func codexStatusErrorClassification(statusCode int, body []byte) (code string, e
 	isInvalidRequest := upstreamType == "" || upstreamType == "invalid_request_error"
 
 	switch {
-	case statusCode == http.StatusRequestEntityTooLarge || upstreamCode == "context_length_exceeded" || upstreamCode == "context_too_large" || isInvalidRequest && (strings.Contains(errorMessage, "context length") || strings.Contains(errorMessage, "context_length") || strings.Contains(errorMessage, "maximum context") || strings.Contains(errorMessage, "too many tokens")):
+	case statusCode == http.StatusRequestEntityTooLarge ||
+		upstreamCode == "context_length_exceeded" ||
+		upstreamCode == "context_too_large" ||
+		isInvalidRequest && (codexErrorTextIndicatesContextLength(errorMessage) || codexErrorTextIndicatesContextLength(lower)):
 		return "context_too_large", "invalid_request_error", true
 	case strings.Contains(lower, "invalid signature in thinking block") || strings.Contains(lower, "invalid_encrypted_content"):
 		return "thinking_signature_invalid", "invalid_request_error", true

@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +42,7 @@ import (
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -56,7 +60,7 @@ func init() {
 	buildinfo.BuildDate = BuildDate
 }
 
-func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode bool) bool {
+func shouldStartExampleAPIKeyWarningServer(cfg *config.Config, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode bool) bool {
 	if cfg == nil || commandMode || homeMode || cloudConfigMissing {
 		return false
 	}
@@ -64,6 +68,163 @@ func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode, tuiMode,
 		return false
 	}
 	return safemode.HasExampleAPIKeys(cfg.APIKeys)
+}
+
+type bootstrapConfigSecrets struct {
+	APIKey              string
+	GeneratedAPIKey     bool
+	ManagementPassword  string
+	GeneratedManagement bool
+}
+
+type bootstrapConfigData struct {
+	Host             string                  `yaml:"host"`
+	Port             int                     `yaml:"port"`
+	TLS              config.TLSConfig        `yaml:"tls"`
+	RemoteManagement config.RemoteManagement `yaml:"remote-management"`
+	AuthDir          string                  `yaml:"auth-dir"`
+	APIKeys          []string                `yaml:"api-keys"`
+	Debug            bool                    `yaml:"debug"`
+	Pprof            config.PprofConfig      `yaml:"pprof"`
+	Plugins          config.PluginsConfig    `yaml:"plugins"`
+	CommercialMode   bool                    `yaml:"commercial-mode"`
+	LoggingToFile    bool                    `yaml:"logging-to-file"`
+}
+
+func bootstrapLocalConfigIfMissing(configFilePath string, lookupEnv func(...string) (string, bool)) (*bootstrapConfigSecrets, error) {
+	configFilePath = strings.TrimSpace(configFilePath)
+	if configFilePath == "" {
+		return nil, nil
+	}
+	if info, errStat := os.Stat(configFilePath); errStat == nil {
+		if info.IsDir() {
+			return nil, fmt.Errorf("config path is a directory: %s", configFilePath)
+		}
+		return nil, nil
+	} else if !errors.Is(errStat, fs.ErrNotExist) {
+		return nil, fmt.Errorf("inspect config file: %w", errStat)
+	}
+	if lookupEnv == nil {
+		lookupEnv = func(...string) (string, bool) { return "", false }
+	}
+
+	apiKey, ok := lookupEnv("CLI_PROXY_API_KEY", "API_KEY", "api_key")
+	generatedAPIKey := false
+	if !ok {
+		var err error
+		apiKey, err = randomBootstrapSecret("cpak", 32)
+		if err != nil {
+			return nil, fmt.Errorf("generate bootstrap api key: %w", err)
+		}
+		generatedAPIKey = true
+	}
+
+	managementPassword, ok := lookupEnv("MANAGEMENT_PASSWORD", "management_password")
+	generatedManagementPassword := false
+	if !ok {
+		var err error
+		managementPassword, err = randomBootstrapSecret("cpmg", 32)
+		if err != nil {
+			return nil, fmt.Errorf("generate bootstrap management password: %w", err)
+		}
+		generatedManagementPassword = true
+	}
+	if currentManagementPassword, exists := os.LookupEnv("MANAGEMENT_PASSWORD"); !exists || strings.TrimSpace(currentManagementPassword) == "" {
+		if errSet := os.Setenv("MANAGEMENT_PASSWORD", managementPassword); errSet != nil {
+			return nil, fmt.Errorf("set bootstrap management password: %w", errSet)
+		}
+	}
+
+	port := 8317
+	if value, okPort := lookupEnv("PORT", "CLI_PROXY_PORT", "port"); okPort {
+		parsedPort, errParse := strconv.Atoi(value)
+		if errParse != nil || parsedPort <= 0 || parsedPort > 65535 {
+			return nil, fmt.Errorf("invalid PORT value %q", value)
+		}
+		port = parsedPort
+	}
+
+	authDir := config.DefaultAuthDir
+	if value, okAuthDir := lookupEnv("CLI_PROXY_AUTH_DIR", "AUTH_DIR", "auth_dir"); okAuthDir {
+		authDir = value
+	}
+
+	bootstrap := bootstrapConfigData{
+		Host: "",
+		Port: port,
+		TLS: config.TLSConfig{
+			Enable: false,
+		},
+		RemoteManagement: config.RemoteManagement{
+			AllowRemote:           true,
+			DisableControlPanel:   false,
+			PanelGitHubRepository: config.DefaultPanelGitHubRepository,
+		},
+		AuthDir: authDir,
+		APIKeys: []string{apiKey},
+		Debug:   false,
+		Pprof: config.PprofConfig{
+			Enable: false,
+			Addr:   config.DefaultPprofAddr,
+		},
+		Plugins: config.PluginsConfig{
+			Enabled: false,
+			Dir:     "plugins",
+			Configs: map[string]config.PluginInstanceConfig{},
+		},
+		CommercialMode: false,
+		LoggingToFile:  false,
+	}
+
+	data, errMarshal := yaml.Marshal(&bootstrap)
+	if errMarshal != nil {
+		return nil, fmt.Errorf("marshal bootstrap config: %w", errMarshal)
+	}
+	if errMkdir := os.MkdirAll(filepath.Dir(configFilePath), 0o700); errMkdir != nil {
+		return nil, fmt.Errorf("create config directory: %w", errMkdir)
+	}
+	if errWrite := os.WriteFile(configFilePath, data, 0o600); errWrite != nil {
+		return nil, fmt.Errorf("write bootstrap config: %w", errWrite)
+	}
+
+	return &bootstrapConfigSecrets{
+		APIKey:              apiKey,
+		GeneratedAPIKey:     generatedAPIKey,
+		ManagementPassword:  managementPassword,
+		GeneratedManagement: generatedManagementPassword,
+	}, nil
+}
+
+func randomBootstrapSecret(prefix string, byteLen int) (string, error) {
+	if byteLen <= 0 {
+		byteLen = 32
+	}
+	raw := make([]byte, byteLen)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	if prefix == "" {
+		return encoded, nil
+	}
+	return prefix + "-" + encoded, nil
+}
+
+func logBootstrapLocalConfig(configFilePath string, secrets *bootstrapConfigSecrets) {
+	if secrets == nil {
+		return
+	}
+	log.WithField("path", configFilePath).Warn("config file missing; generated bootstrap config")
+	if secrets.GeneratedAPIKey {
+		log.WithField("api_key", secrets.APIKey).Warn("generated bootstrap API key; set CLI_PROXY_API_KEY to keep it stable")
+	} else {
+		log.Info("bootstrap API key loaded from environment")
+	}
+	if secrets.GeneratedManagement {
+		log.WithField("management_password", secrets.ManagementPassword).Warn("generated bootstrap management password; set MANAGEMENT_PASSWORD to keep it stable")
+	} else {
+		log.Info("bootstrap management password loaded from environment")
+	}
 }
 
 // main is the entry point of the application.
@@ -472,6 +633,12 @@ func main() {
 		}
 	} else if configPath != "" {
 		configFilePath = configPath
+		secrets, errBootstrap := bootstrapLocalConfigIfMissing(configFilePath, lookupEnv)
+		if errBootstrap != nil {
+			log.Errorf("failed to bootstrap local config: %v", errBootstrap)
+			return
+		}
+		logBootstrapLocalConfig(configFilePath, secrets)
 		cfg, err = config.LoadConfigOptional(configPath, isCloudDeploy)
 	} else {
 		wd, err = os.Getwd()
@@ -480,12 +647,12 @@ func main() {
 			return
 		}
 		configFilePath = filepath.Join(wd, "config.yaml")
-		if !isCloudDeploy {
-			if errBootstrap := bootstrapDefaultConfig(configFilePath, wd); errBootstrap != nil {
-				log.Errorf("failed to bootstrap default config: %v", errBootstrap)
-				return
-			}
+		secrets, errBootstrap := bootstrapLocalConfigIfMissing(configFilePath, lookupEnv)
+		if errBootstrap != nil {
+			log.Errorf("failed to bootstrap local config: %v", errBootstrap)
+			return
 		}
+		logBootstrapLocalConfig(configFilePath, secrets)
 		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
 	}
 	if err != nil {
@@ -552,13 +719,13 @@ func main() {
 	commandMode := vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
-	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
-	serverOptions := []api.ServerOption(nil)
-	if exampleAPIKeySafeMode {
+	if shouldStartExampleAPIKeyWarningServer(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode) {
 		matches := safemode.ExampleAPIKeys(cfg.APIKeys)
-		log.WithField("api_keys", strings.Join(matches, ",")).Error("unsafe example API key configured; proxy API endpoints disabled until api-keys is updated")
-		serverOptions = append(serverOptions, api.WithExampleAPIKeySafeMode())
+		log.WithField("api_keys", strings.Join(matches, ",")).Error("unsafe example API key configured; starting warning-only server")
+		cmd.StartExampleAPIKeyWarningServer(cfg, configFilePath, matches)
+		return
 	}
+	serverOptions := []api.ServerOption(nil)
 
 	// Register the shared token store once so all components use the same persistence backend.
 	if usePostgresStore {
@@ -726,24 +893,6 @@ func main() {
 			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
 		}
 	}
-}
-
-func bootstrapDefaultConfig(configFilePath, wd string) error {
-	if _, errStat := os.Stat(configFilePath); errStat == nil {
-		return nil
-	} else if !errors.Is(errStat, fs.ErrNotExist) {
-		return fmt.Errorf("failed to inspect config file: %w", errStat)
-	}
-
-	examplePath := filepath.Join(wd, "config.example.yaml")
-	if _, errExample := os.Stat(examplePath); errExample != nil {
-		return fmt.Errorf("failed to find template config file: %w", errExample)
-	}
-	if errCopy := misc.CopyConfigTemplate(examplePath, configFilePath); errCopy != nil {
-		return fmt.Errorf("failed to copy template config: %w", errCopy)
-	}
-	log.Infof("default config initialized from template: %s", configFilePath)
-	return nil
 }
 
 func pluginBootstrapConfigPath(args []string, defaultPath string) string {

@@ -88,3 +88,102 @@ func compactUsageToken(rawJSON []byte, paths ...string) int64 {
 	}
 	return 0
 }
+
+func buildAstronCompactionStreamChunks(compactPayload []byte, model string) [][]byte {
+	responseID := strings.TrimSpace(gjson.GetBytes(compactPayload, "id").String())
+	if responseID == "" {
+		responseID = fmt.Sprintf("resp_compact_%d", time.Now().UnixNano())
+	}
+	createdAt := gjson.GetBytes(compactPayload, "created_at").Int()
+	if createdAt == 0 {
+		createdAt = time.Now().Unix()
+	}
+	item := astronCompactionOutputItem(compactPayload, responseID)
+	output := []json.RawMessage{item}
+
+	createdResponse := astronCompactionStreamResponse(compactPayload, responseID, model, createdAt, "in_progress", nil)
+	completedResponse := astronCompactionStreamResponse(compactPayload, responseID, model, createdAt, "completed", output)
+
+	return [][]byte{
+		astronSSEFrame("response.created", map[string]any{
+			"type":            "response.created",
+			"sequence_number": 0,
+			"response":        createdResponse,
+		}),
+		astronSSEFrame("response.output_item.added", map[string]any{
+			"type":            "response.output_item.added",
+			"sequence_number": 1,
+			"output_index":    0,
+			"item":            item,
+		}),
+		astronSSEFrame("response.output_item.done", map[string]any{
+			"type":            "response.output_item.done",
+			"sequence_number": 2,
+			"output_index":    0,
+			"item":            item,
+		}),
+		astronSSEFrame("response.completed", map[string]any{
+			"type":            "response.completed",
+			"sequence_number": 3,
+			"response":        completedResponse,
+		}),
+	}
+}
+
+func astronCompactionStreamResponse(compactPayload []byte, responseID string, model string, createdAt int64, status string, output []json.RawMessage) map[string]any {
+	if output == nil {
+		output = []json.RawMessage{}
+	}
+	responseModel := strings.TrimSpace(gjson.GetBytes(compactPayload, "model").String())
+	if responseModel == "" {
+		responseModel = model
+	}
+	response := map[string]any{
+		"id":                 responseID,
+		"object":             "response",
+		"created_at":         createdAt,
+		"status":             status,
+		"model":              responseModel,
+		"background":         false,
+		"error":              nil,
+		"incomplete_details": nil,
+		"output":             output,
+	}
+	if usage := gjson.GetBytes(compactPayload, "usage"); usage.Exists() && usage.Type == gjson.JSON {
+		response["usage"] = json.RawMessage(usage.Raw)
+	}
+	return response
+}
+
+func astronCompactionOutputItem(compactPayload []byte, responseID string) json.RawMessage {
+	item := map[string]any{
+		"id":                fmt.Sprintf("cmpct_%d", time.Now().UnixNano()),
+		"type":              "compaction",
+		"encrypted_content": strings.TrimSpace(gjson.GetBytes(compactPayload, "output.0.encrypted_content").String()),
+	}
+	if outputItem := gjson.GetBytes(compactPayload, "output.0"); outputItem.Exists() && outputItem.Type == gjson.JSON {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(outputItem.Raw), &parsed); err == nil && parsed != nil {
+			item = parsed
+		}
+	}
+	if id, ok := item["id"].(string); !ok || strings.TrimSpace(id) == "" {
+		item["id"] = fmt.Sprintf("cmpct_%s", responseID)
+	}
+	if itemType, ok := item["type"].(string); !ok || strings.TrimSpace(itemType) == "" {
+		item["type"] = "compaction"
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		return json.RawMessage(`{"type":"compaction"}`)
+	}
+	return json.RawMessage(raw)
+}
+
+func astronSSEFrame(event string, payload any) []byte {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		raw = []byte(`{"type":"error"}`)
+	}
+	return []byte("event: " + event + "\ndata: " + string(raw) + "\n\n")
+}

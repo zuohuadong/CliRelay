@@ -202,6 +202,12 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 
 func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	if opts.Alt == "responses/compact" {
+		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
+	}
+	if astronShouldHandleStreamingCompaction(req.Payload, opts) {
+		return e.executeCompactionTriggerStream(ctx, auth, req, opts, baseModel)
+	}
 
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
@@ -393,6 +399,55 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 		reporter.EnsurePublished(ctx)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+func (e *AstronCodeExecutor) executeCompactionTriggerStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string) (*cliproxyexecutor.StreamResult, error) {
+	compactOpts := opts
+	compactOpts.Stream = false
+	compactOpts.Alt = "responses/compact"
+	resp, err := e.Execute(ctx, auth, req, compactOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	headers := resp.Headers.Clone()
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	headers.Set("Content-Type", "text/event-stream")
+	chunks := buildAstronCompactionStreamChunks(resp.Payload, baseModel)
+	out := make(chan cliproxyexecutor.StreamChunk, len(chunks))
+	for _, chunk := range chunks {
+		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+	}
+	close(out)
+	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}, nil
+}
+
+func astronShouldHandleStreamingCompaction(payload []byte, opts cliproxyexecutor.Options) bool {
+	if astronInputHasItemType(payload, "compaction_trigger") {
+		return true
+	}
+	if opts.Headers != nil {
+		turnMetadata := strings.TrimSpace(opts.Headers.Get("X-Codex-Turn-Metadata"))
+		if strings.EqualFold(strings.TrimSpace(gjson.Get(turnMetadata, "request_kind").String()), "compaction") {
+			return true
+		}
+	}
+	return false
+}
+
+func astronInputHasItemType(payload []byte, itemType string) bool {
+	input := gjson.GetBytes(payload, "input")
+	if !input.IsArray() {
+		return false
+	}
+	for _, item := range input.Array() {
+		if item.Get("type").String() == itemType {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *AstronCodeExecutor) applyAstronMultimodalAdapter(ctx context.Context, payload []byte, model, protocol, requestedModel string) ([]byte, error) {

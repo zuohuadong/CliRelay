@@ -448,8 +448,57 @@ nonstream-keepalive-interval: 0
 #       - api-key: "astron-key-1"
 #       - api-key: "astron-key-2"
 #     models:
+#       - name: "astron-code-latest"
+#         alias: "gpt-5.3-codex"
+#         context-length: 500000
+#       - name: "xsparkx2"
+#         alias: "spark-x2"
+#         context-length: 128000
+#       - name: "xopglm5"
+#         alias: "glm-5"
+#         context-length: 200000
+#       - name: "xopglm52"
+#         alias: "glm-5.2"
+#         context-length: 500000
 #       - name: "xopdeepseekv4pro"
 #         alias: "deepseek-v4-pro"
+#         context-length: 1000000
+#       - name: "xopdeepseekv4flash"
+#         alias: "deepseek-v4-flash"
+#         context-length: 1000000
+#       - name: "xopkimik26"
+#         alias: "kimi-k2.6"
+#         context-length: 256000
+#       - name: "xopglm51"
+#         alias: "glm-5.1"
+#         context-length: 200000
+#       - name: "xminimaxm25"
+#         alias: "minimax-m2.5"
+#         context-length: 128000
+#       - name: "xopkimik25"
+#         alias: "kimi-k2.5"
+#         context-length: 128000
+#       - name: "xopdeepseekv32"
+#         alias: "deepseek-v3.2"
+#         context-length: 128000
+#       - name: "xsparkx2flash"
+#         alias: "spark-x2-flash"
+#         context-length: 256000
+#       - name: "xopqwen36v35b"
+#         alias: "qwen3.6-35b-a3b"
+#         context-length: 128000
+#       - name: "xopglmv47flash"
+#         alias: "glm-4.7-flash"
+#         context-length: 128000
+#       - name: "xopqwen35v35b"
+#         alias: "qwen3.5-35b-a3b"
+#         context-length: 128000
+#       - name: "xop3qwencodernext"
+#         alias: "qwen3-coder-next-fp8"
+#         context-length: 256000
+#       - name: "xopqwen35397b"
+#         alias: "qwen3.5-397b-a17b"
+#         context-length: 256000
 
 # Vertex API keys (Vertex-compatible endpoints, base-url is optional)
 # vertex-api-key:

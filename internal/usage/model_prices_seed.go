@@ -98,7 +98,7 @@ var officialModelPrices = []ModelPriceRow{
 	{Model: "kimi-k2", Mode: "token", InputPricePerM: 0.6, OutputPricePerM: 2.5, CachedPricePerM: 0.06},
 	{Model: "kimi-k2-thinking", Mode: "token", InputPricePerM: 0.6, OutputPricePerM: 2.5, CachedPricePerM: 0.06},
 	{Model: "kimi-k2.5", Mode: "token", InputPricePerM: 0.6, OutputPricePerM: 2.5, CachedPricePerM: 0.06},
-	{Model: "kimi-k2.6", Mode: "token", InputPricePerM: 0.6, OutputPricePerM: 2.5, CachedPricePerM: 0.06},
+	{Model: "kimi-k2.6", Mode: "token", InputPricePerM: 0.95, OutputPricePerM: 4, CachedPricePerM: 0.16},
 
 	// --- Antigravity / other upstream seen in production ---
 	{Model: "gpt-oss-120b-medium", Mode: "token", InputPricePerM: 0.15, OutputPricePerM: 0.6, CachedPricePerM: 0.0375},
@@ -115,7 +115,8 @@ var officialModelPrices = []ModelPriceRow{
 	{Model: "glm-4.7-flash", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
 	{Model: "glm-5", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
 	{Model: "glm-5.1", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
-	{Model: "glm-5.2", Mode: "token", InputPricePerM: 0.8, OutputPricePerM: 2.4, CachedPricePerM: 0.08},
+	{Model: "glm-5.2", Mode: "token", InputPricePerM: 1.4, OutputPricePerM: 4.4, CachedPricePerM: 0.26},
+	{Model: "xopglm52", Mode: "token", InputPricePerM: 1.4, OutputPricePerM: 4.4, CachedPricePerM: 0.26},
 	{Model: "glm-4.6", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
 	{Model: "glm-4.5", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
 
@@ -124,7 +125,9 @@ var officialModelPrices = []ModelPriceRow{
 
 	// --- Third-party OpenAI-compatible models observed in production ---
 	{Model: "deepseek-v3.2", Mode: "token", InputPricePerM: 0.27, OutputPricePerM: 1.1, CachedPricePerM: 0.027},
-	{Model: "deepseek-v4-flash", Mode: "token", InputPricePerM: 0.14, OutputPricePerM: 0.28, CachedPricePerM: 0.014},
+	{Model: "deepseek-v4-flash", Mode: "token", InputPricePerM: 0.14, OutputPricePerM: 0.28, CachedPricePerM: 0.0028},
+	{Model: "deepseek-v4-pro", Mode: "token", InputPricePerM: 0.435, OutputPricePerM: 0.87, CachedPricePerM: 0.003625},
+	{Model: "xopdeepseekv4pro", Mode: "token", InputPricePerM: 0.435, OutputPricePerM: 0.87, CachedPricePerM: 0.003625},
 	{Model: "qwen3.6-plus", Mode: "token", InputPricePerM: 0.4, OutputPricePerM: 1.2, CachedPricePerM: 0.04},
 	{Model: "qwen3.6-flash", Mode: "token", InputPricePerM: 0.1, OutputPricePerM: 0.3, CachedPricePerM: 0.01},
 	{Model: "qwen-image-2.0", Mode: "call", PricePerCall: 0.03},
@@ -138,6 +141,8 @@ var officialModelPrices = []ModelPriceRow{
 	{Model: "nano-banana-fast", Mode: "call", PricePerCall: 0.02},
 	{Model: "xopglmv47flash", Mode: "call", PricePerCall: 0.02},
 	{Model: "xsparkx2flash", Mode: "call", PricePerCall: 0.02},
+	{Model: "spark-x2-flash", Mode: "call", PricePerCall: 0.02},
+	{Model: "xopkimik26", Mode: "token", InputPricePerM: 0.95, OutputPricePerM: 4, CachedPricePerM: 0.16},
 }
 
 var (

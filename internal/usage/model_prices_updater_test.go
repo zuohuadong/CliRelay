@@ -223,10 +223,18 @@ func TestOfficialModelPricesCoverVisibleUnpricedModels(t *testing.T) {
 		"agnes-image-2.1-flash":      {Mode: "token", InputPricePerM: 0.01, OutputPricePerM: 0.03, CachedPricePerM: 0.001},
 		"agnes-video-v2.0":           {Mode: "token", InputPricePerM: 0.02, OutputPricePerM: 0.06, CachedPricePerM: 0.002},
 		"codex-auto-review":          {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
+		"deepseek-v4-flash":          {Mode: "token", InputPricePerM: 0.14, OutputPricePerM: 0.28, CachedPricePerM: 0.0028},
+		"deepseek-v4-pro":            {Mode: "token", InputPricePerM: 0.435, OutputPricePerM: 0.87, CachedPricePerM: 0.003625},
 		"gemini-3.1-pro":             {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
 		"gemini-3.1-pro-high":        {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
 		"gemini-3.5-flash-extra-low": {Mode: "token", InputPricePerM: 0.15, OutputPricePerM: 0.6, CachedPricePerM: 0.0375},
 		"glm-4.7-flash":              {Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+		"glm-5.2":                    {Mode: "token", InputPricePerM: 1.4, OutputPricePerM: 4.4, CachedPricePerM: 0.26},
+		"kimi-k2.6":                  {Mode: "token", InputPricePerM: 0.95, OutputPricePerM: 4, CachedPricePerM: 0.16},
+		"spark-x2-flash":             {Mode: "call", PricePerCall: 0.02},
+		"xopdeepseekv4pro":           {Mode: "token", InputPricePerM: 0.435, OutputPricePerM: 0.87, CachedPricePerM: 0.003625},
+		"xopglm52":                   {Mode: "token", InputPricePerM: 1.4, OutputPricePerM: 4.4, CachedPricePerM: 0.26},
+		"xopkimik26":                 {Mode: "token", InputPricePerM: 0.95, OutputPricePerM: 4, CachedPricePerM: 0.16},
 	}
 
 	got := make(map[string]ModelPriceRow, len(officialModelPrices))

@@ -18,6 +18,7 @@ import (
 
 	"github.com/joho/godotenv"
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cmd"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -55,7 +56,7 @@ func init() {
 	buildinfo.BuildDate = BuildDate
 }
 
-func shouldStartExampleAPIKeyWarningServer(cfg *config.Config, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode bool) bool {
+func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode bool) bool {
 	if cfg == nil || commandMode || homeMode || cloudConfigMissing {
 		return false
 	}
@@ -479,6 +480,12 @@ func main() {
 			return
 		}
 		configFilePath = filepath.Join(wd, "config.yaml")
+		if !isCloudDeploy {
+			if errBootstrap := bootstrapDefaultConfig(configFilePath, wd); errBootstrap != nil {
+				log.Errorf("failed to bootstrap default config: %v", errBootstrap)
+				return
+			}
+		}
 		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
 	}
 	if err != nil {
@@ -545,11 +552,12 @@ func main() {
 	commandMode := vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
-	if shouldStartExampleAPIKeyWarningServer(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode) {
+	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
+	serverOptions := []api.ServerOption(nil)
+	if exampleAPIKeySafeMode {
 		matches := safemode.ExampleAPIKeys(cfg.APIKeys)
-		log.WithField("api_keys", strings.Join(matches, ",")).Error("unsafe example API key configured; starting warning-only server")
-		cmd.StartExampleAPIKeyWarningServer(cfg, configFilePath, matches)
-		return
+		log.WithField("api_keys", strings.Join(matches, ",")).Error("unsafe example API key configured; proxy API endpoints disabled until api-keys is updated")
+		serverOptions = append(serverOptions, api.WithExampleAPIKeySafeMode())
 	}
 
 	// Register the shared token store once so all components use the same persistence backend.
@@ -662,7 +670,7 @@ func main() {
 					password = localMgmtPassword
 				}
 
-				cancel, done := cmd.StartServiceBackgroundWithPluginHost(cfg, configFilePath, password, pluginHost)
+				cancel, done := cmd.StartServiceBackgroundWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
 
 				client := tui.NewClient(cfg.Port, password)
 				ready := false
@@ -715,9 +723,27 @@ func main() {
 			if cfg.OpenRouterSyncEnabled {
 				registry.StartOpenRouterSync(context.Background(), true, cfg.OpenRouterSyncIntervalMinutes, cfg.OpenRouterAPIKey)
 			}
-			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost)
+			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
 		}
 	}
+}
+
+func bootstrapDefaultConfig(configFilePath, wd string) error {
+	if _, errStat := os.Stat(configFilePath); errStat == nil {
+		return nil
+	} else if !errors.Is(errStat, fs.ErrNotExist) {
+		return fmt.Errorf("failed to inspect config file: %w", errStat)
+	}
+
+	examplePath := filepath.Join(wd, "config.example.yaml")
+	if _, errExample := os.Stat(examplePath); errExample != nil {
+		return fmt.Errorf("failed to find template config file: %w", errExample)
+	}
+	if errCopy := misc.CopyConfigTemplate(examplePath, configFilePath); errCopy != nil {
+		return fmt.Errorf("failed to copy template config: %w", errCopy)
+	}
+	log.Infof("default config initialized from template: %s", configFilePath)
+	return nil
 }
 
 func pluginBootstrapConfigPath(args []string, defaultPath string) string {

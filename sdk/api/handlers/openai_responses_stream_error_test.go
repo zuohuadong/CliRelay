@@ -74,6 +74,31 @@ func TestBuildOpenAIResponsesStreamErrorChunkExtractsHTTPErrorBody(t *testing.T)
 	}
 }
 
+func TestBuildOpenAIResponsesStreamErrorChunkPreservesPlainAuthUnavailable(t *testing.T) {
+	chunk := BuildOpenAIResponsesStreamErrorChunk(
+		http.StatusServiceUnavailable,
+		"auth_unavailable: no auth available (providers=astron-code, model=deepseek-v4-pro)",
+		0,
+	)
+	var payload map[string]any
+	if err := json.Unmarshal(chunk, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload["code"] != "auth_unavailable" {
+		t.Fatalf("code = %v, want %q", payload["code"], "auth_unavailable")
+	}
+	if payload["status"] != float64(http.StatusServiceUnavailable) {
+		t.Fatalf("status = %v, want %v", payload["status"], http.StatusServiceUnavailable)
+	}
+	errorPayload, ok := payload["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing nested error object: %#v", payload["error"])
+	}
+	if errorPayload["type"] != "authentication_error" {
+		t.Fatalf("error.type = %v, want %q", errorPayload["type"], "authentication_error")
+	}
+}
+
 func TestBuildOpenAIResponsesStreamErrorChunkNormalizesContextTooLarge(t *testing.T) {
 	chunk := BuildOpenAIResponsesStreamErrorChunk(
 		http.StatusRequestEntityTooLarge,

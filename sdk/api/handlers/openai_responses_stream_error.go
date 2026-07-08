@@ -66,6 +66,11 @@ func normalizeOpenAIResponsesStreamErrorCode(status int, code string, message st
 		strings.Contains(lowerMessage, "maximum context") ||
 		strings.Contains(lowerMessage, "too many tokens"):
 		return "context_too_large"
+	case lowerCode == "auth_unavailable" ||
+		lowerCode == "auth_not_found" ||
+		strings.Contains(lowerMessage, "auth_unavailable") ||
+		strings.Contains(lowerMessage, "auth_not_found"):
+		return "auth_unavailable"
 	case strings.Contains(lowerMessage, "invalid signature in thinking block"):
 		return "thinking_signature_invalid"
 	case strings.Contains(lowerCode, "previous_response_not_found") ||
@@ -164,7 +169,7 @@ func parseOpenAIResponsesStreamError(status int, errText string) openAIResponses
 	}
 	code = normalizeOpenAIResponsesStreamErrorCode(status, code, message)
 	status = NormalizeOpenAIResponsesStreamErrorStatus(status, code, message)
-	if strings.TrimSpace(errType) == "" || code == "context_too_large" {
+	if strings.TrimSpace(errType) == "" || code == "context_too_large" || code == "auth_unavailable" {
 		errType = openAIResponsesStreamErrorType(status, code)
 	}
 

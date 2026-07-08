@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -85,5 +87,52 @@ func TestShouldEnableExampleAPIKeySafeMode(t *testing.T) {
 				t.Fatalf("shouldEnableExampleAPIKeySafeMode() = %t, want %t", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBootstrapDefaultConfigCopiesTemplateWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	templatePath := filepath.Join(dir, "config.example.yaml")
+	configPath := filepath.Join(dir, "config.yaml")
+	template := []byte("port: 8317\n")
+	if err := os.WriteFile(templatePath, template, 0o600); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+
+	if err := bootstrapDefaultConfig(configPath, dir); err != nil {
+		t.Fatalf("bootstrapDefaultConfig() error = %v", err)
+	}
+
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(got) != string(template) {
+		t.Fatalf("config content = %q, want %q", got, template)
+	}
+}
+
+func TestBootstrapDefaultConfigKeepsExistingConfig(t *testing.T) {
+	dir := t.TempDir()
+	templatePath := filepath.Join(dir, "config.example.yaml")
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(templatePath, []byte("port: 8317\n"), 0o600); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+	existing := []byte("port: 9000\n")
+	if err := os.WriteFile(configPath, existing, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if err := bootstrapDefaultConfig(configPath, dir); err != nil {
+		t.Fatalf("bootstrapDefaultConfig() error = %v", err)
+	}
+
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(got) != string(existing) {
+		t.Fatalf("config content = %q, want %q", got, existing)
 	}
 }

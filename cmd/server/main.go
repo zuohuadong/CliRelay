@@ -480,6 +480,12 @@ func main() {
 			return
 		}
 		configFilePath = filepath.Join(wd, "config.yaml")
+		if !isCloudDeploy {
+			if errBootstrap := bootstrapDefaultConfig(configFilePath, wd); errBootstrap != nil {
+				log.Errorf("failed to bootstrap default config: %v", errBootstrap)
+				return
+			}
+		}
 		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
 	}
 	if err != nil {
@@ -720,6 +726,24 @@ func main() {
 			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
 		}
 	}
+}
+
+func bootstrapDefaultConfig(configFilePath, wd string) error {
+	if _, errStat := os.Stat(configFilePath); errStat == nil {
+		return nil
+	} else if !errors.Is(errStat, fs.ErrNotExist) {
+		return fmt.Errorf("failed to inspect config file: %w", errStat)
+	}
+
+	examplePath := filepath.Join(wd, "config.example.yaml")
+	if _, errExample := os.Stat(examplePath); errExample != nil {
+		return fmt.Errorf("failed to find template config file: %w", errExample)
+	}
+	if errCopy := misc.CopyConfigTemplate(examplePath, configFilePath); errCopy != nil {
+		return fmt.Errorf("failed to copy template config: %w", errCopy)
+	}
+	log.Infof("default config initialized from template: %s", configFilePath)
+	return nil
 }
 
 func pluginBootstrapConfigPath(args []string, defaultPath string) string {

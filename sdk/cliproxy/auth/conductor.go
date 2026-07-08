@@ -1552,7 +1552,31 @@ func (m *Manager) routeModelAvailability(auth *Auth, routeModel string, now time
 	}
 	candidates := m.executionModelCandidatesForCapacityCheck(auth, routeModel)
 	if len(candidates) > 1 {
-		return true, blockReasonNone, time.Time{}
+		cooldownCount := 0
+		disabledCount := 0
+		var earliest time.Time
+		for _, candidate := range candidates {
+			blocked, reason, next := isAuthBlockedForModel(auth, candidate, now)
+			if !blocked {
+				return true, blockReasonNone, time.Time{}
+			}
+			switch reason {
+			case blockReasonCooldown:
+				cooldownCount++
+				if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
+					earliest = next
+				}
+			case blockReasonDisabled:
+				disabledCount++
+			}
+		}
+		if cooldownCount == len(candidates) && !earliest.IsZero() {
+			return false, blockReasonCooldown, earliest
+		}
+		if disabledCount == len(candidates) {
+			return false, blockReasonDisabled, time.Time{}
+		}
+		return false, blockReasonOther, time.Time{}
 	}
 	checkModel := m.selectionModelForAuth(auth, routeModel)
 	blocked, reason, next := isAuthBlockedForModel(auth, checkModel, now)

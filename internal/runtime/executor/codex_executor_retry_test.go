@@ -204,6 +204,19 @@ func TestNewCodexStatusErrPreservesUnclassifiedErrors(t *testing.T) {
 	}
 }
 
+func TestNewCodexStatusErrPreservesUpstreamModelUnavailableContextDiagnostics(t *testing.T) {
+	body := []byte(`{"error":{"message":"upstream_model_unavailable: no executable upstream model available (provider=astron-code, model=deepseek-v4-pro, request_bytes=121, candidates=xopdeepseekv4pro,astron-code-latest, candidate_context_lengths=astron-code-latest:500000)","code":"internal_server_error"}}`)
+
+	err := newCodexStatusErr(http.StatusServiceUnavailable, body)
+
+	if got := err.StatusCode(); got != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+	if got := err.Error(); got != string(body) {
+		t.Fatalf("error body = %s, want original %s", got, string(body))
+	}
+}
+
 func assertCodexErrorCode(t *testing.T, raw string, wantType string, wantCode string) {
 	t.Helper()
 

@@ -244,7 +244,8 @@ func codexTerminalErrorIsContextLength(body []byte) bool {
 func codexErrorTextIndicatesContextLength(text string) bool {
 	text = strings.ToLower(strings.TrimSpace(text))
 	return strings.Contains(text, "context length") ||
-		strings.Contains(text, "context_length") ||
+		strings.Contains(text, "context_length_exceeded") ||
+		strings.Contains(text, "context_too_large") ||
 		strings.Contains(text, "context window") ||
 		strings.Contains(text, "maximum context") ||
 		strings.Contains(text, "ran out of room") ||

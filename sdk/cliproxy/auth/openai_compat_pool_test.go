@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -643,6 +644,54 @@ func TestManagerExecute_OpenAICompatAliasPoolSkipsSuspendedUpstreamOnLaterReques
 		if got[i] != want[i] {
 			t.Fatalf("execute call %d model = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestManagerExecute_OpenAICompatAliasPoolAllCandidatesCoolingReportsModelCooldown(t *testing.T) {
+	alias := "deepseek-v4-pro"
+	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: "xopdeepseekv4pro", Alias: alias},
+		{Name: "astron-code-latest", Alias: alias, ContextLength: 500000},
+	}, executor)
+
+	auth, ok := m.GetByID("pool-auth-" + t.Name())
+	if !ok || auth == nil {
+		t.Fatalf("expected test auth to be registered")
+	}
+	next := time.Now().Add(5 * time.Minute)
+	auth.ModelStates = map[string]*ModelState{
+		"xopdeepseekv4pro": {
+			Status:         StatusError,
+			Unavailable:    true,
+			NextRetryAfter: next,
+			Quota:          QuotaState{Exceeded: true, NextRecoverAt: next},
+		},
+		"astron-code-latest": {
+			Status:         StatusError,
+			Unavailable:    true,
+			NextRetryAfter: next,
+			Quota:          QuotaState{Exceeded: true, NextRecoverAt: next},
+		},
+	}
+	if _, err := m.Update(context.Background(), auth); err != nil {
+		t.Fatalf("update auth: %v", err)
+	}
+
+	_, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: int64(121)},
+	})
+	if err == nil {
+		t.Fatalf("execute error = nil, want model cooldown")
+	}
+	if got := statusCodeFromError(err); got != http.StatusTooManyRequests {
+		t.Fatalf("execute status = %d, want %d; err=%v", got, http.StatusTooManyRequests, err)
+	}
+	if !strings.Contains(err.Error(), `"code":"model_cooldown"`) {
+		t.Fatalf("execute error = %v, want model_cooldown", err)
+	}
+	if got := executor.ExecuteModels(); len(got) != 0 {
+		t.Fatalf("execute models = %v, want no calls while all pool candidates are cooling", got)
 	}
 }
 

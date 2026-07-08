@@ -62,7 +62,8 @@ func normalizeOpenAIResponsesStreamErrorCode(status int, code string, message st
 		lowerCode == "context_length_exceeded" ||
 		lowerCode == "context_too_large" ||
 		strings.Contains(lowerMessage, "context length") ||
-		strings.Contains(lowerMessage, "context_length") ||
+		strings.Contains(lowerMessage, "context_length_exceeded") ||
+		strings.Contains(lowerMessage, "context_too_large") ||
 		strings.Contains(lowerMessage, "context window") ||
 		strings.Contains(lowerMessage, "maximum context") ||
 		strings.Contains(lowerMessage, "ran out of room") ||

@@ -190,3 +190,29 @@ func TestBuildOpenAIResponsesResponseFailedChunkRecognizesCodexContextWindowText
 		t.Fatalf("response.error.message = %v, want %q", errorPayload["message"], errText)
 	}
 }
+
+func TestBuildOpenAIResponsesStreamErrorChunkPreservesUpstreamUnavailableContextDiagnostics(t *testing.T) {
+	errText := `{"error":{"message":"upstream_model_unavailable: no executable upstream model available (provider=astron-code, model=deepseek-v4-pro, request_bytes=121, candidates=xopdeepseekv4pro,astron-code-latest, candidate_context_lengths=astron-code-latest:500000)","type":"server_error","code":"internal_server_error"}}`
+	if IsOpenAIResponsesContextWindowError(http.StatusServiceUnavailable, errText) {
+		t.Fatalf("upstream model availability diagnostics must not be treated as context window overflow")
+	}
+
+	chunk := BuildOpenAIResponsesStreamErrorChunk(http.StatusServiceUnavailable, errText, 0)
+	var payload map[string]any
+	if err := json.Unmarshal(chunk, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload["code"] != "internal_server_error" {
+		t.Fatalf("code = %v, want internal_server_error", payload["code"])
+	}
+	errorPayload, ok := payload["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing nested error object: %#v", payload["error"])
+	}
+	if errorPayload["type"] != "server_error" {
+		t.Fatalf("error.type = %v, want server_error", errorPayload["type"])
+	}
+	if errorPayload["code"] != "internal_server_error" {
+		t.Fatalf("error.code = %v, want internal_server_error", errorPayload["code"])
+	}
+}

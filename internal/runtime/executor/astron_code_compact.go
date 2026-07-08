@@ -38,23 +38,20 @@ func compactTranscriptForPrompt(rawJSON []byte) string {
 	return string(rawJSON)
 }
 
-func buildAstronCompactResponse(originalRequest []byte, model string, chatResponse []byte, upstreamHeaders http.Header) (cliproxyexecutor.Response, error) {
+func buildAstronCompactResponse(_ []byte, model string, chatResponse []byte, upstreamHeaders http.Header) (cliproxyexecutor.Response, error) {
 	summary := strings.TrimSpace(gjson.GetBytes(chatResponse, "choices.0.message.content").String())
 	if summary == "" {
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: "astron compact: upstream chat response did not include summary content"}
 	}
 
 	idSuffix := time.Now().UnixNano()
-	output := make([]any, 0, 8)
-	for _, item := range astronCompactUserItems(originalRequest) {
-		output = append(output, item)
+	output := []map[string]any{
+		{
+			"id":                fmt.Sprintf("cmpct_%d", idSuffix),
+			"type":              "compaction",
+			"encrypted_content": summary,
+		},
 	}
-	output = append(output, map[string]any{
-		"id":                fmt.Sprintf("cmpct_%d", idSuffix),
-		"type":              "compaction",
-		"encrypted_content": summary,
-		"created_by":        "astron-code",
-	})
 
 	inputTokens := compactUsageToken(chatResponse, "usage.input_tokens", "usage.prompt_tokens")
 	outputTokens := compactUsageToken(chatResponse, "usage.output_tokens", "usage.completion_tokens")
@@ -90,23 +87,4 @@ func compactUsageToken(rawJSON []byte, paths ...string) int64 {
 		}
 	}
 	return 0
-}
-
-func astronCompactUserItems(rawJSON []byte) []map[string]any {
-	input := gjson.GetBytes(rawJSON, "input")
-	if !input.IsArray() {
-		return nil
-	}
-	items := make([]map[string]any, 0)
-	for _, item := range input.Array() {
-		if strings.TrimSpace(item.Get("role").String()) != "user" {
-			continue
-		}
-		var decoded map[string]any
-		if err := json.Unmarshal([]byte(item.Raw), &decoded); err != nil {
-			continue
-		}
-		items = append(items, decoded)
-	}
-	return items
 }

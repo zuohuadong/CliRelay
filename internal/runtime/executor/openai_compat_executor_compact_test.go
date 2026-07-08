@@ -936,14 +936,50 @@ func TestAstronCodeExecutorCompactUsesChatAndWrapsResponse(t *testing.T) {
 	if got := gjson.GetBytes(resp.Payload, "object").String(); got != "response.compaction" {
 		t.Fatalf("object = %q, want response.compaction; body=%s", got, string(resp.Payload))
 	}
-	if got := gjson.GetBytes(resp.Payload, "output.#").Int(); got != 2 {
-		t.Fatalf("output length = %d, want user message plus compaction; body=%s", got, string(resp.Payload))
+	if got := gjson.GetBytes(resp.Payload, "output.#").Int(); got != 1 {
+		t.Fatalf("output length = %d, want only one compaction item; body=%s", got, string(resp.Payload))
 	}
-	if got := gjson.GetBytes(resp.Payload, "output.1.encrypted_content").String(); got != "summary text" {
+	if got := gjson.GetBytes(resp.Payload, "output.0.type").String(); got != "compaction" {
+		t.Fatalf("output.0.type = %q, want compaction; body=%s", got, string(resp.Payload))
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.0.encrypted_content").String(); got != "summary text" {
 		t.Fatalf("compaction content = %q, want summary text", got)
+	}
+	if gjson.GetBytes(resp.Payload, "output.0.created_by").Exists() {
+		t.Fatalf("compact output should not include non-Codex created_by metadata: %s", string(resp.Payload))
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 11 {
 		t.Fatalf("usage.input_tokens = %d, want 11", got)
+	}
+}
+
+func TestBuildAstronCompactResponseUsesSingleStrictCompactionItem(t *testing.T) {
+	chatResponse := []byte(`{"choices":[{"message":{"content":"summary text"}}],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}`)
+	resp, err := buildAstronCompactResponse(
+		[]byte(`{"input":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}]}`),
+		"astron-code-latest",
+		chatResponse,
+		http.Header{"X-Test": []string{"ok"}},
+	)
+	if err != nil {
+		t.Fatalf("buildAstronCompactResponse error: %v", err)
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.#").Int(); got != 1 {
+		t.Fatalf("output length = %d, want one compaction item; body=%s", got, string(resp.Payload))
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.0.type").String(); got != "compaction" {
+		t.Fatalf("output.0.type = %q, want compaction; body=%s", got, string(resp.Payload))
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.0.encrypted_content").String(); got != "summary text" {
+		t.Fatalf("output.0.encrypted_content = %q, want summary text", got)
+	}
+	for _, path := range []string{"output.0.role", "output.0.content", "output.0.created_by", "output.1"} {
+		if gjson.GetBytes(resp.Payload, path).Exists() {
+			t.Fatalf("%s should be absent from strict compaction output: %s", path, string(resp.Payload))
+		}
+	}
+	if got := resp.Headers.Get("X-Test"); got != "ok" {
+		t.Fatalf("headers were not preserved, got %q", got)
 	}
 }
 

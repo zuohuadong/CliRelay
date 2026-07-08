@@ -274,6 +274,8 @@ func (e *OpenCodeGoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, 52_428_800)
 		var param any
+		var pendingTranslated [][]byte
+		semanticOutput := false
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -302,12 +304,8 @@ func (e *OpenCodeGoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 				continue
 			}
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return
-				}
+			if !openAICompatForwardSemanticStreamChunks(ctx, out, &pendingTranslated, &semanticOutput, chunks) {
+				return
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
@@ -319,12 +317,18 @@ func (e *OpenCodeGoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 			}
 		} else {
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param)
-			for i := range chunks {
+			if !semanticOutput && !openAICompatStreamChunksHaveSemanticOutput(chunks) {
+				streamErr := statusErr{code: http.StatusBadGateway, msg: "opencode go executor: upstream returned empty stream response"}
+				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+				reporter.PublishFailure(ctx, streamErr)
 				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+				case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 				case <-ctx.Done():
-					return
 				}
+				return
+			}
+			if !openAICompatForwardSemanticStreamChunks(ctx, out, &pendingTranslated, &semanticOutput, chunks) {
+				return
 			}
 		}
 		reporter.EnsurePublished(ctx)

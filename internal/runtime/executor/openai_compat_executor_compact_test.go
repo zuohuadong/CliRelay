@@ -442,6 +442,56 @@ func TestAstronCodeExecutorGeneratesDistinctNonStreamToolCallIDs(t *testing.T) {
 		t.Fatalf("synthetic ids should be distinct, got %q", firstID)
 	}
 }
+
+func TestAstronCodeExecutorStreamRejectsDoneOnlyResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewAstronCodeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "sk-test",
+	}}
+	payload := []byte(`{"model":"xopglm52","input":"hi","stream":true}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "xopglm52",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		OriginalRequest: payload,
+		Stream:          true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var got strings.Builder
+	var gotErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+			break
+		}
+		got.Write(chunk.Payload)
+	}
+	if got.String() != "" {
+		t.Fatalf("expected no payload before empty-stream error, got %q", got.String())
+	}
+	if gotErr == nil {
+		t.Fatal("expected done-only stream error")
+	}
+	if status, ok := gotErr.(interface{ StatusCode() int }); !ok || status.StatusCode() != http.StatusBadGateway {
+		t.Fatalf("stream error status = %v, want %d", gotErr, http.StatusBadGateway)
+	}
+	if !strings.Contains(gotErr.Error(), "empty stream response") {
+		t.Fatalf("stream error = %v", gotErr)
+	}
+}
+
 func TestAstronCodeExecutorDropsStreamingToolCallsWithEmptyName(t *testing.T) {
 	seq := &astronToolCallIDSeq{}
 	input := []byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"read","arguments":"{}"}},{"index":1,"type":"function","function":{"name":"","arguments":"{}"}},{"index":2,"type":"function","function":{"name":"glob","arguments":"{}"}}]}}]}`)
@@ -1669,6 +1719,101 @@ func TestOpenAICompatExecutorStreamRejectsPlainJSONAfterBlankLines(t *testing.T)
 		t.Fatalf("stream error status = %v, want %d", gotErr, http.StatusBadGateway)
 	}
 	if !strings.Contains(gotErr.Error(), "upstream failed") {
+		t.Fatalf("stream error = %v", gotErr)
+	}
+}
+
+func TestOpenAICompatExecutorStreamRejectsDoneOnlyResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "openrouter-model",
+		Payload: []byte(`{"model":"openrouter-model","input":"hi","stream":true}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		OriginalRequest: []byte(`{"model":"openrouter-model","input":"hi","stream":true}`),
+		Stream:          true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var got strings.Builder
+	var gotErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+			break
+		}
+		got.Write(chunk.Payload)
+	}
+	if got.String() != "" {
+		t.Fatalf("expected no payload before empty-stream error, got %q", got.String())
+	}
+	if gotErr == nil {
+		t.Fatal("expected done-only stream error")
+	}
+	if status, ok := gotErr.(interface{ StatusCode() int }); !ok || status.StatusCode() != http.StatusBadGateway {
+		t.Fatalf("stream error status = %v, want %d", gotErr, http.StatusBadGateway)
+	}
+	if !strings.Contains(gotErr.Error(), "empty stream response") {
+		t.Fatalf("stream error = %v", gotErr)
+	}
+}
+
+func TestOpenAICompatExecutorStreamRejectsUsageOnlyResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_usage_only","object":"chat.completion.chunk","created":1779410449,"model":"openrouter-model","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":0,"total_tokens":10}}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "openrouter-model",
+		Payload: []byte(`{"model":"openrouter-model","input":"hi","stream":true}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		OriginalRequest: []byte(`{"model":"openrouter-model","input":"hi","stream":true}`),
+		Stream:          true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var got strings.Builder
+	var gotErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+			break
+		}
+		got.Write(chunk.Payload)
+	}
+	if got.String() != "" {
+		t.Fatalf("expected lifecycle-only payload to be withheld before error, got %q", got.String())
+	}
+	if gotErr == nil {
+		t.Fatal("expected usage-only stream error")
+	}
+	if status, ok := gotErr.(interface{ StatusCode() int }); !ok || status.StatusCode() != http.StatusBadGateway {
+		t.Fatalf("stream error status = %v, want %d", gotErr, http.StatusBadGateway)
+	}
+	if !strings.Contains(gotErr.Error(), "empty stream response") {
 		t.Fatalf("stream error = %v", gotErr)
 	}
 }

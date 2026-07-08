@@ -322,17 +322,21 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 		scanner.Buffer(nil, 52_428_800)
 		var param any
 		tcIDSeq := &astronToolCallIDSeq{}
-		sawSSEData := false
+		var pendingTranslated [][]byte
+		semanticOutput := false
 		emitDone := func() bool {
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param)
-			for i := range chunks {
+			if !semanticOutput && !openAICompatStreamChunksHaveSemanticOutput(chunks) {
+				streamErr := statusErr{code: http.StatusBadGateway, msg: "astron code executor: upstream returned empty stream response"}
+				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+				reporter.PublishFailure(ctx, streamErr)
 				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+				case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 				case <-ctx.Done():
-					return false
 				}
+				return false
 			}
-			return true
+			return openAICompatForwardSemanticStreamChunks(ctx, out, &pendingTranslated, &semanticOutput, chunks)
 		}
 		for scanner.Scan() {
 			line := scanner.Bytes()
@@ -354,7 +358,7 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 					continue
 				}
 				if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
-					if sawSSEData {
+					if semanticOutput {
 						helps.LogWithRequestID(ctx).Debugf("astron code stream ended with non-SSE payload after data: %s", helps.SummarizeErrorBody("application/json", trimmedLine))
 						if emitDone() {
 							reporter.EnsurePublished(ctx)
@@ -372,18 +376,13 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 				}
 				continue
 			}
-			sawSSEData = true
 			normalizedLine := trimmedLine
 			if !useResponsesEndpoint {
 				normalizedLine = ensureAstronToolCallIDs(bytes.Clone(trimmedLine), tcIDSeq)
 			}
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, normalizedLine, &param)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return
-				}
+			if !openAICompatForwardSemanticStreamChunks(ctx, out, &pendingTranslated, &semanticOutput, chunks) {
+				return
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {

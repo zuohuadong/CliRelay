@@ -302,17 +302,21 @@ func (e *BigModelCodingExecutor) ExecuteStream(ctx context.Context, auth *clipro
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, 52_428_800)
 		var param any
-		sawSSEData := false
+		var pendingTranslated [][]byte
+		semanticOutput := false
 		emitDone := func() bool {
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param)
-			for i := range chunks {
+			if !semanticOutput && !openAICompatStreamChunksHaveSemanticOutput(chunks) {
+				streamErr := statusErr{code: http.StatusBadGateway, msg: "bigmodel coding executor: upstream returned empty stream response"}
+				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+				reporter.PublishFailure(ctx, streamErr)
 				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+				case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 				case <-ctx.Done():
-					return false
 				}
+				return false
 			}
-			return true
+			return openAICompatForwardSemanticStreamChunks(ctx, out, &pendingTranslated, &semanticOutput, chunks)
 		}
 		for scanner.Scan() {
 			line := scanner.Bytes()
@@ -330,7 +334,7 @@ func (e *BigModelCodingExecutor) ExecuteStream(ctx context.Context, auth *clipro
 					continue
 				}
 				if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
-					if sawSSEData {
+					if semanticOutput {
 						helps.LogWithRequestID(ctx).Debugf("bigmodel coding stream ended with non-SSE payload after data: %s", helps.SummarizeErrorBody("application/json", trimmedLine))
 						if emitDone() {
 							reporter.EnsurePublished(ctx)
@@ -348,14 +352,9 @@ func (e *BigModelCodingExecutor) ExecuteStream(ctx context.Context, auth *clipro
 				}
 				continue
 			}
-			sawSSEData = true
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return
-				}
+			if !openAICompatForwardSemanticStreamChunks(ctx, out, &pendingTranslated, &semanticOutput, chunks) {
+				return
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {

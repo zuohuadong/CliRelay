@@ -213,6 +213,9 @@ type Config struct {
 	// gemini-api-key, interactions-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
 	OAuthModelAlias map[string][]OAuthModelAlias `yaml:"oauth-model-alias,omitempty" json:"oauth-model-alias,omitempty"`
 
+	// ModelOverrides define generic metadata overrides for client-visible model IDs.
+	ModelOverrides []ModelOverride `yaml:"model-overrides,omitempty" json:"model-overrides,omitempty"`
+
 	// RequestPolicies define request-size and routing guards evaluated before upstream execution.
 	RequestPolicies []RequestPolicy `yaml:"request-policies,omitempty" json:"request-policies,omitempty"`
 
@@ -492,6 +495,7 @@ type RoutingConfig struct {
 	IncludeDefaultGroup bool                  `yaml:"include-default-group,omitempty" json:"include-default-group,omitempty"`
 	ChannelGroups       []RoutingChannelGroup `yaml:"channel-groups,omitempty" json:"channel-groups,omitempty"`
 	PathRoutes          []RoutingPathRoute    `yaml:"path-routes,omitempty" json:"path-routes,omitempty"`
+	ModelRoutes         []ModelRouteRule      `yaml:"model-routes,omitempty" json:"model-routes,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
@@ -504,6 +508,51 @@ type OAuthModelAlias struct {
 	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
 
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+}
+
+// ModelOverride defines model metadata for a client-visible model ID.
+// Channel scopes OAuth/file-backed providers (for example "codex"); Provider scopes
+// concrete provider keys. Empty Channel/Provider applies globally to matching models.
+type ModelOverride struct {
+	Channel             string `yaml:"channel,omitempty" json:"channel,omitempty"`
+	Provider            string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Model               string `yaml:"model" json:"model"`
+	Priority            int    `yaml:"priority,omitempty" json:"priority,omitempty"`
+	ContextLength       int    `yaml:"context-length,omitempty" json:"context-length,omitempty"`
+	MaxCompletionTokens int    `yaml:"max-completion-tokens,omitempty" json:"max-completion-tokens,omitempty"`
+}
+
+// ModelRouteRule conditionally rewrites a requested model before auth/provider selection.
+type ModelRouteRule struct {
+	Name    string             `yaml:"name,omitempty" json:"name,omitempty"`
+	Match   ModelRouteMatch    `yaml:"match,omitempty" json:"match,omitempty"`
+	Measure ModelRouteMeasure  `yaml:"measure,omitempty" json:"measure,omitempty"`
+	Routes  []ModelRouteBranch `yaml:"routes,omitempty" json:"routes,omitempty"`
+}
+
+type ModelRouteMatch struct {
+	RequestedModels []string `yaml:"requested-models,omitempty" json:"requested-models,omitempty"`
+}
+
+type ModelRouteMeasure struct {
+	// Source currently supports "estimated-input-tokens" and "request-bytes".
+	Source string `yaml:"source,omitempty" json:"source,omitempty"`
+	// OnMissing controls behavior when the selected measurement is absent.
+	// Supported values: "passthrough" and "reject".
+	OnMissing string `yaml:"on-missing,omitempty" json:"on-missing,omitempty"`
+}
+
+type ModelRouteBranch struct {
+	MinInputTokens int64            `yaml:"min-input-tokens,omitempty" json:"min-input-tokens,omitempty"`
+	MaxInputTokens int64            `yaml:"max-input-tokens,omitempty" json:"max-input-tokens,omitempty"`
+	Action         string           `yaml:"action,omitempty" json:"action,omitempty"`
+	Target         ModelRouteTarget `yaml:"target,omitempty" json:"target,omitempty"`
+}
+
+type ModelRouteTarget struct {
+	Provider               string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Model                  string `yaml:"model,omitempty" json:"model,omitempty"`
+	PreserveRequestedModel bool   `yaml:"preserve-requested-model,omitempty" json:"preserve-requested-model,omitempty"`
 }
 
 // AmpModelMapping defines a model name mapping for Amp CLI requests.
@@ -1301,6 +1350,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()
+	cfg.SanitizeModelOverrides()
 
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizeRequestPolicies()
@@ -1723,6 +1773,40 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 		}
 	}
 	cfg.OAuthModelAlias = out
+}
+
+// SanitizeModelOverrides normalizes generic model metadata overrides.
+func (cfg *Config) SanitizeModelOverrides() {
+	if cfg == nil || len(cfg.ModelOverrides) == 0 {
+		return
+	}
+	out := make([]ModelOverride, 0, len(cfg.ModelOverrides))
+	seen := make(map[string]struct{}, len(cfg.ModelOverrides))
+	for i := range cfg.ModelOverrides {
+		override := cfg.ModelOverrides[i]
+		override.Channel = strings.ToLower(strings.TrimSpace(override.Channel))
+		override.Provider = strings.ToLower(strings.TrimSpace(override.Provider))
+		override.Model = strings.TrimSpace(override.Model)
+		if override.Model == "" {
+			continue
+		}
+		if override.Priority < 0 {
+			override.Priority = 0
+		}
+		if override.ContextLength < 0 {
+			override.ContextLength = 0
+		}
+		if override.MaxCompletionTokens < 0 {
+			override.MaxCompletionTokens = 0
+		}
+		key := strings.ToLower(override.Channel + "\x00" + override.Provider + "\x00" + override.Model)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, override)
+	}
+	cfg.ModelOverrides = out
 }
 
 // SanitizeOpenAICompatibility removes OpenAI-compatibility provider entries that are

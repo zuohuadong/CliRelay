@@ -21,6 +21,15 @@ const DisallowFreeAuthMetadataKey = "disallow_free_auth"
 // RequestBytesMetadataKey stores the inbound request body size in bytes.
 const RequestBytesMetadataKey = "request_bytes"
 
+// EstimatedInputTokensMetadataKey stores the best-effort input token estimate used by routing rules.
+const EstimatedInputTokensMetadataKey = "estimated_input_tokens"
+
+// RoutedModelMetadataKey stores the model selected by configurable model routing.
+const RoutedModelMetadataKey = "routed_model"
+
+// RoutedProviderMetadataKey stores the provider selected by configurable model routing.
+const RoutedProviderMetadataKey = "routed_provider"
+
 // RequestFeaturesMetadataKey stores derived request features used by routing policies.
 const RequestFeaturesMetadataKey = "request_features"
 

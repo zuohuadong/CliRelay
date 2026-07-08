@@ -234,10 +234,20 @@ tr.selected td{background:var(--primary-bg)}
       <h3 style="font-size:16px">模型别名</h3>
       <div style="display:flex;gap:8px">
         <button class="btn btn-sm btn-primary" onclick="addAliasChannel()">+ 添加 Channel</button>
-        <button class="btn btn-sm" onclick="loadModelAliases()">刷新</button>
+        <button class="btn btn-sm" onclick="loadModelAliasConfig()">刷新</button>
       </div>
     </div>
     <div id="aliasList"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:24px 0 16px">
+      <h3 style="font-size:16px">模型能力覆盖</h3>
+      <button class="btn btn-sm btn-primary" onclick="addModelOverride()">+ 添加覆盖</button>
+    </div>
+    <div id="modelOverrideList"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:24px 0 16px">
+      <h3 style="font-size:16px">模型路由规则</h3>
+      <button class="btn btn-sm btn-primary" onclick="addModelRoute()">+ 添加规则</button>
+    </div>
+    <div id="modelRouteList"></div>
   </div>
 </div>
 
@@ -307,7 +317,7 @@ function switchTab(idx){
     contents[i].className='tab-content'+(i===idx?' active':'')
   }
   if(idx===1)loadExcludedModels();
-  if(idx===2)loadModelAliases()
+  if(idx===2)loadModelAliasConfig()
 }
 
 function escHtml(s){
@@ -1530,6 +1540,12 @@ async function loadModelAliases(){
   }catch(e){toast('加载失败: '+e.message,false)}
 }
 
+async function loadModelAliasConfig(){
+  await loadModelAliases();
+  await loadModelOverrides();
+  await loadModelRoutes()
+}
+
 function renderModelAliases(){
   var c=document.getElementById('aliasList');
   var keys=Object.keys(aliasData);
@@ -1623,6 +1639,164 @@ async function submitAliasChannel(){
     closeModal('aliasAddModal');
     loadModelAliases()
   }catch(e){toast('添加失败: '+e.message,false)}
+}
+
+var modelOverrides=[];
+var modelRoutes=[];
+
+async function loadModelOverrides(){
+  try{
+    var data=await api('GET','/model-overrides');
+    modelOverrides=data['model-overrides']||[];
+    renderModelOverrides()
+  }catch(e){toast('加载模型能力覆盖失败: '+e.message,false)}
+}
+
+function renderModelOverrides(){
+  var c=document.getElementById('modelOverrideList');
+  if(!c)return;
+  if(!modelOverrides.length){c.innerHTML='<div class="empty"><p>未配置模型能力覆盖</p></div>';return}
+  var html='<div class="table-wrap"><table><thead><tr><th>Channel</th><th>Provider</th><th>Model</th><th>Priority</th><th>Context</th><th>Max Output</th><th>操作</th></tr></thead><tbody>';
+  for(var i=0;i<modelOverrides.length;i++){
+    var o=modelOverrides[i]||{};
+    html+='<tr><td>'+escHtml(o.channel||'')+'</td><td>'+escHtml(o.provider||'')+'</td><td>'+escHtml(o.model||'')+'</td><td>'+escHtml(o.priority||'')+'</td><td>'+escHtml(o['context-length']||'')+'</td><td>'+escHtml(o['max-completion-tokens']||'')+'</td><td><button class="btn btn-xs btn-danger" onclick="removeModelOverride('+i+')">删除</button></td></tr>'
+  }
+  html+='</tbody></table></div>';
+  c.innerHTML=html
+}
+
+function addModelOverride(){
+  var m=document.createElement('div');m.className='modal-overlay';m.id='modelOverrideModal';
+  m.onclick=function(e){if(e.target===m)m.remove()};
+  m.innerHTML='<div class="modal"><h3>添加模型能力覆盖</h3>'+
+    '<label>Channel</label><input id="moChannel" placeholder="例如 codex，可空">'+
+    '<label>Provider</label><input id="moProvider" placeholder="例如 codex，可空">'+
+    '<label>Model</label><input id="moModel" placeholder="例如 gpt-5.3-codex-spark">'+
+    '<label>Priority</label><input id="moPriority" type="number" placeholder="100">'+
+    '<label>Context Length</label><input id="moContext" type="number" placeholder="131072">'+
+    '<label>Max Completion Tokens</label><input id="moMax" type="number" placeholder="32768">'+
+    '<div class="modal-actions">'+
+    '<button class="btn" onclick="closeModal(\'modelOverrideModal\')">取消</button>'+
+    '<button class="btn btn-primary" onclick="submitModelOverride()">添加</button>'+
+    '</div></div>';
+  document.body.appendChild(m)
+}
+
+async function submitModelOverride(){
+  var model=document.getElementById('moModel').value.trim();
+  if(!model){toast('Model 必填',false);return}
+  var entry={model:model};
+  var channel=document.getElementById('moChannel').value.trim().toLowerCase();
+  var provider=document.getElementById('moProvider').value.trim().toLowerCase();
+  var priority=parseInt(document.getElementById('moPriority').value||'0',10);
+  var contextLength=parseInt(document.getElementById('moContext').value||'0',10);
+  var maxTokens=parseInt(document.getElementById('moMax').value||'0',10);
+  if(channel)entry.channel=channel;
+  if(provider)entry.provider=provider;
+  if(priority>0)entry.priority=priority;
+  if(contextLength>0)entry['context-length']=contextLength;
+  if(maxTokens>0)entry['max-completion-tokens']=maxTokens;
+  modelOverrides.push(entry);
+  await saveModelOverrides();
+  closeModal('modelOverrideModal')
+}
+
+async function removeModelOverride(idx){
+  modelOverrides.splice(idx,1);
+  await saveModelOverrides()
+}
+
+async function saveModelOverrides(){
+  try{
+    await api('PUT','/model-overrides',modelOverrides);
+    toast('模型能力覆盖已保存',true);
+    loadModelOverrides()
+  }catch(e){toast('保存失败: '+e.message,false)}
+}
+
+async function loadModelRoutes(){
+  try{
+    var data=await api('GET','/model-routes');
+    modelRoutes=data['model-routes']||[];
+    renderModelRoutes()
+  }catch(e){toast('加载模型路由失败: '+e.message,false)}
+}
+
+function renderModelRoutes(){
+  var c=document.getElementById('modelRouteList');
+  if(!c)return;
+  if(!modelRoutes.length){c.innerHTML='<div class="empty"><p>未配置模型路由规则</p></div>';return}
+  var html='';
+  for(var i=0;i<modelRoutes.length;i++){
+    var r=modelRoutes[i]||{};
+    var match=(r.match&&r.match['requested-models'])?r.match['requested-models'].join(', '):'';
+    var branches=r.routes||[];
+    var desc=[];
+    for(var j=0;j<branches.length;j++){
+      var b=branches[j]||{};
+      var t=b.target||{};
+      var range=[];
+      if(b['min-input-tokens'])range.push('&gt;= '+b['min-input-tokens']);
+      if(b['max-input-tokens'])range.push('&lt;= '+b['max-input-tokens']);
+      desc.push((range.join(' 且 ')||'默认')+' → '+(b.action||t.model||'target')+(t.provider?(' @ '+t.provider):''))
+    }
+    html+='<div class="provider-card"><div class="provider-header" onclick="toggleProvider(this)"><span>'+escHtml(r.name||match||'未命名规则')+'</span><div style="display:flex;gap:4px;align-items:center"><button class="btn btn-xs btn-danger" onclick="event.stopPropagation();removeModelRoute('+i+')">删除</button><span style="color:var(--text2)">&#9660;</span></div></div>';
+    html+='<div class="provider-body"><div style="font-size:12px;color:var(--text2);margin-bottom:6px">Match: '+escHtml(match)+'</div><div style="display:flex;flex-wrap:wrap;gap:4px">';
+    for(var k=0;k<desc.length;k++)html+='<span class="tag">'+desc[k]+'</span>';
+    html+='</div></div></div>'
+  }
+  c.innerHTML=html
+}
+
+function addModelRoute(){
+  var m=document.createElement('div');m.className='modal-overlay';m.id='modelRouteModal';
+  m.onclick=function(e){if(e.target===m)m.remove()};
+  m.innerHTML='<div class="modal"><h3>添加模型路由规则</h3>'+
+    '<label>规则名</label><input id="mrName" placeholder="codex-spark-under-128k">'+
+    '<label>请求模型</label><input id="mrRequested" placeholder="gpt-5.3-codex">'+
+    '<label>Max Input Tokens</label><input id="mrMax" type="number" placeholder="131072">'+
+    '<label>目标 Provider</label><input id="mrProvider" placeholder="codex">'+
+    '<label>目标 Model</label><input id="mrModel" placeholder="gpt-5.3-codex-spark">'+
+    '<div class="modal-actions">'+
+    '<button class="btn" onclick="closeModal(\'modelRouteModal\')">取消</button>'+
+    '<button class="btn btn-primary" onclick="submitModelRoute()">添加</button>'+
+    '</div></div>';
+  document.body.appendChild(m)
+}
+
+async function submitModelRoute(){
+  var requested=document.getElementById('mrRequested').value.trim();
+  var targetModel=document.getElementById('mrModel').value.trim();
+  var max=parseInt(document.getElementById('mrMax').value||'0',10);
+  if(!requested||!targetModel||max<=0){toast('请求模型、目标模型和 Max Input Tokens 必填',false);return}
+  var name=document.getElementById('mrName').value.trim()||requested+'-under-'+max;
+  var provider=document.getElementById('mrProvider').value.trim().toLowerCase();
+  var target={model:targetModel,'preserve-requested-model':true};
+  if(provider)target.provider=provider;
+  modelRoutes.push({
+    name:name,
+    match:{'requested-models':[requested]},
+    measure:{source:'estimated-input-tokens','on-missing':'passthrough'},
+    routes:[
+      {'max-input-tokens':max,target:target},
+      {'min-input-tokens':max+1,action:'passthrough'}
+    ]
+  });
+  await saveModelRoutes();
+  closeModal('modelRouteModal')
+}
+
+async function removeModelRoute(idx){
+  modelRoutes.splice(idx,1);
+  await saveModelRoutes()
+}
+
+async function saveModelRoutes(){
+  try{
+    await api('PUT','/model-routes',modelRoutes);
+    toast('模型路由规则已保存',true);
+    loadModelRoutes()
+  }catch(e){toast('保存失败: '+e.message,false)}
 }
 
 if(getToken())loadData();

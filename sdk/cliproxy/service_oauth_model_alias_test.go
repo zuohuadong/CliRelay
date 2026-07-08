@@ -179,3 +179,38 @@ func TestApplyOAuthModelAlias_PerAuthAlias(t *testing.T) {
 		t.Fatalf("expected per-auth alias name %q, got %q", "models/gpt-5.5", out[0].Name)
 	}
 }
+
+func TestApplyModelOverridesAfterOAuthAlias(t *testing.T) {
+	cfg := &config.Config{
+		OAuthModelAlias: map[string][]config.OAuthModelAlias{
+			"codex": {
+				{Name: "gpt-5.3-codex-spark", Alias: "gpt-5.3-codex"},
+			},
+		},
+		ModelOverrides: []config.ModelOverride{
+			{
+				Channel:             "codex",
+				Model:               "gpt-5.3-codex-spark",
+				Priority:            100,
+				ContextLength:       131072,
+				MaxCompletionTokens: 32768,
+			},
+		},
+	}
+	models := []*ModelInfo{
+		{ID: "gpt-5.3-codex-spark", Name: "models/gpt-5.3-codex-spark"},
+	}
+
+	prepared := applyModelOverrides(cfg, "codex", "oauth", models)
+	aliased := applyOAuthModelAlias(cfg, "codex", "oauth", prepared)
+	out := applyModelOverrides(cfg, "codex", "oauth", aliased)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(out))
+	}
+	if out[0].ID != "gpt-5.3-codex" {
+		t.Fatalf("expected aliased model id, got %q", out[0].ID)
+	}
+	if out[0].Priority != 100 || out[0].ContextLength != 131072 || out[0].MaxCompletionTokens != 32768 {
+		t.Fatalf("override metadata not applied: %#v", out[0])
+	}
+}

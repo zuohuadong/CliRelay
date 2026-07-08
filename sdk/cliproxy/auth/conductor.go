@@ -525,6 +525,8 @@ func (m *Manager) SetConfig(cfg *internalconfig.Config) {
 	if cfg == nil {
 		cfg = &internalconfig.Config{}
 	}
+	cfg.SanitizeModelOverrides()
+	cfg.SanitizeRouting()
 	m.runtimeConfig.Store(cfg)
 	clearedCooldowns := m.clearDisabledCooldownStates(cfg)
 	if !cfg.Home.Enabled {
@@ -1516,6 +1518,9 @@ func authHasConfiguredContextCapacity(m *Manager, cfg *internalconfig.Config, au
 func configuredOpenAICompatModelContextLength(cfg *internalconfig.Config, auth *Auth, upstreamModel string) (int64, bool) {
 	if cfg == nil || auth == nil {
 		return 0, false
+	}
+	if contextLength, ok := configuredModelOverrideContextLength(cfg, auth, upstreamModel); ok {
+		return contextLength, true
 	}
 	providerKey := ""
 	compatName := ""
@@ -2739,6 +2744,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	routeModel := authSelectionModelFromOptions(opts, req.Model)
 	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	var errRoute error
+	providers, routeModel, opts, errRoute = m.applyConfiguredModelRoutes(providers, routeModel, opts)
+	if errRoute != nil {
+		return cliproxyexecutor.Response{}, errRoute
+	}
+	req.Model = routeModel
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
@@ -2859,6 +2870,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	routeModel := authSelectionModelFromOptions(opts, req.Model)
 	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	var errRoute error
+	providers, routeModel, opts, errRoute = m.applyConfiguredModelRoutes(providers, routeModel, opts)
+	if errRoute != nil {
+		return cliproxyexecutor.Response{}, errRoute
+	}
+	req.Model = routeModel
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
@@ -2974,6 +2991,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	routeModel := authSelectionModelFromOptions(opts, req.Model)
 	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	var errRoute error
+	providers, routeModel, opts, errRoute = m.applyConfiguredModelRoutes(providers, routeModel, opts)
+	if errRoute != nil {
+		return nil, errRoute
+	}
+	req.Model = routeModel
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})

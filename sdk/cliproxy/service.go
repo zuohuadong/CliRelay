@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1308,7 +1309,9 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 		}
 	}
 	models := applyExcludedModels(result.Models, activeExcluded)
+	models = applyModelOverrides(s.cfg, providerKey, activeAuthKind, models)
 	models = applyOAuthModelAliasForAuth(s.cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
+	models = applyModelOverrides(s.cfg, providerKey, activeAuthKind, models)
 	if len(models) > 0 {
 		s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		return true
@@ -2276,6 +2279,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 						if providerKey == "" {
 							providerKey = "openai-compatibility"
 						}
+						ms = applyModelOverrides(s.cfg, providerKey, authKind, ms)
 						ms = s.appendPluginModels(providerKey, ms)
 						s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
 					} else {
@@ -2311,7 +2315,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			}
 		}
 	}
+	models = applyModelOverrides(s.cfg, provider, authKind, models)
 	models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, a.Attributes, models)
+	models = applyModelOverrides(s.cfg, provider, authKind, models)
 	key := provider
 	if key == "" {
 		key = strings.ToLower(strings.TrimSpace(a.Provider))
@@ -2739,6 +2745,7 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 			MaxCompletionTokens:       model.MaxCompletionTokens,
 			SupportedInputModalities:  inputModalities,
 			SupportedOutputModalities: outputModalities,
+			Priority:                  model.Priority,
 		})
 	}
 	return models
@@ -3188,4 +3195,97 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 		}
 	}
 	return out
+}
+
+func applyModelOverrides(cfg *config.Config, provider, authKind string, models []*ModelInfo) []*ModelInfo {
+	if cfg == nil || len(cfg.ModelOverrides) == 0 || len(models) == 0 {
+		return models
+	}
+	providerKey := strings.ToLower(strings.TrimSpace(provider))
+	channel := coreauth.OAuthModelAliasChannel(providerKey, authKind)
+	if channel == "" {
+		channel = providerKey
+	}
+
+	out := make([]*ModelInfo, 0, len(models))
+	changed := false
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		applied := false
+		clone := *model
+		for i := range cfg.ModelOverrides {
+			override := cfg.ModelOverrides[i]
+			if !modelOverrideMatches(override, providerKey, channel, model) {
+				continue
+			}
+			if override.ContextLength > 0 {
+				clone.ContextLength = override.ContextLength
+			}
+			if override.MaxCompletionTokens > 0 {
+				clone.MaxCompletionTokens = override.MaxCompletionTokens
+			}
+			if override.Priority > 0 {
+				clone.Priority = override.Priority
+			}
+			applied = true
+		}
+		if applied {
+			modelCopy := clone
+			out = append(out, &modelCopy)
+			changed = true
+			continue
+		}
+		out = append(out, model)
+	}
+	if !changed {
+		return models
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		left := 0
+		right := 0
+		if out[i] != nil {
+			left = out[i].Priority
+		}
+		if out[j] != nil {
+			right = out[j].Priority
+		}
+		return left > right
+	})
+	return out
+}
+
+func modelOverrideMatches(override config.ModelOverride, provider, channel string, model *ModelInfo) bool {
+	if model == nil {
+		return false
+	}
+	if override.Channel != "" && !strings.EqualFold(override.Channel, channel) {
+		return false
+	}
+	if override.Provider != "" && !strings.EqualFold(override.Provider, provider) {
+		return false
+	}
+	target := strings.TrimSpace(override.Model)
+	if target == "" {
+		return false
+	}
+	return modelIDMatchesOverride(model.ID, target) ||
+		modelIDMatchesOverride(model.DisplayName, target) ||
+		modelIDMatchesOverride(model.Name, target)
+}
+
+func modelIDMatchesOverride(value, target string) bool {
+	value = strings.TrimSpace(value)
+	target = strings.TrimSpace(target)
+	if value == "" || target == "" {
+		return false
+	}
+	if strings.EqualFold(value, target) {
+		return true
+	}
+	if strings.HasPrefix(value, "models/") && strings.EqualFold(strings.TrimPrefix(value, "models/"), target) {
+		return true
+	}
+	return false
 }

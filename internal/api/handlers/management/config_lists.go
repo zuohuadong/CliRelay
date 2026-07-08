@@ -1088,6 +1088,58 @@ func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
 	h.persist(c)
 }
 
+func (h *Handler) GetModelOverrides(c *gin.Context) {
+	c.JSON(200, gin.H{"model-overrides": h.cfg.ModelOverrides})
+}
+
+func (h *Handler) PutModelOverrides(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var entries []config.ModelOverride
+	if err = json.Unmarshal(data, &entries); err != nil {
+		var wrapper struct {
+			Items []config.ModelOverride `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &wrapper); err2 != nil {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		entries = wrapper.Items
+	}
+	h.cfg.ModelOverrides = entries
+	h.cfg.SanitizeModelOverrides()
+	h.persist(c)
+}
+
+func (h *Handler) GetModelRoutes(c *gin.Context) {
+	c.JSON(200, gin.H{"model-routes": h.cfg.Routing.ModelRoutes})
+}
+
+func (h *Handler) PutModelRoutes(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var entries []config.ModelRouteRule
+	if err = json.Unmarshal(data, &entries); err != nil {
+		var wrapper struct {
+			Items []config.ModelRouteRule `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &wrapper); err2 != nil {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		entries = wrapper.Items
+	}
+	h.cfg.Routing.ModelRoutes = entries
+	h.cfg.SanitizeRouting()
+	h.persist(c)
+}
+
 func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
 	var body struct {
 		Provider *string                  `json:"provider"`

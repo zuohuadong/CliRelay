@@ -143,6 +143,46 @@ func (cfg *Config) SanitizeRouting() {
 		pathRoutes = append(pathRoutes, route)
 	}
 	cfg.Routing.PathRoutes = pathRoutes
+
+	routes := make([]ModelRouteRule, 0, len(cfg.Routing.ModelRoutes))
+	for i := range cfg.Routing.ModelRoutes {
+		route := cfg.Routing.ModelRoutes[i]
+		route.Name = strings.TrimSpace(route.Name)
+		route.Match.RequestedModels = normalizeStringList(route.Match.RequestedModels, func(value string) string {
+			return strings.TrimSpace(value)
+		})
+		if len(route.Match.RequestedModels) == 0 {
+			continue
+		}
+		route.Measure.Source = normalizeModelRouteMeasureSource(route.Measure.Source)
+		route.Measure.OnMissing = normalizeModelRouteOnMissing(route.Measure.OnMissing)
+		branches := make([]ModelRouteBranch, 0, len(route.Routes))
+		for j := range route.Routes {
+			branch := route.Routes[j]
+			if branch.MinInputTokens < 0 {
+				branch.MinInputTokens = 0
+			}
+			if branch.MaxInputTokens < 0 {
+				branch.MaxInputTokens = 0
+			}
+			branch.Action = normalizeModelRouteAction(branch.Action)
+			branch.Target.Provider = strings.ToLower(strings.TrimSpace(branch.Target.Provider))
+			branch.Target.Model = strings.TrimSpace(branch.Target.Model)
+			if branch.Action == "" && branch.Target.Model == "" {
+				continue
+			}
+			if branch.Action == "target" && branch.Target.Model == "" {
+				continue
+			}
+			branches = append(branches, branch)
+		}
+		if len(branches) == 0 {
+			continue
+		}
+		route.Routes = branches
+		routes = append(routes, route)
+	}
+	cfg.Routing.ModelRoutes = routes
 }
 
 func (cfg *Config) SanitizeAPIKeyEntries() {
@@ -154,4 +194,35 @@ func normalizeRoutingTag(value string) string {
 		return ""
 	}
 	return strings.Join(strings.Fields(value), "-")
+}
+
+func normalizeModelRouteMeasureSource(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "request-bytes", "bytes":
+		return "request-bytes"
+	default:
+		return "estimated-input-tokens"
+	}
+}
+
+func normalizeModelRouteOnMissing(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "reject":
+		return "reject"
+	default:
+		return "passthrough"
+	}
+}
+
+func normalizeModelRouteAction(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "target", "route":
+		return "target"
+	case "passthrough", "pass-through", "normal":
+		return "passthrough"
+	case "reject":
+		return "reject"
+	default:
+		return "passthrough"
+	}
 }

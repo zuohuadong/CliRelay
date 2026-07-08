@@ -981,6 +981,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
 	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
+	setEstimatedInputTokensMetadata(reqMeta, normalizedModel, rawJSON)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
@@ -1050,6 +1051,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
+	setEstimatedInputTokensMetadata(reqMeta, normalizedModel, rawJSON)
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
@@ -1386,6 +1388,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
 	enrichRequestExecutionMetadataForAlt(reqMeta, rawJSON, alt)
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
+	setEstimatedInputTokensMetadata(reqMeta, normalizedModel, rawJSON)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON

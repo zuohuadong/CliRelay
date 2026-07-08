@@ -218,6 +218,23 @@ routing:
   session-affinity: false # default: false
   # How long session-to-auth bindings are retained. Default: 1h
   session-affinity-ttl: "1h"
+  # Conditional model routing. Rewrites the requested model before provider/auth selection.
+  # model-routes:
+  #   - name: codex-spark-under-128k
+  #     match:
+  #       requested-models:
+  #         - gpt-5.3-codex
+  #     measure:
+  #       source: estimated-input-tokens # estimated-input-tokens (default), request-bytes
+  #       on-missing: passthrough        # passthrough (default), reject
+  #     routes:
+  #       - max-input-tokens: 131072
+  #         target:
+  #           provider: codex
+  #           model: gpt-5.3-codex-spark
+  #           preserve-requested-model: true
+  #       - min-input-tokens: 131073
+  #         action: passthrough
 
 # Codex provider behavior.
 codex:
@@ -501,6 +518,17 @@ nonstream-keepalive-interval: 0
 #   sample-provider:                  # plugin provider keys are supported for OAuth plugins
 #     - name: "sample-model-latest"
 #       alias: "sample-latest"
+
+# Generic client-visible model metadata overrides.
+# Applies after aliases are resolved for model listing and also participates in
+# context-capacity checks. Channel scopes OAuth/file-backed providers; provider
+# scopes concrete provider keys. Leave channel/provider empty for a global override.
+# model-overrides:
+#   - channel: codex
+#     model: gpt-5.3-codex-spark
+#     priority: 100
+#     context-length: 131072
+#     max-completion-tokens: 32768
 
 # OAuth provider excluded models
 # oauth-excluded-models:

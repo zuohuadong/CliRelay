@@ -730,11 +730,15 @@ func clearCodexReasoningReplayOnInvalidSignature(ctx context.Context, scope code
 	if !scope.valid() {
 		return nil
 	}
-	code, _, ok := codexStatusErrorClassification(statusCode, body)
-	if ok && code == "thinking_signature_invalid" {
+	if codexStatusErrorIsThinkingSignatureInvalid(statusCode, body) {
 		return internalcache.DeleteCodexReasoningReplayItemRequired(ctx, scope.modelName, scope.sessionKey)
 	}
 	return nil
+}
+
+func codexStatusErrorIsThinkingSignatureInvalid(statusCode int, body []byte) bool {
+	code, _, ok := codexStatusErrorClassification(statusCode, body)
+	return ok && code == "thinking_signature_invalid"
 }
 
 // PrepareRequest injects Codex credentials into the outgoing HTTP request.
@@ -768,6 +772,40 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 	}
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 	return httpClient.Do(httpReq)
+}
+
+func (e *CodexExecutor) openCodexResponse(ctx context.Context, from sdktranslator.Format, url string, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, originalPayloadSource []byte, body []byte, apiKey string, stream bool, httpClient *http.Client) (*http.Response, codexIdentityConfuseState, error) {
+	var identityState codexIdentityConfuseState
+	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body)
+	if err != nil {
+		return nil, identityState, err
+	}
+	applyCodexHeaders(httpReq, auth, apiKey, stream, e.cfg)
+	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+		URL:       url,
+		Method:    http.MethodPost,
+		Headers:   httpReq.Header.Clone(),
+		Body:      upstreamBody,
+		Provider:  e.Identifier(),
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return nil, identityState, err
+	}
+	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	return httpResp, identityState, nil
 }
 
 func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
@@ -1115,39 +1153,12 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	var identityState codexIdentityConfuseState
-	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body)
-	if err != nil {
-		return nil, err
-	}
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
-	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      upstreamBody,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, identityState, err := e.openCodexResponse(ctx, from, url, auth, req, originalPayloadSource, body, apiKey, true, httpClient)
 	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return nil, err
 	}
-	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		data, readErr := io.ReadAll(httpResp.Body)
 		if errClose := httpResp.Body.Close(); errClose != nil {
@@ -1179,6 +1190,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
+		emittedPayload := false
+		retriedInvalidSignature := false
 		for scanner.Scan() {
 			line := applyCodexIdentityConfuseResponsePayload(scanner.Bytes(), identityState)
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -1195,6 +1208,58 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						case <-ctx.Done():
 						}
 						return
+					}
+					if !emittedPayload && !retriedInvalidSignature && codexStatusErrorIsThinkingSignatureInvalid(streamErr.StatusCode(), terminalBody) {
+						retryBody, okDrop := dropOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body, "retry after upstream rejected thinking signature")
+						if okDrop {
+							retriedInvalidSignature = true
+							body = retryBody
+							outputItemsByIndex = make(map[int64][]byte)
+							outputItemsFallback = nil
+							if errClose := httpResp.Body.Close(); errClose != nil {
+								log.Errorf("codex executor: close response body error before invalid signature retry: %v", errClose)
+							}
+							var retryOpenErr error
+							httpResp, identityState, retryOpenErr = e.openCodexResponse(ctx, from, url, auth, req, originalPayloadSource, body, apiKey, true, httpClient)
+							if retryOpenErr != nil {
+								helps.RecordAPIResponseError(ctx, e.cfg, retryOpenErr)
+								reporter.PublishFailure(ctx, retryOpenErr)
+								select {
+								case out <- cliproxyexecutor.StreamChunk{Err: retryOpenErr}:
+								case <-ctx.Done():
+								}
+								return
+							}
+							if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+								retryData, readErr := io.ReadAll(httpResp.Body)
+								if errClose := httpResp.Body.Close(); errClose != nil {
+									log.Errorf("codex executor: close response body error after invalid signature retry: %v", errClose)
+								}
+								if readErr != nil {
+									helps.RecordAPIResponseError(ctx, e.cfg, readErr)
+									reporter.PublishFailure(ctx, readErr)
+									select {
+									case out <- cliproxyexecutor.StreamChunk{Err: readErr}:
+									case <-ctx.Done():
+									}
+									return
+								}
+								retryData = applyCodexIdentityConfuseResponsePayload(retryData, identityState)
+								helps.AppendAPIResponseChunk(ctx, e.cfg, retryData)
+								helps.LogWithRequestID(ctx).Debugf("request error after invalid signature retry, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), retryData))
+								retryErr := newCodexStatusErr(httpResp.StatusCode, retryData)
+								helps.RecordAPIResponseError(ctx, e.cfg, retryErr)
+								reporter.PublishFailure(ctx, retryErr)
+								select {
+								case out <- cliproxyexecutor.StreamChunk{Err: retryErr}:
+								case <-ctx.Done():
+								}
+								return
+							}
+							scanner = bufio.NewScanner(httpResp.Body)
+							scanner.Buffer(nil, 52_428_800) // 50MB
+							continue
+						}
 					}
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
@@ -1226,6 +1291,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+					emittedPayload = true
 				case <-ctx.Done():
 					return
 				}
@@ -1966,7 +2032,14 @@ func codexStatusErrorClassification(statusCode int, body []byte) (code string, e
 		upstreamCode == "context_too_large" ||
 		isInvalidRequest && (codexErrorTextIndicatesContextLength(errorMessage) || codexErrorTextIndicatesContextLength(lower)):
 		return "context_too_large", "invalid_request_error", true
-	case strings.Contains(lower, "invalid signature in thinking block") || strings.Contains(lower, "invalid_encrypted_content"):
+	case upstreamCode == "thinking_signature_invalid" ||
+		upstreamCode == "invalid_encrypted_content" ||
+		strings.Contains(lower, "invalid signature in thinking block") ||
+		strings.Contains(lower, "invalid_encrypted_content") ||
+		strings.Contains(lower, "encrypted content") &&
+			(strings.Contains(lower, "could not be verified") ||
+				strings.Contains(lower, "could not be decrypted") ||
+				strings.Contains(lower, "could not be parsed")):
 		return "thinking_signature_invalid", "invalid_request_error", true
 	case upstreamCode == "previous_response_not_found" || strings.Contains(lower, "previous_response_not_found") || strings.Contains(lower, "previous_response_id") && strings.Contains(lower, "not found"):
 		return "previous_response_not_found", "invalid_request_error", true

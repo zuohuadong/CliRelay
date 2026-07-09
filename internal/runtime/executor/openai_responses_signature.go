@@ -16,10 +16,7 @@ func sanitizeOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provi
 	if !input.Exists() || !input.IsArray() {
 		return body
 	}
-	provider = strings.TrimSpace(provider)
-	if provider == "" {
-		provider = "openai responses upstream"
-	}
+	provider = openAIResponsesSignatureProviderName(provider)
 
 	updated := body
 	for index, item := range input.Array() {
@@ -65,4 +62,51 @@ func sanitizeOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provi
 		helps.LogWithRequestID(ctx).Debugf("%s: dropped invalid reasoning encrypted_content at input[%d] item_id=%q reason=%s", provider, index, itemID, reason)
 	}
 	return updated
+}
+
+func dropOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provider string, body []byte, reason string) ([]byte, bool) {
+	input := gjson.GetBytes(body, "input")
+	if !input.Exists() || !input.IsArray() {
+		return body, false
+	}
+	provider = openAIResponsesSignatureProviderName(provider)
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "upstream rejected reasoning encrypted_content"
+	}
+
+	updated := body
+	dropped := false
+	for index, item := range input.Array() {
+		if strings.TrimSpace(item.Get("type").String()) != "reasoning" {
+			continue
+		}
+		encryptedContentPath := fmt.Sprintf("input.%d.encrypted_content", index)
+		if !gjson.GetBytes(updated, encryptedContentPath).Exists() {
+			continue
+		}
+
+		next, err := sjson.DeleteBytes(updated, encryptedContentPath)
+		if err != nil {
+			helps.LogWithRequestID(ctx).Debugf("%s: failed to drop reasoning encrypted_content at input[%d]: %v", provider, index, err)
+			continue
+		}
+		updated = next
+		dropped = true
+
+		itemID := strings.TrimSpace(gjson.GetBytes(updated, fmt.Sprintf("input.%d.id", index)).String())
+		if itemID == "" {
+			itemID = fmt.Sprintf("input[%d]", index)
+		}
+		helps.LogWithRequestID(ctx).Debugf("%s: dropped reasoning encrypted_content at input[%d] item_id=%q reason=%s", provider, index, itemID, reason)
+	}
+	return updated, dropped
+}
+
+func openAIResponsesSignatureProviderName(provider string) string {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return "openai responses upstream"
+	}
+	return provider
 }

@@ -1960,34 +1960,7 @@ func ensureAstronCodeModels(models []OpenAICompatibilityModel, responseEndpoint 
 		models[i].Name = strings.TrimSpace(models[i].Name)
 		models[i].Alias = strings.TrimSpace(models[i].Alias)
 	}
-	if !responseEndpoint {
-		return models
-	}
-	for _, alias := range defaultAstronCodeResponseAliases() {
-		if !hasOpenAICompatibilityModelAlias(models, DefaultAstronCodeModel, alias) {
-			models = append(models, OpenAICompatibilityModel{Name: DefaultAstronCodeModel, Alias: alias})
-		}
-	}
 	return models
-}
-
-func defaultAstronCodeResponseAliases() []string {
-	return []string{
-		DefaultAstronCodeAlias,
-		"deepseek-v4-pro",
-		"deepseek-v4-flash",
-	}
-}
-
-func hasOpenAICompatibilityModelAlias(models []OpenAICompatibilityModel, name, alias string) bool {
-	name = strings.TrimSpace(name)
-	alias = strings.TrimSpace(alias)
-	for _, model := range models {
-		if strings.EqualFold(strings.TrimSpace(model.Name), name) && strings.EqualFold(strings.TrimSpace(model.Alias), alias) {
-			return true
-		}
-	}
-	return false
 }
 
 func (cfg *Config) SanitizeAgnes() {

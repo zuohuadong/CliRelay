@@ -158,7 +158,7 @@ func TestSanitizeAstronCodeDoesNotInjectAliasesForChatEndpoint(t *testing.T) {
 	}
 }
 
-func TestSanitizeAstronCodeResponseEndpointAddsCodingAliases(t *testing.T) {
+func TestSanitizeAstronCodeResponseEndpointDoesNotInjectAliases(t *testing.T) {
 	cfg := &Config{AstronCodeAPIKey: []OpenAICompatibility{{
 		ResponseEndpoint: true,
 		APIKeyEntries:    []OpenAICompatibilityAPIKey{{APIKey: "sk"}},
@@ -168,14 +168,32 @@ func TestSanitizeAstronCodeResponseEndpointAddsCodingAliases(t *testing.T) {
 		t.Fatalf("astron-code len = %d, want 1", len(cfg.AstronCodeAPIKey))
 	}
 	models := cfg.AstronCodeAPIKey[0].Models
-	for _, alias := range []string{"gpt-5.3-codex", "deepseek-v4-pro", "deepseek-v4-flash"} {
-		if !hasModelAlias(models, DefaultAstronCodeModel, alias) {
-			t.Fatalf("missing astron response alias %q in %#v", alias, models)
-		}
+	if len(models) != 0 {
+		t.Fatalf("expected no auto-injected models, got %#v", models)
 	}
-	providers := cfg.OpenAICompatibilityAliasProviders("deepseek-v4-pro")
-	if strings.Join(providers, ",") != DefaultAstronCodeProviderName {
-		t.Fatalf("providers = %v, want [%s]", providers, DefaultAstronCodeProviderName)
+}
+
+func TestSanitizeAstronCodeResponseEndpointKeepsExplicitAliasOnly(t *testing.T) {
+	cfg := &Config{AstronCodeAPIKey: []OpenAICompatibility{{
+		ResponseEndpoint: true,
+		APIKeyEntries:    []OpenAICompatibilityAPIKey{{APIKey: "sk"}},
+		Models: []OpenAICompatibilityModel{
+			{Name: "xopdeepseekv4pro", Alias: "deepseek-v4-pro", ContextLength: 1000000},
+		},
+	}}}
+	cfg.SanitizeAstronCode()
+	if len(cfg.AstronCodeAPIKey) != 1 {
+		t.Fatalf("astron-code len = %d, want 1", len(cfg.AstronCodeAPIKey))
+	}
+	models := cfg.AstronCodeAPIKey[0].Models
+	if !hasModelAlias(models, "xopdeepseekv4pro", "deepseek-v4-pro") {
+		t.Fatalf("missing explicit deepseek alias in %#v", models)
+	}
+	if hasModelAlias(models, DefaultAstronCodeModel, "deepseek-v4-pro") {
+		t.Fatalf("unexpected default deepseek alias in %#v", models)
+	}
+	if hasModelAlias(models, DefaultAstronCodeModel, "gpt-5.3-codex") {
+		t.Fatalf("unexpected default codex alias in %#v", models)
 	}
 }
 

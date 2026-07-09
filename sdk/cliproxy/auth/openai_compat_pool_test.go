@@ -130,7 +130,7 @@ func TestOpenAICompatAliasPoolStreamFallsThroughAfterInitialModelError(t *testin
 	const (
 		provider = internalconfig.DefaultAstronCodeProviderName
 		alias    = "deepseek-v4-pro"
-		first    = internalconfig.DefaultAstronCodeModel
+		first    = "xopdeepseekv4flash"
 		second   = "xopdeepseekv4pro"
 	)
 

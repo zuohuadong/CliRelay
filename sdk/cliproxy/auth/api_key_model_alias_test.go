@@ -200,7 +200,7 @@ func TestApplyAPIKeyModelAlias(t *testing.T) {
 	}
 }
 
-func TestAstronResponseEndpointDefaultAliasMapsDeepSeekV4Pro(t *testing.T) {
+func TestAstronResponseEndpointDoesNotDefaultAliasDeepSeekV4Pro(t *testing.T) {
 	cfg := &internalconfig.Config{
 		AstronCodeAPIKey: []internalconfig.OpenAICompatibility{{
 			ResponseEndpoint: true,
@@ -222,12 +222,46 @@ func TestAstronResponseEndpointDefaultAliasMapsDeepSeekV4Pro(t *testing.T) {
 		t.Fatalf("register auth: %v", err)
 	}
 
-	if resolved := mgr.lookupAPIKeyUpstreamModel("astron-auth", "deepseek-v4-pro"); resolved != internalconfig.DefaultAstronCodeModel {
-		t.Fatalf("lookupAPIKeyUpstreamModel() = %q, want %q", resolved, internalconfig.DefaultAstronCodeModel)
+	if resolved := mgr.lookupAPIKeyUpstreamModel("astron-auth", "deepseek-v4-pro"); resolved != "" {
+		t.Fatalf("lookupAPIKeyUpstreamModel() = %q, want empty", resolved)
 	}
 	result := mgr.resolveAPIKeyModelAliasWithResult(auth, "deepseek-v4-pro")
-	if result.UpstreamModel != internalconfig.DefaultAstronCodeModel || !result.ForceMapping || result.OriginalAlias != "deepseek-v4-pro" {
-		t.Fatalf("resolveAPIKeyModelAliasWithResult() = %+v, want upstream %q force-mapped from deepseek-v4-pro", result, internalconfig.DefaultAstronCodeModel)
+	if result.UpstreamModel != "deepseek-v4-pro" || result.ForceMapping || result.OriginalAlias != "" {
+		t.Fatalf("resolveAPIKeyModelAliasWithResult() = %+v, want no-op deepseek-v4-pro mapping", result)
+	}
+}
+
+func TestAstronResponseEndpointExplicitAliasMapsDeepSeekV4Pro(t *testing.T) {
+	cfg := &internalconfig.Config{
+		AstronCodeAPIKey: []internalconfig.OpenAICompatibility{{
+			ResponseEndpoint: true,
+			APIKeyEntries:    []internalconfig.OpenAICompatibilityAPIKey{{APIKey: "astron-key"}},
+			Models: []internalconfig.OpenAICompatibilityModel{
+				{Name: "xopdeepseekv4pro", Alias: "deepseek-v4-pro", ContextLength: 1000000},
+			},
+		}},
+	}
+	cfg.SanitizeAstronCode()
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(cfg)
+
+	ctx := context.Background()
+	auth := &Auth{ID: "astron-auth-explicit", Provider: internalconfig.DefaultAstronCodeProviderName, Attributes: map[string]string{
+		"api_key":      "astron-key",
+		"compat_name":  internalconfig.DefaultAstronCodeProviderName,
+		"provider_key": internalconfig.DefaultAstronCodeProviderName,
+	}}
+	if _, err := mgr.Register(ctx, auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	if resolved := mgr.lookupAPIKeyUpstreamModel("astron-auth-explicit", "deepseek-v4-pro"); resolved != "xopdeepseekv4pro" {
+		t.Fatalf("lookupAPIKeyUpstreamModel() = %q, want xopdeepseekv4pro", resolved)
+	}
+	result := mgr.resolveAPIKeyModelAliasWithResult(auth, "deepseek-v4-pro")
+	if result.UpstreamModel != "xopdeepseekv4pro" || !result.ForceMapping || result.OriginalAlias != "deepseek-v4-pro" {
+		t.Fatalf("resolveAPIKeyModelAliasWithResult() = %+v, want upstream xopdeepseekv4pro force-mapped from deepseek-v4-pro", result)
 	}
 }
 

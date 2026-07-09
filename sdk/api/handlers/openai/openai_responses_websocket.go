@@ -38,6 +38,11 @@ const (
 
 	responsesWebsocketTimelineMaxBytes        = 1 << 20
 	responsesWebsocketTimelinePayloadMaxBytes = 64 << 10
+
+	// responsesWebsocketHeartbeatInterval 控制在等待上游数据时向下游 websocket
+	// 发送 response.in_progress 心跳的频率。防止客户端因长时间无数据而触发
+	// idle timeout（"正在思考"卡住）。
+	responsesWebsocketHeartbeatInterval = 15 * time.Second
 )
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
@@ -1318,11 +1323,25 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 		return nil
 	}
 
+	heartbeatTicker := time.NewTicker(responsesWebsocketHeartbeatInterval)
+	defer heartbeatTicker.Stop()
+	heartbeatPayload := []byte(`{"type":"response.in_progress","response":{"status":"in_progress"}}`)
+
 	for {
 		select {
 		case <-c.Request.Context().Done():
 			cancel(c.Request.Context().Err())
 			return outputAccumulator.Output(), nil, false, c.Request.Context().Err()
+		case <-heartbeatTicker.C:
+			if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, heartbeatPayload, time.Now()); errWrite != nil {
+				log.Warnf(
+					"responses websocket: heartbeat write failed id=%s error=%v",
+					sessionID,
+					errWrite,
+				)
+				cancel(errWrite)
+				return outputAccumulator.Output(), nil, false, errWrite
+			}
 		case errMsg, ok := <-errs:
 			if !ok {
 				errs = nil

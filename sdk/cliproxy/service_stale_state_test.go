@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
@@ -69,6 +71,69 @@ func TestServiceApplyCoreAuthAddOrUpdate_DeleteReAddDoesNotInheritStaleRuntimeSt
 	if models := registry.GetGlobalRegistry().GetModelsForClient(authID); len(models) == 0 {
 		t.Fatalf("expected re-added auth to re-register models in global registry")
 	}
+}
+
+func TestServiceHandleWatcherConfigAuthUpdateRegistersAstronModelsForScheduler(t *testing.T) {
+	cfg := &config.Config{
+		AstronCodeAPIKey: []config.OpenAICompatibility{{
+			ResponseEndpoint: true,
+			APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+				{APIKey: "sk-test"},
+			},
+			Models: []config.OpenAICompatibilityModel{
+				{Name: "xopdeepseekv4pro", Alias: "deepseek-v4-pro", ContextLength: 1000000},
+			},
+		}},
+	}
+	cfg.SanitizeAstronCode()
+
+	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
+	manager.SetConfig(cfg)
+	service := &Service{cfg: cfg, coreManager: manager}
+
+	auths, err := synthesizer.NewConfigSynthesizer().Synthesize(&synthesizer.SynthesisContext{
+		Config:      cfg,
+		Now:         time.Now(),
+		IDGenerator: synthesizer.NewStableIDGenerator(),
+	})
+	if err != nil {
+		t.Fatalf("synthesize config auths: %v", err)
+	}
+	var astronAuth *coreauth.Auth
+	for _, auth := range auths {
+		if auth != nil && auth.Provider == "astron-code" {
+			astronAuth = auth
+			break
+		}
+	}
+	if astronAuth == nil {
+		t.Fatal("expected synthesized astron-code auth")
+	}
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(astronAuth.ID)
+	})
+
+	service.handleAuthUpdate(coreauth.WithSkipPersist(context.Background()), watcher.AuthUpdate{
+		Action: watcher.AuthUpdateActionAdd,
+		ID:     astronAuth.ID,
+		Auth:   astronAuth,
+	})
+
+	if models := registry.GetGlobalRegistry().GetModelsForClient(astronAuth.ID); !hasServiceModelID(models, "deepseek-v4-pro") {
+		t.Fatalf("expected deepseek-v4-pro to be registered for %s, got %#v", astronAuth.ID, models)
+	}
+	if registered, ok := manager.GetByID(astronAuth.ID); !ok || registered.Provider != "astron-code" {
+		t.Fatalf("expected astron-code auth %s to be registered, got %#v", astronAuth.ID, registered)
+	}
+}
+
+func hasServiceModelID(models []*registry.ModelInfo, want string) bool {
+	for _, model := range models {
+		if model != nil && model.ID == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestForceHomeRuntimeConfigEnablesUsageStatistics(t *testing.T) {

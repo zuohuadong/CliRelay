@@ -197,6 +197,26 @@ func TestSanitizeAstronCodeResponseEndpointKeepsExplicitAliasOnly(t *testing.T) 
 	}
 }
 
+func TestSanitizeAstronCodeUsesExplicitModelAsDefaultTestModel(t *testing.T) {
+	cfg := &Config{AstronCodeAPIKey: []OpenAICompatibility{{
+		ResponseEndpoint: true,
+		APIKeyEntries:    []OpenAICompatibilityAPIKey{{APIKey: "sk"}},
+		Models: []OpenAICompatibilityModel{
+			{Name: "xopdeepseekv4pro", Alias: "deepseek-v4-pro", ContextLength: 1000000},
+		},
+	}}}
+	cfg.SanitizeAstronCode()
+	if len(cfg.AstronCodeAPIKey) != 1 {
+		t.Fatalf("astron-code len = %d, want 1", len(cfg.AstronCodeAPIKey))
+	}
+	if got := cfg.AstronCodeAPIKey[0].TestModel; got != "xopdeepseekv4pro" {
+		t.Fatalf("test-model = %q, want xopdeepseekv4pro", got)
+	}
+	if hasModelAlias(cfg.AstronCodeAPIKey[0].Models, DefaultAstronCodeModel, "deepseek-v4-pro") {
+		t.Fatalf("unexpected default model alias in %#v", cfg.AstronCodeAPIKey[0].Models)
+	}
+}
+
 func TestParseConfigBytesMigratesLegacyAgnesEntry(t *testing.T) {
 	cfg, err := ParseConfigBytes([]byte(`
 openai-compatibility:

@@ -1945,6 +1945,9 @@ func (cfg *Config) SanitizeAstronCode() {
 		}
 		e.TestModel = strings.TrimSpace(e.TestModel)
 		if e.TestModel == "" {
+			e.TestModel = firstOpenAICompatibilityModelName(e.Models)
+		}
+		if e.TestModel == "" {
 			e.TestModel = DefaultAstronCodeModel
 		}
 		e.Headers = NormalizeHeaders(e.Headers)
@@ -1961,6 +1964,15 @@ func ensureAstronCodeModels(models []OpenAICompatibilityModel, responseEndpoint 
 		models[i].Alias = strings.TrimSpace(models[i].Alias)
 	}
 	return models
+}
+
+func firstOpenAICompatibilityModelName(models []OpenAICompatibilityModel) string {
+	for i := range models {
+		if name := strings.TrimSpace(models[i].Name); name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 func (cfg *Config) SanitizeAgnes() {

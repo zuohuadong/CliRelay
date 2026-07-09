@@ -492,6 +492,70 @@ func TestAstronCodeExecutorStreamRejectsDoneOnlyResponse(t *testing.T) {
 	}
 }
 
+func TestAstronCodeExecutorResponseEndpointFallsBackToChatOnDoneOnlyStream(t *testing.T) {
+	var paths []string
+	var bodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		paths = append(paths, r.URL.Path)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch r.URL.Path {
+		case "/v1/responses":
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case "/v2/chat/completions":
+			_, _ = w.Write([]byte(`data: {"id":"chatcmpl-fallback","object":"chat.completion.chunk","model":"xopglm52","choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":null}]}` + "\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	executor := NewAstronCodeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url":          server.URL + "/v2",
+		"api_key":           "sk-test",
+		"response_endpoint": "true",
+	}}
+	payload := []byte(`{"model":"deepseek-v4-pro","input":"hi","stream":true}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "xopglm52",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		OriginalRequest: payload,
+		Stream:          true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var got strings.Builder
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v; stream=%s", chunk.Err, got.String())
+		}
+		got.Write(chunk.Payload)
+	}
+	if !strings.Contains(got.String(), "OK") {
+		t.Fatalf("fallback stream missing chat payload: %s", got.String())
+	}
+	if len(paths) != 2 {
+		t.Fatalf("paths = %v, want responses primary then chat fallback", paths)
+	}
+	if paths[0] != "/v1/responses" || paths[1] != "/v2/chat/completions" {
+		t.Fatalf("paths = %v, want [/v1/responses /v2/chat/completions]", paths)
+	}
+	if !gjson.GetBytes(bodies[0], "input").Exists() {
+		t.Fatalf("responses request should keep input payload, got %s", string(bodies[0]))
+	}
+	if !gjson.GetBytes(bodies[1], "messages").Exists() {
+		t.Fatalf("chat fallback request should use messages payload, got %s", string(bodies[1]))
+	}
+}
+
 func TestAstronCodeExecutorDropsStreamingToolCallsWithEmptyName(t *testing.T) {
 	seq := &astronToolCallIDSeq{}
 	input := []byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"read","arguments":"{}"}},{"index":1,"type":"function","function":{"name":"","arguments":"{}"}},{"index":2,"type":"function","function":{"name":"glob","arguments":"{}"}}]}}]}`)

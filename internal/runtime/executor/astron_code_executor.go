@@ -235,24 +235,38 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 		return nil, err
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
-	translated := sdktranslator.TranslateRequest(from, to, baseModel, adaptedPayload, true)
+	requestPath := helps.PayloadRequestPath(opts)
 
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	buildStreamPayload := func(target sdktranslator.Format, responsesEndpoint bool) ([]byte, error) {
+		originalTranslated := sdktranslator.TranslateRequest(from, target, baseModel, originalPayload, true)
+		translated := sdktranslator.TranslateRequest(from, target, baseModel, adaptedPayload, true)
+		translated, errApply := thinking.ApplyThinking(translated, req.Model, from.String(), target.String(), e.Identifier())
+		if errApply != nil {
+			return nil, errApply
+		}
+		if shouldNormalizeKimiCompatPayload(baseModel) {
+			var errNormalize error
+			translated, errNormalize = normalizeKimiToolMessageLinks(translated)
+			if errNormalize != nil {
+				return nil, errNormalize
+			}
+		}
+		translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, target.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+		translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
+		if responsesEndpoint {
+			return translated, nil
+		}
+		return e.normalizeAstronPayload(translated, baseModel)
+	}
+
+	translated, err := buildStreamPayload(to, useResponsesEndpoint)
 	if err != nil {
 		return nil, err
 	}
-	if shouldNormalizeKimiCompatPayload(baseModel) {
-		translated, err = normalizeKimiToolMessageLinks(translated)
-		if err != nil {
-			return nil, err
-		}
-	}
-	requestPath := helps.PayloadRequestPath(opts)
-	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
-	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
-	if !useResponsesEndpoint {
-		translated, err = e.normalizeAstronPayload(translated, baseModel)
+	fallbackTo := sdktranslator.FromString("openai")
+	var fallbackTranslated []byte
+	if useResponsesEndpoint {
+		fallbackTranslated, err = buildStreamPayload(fallbackTo, false)
 		if err != nil {
 			return nil, err
 		}
@@ -263,139 +277,169 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 		streamEndpoint = "/responses"
 	}
 	url := astronCodeEndpointURL(baseURL, streamEndpoint, useResponsesEndpoint)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	httpReq.Header.Set("User-Agent", "cli-proxy-astron-code")
-	e.applyCustomHeadersAndIdentityFingerprint(httpReq, auth, false)
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("Cache-Control", "no-cache")
+	fallbackURL := astronCodeEndpointURL(baseURL, "/chat/completions", false)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
-	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      redactSensitiveJSONForLog(translated),
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return nil, err
-	}
-	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
-		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
-		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("astron code executor: close response body error: %v", errClose)
+
+	openStreamResponse := func(requestURL string, body []byte) (*http.Response, error) {
+		httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(body))
+		if errReq != nil {
+			return nil, errReq
 		}
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+		httpReq.Header.Set("User-Agent", "cli-proxy-astron-code")
+		e.applyCustomHeadersAndIdentityFingerprint(httpReq, auth, false)
+		httpReq.Header.Set("Accept", "text/event-stream")
+		httpReq.Header.Set("Cache-Control", "no-cache")
+		helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+			URL:       requestURL,
+			Method:    http.MethodPost,
+			Headers:   httpReq.Header.Clone(),
+			Body:      redactSensitiveJSONForLog(body),
+			Provider:  e.Identifier(),
+			AuthID:    authID,
+			AuthLabel: authLabel,
+			AuthType:  authType,
+			AuthValue: authValue,
+		})
+		httpResp, errDo := httpClient.Do(httpReq)
+		if errDo != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, errDo)
+			return nil, errDo
+		}
+		helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+		if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+			b, _ := io.ReadAll(httpResp.Body)
+			helps.AppendAPIResponseChunk(ctx, e.cfg, b)
+			helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+			if errClose := httpResp.Body.Close(); errClose != nil {
+				log.Errorf("astron code executor: close response body error: %v", errClose)
+			}
+			return nil, statusErr{code: httpResp.StatusCode, msg: string(b)}
+		}
+		return httpResp, nil
+	}
+
+	httpResp, err := openStreamResponse(url, translated)
+	if err != nil {
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
-		defer func() {
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("astron code executor: close response body error: %v", errClose)
-			}
-		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 52_428_800)
-		var param any
-		tcIDSeq := &astronToolCallIDSeq{}
-		var pendingTranslated [][]byte
-		semanticOutput := false
-		emitDone := func() bool {
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param)
-			if !semanticOutput && !openAICompatStreamChunksHaveSemanticOutput(chunks) {
-				streamErr := statusErr{code: http.StatusBadGateway, msg: "astron code executor: upstream returned empty stream response"}
-				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-				reporter.PublishFailure(ctx, streamErr)
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
-				case <-ctx.Done():
-				}
-				return false
-			}
-			return openAICompatForwardSemanticStreamChunks(ctx, out, &pendingTranslated, &semanticOutput, chunks)
-		}
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			if useResponsesEndpoint {
-				if detail, ok := helps.ParseCodexUsage(jsonPayloadFromDataLine(line)); ok {
-					reporter.Publish(ctx, detail)
-				}
-			} else if detail, ok := helps.ParseOpenAIStreamUsage(line); ok {
-				reporter.Publish(ctx, detail)
-			}
-			trimmedLine := bytes.TrimSpace(line)
-			if len(trimmedLine) == 0 {
-				continue
-			}
-			if !bytes.HasPrefix(trimmedLine, []byte("data:")) {
-				if bytes.HasPrefix(trimmedLine, []byte(":")) || bytes.HasPrefix(trimmedLine, []byte("event:")) ||
-					bytes.HasPrefix(trimmedLine, []byte("id:")) || bytes.HasPrefix(trimmedLine, []byte("retry:")) {
-					continue
-				}
-				if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
-					if semanticOutput {
-						helps.LogWithRequestID(ctx).Debugf("astron code stream ended with non-SSE payload after data: %s", helps.SummarizeErrorBody("application/json", trimmedLine))
-						if emitDone() {
-							reporter.EnsurePublished(ctx)
-						}
-						return
-					}
-					streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
-					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-					reporter.PublishFailure(ctx, streamErr)
-					select {
-					case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
-					case <-ctx.Done():
-					}
-					return
-				}
-				continue
-			}
-			normalizedLine := trimmedLine
-			if !useResponsesEndpoint {
-				normalizedLine = ensureAstronToolCallIDs(bytes.Clone(trimmedLine), tcIDSeq)
-			}
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, normalizedLine, &param)
-			if !openAICompatForwardSemanticStreamChunks(ctx, out, &pendingTranslated, &semanticOutput, chunks) {
-				return
-			}
-		}
-		if errScan := scanner.Err(); errScan != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+
+		sendStreamError := func(streamErr error) bool {
+			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+			reporter.PublishFailure(ctx, streamErr)
 			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 			case <-ctx.Done():
 			}
-		} else {
-			emitDone()
+			return false
 		}
-		reporter.EnsurePublished(ctx)
+
+		var scanResponse func(*http.Response, sdktranslator.Format, []byte, bool, bool) bool
+		runChatFallback := func() bool {
+			if len(fallbackTranslated) == 0 {
+				return false
+			}
+			helps.LogWithRequestID(ctx).Debugf("astron code executor: /responses stream produced no semantic output; retrying via /chat/completions")
+			fallbackResp, errFallback := openStreamResponse(fallbackURL, fallbackTranslated)
+			if errFallback != nil {
+				return sendStreamError(errFallback)
+			}
+			return scanResponse(fallbackResp, fallbackTo, fallbackTranslated, false, false)
+		}
+
+		scanResponse = func(resp *http.Response, attemptTo sdktranslator.Format, attemptTranslated []byte, attemptUseResponsesEndpoint bool, allowFallback bool) bool {
+			if resp == nil || resp.Body == nil {
+				return sendStreamError(statusErr{code: http.StatusBadGateway, msg: "astron code executor: upstream returned nil stream response"})
+			}
+			closed := false
+			closeResp := func() {
+				if closed {
+					return
+				}
+				closed = true
+				if errClose := resp.Body.Close(); errClose != nil {
+					log.Errorf("astron code executor: close response body error: %v", errClose)
+				}
+			}
+			defer closeResp()
+
+			scanner := bufio.NewScanner(resp.Body)
+			scanner.Buffer(nil, 52_428_800)
+			var param any
+			tcIDSeq := &astronToolCallIDSeq{}
+			var pendingTranslated [][]byte
+			semanticOutput := false
+			emitDone := func() bool {
+				chunks := sdktranslator.TranslateStream(ctx, attemptTo, from, req.Model, opts.OriginalRequest, attemptTranslated, []byte("data: [DONE]"), &param)
+				if !semanticOutput && !openAICompatStreamChunksHaveSemanticOutput(chunks) {
+					if allowFallback {
+						closeResp()
+						return runChatFallback()
+					}
+					streamErr := statusErr{code: http.StatusBadGateway, msg: "astron code executor: upstream returned empty stream response"}
+					return sendStreamError(streamErr)
+				}
+				return openAICompatForwardSemanticStreamChunks(ctx, out, &pendingTranslated, &semanticOutput, chunks)
+			}
+			for scanner.Scan() {
+				line := scanner.Bytes()
+				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+				if attemptUseResponsesEndpoint {
+					if detail, ok := helps.ParseCodexUsage(jsonPayloadFromDataLine(line)); ok {
+						reporter.Publish(ctx, detail)
+					}
+				} else if detail, ok := helps.ParseOpenAIStreamUsage(line); ok {
+					reporter.Publish(ctx, detail)
+				}
+				trimmedLine := bytes.TrimSpace(line)
+				if len(trimmedLine) == 0 {
+					continue
+				}
+				if !bytes.HasPrefix(trimmedLine, []byte("data:")) {
+					if bytes.HasPrefix(trimmedLine, []byte(":")) || bytes.HasPrefix(trimmedLine, []byte("event:")) ||
+						bytes.HasPrefix(trimmedLine, []byte("id:")) || bytes.HasPrefix(trimmedLine, []byte("retry:")) {
+						continue
+					}
+					if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
+						if semanticOutput {
+							helps.LogWithRequestID(ctx).Debugf("astron code stream ended with non-SSE payload after data: %s", helps.SummarizeErrorBody("application/json", trimmedLine))
+							return emitDone()
+						}
+						streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
+						return sendStreamError(streamErr)
+					}
+					continue
+				}
+				normalizedLine := trimmedLine
+				if !attemptUseResponsesEndpoint {
+					normalizedLine = ensureAstronToolCallIDs(bytes.Clone(trimmedLine), tcIDSeq)
+				}
+				chunks := sdktranslator.TranslateStream(ctx, attemptTo, from, req.Model, opts.OriginalRequest, attemptTranslated, normalizedLine, &param)
+				if !openAICompatForwardSemanticStreamChunks(ctx, out, &pendingTranslated, &semanticOutput, chunks) {
+					return false
+				}
+			}
+			if errScan := scanner.Err(); errScan != nil {
+				return sendStreamError(errScan)
+			}
+			return emitDone()
+		}
+
+		if scanResponse(httpResp, to, translated, useResponsesEndpoint, useResponsesEndpoint && len(fallbackTranslated) > 0) {
+			reporter.EnsurePublished(ctx)
+		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }

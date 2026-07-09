@@ -1121,6 +1121,8 @@ func astronCodeEndpointURL(baseURL, endpoint string, useResponses bool) string {
 			}
 		}
 		base = strings.Replace(base, "/v2", "/v1", 1)
+	} else {
+		base = strings.Replace(base, "/v1", "/v2", 1)
 	}
 	return base + endpoint
 }

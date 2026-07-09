@@ -514,7 +514,7 @@ func TestAstronCodeExecutorResponseEndpointFallsBackToChatOnDoneOnlyStream(t *te
 
 	executor := NewAstronCodeExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
-		"base_url":          server.URL + "/v2",
+		"base_url":          server.URL + "/v1",
 		"api_key":           "sk-test",
 		"response_endpoint": "true",
 	}}
@@ -580,7 +580,7 @@ func TestAstronCodeExecutorResponseEndpointFallsBackToChatOnSchemaRouteNotFound(
 
 	executor := NewAstronCodeExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
-		"base_url":          server.URL + "/v2",
+		"base_url":          server.URL + "/v1",
 		"api_key":           "sk-test",
 		"response_endpoint": "true",
 	}}

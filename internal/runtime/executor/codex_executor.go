@@ -116,6 +116,103 @@ func patchCodexCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]
 	return completedDataPatched
 }
 
+func codexStreamPayloadHasSemanticOutput(eventData []byte) bool {
+	eventType := gjson.GetBytes(eventData, "type").String()
+	switch eventType {
+	case "response.incomplete":
+		return true
+	case "response.completed", "response.done":
+		return codexOutputArrayHasSemanticOutput(gjson.GetBytes(eventData, "response.output"))
+	case "response.output_item.done":
+		return codexOutputItemHasSemanticOutput(gjson.GetBytes(eventData, "item"))
+	case "response.output_text.delta":
+		return strings.TrimSpace(gjson.GetBytes(eventData, "delta").String()) != ""
+	case "response.output_text.done":
+		return strings.TrimSpace(gjson.GetBytes(eventData, "text").String()) != ""
+	case "response.function_call_arguments.delta":
+		return strings.TrimSpace(gjson.GetBytes(eventData, "delta").String()) != ""
+	case "response.function_call_arguments.done":
+		return strings.TrimSpace(gjson.GetBytes(eventData, "arguments").String()) != ""
+	case "response.reasoning_summary_text.delta":
+		return strings.TrimSpace(gjson.GetBytes(eventData, "delta").String()) != ""
+	case "response.reasoning_summary_text.done":
+		return strings.TrimSpace(gjson.GetBytes(eventData, "text").String()) != ""
+	}
+	if strings.HasPrefix(eventType, "response.image_generation_call.") || strings.HasPrefix(eventType, "image_generation.") {
+		return true
+	}
+	return false
+}
+
+func codexOutputArrayHasSemanticOutput(output gjson.Result) bool {
+	if !output.IsArray() {
+		return false
+	}
+	for _, item := range output.Array() {
+		if codexOutputItemHasSemanticOutput(item) {
+			return true
+		}
+	}
+	return false
+}
+
+func codexOutputItemHasSemanticOutput(item gjson.Result) bool {
+	if !item.Exists() || item.Type != gjson.JSON {
+		return false
+	}
+	switch item.Get("type").String() {
+	case "message":
+		if strings.TrimSpace(item.Get("content").String()) != "" {
+			return true
+		}
+		content := item.Get("content")
+		if !content.IsArray() {
+			return false
+		}
+		for _, part := range content.Array() {
+			if strings.TrimSpace(part.Get("text").String()) != "" {
+				return true
+			}
+		}
+		return false
+	case "function_call":
+		return strings.TrimSpace(item.Get("call_id").String()) != "" ||
+			strings.TrimSpace(item.Get("name").String()) != "" ||
+			strings.TrimSpace(item.Get("arguments").String()) != ""
+	case "custom_tool_call":
+		return strings.TrimSpace(item.Get("call_id").String()) != "" ||
+			strings.TrimSpace(item.Get("name").String()) != "" ||
+			strings.TrimSpace(item.Get("input").String()) != ""
+	case "reasoning":
+		if strings.TrimSpace(item.Get("encrypted_content").String()) != "" {
+			return true
+		}
+		summary := item.Get("summary")
+		if !summary.IsArray() {
+			return false
+		}
+		for _, part := range summary.Array() {
+			if strings.TrimSpace(part.Get("text").String()) != "" {
+				return true
+			}
+		}
+		return false
+	default:
+		return strings.TrimSpace(item.Raw) != "" && strings.TrimSpace(item.Raw) != "{}"
+	}
+}
+
+func codexSendStreamChunks(ctx context.Context, out chan<- cliproxyexecutor.StreamChunk, chunks [][]byte) bool {
+	for i := range chunks {
+		select {
+		case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
+}
+
 func codexTerminalStreamContextLengthErr(eventData []byte) (statusErr, bool) {
 	streamErr, body, ok := codexTerminalStreamErr(eventData)
 	if !ok || !codexTerminalErrorIsContextLength(body) {
@@ -1430,6 +1527,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}()
 
+		var pendingTranslated [][]byte
+		semanticOutput := false
 		for scanner.Scan() {
 			select {
 			case idleReset <- struct{}{}:
@@ -1438,6 +1537,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			line := applyCodexIdentityConfuseResponsePayload(scanner.Bytes(), identityState)
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			translatedLine := bytes.Clone(line)
+			lineHasSemanticOutput := false
 
 			if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
@@ -1514,6 +1614,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				switch gjson.GetBytes(data, "type").String() {
 				case "response.output_item.done":
 					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
+					lineHasSemanticOutput = codexStreamPayloadHasSemanticOutput(data)
 				case "response.completed", "response.done", "response.incomplete":
 					if gjson.GetBytes(data, "type").String() == "response.done" {
 						data, _ = sjson.SetRawBytes(data, "type", []byte(`"response.completed"`))
@@ -1525,19 +1626,33 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
 					cacheCodexReasoningReplayFromCompleted(replayScope, data)
 					translatedLine = append([]byte("data: "), data...)
+					lineHasSemanticOutput = codexStreamPayloadHasSemanticOutput(data)
+				default:
+					lineHasSemanticOutput = codexStreamPayloadHasSemanticOutput(data)
 				}
 			}
 
 			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
 			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-					emittedPayload = true
-				case <-ctx.Done():
-					return
+			if !semanticOutput {
+				if lineHasSemanticOutput {
+					semanticOutput = true
+					if len(pendingTranslated) > 0 {
+						if !codexSendStreamChunks(ctx, out, pendingTranslated) {
+							return
+						}
+						pendingTranslated = nil
+						emittedPayload = true
+					}
+				} else {
+					pendingTranslated = append(pendingTranslated, chunks...)
+					continue
 				}
 			}
+			if !codexSendStreamChunks(ctx, out, chunks) {
+				return
+			}
+			emittedPayload = true
 		}
 		close(streamDone)
 		if idleTimedOut.Load() {
@@ -1559,6 +1674,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			reporter.PublishFailure(ctx, errScan)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
+		} else if !semanticOutput {
+			streamErr := statusErr{code: http.StatusBadGateway, msg: "codex executor: upstream returned empty stream response"}
+			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+			reporter.PublishFailure(ctx, streamErr)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 			case <-ctx.Done():
 			}
 		}

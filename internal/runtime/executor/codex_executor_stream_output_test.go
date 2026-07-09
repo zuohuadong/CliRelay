@@ -128,6 +128,54 @@ func TestCodexExecutorExecuteStreamSurfacesTerminalStreamError(t *testing.T) {
 	assertCodexErrorCode(t, streamErr.Error(), "invalid_request_error", "context_too_large")
 }
 
+func TestCodexExecutorExecuteStreamRejectsEmptyCompletedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","created_at":1775555723,"status":"completed","model":"gpt-5.4-mini-2026-03-17","output":[],"usage":{"input_tokens":8,"output_tokens":0,"total_tokens":8}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.4-mini",
+		Payload: []byte(`{"model":"gpt-5.4-mini","input":"Say ok"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream setup error: %v", err)
+	}
+
+	var got strings.Builder
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			break
+		}
+		got.Write(chunk.Payload)
+	}
+	if got.String() != "" {
+		t.Fatalf("expected no payload before empty response error, got %q", got.String())
+	}
+	if streamErr == nil {
+		t.Fatal("expected empty completed response error")
+	}
+	if gotStatus := statusCodeFromTestError(t, streamErr); gotStatus != http.StatusBadGateway {
+		t.Fatalf("status code = %d, want %d; err=%v", gotStatus, http.StatusBadGateway, streamErr)
+	}
+	if !strings.Contains(streamErr.Error(), "empty stream response") {
+		t.Fatalf("stream error = %v, want empty stream response", streamErr)
+	}
+}
+
 func TestCodexExecutorExecuteSurfacesResponseFailedRateLimitError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

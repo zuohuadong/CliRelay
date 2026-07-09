@@ -73,6 +73,12 @@ const getProviderSelectionKey = (
           .trim()
           .toLowerCase();
 
+const parseProviderRouteIndex = (action: string): number | null => {
+  if (!action.trim()) return null;
+  const index = Number(action);
+  return Number.isInteger(index) && index >= 0 ? index : null;
+};
+
 export function ProvidersPage() {
   const { t } = useTranslation();
   const { notify } = useToast();
@@ -339,6 +345,7 @@ export function ProvidersPage() {
     deleteOpenAIProvider,
     toggleOpenAIProviderEnabled,
     toggleOpenAIKeyEntryEnabled,
+    toggleOpenAIProviderResponseEndpoint,
     discoverModels,
     applyDiscoveredModels,
   } = useOpenAIProviderEditor({
@@ -365,6 +372,7 @@ export function ProvidersPage() {
     deleteOpenAIProvider: deleteBigModelCodingProvider,
     toggleOpenAIProviderEnabled: toggleBigModelCodingProviderEnabled,
     toggleOpenAIKeyEntryEnabled: toggleBigModelCodingKeyEntryEnabled,
+    toggleOpenAIProviderResponseEndpoint: toggleBigModelCodingProviderResponseEndpoint,
     discoverModels: discoverBigModelCodingModels,
     applyDiscoveredModels: applyBigModelCodingDiscoveredModels,
   } = useOpenAIProviderEditor({
@@ -393,6 +401,7 @@ export function ProvidersPage() {
     deleteOpenAIProvider: deleteAstronCodeProvider,
     toggleOpenAIProviderEnabled: toggleAstronCodeProviderEnabled,
     toggleOpenAIKeyEntryEnabled: toggleAstronCodeKeyEntryEnabled,
+    toggleOpenAIProviderResponseEndpoint: toggleAstronCodeProviderResponseEndpoint,
     discoverModels: discoverAstronCodeModels,
     applyDiscoveredModels: applyAstronCodeDiscoveredModels,
   } = useOpenAIProviderEditor({
@@ -403,6 +412,7 @@ export function ProvidersPage() {
     afterClose: handleKeyEditorRouteClose,
     saveProviders: providersApi.saveAstronCodeProviders,
     deleteProvider: providersApi.deleteAstronCodeProvider,
+    forceResponseEndpoint: true,
   });
 
   useEffect(() => {
@@ -435,8 +445,8 @@ export function ProvidersPage() {
           openKeyEditor(provider, null);
           return;
         }
-        const index = Number(action);
-        if (Number.isFinite(index) && index >= 0) {
+        const index = parseProviderRouteIndex(action);
+        if (index !== null) {
           openKeyEditor(provider, index);
         }
         return;
@@ -450,8 +460,8 @@ export function ProvidersPage() {
           openBigModelCodingEditor(null);
           return;
         }
-        const index = Number(action);
-        if (Number.isFinite(index) && index >= 0) {
+        const index = parseProviderRouteIndex(action);
+        if (index !== null) {
           openBigModelCodingEditor(index);
         }
         return;
@@ -465,8 +475,8 @@ export function ProvidersPage() {
           openAstronCodeEditor(null);
           return;
         }
-        const index = Number(action);
-        if (Number.isFinite(index) && index >= 0) {
+        const index = parseProviderRouteIndex(action);
+        if (index !== null) {
           openAstronCodeEditor(index);
         }
         return;
@@ -480,8 +490,8 @@ export function ProvidersPage() {
           openOpenAIEditor(null);
           return;
         }
-        const index = Number(action);
-        if (Number.isFinite(index) && index >= 0) {
+        const index = parseProviderRouteIndex(action);
+        if (index !== null) {
           openOpenAIEditor(index);
         }
         return;
@@ -926,9 +936,13 @@ export function ProvidersPage() {
               onToggleProviderEnabled={(providerIndex, enabled) =>
                 void toggleBigModelCodingProviderEnabled(providerIndex, enabled)
               }
+              onToggleProviderResponseEndpoint={(providerIndex, enabled) =>
+                void toggleBigModelCodingProviderResponseEndpoint(providerIndex, enabled)
+              }
               onToggleKeyEntryEnabled={(providerIndex, entryIndex, enabled) =>
                 void toggleBigModelCodingKeyEntryEnabled(providerIndex, entryIndex, enabled)
               }
+              showResponseEndpointToggle
               selectedKeys={selectedExportKeySet}
               onToggleSelected={toggleExportSelection}
               title={t("providers.bigmodel_coding_keys")}
@@ -953,9 +967,14 @@ export function ProvidersPage() {
               onToggleProviderEnabled={(providerIndex, enabled) =>
                 void toggleAstronCodeProviderEnabled(providerIndex, enabled)
               }
+              onToggleProviderResponseEndpoint={(providerIndex, enabled) =>
+                void toggleAstronCodeProviderResponseEndpoint(providerIndex, enabled)
+              }
               onToggleKeyEntryEnabled={(providerIndex, entryIndex, enabled) =>
                 void toggleAstronCodeKeyEntryEnabled(providerIndex, entryIndex, enabled)
               }
+              showResponseEndpointToggle
+              responseEndpointLocked
               selectedKeys={selectedExportKeySet}
               onToggleSelected={toggleExportSelection}
               title={t("providers.astron_code_keys")}
@@ -1108,9 +1127,13 @@ export function ProvidersPage() {
               onToggleProviderEnabled={(providerIndex, enabled) =>
                 void toggleOpenAIProviderEnabled(providerIndex, enabled)
               }
+              onToggleProviderResponseEndpoint={(providerIndex, enabled) =>
+                void toggleOpenAIProviderResponseEndpoint(providerIndex, enabled)
+              }
               onToggleKeyEntryEnabled={(providerIndex, entryIndex, enabled) =>
                 void toggleOpenAIKeyEntryEnabled(providerIndex, entryIndex, enabled)
               }
+              showResponseEndpointToggle
               selectedKeys={selectedExportKeySet}
               onToggleSelected={toggleExportSelection}
             />
@@ -1214,6 +1237,7 @@ export function ProvidersPage() {
         maskApiKey={maskApiKey}
         title="Astron Code"
         description={t("providers.astron_code_config_desc")}
+        responseEndpointLocked
       />
 
       <ConfirmModal

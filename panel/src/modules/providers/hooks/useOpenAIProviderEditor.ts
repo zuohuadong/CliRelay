@@ -21,6 +21,7 @@ interface UseOpenAIProviderEditorArgs {
   afterClose: () => void;
   saveProviders?: (providers: OpenAIProvider[]) => Promise<unknown>;
   deleteProvider?: (name: string, index?: number) => Promise<unknown>;
+  forceResponseEndpoint?: boolean;
 }
 
 export function useOpenAIProviderEditor({
@@ -31,6 +32,7 @@ export function useOpenAIProviderEditor({
   afterClose,
   saveProviders = providersApi.saveOpenAIProviders,
   deleteProvider = providersApi.deleteOpenAIProvider,
+  forceResponseEndpoint = false,
 }: UseOpenAIProviderEditorArgs) {
   const { t } = useTranslation();
   const { notify } = useToast();
@@ -50,14 +52,18 @@ export function useOpenAIProviderEditor({
   const openOpenAIEditor = useCallback(
     (index: number | null) => {
       const current = index === null ? null : (openaiProviders[index] ?? null);
+      const draft = buildOpenAIDraft(current);
+      if (forceResponseEndpoint) {
+        draft.responseEndpoint = true;
+      }
       setEditOpenAIIndex(index);
-      setOpenaiDraft(buildOpenAIDraft(current));
+      setOpenaiDraft(draft);
       setOpenaiDraftError(null);
       setDiscoveredModels([]);
       setDiscoverSelected(new Set());
       setEditOpenAIOpen(true);
     },
-    [openaiProviders],
+    [forceResponseEndpoint, openaiProviders],
   );
 
   const commitOpenAIDraft = useCallback((): OpenAIProvider | null => {
@@ -127,11 +133,11 @@ export function useOpenAIProviderEditor({
       ...(priority !== undefined ? { priority } : {}),
       ...(openaiDraft.testModel.trim() ? { testModel: openaiDraft.testModel.trim() } : {}),
       ...(openaiDraft.disableCooling ? { disableCooling: true } : {}),
-      ...(openaiDraft.responseEndpoint ? { responseEndpoint: true } : {}),
+      ...(forceResponseEndpoint || openaiDraft.responseEndpoint ? { responseEndpoint: true } : {}),
       ...(modelCommit.models ? { models: modelCommit.models } : {}),
       ...(apiKeyEntries?.length ? { apiKeyEntries } : {}),
     };
-  }, [openaiDraft, t]);
+  }, [forceResponseEndpoint, openaiDraft, t]);
 
   const saveOpenAIDraft = useCallback(async () => {
     try {
@@ -272,6 +278,50 @@ export function useOpenAIProviderEditor({
     ],
   );
 
+  const toggleOpenAIProviderResponseEndpoint = useCallback(
+    async (providerIndex: number, enabled: boolean) => {
+      if (forceResponseEndpoint) return;
+      const provider = openaiProviders[providerIndex];
+      if (!provider) return;
+
+      const prev = openaiProviders;
+      const next = prev.map((item, itemIndex) => {
+        if (itemIndex !== providerIndex) return item;
+        if (enabled) {
+          return { ...item, responseEndpoint: true };
+        }
+        const { responseEndpoint: _responseEndpoint, ...rest } = item;
+        return rest;
+      });
+
+      setOpenaiProviders(next);
+      try {
+        await saveProviders(next);
+        notify({
+          type: "success",
+          message: enabled ? t("providers.toggle_enabled") : t("providers.toggle_disabled"),
+        });
+        startRefreshTransition(() => void refreshAll());
+      } catch (err: unknown) {
+        setOpenaiProviders(prev);
+        notify({
+          type: "error",
+          message: err instanceof Error ? err.message : t("providers.update_failed"),
+        });
+      }
+    },
+    [
+      forceResponseEndpoint,
+      notify,
+      openaiProviders,
+      refreshAll,
+      setOpenaiProviders,
+      saveProviders,
+      startRefreshTransition,
+      t,
+    ],
+  );
+
   const discoverModels = useCallback(async () => {
     const baseUrl = openaiDraft.baseUrl.trim();
     if (!baseUrl) {
@@ -358,6 +408,7 @@ export function useOpenAIProviderEditor({
     deleteOpenAIProvider,
     toggleOpenAIProviderEnabled,
     toggleOpenAIKeyEntryEnabled,
+    toggleOpenAIProviderResponseEndpoint,
     discoverModels,
     applyDiscoveredModels,
   };

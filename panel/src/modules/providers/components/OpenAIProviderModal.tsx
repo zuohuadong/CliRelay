@@ -32,6 +32,7 @@ interface OpenAIProviderModalProps {
   maskApiKey: (value: string) => string;
   title?: string;
   description?: string;
+  responseEndpointLocked?: boolean;
 }
 
 export function OpenAIProviderModal({
@@ -53,6 +54,7 @@ export function OpenAIProviderModal({
   maskApiKey,
   title,
   description,
+  responseEndpointLocked = false,
 }: OpenAIProviderModalProps) {
   const { t } = useTranslation();
   const [discoverQuery, setDiscoverQuery] = useState("");
@@ -127,7 +129,7 @@ export function OpenAIProviderModal({
       }
     >
       <div className="space-y-5">
-        <div className="grid gap-3 md:grid-cols-2">
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(14rem,auto)]">
           <div className="space-y-2">
             <p className="text-sm font-semibold text-slate-900 dark:text-white">
               {t("providers.name")}
@@ -160,6 +162,24 @@ export function OpenAIProviderModal({
               {t("providers.models_fetch_url")}
               {openaiDraft.baseUrl.trim() ? buildModelsEndpoint(openaiDraft.baseUrl) : "--"}
             </p>
+          </div>
+          <div className="flex items-start justify-between gap-3 rounded-lg border border-slate-200/70 bg-slate-50/70 px-3 py-2 dark:border-neutral-800/70 dark:bg-neutral-900/35">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                {t("providers.response_endpoint")}
+              </p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-white/55">
+                {t("providers.response_endpoint_hint")}
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={responseEndpointLocked || openaiDraft.responseEndpoint}
+              disabled={responseEndpointLocked}
+              ariaLabel={t("providers.response_endpoint")}
+              onCheckedChange={(enabled) => {
+                setOpenaiDraft((prev) => ({ ...prev, responseEndpoint: enabled }));
+              }}
+            />
           </div>
         </div>
 
@@ -220,26 +240,6 @@ export function OpenAIProviderModal({
               }}
               placeholder={t("providers.test_model_placeholder")}
             />
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-4 border-t border-slate-200/60 pt-5 dark:border-neutral-800/60">
-          <div className="flex items-center gap-3">
-            <ToggleSwitch
-              checked={openaiDraft.responseEndpoint}
-              ariaLabel={t("providers.response_endpoint")}
-              onCheckedChange={(enabled) => {
-                setOpenaiDraft((prev) => ({ ...prev, responseEndpoint: enabled }));
-              }}
-            />
-            <div>
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">
-                {t("providers.response_endpoint")}
-              </p>
-              <p className="text-xs text-slate-500 dark:text-white/55">
-                {t("providers.response_endpoint_hint")}
-              </p>
-            </div>
           </div>
         </div>
 

@@ -3227,6 +3227,7 @@
     "anthropic_processing_label": "Anthropic Processing",
     "anthropic_processing_hint": "When enabled, applies Anthropic-specific processing (cloaking, cache control, tool prefix). Disable for third-party Claude-compatible APIs (e.g. Kimi) to improve performance.",
     "response_endpoint": "Responses API Endpoint",
+    "response_endpoint_short": "Responses",
     "response_endpoint_hint": "Route requests to /responses instead of /chat/completions"
   },
   "logs_page": {

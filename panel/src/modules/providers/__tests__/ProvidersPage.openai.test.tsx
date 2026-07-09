@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ProvidersPage } from "@/modules/providers/ProvidersPage";
 import { ThemeProvider } from "@/modules/ui/ThemeProvider";
 import { ToastProvider } from "@/modules/ui/ToastProvider";
-import type { ApiCallResult } from "@/lib/http/types";
+import type { ApiCallResult, OpenAIProvider } from "@/lib/http/types";
 
 const mocks = vi.hoisted(() => ({
   apiCallRequest: vi.fn(
@@ -16,16 +16,18 @@ const mocks = vi.hoisted(() => ({
       body: null,
     }),
   ),
-  getBigModelCodingProviders: vi.fn(async () => []),
-  getAstronCodeProviders: vi.fn(async () => []),
+  getBigModelCodingProviders: vi.fn(async (): Promise<OpenAIProvider[]> => []),
+  getAstronCodeProviders: vi.fn(async (): Promise<OpenAIProvider[]> => []),
   getGeminiKeys: vi.fn(async () => []),
   getClaudeConfigs: vi.fn(async () => []),
   getCodexConfigs: vi.fn(async () => []),
   getOpenCodeGoConfigs: vi.fn(async () => []),
   getVertexConfigs: vi.fn(async () => []),
   getBedrockConfigs: vi.fn(async () => []),
-  getOpenAIProviders: vi.fn(async () => []),
+  getOpenAIProviders: vi.fn(async (): Promise<OpenAIProvider[]> => []),
   saveCodexConfigs: vi.fn(async (_configs: unknown[]) => ({})),
+  saveBigModelCodingProviders: vi.fn(async (_configs: unknown[]) => ({})),
+  saveAstronCodeProviders: vi.fn(async (_configs: unknown[]) => ({})),
   saveOpenAIProviders: vi.fn(async (_configs: unknown[]) => ({})),
   getEntityStats: vi.fn(async () => ({ source: [] })),
   apiKeyEntriesList: vi.fn(async () => []),
@@ -53,6 +55,8 @@ vi.mock("@/lib/http/apis", async (importOriginal) => {
       getBedrockConfigs: mocks.getBedrockConfigs,
       getOpenAIProviders: mocks.getOpenAIProviders,
       saveCodexConfigs: mocks.saveCodexConfigs,
+      saveBigModelCodingProviders: mocks.saveBigModelCodingProviders,
+      saveAstronCodeProviders: mocks.saveAstronCodeProviders,
       saveOpenAIProviders: mocks.saveOpenAIProviders,
     },
     usageApi: {
@@ -97,6 +101,8 @@ describe("ProvidersPage openai tab", () => {
     mocks.getBedrockConfigs.mockReset();
     mocks.getOpenAIProviders.mockReset();
     mocks.saveCodexConfigs.mockReset();
+    mocks.saveBigModelCodingProviders.mockReset();
+    mocks.saveAstronCodeProviders.mockReset();
     mocks.saveOpenAIProviders.mockReset();
     mocks.getEntityStats.mockReset();
     mocks.apiKeyEntriesList.mockReset();
@@ -118,6 +124,8 @@ describe("ProvidersPage openai tab", () => {
     mocks.getVertexConfigs.mockImplementation(async () => []);
     mocks.getBedrockConfigs.mockImplementation(async () => []);
     mocks.saveCodexConfigs.mockImplementation(async () => ({}));
+    mocks.saveBigModelCodingProviders.mockImplementation(async () => ({}));
+    mocks.saveAstronCodeProviders.mockImplementation(async () => ({}));
     mocks.saveOpenAIProviders.mockImplementation(async () => ({}));
     mocks.apiKeyEntriesList.mockImplementation(async () => []);
     mocks.channelGroupsList.mockImplementation(async () => []);
@@ -327,13 +335,13 @@ describe("ProvidersPage openai tab", () => {
 
   test("merges fetched OpenAI Compatible models into the editable model list", async () => {
     const user = userEvent.setup();
-    const provider = {
+    const provider: OpenAIProvider = {
       name: "OpenAI Main",
       baseUrl: "https://example.com/v1",
       apiKeyEntries: [{ apiKey: "sk-openai-provider-1234567890" }],
       models: [{ name: "gpt-4.1" }],
-    } as any;
-    mocks.getOpenAIProviders.mockImplementation(async () => [provider] as any);
+    };
+    mocks.getOpenAIProviders.mockImplementation(async () => [provider]);
     mocks.apiCallRequest.mockImplementation(async () => ({
       statusCode: 200,
       header: {},
@@ -470,6 +478,96 @@ describe("ProvidersPage openai tab", () => {
               disabled: true,
             }),
           ],
+        }),
+      ]);
+    });
+  });
+
+  test("toggles the OpenAI Compatible Responses endpoint from the provider card", async () => {
+    const user = userEvent.setup();
+    const provider: OpenAIProvider = {
+      name: "OpenAI Main",
+      baseUrl: "https://example.com/v1",
+      apiKeyEntries: [{ apiKey: "sk-openai-provider-1234567890" }],
+      models: [{ name: "gpt-4.1" }],
+    };
+    mocks.getOpenAIProviders.mockImplementation(async () => [provider]);
+
+    render(
+      <MemoryRouter initialEntries={["/ai-providers/openai"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/ai-providers/*" element={<ProvidersPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("OpenAI Main")).toBeInTheDocument();
+    const responseSwitch = await screen.findByRole("switch", {
+      name: /Responses API Endpoint OpenAI Main/i,
+    });
+    expect(responseSwitch).toHaveAttribute("aria-checked", "false");
+
+    await user.click(responseSwitch);
+
+    await waitFor(() => {
+      expect(mocks.saveOpenAIProviders).toHaveBeenCalledWith([
+        expect.objectContaining({
+          name: "OpenAI Main",
+          responseEndpoint: true,
+        }),
+      ]);
+    });
+  });
+
+  test("keeps Astron Code Responses endpoint locked on and persists it from the editor", async () => {
+    const user = userEvent.setup();
+    const provider: OpenAIProvider = {
+      name: "astron-code",
+      baseUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v1",
+      apiKeyEntries: [{ apiKey: "sk-astron-provider-1234567890" }],
+      models: [{ name: "xopkimik26", alias: "kimi-k2.6" }],
+    };
+    mocks.getAstronCodeProviders.mockImplementation(async () => [provider]);
+
+    render(
+      <MemoryRouter initialEntries={["/ai-providers/astron-code"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/ai-providers/*" element={<ProvidersPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("astron-code")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const responseSwitch = await screen.findByRole("switch", {
+      name: /Responses API Endpoint astron-code/i,
+    });
+    expect(responseSwitch).toHaveAttribute("aria-checked", "true");
+    expect(responseSwitch).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /Edit/ }));
+    const dialog = await screen.findByRole("dialog");
+    const modalResponseSwitch = within(dialog).getByRole("switch", {
+      name: /Responses API Endpoint/i,
+    });
+    expect(modalResponseSwitch).toHaveAttribute("aria-checked", "true");
+    expect(modalResponseSwitch).toBeDisabled();
+
+    await user.click(within(dialog).getByRole("button", { name: /Save/ }));
+
+    await waitFor(() => {
+      expect(mocks.saveAstronCodeProviders).toHaveBeenCalledWith([
+        expect.objectContaining({
+          name: "astron-code",
+          responseEndpoint: true,
         }),
       ]);
     });

@@ -329,3 +329,56 @@ func TestCodexExecutorExecuteStream_EmptyStreamCompletionOutputUsesOutputItemDon
 		t.Fatalf("response.output[0].content[0].text = %q, want %q; completed=%s", gotContent, "ok", string(completed))
 	}
 }
+
+func TestCodexExecutorExecuteStreamIdleTimeout(t *testing.T) {
+	// 缩短 idle timeout 以加快测试
+	original := codexHTTPStreamIdleTimeout
+	codexHTTPStreamIdleTimeout = 200 * time.Millisecond
+	defer func() { codexHTTPStreamIdleTimeout = original }()
+
+	// 模拟上游接受连接但不发送任何 SSE 数据
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// 阻塞直到客户端断开
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			break
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("expected idle timeout error, got nil")
+	}
+	if got := statusCodeFromTestError(t, streamErr); got != http.StatusRequestTimeout {
+		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusRequestTimeout, streamErr)
+	}
+	if !strings.Contains(streamErr.Error(), "idle timeout") {
+		t.Fatalf("error message should contain 'idle timeout': %v", streamErr)
+	}
+}

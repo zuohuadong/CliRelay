@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	codexauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
@@ -41,6 +42,12 @@ const (
 	codexCompactResponseHeaderTimeout = 30 * time.Second
 	codexFastModeServiceTier          = "priority"
 )
+
+// codexHTTPStreamIdleTimeout aborts an upstream SSE stream that accepts the
+// connection but sends no data for this duration. This prevents the client
+// from hitting its own 5-minute idle timeout ("idle timeout waiting for SSE")
+// and surfaces a clear error instead.
+var codexHTTPStreamIdleTimeout = 3 * time.Minute
 
 var dataTag = []byte("data:")
 
@@ -1224,7 +1231,44 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		var outputItemsFallback [][]byte
 		emittedPayload := false
 		retriedInvalidSignature := false
+
+		// idleTimer 关闭上游连接以中止卡住的 SSE 流。
+		// 上游可能接受连接但不发送任何数据，导致 scanner.Scan() 永久阻塞。
+		// 超时后关闭 body 让 Scan 返回，并发出明确的 idle timeout 错误。
+		idleReset := make(chan struct{}, 1)
+		streamDone := make(chan struct{})
+		var idleTimedOut atomic.Bool
+		go func() {
+			timer := time.NewTimer(codexHTTPStreamIdleTimeout)
+			defer timer.Stop()
+			for {
+				select {
+				case <-timer.C:
+					idleTimedOut.Store(true)
+					helps.LogWithRequestID(ctx).Warnf("codex executor: stream idle timeout after %s without upstream data, aborting read", codexHTTPStreamIdleTimeout)
+					_ = httpResp.Body.Close()
+					return
+				case <-idleReset:
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					timer.Reset(codexHTTPStreamIdleTimeout)
+				case <-streamDone:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+
 		for scanner.Scan() {
+			select {
+			case idleReset <- struct{}{}:
+			default:
+			}
 			line := applyCodexIdentityConfuseResponsePayload(scanner.Bytes(), identityState)
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			translatedLine := bytes.Clone(line)
@@ -1328,6 +1372,17 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					return
 				}
 			}
+		}
+		close(streamDone)
+		if idleTimedOut.Load() {
+			idleErr := statusErr{code: http.StatusRequestTimeout, msg: `{"error":{"message":"upstream stream idle timeout","type":"server_error","code":"stream_idle_timeout"}}`}
+			helps.RecordAPIResponseError(ctx, e.cfg, idleErr)
+			reporter.PublishFailure(ctx, idleErr)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: idleErr}:
+			case <-ctx.Done():
+			}
+			return
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)

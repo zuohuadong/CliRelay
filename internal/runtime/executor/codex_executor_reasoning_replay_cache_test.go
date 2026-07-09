@@ -685,6 +685,70 @@ func TestCodexExecutorExecuteStreamRetriesWithoutClientReasoningEncryptedContent
 	}
 }
 
+func TestCodexExecutorExecuteStreamRetriesWithoutClientReasoningEncryptedContentOnHTTPInvalidSignature(t *testing.T) {
+	internalcache.ClearCodexReasoningReplayCache()
+	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
+
+	staleEncryptedContent := validCodexReasoningEncryptedContentForTestSeed(17)
+	var bodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, errRead := io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Fatalf("read body: %v", errRead)
+		}
+		bodies = append(bodies, body)
+		if len(bodies) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"The encrypted content located at input[0].summary could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","code":"invalid_request_error"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_2","object":"response","created_at":0,"status":"completed","model":"gpt-5.5","output":[]}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	streamResult, err := executor.ExecuteStream(context.Background(), &cliproxyauth.Auth{
+		ID: "auth-replay-switch-model-http-stream",
+		Attributes: map[string]string{
+			"base_url": server.URL,
+			"api_key":  "test",
+		},
+	}, cliproxyexecutor.Request{
+		Model: "gpt-5.5",
+		Payload: []byte(`{
+			"model":"gpt-5.5",
+			"metadata":{"user_id":"{\"device_id\":\"device-test\",\"account_uuid\":\"\",\"session_id\":\"session-switch-model-http\"}"},
+			"messages":[
+				{"role":"assistant","content":[{"type":"thinking","thinking":"previous model reasoning","signature":"` + staleEncryptedContent + `"},{"type":"text","text":"previous answer"}]},
+				{"role":"user","content":[{"type":"text","text":"continue on another model"}]}
+			]
+		}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("claude"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream setup error: %v", err)
+	}
+
+	for chunk := range streamResult.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream chunk error after HTTP invalid signature retry: %v", chunk.Err)
+		}
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("upstream request count = %d, want 2", len(bodies))
+	}
+	if got := gjson.GetBytes(bodies[0], "input.0.encrypted_content").String(); got != staleEncryptedContent {
+		t.Fatalf("first request encrypted_content = %q, want stale client signature; body=%s", got, string(bodies[0]))
+	}
+	if gjson.GetBytes(bodies[1], "input.0.encrypted_content").Exists() {
+		t.Fatalf("retry request should drop stale client encrypted_content; body=%s", string(bodies[1]))
+	}
+}
+
 func TestCodexExecutorReasoningReplayCacheReplaysFunctionCallForClaudeToolResult(t *testing.T) {
 	internalcache.ClearCodexReasoningReplayCache()
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)

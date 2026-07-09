@@ -1173,9 +1173,41 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			return nil, errClearReplay
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
-		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = newCodexStatusErr(httpResp.StatusCode, data)
-		return nil, err
+		if codexStatusErrorIsThinkingSignatureInvalid(httpResp.StatusCode, data) {
+			if retryBody, okDrop := dropOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body, "retry after upstream rejected thinking signature"); okDrop {
+				body = retryBody
+				httpResp, identityState, err = e.openCodexResponse(ctx, from, url, auth, req, originalPayloadSource, body, apiKey, true, httpClient)
+				if err != nil {
+					return nil, err
+				}
+				if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+					data, readErr = io.ReadAll(httpResp.Body)
+					if errClose := httpResp.Body.Close(); errClose != nil {
+						log.Errorf("codex executor: close response body error after invalid signature retry: %v", errClose)
+					}
+					if readErr != nil {
+						helps.RecordAPIResponseError(ctx, e.cfg, readErr)
+						return nil, readErr
+					}
+					data = applyCodexIdentityConfuseResponsePayload(data, identityState)
+					if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, data); errClearReplay != nil {
+						return nil, errClearReplay
+					}
+					helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+					helps.LogWithRequestID(ctx).Debugf("request error after invalid signature retry, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+					err = newCodexStatusErr(httpResp.StatusCode, data)
+					return nil, err
+				}
+			} else {
+				helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+				err = newCodexStatusErr(httpResp.StatusCode, data)
+				return nil, err
+			}
+		} else {
+			helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+			err = newCodexStatusErr(httpResp.StatusCode, data)
+			return nil, err
+		}
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {

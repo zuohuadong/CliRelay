@@ -106,6 +106,36 @@ func TestMCPGatewayGETReturnsCatalog(t *testing.T) {
 	}
 }
 
+func TestMCPGatewayEventStreamGETIsRejected(t *testing.T) {
+	server := newTestServer(t)
+
+	for _, tt := range []struct {
+		name      string
+		sessionID string
+	}{
+		{name: "with session", sessionID: "test-session"},
+		{name: "without session"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+			req.Header.Set("Authorization", "Bearer test-key")
+			req.Header.Set("Accept", "text/event-stream, application/json")
+			if tt.sessionID != "" {
+				req.Header.Set("Mcp-Session-Id", tt.sessionID)
+			}
+			rec := httptest.NewRecorder()
+			server.engine.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("GET /mcp event stream status = %d, body=%s", rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Allow"); got != http.MethodPost {
+				t.Fatalf("Allow header = %q, want %q", got, http.MethodPost)
+			}
+		})
+	}
+}
+
 func TestMCPGatewayRouteInfoRejectsUnknownConcreteTool(t *testing.T) {
 	server := newTestServer(t)
 

@@ -47,6 +47,10 @@ type mcpRouteDescriptor struct {
 
 func (s *Server) handleMCPGateway(c *gin.Context) {
 	if c != nil && c.Request != nil && c.Request.Method == http.MethodGet {
+		if requestAcceptsMCPSSE(c.Request) {
+			writeMCPMethodNotAllowed(c)
+			return
+		}
 		c.JSON(http.StatusOK, s.mcpGatewayCatalog(c))
 		return
 	}

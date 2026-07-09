@@ -22,7 +22,7 @@ func (s *Server) dispatchMCPJSONRPC(c *gin.Context, methodHandler func(c *gin.Co
 		return
 	}
 	if c.Request.Method != http.MethodPost {
-		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "MCP route requires POST"})
+		writeMCPMethodNotAllowed(c)
 		return
 	}
 
@@ -56,4 +56,27 @@ func (s *Server) dispatchMCPJSONRPC(c *gin.Context, methodHandler func(c *gin.Co
 		ID:      normalizedMCPGatewayID(req.ID),
 		Result:  result,
 	})
+}
+
+func requestAcceptsMCPSSE(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	for _, value := range r.Header.Values("Accept") {
+		for _, part := range strings.Split(value, ",") {
+			mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(part, ";", 2)[0]))
+			if mediaType == "text/event-stream" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func writeMCPMethodNotAllowed(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Header("Allow", http.MethodPost)
+	c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "MCP route requires POST"})
 }

@@ -329,8 +329,24 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 	}
 
 	httpResp, err := openStreamResponse(url, translated)
+	attemptTo := to
+	attemptTranslated := translated
+	attemptUseResponsesEndpoint := useResponsesEndpoint
+	allowEmptyStreamFallback := useResponsesEndpoint && len(fallbackTranslated) > 0
 	if err != nil {
-		return nil, err
+		if useResponsesEndpoint && len(fallbackTranslated) > 0 && astronShouldFallbackResponsesEndpointError(err) {
+			helps.LogWithRequestID(ctx).Debugf("astron code executor: /responses endpoint unavailable for model schema; retrying via /chat/completions: %v", err)
+			httpResp, err = openStreamResponse(fallbackURL, fallbackTranslated)
+			if err != nil {
+				return nil, err
+			}
+			attemptTo = fallbackTo
+			attemptTranslated = fallbackTranslated
+			attemptUseResponsesEndpoint = false
+			allowEmptyStreamFallback = false
+		} else {
+			return nil, err
+		}
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
@@ -437,7 +453,7 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 			return emitDone()
 		}
 
-		if scanResponse(httpResp, to, translated, useResponsesEndpoint, useResponsesEndpoint && len(fallbackTranslated) > 0) {
+		if scanResponse(httpResp, attemptTo, attemptTranslated, attemptUseResponsesEndpoint, allowEmptyStreamFallback) {
 			reporter.EnsurePublished(ctx)
 		}
 	}()
@@ -1069,6 +1085,23 @@ func jsonPayloadFromDataLine(line []byte) []byte {
 		return nil
 	}
 	return bytes.TrimSpace(line[idx+1:])
+}
+
+func astronShouldFallbackResponsesEndpointError(err error) bool {
+	if err == nil {
+		return false
+	}
+	statusCode := 0
+	if status, ok := err.(interface{ StatusCode() int }); ok {
+		statusCode = status.StatusCode()
+	}
+	if statusCode != http.StatusNotFound && statusCode != http.StatusBadRequest {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no any schema route found") ||
+		strings.Contains(msg, "schema route") ||
+		strings.Contains(msg, "model_not_found")
 }
 
 // astronCodeEndpointURL builds the upstream request URL for Astron Code.

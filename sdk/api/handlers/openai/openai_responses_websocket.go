@@ -39,10 +39,10 @@ const (
 	responsesWebsocketTimelineMaxBytes        = 1 << 20
 	responsesWebsocketTimelinePayloadMaxBytes = 64 << 10
 
-	// responsesWebsocketHeartbeatInterval 控制在等待上游数据时向下游 websocket
-	// 发送 response.in_progress 心跳的频率。防止客户端因长时间无数据而触发
-	// idle timeout（"正在思考"卡住）。
-	responsesWebsocketHeartbeatInterval = 15 * time.Second
+	// 下游 websocket 心跳：定期发送 ping frame 防止客户端 idle timeout
+	responsesWebsocketReadTimeout      = 60 * time.Second
+	responsesWebsocketWriteTimeout     = 10 * time.Second
+	responsesWebsocketHeartbeatInterval = 30 * time.Second
 )
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
@@ -239,6 +239,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 
 	wsDone := make(chan struct{})
 	defer close(wsDone)
+	startResponsesWebsocketHeartbeat(conn, wsDone, passthroughSessionID, responsesWebsocketHeartbeatInterval)
 
 	if h != nil && h.AuthManager != nil {
 		if exec, ok := h.AuthManager.Executor("codex"); ok && exec != nil {
@@ -456,6 +457,35 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			break
 		}
 	}
+}
+
+// startResponsesWebsocketHeartbeat 定期向下游客户端发送 websocket ping frame，
+// 防止客户端在等待上游响应期间因 idle timeout 断开连接（"正在思考"卡住）。
+// 同时设置读超时，如果客户端长时间无响应则关闭连接。
+func startResponsesWebsocketHeartbeat(conn *websocket.Conn, done <-chan struct{}, sessionID string, interval time.Duration) {
+	if conn == nil || interval <= 0 {
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(responsesWebsocketReadTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(responsesWebsocketReadTimeout))
+	})
+	ticker := time.NewTicker(interval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
+					log.Warnf("responses websocket: ping failed id=%s error=%v", sessionID, err)
+					_ = conn.Close()
+					return
+				}
+			}
+		}
+	}()
 }
 
 func websocketClientAddress(c *gin.Context) string {
@@ -1323,25 +1353,11 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 		return nil
 	}
 
-	heartbeatTicker := time.NewTicker(responsesWebsocketHeartbeatInterval)
-	defer heartbeatTicker.Stop()
-	heartbeatPayload := []byte(`{"type":"response.in_progress","response":{"status":"in_progress"}}`)
-
 	for {
 		select {
 		case <-c.Request.Context().Done():
 			cancel(c.Request.Context().Err())
 			return outputAccumulator.Output(), nil, false, c.Request.Context().Err()
-		case <-heartbeatTicker.C:
-			if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, heartbeatPayload, time.Now()); errWrite != nil {
-				log.Warnf(
-					"responses websocket: heartbeat write failed id=%s error=%v",
-					sessionID,
-					errWrite,
-				)
-				cancel(errWrite)
-				return outputAccumulator.Output(), nil, false, errWrite
-			}
 		case errMsg, ok := <-errs:
 			if !ok {
 				errs = nil

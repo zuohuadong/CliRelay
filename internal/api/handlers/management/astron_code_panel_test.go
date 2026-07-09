@@ -36,3 +36,45 @@ func TestGetAstronCodeKeysReturnsBillingMultiplier(t *testing.T) {
 		t.Fatalf("billing multiplier = %v, want 0.1", got)
 	}
 }
+
+func TestPutAstronCodeKeysDefaultsResponseEndpoint(t *testing.T) {
+	cfg := &config.Config{}
+	h := newBigModelCodingPanelTestHandler(t, cfg)
+
+	body := `[{"name":"astron-code","base-url":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v1","api-key-entries":[{"api-key":"sk-astron"}],"models":[{"name":"xopkimik26","alias":"kimi-k2.6"}]}]`
+	rec := runBigModelCodingPanelRequest(t, h, http.MethodPut, body, h.PutAstronCodeKeys)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(cfg.AstronCodeAPIKey) != 1 {
+		t.Fatalf("astron-code len = %d, want 1", len(cfg.AstronCodeAPIKey))
+	}
+	entry := cfg.AstronCodeAPIKey[0]
+	if !entry.ResponseEndpoint {
+		t.Fatal("expected response endpoint to default on")
+	}
+	if entry.IdentityFingerprint != "codex" {
+		t.Fatalf("identity fingerprint = %q, want codex", entry.IdentityFingerprint)
+	}
+}
+
+func TestPatchAstronCodeKeyRestoresResponseEndpoint(t *testing.T) {
+	cfg := &config.Config{
+		AstronCodeAPIKey: []config.OpenAICompatibility{{
+			Name: "astron-code",
+			APIKeyEntries: []config.OpenAICompatibilityAPIKey{{
+				APIKey: "sk-astron",
+			}},
+			Models: []config.OpenAICompatibilityModel{{Name: "xopkimik26", Alias: "kimi-k2.6"}},
+		}},
+	}
+	h := newBigModelCodingPanelTestHandler(t, cfg)
+
+	rec := runBigModelCodingPanelRequest(t, h, http.MethodPatch, `{"value":{"response-endpoint":false}}`, h.PatchAstronCodeKey)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !cfg.AstronCodeAPIKey[0].ResponseEndpoint {
+		t.Fatal("expected response endpoint to be restored")
+	}
+}

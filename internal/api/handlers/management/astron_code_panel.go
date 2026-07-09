@@ -275,6 +275,7 @@ func defaultAstronCodeEntry() config.OpenAICompatibility {
 		BaseURL:             astronCodeBaseURL,
 		TestModel:           astronCodeModel,
 		IdentityFingerprint: "codex",
+		ResponseEndpoint:    true,
 		Models: []config.OpenAICompatibilityModel{
 			{Name: astronCodeModel, Alias: astronCodeAlias},
 		},
@@ -297,6 +298,7 @@ func normalizeAstronCodeEntry(entry *config.OpenAICompatibility) {
 	entry.TestModel = strings.TrimSpace(entry.TestModel)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.IdentityFingerprint = "codex"
+	entry.ResponseEndpoint = true
 	ensureAstronCodeAlias(entry)
 }
 

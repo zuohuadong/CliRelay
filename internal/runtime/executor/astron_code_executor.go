@@ -1033,6 +1033,16 @@ func jsonPayloadFromDataLine(line []byte) []byte {
 func astronCodeEndpointURL(baseURL, endpoint string, useResponses bool) string {
 	base := strings.TrimSuffix(baseURL, "/")
 	if useResponses {
+		baseLower := strings.ToLower(base)
+		endpointLower := strings.ToLower(endpoint)
+		if strings.HasSuffix(baseLower, "/responses") {
+			if endpointLower == "/responses" {
+				return base
+			}
+			if strings.HasPrefix(endpointLower, "/responses/") {
+				return base + strings.TrimPrefix(endpoint, "/responses")
+			}
+		}
 		base = strings.Replace(base, "/v2", "/v1", 1)
 	}
 	return base + endpoint

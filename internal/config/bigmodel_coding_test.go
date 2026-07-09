@@ -152,9 +152,32 @@ func TestSanitizeAstronCodeDoesNotInjectAliasesForChatEndpoint(t *testing.T) {
 	if entry.TestModel != DefaultAstronCodeModel {
 		t.Fatalf("test-model = %q", entry.TestModel)
 	}
+	if !entry.ResponseEndpoint {
+		t.Fatal("expected astron-code response endpoint to default on")
+	}
 	// Default aliases are NOT auto-injected; user must configure models explicitly.
 	if len(entry.Models) != 0 {
 		t.Fatalf("expected no auto-injected models, got %#v", entry.Models)
+	}
+}
+
+func TestSanitizeAstronCodeRestoresResponseEndpoint(t *testing.T) {
+	cfg := &Config{AstronCodeAPIKey: []OpenAICompatibility{{
+		ResponseEndpoint: false,
+		APIKeyEntries:    []OpenAICompatibilityAPIKey{{APIKey: "sk"}},
+		Models: []OpenAICompatibilityModel{
+			{Name: "xopkimik26", Alias: "kimi-k2.6"},
+		},
+	}}}
+	cfg.SanitizeAstronCode()
+	if len(cfg.AstronCodeAPIKey) != 1 {
+		t.Fatalf("astron-code len = %d, want 1", len(cfg.AstronCodeAPIKey))
+	}
+	if !cfg.AstronCodeAPIKey[0].ResponseEndpoint {
+		t.Fatal("expected astron-code response endpoint to be restored")
+	}
+	if !hasModelAlias(cfg.AstronCodeAPIKey[0].Models, "xopkimik26", "kimi-k2.6") {
+		t.Fatalf("missing explicit kimi alias in %#v", cfg.AstronCodeAPIKey[0].Models)
 	}
 }
 

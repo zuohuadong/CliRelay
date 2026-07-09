@@ -14,6 +14,30 @@ func TestAstronCodeEndpointURLSwapsV2ToV1ForResponses(t *testing.T) {
 	}
 }
 
+func TestAstronCodeEndpointURLAcceptsFullResponsesEndpoint(t *testing.T) {
+	got := astronCodeEndpointURL(
+		"https://maas-coding-api.cn-huabei-1.xf-yun.com/v1/responses",
+		"/responses",
+		true,
+	)
+	want := "https://maas-coding-api.cn-huabei-1.xf-yun.com/v1/responses"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestAstronCodeEndpointURLAcceptsFullResponsesEndpointForCompact(t *testing.T) {
+	got := astronCodeEndpointURL(
+		"https://maas-coding-api.cn-huabei-1.xf-yun.com/v1/responses",
+		"/responses/compact",
+		true,
+	)
+	want := "https://maas-coding-api.cn-huabei-1.xf-yun.com/v1/responses/compact"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 func TestAstronCodeEndpointURLKeepsV2ForChat(t *testing.T) {
 	got := astronCodeEndpointURL(
 		"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",

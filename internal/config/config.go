@@ -1952,6 +1952,7 @@ func (cfg *Config) SanitizeAstronCode() {
 		}
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.IdentityFingerprint = "codex"
+		e.ResponseEndpoint = true
 		e.Models = ensureAstronCodeModels(e.Models, e.ResponseEndpoint)
 		out = append(out, e)
 	}

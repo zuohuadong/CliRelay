@@ -20,6 +20,9 @@ import (
 var officialModelPrices = []ModelPriceRow{
 	// --- OpenAI / Codex (codex channel, upstream OAuth) ---
 	{Model: "gpt-5.5", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
+	{Model: "gpt-5.6-sol", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
+	{Model: "gpt-5.6-terra", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
+	{Model: "gpt-5.6-luna", Mode: "token", InputPricePerM: 0.25, OutputPricePerM: 2, CachedPricePerM: 0.025},
 	{Model: "gpt-5.4", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
 	{Model: "gpt-5.4-mini", Mode: "token", InputPricePerM: 0.25, OutputPricePerM: 2, CachedPricePerM: 0.025},
 	{Model: "gpt-5.3-codex", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
@@ -37,7 +40,9 @@ var officialModelPrices = []ModelPriceRow{
 	{Model: "o4-mini", Mode: "token", InputPricePerM: 1.1, OutputPricePerM: 4.4, CachedPricePerM: 0.275},
 
 	// --- OpenAI image generation ---
+	{Model: "gpt-image-1.5", Mode: "call", PricePerCall: 0.04},
 	{Model: "gpt-image-2", Mode: "call", PricePerCall: 0.04},
+	{Model: "gpt-image-2-vip", Mode: "call", PricePerCall: 0.04},
 	{Model: "dall-e-3", Mode: "call", PricePerCall: 0.04},
 
 	// --- Anthropic Claude (claude channel) ---

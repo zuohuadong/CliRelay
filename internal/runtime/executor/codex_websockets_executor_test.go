@@ -273,6 +273,87 @@ func TestCodexWebsocketsExecuteStreamMapsMessageTooBigClose(t *testing.T) {
 	}
 }
 
+func TestCodexWebsocketShouldFallbackToHTTP(t *testing.T) {
+	cases := []struct {
+		status int
+		want   bool
+	}{
+		{http.StatusUpgradeRequired, true},
+		{http.StatusBadGateway, true},
+		{http.StatusServiceUnavailable, true},
+		{http.StatusGatewayTimeout, true},
+		{http.StatusOK, false},
+		{http.StatusBadRequest, false},
+		{http.StatusUnauthorized, false},
+		{http.StatusForbidden, false},
+		{http.StatusNotFound, false},
+		{http.StatusTooManyRequests, false},
+		{http.StatusInternalServerError, false},
+	}
+	for _, tc := range cases {
+		if got := codexWebsocketShouldFallbackToHTTP(tc.status); got != tc.want {
+			t.Fatalf("codexWebsocketShouldFallbackToHTTP(%d) = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+}
+
+func TestCodexWebsocketsExecuteStreamFallsBackToHTTPOn502(t *testing.T) {
+	var httpReached = make(chan struct{}, 1)
+	// GET = websocket dial attempt -> return 502 so the executor falls back to HTTP.
+	// POST = HTTP fallback -> serve a minimal completed SSE response.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("request path = %s, want /responses", r.URL.Path)
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if r.Method == http.MethodGet {
+			// Simulate the Cloudflare 502 the user observed on the wss:// upgrade.
+			http.Error(w, "502 Bad Gateway: error code: 502", http.StatusBadGateway)
+			return
+		}
+		select {
+		case httpReached <- struct{}{}:
+		default:
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","created_at":0,"status":"completed","model":"gpt-5-codex","output":[]}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+	auth := &cliproxyauth.Auth{ID: "auth-1", Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5-codex",
+		Payload: []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":"hello"}]}`),
+	}
+	opts := cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FromString("openai-response"),
+		ResponseFormat: sdktranslator.FromString("openai-response"),
+	}
+
+	result, err := exec.ExecuteStream(context.Background(), auth, req, opts)
+	if err != nil {
+		t.Fatalf("ExecuteStream error = %v; expected HTTP fallback after 502 websocket upgrade failure", err)
+	}
+
+	select {
+	case _, ok := <-result.Chunks:
+		if !ok {
+			// Stream closed cleanly after the terminal event; that's an acceptable fallback outcome.
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stream chunk from HTTP fallback")
+	}
+
+	select {
+	case <-httpReached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HTTP fallback endpoint was never reached after 502 websocket upgrade failure")
+	}
+}
+
 func TestCodexWebsocketsUpstreamDisconnectChanSignalsOnInvalidate(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

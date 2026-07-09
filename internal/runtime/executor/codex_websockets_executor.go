@@ -267,7 +267,8 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		if respHS != nil {
 			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
 		}
-		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
+		if respHS != nil && codexWebsocketShouldFallbackToHTTP(respHS.StatusCode) {
+			log.Infof("codex websockets executor: falling back to HTTP transport after websocket upgrade failure (status=%d url=%s)", respHS.StatusCode, wsURL)
 			return e.CodexExecutor.Execute(ctx, auth, req, opts)
 		}
 		if respHS != nil && respHS.StatusCode > 0 {
@@ -498,10 +499,17 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		if respHS != nil {
 			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
 		}
-		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
+		if respHS != nil && codexWebsocketShouldFallbackToHTTP(respHS.StatusCode) {
+			log.Infof("codex websockets executor: falling back to HTTP transport after websocket upgrade failure (status=%d url=%s)", respHS.StatusCode, wsURL)
+			if sess != nil {
+				sess.reqMu.Unlock()
+			}
 			return e.CodexExecutor.ExecuteStream(ctx, auth, req, opts)
 		}
 		if respHS != nil && respHS.StatusCode > 0 {
+			if sess != nil {
+				sess.reqMu.Unlock()
+			}
 			return nil, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
 		}
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
@@ -867,6 +875,24 @@ func buildCodexResponsesWebsocketURL(httpURL string) (string, error) {
 		return "", fmt.Errorf("codex websockets executor: responses websocket URL host is empty")
 	}
 	return parsed.String(), nil
+}
+
+// codexWebsocketShouldFallbackToHTTP reports whether a failed websocket upgrade
+// should fall back to the legacy HTTP executor. The HTTP endpoint may still be
+// reachable when the websocket transport is unavailable: the origin rejects the
+// upgrade (426 Upgrade Required), or a gateway/CDN returns a 5xx availability
+// error such as 502 Bad Gateway, 503 Service Unavailable, or 504 Gateway
+// Timeout while proxying the websocket handshake.
+func codexWebsocketShouldFallbackToHTTP(status int) bool {
+	switch status {
+	case http.StatusUpgradeRequired,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func applyCodexPromptCacheHeaders(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, rawJSON []byte) ([]byte, http.Header) {

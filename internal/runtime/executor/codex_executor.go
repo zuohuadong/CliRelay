@@ -35,7 +35,7 @@ import (
 )
 
 const (
-	codexUserAgent                    = "codex-tui/0.142.5 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.142.5)"
+	codexUserAgent                    = "codex-tui/0.143.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.143.0)"
 	codexOriginator                   = "codex-tui"
 	codexDefaultImageToolModel        = "gpt-image-2"
 	codexCompactResponseHeaderTimeout = 30 * time.Second

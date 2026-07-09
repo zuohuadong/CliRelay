@@ -100,6 +100,48 @@ func registerSchedulerModels(t *testing.T, provider string, model string, authID
 	})
 }
 
+func TestSchedulerPickTransientModelBlockReturnsCooldownError(t *testing.T) {
+	const (
+		provider = "astron-code"
+		model    = "deepseek-v4-pro"
+		authID   = "transient-block-auth"
+	)
+
+	registerSchedulerModels(t, provider, model, authID)
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	if _, errRegister := manager.Register(context.Background(), &Auth{
+		ID:       authID,
+		Provider: provider,
+		Status:   StatusActive,
+	}); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+
+	manager.MarkResult(context.Background(), Result{
+		AuthID:   authID,
+		Provider: provider,
+		Model:    model,
+		Success:  false,
+		Error: &Error{
+			Code:       "upstream_error",
+			Message:    "temporary upstream failure",
+			HTTPStatus: http.StatusServiceUnavailable,
+		},
+	})
+
+	got, errPick := manager.scheduler.pickSingle(context.Background(), provider, model, cliproxyexecutor.Options{}, nil)
+	if got != nil {
+		t.Fatalf("pickSingle() auth = %v, want nil", got)
+	}
+	var cooldownErr *modelCooldownError
+	if !errors.As(errPick, &cooldownErr) {
+		t.Fatalf("pickSingle() error = %T %v, want modelCooldownError", errPick, errPick)
+	}
+	if cooldownErr.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("cooldown status = %d, want %d", cooldownErr.StatusCode(), http.StatusTooManyRequests)
+	}
+}
+
 func TestSchedulerPick_RoundRobinHighestPriority(t *testing.T) {
 	t.Parallel()
 

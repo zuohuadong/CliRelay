@@ -126,6 +126,77 @@ func (e *openAICompatPoolExecutor) StreamModels() []string {
 	return out
 }
 
+func TestOpenAICompatAliasPoolStreamFallsThroughAfterInitialModelError(t *testing.T) {
+	const (
+		provider = internalconfig.DefaultAstronCodeProviderName
+		alias    = "deepseek-v4-pro"
+		first    = internalconfig.DefaultAstronCodeModel
+		second   = "xopdeepseekv4pro"
+	)
+
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		AstronCodeAPIKey: []internalconfig.OpenAICompatibility{{
+			Name:             provider,
+			ResponseEndpoint: true,
+			APIKeyEntries:    []internalconfig.OpenAICompatibilityAPIKey{{APIKey: "astron-key"}},
+			Models: []internalconfig.OpenAICompatibilityModel{
+				{Name: first, Alias: alias},
+				{Name: second, Alias: alias},
+			},
+		}},
+	})
+
+	executor := &openAICompatPoolExecutor{
+		id: provider,
+		streamFirstErrors: map[string]error{
+			first: &Error{Code: "upstream_error", Message: "temporary upstream failure", HTTPStatus: http.StatusServiceUnavailable},
+		},
+	}
+	manager.RegisterExecutor(executor)
+
+	auth := &Auth{
+		ID:       "astron-alias-pool-auth",
+		Provider: provider,
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"api_key":      "astron-key",
+			"provider_key": provider,
+			"compat_name":  provider,
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, provider, []*registry.ModelInfo{{ID: alias}, {ID: first}, {ID: second}})
+	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+	manager.RefreshSchedulerEntry(auth.ID)
+
+	stream, err := manager.ExecuteStream(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	if stream == nil || stream.Chunks == nil {
+		t.Fatalf("ExecuteStream() returned nil stream")
+	}
+
+	var got []byte
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream chunk error: %v", chunk.Err)
+		}
+		got = append(got, chunk.Payload...)
+	}
+	if string(got) != second {
+		t.Fatalf("stream payload = %q, want %q", string(got), second)
+	}
+	if models := executor.StreamModels(); len(models) != 2 || models[0] != first || models[1] != second {
+		t.Fatalf("stream models = %v, want [%s %s]", models, first, second)
+	}
+}
+
 type authScopedOpenAICompatPoolExecutor struct {
 	id string
 

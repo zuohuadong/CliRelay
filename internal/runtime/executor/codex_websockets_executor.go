@@ -741,7 +741,39 @@ func mapCodexWebsocketReadError(err error) error {
 	if errors.As(err, &closeErr) && closeErr.Code == websocket.CloseMessageTooBig {
 		return statusErr{code: http.StatusRequestEntityTooLarge, msg: `{"error":{"message":"upstream websocket message too big","type":"invalid_request_error","code":"message_too_big"}}`}
 	}
+	// Map upstream disconnects without a proper close handshake (TCP reset,
+	// broken pipe, unexpected EOF, abnormal close) to a replayable 408 so the
+	// handler can retry the request on a fresh connection when no output has
+	// been forwarded to the client yet.
+	if isCodexWebsocketDirtyDisconnect(err) {
+		return statusErr{code: http.StatusRequestTimeout, msg: `{"error":{"message":"stream closed before response.completed","type":"server_error","code":"upstream_disconnected"}}`}
+	}
 	return err
+}
+
+// isCodexWebsocketDirtyDisconnect reports whether err represents an upstream
+// websocket that went away without a clean close handshake.
+func isCodexWebsocketDirtyDisconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		switch closeErr.Code {
+		case websocket.CloseNormalClosure, websocket.CloseMessageTooBig:
+			return false
+		}
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "connection reset") ||
+		strings.Contains(text, "broken pipe") ||
+		strings.Contains(text, "connection aborted") ||
+		strings.Contains(text, "websocket: close") ||
+		strings.Contains(text, "forcibly closed")
 }
 
 func buildCodexWebsocketRequestBody(body []byte) []byte {

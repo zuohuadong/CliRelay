@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -270,6 +271,49 @@ func TestCodexWebsocketsExecuteStreamMapsMessageTooBigClose(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for error stream chunk")
+	}
+}
+
+func TestMapCodexWebsocketReadErrorMapsDirtyDisconnects(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int // expected status code; 0 means error should pass through unchanged
+	}{
+		{"nil", nil, 0},
+		{"EOF", io.EOF, http.StatusRequestTimeout},
+		{"UnexpectedEOF", io.ErrUnexpectedEOF, http.StatusRequestTimeout},
+		{"close abnormal", &websocket.CloseError{Code: websocket.CloseAbnormalClosure, Text: "Connection reset without closing handshake"}, http.StatusRequestTimeout},
+		{"close internal error", &websocket.CloseError{Code: websocket.CloseInternalServerErr, Text: ""}, http.StatusRequestTimeout},
+		{"close going away", &websocket.CloseError{Code: websocket.CloseGoingAway, Text: ""}, http.StatusRequestTimeout},
+		{"close normal", &websocket.CloseError{Code: websocket.CloseNormalClosure, Text: ""}, 0},
+		{"connection reset by peer", errors.New("read tcp 127.0.0.1:1234->10.0.0.1:443: read: connection reset by peer"), http.StatusRequestTimeout},
+		{"broken pipe", errors.New("write tcp: broken pipe"), http.StatusRequestTimeout},
+		{"message too big", &websocket.CloseError{Code: websocket.CloseMessageTooBig, Text: "too big"}, http.StatusRequestEntityTooLarge},
+		{"unrelated error", errors.New("some other error"), 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mapped := mapCodexWebsocketReadError(tc.err)
+			if tc.want == 0 {
+				if mapped != tc.err {
+					t.Fatalf("expected error to pass through unchanged, got %v", mapped)
+				}
+				return
+			}
+			se, ok := mapped.(statusErr)
+			if !ok {
+				t.Fatalf("expected statusErr, got %T: %v", mapped, mapped)
+			}
+			if se.StatusCode() != tc.want {
+				t.Fatalf("status = %d, want %d", se.StatusCode(), tc.want)
+			}
+			if tc.want == http.StatusRequestTimeout {
+				if !strings.Contains(se.Error(), "stream closed before response.completed") {
+					t.Fatalf("error text = %q, want it to contain 'stream closed before response.completed' for replay", se.Error())
+				}
+			}
+		})
 	}
 }
 

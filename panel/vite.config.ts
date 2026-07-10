@@ -51,19 +51,42 @@ export default defineConfig({
     },
   },
   build: {
-    rollupOptions: {
+    target: ["chrome107", "edge107", "firefox104", "safari16"],
+    rolldownOptions: {
       input: {
         main: path.resolve(__dirname, "index.html"),
         manage: path.resolve(__dirname, "manage.html"),
       },
       output: {
-        manualChunks: {
-          "vendor-react": ["react", "react-dom", "react-router-dom"],
-          "vendor-i18n": ["i18next", "react-i18next", "goey-toast"],
-          "vendor-echarts": ["echarts", "echarts-for-react"],
-          "vendor-animation": ["framer-motion", "gsap"],
-          "vendor-charts": ["chart.js", "react-chartjs-2"],
-          "vendor-markdown": ["react-markdown", "react-syntax-highlighter", "remark-gfm"],
+        codeSplitting: {
+          includeDependenciesRecursively: true,
+          groups: [
+            {
+              name: "vendor-react",
+              test: /node_modules[\\/](?:react|react-dom|react-router-dom)(?:[\\/]|$)/,
+            },
+            {
+              name: "vendor-animation",
+              test: /node_modules[\\/](?:framer-motion|gsap)(?:[\\/]|$)/,
+            },
+            {
+              name: "vendor-i18n",
+              test: /node_modules[\\/](?:i18next|react-i18next|goey-toast)(?:[\\/]|$)/,
+            },
+            {
+              name: "vendor-echarts",
+              test: /node_modules[\\/](?:echarts|echarts-for-react)(?:[\\/]|$)/,
+            },
+            {
+              name: "vendor-charts",
+              test: /node_modules[\\/](?:chart.js|react-chartjs-2)(?:[\\/]|$)/,
+            },
+            {
+              name: "vendor-markdown",
+              test:
+                /node_modules[\\/](?:react-markdown|react-syntax-highlighter|remark-gfm)(?:[\\/]|$)/,
+            },
+          ],
         },
       },
     },

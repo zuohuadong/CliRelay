@@ -1,4 +1,4 @@
-FROM oven/bun:1.2 AS panel-builder
+FROM oven/bun:1.3.14 AS panel-builder
 
 WORKDIR /panel
 
@@ -11,7 +11,7 @@ COPY panel/ .
 ARG VERSION=dev
 ENV VITE_APP_VERSION=${VERSION}
 
-RUN bunx vite build
+RUN bun run build
 
 FROM alpine:3.23 AS tzdata-provider
 

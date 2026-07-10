@@ -130,7 +130,7 @@ CliRelay 后端新增 Docker-first 自动更新能力，需要前端在用户登
 
 ### 回滚策略（如适用）
 
-- 删除 `management.html`、`src/management.tsx`，并从 `vite.config.ts` 移除多页面 `rollupOptions.input` 与 SCSS/CSS Modules 配置。
+- 删除 `management.html`、`src/management.tsx`，并从 `vite.config.ts` 移除多页面 `rolldownOptions.input` 与 SCSS/CSS Modules 配置。
 - 移除历史兼容入口目录（`src/pages/` 等）及对应新增依赖后重新 `bun install`。
 
 ## 2026-02-22 · 业务功能补齐（保持默认入口为 Tailwind 后台）
@@ -152,6 +152,6 @@ CliRelay 后端新增 Docker-first 自动更新能力，需要前端在用户登
 
 ### 回滚策略（如适用）
 
-- 如需恢复双入口产物：在 `vite.config.ts` 的 `build.rollupOptions.input` 中重新加入 `management.html`。
+- 如需恢复双入口产物：在 `vite.config.ts` 的 `build.rolldownOptions.input` 中重新加入 `management.html`。
 
 <!-- PROJECT-OVERRIDES:END -->

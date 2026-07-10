@@ -1,9 +1,9 @@
 <p align="center">
   <img src="https://img.shields.io/badge/React-19.2-61DAFB?style=for-the-badge&logo=react&logoColor=white" alt="React" />
-  <img src="https://img.shields.io/badge/Vite-7.3-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite" />
+  <img src="https://img.shields.io/badge/Vite-8.1-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite" />
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/Tailwind_CSS-4.1-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white" alt="Tailwind CSS" />
-  <img src="https://img.shields.io/badge/Bun-1.2-FBF0DF?style=for-the-badge&logo=bun&logoColor=black" alt="Bun" />
+  <img src="https://img.shields.io/badge/Tailwind_CSS-4.3-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white" alt="Tailwind CSS" />
+  <img src="https://img.shields.io/badge/Bun-1.3-FBF0DF?style=for-the-badge&logo=bun&logoColor=black" alt="Bun" />
 </p>
 
 <h1 align="center">🖥️ Code Proxy · Admin Dashboard</h1>
@@ -215,8 +215,8 @@ The gallery below uses the latest 13 management-panel screenshots and maps each 
 | Category             | Technology                                     |
 | :------------------- | :--------------------------------------------- |
 | **Framework**        | React 19.2 + TypeScript 5.9                    |
-| **Build Tool**       | Vite 7.3                                       |
-| **Package Manager**  | Bun 1.2                                        |
+| **Build Tool**       | Vite 8.1                                       |
+| **Package Manager**  | Bun 1.3                                        |
 | **Styling**          | Tailwind CSS v4                                |
 | **State Management** | Zustand                                        |
 | **Charts**           | Apache ECharts                                 |
@@ -229,7 +229,7 @@ The gallery below uses the latest 13 management-panel screenshots and maps each 
 
 ### Prerequisites
 
-- [Bun](https://bun.sh/) ≥ 1.2 (or Node.js ≥ 18)
+- [Bun](https://bun.sh/) 1.3.14 (recommended and pinned), or Node.js `^20.19.0 || >=22.12.0`
 - A running [CliRelay](https://github.com/kittors/CliRelay) backend instance
 
 ### Install & Run
@@ -260,7 +260,7 @@ bun run preview
 
 ### Quality Checks
 
-Pull requests to `dev` and `main` run lint, low-concurrency Vitest, build, and bundle diff in GitHub Actions. The frontend package manager is Bun (`packageManager: bun@1.2.2`); use `bun run ...` commands for local spot checks and leave full CI validation to GitHub Actions when local hardware is constrained.
+Pull requests to `dev` and `main` run lint, low-concurrency Vitest, build, and bundle diff in GitHub Actions. The frontend package manager is Bun (`packageManager: bun@1.3.14`); use `bun run ...` commands for local spot checks and leave full CI validation to GitHub Actions when local hardware is constrained.
 
 ## 📁 Project Structure
 

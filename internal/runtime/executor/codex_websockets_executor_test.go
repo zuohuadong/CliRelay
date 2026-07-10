@@ -40,6 +40,66 @@ func TestBuildCodexWebsocketRequestBodyPreservesPreviousResponseID(t *testing.T)
 	}
 }
 
+func TestCodexWebsocketSessionReadChannelIsBoundedAndCancelsBlockedProducer(t *testing.T) {
+	readCh := newCodexWebsocketReadChannel()
+	if got := cap(readCh); got > 32 {
+		t.Fatalf("session read channel capacity = %d, want at most 32", got)
+	}
+
+	for i := 0; i < cap(readCh); i++ {
+		readCh <- codexWebsocketRead{payload: []byte("queued")}
+	}
+
+	done := make(chan struct{})
+	queued := make(chan bool, 1)
+	go func() {
+		queued <- enqueueCodexWebsocketRead(readCh, done, codexWebsocketRead{payload: []byte("blocked")})
+	}()
+
+	select {
+	case delivered := <-queued:
+		t.Fatalf("full session read channel producer returned early: delivered=%t", delivered)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(done)
+	select {
+	case delivered := <-queued:
+		if delivered {
+			t.Fatal("blocked session read was delivered after cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked session read did not unblock after cancellation")
+	}
+}
+
+func TestCodexWebsocketSessionIgnoresStaleReaderAfterReconnect(t *testing.T) {
+	sess := &codexWebsocketSession{}
+	oldConn := &websocket.Conn{}
+	newConn := &websocket.Conn{}
+	readCh := newCodexWebsocketReadChannel()
+
+	sess.setActiveForConn(oldConn, readCh)
+	sess.setActiveForConn(newConn, readCh)
+
+	if delivered := sess.enqueueActiveRead(oldConn, codexWebsocketRead{conn: oldConn, err: io.ErrUnexpectedEOF}); delivered {
+		t.Fatal("stale reader error was delivered to the replacement request")
+	}
+	sess.clearActiveForConn(oldConn, readCh)
+
+	if delivered := sess.enqueueActiveRead(newConn, codexWebsocketRead{conn: newConn, msgType: websocket.TextMessage, payload: []byte(`{"type":"response.completed"}`)}); !delivered {
+		t.Fatal("active replacement reader did not deliver response.completed")
+	}
+	select {
+	case event := <-readCh:
+		if event.conn != newConn || !bytes.Contains(event.payload, []byte("response.completed")) {
+			t.Fatalf("replacement reader delivered wrong event: conn=%p payload=%s", event.conn, event.payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for replacement connection response.completed")
+	}
+}
+
 func TestCodexWebsocketsExecutePreservesPreviousResponseIDUpstream(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	capturedPayload := make(chan []byte, 1)

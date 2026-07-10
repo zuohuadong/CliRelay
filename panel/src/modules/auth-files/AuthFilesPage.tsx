@@ -4,7 +4,12 @@ import { useNavigationType, useSearchParams } from "react-router-dom";
 import { ConfirmModal } from "@/modules/ui/ConfirmModal";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/modules/ui/Tabs";
 import type { AuthFileItem } from "@/lib/http/types";
-import { proxiesApi, type ProxyPoolEntry } from "@/lib/http/apis/proxies";
+import {
+  egressApi,
+  type EgressBinding,
+  type EgressEndpoint,
+  type EgressOverview,
+} from "@/lib/http/apis/egress";
 import { OAuthLoginDialog } from "@/modules/oauth/OAuthLoginDialog";
 import { AuthFileDetailModal } from "@/modules/auth-files/components/AuthFileDetailModal";
 import { AuthFilesExcludedTab } from "@/modules/auth-files/components/AuthFilesExcludedTab";
@@ -125,7 +130,10 @@ export function AuthFilesPage() {
     refreshUsageDataForFiles,
   } = useAuthFilesDataState();
 
-  const [confirm, setConfirm] = useState<null | { type: "deleteSelection"; names: string[] }>(null);
+  const [confirm, setConfirm] = useState<null | {
+    type: "deleteSelection";
+    names: string[];
+  }>(null);
 
   const [oauthDialogOpen, setOauthDialogOpen] = useState(false);
   const [oauthDialogDefaultTab, setOauthDialogDefaultTab] = useState<OAuthDialogTab>("codex");
@@ -136,7 +144,9 @@ export function AuthFilesPage() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [selectedFileNames, setSelectedFileNames] = useState<string[]>([]);
-  const [proxyPoolEntries, setProxyPoolEntries] = useState<ProxyPoolEntry[]>([]);
+  const [egressEndpoints, setEgressEndpoints] = useState<EgressEndpoint[]>([]);
+  const [egressBindings, setEgressBindings] = useState<EgressBinding[]>([]);
+  const [egressOverview, setEgressOverview] = useState<EgressOverview | null>(null);
   const [tagsEditorFileName, setTagsEditorFileName] = useState<string | null>(null);
   const [refreshingCurrentPage, setRefreshingCurrentPage] = useState(false);
   const isMountedRef = useRef(true);
@@ -271,15 +281,33 @@ export function AuthFilesPage() {
     }
   }, [searchParams]);
 
-  useEffect(() => {
-    void proxiesApi
-      .list()
-      .then(setProxyPoolEntries)
-      .catch(() => setProxyPoolEntries([]));
+  const refreshEgressState = useCallback(async () => {
+    await Promise.all([egressApi.getOverview(), egressApi.listEndpoints(), egressApi.listBindings()])
+      .then(([nextOverview, nextEndpoints, nextBindings]) => {
+        setEgressOverview(nextOverview);
+        setEgressEndpoints(nextEndpoints);
+        setEgressBindings(nextBindings);
+      })
+      .catch(() => {
+        setEgressOverview(null);
+        setEgressEndpoints([]);
+        setEgressBindings([]);
+      });
   }, []);
 
   useEffect(() => {
-    writeAuthFilesUiState({ tab, filter, tagFilter, statusFilter, search, page });
+    void refreshEgressState();
+  }, [refreshEgressState]);
+
+  useEffect(() => {
+    writeAuthFilesUiState({
+      tab,
+      filter,
+      tagFilter,
+      statusFilter,
+      search,
+      page,
+    });
   }, [filter, page, search, statusFilter, tab, tagFilter]);
 
   useEffect(() => {
@@ -380,7 +408,10 @@ export function AuthFilesPage() {
         return provider ? [{ file, provider }] : [];
       });
       if (!targets.length) return;
-      await runQuotaRefreshBatch(targets, { markAsAutoRefreshing: true, showLoading: true });
+      await runQuotaRefreshBatch(targets, {
+        markAsAutoRefreshing: true,
+        showLoading: true,
+      });
     },
     [runQuotaRefreshBatch, tab],
   );
@@ -399,7 +430,8 @@ export function AuthFilesPage() {
 
   const refreshAfterOAuthAuthorized = useCallback(async () => {
     await waitForAuthFilesChanged();
-  }, [waitForAuthFilesChanged]);
+    await refreshEgressState();
+  }, [refreshEgressState, waitForAuthFilesChanged]);
 
   const handleUploadAndRefreshQuota = useCallback(
     async (input: FileList | File[] | null) => {
@@ -496,6 +528,23 @@ export function AuthFilesPage() {
   const detailModelOwnerGroup = detailModelOwnerValue
     ? (modelOwnerGroups.find((group) => group.value === detailModelOwnerValue) ?? null)
     : null;
+  const detailEgressBinding = detailFile
+    ? (egressBindings.find(
+        (binding) =>
+          binding.authId === detailFile.name || binding.authId.endsWith(`/${detailFile.name}`),
+      ) ?? null)
+    : null;
+  const oauthEgressEndpoints = useMemo(() => {
+    const occupiedEndpointIds = new Set(
+      egressBindings
+        .filter((binding) => binding.bound && binding.endpointId)
+        .map((binding) => binding.endpointId),
+    );
+    return egressEndpoints.filter(
+      (endpoint) =>
+        endpoint.eligibility?.selectable === true && !occupiedEndpointIds.has(endpoint.id),
+    );
+  }, [egressBindings, egressEndpoints]);
   const {
     translateQuotaText,
     formatPlanTypeLabel,
@@ -680,7 +729,7 @@ export function AuthFilesPage() {
         setPrefixProxyEditor={setPrefixProxyEditor}
         prefixProxyDirty={prefixProxyDirty}
         savePrefixProxy={savePrefixProxy}
-        proxyPoolEntries={proxyPoolEntries}
+        egressBinding={detailEgressBinding}
         channelEditor={channelEditor}
         setChannelEditor={setChannelEditor}
         saveChannelEditor={saveChannelEditor}
@@ -711,7 +760,9 @@ export function AuthFilesPage() {
       <OAuthLoginDialog
         open={oauthDialogOpen}
         defaultTab={oauthDialogDefaultTab}
-        proxyPoolEntries={proxyPoolEntries}
+        egressEndpoints={oauthEgressEndpoints}
+        egressEnabled={Boolean(egressOverview?.enabled)}
+        codexOAuthAllowed={Boolean(egressOverview?.readiness.codexOAuthAllowed)}
         onClose={() => setOauthDialogOpen(false)}
         onAuthorized={refreshAfterOAuthAuthorized}
       />
@@ -737,7 +788,9 @@ export function AuthFilesPage() {
       <ConfirmModal
         open={confirm !== null}
         title={t("auth_files.batch_delete_title")}
-        description={t("auth_files.batch_delete_confirm", { count: confirm?.names.length ?? 0 })}
+        description={t("auth_files.batch_delete_confirm", {
+          count: confirm?.names.length ?? 0,
+        })}
         confirmText={t("common.delete")}
         cancelText={t("common.cancel")}
         busy={deletingAll}

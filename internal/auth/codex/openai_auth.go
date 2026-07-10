@@ -60,6 +60,13 @@ func NewCodexAuthWithProxyURL(cfg *config.Config, proxyURL string) *CodexAuth {
 	}
 }
 
+// NewCodexAuthWithHTTPClient creates a Codex OAuth service with a caller-owned
+// transport. It is used by fail-closed egress flows that must not consult global
+// proxy settings or the host's default transport.
+func NewCodexAuthWithHTTPClient(client *http.Client) *CodexAuth {
+	return &CodexAuth{httpClient: client}
+}
+
 // GenerateAuthURL creates the OAuth authorization URL with PKCE (Proof Key for Code Exchange).
 // It constructs the URL with the necessary parameters, including the client ID,
 // response type, redirect URI, scopes, and PKCE challenge.

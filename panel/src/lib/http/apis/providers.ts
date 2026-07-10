@@ -149,7 +149,6 @@ export const providersApi = {
         const name = normalizeString(item.name) ?? undefined;
         const prefix = normalizeString(item.prefix) ?? undefined;
         const baseUrl = normalizeString(item["base-url"] ?? item.baseUrl) ?? undefined;
-        const proxyId = normalizeString(item["proxy-id"] ?? item.proxyId) ?? undefined;
         const billingMultiplier = normalizePositiveNumber(
           item["billing-multiplier"] ?? item.billingMultiplier,
         );
@@ -163,7 +162,6 @@ export const providersApi = {
           ...(name ? { name } : {}),
           ...(prefix ? { prefix } : {}),
           ...(baseUrl ? { baseUrl } : {}),
-          ...(proxyId ? { proxyId } : {}),
           ...(billingMultiplier !== undefined ? { billingMultiplier } : {}),
           ...(headers ? { headers } : {}),
           ...(models ? { models } : {}),
@@ -195,7 +193,6 @@ export const providersApi = {
         const prefix = normalizeString(item.prefix) ?? undefined;
         const baseUrl = normalizeString(item["base-url"] ?? item.baseUrl) ?? undefined;
         const proxyUrl = normalizeString(item["proxy-url"] ?? item.proxyUrl) ?? undefined;
-        const proxyId = normalizeString(item["proxy-id"] ?? item.proxyId) ?? undefined;
         const billingMultiplier = normalizePositiveNumber(
           item["billing-multiplier"] ?? item.billingMultiplier,
         );
@@ -210,7 +207,6 @@ export const providersApi = {
           ...(prefix ? { prefix } : {}),
           ...(baseUrl ? { baseUrl } : {}),
           ...(proxyUrl ? { proxyUrl } : {}),
-          ...(proxyId ? { proxyId } : {}),
           ...(billingMultiplier !== undefined ? { billingMultiplier } : {}),
           ...(headers ? { headers } : {}),
           ...(models ? { models } : {}),
@@ -241,7 +237,6 @@ export const providersApi = {
         const name = normalizeString(item.name) ?? undefined;
         const prefix = normalizeString(item.prefix) ?? undefined;
         const proxyUrl = normalizeString(item["proxy-url"] ?? item.proxyUrl) ?? undefined;
-        const proxyId = normalizeString(item["proxy-id"] ?? item.proxyId) ?? undefined;
         const billingMultiplier = normalizePositiveNumber(
           item["billing-multiplier"] ?? item.billingMultiplier,
         );
@@ -254,7 +249,6 @@ export const providersApi = {
           ...(name ? { name } : {}),
           ...(prefix ? { prefix } : {}),
           ...(proxyUrl ? { proxyUrl } : {}),
-          ...(proxyId ? { proxyId } : {}),
           ...(billingMultiplier !== undefined ? { billingMultiplier } : {}),
           ...(headers ? { headers } : {}),
           ...(excludedModels ? { excludedModels } : {}),
@@ -285,7 +279,6 @@ export const providersApi = {
         const prefix = normalizeString(item.prefix) ?? undefined;
         const baseUrl = normalizeString(item["base-url"] ?? item.baseUrl) ?? undefined;
         const proxyUrl = normalizeString(item["proxy-url"] ?? item.proxyUrl) ?? undefined;
-        const proxyId = normalizeString(item["proxy-id"] ?? item.proxyId) ?? undefined;
         const billingMultiplier = normalizePositiveNumber(
           item["billing-multiplier"] ?? item.billingMultiplier,
         );
@@ -302,7 +295,6 @@ export const providersApi = {
           ...(prefix ? { prefix } : {}),
           ...(baseUrl ? { baseUrl } : {}),
           ...(proxyUrl ? { proxyUrl } : {}),
-          ...(proxyId ? { proxyId } : {}),
           ...(billingMultiplier !== undefined ? { billingMultiplier } : {}),
           ...(headers ? { headers } : {}),
           ...(models ? { models } : {}),
@@ -348,7 +340,6 @@ export const providersApi = {
         const forceGlobal = item["force-global"] === true || item.forceGlobal === true;
         const baseUrl = normalizeString(item["base-url"] ?? item.baseUrl) ?? undefined;
         const proxyUrl = normalizeString(item["proxy-url"] ?? item.proxyUrl) ?? undefined;
-        const proxyId = normalizeString(item["proxy-id"] ?? item.proxyId) ?? undefined;
         const billingMultiplier = normalizePositiveNumber(
           item["billing-multiplier"] ?? item.billingMultiplier,
         );
@@ -369,7 +360,6 @@ export const providersApi = {
           ...(forceGlobal ? { forceGlobal } : {}),
           ...(baseUrl ? { baseUrl } : {}),
           ...(proxyUrl ? { proxyUrl } : {}),
-          ...(proxyId ? { proxyId } : {}),
           ...(billingMultiplier !== undefined ? { billingMultiplier } : {}),
           ...(headers ? { headers } : {}),
           ...(models ? { models } : {}),
@@ -401,7 +391,6 @@ export const providersApi = {
         const prefix = normalizeString(item.prefix) ?? undefined;
         const baseUrl = normalizeString(item["base-url"] ?? item.baseUrl) ?? undefined;
         const proxyUrl = normalizeString(item["proxy-url"] ?? item.proxyUrl) ?? undefined;
-        const proxyId = normalizeString(item["proxy-id"] ?? item.proxyId) ?? undefined;
         const billingMultiplier = normalizePositiveNumber(
           item["billing-multiplier"] ?? item.billingMultiplier,
         );
@@ -413,7 +402,6 @@ export const providersApi = {
           ...(prefix ? { prefix } : {}),
           ...(baseUrl ? { baseUrl } : {}),
           ...(proxyUrl ? { proxyUrl } : {}),
-          ...(proxyId ? { proxyId } : {}),
           ...(billingMultiplier !== undefined ? { billingMultiplier } : {}),
           ...(headers ? { headers } : {}),
           ...(models ? { models } : {}),

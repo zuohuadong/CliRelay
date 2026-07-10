@@ -9,7 +9,6 @@ import {
 import { useTranslation } from "react-i18next";
 import { Check, Copy, RefreshCw } from "lucide-react";
 import { apiCallApi, getApiCallErrorMessage } from "@/lib/http/apis";
-import type { ProxyPoolEntry } from "@/lib/http/apis/proxies";
 import { Button } from "@/modules/ui/Button";
 import { Checkbox } from "@/modules/ui/Checkbox";
 import { TextInput } from "@/modules/ui/Input";
@@ -18,7 +17,6 @@ import { SearchableSelect } from "@/modules/ui/SearchableSelect";
 import { Select } from "@/modules/ui/Select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/modules/ui/Tabs";
 import { ToggleSwitch } from "@/modules/ui/ToggleSwitch";
-import { ProxyPoolSelect } from "@/modules/proxies/ProxyPoolSelect";
 import { KeyValueInputList } from "@/modules/providers/KeyValueInputList";
 import { ModelInputList } from "@/modules/providers/ModelInputList";
 import type { ProviderKeyDraft } from "@/modules/providers/providers-helpers";
@@ -52,7 +50,6 @@ interface ProviderKeyModalProps {
   editKeyHeaderCount: number;
   editKeyModelCount: number;
   editKeyExcludedCount: number;
-  proxyPoolEntries: ProxyPoolEntry[];
   copyText: (text: string) => Promise<void>;
   maskApiKey: (value: string) => string;
 }
@@ -91,7 +88,6 @@ export function ProviderKeyModal({
   editKeyHeaderCount,
   editKeyModelCount,
   editKeyExcludedCount,
-  proxyPoolEntries,
   copyText,
   maskApiKey,
 }: ProviderKeyModalProps) {
@@ -640,16 +636,6 @@ export function ProviderKeyModal({
                     />
                   </div>
                 )}
-                <div className="space-y-2">
-                  <ProxyPoolSelect
-                    value={keyDraft.proxyId}
-                    entries={proxyPoolEntries}
-                    onChange={(value) => setKeyDraft((prev) => ({ ...prev, proxyId: value }))}
-                    label={t("providers.proxy_pool_label")}
-                    hint={t("providers.proxy_pool_hint")}
-                    ariaLabel={t("providers.proxy_pool_label")}
-                  />
-                </div>
                 <div className="space-y-2">
                   <p className="text-xs font-semibold text-slate-700 dark:text-white/75">
                     {t("providers.proxy_url")}

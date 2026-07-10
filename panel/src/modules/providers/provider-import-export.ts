@@ -69,7 +69,9 @@ const sortRecord = (value?: Record<string, string>) => {
 };
 
 const sortExcludedModels = (value: unknown) =>
-  normalizeExcludedModels(value)?.slice().sort((left, right) => left.localeCompare(right));
+  normalizeExcludedModels(value)
+    ?.slice()
+    .sort((left, right) => left.localeCompare(right));
 
 const normalizeModelList = (
   value: unknown,
@@ -136,7 +138,6 @@ const normalizeEntryList = (
         apiKey,
         ...(entry.disabled ? { disabled: true } : {}),
         ...(normalizeString(entry.proxyUrl) ? { proxyUrl: normalizeString(entry.proxyUrl)! } : {}),
-        ...(normalizeString(entry.proxyId) ? { proxyId: normalizeString(entry.proxyId)! } : {}),
         ...(headers ? { headers } : {}),
       };
     })
@@ -156,7 +157,14 @@ const normalizeEntryList = (
 };
 
 const normalizeSimpleItem = (
-  kind: "bigmodel-coding" | "astron-code" | "gemini" | "claude" | "codex" | "opencode-go" | "vertex",
+  kind:
+    | "bigmodel-coding"
+    | "astron-code"
+    | "gemini"
+    | "claude"
+    | "codex"
+    | "opencode-go"
+    | "vertex",
   value: unknown,
 ): { item: ProviderSimpleConfig | null; duplicateCount: number } => {
   if (!isRecord(value)) return { item: null, duplicateCount: 0 };
@@ -174,9 +182,6 @@ const normalizeSimpleItem = (
       ...(baseUrl ? { baseUrl } : {}),
       ...(normalizeString(value["proxy-url"] ?? value.proxyUrl)
         ? { proxyUrl: normalizeString(value["proxy-url"] ?? value.proxyUrl)! }
-        : {}),
-      ...(normalizeString(value["proxy-id"] ?? value.proxyId)
-        ? { proxyId: normalizeString(value["proxy-id"] ?? value.proxyId)! }
         : {}),
       ...(headers ? { headers } : {}),
       ...(models ? { models } : {}),
@@ -213,15 +218,14 @@ const normalizeBedrockItem = (
       ...(normalizeString(value.name) ? { name: normalizeString(value.name)! } : {}),
       ...(normalizeString(value.prefix) ? { prefix: normalizeString(value.prefix)! } : {}),
       ...(normalizeString(value.region) ? { region: normalizeString(value.region)! } : {}),
-      ...((value["force-global"] === true || value.forceGlobal === true) ? { forceGlobal: true } : {}),
+      ...(value["force-global"] === true || value.forceGlobal === true
+        ? { forceGlobal: true }
+        : {}),
       ...(normalizeString(value["base-url"] ?? value.baseUrl)
         ? { baseUrl: normalizeString(value["base-url"] ?? value.baseUrl)! }
         : {}),
       ...(normalizeString(value["proxy-url"] ?? value.proxyUrl)
         ? { proxyUrl: normalizeString(value["proxy-url"] ?? value.proxyUrl)! }
-        : {}),
-      ...(normalizeString(value["proxy-id"] ?? value.proxyId)
-        ? { proxyId: normalizeString(value["proxy-id"] ?? value.proxyId)! }
         : {}),
       ...(headers ? { headers } : {}),
       ...(models ? { models } : {}),
@@ -229,11 +233,10 @@ const normalizeBedrockItem = (
         ? { excludedModels: sortExcludedModels(value["excluded-models"] ?? value.excludedModels) }
         : {}),
       ...(authMode === "sigv4" && accessKeyId ? { accessKeyId } : {}),
-      ...(authMode === "sigv4" && normalizeString(value["secret-access-key"] ?? value.secretAccessKey)
+      ...(authMode === "sigv4" &&
+      normalizeString(value["secret-access-key"] ?? value.secretAccessKey)
         ? {
-            secretAccessKey: normalizeString(
-              value["secret-access-key"] ?? value.secretAccessKey,
-            )!,
+            secretAccessKey: normalizeString(value["secret-access-key"] ?? value.secretAccessKey)!,
           }
         : {}),
       ...(authMode === "sigv4" && normalizeString(value["session-token"] ?? value.sessionToken)
@@ -292,9 +295,10 @@ const normalizeItems = <K extends ProviderImportKind>(
     if (kind === "bigmodel-coding" || kind === "astron-code" || kind === "openai") {
       const normalized = normalizeOpenAIItem(value);
       if (!normalized.item) return;
-      const key = kind === "bigmodel-coding" || kind === "astron-code"
-        ? getBigModelCodingItemKey(normalized.item)
-        : normalized.item.name.toLowerCase();
+      const key =
+        kind === "bigmodel-coding" || kind === "astron-code"
+          ? getBigModelCodingItemKey(normalized.item)
+          : normalized.item.name.toLowerCase();
       if (seen.has(key)) {
         duplicateCount += 1;
         return;
@@ -331,7 +335,9 @@ const normalizeItems = <K extends ProviderImportKind>(
 
   items.sort((left, right) => {
     const leftKey =
-      "apiKey" in left ? (left.name?.toLowerCase() ?? left.apiKey.toLowerCase()) : left.name.toLowerCase();
+      "apiKey" in left
+        ? (left.name?.toLowerCase() ?? left.apiKey.toLowerCase())
+        : left.name.toLowerCase();
     const rightKey =
       "apiKey" in right
         ? (right.name?.toLowerCase() ?? right.apiKey.toLowerCase())
@@ -428,7 +434,10 @@ export const prepareProviderImport = <K extends ProviderImportKind>(
   const next = normalizeItems(kind, envelope.items);
   const current = normalizeItems(kind, currentItems);
   const currentMap = new Map(
-    current.items.map((item) => [getItemKey(kind, item), JSON.stringify(serializeItem(kind, item))]),
+    current.items.map((item) => [
+      getItemKey(kind, item),
+      JSON.stringify(serializeItem(kind, item)),
+    ]),
   );
   const nextMap = new Map(
     next.items.map((item) => [getItemKey(kind, item), JSON.stringify(serializeItem(kind, item))]),
@@ -476,10 +485,7 @@ export const prepareProviderImport = <K extends ProviderImportKind>(
       unchanged,
       duplicateEntriesRemoved: next.duplicateCount,
       hasChanges:
-        added > 0 ||
-        removed > 0 ||
-        changed > 0 ||
-        current.items.length !== next.items.length,
+        added > 0 || removed > 0 || changed > 0 || current.items.length !== next.items.length,
       addedLabels,
       removedLabels,
       changedLabels,

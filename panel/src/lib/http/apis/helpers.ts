@@ -144,8 +144,6 @@ export const serializeProviderKey = (config: ProviderSimpleConfig) => {
   if (baseUrl) payload["base-url"] = baseUrl;
   const proxyUrl = normalizeString(config.proxyUrl);
   if (proxyUrl) payload["proxy-url"] = proxyUrl;
-  const proxyId = normalizeString(config.proxyId);
-  if (proxyId) payload["proxy-id"] = proxyId;
   const headers = serializeHeaders(config.headers);
   if (headers) payload.headers = headers;
   const models = serializeModels(config.models);
@@ -175,8 +173,6 @@ export const serializeOpenCodeGoKey = (config: ProviderSimpleConfig) => {
   if (prefix) payload.prefix = prefix;
   const proxyUrl = normalizeString(config.proxyUrl);
   if (proxyUrl) payload["proxy-url"] = proxyUrl;
-  const proxyId = normalizeString(config.proxyId);
-  if (proxyId) payload["proxy-id"] = proxyId;
   const headers = serializeHeaders(config.headers);
   if (headers) payload.headers = headers;
   if (config.excludedModels && config.excludedModels.length) {
@@ -201,8 +197,6 @@ export const serializeGeminiKey = (config: ProviderSimpleConfig) => {
   if (prefix) payload.prefix = prefix;
   const baseUrl = normalizeString(config.baseUrl);
   if (baseUrl) payload["base-url"] = baseUrl;
-  const proxyId = normalizeString(config.proxyId);
-  if (proxyId) payload["proxy-id"] = proxyId;
   const headers = serializeHeaders(config.headers);
   if (headers) payload.headers = headers;
   const models = serializeModels(config.models);
@@ -227,8 +221,6 @@ export const serializeBedrockKey = (config: BedrockProviderConfig) => {
   if (baseUrl) payload["base-url"] = baseUrl;
   const proxyUrl = normalizeString(config.proxyUrl);
   if (proxyUrl) payload["proxy-url"] = proxyUrl;
-  const proxyId = normalizeString(config.proxyId);
-  if (proxyId) payload["proxy-id"] = proxyId;
   const headers = serializeHeaders(config.headers);
   if (headers) payload.headers = headers;
   const models = serializeModels(config.models);
@@ -287,8 +279,6 @@ export const serializeOpenAIProvider = (provider: OpenAIProvider) => {
         if (entry.disabled === true) entryPayload.disabled = true;
         const proxyUrl = normalizeString(entry.proxyUrl);
         if (proxyUrl) entryPayload["proxy-url"] = proxyUrl;
-        const proxyId = normalizeString(entry.proxyId);
-        if (proxyId) entryPayload["proxy-id"] = proxyId;
         const entryHeaders = serializeHeaders(entry.headers);
         if (entryHeaders) entryPayload.headers = entryHeaders;
         return entryPayload;
@@ -372,13 +362,11 @@ export const normalizeApiKeyEntries = (raw: unknown): ProviderApiKeyEntry[] | un
       if (!apiKey) return null;
       const disabled = entry.disabled === true;
       const proxyUrl = normalizeString(entry["proxy-url"] ?? entry.proxyUrl) ?? undefined;
-      const proxyId = normalizeString(entry["proxy-id"] ?? entry.proxyId) ?? undefined;
       const entryHeaders = normalizeHeaders(entry.headers);
       return {
         apiKey,
         ...(disabled ? { disabled } : {}),
         ...(proxyUrl ? { proxyUrl } : {}),
-        ...(proxyId ? { proxyId } : {}),
         ...(entryHeaders ? { headers: entryHeaders } : {}),
       };
     })

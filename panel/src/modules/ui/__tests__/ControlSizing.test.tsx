@@ -109,8 +109,8 @@ describe("shared control sizing", () => {
         <Select
           value=""
           onChange={vi.fn()}
-          options={[{ value: "", label: "No proxy pool binding" }]}
-          aria-label="Proxy pool"
+          options={[{ value: "", label: "No endpoint selected" }]}
+          aria-label="Endpoint"
           className="w-full"
         />
         <SearchableSelect

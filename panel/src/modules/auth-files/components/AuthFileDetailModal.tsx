@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Download, RefreshCw, ShieldCheck } from "lucide-react";
 import type { AuthFileTrendResponse } from "@/lib/http/apis/usage";
 import type { AuthFileItem, AuthFileSubscriptionPeriod } from "@/lib/http/types";
-import type { ProxyPoolEntry } from "@/lib/http/apis/proxies";
+import type { EgressBinding } from "@/lib/http/apis/egress";
 import { Button } from "@/modules/ui/Button";
 import { DateTimePicker } from "@/modules/ui/DateTimePicker";
 import { EmptyState } from "@/modules/ui/EmptyState";
@@ -12,8 +12,6 @@ import { Modal } from "@/modules/ui/Modal";
 import { Select } from "@/modules/ui/Select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/modules/ui/Tabs";
 import { EChart } from "@/modules/ui/charts/EChart";
-import { ProxyPoolSelect } from "@/modules/proxies/ProxyPoolSelect";
-import { useProxyPoolChecks } from "@/modules/proxies/useProxyPoolChecks";
 import {
   canRenameAuthFileChannel,
   downloadTextAsFile,
@@ -73,7 +71,7 @@ interface AuthFileDetailModalProps {
   setPrefixProxyEditor: Dispatch<SetStateAction<PrefixProxyEditorState>>;
   prefixProxyDirty: boolean;
   savePrefixProxy: () => Promise<void>;
-  proxyPoolEntries: ProxyPoolEntry[];
+  egressBinding: EgressBinding | null;
   channelEditor: ChannelEditorState;
   setChannelEditor: Dispatch<SetStateAction<ChannelEditorState>>;
   saveChannelEditor: () => Promise<boolean>;
@@ -107,13 +105,15 @@ export function AuthFileDetailModal({
   setPrefixProxyEditor,
   prefixProxyDirty,
   savePrefixProxy,
-  proxyPoolEntries,
+  egressBinding,
   channelEditor,
   setChannelEditor,
   saveChannelEditor,
 }: AuthFileDetailModalProps) {
   const { t, i18n } = useTranslation();
-  const proxyCheckState = useProxyPoolChecks(proxyPoolEntries, open && detailTab === "fields");
+  const isCodexDetail = detailFile
+    ? normalizeProviderKey(resolveFileType(detailFile)) === "codex"
+    : false;
   const usesMappedModelOwner = Boolean(mappedModelOwnerValue);
   const visibleModelsList = usesMappedModelOwner
     ? (mappedModelOwnerGroup?.models ?? [])
@@ -518,7 +518,10 @@ export function AuthFileDetailModal({
                             value={prefixProxyEditor.prefix}
                             onChange={(e) => {
                               const value = e.currentTarget.value;
-                              setPrefixProxyEditor((prev) => ({ ...prev, prefix: value }));
+                              setPrefixProxyEditor((prev) => ({
+                                ...prev,
+                                prefix: value,
+                              }));
                             }}
                             placeholder={t("auth_files.prefix_placeholder")}
                           />
@@ -527,37 +530,62 @@ export function AuthFileDetailModal({
                           </p>
                         </div>
 
-                        <div className="grid gap-2">
-                          <ProxyPoolSelect
-                            value={prefixProxyEditor.proxyId}
-                            entries={proxyPoolEntries}
-                            onChange={(value) =>
-                              setPrefixProxyEditor((prev) => ({ ...prev, proxyId: value }))
-                            }
-                            label={t("auth_files.proxy_id_label")}
-                            hint={t("auth_files.leave_empty_proxy_id")}
-                            ariaLabel={t("auth_files.proxy_id_label")}
-                            checkState={proxyCheckState}
-                            showDetails
-                          />
-                        </div>
-
-                        <div className="grid gap-2">
-                          <p className="text-xs font-semibold text-slate-700 dark:text-white/75">
-                            {t("auth_files.proxy_url_label")}
-                          </p>
-                          <TextInput
-                            value={prefixProxyEditor.proxyUrl}
-                            onChange={(e) => {
-                              const value = e.currentTarget.value;
-                              setPrefixProxyEditor((prev) => ({ ...prev, proxyUrl: value }));
-                            }}
-                            placeholder={t("auth_files.proxy_url_placeholder")}
-                          />
-                          <p className="text-xs text-slate-500 dark:text-white/55">
-                            {t("auth_files.leave_empty_proxy")}
-                          </p>
-                        </div>
+                        {isCodexDetail ? (
+                          <div className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-neutral-800">
+                            <div>
+                              <p className="text-xs font-semibold text-slate-700 dark:text-white/75">
+                                {t("auth_files.egress_endpoint_label")}
+                              </p>
+                              <p className="mt-1 text-xs text-slate-500 dark:text-white/55">
+                                {t("auth_files.egress_endpoint_hint")}
+                              </p>
+                            </div>
+                            {egressBinding?.identity ? (
+                              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 p-3 dark:bg-neutral-900">
+                                <div>
+                                  <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                                    {egressBinding.bound
+                                      ? egressBinding.endpointName || egressBinding.endpointId
+                                      : t("egress.bindings.unbound")}
+                                  </p>
+                                  <p className="mt-1 font-mono text-[11px] text-slate-500">
+                                    {egressBinding.endpointId || "--"}
+                                  </p>
+                                </div>
+                                <a
+                                  href="/egress"
+                                  className="text-xs font-semibold text-slate-900 underline-offset-4 hover:underline dark:text-white"
+                                >
+                                  {t("auth_files.manage_egress_bindings")}
+                                </a>
+                              </div>
+                            ) : (
+                              <p className="text-sm text-amber-700 dark:text-amber-200">
+                                {t("auth_files.egress_identity_missing")}
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="grid gap-2">
+                            <p className="text-xs font-semibold text-slate-700 dark:text-white/75">
+                              {t("auth_files.proxy_url_label")}
+                            </p>
+                            <TextInput
+                              value={prefixProxyEditor.proxyUrl}
+                              onChange={(e) => {
+                                const value = e.currentTarget.value;
+                                setPrefixProxyEditor((prev) => ({
+                                  ...prev,
+                                  proxyUrl: value,
+                                }));
+                              }}
+                              placeholder={t("auth_files.proxy_url_placeholder")}
+                            />
+                            <p className="text-xs text-slate-500 dark:text-white/55">
+                              {t("auth_files.leave_empty_proxy")}
+                            </p>
+                          </div>
+                        )}
 
                         <div className="grid gap-2">
                           <p className="text-xs font-semibold text-slate-700 dark:text-white/75">
@@ -635,7 +663,9 @@ export function AuthFileDetailModal({
                   </div>
                   {!visibleModelsLoading && visibleModelsError !== "unsupported" ? (
                     <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600 dark:bg-white/10 dark:text-white/65">
-                      {t("auth_files.count_items", { count: visibleModelsList.length })}
+                      {t("auth_files.count_items", {
+                        count: visibleModelsList.length,
+                      })}
                     </span>
                   ) : null}
                 </div>

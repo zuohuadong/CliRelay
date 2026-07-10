@@ -18,26 +18,29 @@ const CALLBACK_PROVIDER_MAP: Partial<Record<OAuthProvider, string>> = {
   "gemini-cli": "gemini",
 };
 
-export interface OAuthProxyOptions {
+export interface OAuthEgressOptions {
   projectId?: string;
-  proxyId?: string;
+  egressId?: string;
 }
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
 
 export const oauthApi = {
-  startAuth: (provider: OAuthProvider, options?: OAuthProxyOptions) => {
+  startAuth: (provider: OAuthProvider, options?: OAuthEgressOptions) => {
     const params: Record<string, string | boolean> = {};
     if (WEBUI_SUPPORTED.includes(provider)) {
       params.is_webui = true;
     }
     const projectId = normalizeString(options?.projectId);
-    const proxyId = normalizeString(options?.proxyId);
+    const egressId = normalizeString(options?.egressId);
+    if (provider === "codex" && !egressId) {
+      throw new Error("Codex authorization requires an egress endpoint");
+    }
     if (provider === "gemini-cli" && projectId) {
       params.project_id = projectId;
     }
-    if (proxyId) {
-      params.proxy_id = proxyId;
+    if (provider === "codex") {
+      params.egress_id = egressId;
     }
     const path = `/${provider}-auth-url`;
     if (provider === "iflow") {
@@ -52,21 +55,22 @@ export const oauthApi = {
   submitCallback: (
     provider: OAuthProvider,
     redirectUrl: string,
-    options?: { proxyId?: string },
+    options?: { egressId?: string },
   ) => {
     const callbackProvider = CALLBACK_PROVIDER_MAP[provider] ?? provider;
-    const proxyId = normalizeString(options?.proxyId);
+    const egressId = normalizeString(options?.egressId);
+    if (provider === "codex" && !egressId) {
+      throw new Error("Codex authorization requires an egress endpoint");
+    }
     return apiClient.post<OAuthCallbackResponse>("/oauth-callback", {
       provider: callbackProvider,
       redirect_url: redirectUrl,
-      ...(proxyId ? { proxy_id: proxyId } : {}),
+      ...(provider === "codex" ? { egress_id: egressId } : {}),
     });
   },
-  iflowCookieAuth: (cookie: string, options?: { proxyId?: string }) => {
-    const proxyId = normalizeString(options?.proxyId);
+  iflowCookieAuth: (cookie: string) => {
     return apiClient.post<IFlowCookieAuthResponse>("/iflow-auth-url", {
       cookie,
-      ...(proxyId ? { proxy_id: proxyId } : {}),
     });
   },
 };

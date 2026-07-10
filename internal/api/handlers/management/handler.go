@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -66,6 +67,7 @@ type Handler struct {
 	imageTasksMu            sync.Mutex
 	imageGenerationTasks    map[string]*imageGenerationTestTask
 	startTime               time.Time
+	egressService           *egress.Service
 }
 
 type configReloadSnapshot struct {
@@ -162,6 +164,15 @@ func (h *Handler) SetPluginHost(host *pluginhost.Host) {
 	}
 	h.mu.Lock()
 	h.pluginHost = host
+	h.mu.Unlock()
+}
+
+func (h *Handler) SetEgressService(service *egress.Service) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.egressService = service
 	h.mu.Unlock()
 }
 

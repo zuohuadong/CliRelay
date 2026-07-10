@@ -16,6 +16,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
@@ -113,6 +114,8 @@ type Service struct {
 	homeLogForwarder  *logging.HomeAppLogForwarder
 	homePluginSyncMu  sync.Mutex
 	homePluginSyncKey string
+
+	egressService *egress.Service
 }
 
 const (
@@ -1101,7 +1104,7 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 				}
 			}
 		}
-		s.coreManager.RegisterExecutor(executor.NewCodexAutoExecutor(s.cfg))
+		s.coreManager.RegisterExecutor(executor.NewCodexAutoExecutorWithEgress(s.cfg, s.egressService))
 		return
 	}
 	// Skip disabled auth entries when (re)binding executors.
@@ -1409,6 +1412,9 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 	s.cfgMu.Lock()
 	s.cfg = newCfg
 	s.cfgMu.Unlock()
+	if s.egressService != nil {
+		s.egressService.SetConfig(newCfg)
+	}
 	if s.coreManager != nil {
 		s.coreManager.SetConfig(newCfg)
 		s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
@@ -1710,6 +1716,11 @@ func (s *Service) Run(ctx context.Context) error {
 			log.Errorf("service shutdown returned error: %v", err)
 		}
 	}()
+	if s.egressService != nil {
+		if err := s.egressService.Start(ctx); err != nil {
+			return fmt.Errorf("cliproxy: start egress lifecycle: %w", err)
+		}
+	}
 
 	if !homeEnabled {
 		if errEnsureAuthDir := s.ensureAuthDir(); errEnsureAuthDir != nil {
@@ -1939,6 +1950,11 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				if shutdownErr == nil {
 					shutdownErr = err
 				}
+			}
+		}
+		if s.egressService != nil {
+			if errClose := s.egressService.Close(); errClose != nil && shutdownErr == nil {
+				shutdownErr = errClose
 			}
 		}
 

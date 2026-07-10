@@ -160,8 +160,8 @@ type Config struct {
 	// MCPProxy exposes configured MCP upstream servers through the authenticated /mcp gateway.
 	MCPProxy MCPProxyConfig `yaml:"mcp-proxy,omitempty" json:"mcp-proxy,omitempty"`
 
-	// ProxyPool stores reusable outbound proxies that can be referenced by providers and auth files.
-	ProxyPool []ProxyPoolEntry `yaml:"proxy-pool,omitempty" json:"proxy-pool,omitempty"`
+	// EgressNetwork configures Headscale-managed, per-Codex-OAuth outbound endpoints.
+	EgressNetwork EgressNetworkConfig `yaml:"egress-network,omitempty" json:"egress-network,omitempty"`
 
 	// BigModelCodingAPIKey defines Zhipu Coding Plan API key configurations.
 	// It uses OpenAI Chat Completions over HTTP, but is kept separate from the
@@ -932,9 +932,6 @@ type OpenAICompatibilityAPIKey struct {
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
 
-	// ProxyID references a proxy pool entry for this API key.
-	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
-
 	// Disabled prevents this API key from being used for routing.
 	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 
@@ -1323,6 +1320,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Sanitize configured MCP proxy upstreams.
 	cfg.SanitizeMCPProxy()
+	cfg.SanitizeEgressNetwork()
 
 	// Move legacy bigmodel-coding entries out of the generic OpenAI compatibility pool.
 	cfg.MigrateBigModelCodingFromOpenAICompatibility()

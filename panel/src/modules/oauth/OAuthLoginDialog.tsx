@@ -3,15 +3,14 @@ import { useTranslation } from "react-i18next";
 import { Copy, ExternalLink, RefreshCw, Send, ShieldCheck, Sparkles, Upload } from "lucide-react";
 import { oauthApi, vertexApi } from "@/lib/http/apis";
 import type { IFlowCookieAuthResponse, OAuthProvider } from "@/lib/http/types";
-import type { ProxyPoolEntry } from "@/lib/http/apis/proxies";
+import type { EgressEndpoint } from "@/lib/http/apis/egress";
 import { Button } from "@/modules/ui/Button";
 import { Card } from "@/modules/ui/Card";
 import { TextInput } from "@/modules/ui/Input";
 import { Modal } from "@/modules/ui/Modal";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/modules/ui/Tabs";
 import { useToast } from "@/modules/ui/ToastProvider";
-import { ProxyPoolSelect } from "@/modules/proxies/ProxyPoolSelect";
-import { useProxyPoolChecks } from "@/modules/proxies/useProxyPoolChecks";
+import { EndpointSelect } from "@/modules/egress/EndpointSelect";
 
 type ProviderStatus = "idle" | "waiting" | "success" | "error";
 
@@ -96,21 +95,24 @@ export function OAuthLoginDialog({
   onClose,
   onAuthorized,
   defaultTab = "codex",
-  proxyPoolEntries = [],
+  egressEndpoints = [],
+  egressEnabled,
+  codexOAuthAllowed,
 }: {
   open: boolean;
   onClose: () => void;
   onAuthorized?: () => void | Promise<void>;
   defaultTab?: TabValue;
-  proxyPoolEntries?: ProxyPoolEntry[];
+  egressEndpoints?: EgressEndpoint[];
+  egressEnabled: boolean;
+  codexOAuthAllowed: boolean;
 }) {
   const { t } = useTranslation();
   const { notify } = useToast();
   const timers = useRef<Record<string, number>>({});
 
   const [tab, setTab] = useState<TabValue>(defaultTab);
-  const [selectedProxyID, setSelectedProxyID] = useState("");
-  const proxyCheckState = useProxyPoolChecks(proxyPoolEntries, open);
+  const [selectedEgressID, setSelectedEgressID] = useState("");
 
   const [states, setStates] = useState<Record<OAuthProvider, ProviderState>>(
     {} as Record<OAuthProvider, ProviderState>,
@@ -146,7 +148,7 @@ export function OAuthLoginDialog({
   useEffect(() => {
     if (!open) return;
     setTab(defaultTab);
-    setSelectedProxyID("");
+    setSelectedEgressID("");
   }, [defaultTab, open]);
 
   const getProviderTitle = useCallback(
@@ -172,16 +174,16 @@ export function OAuthLoginDialog({
     }
   }, []);
 
-  const proxyOptions = useCallback(
-    (extra?: { projectId?: string }) => {
-      const proxyId = selectedProxyID.trim();
+  const authOptions = useCallback(
+    (provider: OAuthProvider, extra?: { projectId?: string }) => {
+      const egressId = selectedEgressID.trim();
       const projectId = extra?.projectId?.trim();
       return {
         ...(projectId ? { projectId } : {}),
-        ...(proxyId ? { proxyId } : {}),
+        ...(provider === "codex" && egressId ? { egressId } : {}),
       };
     },
-    [selectedProxyID],
+    [selectedEgressID],
   );
 
   const completeAuthorization = useCallback(
@@ -263,7 +265,7 @@ export function OAuthLoginDialog({
       try {
         const res = await oauthApi.startAuth(
           provider,
-          proxyOptions(provider === "gemini-cli" ? { projectId } : undefined),
+          authOptions(provider, provider === "gemini-cli" ? { projectId } : undefined),
         );
         updateProviderState(provider, {
           url: res.url,
@@ -286,7 +288,7 @@ export function OAuthLoginDialog({
         });
       }
     },
-    [getProviderTitle, notify, proxyOptions, startPolling, states, t, updateProviderState],
+    [authOptions, getProviderTitle, notify, startPolling, states, t, updateProviderState],
   );
 
   const copyLink = useCallback(
@@ -323,7 +325,7 @@ export function OAuthLoginDialog({
       });
       try {
         const callbackState = states[provider]?.state || extractCallbackState(redirectUrl);
-        await oauthApi.submitCallback(provider, redirectUrl, proxyOptions());
+        await oauthApi.submitCallback(provider, redirectUrl, authOptions(provider));
         updateProviderState(provider, {
           callbackStatus: "success",
           state: callbackState || states[provider]?.state,
@@ -348,7 +350,7 @@ export function OAuthLoginDialog({
         notify({ type: "error", message });
       }
     },
-    [notify, onAuthorized, onClose, proxyOptions, states, t, updateProviderState],
+    [authOptions, notify, onAuthorized, onClose, states, t, updateProviderState],
   );
 
   const iflowHint = useMemo(() => {
@@ -368,7 +370,7 @@ export function OAuthLoginDialog({
     setIflowLoading(true);
     setIflowResult(null);
     try {
-      const res = await oauthApi.iflowCookieAuth(cookie, proxyOptions());
+      const res = await oauthApi.iflowCookieAuth(cookie);
       setIflowResult(res);
       notify({
         type: res.status === "ok" ? "success" : "error",
@@ -381,7 +383,7 @@ export function OAuthLoginDialog({
     } finally {
       setIflowLoading(false);
     }
-  }, [iflowCookie, notify, onAuthorized, proxyOptions, t]);
+  }, [iflowCookie, notify, onAuthorized, t]);
 
   const onVertexFileChange = useCallback(
     async (file: File | null) => {
@@ -390,11 +392,7 @@ export function OAuthLoginDialog({
       setVertexResult(null);
       setVertexFileName(file.name);
       try {
-        const res = await vertexApi.importCredential(
-          file,
-          vertexLocation.trim() || undefined,
-          proxyOptions(),
-        );
+        const res = await vertexApi.importCredential(file, vertexLocation.trim() || undefined);
         const authFile = (res as any)["auth-file"] ?? (res as any).auth_file;
         setVertexResult({
           projectId: (res as any).project_id,
@@ -410,14 +408,16 @@ export function OAuthLoginDialog({
         setVertexLoading(false);
       }
     },
-    [notify, onAuthorized, proxyOptions, t, vertexLocation],
+    [notify, onAuthorized, t, vertexLocation],
   );
 
   const renderProviderPanel = useCallback(
     (provider: OAuthProvider) => {
       const state = states[provider] ?? {};
       const status = state.status ?? "idle";
-      const disabled = status === "waiting";
+      const noCodexEndpoint = provider === "codex" && !selectedEgressID.trim();
+      const codexReadinessBlocked = provider === "codex" && (!egressEnabled || !codexOAuthAllowed);
+      const disabled = status === "waiting" || noCodexEndpoint || codexReadinessBlocked;
       const url = state.url ?? "";
       const polling = Boolean(state.polling);
 
@@ -442,7 +442,11 @@ export function OAuthLoginDialog({
               onClick={() => void startAuth(provider)}
               disabled={disabled}
             >
-              {disabled ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              {status === "waiting" ? (
+                <RefreshCw size={14} className="animate-spin" />
+              ) : (
+                <Sparkles size={14} />
+              )}
               {t("oauth.start_authorization")}
             </Button>
           }
@@ -457,6 +461,20 @@ export function OAuthLoginDialog({
                 placeholder={t("oauth.project_placeholder")}
               />
             </div>
+          ) : null}
+          {noCodexEndpoint ? (
+            <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+              {t("oauth.codex_egress_required")}
+            </p>
+          ) : null}
+          {codexReadinessBlocked ? (
+            <p className="mb-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-500/10 dark:text-rose-200">
+              {t(
+                !egressEnabled
+                  ? "oauth.codex_preparation_blocked"
+                  : "oauth.codex_readiness_blocked",
+              )}
+            </p>
           ) : null}
 
           <div className="grid min-w-0 gap-3">
@@ -549,7 +567,18 @@ export function OAuthLoginDialog({
         </Card>
       );
     },
-    [copyLink, openLink, startAuth, states, submitCallback, t, updateProviderState],
+    [
+      copyLink,
+      codexOAuthAllowed,
+      egressEnabled,
+      openLink,
+      selectedEgressID,
+      startAuth,
+      states,
+      submitCallback,
+      t,
+      updateProviderState,
+    ],
   );
 
   return (
@@ -581,19 +610,28 @@ export function OAuthLoginDialog({
             <TabsTrigger value="vertex">{t("oauth.vertex_title")}</TabsTrigger>
           </TabsList>
 
-          <div className="mt-4 rounded-2xl border border-slate-200 bg-white/70 p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-950/60">
-            <ProxyPoolSelect
-              value={selectedProxyID}
-              onChange={setSelectedProxyID}
-              entries={proxyPoolEntries}
-              checkState={proxyCheckState}
-              showDetails
-              noneLabel={t("oauth.proxy_default_local")}
-              label={t("oauth.authorization_proxy")}
-              hint={t("oauth.authorization_proxy_hint")}
-              ariaLabel={t("oauth.authorization_proxy")}
-            />
-          </div>
+          {tab === "codex" ? (
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-white/70 p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-950/60">
+              <p className="mb-2 text-xs font-semibold text-slate-700 dark:text-white/75">
+                {t("oauth.authorization_egress")}
+              </p>
+              <EndpointSelect
+                value={selectedEgressID}
+                onChange={setSelectedEgressID}
+                endpoints={egressEndpoints}
+                ariaLabel={t("oauth.authorization_egress")}
+                disabled={!egressEnabled || !codexOAuthAllowed}
+              />
+              <p className="mt-2 text-xs text-slate-500 dark:text-white/55">
+                {egressEndpoints.some((endpoint) => endpoint.eligibility?.selectable)
+                  ? t("oauth.authorization_egress_hint")
+                  : t("oauth.authorization_egress_empty")}
+              </p>
+              <p className="mt-2 rounded-xl bg-slate-100 px-3 py-2 text-xs leading-5 text-slate-600 dark:bg-neutral-900 dark:text-white/60">
+                {t("oauth.browser_network_scope")}
+              </p>
+            </div>
+          ) : null}
 
           {PROVIDER_TAB_IDS.map((providerId) => (
             <TabsContent key={providerId} value={providerId} className="mt-4">

@@ -49,7 +49,9 @@ describe("AppShell", () => {
     expect(navBlock).toContain('i18nKey: "shell.nav_ccswitch_import_settings"');
     expect(navBlock).toContain('to: "/identity-fingerprint"');
     expect(navBlock).toContain('to: "/models"');
-    expect(navBlock).toContain('to: "/proxies"');
+    expect(navBlock).toContain('to: "/egress"');
+    expect(navBlock).toContain('i18nKey: "shell.nav_egress"');
+    expect(navBlock).not.toContain('to: "/proxies"');
     expect(navBlock).toContain('to: "/api-key-permissions"');
     expect(navBlock).toContain('i18nKey: "shell.nav_api_key_permissions"');
     expect(navBlock).not.toContain('to: "/manage/identity-fingerprint"');

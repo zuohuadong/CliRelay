@@ -32,7 +32,6 @@ const mocks = vi.hoisted(() => ({
   getEntityStats: vi.fn(async () => ({ source: [] })),
   apiKeyEntriesList: vi.fn(async () => []),
   channelGroupsList: vi.fn(async () => []),
-  proxiesList: vi.fn(async (): Promise<any[]> => []),
 }));
 
 vi.mock("@/lib/http/apis", async (importOriginal) => {
@@ -78,12 +77,6 @@ vi.mock("@/lib/http/apis/channel-groups", () => ({
   },
 }));
 
-vi.mock("@/lib/http/apis/proxies", () => ({
-  proxiesApi: {
-    list: mocks.proxiesList,
-  },
-}));
-
 describe("ProvidersPage openai tab", () => {
   afterEach(() => {
     cleanup();
@@ -107,7 +100,6 @@ describe("ProvidersPage openai tab", () => {
     mocks.getEntityStats.mockReset();
     mocks.apiKeyEntriesList.mockReset();
     mocks.channelGroupsList.mockReset();
-    mocks.proxiesList.mockReset();
 
     mocks.apiCallRequest.mockImplementation(async () => ({
       statusCode: 200,
@@ -129,20 +121,6 @@ describe("ProvidersPage openai tab", () => {
     mocks.saveOpenAIProviders.mockImplementation(async () => ({}));
     mocks.apiKeyEntriesList.mockImplementation(async () => []);
     mocks.channelGroupsList.mockImplementation(async () => []);
-    mocks.proxiesList.mockImplementation(async () => [
-      {
-        id: "hk",
-        name: "Hong Kong",
-        url: "http://hk.example:7890",
-        enabled: true,
-      },
-      {
-        id: "jp",
-        name: "Japan",
-        url: "http://jp.example:7890",
-        enabled: true,
-      },
-    ]);
     mocks.getEntityStats.mockImplementation(
       async () =>
         ({
@@ -189,53 +167,6 @@ describe("ProvidersPage openai tab", () => {
     expect(screen.getByText(/sk-ope\*\*\*7890/)).toBeInTheDocument();
     expect(screen.getByText("80.0%")).toBeInTheDocument();
     expect(screen.getByText("testModel: gpt-4.1")).toBeInTheDocument();
-  });
-
-  test("saves selected proxy pool binding for provider keys", async () => {
-    const user = userEvent.setup();
-    mocks.getCodexConfigs.mockImplementation(
-      async () =>
-        [
-          {
-            name: "Codex Main",
-            apiKey: "sk-codex-provider-1234567890",
-            proxyId: "hk",
-          },
-        ] as any,
-    );
-
-    render(
-      <MemoryRouter initialEntries={["/ai-providers"]}>
-        <ThemeProvider>
-          <ToastProvider>
-            <Routes>
-              <Route path="/ai-providers/*" element={<ProvidersPage />} />
-            </Routes>
-          </ToastProvider>
-        </ThemeProvider>
-      </MemoryRouter>,
-    );
-
-    await user.click(await screen.findByRole("tab", { name: /Codex/ }));
-    expect(await screen.findByText("Codex Main")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /Edit/ }));
-
-    expect(await screen.findByText("Edit Codex configuration")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: /Request/i }));
-    await user.click(screen.getByRole("combobox", { name: "Proxy pool binding" }));
-    await user.click(await screen.findByRole("option", { name: /Japan/ }));
-    await user.click(screen.getByRole("button", { name: /Save/ }));
-
-    await waitFor(() => {
-      expect(mocks.saveCodexConfigs).toHaveBeenCalledWith([
-        expect.objectContaining({
-          name: "Codex Main",
-          apiKey: "sk-codex-provider-1234567890",
-          proxyId: "jp",
-        }),
-      ]);
-    });
   });
 
   test("toggles an OpenAI Compatible key entry without removing it", async () => {

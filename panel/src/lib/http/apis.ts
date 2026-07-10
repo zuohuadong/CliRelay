@@ -16,5 +16,5 @@ export { quotaApi } from "./apis/quota";
 export { identityFingerprintApi } from "./apis/identity-fingerprint";
 export { updateApi } from "./apis/update";
 export { imageGenerationApi } from "./apis/image-generation";
-export { proxiesApi } from "./apis/proxies";
+export { egressApi } from "./apis/egress";
 export type { UpdateApplyResponse, UpdateCheckResponse } from "./apis/update";

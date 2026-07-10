@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"html"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -322,107 +321,6 @@ func (h *Handler) PutRoutingConfig(c *gin.Context) {
 		h.authManager.SetConfig(updatedCfg)
 	}
 	managementasset.SetCurrentConfig(updatedCfg)
-}
-
-func (h *Handler) GetProxyPool(c *gin.Context) {
-	items := make([]gin.H, 0)
-	if h != nil && h.cfg != nil {
-		for _, entry := range h.cfg.ProxyPool {
-			items = append(items, gin.H{
-				"id":          entry.ID,
-				"name":        entry.Name,
-				"url":         entry.URL,
-				"enabled":     entry.Enabled,
-				"description": entry.Description,
-			})
-		}
-	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
-}
-
-func (h *Handler) PutProxyPool(c *gin.Context) {
-	var body struct {
-		Items []struct {
-			ID          string `json:"id"`
-			Name        string `json:"name"`
-			URL         string `json:"url"`
-			Enabled     bool   `json:"enabled"`
-			Description string `json:"description"`
-		} `json:"items"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	entries := make([]config.ProxyPoolEntry, 0, len(body.Items))
-	for _, item := range body.Items {
-		entries = append(entries, config.ProxyPoolEntry{
-			ID:          strings.TrimSpace(item.ID),
-			Name:        strings.TrimSpace(item.Name),
-			URL:         strings.TrimSpace(item.URL),
-			Enabled:     item.Enabled,
-			Description: strings.TrimSpace(item.Description),
-		})
-	}
-	h.mu.Lock()
-	h.cfg.ProxyPool = config.NormalizeProxyPool(entries)
-	h.mu.Unlock()
-	h.persist(c)
-}
-
-func (h *Handler) CheckProxyPool(c *gin.Context) {
-	var body struct {
-		ID  string `json:"id"`
-		URL string `json:"url"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	proxyURL := strings.TrimSpace(body.URL)
-	if proxyURL == "" && strings.TrimSpace(body.ID) != "" {
-		id := strings.TrimSpace(body.ID)
-		if h != nil && h.cfg != nil {
-			for _, entry := range h.cfg.ProxyPool {
-				if entry.ID == id || entry.Name == id {
-					proxyURL = strings.TrimSpace(entry.URL)
-					break
-				}
-			}
-		}
-	}
-	if proxyURL == "" {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "message": "no proxy url resolved"})
-		return
-	}
-	transport := &http.Transport{
-		Proxy: http.ProxyURL(mustParseURL(proxyURL)),
-	}
-	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
-	start := time.Now()
-	resp, err := client.Get("https://httpbin.org/ip")
-	latencyMs := time.Since(start).Milliseconds()
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"ok":         false,
-			"latency_ms": latencyMs,
-			"message":    err.Error(),
-		})
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	ok := resp.StatusCode >= 200 && resp.StatusCode < 400
-	c.JSON(http.StatusOK, gin.H{
-		"ok":          ok,
-		"latency_ms":  latencyMs,
-		"status_code": resp.StatusCode,
-		"message":     "",
-	})
-}
-
-func mustParseURL(raw string) *url.URL {
-	u, _ := url.Parse(raw)
-	return u
 }
 
 func (h *Handler) GetCCSwitchImportConfigs(c *gin.Context) {

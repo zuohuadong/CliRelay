@@ -10,8 +10,6 @@ import { Modal } from "@/modules/ui/Modal";
 import { ToggleSwitch } from "@/modules/ui/ToggleSwitch";
 import { KeyValueInputList } from "@/modules/providers/KeyValueInputList";
 import { ModelInputList } from "@/modules/providers/ModelInputList";
-import type { ProxyPoolEntry } from "@/lib/http/apis/proxies";
-import { ProxyPoolSelect } from "@/modules/proxies/ProxyPoolSelect";
 
 interface OpenAIProviderModalProps {
   open: boolean;
@@ -27,7 +25,6 @@ interface OpenAIProviderModalProps {
   discoveredModels: { id: string; owned_by?: string }[];
   discoverSelected: Set<string>;
   setDiscoverSelected: Dispatch<SetStateAction<Set<string>>>;
-  proxyPoolEntries: ProxyPoolEntry[];
   copyText: (text: string) => Promise<void>;
   maskApiKey: (value: string) => string;
   title?: string;
@@ -49,7 +46,6 @@ export function OpenAIProviderModal({
   discoveredModels,
   discoverSelected,
   setDiscoverSelected,
-  proxyPoolEntries,
   copyText,
   maskApiKey,
   title,
@@ -269,7 +265,6 @@ export function OpenAIProviderModal({
                       apiKey: "",
                       disabled: false,
                       proxyUrl: "",
-                      proxyId: "",
                       headersEntries: [],
                     },
                   ],
@@ -343,7 +338,9 @@ export function OpenAIProviderModal({
                       placeholder={t("providers.api_key_placeholder")}
                     />
                     <div className="flex items-center justify-between text-xs text-slate-500 dark:text-white/55">
-                      <span>{t("providers.show_masked_key", { key: maskApiKey(entry.apiKey) })}</span>
+                      <span>
+                        {t("providers.show_masked_key", { key: maskApiKey(entry.apiKey) })}
+                      </span>
                       <Button
                         variant="ghost"
                         size="sm"
@@ -354,23 +351,6 @@ export function OpenAIProviderModal({
                         {t("providers.copy")}
                       </Button>
                     </div>
-                  </div>
-                  <div className="space-y-2">
-                    <ProxyPoolSelect
-                      value={entry.proxyId}
-                      entries={proxyPoolEntries}
-                      onChange={(value) => {
-                        setOpenaiDraft((prev) => ({
-                          ...prev,
-                          apiKeyEntries: prev.apiKeyEntries.map((it, i) =>
-                            i === idx ? { ...it, proxyId: value } : it,
-                          ),
-                        }));
-                      }}
-                      label={t("providers.proxy_pool_label")}
-                      hint={t("providers.proxy_pool_hint")}
-                      ariaLabel={`${t("providers.proxy_pool_label")} ${idx + 1}`}
-                    />
                   </div>
                   <div className="space-y-2">
                     <p className="text-sm font-semibold text-slate-900 dark:text-white">
@@ -417,7 +397,12 @@ export function OpenAIProviderModal({
               {t("providers.models_label")}
             </p>
             <div className="flex items-center gap-2">
-              <Button variant="secondary" size="sm" onClick={() => void discoverModels()} disabled={discovering}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void discoverModels()}
+                disabled={discovering}
+              >
                 <RefreshCw size={14} className={discovering ? "animate-spin" : ""} />
                 {t("providers.fetch_models")}
               </Button>

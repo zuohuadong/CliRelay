@@ -14,7 +14,6 @@ import iconOpenCodeLight from "@/assets/icons/opencode-light.svg";
 import { ampcodeApi, providersApi, usageApi } from "@/lib/http/apis";
 import { apiKeyEntriesApi, type ApiKeyEntry } from "@/lib/http/apis/api-keys";
 import { channelGroupsApi, type ChannelGroupItem } from "@/lib/http/apis/channel-groups";
-import { proxiesApi, type ProxyPoolEntry } from "@/lib/http/apis/proxies";
 import type { BedrockProviderConfig, OpenAIProvider, ProviderSimpleConfig } from "@/lib/http/types";
 import { Button } from "@/modules/ui/Button";
 import { ConfirmModal } from "@/modules/ui/ConfirmModal";
@@ -64,7 +63,9 @@ const getProviderSelectionKey = (
   index?: number,
 ) =>
   kind === "bigmodel-coding" || kind === "astron-code"
-    ? `${String((item as OpenAIProvider).name ?? "").trim().toLowerCase()}:${index ?? 0}`
+    ? `${String((item as OpenAIProvider).name ?? "")
+        .trim()
+        .toLowerCase()}:${index ?? 0}`
     : kind === "openai"
       ? String((item as OpenAIProvider).name ?? "")
           .trim()
@@ -101,7 +102,6 @@ export function ProvidersPage() {
   const [openaiProviders, setOpenaiProviders] = useState<OpenAIProvider[]>([]);
   const [apiKeyEntries, setApiKeyEntries] = useState<ApiKeyEntry[]>([]);
   const [channelGroups, setChannelGroups] = useState<ChannelGroupItem[]>([]);
-  const [proxyPoolEntries, setProxyPoolEntries] = useState<ProxyPoolEntry[]>([]);
 
   const [usageStatsBySource, setUsageStatsBySource] = useState<Record<string, KeyStatBucket>>({});
 
@@ -239,14 +239,6 @@ export function ProvidersPage() {
     }
   }, []);
 
-  const loadProxyPool = useCallback(async () => {
-    try {
-      setProxyPoolEntries(await proxiesApi.list());
-    } catch {
-      setProxyPoolEntries([]);
-    }
-  }, []);
-
   const {
     getSimpleStats,
     getSimpleStatusBar,
@@ -259,14 +251,13 @@ export function ProvidersPage() {
   });
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([refreshTab(tab), loadUsage(), loadAccessSnapshot(), loadProxyPool()]);
-  }, [loadAccessSnapshot, loadProxyPool, loadUsage, refreshTab, tab]);
+    await Promise.all([refreshTab(tab), loadUsage(), loadAccessSnapshot()]);
+  }, [loadAccessSnapshot, loadUsage, refreshTab, tab]);
 
   useEffect(() => {
     void refreshTab(tab);
     void loadUsage();
     void loadAccessSnapshot();
-    void loadProxyPool();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -585,7 +576,17 @@ export function ProvidersPage() {
           return openaiProviders;
       }
     },
-    [bedrockKeys, bigmodelCodingProviders, astronCodeProviders, claudeKeys, codexKeys, geminiKeys, openCodeGoKeys, openaiProviders, vertexKeys],
+    [
+      bedrockKeys,
+      bigmodelCodingProviders,
+      astronCodeProviders,
+      claudeKeys,
+      codexKeys,
+      geminiKeys,
+      openCodeGoKeys,
+      openaiProviders,
+      vertexKeys,
+    ],
   );
 
   const currentImportKind = getImportKind();
@@ -1173,7 +1174,6 @@ export function ProvidersPage() {
         editKeyHeaderCount={editKeyHeaderCount}
         editKeyModelCount={editKeyModelCount}
         editKeyExcludedCount={editKeyExcludedCount}
-        proxyPoolEntries={proxyPoolEntries}
         copyText={copyText}
         maskApiKey={maskApiKey}
       />
@@ -1192,7 +1192,6 @@ export function ProvidersPage() {
         discoveredModels={discoveredModels}
         discoverSelected={discoverSelected}
         setDiscoverSelected={setDiscoverSelected}
-        proxyPoolEntries={proxyPoolEntries}
         copyText={copyText}
         maskApiKey={maskApiKey}
       />
@@ -1211,7 +1210,6 @@ export function ProvidersPage() {
         discoveredModels={bigModelCodingDiscoveredModels}
         discoverSelected={bigModelCodingDiscoverSelected}
         setDiscoverSelected={setBigModelCodingDiscoverSelected}
-        proxyPoolEntries={proxyPoolEntries}
         copyText={copyText}
         maskApiKey={maskApiKey}
         title="BigModel Coding"
@@ -1232,7 +1230,6 @@ export function ProvidersPage() {
         discoveredModels={astronCodeDiscoveredModels}
         discoverSelected={astronCodeDiscoverSelected}
         setDiscoverSelected={setAstronCodeDiscoverSelected}
-        proxyPoolEntries={proxyPoolEntries}
         copyText={copyText}
         maskApiKey={maskApiKey}
         title="Astron Code"
@@ -1257,8 +1254,8 @@ export function ProvidersPage() {
                     name: astronCodeProviders[confirm.index]?.name ?? "",
                   })
                 : confirm?.type === "deleteKey"
-                ? t("providers.confirm_delete_config")
-                : t("providers.confirm_delete_generic")
+                  ? t("providers.confirm_delete_config")
+                  : t("providers.confirm_delete_generic")
         }
         confirmText={t("providers.delete")}
         onClose={() => setConfirm(null)}

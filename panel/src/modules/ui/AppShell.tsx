@@ -69,7 +69,7 @@ const NAV_ITEMS = [
     icon: Fingerprint,
   },
   { to: "/models", i18nKey: "shell.nav_models", icon: Cpu },
-  { to: "/proxies", i18nKey: "shell.nav_proxies", icon: Network },
+  { to: "/egress", i18nKey: "shell.nav_egress", icon: Network },
   { to: "/config", i18nKey: "shell.nav_config", icon: Settings },
   { to: "/system", i18nKey: "shell.nav_system", icon: Info },
   { to: "/logs", i18nKey: "shell.nav_logs", icon: FileText },
@@ -101,8 +101,7 @@ const getPageTitleKey = (pathname: string): string => {
     return "shell.nav_identity_fingerprint";
   if (pathname.startsWith("/models") || pathname.startsWith("/manage/models"))
     return "shell.nav_models";
-  if (pathname.startsWith("/proxies") || pathname.startsWith("/manage/proxies"))
-    return "shell.nav_proxies";
+  if (pathname.startsWith("/egress")) return "shell.nav_egress";
   if (pathname.startsWith("/config")) return "shell.nav_config";
   if (pathname.startsWith("/system")) return "shell.nav_system";
   if (pathname.startsWith("/logs")) return "shell.nav_logs";

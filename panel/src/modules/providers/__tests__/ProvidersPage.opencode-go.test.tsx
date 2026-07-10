@@ -30,7 +30,6 @@ const mocks = vi.hoisted(() => ({
   getEntityStats: vi.fn(async () => ({ source: [] })),
   apiKeyEntriesList: vi.fn(async () => []),
   channelGroupsList: vi.fn(async () => []),
-  proxiesList: vi.fn(async (): Promise<any[]> => []),
 }));
 
 vi.mock("@/lib/http/apis", async (importOriginal) => {
@@ -71,12 +70,6 @@ vi.mock("@/lib/http/apis/channel-groups", () => ({
   },
 }));
 
-vi.mock("@/lib/http/apis/proxies", () => ({
-  proxiesApi: {
-    list: mocks.proxiesList,
-  },
-}));
-
 describe("ProvidersPage OpenCode Go tab", () => {
   beforeEach(() => {
     Object.values(mocks).forEach((mock) => mock.mockReset());
@@ -103,7 +96,6 @@ describe("ProvidersPage OpenCode Go tab", () => {
     mocks.getEntityStats.mockImplementation(async () => ({ source: [] }));
     mocks.apiKeyEntriesList.mockImplementation(async () => []);
     mocks.channelGroupsList.mockImplementation(async () => []);
-    mocks.proxiesList.mockImplementation(async () => []);
   });
 
   test("opens OpenCode Go route and saves a key without requiring Base URL", async () => {

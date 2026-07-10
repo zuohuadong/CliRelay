@@ -28,6 +28,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
@@ -88,6 +89,7 @@ type serverOptionConfig struct {
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
 	exampleAPIKeySafeMode bool
+	egressService         *egress.Service
 }
 
 type routeRateLimitBucket struct {
@@ -196,6 +198,12 @@ func WithConfigReloadHook(hook func(context.Context, *config.Config)) ServerOpti
 func WithExampleAPIKeySafeMode() ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.exampleAPIKeySafeMode = true
+	}
+}
+
+func WithEgressService(service *egress.Service) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.egressService = service
 	}
 }
 
@@ -375,6 +383,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	internalusage.SetChannelBillingMultipliersFromConfig(cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
+	s.mgmt.SetEgressService(optionState.egressService)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
 	if optionState.localPassword != "" {
@@ -884,6 +893,21 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
 		mgmt.POST("/api-call", s.mgmt.APICall)
 
+		mgmt.GET("/egress/overview", s.mgmt.GetEgressOverview)
+		mgmt.GET("/egress/nodes", s.mgmt.GetEgressNodes)
+		mgmt.POST("/egress/nodes/sync", s.mgmt.PostEgressNodeSync)
+		mgmt.POST("/egress/enrollment", s.mgmt.PostEgressEnrollment)
+		mgmt.GET("/egress/endpoints", s.mgmt.GetEgressEndpoints)
+		mgmt.POST("/egress/endpoints", s.mgmt.PostEgressEndpoint)
+		mgmt.PATCH("/egress/endpoints/:id", s.mgmt.PatchEgressEndpoint)
+		mgmt.DELETE("/egress/endpoints/:id", s.mgmt.DeleteEgressEndpoint)
+		mgmt.POST("/egress/endpoints/:id/check", s.mgmt.PostEgressEndpointCheck)
+		mgmt.POST("/egress/endpoints/:id/impact", s.mgmt.PostEgressEndpointImpact)
+		mgmt.POST("/egress/endpoints/:id/actions", s.mgmt.PostEgressEndpointAction)
+		mgmt.GET("/egress/bindings", s.mgmt.GetEgressBindings)
+		mgmt.POST("/egress/bindings/preview", s.mgmt.PostEgressBindingPreview)
+		mgmt.PUT("/egress/bindings/batch", s.mgmt.PutEgressBindingBatch)
+
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)
 		mgmt.PUT("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)
 		mgmt.PATCH("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)
@@ -964,9 +988,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/routing/strategy", s.mgmt.PutRoutingStrategy)
 		mgmt.GET("/routing-config", s.mgmt.GetRoutingConfig)
 		mgmt.PUT("/routing-config", s.mgmt.PutRoutingConfig)
-		mgmt.GET("/proxy-pool", s.mgmt.GetProxyPool)
-		mgmt.PUT("/proxy-pool", s.mgmt.PutProxyPool)
-		mgmt.POST("/proxy-pool/check", s.mgmt.CheckProxyPool)
 		mgmt.GET("/channel-groups", s.mgmt.GetChannelGroups)
 		mgmt.GET("/ccswitch-import-configs", s.mgmt.GetCCSwitchImportConfigs)
 		mgmt.PUT("/ccswitch-import-configs", s.mgmt.PutCCSwitchImportConfigs)

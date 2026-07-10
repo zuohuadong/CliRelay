@@ -358,7 +358,6 @@ func TestManagementRoutesRestoredAfterMerge(t *testing.T) {
 		{http.MethodGet, "/v0/management/api-key-billing?api_key=sk-test"},
 		{http.MethodGet, "/v0/management/api-key-permission-profiles"},
 		{http.MethodGet, "/v0/management/routing-config"},
-		{http.MethodGet, "/v0/management/proxy-pool"},
 		{http.MethodGet, "/v0/management/channel-groups"},
 		{http.MethodGet, "/v0/management/identity-fingerprint"},
 		{http.MethodGet, "/v0/management/models"},
@@ -535,7 +534,6 @@ func TestManagementPanelCompatibilityRoutesRegistered(t *testing.T) {
 	}{
 		{method: http.MethodGet, path: "/v0/management/dashboard-summary?days=1"},
 		{method: http.MethodGet, path: "/v0/management/update/check"},
-		{method: http.MethodGet, path: "/v0/management/proxy-pool"},
 		{method: http.MethodGet, path: "/v0/management/api-key-entries"},
 		{method: http.MethodGet, path: "/v0/management/api-key-permission-profiles"},
 		{method: http.MethodGet, path: "/v0/management/ccswitch-import-configs"},
@@ -573,6 +571,64 @@ func TestManagementPanelCompatibilityRoutesRegistered(t *testing.T) {
 				t.Fatalf("route unexpectedly unauthorized; body=%s", rr.Body.String())
 			}
 		})
+	}
+}
+
+func TestRemovedReusableProxyManagementRoutesAreNotRegistered(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	basePath := "/v0/management/" + "proxy-" + "pool"
+	for _, route := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: basePath},
+		{method: http.MethodPut, path: basePath, body: `{"items":[]}`},
+		{method: http.MethodPost, path: basePath + "/check", body: `{}`},
+	} {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			req := httptest.NewRequest(route.method, route.path, strings.NewReader(route.body))
+			req.Header.Set("Authorization", "Bearer test-management-key")
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestEgressHardeningManagementRoutesAreRegistered(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	server := newTestServer(t)
+	want := map[string]bool{
+		http.MethodPost + " /v0/management/egress/bindings/preview":      false,
+		http.MethodPut + " /v0/management/egress/bindings/batch":         false,
+		http.MethodPost + " /v0/management/egress/endpoints/:id/impact":  false,
+		http.MethodPost + " /v0/management/egress/endpoints/:id/actions": false,
+	}
+	for _, route := range server.engine.Routes() {
+		key := route.Method + " " + route.Path
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+	}
+	for route, found := range want {
+		if !found {
+			t.Errorf("management route not registered: %s", route)
+		}
+	}
+	removed := map[string]struct{}{
+		http.MethodPut + " /v0/management/egress/bindings/:identity":    {},
+		http.MethodDelete + " /v0/management/egress/bindings/:identity": {},
+	}
+	for _, route := range server.engine.Routes() {
+		if _, exists := removed[route.Method+" "+route.Path]; exists {
+			t.Errorf("unsafe direct binding route remains registered: %s %s", route.Method, route.Path)
+		}
 	}
 }
 

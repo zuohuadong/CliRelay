@@ -100,11 +100,6 @@ func (s *ConfigSynthesizer) synthesizeBedrock(ctx *SynthesisContext) []*coreauth
 		}
 		base := strings.TrimSpace(entry.BaseURL)
 		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		if pid := strings.TrimSpace(entry.ProxyID); pid != "" {
-			if resolved := cfg.ResolveProxyURL(pid, ""); resolved != "" {
-				proxyURL = resolved
-			}
-		}
 		id, token := idGen.Next("bedrock:credential", authMode, credential, region, base, proxyURL)
 		attrs := map[string]string{
 			"source":       fmt.Sprintf("config:bedrock[%s]", token),
@@ -182,11 +177,6 @@ func (s *ConfigSynthesizer) synthesizeBigModelCoding(ctx *SynthesisContext) []*c
 			}
 			key := strings.TrimSpace(entry.APIKey)
 			proxyURL := strings.TrimSpace(entry.ProxyURL)
-			if pid := strings.TrimSpace(entry.ProxyID); pid != "" {
-				if resolved := cfg.ResolveProxyURL(pid, ""); resolved != "" {
-					proxyURL = resolved
-				}
-			}
 			idKind := fmt.Sprintf("%s:%s", providerName, providerName)
 			id, token := idGen.Next(idKind, key, base, proxyURL)
 			attrs := map[string]string{
@@ -298,11 +288,6 @@ func (s *ConfigSynthesizer) synthesizeAstronCode(ctx *SynthesisContext) []*corea
 			}
 			key := strings.TrimSpace(entry.APIKey)
 			proxyURL := strings.TrimSpace(entry.ProxyURL)
-			if pid := strings.TrimSpace(entry.ProxyID); pid != "" {
-				if resolved := cfg.ResolveProxyURL(pid, ""); resolved != "" {
-					proxyURL = resolved
-				}
-			}
 			idKind := fmt.Sprintf("%s:%s", providerName, providerName)
 			id, token := idGen.Next(idKind, key, base, proxyURL)
 			attrs := map[string]string{
@@ -419,11 +404,6 @@ func (s *ConfigSynthesizer) synthesizeAgnes(ctx *SynthesisContext) []*coreauth.A
 				continue
 			}
 			proxyURL := strings.TrimSpace(entry.ProxyURL)
-			if pid := strings.TrimSpace(entry.ProxyID); pid != "" {
-				if resolved := cfg.ResolveProxyURL(pid, ""); resolved != "" {
-					proxyURL = resolved
-				}
-			}
 			idKind := fmt.Sprintf("%s:%s", providerName, providerName)
 			id, token := idGen.Next(idKind, key, base, proxyURL)
 			attrs := map[string]string{
@@ -492,11 +472,6 @@ func (s *ConfigSynthesizer) synthesizeOpenCodeGo(ctx *SynthesisContext) []*corea
 			base = "http://localhost:8080/v1"
 		}
 		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		if pid := strings.TrimSpace(entry.ProxyID); pid != "" {
-			if resolved := cfg.ResolveProxyURL(pid, ""); resolved != "" {
-				proxyURL = resolved
-			}
-		}
 		id, token := idGen.Next("opencode-go:apikey", key, base, proxyURL)
 		attrs := map[string]string{
 			"source":       fmt.Sprintf("config:opencode-go[%s]", token),
@@ -743,11 +718,6 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			}
 			key := strings.TrimSpace(entry.APIKey)
 			proxyURL := strings.TrimSpace(entry.ProxyURL)
-			if pid := strings.TrimSpace(entry.ProxyID); pid != "" {
-				if resolved := cfg.ResolveProxyURL(pid, ""); resolved != "" {
-					proxyURL = resolved
-				}
-			}
 			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
 			id, token := idGen.Next(idKind, key, base, proxyURL)
 			attrs := map[string]string{

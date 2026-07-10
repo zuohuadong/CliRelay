@@ -41,7 +41,6 @@ const createPrefixProxyEditorState = (): PrefixProxyEditorState => ({
   json: null,
   prefix: "",
   proxyUrl: "",
-  proxyId: "",
   subscriptionStartedAt: "",
   subscriptionPeriod: "monthly",
 });
@@ -293,7 +292,6 @@ export function useAuthFilesDetailEditors(
         json: null,
         prefix: "",
         proxyUrl: "",
-        proxyId: "",
         subscriptionStartedAt: "",
         subscriptionPeriod: "monthly",
       });
@@ -326,7 +324,6 @@ export function useAuthFilesDetailEditors(
         const json = parsed as Record<string, unknown>;
         const prefix = typeof json.prefix === "string" ? json.prefix : "";
         const proxyUrl = typeof json.proxy_url === "string" ? json.proxy_url : "";
-        const proxyId = typeof json.proxy_id === "string" ? json.proxy_id : "";
         const subscriptionStartedAt = dateLikeToDateTimeLocalInput(
           readSubscriptionStartValue(json),
         );
@@ -340,7 +337,6 @@ export function useAuthFilesDetailEditors(
           json,
           prefix,
           proxyUrl,
-          proxyId,
           subscriptionStartedAt,
           subscriptionPeriod,
           error: null,
@@ -435,8 +431,6 @@ export function useAuthFilesDetailEditors(
       typeof prefixProxyEditor.json.prefix === "string" ? prefixProxyEditor.json.prefix : "";
     const originalProxyUrl =
       typeof prefixProxyEditor.json.proxy_url === "string" ? prefixProxyEditor.json.proxy_url : "";
-    const originalProxyId =
-      typeof prefixProxyEditor.json.proxy_id === "string" ? prefixProxyEditor.json.proxy_id : "";
     const originalSubscriptionStartedAt = dateLikeToDateTimeLocalInput(
       readSubscriptionStartValue(prefixProxyEditor.json),
     );
@@ -446,14 +440,12 @@ export function useAuthFilesDetailEditors(
     return (
       originalPrefix !== prefixProxyEditor.prefix ||
       originalProxyUrl !== prefixProxyEditor.proxyUrl ||
-      originalProxyId !== prefixProxyEditor.proxyId ||
       originalSubscriptionStartedAt !== prefixProxyEditor.subscriptionStartedAt ||
       originalSubscriptionPeriod !== prefixProxyEditor.subscriptionPeriod
     );
   }, [
     prefixProxyEditor.json,
     prefixProxyEditor.prefix,
-    prefixProxyEditor.proxyId,
     prefixProxyEditor.proxyUrl,
     prefixProxyEditor.subscriptionPeriod,
     prefixProxyEditor.subscriptionStartedAt,
@@ -471,10 +463,6 @@ export function useAuthFilesDetailEditors(
     if (proxyUrl) next.proxy_url = proxyUrl;
     else delete next.proxy_url;
 
-    const proxyId = prefixProxyEditor.proxyId.trim();
-    if (proxyId) next.proxy_id = proxyId;
-    else delete next.proxy_id;
-
     removeSubscriptionFields(next);
     const subscriptionStartedAt = prefixProxyEditor.subscriptionStartedAt.trim();
     if (subscriptionStartedAt) {
@@ -489,7 +477,6 @@ export function useAuthFilesDetailEditors(
   }, [
     prefixProxyEditor.json,
     prefixProxyEditor.prefix,
-    prefixProxyEditor.proxyId,
     prefixProxyEditor.proxyUrl,
     prefixProxyEditor.subscriptionPeriod,
     prefixProxyEditor.subscriptionStartedAt,

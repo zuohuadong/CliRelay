@@ -89,6 +89,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeOpenCodeGoKeys()
 	cfg.SanitizeIdentityFingerprint()
 	cfg.SanitizeMCPProxy()
+	cfg.SanitizeEgressNetwork()
 	cfg.MigrateBigModelCodingFromOpenAICompatibility()
 	cfg.SanitizeBigModelCoding()
 	cfg.MigrateAgnesFromOpenAICompatibility()

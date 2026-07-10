@@ -18,6 +18,7 @@ import (
 	codexauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
@@ -262,12 +263,89 @@ func codexErrorTextIndicatesContextLength(text string) bool {
 // CodexExecutor is a stateless executor for Codex (OpenAI Responses API entrypoint).
 // If api_key is unavailable on auth, it falls back to legacy via ClientAdapter.
 type CodexExecutor struct {
-	cfg *config.Config
+	cfg          *config.Config
+	egress       egress.Resolver
+	strictEgress bool
+	homeRefresh  func(context.Context, *config.Config, *cliproxyauth.Auth) (*cliproxyauth.Auth, bool, error)
 }
 
 func NewCodexExecutor(cfg *config.Config) *CodexExecutor { return &CodexExecutor{cfg: cfg} }
 
+func NewCodexExecutorWithEgress(cfg *config.Config, resolver egress.Resolver) *CodexExecutor {
+	return &CodexExecutor{cfg: cfg, egress: resolver, strictEgress: true}
+}
+
 func (e *CodexExecutor) Identifier() string { return "codex" }
+
+func (e *CodexExecutor) refreshViaHome(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, bool, error) {
+	if e != nil && e.homeRefresh != nil {
+		return e.homeRefresh(ctx, e.cfg, auth)
+	}
+	var cfg *config.Config
+	if e != nil {
+		cfg = e.cfg
+	}
+	return helps.RefreshAuthViaHome(ctx, cfg, auth)
+}
+
+func (e *CodexExecutor) outboundHTTPClient(ctx context.Context, auth *cliproxyauth.Auth, timeout, responseHeaderTimeout time.Duration, useUTLS bool) (*http.Client, error) {
+	if e != nil && e.strictEgress {
+		proxyURL := ""
+		if auth != nil {
+			proxyURL = strings.TrimSpace(auth.ProxyURL)
+		}
+		var (
+			client *http.Client
+			err    error
+		)
+		if useUTLS {
+			client, err = helps.NewStrictUtlsHTTPClient(proxyURL, timeout)
+		} else {
+			client, err = helps.NewStrictProxyHTTPClient(proxyURL, timeout, responseHeaderTimeout)
+		}
+		if err != nil {
+			return nil, egress.RuntimeError(fmt.Errorf("%w: %v", egress.ErrEndpointInvalid, err))
+		}
+		return client, nil
+	}
+	if useUTLS {
+		return helps.NewUtlsHTTPClient(ctx, e.cfg, auth, timeout), nil
+	}
+	return helps.NewProxyAwareHTTPClientWithResponseHeaderTimeout(ctx, e.cfg, auth, timeout, responseHeaderTimeout), nil
+}
+
+func (e *CodexExecutor) resolveEgressAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if e == nil || !e.strictEgress {
+		return auth, nil
+	}
+	if e.egress == nil {
+		return nil, egress.RuntimeError(fmt.Errorf("%w: Codex egress resolver is unavailable", egress.ErrEgressRequired))
+	}
+	if auth == nil {
+		return nil, egress.RuntimeError(fmt.Errorf("%w: Codex auth is missing", egress.ErrEgressRequired))
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	accountID := ""
+	if auth.Metadata != nil {
+		accountID, _ = auth.Metadata["account_id"].(string)
+	}
+	resolved, err := e.egress.Resolve(ctx, accountID)
+	if err != nil {
+		return nil, egress.RuntimeError(err)
+	}
+	if strings.TrimSpace(resolved.ProxyURL) == "" {
+		return nil, egress.RuntimeError(fmt.Errorf("%w: resolved endpoint has no proxy URL", egress.ErrEndpointInvalid))
+	}
+	cloned := auth.Clone()
+	cloned.ProxyURL = strings.TrimSpace(resolved.ProxyURL)
+	if cloned.Attributes == nil {
+		cloned.Attributes = make(map[string]string)
+	}
+	cloned.Attributes["egress_id"] = resolved.Endpoint.ID
+	return cloned, nil
+}
 
 func translateCodexRequestPair(from, to sdktranslator.Format, model string, originalPayload, payload []byte, stream bool) ([]byte, []byte) {
 	if bytes.Equal(originalPayload, payload) {
@@ -773,11 +851,19 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 	if ctx == nil {
 		ctx = req.Context()
 	}
+	var err error
+	auth, err = e.resolveEgressAuth(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
 	httpReq := req.WithContext(ctx)
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, err
 	}
-	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient, err := e.outboundHTTPClient(ctx, auth, 0, 0, true)
+	if err != nil {
+		return nil, err
+	}
 	return httpClient.Do(httpReq)
 }
 
@@ -816,6 +902,10 @@ func (e *CodexExecutor) openCodexResponse(ctx context.Context, from sdktranslato
 }
 
 func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	auth, err = e.resolveEgressAuth(ctx, auth)
+	if err != nil {
+		return resp, err
+	}
 	if opts.Alt == "responses/compact" {
 		return e.executeCompact(ctx, auth, req, opts)
 	}
@@ -894,7 +984,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		AuthType:  authType,
 		AuthValue: authValue,
 	})
-	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient, err := e.outboundHTTPClient(ctx, auth, 0, 0, true)
+	if err != nil {
+		return resp, err
+	}
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -1070,7 +1163,10 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		AuthType:  authType,
 		AuthValue: authValue,
 	})
-	httpClient := helps.NewProxyAwareHTTPClientWithResponseHeaderTimeout(ctx, e.cfg, auth, 0, codexCompactResponseHeaderTimeout)
+	httpClient, err := e.outboundHTTPClient(ctx, auth, 0, codexCompactResponseHeaderTimeout, false)
+	if err != nil {
+		return resp, err
+	}
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -1108,6 +1204,10 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 }
 
 func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	auth, err = e.resolveEgressAuth(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
 	}
@@ -1160,7 +1260,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient, err := e.outboundHTTPClient(ctx, auth, 0, 0, true)
+	if err != nil {
+		return nil, err
+	}
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, identityState, err := e.openCodexResponse(ctx, from, url, auth, req, originalPayloadSource, body, apiKey, true, httpClient)
 	if err != nil {
@@ -1556,8 +1659,15 @@ func countCodexInputTokens(enc tokenizer.Codec, body []byte) (int64, error) {
 
 func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	log.Debugf("codex executor: refresh called")
-	if refreshed, handled, err := helps.RefreshAuthViaHome(ctx, e.cfg, auth); handled {
-		return refreshed, err
+	var err error
+	auth, err = e.resolveEgressAuth(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	if e == nil || !e.strictEgress {
+		if refreshed, handled, err := e.refreshViaHome(ctx, auth); handled {
+			return refreshed, err
+		}
 	}
 	if auth == nil {
 		return nil, statusErr{code: 500, msg: "codex executor: auth is nil"}
@@ -1571,7 +1681,11 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	if refreshToken == "" {
 		return auth, nil
 	}
-	svc := codexauth.NewCodexAuthWithProxyURL(e.cfg, auth.ProxyURL)
+	httpClient, err := e.outboundHTTPClient(ctx, auth, 0, 0, false)
+	if err != nil {
+		return nil, err
+	}
+	svc := codexauth.NewCodexAuthWithHTTPClient(httpClient)
 	td, err := svc.RefreshTokensWithRetry(ctx, refreshToken, 3)
 	if err != nil {
 		return nil, err
@@ -1611,6 +1725,11 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 // ProbeQuotaRecovery performs a lightweight quota check for Codex auths by calling
 // the ChatGPT usage endpoint. It implements the cliproxyauth.QuotaRecoveryProber interface.
 func (e *CodexExecutor) ProbeQuotaRecovery(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.QuotaProbeResult, error) {
+	var err error
+	auth, err = e.resolveEgressAuth(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
 	if auth == nil {
 		return nil, fmt.Errorf("codex executor: auth is nil")
 	}
@@ -1631,7 +1750,10 @@ func (e *CodexExecutor) ProbeQuotaRecovery(ctx context.Context, auth *cliproxyau
 	apiKey, _ := codexCreds(auth)
 	applyCodexHeaders(req, auth, apiKey, false, e.cfg)
 
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient, err := e.outboundHTTPClient(ctx, auth, 0, 0, false)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err

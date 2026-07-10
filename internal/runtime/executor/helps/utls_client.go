@@ -2,6 +2,7 @@ package helps
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -36,11 +37,48 @@ func newUtlsRoundTripper(proxyURL string) *utlsRoundTripper {
 			dialer = proxyDialer
 		}
 	}
+	return newUtlsRoundTripperWithDialer(dialer)
+}
+
+func newUtlsRoundTripperWithDialer(dialer proxy.Dialer) *utlsRoundTripper {
+	if dialer == nil {
+		dialer = proxy.Direct
+	}
 	return &utlsRoundTripper{
 		connections: make(map[string]*http2.ClientConn),
 		pending:     make(map[string]*sync.Cond),
 		dialer:      dialer,
 	}
+}
+
+// NewStrictUtlsHTTPClient builds a uTLS-capable client that must use proxyURL.
+// Any proxy parse/build failure is returned to the caller instead of falling back.
+func NewStrictUtlsHTTPClient(proxyURL string, timeout time.Duration) (*http.Client, error) {
+	proxyURL = strings.TrimSpace(proxyURL)
+	dialer, mode, err := proxyutil.BuildDialer(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	if mode != proxyutil.ModeProxy || dialer == nil {
+		return nil, fmt.Errorf("strict proxy URL must select proxy mode")
+	}
+	standardTransport, standardMode, err := proxyutil.BuildHTTPTransport(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	if standardMode != proxyutil.ModeProxy || standardTransport == nil {
+		return nil, fmt.Errorf("strict proxy URL must build an HTTP transport")
+	}
+	client := &http.Client{
+		Transport: &fallbackRoundTripper{
+			utls:     newUtlsRoundTripperWithDialer(dialer),
+			fallback: standardTransport,
+		},
+	}
+	if timeout > 0 {
+		client.Timeout = timeout
+	}
+	return client, nil
 }
 
 func (t *utlsRoundTripper) getOrCreateConnection(host, addr string) (*http2.ClientConn, error) {

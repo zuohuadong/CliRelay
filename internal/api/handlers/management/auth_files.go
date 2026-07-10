@@ -28,6 +28,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -51,6 +52,7 @@ type callbackForwarder struct {
 	provider string
 	server   *http.Server
 	done     chan struct{}
+	address  string
 }
 
 type codexOAuthService interface {
@@ -60,13 +62,86 @@ type codexOAuthService interface {
 }
 
 var (
-	callbackForwardersMu  sync.Mutex
-	callbackForwarders    = make(map[int]*callbackForwarder)
-	errAuthFileMustBeJSON = errors.New("auth file must be .json")
-	errAuthFileNotFound   = errors.New("auth file not found")
-	errPluginVirtualAuth  = errors.New("plugin virtual auth cannot be modified directly; edit or delete the source auth file")
-	newCodexOAuthService  = func(cfg *config.Config) codexOAuthService { return codex.NewCodexAuth(cfg) }
+	callbackForwardersMu   sync.Mutex
+	callbackForwarders     = make(map[int]*callbackForwarder)
+	codexTokenBindingLocks keyedMutexTable
+	errAuthFileMustBeJSON  = errors.New("auth file must be .json")
+	errAuthFileNotFound    = errors.New("auth file not found")
+	errPluginVirtualAuth   = errors.New("plugin virtual auth cannot be modified directly; edit or delete the source auth file")
+	newCodexOAuthService   = func(_ *config.Config, client *http.Client) codexOAuthService {
+		return codex.NewCodexAuthWithHTTPClient(client)
+	}
 )
+
+type keyedMutexEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
+type keyedMutexTable struct {
+	mu      sync.Mutex
+	entries map[string]*keyedMutexEntry
+}
+
+func (t *keyedMutexTable) lock(keys ...string) func() {
+	if t == nil {
+		return func() {}
+	}
+	unique := make(map[string]struct{}, len(keys))
+	normalized := make([]string, 0, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, exists := unique[key]; exists {
+			continue
+		}
+		unique[key] = struct{}{}
+		normalized = append(normalized, key)
+	}
+	if len(normalized) == 0 {
+		return func() {}
+	}
+	sort.Strings(normalized)
+
+	t.mu.Lock()
+	if t.entries == nil {
+		t.entries = make(map[string]*keyedMutexEntry)
+	}
+	entries := make([]*keyedMutexEntry, len(normalized))
+	for i, key := range normalized {
+		entry := t.entries[key]
+		if entry == nil {
+			entry = &keyedMutexEntry{}
+			t.entries[key] = entry
+		}
+		entry.refs++
+		entries[i] = entry
+	}
+	t.mu.Unlock()
+
+	for _, entry := range entries {
+		entry.mu.Lock()
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			for i := len(entries) - 1; i >= 0; i-- {
+				entries[i].mu.Unlock()
+			}
+			t.mu.Lock()
+			for i, key := range normalized {
+				entry := entries[i]
+				entry.refs--
+				if entry.refs == 0 && t.entries[key] == entry {
+					delete(t.entries, key)
+				}
+			}
+			t.mu.Unlock()
+		})
+	}
+}
 
 func extractLastRefreshTimestamp(meta map[string]any) (time.Time, bool) {
 	if len(meta) == 0 {
@@ -146,7 +221,7 @@ func startCallbackForwarder(port int, provider, targetBase string) (*callbackFor
 		stopForwarderInstance(port, prev)
 	}
 
-	addr := fmt.Sprintf("0.0.0.0:%d", port)
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
@@ -183,6 +258,7 @@ func startCallbackForwarder(port int, provider, targetBase string) (*callbackFor
 		provider: provider,
 		server:   srv,
 		done:     done,
+		address:  ln.Addr().String(),
 	}
 
 	callbackForwardersMu.Lock()
@@ -2166,6 +2242,20 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 func (h *Handler) RequestCodexToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
+	egressID := strings.TrimSpace(c.Query("egress_id"))
+	if egressID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "egress_required", "message": "egress_id is required for Codex OAuth"}})
+		return
+	}
+	egressService, oauthHTTPClient, err := h.codexOAuthEgressClient(ctx, egressID)
+	if err != nil {
+		writeEgressError(c, err)
+		return
+	}
+	if err = codexOAuthEndpointAvailable(ctx, egressService, egressID); err != nil {
+		writeEgressError(c, err)
+		return
+	}
 
 	fmt.Println("Initializing Codex authentication...")
 
@@ -2184,31 +2274,41 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
 		return
 	}
+	if err = RegisterOAuthSessionWithEndpointReservation(state, "codex", egressID, map[string]any{"egress_id": egressID}); err != nil {
+		writeEgressError(c, fmt.Errorf("%w: %v", egress.ErrEndpointInUse, err))
+		return
+	}
 
 	// Initialize Codex auth service
-	openaiAuth := newCodexOAuthService(h.cfg)
+	oauthCfg := h.codexOAuthConfig()
+	openaiAuth := newCodexOAuthService(oauthCfg, oauthHTTPClient)
+	authDir := ""
+	if oauthCfg != nil {
+		authDir = oauthCfg.AuthDir
+	}
 
 	// Generate authorization URL
 	authURL, err := openaiAuth.GenerateAuthURL(state, pkceCodes)
 	if err != nil {
+		CompleteOAuthSession(state)
 		log.Errorf("Failed to generate authorization URL: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
 		return
 	}
-
-	RegisterOAuthSession(state, "codex")
 
 	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
 	if isWebUI {
 		targetURL, errTarget := h.managementCallbackURL("/codex/callback")
 		if errTarget != nil {
+			CompleteOAuthSession(state)
 			log.WithError(errTarget).Error("failed to compute codex callback target")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
 			return
 		}
 		var errStart error
 		if forwarder, errStart = startCallbackForwarder(codexCallbackPort, "codex", targetURL); errStart != nil {
+			CompleteOAuthSession(state)
 			log.WithError(errStart).Error("failed to start codex callback forwarder")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
 			return
@@ -2221,7 +2321,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		}
 
 		// Wait for callback file
-		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-codex-%s.oauth", state))
+		waitFile := filepath.Join(authDir, fmt.Sprintf(".oauth-codex-%s.oauth", state))
 		deadline := time.Now().Add(5 * time.Minute)
 		var code string
 		for {
@@ -2257,8 +2357,23 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		}
 
 		log.Debug("Authorization code received, exchanging for tokens...")
+		// Re-resolve the selected endpoint immediately before exchanging the
+		// authorization code. A session created before shutdown, node staleness,
+		// health failure, or endpoint replacement must never retain its old route.
+		currentEgressService, exchangeHTTPClient, errRoute := h.codexOAuthEgressClient(ctx, egressID)
+		if errRoute != nil {
+			SetOAuthSessionError(state, oauthSessionErrorWithCause("Codex OAuth egress is not ready", errRoute))
+			log.Errorf("Codex OAuth egress recheck failed: %v", errRoute)
+			return
+		}
+		if errAvailable := codexOAuthEndpointAvailable(ctx, currentEgressService, egressID); errAvailable != nil {
+			SetOAuthSessionError(state, oauthSessionErrorWithCause("Codex OAuth egress endpoint is no longer available", errAvailable))
+			log.Errorf("Codex OAuth endpoint availability recheck failed: %v", errAvailable)
+			return
+		}
+		exchangeAuth := newCodexOAuthService(h.codexOAuthConfig(), exchangeHTTPClient)
 		// Exchange code for tokens using internal auth service
-		bundle, errExchange := openaiAuth.ExchangeCodeForTokens(ctx, code, pkceCodes)
+		bundle, errExchange := exchangeAuth.ExchangeCodeForTokens(ctx, code, pkceCodes)
 		if errExchange != nil {
 			authErr := codex.NewAuthenticationError(codex.ErrCodeExchangeFailed, errExchange)
 			SetOAuthSessionError(state, oauthSessionErrorWithCause("Failed to exchange authorization code for tokens", errExchange))
@@ -2279,7 +2394,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		}
 
 		// Create token storage and persist
-		tokenStorage := openaiAuth.CreateTokenStorage(bundle)
+		tokenStorage := exchangeAuth.CreateTokenStorage(bundle)
 		fileName := codex.CredentialFileName(tokenStorage.Email, planType, hashAccountID, true)
 		record := &coreauth.Auth{
 			ID:       fileName,
@@ -2289,9 +2404,11 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 			Metadata: map[string]any{
 				"email":      tokenStorage.Email,
 				"account_id": tokenStorage.AccountID,
+				"egress_id":  egressID,
 			},
 		}
-		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		tokenStorage.SetMetadata(record.Metadata)
+		savedPath, errSave := h.saveCodexTokenWithBinding(ctx, currentEgressService, egressID, record, tokenStorage)
 		if errSave != nil {
 			SetOAuthSessionError(state, "Failed to save authentication tokens")
 			log.Errorf("Failed to save authentication tokens: %v", errSave)
@@ -2306,6 +2423,132 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
+}
+
+func (h *Handler) codexOAuthEgressClient(ctx context.Context, egressID string) (*egress.Service, *http.Client, error) {
+	if !h.egressRuntimeEnabled() {
+		return nil, nil, fmt.Errorf("%w: egress runtime is disabled", egress.ErrEgressRequired)
+	}
+	service := h.egress()
+	if service == nil {
+		return nil, nil, fmt.Errorf("%w: egress service is unavailable", egress.ErrEgressRequired)
+	}
+	readiness, err := service.EndpointReadiness(ctx, egressID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !readiness.RuntimeReady {
+		return nil, nil, fmt.Errorf("%w: endpoint %s is not ready: %s", egress.ErrEndpointDisabled, egressID, strings.Join(readiness.Reasons, ","))
+	}
+	client, err := service.HTTPClient(ctx, egressID, 30*time.Second)
+	if err != nil {
+		return nil, nil, err
+	}
+	return service, client, nil
+}
+
+func codexOAuthEndpointAvailable(ctx context.Context, service *egress.Service, egressID string) error {
+	if service == nil {
+		return fmt.Errorf("%w: egress service is unavailable", egress.ErrEgressRequired)
+	}
+	impact, err := service.EndpointImpact(ctx, egressID, egress.EndpointActionDisable)
+	if err != nil {
+		return err
+	}
+	if impact.BindingCount > 0 {
+		return fmt.Errorf("%w: endpoint %s already has %d binding(s)", egress.ErrEndpointInUse, egressID, impact.BindingCount)
+	}
+	return nil
+}
+
+func (h *Handler) codexOAuthConfig() *config.Config {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cfg
+}
+
+func (h *Handler) authManagerSnapshot() *coreauth.Manager {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.authManager
+}
+
+func (h *Handler) saveCodexTokenWithBinding(ctx context.Context, service *egress.Service, egressID string, record *coreauth.Auth, storage *codex.CodexTokenStorage) (string, error) {
+	if service == nil || record == nil || storage == nil {
+		return "", fmt.Errorf("Codex token binding inputs are incomplete")
+	}
+	identity, err := egress.StableIdentity(storage.AccountID)
+	if err != nil {
+		return "", fmt.Errorf("derive Codex egress identity: %w", err)
+	}
+	targetPath := record.FileName
+	cfg := h.codexOAuthConfig()
+	if !filepath.IsAbs(targetPath) && cfg != nil {
+		targetPath = filepath.Join(cfg.AuthDir, targetPath)
+	}
+	targetPath = cleanAuthFilePath(targetPath)
+	pathLockKey := targetPath
+	if pathLockKey == "" {
+		pathLockKey = strings.TrimSpace(record.ID)
+	}
+	if runtime.GOOS == "windows" {
+		pathLockKey = strings.ToLower(pathLockKey)
+	}
+	unlock := codexTokenBindingLocks.lock("path:"+pathLockKey, "identity:"+identity)
+	defer unlock()
+
+	previousBytes, readErr := os.ReadFile(targetPath)
+	previousExists := readErr == nil
+	var previousMode os.FileMode = 0o600
+	if previousExists {
+		if info, errStat := os.Stat(targetPath); errStat == nil {
+			previousMode = info.Mode().Perm()
+		}
+	}
+	var previousRuntime *coreauth.Auth
+	manager := h.authManagerSnapshot()
+	if manager != nil {
+		if existing, ok := manager.GetByID(record.ID); ok && existing != nil {
+			previousRuntime = existing.Clone()
+		}
+	}
+
+	savedPath, err := h.saveTokenRecord(ctx, record)
+	if err != nil {
+		return savedPath, err
+	}
+	err = service.PutBinding(ctx, egress.Binding{Identity: identity, EndpointID: egressID, AuthFileID: record.ID})
+	if err == nil {
+		return savedPath, nil
+	}
+
+	rollbackCtx := coreauth.WithSkipPersist(context.WithoutCancel(ctx))
+	if previousExists {
+		if errRestore := os.WriteFile(targetPath, previousBytes, previousMode); errRestore != nil {
+			return savedPath, fmt.Errorf("bind Codex egress: %w; restore previous token: %v", err, errRestore)
+		}
+		if manager != nil && previousRuntime != nil {
+			if _, errUpdate := manager.Update(rollbackCtx, previousRuntime); errUpdate != nil {
+				return savedPath, fmt.Errorf("bind Codex egress: %w; restore previous runtime: %v", err, errUpdate)
+			}
+		} else if manager != nil {
+			manager.Remove(rollbackCtx, record.ID)
+		}
+	} else {
+		if errDelete := h.deleteTokenRecord(rollbackCtx, savedPath); errDelete != nil {
+			return savedPath, fmt.Errorf("bind Codex egress: %w; delete new token: %v", err, errDelete)
+		}
+		if manager != nil {
+			manager.Remove(rollbackCtx, record.ID)
+		}
+	}
+	return savedPath, fmt.Errorf("bind Codex egress endpoint: %w", err)
 }
 
 func (h *Handler) RequestAntigravityToken(c *gin.Context) {

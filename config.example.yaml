@@ -106,6 +106,35 @@ redis-usage-queue-retention-seconds: 60
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""
 
+# Headscale-managed, fail-closed egress network for Codex OAuth accounts.
+# Strong-isolation deployments must run this as a dedicated Codex-only CliRelay instance:
+# one process, one system user, one config/auth/data set, and no local endpoint.
+# When disabled or when an account has no valid endpoint binding, Codex outbound requests are rejected;
+# they never fall back to proxy-url, environment proxies, the host network, or another endpoint.
+# "exclusive" prevents two identities from sharing an endpoint/public IP. The same OAuth never
+# automatically fails over to another endpoint or public IP.
+# The Headscale API key is read only from the named environment variable.
+# Scope: server-side OAuth code exchange, token refresh, and Codex API traffic are isolated. The browser
+# that opens auth.openai.com still uses the administrator workstation's network and is outside this scope.
+egress-network:
+  enabled: false
+  local-endpoint-enabled: false
+  binding-policy: "exclusive"
+  endpoint-check-interval: "2m"
+  endpoint-health-ttl: "5m"
+  # HTTPS IP echo services used in order. Every request is sent through the endpoint being checked.
+  # Each response may be {"ip":"..."} or a plain IPv4/IPv6 address.
+  probe-urls:
+    - "https://api.ipify.org?format=json"
+    - "https://ifconfig.co/json"
+  headscale:
+    url: "https://headscale.internal.example"
+    api-key-env: "CLIRELAY_HEADSCALE_API_KEY"
+    service-tag: "tag:clirelay-egress"
+    enrollment-ttl: "1h"
+    sync-interval: "1m"
+    node-freshness-ttl: "3m"
+
 # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
 force-model-prefix: false
 

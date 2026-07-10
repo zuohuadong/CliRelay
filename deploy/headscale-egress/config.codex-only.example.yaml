@@ -1,0 +1,57 @@
+# This template is for the dedicated Codex-only strong-isolation instance.
+# Replace every __REPLACE_*__ token before starting the service.
+host: "127.0.0.1"
+port: 18317
+
+remote-management:
+  allow-remote: false
+  secret-key: "__REPLACE_WITH_MANAGEMENT_SECRET__"
+  disable-control-panel: false
+  # The strong-isolation UID cannot reach GitHub. Install panel/dist locally before start.
+  disable-auto-update-panel: true
+
+auth-dir: "/var/lib/clirelay-codex/auths"
+
+api-keys:
+  - "__REPLACE_WITH_CLIENT_API_KEY__"
+
+debug: false
+logging-to-file: true
+logs-max-total-size-mb: 1024
+usage-statistics-enabled: true
+
+# Dynamic in-process plugins are outside the Codex-only isolation boundary.
+plugins:
+  enabled: false
+
+# This value is intentionally empty. Codex never falls back to it.
+proxy-url: ""
+
+egress-network:
+  # Keep false while preparing nodes/endpoints/bindings on port 18317. Set true only at cutover.
+  enabled: false
+  # Strong isolation forbids local endpoints.
+  local-endpoint-enabled: false
+  binding-policy: "exclusive"
+  endpoint-check-interval: "2m"
+  endpoint-health-ttl: "5m"
+  # Both HTTPS services must return either {"ip":"..."} or a plain IP address.
+  # Every probe request is sent through the endpoint being checked.
+  probe-urls:
+    - "https://__REPLACE_WITH_PRIMARY_IP_ECHO_HOST__/ip"
+    - "https://__REPLACE_WITH_SECONDARY_IP_ECHO_HOST__/ip"
+  headscale:
+    url: "https://__REPLACE_WITH_FIXED_HEADSCALE_HOSTNAME__"
+    api-key-env: "CLIRELAY_HEADSCALE_API_KEY"
+    service-tag: "tag:clirelay-egress"
+    enrollment-ttl: "1h"
+    sync-interval: "1m"
+    node-freshness-ttl: "3m"
+
+routing:
+  strategy: "round-robin"
+  session-affinity: false
+
+request-retry: 3
+# Do not retry one failed request through a different OAuth credential/egress binding.
+max-retry-credentials: 1

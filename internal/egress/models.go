@@ -1,0 +1,150 @@
+package egress
+
+import "time"
+
+type Protocol string
+
+const (
+	ProtocolSOCKS5 Protocol = "socks5"
+	ProtocolHTTP   Protocol = "http"
+	ProtocolHTTPS  Protocol = "https"
+)
+
+type Node struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Addresses []string  `json:"addresses"`
+	Online    bool      `json:"online"`
+	LastSeen  time.Time `json:"last_seen,omitempty"`
+	Tags      []string  `json:"tags"`
+	SyncedAt  time.Time `json:"synced_at"`
+}
+
+type NodeReadiness struct {
+	Fresh          bool  `json:"fresh"`
+	SyncAgeSeconds int64 `json:"sync_age_seconds"`
+}
+
+type Endpoint struct {
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	NodeID           string    `json:"node_id,omitempty"`
+	Protocol         Protocol  `json:"protocol"`
+	Host             string    `json:"host"`
+	Port             int       `json:"port"`
+	Enabled          bool      `json:"enabled"`
+	LocalServer      bool      `json:"local_server"`
+	Username         string    `json:"username,omitempty"`
+	Password         string    `json:"-"`
+	ExpectedPublicIP string    `json:"expected_public_ip,omitempty"`
+	PublicIP         string    `json:"public_ip,omitempty"`
+	LatencyMS        int64     `json:"latency_ms,omitempty"`
+	LastCheckedAt    time.Time `json:"last_checked_at,omitempty"`
+	CheckStatus      string    `json:"status,omitempty"`
+	CheckError       string    `json:"error,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+const (
+	EndpointStatusHealthy           = "healthy"
+	EndpointStatusUnhealthy         = "unhealthy"
+	EndpointStatusIPMismatch        = "ip_mismatch"
+	EndpointStatusDuplicatePublicIP = "duplicate_public_ip"
+)
+
+type Binding struct {
+	Identity   string    `json:"identity"`
+	EndpointID string    `json:"endpoint_id"`
+	AuthFileID string    `json:"auth_file_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type BindingAssignment struct {
+	Identity   string `json:"identity"`
+	EndpointID string `json:"endpoint_id"`
+	AuthFileID string `json:"auth_file_id,omitempty"`
+}
+
+type BindingConflict struct {
+	Identity   string `json:"identity,omitempty"`
+	EndpointID string `json:"endpoint_id,omitempty"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+}
+
+type BindingBatchPreview struct {
+	Revision    string              `json:"revision"`
+	Assignments []BindingAssignment `json:"assignments"`
+	Conflicts   []BindingConflict   `json:"conflicts"`
+	Valid       bool                `json:"valid"`
+}
+
+type BindingBatchResult struct {
+	Revision string `json:"revision"`
+	Applied  int    `json:"applied"`
+}
+
+type EndpointReadiness struct {
+	EndpointID        string   `json:"endpoint_id"`
+	Eligible          bool     `json:"eligible"`
+	RuntimeReady      bool     `json:"runtime_ready"`
+	NodeOnline        bool     `json:"node_online"`
+	NodeFresh         bool     `json:"node_fresh"`
+	HealthFresh       bool     `json:"health_fresh"`
+	PublicIPMatches   bool     `json:"public_ip_matches"`
+	DuplicatePublicIP bool     `json:"duplicate_public_ip"`
+	Reasons           []string `json:"reasons"`
+}
+
+type EndpointAction string
+
+const (
+	EndpointActionDisable EndpointAction = "disable"
+	EndpointActionDelete  EndpointAction = "delete"
+)
+
+type EndpointImpact struct {
+	EndpointID           string         `json:"endpoint_id"`
+	Action               EndpointAction `json:"action"`
+	Revision             string         `json:"revision"`
+	BindingCount         int            `json:"binding_count"`
+	BindingIdentities    []string       `json:"binding_identities"`
+	Allowed              bool           `json:"allowed"`
+	RequiresConfirmation bool           `json:"requires_confirmation"`
+	Blockers             []string       `json:"blockers"`
+}
+
+type TechnicalReadiness struct {
+	Revision      string              `json:"revision"`
+	Ready         bool                `json:"ready"`
+	ReadyCount    int                 `json:"ready_count"`
+	EndpointCount int                 `json:"endpoint_count"`
+	Endpoints     []EndpointReadiness `json:"endpoints"`
+	Blockers      []string            `json:"blockers"`
+}
+
+type ResolvedBinding struct {
+	Binding  Binding  `json:"binding"`
+	Endpoint Endpoint `json:"endpoint"`
+}
+
+type Counts struct {
+	Nodes            int `json:"nodes"`
+	OnlineNodes      int `json:"online_nodes"`
+	Endpoints        int `json:"endpoints"`
+	EnabledEndpoints int `json:"enabled_endpoints"`
+	Bindings         int `json:"bindings"`
+}
+
+type HeadscaleStatus struct {
+	URL              string `json:"url"`
+	APIKeyConfigured bool   `json:"api_key_configured"`
+	ServiceTag       string `json:"service_tag"`
+}
+
+type SyncState struct {
+	LastSync time.Time `json:"last_sync,omitempty"`
+	Error    string    `json:"error,omitempty"`
+}

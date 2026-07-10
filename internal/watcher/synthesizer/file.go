@@ -11,6 +11,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -232,6 +233,14 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, authKind)
 	// For codex auth files, extract plan_type from the JWT id_token.
 	if provider == "codex" {
+		if egressID, _ := metadata["egress_id"].(string); strings.TrimSpace(egressID) != "" {
+			a.Attributes["egress_id"] = strings.TrimSpace(egressID)
+		}
+		if accountID, _ := metadata["account_id"].(string); strings.TrimSpace(accountID) != "" {
+			if identity, errIdentity := egress.StableIdentity(accountID); errIdentity == nil {
+				a.Attributes["stable_identity"] = identity
+			}
+		}
 		if idTokenRaw, ok := metadata["id_token"].(string); ok && strings.TrimSpace(idTokenRaw) != "" {
 			if claims, errParse := codex.ParseJWTToken(idTokenRaw); errParse == nil && claims != nil {
 				if pt := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); pt != "" {

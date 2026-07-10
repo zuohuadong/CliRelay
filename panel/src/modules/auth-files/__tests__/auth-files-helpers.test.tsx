@@ -588,13 +588,12 @@ describe("Auth Files helper coverage", () => {
     ]);
   });
 
-  test("edits auth file proxy_id together with prefix and proxy_url", async () => {
+  test("edits auth file prefix and generic proxy_url", async () => {
     let uploadedText = "";
     mocks.downloadText.mockImplementation(async () =>
       JSON.stringify({
         prefix: "codex-main",
         proxy_url: "http://fallback.example:7890",
-        proxy_id: "hk",
       }),
     );
     mocks.upload.mockImplementation(async (file: File) => {
@@ -611,18 +610,16 @@ describe("Auth Files helper coverage", () => {
       result.current.setDetailTab("fields");
     });
 
-    await waitFor(() => {
-      expect(result.current.prefixProxyEditor.proxyId).toBe("hk");
-    });
-
     await act(async () => {
       result.current.setPrefixProxyEditor((prev) => ({
         ...prev,
-        proxyId: "jp",
+        proxyUrl: "http://next.example:7890",
       }));
     });
 
-    expect(result.current.prefixProxyUpdatedText).toContain('"proxy_id": "jp"');
+    expect(result.current.prefixProxyUpdatedText).toContain(
+      '"proxy_url": "http://next.example:7890"',
+    );
 
     await act(async () => {
       await result.current.savePrefixProxy();
@@ -631,8 +628,7 @@ describe("Auth Files helper coverage", () => {
     expect(mocks.upload).toHaveBeenCalledTimes(1);
     expect(JSON.parse(uploadedText)).toEqual({
       prefix: "codex-main",
-      proxy_url: "http://fallback.example:7890",
-      proxy_id: "jp",
+      proxy_url: "http://next.example:7890",
     });
     expect(loadAll).toHaveBeenCalledTimes(1);
   });

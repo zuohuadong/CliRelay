@@ -6,18 +6,21 @@ import { ToastProvider } from "@/modules/ui/ToastProvider";
 import { ThemeProvider } from "@/modules/ui/ThemeProvider";
 import { AuthFilesPage } from "@/modules/auth-files/AuthFilesPage";
 import type { AuthFileItem } from "@/lib/http/types";
-import type { ProxyCheckResult, ProxyPoolEntry } from "@/lib/http/apis/proxies";
+import type { EgressBinding, EgressEndpoint, EgressOverview } from "@/lib/http/apis/egress";
 
 const mocks = vi.hoisted(() => ({
-  list: vi.fn<() => Promise<{ files: AuthFileItem[] }>>(async () => ({ files: [] })),
+  list: vi.fn<() => Promise<{ files: AuthFileItem[] }>>(async () => ({
+    files: [],
+  })),
   getEntityStats: vi.fn(async () => ({ source: [], auth_index: [] })),
   startAuth: vi.fn(async () => ({ url: "", state: "" })),
   getAuthStatus: vi.fn(async () => ({ status: "waiting" })),
   submitCallback: vi.fn(async () => ({})),
   iflowCookieAuth: vi.fn(async () => ({ status: "ok" })),
   importCredential: vi.fn(async () => ({})),
-  proxiesList: vi.fn<() => Promise<ProxyPoolEntry[]>>(async () => []),
-  proxiesCheck: vi.fn<() => Promise<ProxyCheckResult>>(async () => ({ ok: true, latencyMs: 88 })),
+  listEndpoints: vi.fn<() => Promise<EgressEndpoint[]>>(async () => []),
+  getOverview: vi.fn<() => Promise<EgressOverview>>(),
+  listBindings: vi.fn<() => Promise<EgressBinding[]>>(async () => []),
 }));
 
 vi.mock("@/lib/http/apis", async (importOriginal) => {
@@ -37,10 +40,11 @@ vi.mock("@/lib/http/apis", async (importOriginal) => {
   };
 });
 
-vi.mock("@/lib/http/apis/proxies", () => ({
-  proxiesApi: {
-    list: mocks.proxiesList,
-    check: mocks.proxiesCheck,
+vi.mock("@/lib/http/apis/egress", () => ({
+  egressApi: {
+    listEndpoints: mocks.listEndpoints,
+    getOverview: mocks.getOverview,
+    listBindings: mocks.listBindings,
   },
 }));
 
@@ -54,10 +58,71 @@ beforeEach(() => {
   mocks.submitCallback.mockClear();
   mocks.iflowCookieAuth.mockClear();
   mocks.importCredential.mockClear();
-  mocks.proxiesList.mockReset();
-  mocks.proxiesCheck.mockReset();
-  mocks.proxiesList.mockResolvedValue([]);
-  mocks.proxiesCheck.mockResolvedValue({ ok: true, latencyMs: 88 });
+  mocks.listEndpoints.mockReset();
+  mocks.getOverview.mockReset();
+  mocks.listBindings.mockReset();
+  mocks.listEndpoints.mockResolvedValue([
+    {
+      id: "hk",
+      nodeId: "node-1",
+      name: "HK Egress",
+      protocol: "socks5",
+      host: "100.64.0.2",
+      port: 1080,
+      enabled: true,
+      isLocal: false,
+      status: "healthy",
+      latencyMs: 88,
+      publicIp: "203.0.113.8",
+      eligibility: {
+        state: "eligible",
+        selectable: true,
+        reasonCodes: [],
+        nodeOnline: true,
+        nodeStale: false,
+        bindingCount: 0,
+        duplicatePublicIp: false,
+      },
+    },
+  ]);
+  mocks.getOverview.mockResolvedValue({
+    enabled: true,
+    revision: "rev-1",
+    policy: {
+      bindingMode: "exclusive",
+      nodeFreshnessTtlSeconds: 300,
+      endpointCheckTtlSeconds: 300,
+    },
+    readiness: {
+      scope: "application_egress",
+      verdict: "ready",
+      readyToEnable: true,
+      codexOAuthAllowed: true,
+      blockers: [],
+      warnings: [],
+      notEvaluated: [],
+    },
+    headscale: {
+      configured: true,
+      reachable: true,
+      url: "https://headscale.internal",
+      apiKeyConfigured: true,
+      serviceTag: "tag:clirelay-egress",
+    },
+    localEndpointEnabled: false,
+    counts: {
+      nodes: 1,
+      onlineNodes: 1,
+      endpoints: 1,
+      enabledEndpoints: 1,
+      bindings: 0,
+      accounts: 0,
+      routableAccounts: 0,
+      unboundAccounts: 0,
+      missingIdentityAccounts: 0,
+    },
+  });
+  mocks.listBindings.mockResolvedValue([]);
 });
 
 describe("AuthFilesPage OAuth login dialog", () => {
@@ -75,7 +140,9 @@ describe("AuthFilesPage OAuth login dialog", () => {
       </MemoryRouter>,
     );
 
-    const openBtn = await screen.findByRole("button", { name: "Add OAuth Login" });
+    const openBtn = await screen.findByRole("button", {
+      name: "Add OAuth Login",
+    });
     await user.click(openBtn);
 
     const dialog = await screen.findByRole("dialog");
@@ -122,7 +189,7 @@ describe("AuthFilesPage OAuth login dialog", () => {
     });
   });
 
-  test("places the authorization proxy selector below the OAuth provider tabs", async () => {
+  test("places the Codex egress selector below the OAuth provider tabs", async () => {
     const user = userEvent.setup();
     render(
       <MemoryRouter initialEntries={["/auth-files"]}>
@@ -141,22 +208,39 @@ describe("AuthFilesPage OAuth login dialog", () => {
     const dialog = await screen.findByRole("dialog");
     const scoped = within(dialog);
     const tabs = scoped.getByRole("tablist");
-    const proxySelect = await scoped.findByRole("combobox", { name: "Authorization Proxy" });
+    const egressSelect = await scoped.findByRole("combobox", {
+      name: "Authorization Egress",
+    });
 
-    expect(tabs.compareDocumentPosition(proxySelect) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
+    expect(tabs.compareDocumentPosition(egressSelect) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
       0,
     );
   });
 
-  test("selects a proxy with IP, latency, and remark before starting OAuth authorization", async () => {
+  test("requires an enabled endpoint and sends egress_id for Codex authorization", async () => {
     const user = userEvent.setup();
-    mocks.proxiesList.mockResolvedValue([
+    mocks.listEndpoints.mockResolvedValue([
       {
         id: "hk",
-        name: "HK Proxy",
-        url: "socks5://user:pass@127.0.0.1:1080",
+        nodeId: "node-1",
+        name: "HK Egress",
+        protocol: "socks5",
+        host: "100.64.0.2",
+        port: 1080,
         enabled: true,
-        description: "Codex egress",
+        isLocal: false,
+        status: "healthy",
+        latencyMs: 88,
+        publicIp: "203.0.113.8",
+        eligibility: {
+          state: "eligible",
+          selectable: true,
+          reasonCodes: [],
+          nodeOnline: true,
+          nodeStale: false,
+          bindingCount: 0,
+          duplicatePublicIp: false,
+        },
       },
     ]);
 
@@ -176,21 +260,116 @@ describe("AuthFilesPage OAuth login dialog", () => {
 
     const dialog = await screen.findByRole("dialog");
     const scoped = within(dialog);
-    const proxySelect = await scoped.findByRole("combobox", { name: "Authorization Proxy" });
-
-    expect(proxySelect).toHaveTextContent("Server local network");
-    await waitFor(() => expect(mocks.proxiesCheck).toHaveBeenCalledWith({ id: "hk" }));
-    await user.click(proxySelect);
-    expect(await screen.findByText("127.0.0.1:1080")).toBeInTheDocument();
-    expect(screen.getByText(/88 ms/)).toBeInTheDocument();
-    expect(screen.getByText("Codex egress")).toBeInTheDocument();
-
-    await user.click(await screen.findByRole("option", { name: /HK Proxy.*127\.0\.0\.1:1080/i }));
+    const egressSelect = await scoped.findByRole("combobox", {
+      name: "Authorization Egress",
+    });
+    expect(scoped.getByRole("button", { name: "Start authorization" })).toBeDisabled();
+    await user.click(egressSelect);
+    await user.click(
+      await screen.findByRole("option", {
+        name: /HK Egress.*203\.0\.113\.8.*healthy/i,
+      }),
+    );
     await user.click(scoped.getByRole("button", { name: "Start authorization" }));
 
     await waitFor(() => {
-      expect(mocks.startAuth).toHaveBeenCalledWith("codex", { proxyId: "hk" });
+      expect(mocks.startAuth).toHaveBeenCalledWith("codex", { egressId: "hk" });
     });
+  });
+
+  test("blocks Codex authorization when no enabled endpoint exists", async () => {
+    const user = userEvent.setup();
+    mocks.listEndpoints.mockResolvedValue([]);
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Add OAuth Login" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("No enabled egress endpoint is available."),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Start authorization" })).toBeDisabled();
+    expect(mocks.startAuth).not.toHaveBeenCalled();
+  });
+
+  test("excludes endpoints already occupied by exclusive bindings from new Codex OAuth", async () => {
+    const user = userEvent.setup();
+    mocks.listBindings.mockResolvedValue([
+      {
+        identity: "codex:occupied",
+        authId: "occupied.json",
+        accountLabel: "occupied@example.com",
+        endpointId: "hk",
+        bound: true,
+      },
+    ]);
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Add OAuth Login" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("No enabled egress endpoint is available."),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Start authorization" })).toBeDisabled();
+  });
+
+  test("blocks Codex in preparation mode and explains browser versus server egress scope", async () => {
+    const user = userEvent.setup();
+    mocks.getOverview.mockResolvedValue({
+      ...(await mocks.getOverview()),
+      enabled: false,
+      readiness: {
+        scope: "application_egress",
+        verdict: "ready",
+        readyToEnable: true,
+        codexOAuthAllowed: false,
+        blockers: [],
+        warnings: [],
+        notEvaluated: [],
+      },
+    });
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Add OAuth Login" }));
+    const dialog = await screen.findByRole("dialog");
+    const scoped = within(dialog);
+    expect(
+      scoped.getByText(/Codex authorization is disabled in preparation mode/),
+    ).toBeInTheDocument();
+    expect(scoped.getByText(/Browser authorization uses the operator network/)).toBeInTheDocument();
+    expect(scoped.getByRole("button", { name: "Start authorization" })).toBeDisabled();
+
+    await user.click(scoped.getByRole("tab", { name: "Anthropic OAuth" }));
+    expect(scoped.getByRole("button", { name: "Start authorization" })).toBeEnabled();
   });
 
   test("shows translated callback guidance instead of raw oauth keys after starting authorization", async () => {
@@ -216,6 +395,8 @@ describe("AuthFilesPage OAuth login dialog", () => {
 
     const dialog = await screen.findByRole("dialog");
     const scoped = within(dialog);
+    await user.click(scoped.getByRole("combobox", { name: "Authorization Egress" }));
+    await user.click(await screen.findByRole("option", { name: /HK Egress/ }));
     await user.click(scoped.getByRole("button", { name: "Start authorization" }));
 
     expect(await scoped.findByText("Status")).toBeInTheDocument();
@@ -268,6 +449,8 @@ describe("AuthFilesPage OAuth login dialog", () => {
 
     const dialog = await screen.findByRole("dialog");
     const scoped = within(dialog);
+    await user.click(scoped.getByRole("combobox", { name: "Authorization Egress" }));
+    await user.click(await screen.findByRole("option", { name: /HK Egress/ }));
     await user.click(scoped.getByRole("button", { name: "Start authorization" }));
     await waitFor(() => expect(mocks.startAuth).toHaveBeenCalledTimes(1));
 
@@ -283,9 +466,12 @@ describe("AuthFilesPage OAuth login dialog", () => {
     expect(screen.queryByText("codex-new.json")).not.toBeInTheDocument();
 
     mocks.getAuthStatus.mockResolvedValueOnce({ status: "ok" });
-    await waitFor(() => expect(mocks.list).toHaveBeenCalledTimes(3), { timeout: 5000 });
+    await waitFor(() => expect(mocks.list).toHaveBeenCalledTimes(3), {
+      timeout: 5000,
+    });
 
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(await screen.findByTestId("auth-files-cards")).toHaveTextContent("codex-new.json");
+    await waitFor(() => expect(mocks.listBindings).toHaveBeenCalledTimes(2));
   }, 12000);
 });

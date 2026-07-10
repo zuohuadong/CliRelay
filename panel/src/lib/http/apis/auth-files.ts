@@ -25,7 +25,6 @@ export const authFilesApi = {
     label?: string;
     prefix?: string;
     proxy_url?: string;
-    proxy_id?: string;
     priority?: number;
     subscription_started_at?: string;
     subscription_period?: string;

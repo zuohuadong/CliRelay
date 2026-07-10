@@ -39,4 +39,13 @@ describe("AppRouter", () => {
       /path="\/manage\/api-key-permissions"[\s\S]*?element=\{<Navigate to="\/api-key-permissions" replace \/>\}/,
     );
   });
+
+  test("exposes one egress route without proxy-pool compatibility routes", () => {
+    const source = readModule("app/AppRouter.tsx");
+
+    expect(source).toMatch(/<Route\s+path="\/egress"\s+element=\{<EgressPage \/>\}\s*\/>/s);
+    expect(source).not.toContain('path="/proxies"');
+    expect(source).not.toContain('path="/manage/proxies"');
+    expect(source).not.toContain("ProxiesPage");
+  });
 });

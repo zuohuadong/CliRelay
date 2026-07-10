@@ -1,0 +1,620 @@
+import { apiClient } from "@/lib/http/client";
+
+export type EgressProtocol = "socks5" | "http" | "https";
+export type EgressEndpointStatus = "unknown" | "healthy" | "unhealthy";
+export type EgressReadinessVerdict = "ready" | "blocked";
+export type EgressEndpointAction = "disable" | "delete";
+
+export interface EgressReadinessIssue {
+  code: string;
+  message: string;
+}
+
+export interface EgressReadiness {
+  scope: string;
+  verdict: EgressReadinessVerdict;
+  readyToEnable: boolean;
+  codexOAuthAllowed: boolean;
+  blockers: EgressReadinessIssue[];
+  warnings: EgressReadinessIssue[];
+  notEvaluated: EgressReadinessIssue[];
+}
+
+export interface EgressPolicy {
+  bindingMode: "exclusive" | "shared";
+  nodeFreshnessTtlSeconds: number;
+  endpointCheckTtlSeconds: number;
+}
+
+export interface EgressHeadscaleStatus {
+  configured: boolean;
+  reachable: boolean;
+  url: string;
+  apiKeyConfigured: boolean;
+  serviceTag: string;
+  lastSyncAt?: string;
+  error?: string;
+}
+
+export interface EgressOverview {
+  enabled: boolean;
+  revision: string;
+  policy: EgressPolicy;
+  readiness: EgressReadiness;
+  headscale: EgressHeadscaleStatus;
+  localEndpointEnabled: boolean;
+  counts: {
+    nodes: number;
+    onlineNodes: number;
+    endpoints: number;
+    enabledEndpoints: number;
+    bindings: number;
+    accounts: number;
+    routableAccounts: number;
+    unboundAccounts: number;
+    missingIdentityAccounts: number;
+  };
+}
+
+export interface EgressNode {
+  id: string;
+  name: string;
+  givenName?: string;
+  ipAddresses: string[];
+  online: boolean;
+  tags: string[];
+  lastSeen?: string;
+  syncedAt?: string;
+  fresh: boolean;
+  syncAgeSeconds: number;
+}
+
+export interface EgressEndpoint {
+  id: string;
+  nodeId: string;
+  name: string;
+  protocol: EgressProtocol;
+  host: string;
+  port: number;
+  enabled: boolean;
+  isLocal: boolean;
+  hasCredentials?: boolean;
+  username?: string;
+  status: EgressEndpointStatus;
+  latencyMs?: number;
+  publicIp?: string;
+  expectedPublicIp?: string;
+  lastCheckedAt?: string;
+  error?: string;
+  eligibility?: {
+    state: string;
+    selectable: boolean;
+    reasonCodes: string[];
+    checkedAgeSeconds?: number;
+    nodeOnline: boolean;
+    nodeStale: boolean;
+    bindingCount: number;
+    exclusiveOwnerIdentity?: string;
+    duplicatePublicIp: boolean;
+  };
+}
+
+export interface EgressBinding {
+  identity: string;
+  authId: string;
+  accountLabel: string;
+  endpointId: string;
+  bound: boolean;
+  endpointName?: string;
+  updatedAt?: string;
+  error?: string;
+}
+
+export interface EgressEnrollment {
+  key: string;
+  expiresAt: string;
+  command: string;
+}
+
+export interface EgressEndpointInput {
+  nodeId: string;
+  name: string;
+  protocol: EgressProtocol;
+  host: string;
+  port: number;
+  enabled: boolean;
+  isLocal: boolean;
+  expectedPublicIp?: string;
+  username?: string;
+  password?: string;
+  clearCredentials?: boolean;
+}
+
+export interface EgressBindingAssignment {
+  identity: string;
+  endpointId: string;
+}
+
+export interface EgressBindingPreview {
+  expectedRevision: string;
+  assignments: EgressBindingAssignment[];
+  changeCount: number;
+  affectedAccounts: string[];
+  blockers: EgressReadinessIssue[];
+  warnings: EgressReadinessIssue[];
+  valid: boolean;
+}
+
+export interface EgressBindingApplyResult {
+  revision: string;
+  applied: number;
+}
+
+export interface EgressEndpointImpact {
+  endpointId: string;
+  action: EgressEndpointAction;
+  expectedRevision: string;
+  affectedBindings: number;
+  affectedAccounts: string[];
+  blocked: boolean;
+  reason?: string;
+}
+
+type UnknownRecord = Record<string, unknown>;
+
+const asRecord = (value: unknown): UnknownRecord =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as UnknownRecord)
+    : {};
+
+const normalizeString = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+
+const normalizeOptionalString = (value: unknown): string | undefined => {
+  const normalized = normalizeString(value);
+  return normalized || undefined;
+};
+
+const normalizeBoolean = (value: unknown, fallback = false): boolean =>
+  typeof value === "boolean" ? value : fallback;
+
+const normalizeNumber = (value: unknown, fallback = 0): number => {
+  const numberValue =
+    typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(numberValue) ? numberValue : fallback;
+};
+
+const normalizeStringArray = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value
+        .map(normalizeString)
+        .filter((item, index, items) => item && items.indexOf(item) === index)
+    : [];
+
+const normalizeIssues = (value: unknown): EgressReadinessIssue[] =>
+  Array.isArray(value)
+    ? value
+        .map((item) => {
+          if (typeof item === "string") {
+            const message = item.trim();
+            return message ? { code: message, message } : null;
+          }
+          const record = asRecord(item);
+          const message = normalizeString(record.message ?? record.detail ?? record.code);
+          if (!message) return null;
+          return { code: normalizeString(record.code) || "warning", message };
+        })
+        .filter((item): item is EgressReadinessIssue => item !== null)
+    : [];
+
+const normalizeAssignment = (value: unknown): EgressBindingAssignment | null => {
+  const raw = asRecord(value);
+  const identity = normalizeString(raw.identity);
+  if (!identity) return null;
+  return {
+    identity,
+    endpointId: normalizeString(raw.endpoint_id ?? raw.endpointId),
+  };
+};
+
+const normalizeList = <T>(value: unknown, normalizer: (item: UnknownRecord) => T | null): T[] => {
+  const record = asRecord(value);
+  const items = Array.isArray(value) ? value : Array.isArray(record.items) ? record.items : [];
+  return items.map((item) => normalizer(asRecord(item))).filter((item): item is T => item !== null);
+};
+
+const normalizeProtocol = (value: unknown): EgressProtocol => {
+  const protocol = normalizeString(value).toLowerCase();
+  return protocol === "http" || protocol === "https" ? protocol : "socks5";
+};
+
+const normalizeStatus = (value: unknown): EgressEndpointStatus => {
+  const status = normalizeString(value).toLowerCase();
+  if (status === "healthy" || status === "ok" || status === "online") return "healthy";
+  if (
+    status === "unhealthy" ||
+    status === "failed" ||
+    status === "offline" ||
+    status === "ip_mismatch" ||
+    status === "duplicate_public_ip"
+  )
+    return "unhealthy";
+  return "unknown";
+};
+
+export const normalizeEgressOverview = (value: unknown): EgressOverview => {
+  const raw = asRecord(value);
+  const headscale = asRecord(raw.headscale ?? raw.settings);
+  const counts = asRecord(raw.counts);
+  const policy = asRecord(raw.policy);
+  const readiness = asRecord(raw.readiness);
+  const configured = normalizeBoolean(headscale.configured ?? headscale.enabled);
+  const ready = normalizeBoolean(readiness.ready);
+  const verdict =
+    normalizeString(readiness.verdict).toLowerCase() === "ready" || ready ? "ready" : "blocked";
+  return {
+    enabled: normalizeBoolean(raw.enabled ?? raw.runtime_enabled ?? raw.runtimeEnabled),
+    revision: normalizeString(raw.revision ?? raw.binding_revision ?? raw.bindingRevision),
+    policy: {
+      bindingMode:
+        normalizeString(policy.binding_mode ?? policy.bindingMode).toLowerCase() === "shared"
+          ? "shared"
+          : "exclusive",
+      nodeFreshnessTtlSeconds: normalizeNumber(
+        policy.node_freshness_ttl_seconds ?? policy.nodeFreshnessTtlSeconds,
+      ),
+      endpointCheckTtlSeconds: normalizeNumber(
+        policy.endpoint_check_ttl_seconds ?? policy.endpointCheckTtlSeconds,
+      ),
+    },
+    readiness: {
+      scope: normalizeString(readiness.scope ?? raw.scope) || "application_egress",
+      verdict,
+      readyToEnable: normalizeBoolean(
+        readiness.ready_to_enable ?? readiness.readyToEnable,
+        ready || verdict === "ready",
+      ),
+      codexOAuthAllowed: normalizeBoolean(
+        readiness.codex_oauth_allowed ?? readiness.codexOAuthAllowed,
+        normalizeBoolean(raw.enabled ?? raw.runtime_enabled ?? raw.runtimeEnabled) &&
+          verdict === "ready",
+      ),
+      blockers: normalizeIssues(readiness.blockers ?? readiness.reasons),
+      warnings: normalizeIssues(readiness.warnings),
+      notEvaluated: normalizeIssues(readiness.not_evaluated ?? readiness.notEvaluated),
+    },
+    headscale: {
+      configured,
+      reachable: normalizeBoolean(headscale.reachable, configured && !headscale.error),
+      url: normalizeString(headscale.url ?? headscale.base_url ?? headscale.baseUrl),
+      apiKeyConfigured: normalizeBoolean(
+        headscale.api_key_configured ?? headscale.apiKeyConfigured,
+      ),
+      serviceTag: normalizeString(headscale.service_tag ?? headscale.serviceTag),
+      ...(normalizeOptionalString(headscale.last_sync_at ?? headscale.lastSyncAt)
+        ? {
+            lastSyncAt: normalizeOptionalString(headscale.last_sync_at ?? headscale.lastSyncAt),
+          }
+        : {}),
+      ...(normalizeOptionalString(headscale.error)
+        ? { error: normalizeOptionalString(headscale.error) }
+        : {}),
+    },
+    localEndpointEnabled: normalizeBoolean(
+      raw.local_endpoint_enabled ?? raw.localEndpointEnabled ?? headscale.local_endpoint_enabled,
+    ),
+    counts: {
+      nodes: normalizeNumber(counts.nodes),
+      onlineNodes: normalizeNumber(counts.online_nodes ?? counts.onlineNodes),
+      endpoints: normalizeNumber(counts.endpoints),
+      enabledEndpoints: normalizeNumber(counts.enabled_endpoints ?? counts.enabledEndpoints),
+      bindings: normalizeNumber(counts.bindings),
+      accounts: normalizeNumber(
+        counts.accounts ?? counts.account_total ?? counts.accountTotal ?? counts.codex_auths,
+      ),
+      routableAccounts: normalizeNumber(
+        counts.routable_accounts ?? counts.routableAccounts ?? counts.bound_codex_auths,
+      ),
+      unboundAccounts: normalizeNumber(
+        counts.unbound_accounts ?? counts.unboundAccounts ?? counts.unbound_codex_auths,
+      ),
+      missingIdentityAccounts: normalizeNumber(
+        counts.missing_identity_accounts ??
+          counts.missingIdentityAccounts ??
+          counts.missing_account_id,
+      ),
+    },
+  };
+};
+
+export const normalizeEgressNode = (raw: UnknownRecord): EgressNode | null => {
+  const id = normalizeString(raw.id);
+  const name = normalizeString(raw.name);
+  if (!id || !name) return null;
+  return {
+    id,
+    name,
+    ...(normalizeOptionalString(raw.given_name ?? raw.givenName)
+      ? { givenName: normalizeOptionalString(raw.given_name ?? raw.givenName) }
+      : {}),
+    ipAddresses: normalizeStringArray(raw.ip_addresses ?? raw.ipAddresses ?? raw.addresses),
+    online: normalizeBoolean(raw.online),
+    tags: normalizeStringArray(raw.tags),
+    ...(normalizeOptionalString(raw.last_seen ?? raw.lastSeen)
+      ? { lastSeen: normalizeOptionalString(raw.last_seen ?? raw.lastSeen) }
+      : {}),
+    ...(normalizeOptionalString(raw.synced_at ?? raw.syncedAt)
+      ? { syncedAt: normalizeOptionalString(raw.synced_at ?? raw.syncedAt) }
+      : {}),
+    fresh: normalizeBoolean(raw.fresh),
+    syncAgeSeconds: normalizeNumber(raw.sync_age_seconds ?? raw.syncAgeSeconds),
+  };
+};
+
+export const normalizeEgressEndpoint = (raw: UnknownRecord): EgressEndpoint | null => {
+  const id = normalizeString(raw.id);
+  const nodeId = normalizeString(raw.node_id ?? raw.nodeId);
+  const name = normalizeString(raw.name);
+  const host = normalizeString(raw.host);
+  const port = normalizeNumber(raw.port);
+  const isLocal = normalizeBoolean(raw.local_server ?? raw.is_local ?? raw.isLocal);
+  if (!id || (!isLocal && !nodeId) || !name || !host || port <= 0 || port > 65535) return null;
+  const username = normalizeOptionalString(raw.username);
+  const eligibility = asRecord(raw.eligibility ?? raw.readiness);
+  const state = normalizeString(eligibility.state);
+  const eligible = normalizeBoolean(eligibility.eligible, false);
+  const runtimeReady = normalizeBoolean(
+    eligibility.runtime_ready ?? eligibility.runtimeReady,
+    false,
+  );
+  return {
+    id,
+    nodeId,
+    name,
+    protocol: normalizeProtocol(raw.protocol),
+    host,
+    port,
+    enabled: normalizeBoolean(raw.enabled, true),
+    isLocal,
+    ...(typeof (raw.has_credentials ?? raw.hasCredentials) === "boolean"
+      ? { hasCredentials: Boolean(raw.has_credentials ?? raw.hasCredentials) }
+      : {}),
+    ...(username ? { username } : {}),
+    status: normalizeStatus(raw.status),
+    ...(normalizeNumber(raw.latency_ms ?? raw.latencyMs, -1) >= 0
+      ? {
+          latencyMs: Math.round(normalizeNumber(raw.latency_ms ?? raw.latencyMs)),
+        }
+      : {}),
+    ...(normalizeOptionalString(raw.public_ip ?? raw.publicIp ?? raw.observed_public_ip)
+      ? {
+          publicIp: normalizeOptionalString(
+            raw.public_ip ?? raw.publicIp ?? raw.observed_public_ip,
+          ),
+        }
+      : {}),
+    ...(normalizeOptionalString(raw.expected_public_ip ?? raw.expectedPublicIp)
+      ? {
+          expectedPublicIp: normalizeOptionalString(raw.expected_public_ip ?? raw.expectedPublicIp),
+        }
+      : {}),
+    ...(normalizeOptionalString(raw.last_checked_at ?? raw.lastCheckedAt)
+      ? {
+          lastCheckedAt: normalizeOptionalString(raw.last_checked_at ?? raw.lastCheckedAt),
+        }
+      : {}),
+    ...(normalizeOptionalString(raw.error) ? { error: normalizeOptionalString(raw.error) } : {}),
+    eligibility: {
+      state: state || (eligible || runtimeReady ? "eligible" : "unknown"),
+      selectable: normalizeBoolean(eligibility.selectable, eligible || runtimeReady),
+      reasonCodes: normalizeStringArray(
+        eligibility.reason_codes ?? eligibility.reasonCodes ?? eligibility.reasons,
+      ),
+      ...(normalizeNumber(eligibility.checked_age_seconds ?? eligibility.checkedAgeSeconds, -1) >= 0
+        ? {
+            checkedAgeSeconds: normalizeNumber(
+              eligibility.checked_age_seconds ?? eligibility.checkedAgeSeconds,
+            ),
+          }
+        : {}),
+      nodeOnline: normalizeBoolean(eligibility.node_online ?? eligibility.nodeOnline),
+      nodeStale: normalizeBoolean(
+        eligibility.node_stale ?? eligibility.nodeStale,
+        typeof eligibility.node_fresh === "boolean" ? !eligibility.node_fresh : false,
+      ),
+      bindingCount: normalizeNumber(eligibility.binding_count ?? eligibility.bindingCount),
+      ...(normalizeOptionalString(
+        eligibility.exclusive_owner_identity ?? eligibility.exclusiveOwnerIdentity,
+      )
+        ? {
+            exclusiveOwnerIdentity: normalizeOptionalString(
+              eligibility.exclusive_owner_identity ?? eligibility.exclusiveOwnerIdentity,
+            ),
+          }
+        : {}),
+      duplicatePublicIp: normalizeBoolean(
+        eligibility.duplicate_public_ip ?? eligibility.duplicatePublicIp,
+      ),
+    },
+  };
+};
+
+export const normalizeEgressBinding = (raw: UnknownRecord): EgressBinding | null => {
+  const identity = normalizeString(raw.identity ?? raw.stable_identity ?? raw.stableIdentity);
+  const endpointId = normalizeString(raw.endpoint_id ?? raw.endpointId);
+  const authId = normalizeString(raw.auth_id ?? raw.authId);
+  const accountLabel = normalizeString(raw.account_label ?? raw.accountLabel);
+  if (!identity && !authId && !accountLabel) return null;
+  return {
+    identity,
+    authId,
+    accountLabel: accountLabel || authId || identity,
+    endpointId,
+    bound: normalizeBoolean(raw.bound, Boolean(endpointId)),
+    ...(normalizeOptionalString(raw.endpoint_name ?? raw.endpointName)
+      ? {
+          endpointName: normalizeOptionalString(raw.endpoint_name ?? raw.endpointName),
+        }
+      : {}),
+    ...(normalizeOptionalString(raw.updated_at ?? raw.updatedAt)
+      ? { updatedAt: normalizeOptionalString(raw.updated_at ?? raw.updatedAt) }
+      : {}),
+    ...(normalizeOptionalString(raw.error) ? { error: normalizeOptionalString(raw.error) } : {}),
+  };
+};
+
+const serializeEndpointInput = (input: Partial<EgressEndpointInput>): UnknownRecord => ({
+  ...(input.nodeId !== undefined ? { node_id: input.nodeId.trim() } : {}),
+  ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+  ...(input.protocol !== undefined ? { protocol: input.protocol } : {}),
+  ...(input.host !== undefined ? { host: input.host.trim() } : {}),
+  ...(input.port !== undefined ? { port: input.port } : {}),
+  ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+  ...(input.isLocal !== undefined ? { local_server: input.isLocal } : {}),
+  ...(input.expectedPublicIp !== undefined
+    ? { expected_public_ip: input.expectedPublicIp.trim() }
+    : {}),
+  ...(input.clearCredentials
+    ? { username: "", password: "" }
+    : {
+        ...(input.username?.trim() ? { username: input.username.trim() } : {}),
+        ...(input.password?.trim() ? { password: input.password } : {}),
+      }),
+});
+
+const encodePath = (value: string): string => encodeURIComponent(value.trim());
+
+const serializeAssignments = (assignments: EgressBindingAssignment[]) =>
+  assignments.map((assignment) => ({
+    identity: assignment.identity.trim(),
+    endpoint_id: assignment.endpointId.trim(),
+  }));
+
+const normalizeBindingPreview = (value: unknown): EgressBindingPreview => {
+  const raw = asRecord(value);
+  const assignments = Array.isArray(raw.assignments)
+    ? raw.assignments
+        .map(normalizeAssignment)
+        .filter((item): item is EgressBindingAssignment => item !== null)
+    : [];
+  const blockers = normalizeIssues(raw.blockers ?? raw.conflicts);
+  return {
+    expectedRevision: normalizeString(
+      raw.expected_revision ?? raw.expectedRevision ?? raw.revision,
+    ),
+    assignments,
+    changeCount: normalizeNumber(raw.change_count ?? raw.changeCount, assignments.length),
+    affectedAccounts: normalizeStringArray(raw.affected_accounts ?? raw.affectedAccounts),
+    blockers,
+    warnings: normalizeIssues(raw.warnings),
+    valid: normalizeBoolean(raw.valid, blockers.length === 0),
+  };
+};
+
+const normalizeEndpointImpact = (value: unknown): EgressEndpointImpact => {
+  const raw = asRecord(value);
+  const action = normalizeString(raw.action) === "disable" ? "disable" : "delete";
+  const blockers = normalizeIssues(raw.blockers);
+  return {
+    endpointId: normalizeString(raw.endpoint_id ?? raw.endpointId),
+    action,
+    expectedRevision: normalizeString(
+      raw.expected_revision ?? raw.expectedRevision ?? raw.revision,
+    ),
+    affectedBindings: normalizeNumber(
+      raw.affected_bindings ?? raw.affectedBindings ?? raw.binding_count ?? raw.bindings_count,
+    ),
+    affectedAccounts: normalizeStringArray(
+      raw.affected_accounts ?? raw.affectedAccounts ?? raw.binding_identities,
+    ),
+    blocked: normalizeBoolean(raw.blocked, !normalizeBoolean(raw.allowed, blockers.length === 0)),
+    ...(normalizeOptionalString(raw.reason) || blockers.length > 0
+      ? {
+          reason:
+            normalizeOptionalString(raw.reason) ??
+            blockers.map((blocker) => blocker.message).join("; "),
+        }
+      : {}),
+  };
+};
+
+export const egressApi = {
+  async getOverview(): Promise<EgressOverview> {
+    return normalizeEgressOverview(await apiClient.get<unknown>("/egress/overview"));
+  },
+  async listNodes(): Promise<EgressNode[]> {
+    return normalizeList(await apiClient.get<unknown>("/egress/nodes"), normalizeEgressNode);
+  },
+  syncNodes() {
+    return apiClient.post("/egress/nodes/sync");
+  },
+  async createEnrollment(input: { name?: string } = {}): Promise<EgressEnrollment> {
+    const raw = asRecord(await apiClient.post<unknown>("/egress/enrollment", input));
+    return {
+      key: normalizeString(raw.key),
+      expiresAt: normalizeString(raw.expires_at ?? raw.expiresAt),
+      command: normalizeString(raw.command),
+    };
+  },
+  async listEndpoints(): Promise<EgressEndpoint[]> {
+    return normalizeList(
+      await apiClient.get<unknown>("/egress/endpoints"),
+      normalizeEgressEndpoint,
+    );
+  },
+  createEndpoint(input: EgressEndpointInput) {
+    return apiClient.post("/egress/endpoints", serializeEndpointInput(input));
+  },
+  updateEndpoint(id: string, input: Partial<EgressEndpointInput>) {
+    return apiClient.patch(`/egress/endpoints/${encodePath(id)}`, serializeEndpointInput(input));
+  },
+  deleteEndpoint(id: string) {
+    return apiClient.delete(`/egress/endpoints/${encodePath(id)}`);
+  },
+  checkEndpoint(id: string) {
+    return apiClient.post(`/egress/endpoints/${encodePath(id)}/check`);
+  },
+  async listBindings(): Promise<EgressBinding[]> {
+    return normalizeList(await apiClient.get<unknown>("/egress/bindings"), normalizeEgressBinding);
+  },
+  async previewBindings(assignments: EgressBindingAssignment[]): Promise<EgressBindingPreview> {
+    return normalizeBindingPreview(
+      await apiClient.post<unknown>("/egress/bindings/preview", {
+        assignments: serializeAssignments(assignments),
+      }),
+    );
+  },
+  async applyBindings(
+    assignments: EgressBindingAssignment[],
+    expectedRevision: string,
+    confirmed: boolean,
+  ): Promise<EgressBindingApplyResult> {
+    const raw = asRecord(
+      await apiClient.put<unknown>("/egress/bindings/batch", {
+        assignments: serializeAssignments(assignments),
+        revision: expectedRevision.trim(),
+        confirmed,
+      }),
+    );
+    return {
+      revision: normalizeString(raw.revision),
+      applied: normalizeNumber(raw.applied ?? raw.applied_count ?? raw.appliedCount),
+    };
+  },
+  async endpointImpact(id: string, action: EgressEndpointAction): Promise<EgressEndpointImpact> {
+    return normalizeEndpointImpact(
+      await apiClient.post<unknown>(`/egress/endpoints/${encodePath(id)}/impact`, { action }),
+    );
+  },
+  endpointAction(
+    id: string,
+    action: EgressEndpointAction,
+    expectedRevision: string,
+    confirmed: boolean,
+  ) {
+    return apiClient.post(`/egress/endpoints/${encodePath(id)}/actions`, {
+      action,
+      revision: expectedRevision.trim(),
+      confirmed,
+    });
+  },
+};

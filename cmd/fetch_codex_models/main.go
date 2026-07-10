@@ -31,6 +31,7 @@ import (
 
 	codexauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -48,12 +49,19 @@ const (
 	accessTokenRefreshLeeway = 30 * time.Second
 )
 
+var errManagedEgressRequired = fmt.Errorf("%w: fetch_codex_models cannot access Codex directly; use the CliRelay egress service", egress.ErrEgressRequired)
+
 func init() {
 	logging.SetupBaseLogger()
 	log.SetLevel(log.InfoLevel)
 }
 
 func main() {
+	if err := requireManagedEgress(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
 	var authsDir string
 	var configPath string
 	var outputPath string
@@ -162,6 +170,10 @@ func main() {
 	fmt.Printf("Model list saved to: %s\n", outputPath)
 }
 
+func requireManagedEgress() error {
+	return errManagedEgressRequired
+}
+
 func findCodexAuth(auths []*coreauth.Auth) *coreauth.Auth {
 	for _, auth := range auths {
 		if auth == nil || auth.Disabled {
@@ -179,6 +191,10 @@ func findCodexAuth(auths []*coreauth.Auth) *coreauth.Auth {
 }
 
 func ensureAccessToken(ctx context.Context, store *sdkauth.FileTokenStore, auth *coreauth.Auth) (string, bool, error) {
+	if err := requireManagedEgress(); err != nil {
+		return "", false, err
+	}
+
 	accessToken := metaStringValue(auth.Metadata, "access_token")
 	if accessToken != "" {
 		if expiresAt, ok := auth.ExpirationTime(); !ok || time.Now().Add(accessTokenRefreshLeeway).Before(expiresAt) {
@@ -229,6 +245,10 @@ func ensureAccessToken(ctx context.Context, store *sdkauth.FileTokenStore, auth 
 }
 
 func fetchModels(ctx context.Context, auth *coreauth.Auth, accessToken, clientVersion string) ([]byte, int, error) {
+	if err := requireManagedEgress(); err != nil {
+		return nil, 0, err
+	}
+
 	modelsURL, errURL := codexModelsURL(clientVersion)
 	if errURL != nil {
 		return nil, 0, errURL

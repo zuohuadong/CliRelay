@@ -30,10 +30,9 @@ const basePrefixProxyEditor: DetailModalProps["prefixProxyEditor"] = {
   loading: false,
   saving: false,
   error: null,
-  json: { prefix: "team-a", proxy_id: "primary", proxy_url: "http://127.0.0.1:7890" },
+  json: { prefix: "team-a", proxy_url: "http://127.0.0.1:7890" },
   prefix: "team-a",
   proxyUrl: "http://127.0.0.1:7890",
-  proxyId: "primary",
   subscriptionStartedAt: "2026-04-01T08:30",
   subscriptionPeriod: "monthly",
 };
@@ -101,14 +100,14 @@ const renderDetailModal = (overrides: Partial<DetailModalProps> = {}) => {
     setPrefixProxyEditor: vi.fn(),
     prefixProxyDirty: true,
     savePrefixProxy: vi.fn(async () => undefined),
-    proxyPoolEntries: [
-      {
-        id: "primary",
-        name: "Primary egress",
-        url: "http://127.0.0.1:7890",
-        enabled: true,
-      },
-    ],
+    egressBinding: {
+      identity: "codex:abc",
+      authId: "codex.json",
+      accountLabel: "Codex Primary",
+      endpointId: "primary",
+      endpointName: "Primary egress",
+      bound: true,
+    },
     channelEditor: {
       open: true,
       fileName: "codex.json",
@@ -238,10 +237,17 @@ describe("AuthFileDetailModal", () => {
     expect(grid.className).not.toMatch(/\bborder\b/);
     expect(grid.className).not.toContain("divide-y");
     expect(within(grid).getByPlaceholderText("e.g. team-a")).toHaveValue("team-a");
-    expect(within(grid).getByLabelText("proxy_id (proxy pool)")).toBeInTheDocument();
-    expect(within(grid).getByPlaceholderText("e.g. http://127.0.0.1:7890")).toHaveValue(
-      "http://127.0.0.1:7890",
+    expect(within(grid).getByText("Primary egress")).toBeInTheDocument();
+    expect(within(grid).getByRole("link", { name: "Manage in Egress Bindings" })).toHaveAttribute(
+      "href",
+      "/egress",
     );
+    expect(
+      within(grid).queryByRole("combobox", { name: "Codex egress endpoint" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(grid).queryByPlaceholderText("e.g. http://127.0.0.1:7890"),
+    ).not.toBeInTheDocument();
     expect(within(grid).getByLabelText(/Subscription start/)).toBeInTheDocument();
     expect(screen.queryByTestId("auth-file-fields-preview")).not.toBeInTheDocument();
     expect(screen.queryByText(/"prefix"/)).not.toBeInTheDocument();
@@ -287,7 +293,6 @@ describe("AuthFileDetailModal", () => {
         json: { type: "kimi", refresh_token: "kimi-refresh-token" },
         prefix: "",
         proxyUrl: "",
-        proxyId: "",
       },
       channelEditor: {
         open: true,

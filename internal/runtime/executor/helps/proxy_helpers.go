@@ -2,6 +2,7 @@ package helps
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -59,6 +60,27 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	}
 
 	return httpClient
+}
+
+// NewStrictProxyHTTPClient builds a client that must use the provided proxy.
+// It never consults environment proxies, context transports, or the host's direct dialer.
+func NewStrictProxyHTTPClient(proxyURL string, timeout, responseHeaderTimeout time.Duration) (*http.Client, error) {
+	proxyURL = strings.TrimSpace(proxyURL)
+	transport, mode, err := proxyutil.BuildHTTPTransport(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("build strict proxy transport: %w", err)
+	}
+	if mode != proxyutil.ModeProxy || transport == nil {
+		return nil, fmt.Errorf("strict proxy URL must select proxy mode")
+	}
+	if responseHeaderTimeout > 0 {
+		transport.ResponseHeaderTimeout = responseHeaderTimeout
+	}
+	client := &http.Client{Transport: transport}
+	if timeout > 0 {
+		client.Timeout = timeout
+	}
+	return client, nil
 }
 
 // buildProxyTransport creates an HTTP transport configured for the given proxy URL.

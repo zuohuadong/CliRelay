@@ -11,6 +11,7 @@ import (
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -270,6 +271,16 @@ func (b *Builder) Build() (*Service, error) {
 		coreManager.SetPluginScheduler(pluginHost)
 	}
 
+	var egressService *egress.Service
+	if egressNetworkConfigured(b.cfg) {
+		databasePath := egress.DatabasePathForConfig(b.configPath)
+		var errEgress error
+		egressService, errEgress = egress.NewService(b.cfg, databasePath)
+		if errEgress != nil {
+			return nil, fmt.Errorf("cliproxy: initialize egress network: %w", errEgress)
+		}
+	}
+
 	service := &Service{
 		cfg:            b.cfg,
 		configPath:     b.configPath,
@@ -282,6 +293,7 @@ func (b *Builder) Build() (*Service, error) {
 		coreManager:    coreManager,
 		pluginHost:     pluginHost,
 		serverOptions:  append([]api.ServerOption(nil), b.serverOptions...),
+		egressService:  egressService,
 	}
 	if b.postAuthHook != nil {
 		service.serverOptions = append(service.serverOptions, api.WithPostAuthHook(b.postAuthHook))
@@ -292,8 +304,17 @@ func (b *Builder) Build() (*Service, error) {
 		api.WithConfigReloadHook(func(_ context.Context, _ *config.Config) {
 			service.reloadConfigFromWatcher()
 		}),
+		api.WithEgressService(egressService),
 	)
 	return service, nil
+}
+
+func egressNetworkConfigured(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	egressCfg := cfg.EgressNetwork
+	return egressCfg.Enabled || egressCfg.LocalEndpointEnabled || strings.TrimSpace(egressCfg.Headscale.URL) != ""
 }
 
 func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {

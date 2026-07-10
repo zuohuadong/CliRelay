@@ -20,7 +20,6 @@ const mocks = vi.hoisted(() => ({
   getEntityStats: vi.fn(async () => ({ source: [] })),
   apiKeyEntriesList: vi.fn(async () => []),
   channelGroupsList: vi.fn(async () => []),
-  proxiesList: vi.fn(async (): Promise<any[]> => []),
 }));
 
 vi.mock("@/lib/http/apis", async (importOriginal) => {
@@ -59,12 +58,6 @@ vi.mock("@/lib/http/apis/channel-groups", () => ({
   },
 }));
 
-vi.mock("@/lib/http/apis/proxies", () => ({
-  proxiesApi: {
-    list: mocks.proxiesList,
-  },
-}));
-
 describe("ProvidersPage import/export", () => {
   const createObjectURL = vi.fn(() => "blob:mock");
   const revokeObjectURL = vi.fn();
@@ -99,7 +92,6 @@ describe("ProvidersPage import/export", () => {
     mocks.getEntityStats.mockImplementation(async () => ({ source: [] }));
     mocks.apiKeyEntriesList.mockImplementation(async () => []);
     mocks.channelGroupsList.mockImplementation(async () => []);
-    mocks.proxiesList.mockImplementation(async () => []);
 
     Object.defineProperty(URL, "createObjectURL", { value: createObjectURL, writable: true });
     Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectURL, writable: true });

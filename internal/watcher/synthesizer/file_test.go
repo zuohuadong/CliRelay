@@ -720,3 +720,26 @@ func TestFileSynthesizer_Synthesize_NoteParsing(t *testing.T) {
 		})
 	}
 }
+
+func TestFileSynthesizerCodexExposesStableEgressIdentity(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	data := []byte(`{"type":"codex","account_id":"acct-123","egress_id":"endpoint-1","email":"user@example.test"}`)
+	if err := os.WriteFile(filepath.Join(tempDir, "codex.json"), data, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	auths, err := NewFileSynthesizer().Synthesize(&SynthesisContext{Config: &config.Config{}, AuthDir: tempDir, Now: time.Now(), IDGenerator: NewStableIDGenerator()})
+	if err != nil {
+		t.Fatalf("Synthesize() error = %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("auths = %#v", auths)
+	}
+	if got := auths[0].Attributes["egress_id"]; got != "endpoint-1" {
+		t.Fatalf("egress_id = %q", got)
+	}
+	if got, want := auths[0].Attributes["stable_identity"], "codex:3abf465e869e7b65598ec70e64b86462802516681a49069caa7947457c9d17aa"; got != want {
+		t.Fatalf("stable_identity = %q, want %q", got, want)
+	}
+}

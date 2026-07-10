@@ -1,10 +1,17 @@
-import { useMemo, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { Download, RefreshCw, ShieldCheck } from "lucide-react";
 import type { AuthFileTrendResponse } from "@/lib/http/apis/usage";
 import type { AuthFileItem, AuthFileSubscriptionPeriod } from "@/lib/http/types";
-import type { EgressBinding } from "@/lib/http/apis/egress";
+import type {
+  EgressBinding,
+  EgressBindingAssignment,
+  EgressBindingPreview,
+  EgressEndpoint,
+} from "@/lib/http/apis/egress";
 import { Button } from "@/modules/ui/Button";
+import { ConfirmModal } from "@/modules/ui/ConfirmModal";
 import { DateTimePicker } from "@/modules/ui/DateTimePicker";
 import { EmptyState } from "@/modules/ui/EmptyState";
 import { TextInput } from "@/modules/ui/Input";
@@ -12,6 +19,7 @@ import { Modal } from "@/modules/ui/Modal";
 import { Select } from "@/modules/ui/Select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/modules/ui/Tabs";
 import { EChart } from "@/modules/ui/charts/EChart";
+import { EndpointSelect } from "@/modules/egress/EndpointSelect";
 import {
   canRenameAuthFileChannel,
   downloadTextAsFile,
@@ -72,6 +80,13 @@ interface AuthFileDetailModalProps {
   prefixProxyDirty: boolean;
   savePrefixProxy: () => Promise<void>;
   egressBinding: EgressBinding | null;
+  egressEndpoints: EgressEndpoint[];
+  egressBindingSaving: boolean;
+  previewEgressBinding: (assignment: EgressBindingAssignment) => Promise<EgressBindingPreview>;
+  applyEgressBinding: (
+    assignments: EgressBindingAssignment[],
+    expectedRevision: string,
+  ) => Promise<void>;
   channelEditor: ChannelEditorState;
   setChannelEditor: Dispatch<SetStateAction<ChannelEditorState>>;
   saveChannelEditor: () => Promise<boolean>;
@@ -106,11 +121,18 @@ export function AuthFileDetailModal({
   prefixProxyDirty,
   savePrefixProxy,
   egressBinding,
+  egressEndpoints,
+  egressBindingSaving,
+  previewEgressBinding,
+  applyEgressBinding,
   channelEditor,
   setChannelEditor,
   saveChannelEditor,
 }: AuthFileDetailModalProps) {
   const { t, i18n } = useTranslation();
+  const [selectedEgressEndpointId, setSelectedEgressEndpointId] = useState("");
+  const [egressPreview, setEgressPreview] = useState<EgressBindingPreview | null>(null);
+  const [egressPreviewing, setEgressPreviewing] = useState(false);
   const isCodexDetail = detailFile
     ? normalizeProviderKey(resolveFileType(detailFile)) === "codex"
     : false;
@@ -139,6 +161,12 @@ export function AuthFileDetailModal({
     prefixProxyEditor.saving ||
     channelEditor.saving ||
     !((prefixProxyDirty && prefixProxyEditor.json) || channelDirty);
+
+  useEffect(() => {
+    if (!open) return;
+    setSelectedEgressEndpointId(egressBinding?.endpointId ?? "");
+    setEgressPreview(null);
+  }, [detailFile?.name, egressBinding?.endpointId, open]);
   const translateQuotaLabel = useMemo(
     () => (label: string) => {
       if (!label) return label;
@@ -261,6 +289,36 @@ export function AuthFileDetailModal({
     }
     if (prefixProxyDirty) {
       await savePrefixProxy();
+    }
+  };
+
+  const previewFixedEgress = async () => {
+    if (!egressBinding?.identity || selectedEgressEndpointId === egressBinding.endpointId) return;
+    setEgressPreviewing(true);
+    try {
+      setEgressPreview(
+        await previewEgressBinding({
+          identity: egressBinding.identity,
+          endpointId: selectedEgressEndpointId,
+        }),
+      );
+    } catch {
+      setEgressPreview(null);
+    } finally {
+      setEgressPreviewing(false);
+    }
+  };
+
+  const applyFixedEgress = async () => {
+    if (!egressPreview?.valid) {
+      setEgressPreview(null);
+      return;
+    }
+    try {
+      await applyEgressBinding(egressPreview.assignments, egressPreview.expectedRevision);
+      setEgressPreview(null);
+    } catch {
+      // The page-level callback reports the API error through the shared toast provider.
     }
   };
 
@@ -541,23 +599,40 @@ export function AuthFileDetailModal({
                               </p>
                             </div>
                             {egressBinding?.identity ? (
-                              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 p-3 dark:bg-neutral-900">
-                                <div>
-                                  <p className="text-sm font-semibold text-slate-900 dark:text-white">
-                                    {egressBinding.bound
-                                      ? egressBinding.endpointName || egressBinding.endpointId
-                                      : t("egress.bindings.unbound")}
+                              <div className="space-y-3 rounded-lg bg-slate-50 p-3 dark:bg-neutral-900">
+                                <EndpointSelect
+                                  value={selectedEgressEndpointId}
+                                  endpoints={egressEndpoints}
+                                  ariaLabel={t("auth_files.egress_endpoint_label")}
+                                  allowEmpty
+                                  disabled={egressBindingSaving || egressPreviewing}
+                                  onChange={setSelectedEgressEndpointId}
+                                />
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <p className="min-w-0 truncate font-mono text-[11px] text-slate-500">
+                                    {egressBinding.identity}
                                   </p>
-                                  <p className="mt-1 font-mono text-[11px] text-slate-500">
-                                    {egressBinding.endpointId || "--"}
-                                  </p>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Link
+                                      to="/egress"
+                                      className="text-xs font-semibold text-slate-600 underline-offset-4 hover:underline dark:text-white/65"
+                                    >
+                                      {t("auth_files.manage_egress_bindings")}
+                                    </Link>
+                                    <Button
+                                      size="sm"
+                                      variant="secondary"
+                                      disabled={
+                                        egressBindingSaving ||
+                                        egressPreviewing ||
+                                        selectedEgressEndpointId === egressBinding.endpointId
+                                      }
+                                      onClick={() => void previewFixedEgress()}
+                                    >
+                                      {t("auth_files.egress_preview_change")}
+                                    </Button>
+                                  </div>
                                 </div>
-                                <a
-                                  href="/egress"
-                                  className="text-xs font-semibold text-slate-900 underline-offset-4 hover:underline dark:text-white"
-                                >
-                                  {t("auth_files.manage_egress_bindings")}
-                                </a>
                               </div>
                             ) : (
                               <p className="text-sm text-amber-700 dark:text-amber-200">
@@ -739,6 +814,22 @@ export function AuthFileDetailModal({
           </div>
         </Tabs>
       )}
+      <ConfirmModal
+        open={egressPreview !== null}
+        title={t("auth_files.egress_apply_title")}
+        description={t("auth_files.egress_apply_description", {
+          endpoint:
+            egressEndpoints.find(
+              (endpoint) => endpoint.id === egressPreview?.assignments[0]?.endpointId,
+            )?.name || t("egress.bindings.unbound"),
+          issues: egressPreview?.blockers.map((blocker) => blocker.message).join("; ") || "",
+        })}
+        confirmText={t(egressPreview?.valid ? "auth_files.egress_apply_confirm" : "common.close")}
+        variant="primary"
+        busy={egressBindingSaving}
+        onConfirm={() => void applyFixedEgress()}
+        onClose={() => setEgressPreview(null)}
+      />
     </Modal>
   );
 }

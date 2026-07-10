@@ -32,14 +32,11 @@ type Service struct {
 	mu              sync.RWMutex
 	cfg             *config.Config
 	store           *Store
-	headscale       *HeadscaleClient
 	now             func() time.Time
-	localIPs        func() []netip.Addr
 	probeURLs       []string
 	lifecycleMu     sync.Mutex
 	lifecycleCancel context.CancelFunc
 	lifecycleWG     sync.WaitGroup
-	wakeSync        chan struct{}
 	wakeChecks      chan struct{}
 	checksMu        sync.Mutex
 	inFlightChecks  map[string]struct{}
@@ -58,11 +55,7 @@ func NewService(cfg *config.Config, databasePath string) (*Service, error) {
 	return &Service{
 		cfg:            cfg,
 		store:          store,
-		headscale:      NewHeadscaleClient(cfg.EgressNetwork.Headscale),
 		now:            func() time.Time { return time.Now().UTC() },
-		localIPs:       interfaceAddresses,
-		probeURLs:      nil,
-		wakeSync:       make(chan struct{}, 1),
 		wakeChecks:     make(chan struct{}, 1),
 		inFlightChecks: make(map[string]struct{}),
 	}, nil
@@ -89,8 +82,8 @@ func (s *Service) Close() error {
 	return closeErr
 }
 
-// Start launches immediate and periodic Headscale/node and endpoint health
-// maintenance. It is idempotent; Close cancels and waits for the loop.
+// Start launches immediate and periodic endpoint health checks. It is
+// idempotent; Close cancels and waits for the loop.
 func (s *Service) Start(ctx context.Context) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("egress service is unavailable")
@@ -105,8 +98,7 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	lifecycleCtx, cancel := context.WithCancel(ctx)
 	s.lifecycleCancel = cancel
-	s.lifecycleWG.Add(2)
-	go s.nodeSyncLoop(lifecycleCtx)
+	s.lifecycleWG.Add(1)
 	go s.endpointCheckLoop(lifecycleCtx)
 	return nil
 }
@@ -125,43 +117,17 @@ func (s *Service) SetConfig(cfg *config.Config) {
 	cfg.SanitizeEgressNetwork()
 	s.mu.Lock()
 	s.cfg = cfg
-	s.headscale = NewHeadscaleClient(cfg.EgressNetwork.Headscale)
 	s.mu.Unlock()
-	for _, wake := range []chan struct{}{s.wakeSync, s.wakeChecks} {
-		select {
-		case wake <- struct{}{}:
-		default:
-		}
-	}
-}
-
-func (s *Service) nodeSyncLoop(ctx context.Context) {
-	defer s.lifecycleWG.Done()
-	s.syncNodesIfConfigured(ctx)
-	syncInterval, _ := s.maintenanceIntervals()
-	syncTimer := time.NewTimer(syncInterval)
-	defer syncTimer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-s.wakeSync:
-			s.syncNodesIfConfigured(ctx)
-			syncInterval, _ = s.maintenanceIntervals()
-			resetTimer(syncTimer, syncInterval)
-		case <-syncTimer.C:
-			s.syncNodesIfConfigured(ctx)
-			syncInterval, _ = s.maintenanceIntervals()
-			syncTimer.Reset(syncInterval)
-		}
+	select {
+	case s.wakeChecks <- struct{}{}:
+	default:
 	}
 }
 
 func (s *Service) endpointCheckLoop(ctx context.Context) {
 	defer s.lifecycleWG.Done()
 	s.checkEnabledEndpoints(ctx)
-	_, checkInterval := s.maintenanceIntervals()
-	checkTimer := time.NewTimer(checkInterval)
+	checkTimer := time.NewTimer(s.maintenanceInterval())
 	defer checkTimer.Stop()
 	for {
 		select {
@@ -169,19 +135,11 @@ func (s *Service) endpointCheckLoop(ctx context.Context) {
 			return
 		case <-s.wakeChecks:
 			s.checkEnabledEndpoints(ctx)
-			_, checkInterval = s.maintenanceIntervals()
-			resetTimer(checkTimer, checkInterval)
+			resetTimer(checkTimer, s.maintenanceInterval())
 		case <-checkTimer.C:
 			s.checkEnabledEndpoints(ctx)
-			_, checkInterval = s.maintenanceIntervals()
-			checkTimer.Reset(checkInterval)
+			checkTimer.Reset(s.maintenanceInterval())
 		}
-	}
-}
-
-func (s *Service) syncNodesIfConfigured(ctx context.Context) {
-	if s.HeadscaleConfigured() && ctx.Err() == nil {
-		_, _ = s.SyncNodes(ctx)
 	}
 }
 
@@ -221,22 +179,18 @@ func resetTimer(timer *time.Timer, duration time.Duration) {
 	timer.Reset(duration)
 }
 
-func (s *Service) maintenanceIntervals() (time.Duration, time.Duration) {
+func (s *Service) maintenanceInterval() time.Duration {
 	s.mu.RLock()
 	cfg := s.cfg
 	s.mu.RUnlock()
 	if cfg == nil {
-		return time.Minute, 2 * time.Minute
+		return 2 * time.Minute
 	}
-	syncInterval, _ := time.ParseDuration(cfg.EgressNetwork.Headscale.SyncInterval)
-	checkInterval, _ := time.ParseDuration(cfg.EgressNetwork.EndpointCheckInterval)
-	if syncInterval <= 0 {
-		syncInterval = time.Minute
+	interval, _ := time.ParseDuration(cfg.EgressNetwork.EndpointCheckInterval)
+	if interval <= 0 {
+		return 2 * time.Minute
 	}
-	if checkInterval <= 0 {
-		checkInterval = 2 * time.Minute
-	}
-	return syncInterval, checkInterval
+	return interval
 }
 
 func (s *Service) Resolve(ctx context.Context, accountID string) (ResolvedEndpoint, error) {
@@ -272,9 +226,7 @@ func (s *Service) resolveEndpoint(ctx context.Context, endpoint Endpoint) (Resol
 	}
 	if !readiness.RuntimeReady {
 		base := ErrEndpointDisabled
-		if !endpoint.Enabled {
-			base = ErrEndpointDisabled
-		} else if strings.TrimSpace(endpoint.ExpectedPublicIP) == "" {
+		if strings.TrimSpace(endpoint.ExpectedPublicIP) == "" || containsReason(readiness.Reasons, "expected_public_ip_invalid") {
 			base = ErrEndpointInvalid
 		}
 		return ResolvedEndpoint{}, fmt.Errorf("%w: endpoint %s is not runtime ready: %s", base, endpoint.ID, strings.Join(readiness.Reasons, ","))
@@ -307,57 +259,24 @@ func (s *Service) endpointReadiness(ctx context.Context, endpoint Endpoint) (End
 	} else {
 		expectedIP = parsed.String()
 	}
-	if endpoint.LocalServer {
-		if err := s.validateEndpointOwnership(ctx, endpoint, true); err != nil {
-			readiness.Reasons = append(readiness.Reasons, "local_endpoint_ineligible")
-		} else {
-			readiness.NodeOnline = true
-			readiness.NodeFresh = true
-		}
-	} else {
-		node, err := s.store.GetNode(ctx, endpoint.NodeID)
-		if err != nil {
-			if errors.Is(err, ErrNodeNotFound) {
-				readiness.Reasons = append(readiness.Reasons, "node_not_found")
-			} else {
-				return EndpointReadiness{}, err
-			}
-		} else {
-			readiness.NodeOnline = node.Online
-			readiness.NodeFresh = s.nodeFresh(node)
-			if !node.Online {
-				readiness.Reasons = append(readiness.Reasons, "node_offline")
-			}
-			if !readiness.NodeFresh {
-				readiness.Reasons = append(readiness.Reasons, "node_stale")
-			}
-			if err = s.validateEndpointOwnership(ctx, endpoint, false); err != nil {
-				readiness.Reasons = append(readiness.Reasons, "node_ownership_invalid")
-			}
-		}
-	}
-	readiness.Eligible = endpoint.Enabled && expectedIP != "" && readiness.NodeOnline && readiness.NodeFresh && !containsReason(readiness.Reasons, "node_ownership_invalid") && !containsReason(readiness.Reasons, "local_endpoint_ineligible")
+	readiness.Eligible = endpoint.Enabled && expectedIP != ""
 	readiness.HealthFresh = endpoint.CheckStatus == EndpointStatusHealthy && s.endpointHealthFresh(endpoint)
-	if endpoint.CheckStatus != EndpointStatusHealthy {
-		readiness.Reasons = append(readiness.Reasons, "endpoint_unhealthy")
-	} else if !readiness.HealthFresh {
-		readiness.Reasons = append(readiness.Reasons, "endpoint_health_stale")
+	if !readiness.HealthFresh {
+		readiness.Reasons = append(readiness.Reasons, "endpoint_health_stale_or_unhealthy")
 	}
-	observedIP := strings.TrimSpace(endpoint.PublicIP)
-	if parsed, err := parseEndpointIP(observedIP); err == nil {
-		observedIP = parsed.String()
-	}
-	readiness.PublicIPMatches = expectedIP != "" && observedIP != "" && expectedIP == observedIP
+	readiness.PublicIPMatches = expectedIP != "" && canonicalIP(endpoint.PublicIP) == expectedIP
 	if !readiness.PublicIPMatches {
 		readiness.Reasons = append(readiness.Reasons, "public_ip_mismatch")
 	}
-	duplicates, err := s.store.CountEndpointsByPublicIP(ctx, observedIP, endpoint.ID)
-	if err != nil {
-		return EndpointReadiness{}, err
-	}
-	readiness.DuplicatePublicIP = duplicates > 0
-	if readiness.DuplicatePublicIP {
-		readiness.Reasons = append(readiness.Reasons, "duplicate_public_ip")
+	if strings.TrimSpace(endpoint.PublicIP) != "" {
+		count, err := s.store.CountEndpointsByPublicIP(ctx, canonicalIP(endpoint.PublicIP), endpoint.ID)
+		if err != nil {
+			return EndpointReadiness{}, err
+		}
+		readiness.DuplicatePublicIP = count > 0
+		if readiness.DuplicatePublicIP {
+			readiness.Reasons = append(readiness.Reasons, "duplicate_public_ip")
+		}
 	}
 	readiness.RuntimeReady = readiness.Eligible && readiness.HealthFresh && readiness.PublicIPMatches && !readiness.DuplicatePublicIP
 	return readiness, nil
@@ -372,37 +291,17 @@ func containsReason(reasons []string, target string) bool {
 	return false
 }
 
-func (s *Service) nodeFresh(node Node) bool {
-	if node.SyncedAt.IsZero() {
-		return false
-	}
-	s.mu.RLock()
-	text := s.cfg.EgressNetwork.Headscale.NodeFreshnessTTL
-	s.mu.RUnlock()
-	ttl, _ := time.ParseDuration(text)
-	if ttl <= 0 {
-		ttl = 3 * time.Minute
-	}
-	age := s.now().Sub(node.SyncedAt)
-	return age >= 0 && age <= ttl
-}
-
-func (s *Service) NodeReadiness(node Node) NodeReadiness {
-	age := s.now().Sub(node.SyncedAt)
-	ageSeconds := int64(age / time.Second)
-	if node.SyncedAt.IsZero() || ageSeconds < 0 {
-		ageSeconds = 0
-	}
-	return NodeReadiness{Fresh: s.nodeFresh(node), SyncAgeSeconds: ageSeconds}
-}
-
 func (s *Service) endpointHealthFresh(endpoint Endpoint) bool {
 	if endpoint.LastCheckedAt.IsZero() {
 		return false
 	}
 	s.mu.RLock()
-	text := s.cfg.EgressNetwork.EndpointHealthTTL
+	cfg := s.cfg
 	s.mu.RUnlock()
+	text := ""
+	if cfg != nil {
+		text = cfg.EgressNetwork.EndpointHealthTTL
+	}
 	ttl, _ := time.ParseDuration(text)
 	if ttl <= 0 {
 		ttl = 5 * time.Minute
@@ -412,16 +311,10 @@ func (s *Service) endpointHealthFresh(endpoint Endpoint) bool {
 }
 
 func (s *Service) CreateEndpoint(ctx context.Context, endpoint Endpoint) (Endpoint, error) {
-	if err := s.validateEndpointOwnership(ctx, endpoint, endpoint.Enabled); err != nil {
-		return Endpoint{}, err
-	}
 	return s.store.CreateEndpoint(ctx, endpoint)
 }
 
 func (s *Service) UpdateEndpoint(ctx context.Context, endpoint Endpoint) (Endpoint, error) {
-	if err := s.validateEndpointOwnership(ctx, endpoint, endpoint.Enabled); err != nil {
-		return Endpoint{}, err
-	}
 	return s.store.UpdateEndpoint(ctx, endpoint)
 }
 
@@ -588,10 +481,6 @@ func (s *Service) GetEndpoint(ctx context.Context, id string) (Endpoint, error) 
 	return s.store.GetEndpoint(ctx, id)
 }
 
-func (s *Service) ListNodes(ctx context.Context) ([]Node, error) {
-	return s.store.ListNodes(ctx)
-}
-
 func (s *Service) ListBindings(ctx context.Context) ([]Binding, error) {
 	return s.store.ListBindings(ctx)
 }
@@ -617,7 +506,7 @@ func (s *Service) PreviewBindingBatch(ctx context.Context, assignments []Binding
 	seenEndpoints := make(map[string]struct{}, len(preview.Assignments))
 	for _, assignment := range preview.Assignments {
 		if strings.TrimSpace(assignment.EndpointID) == "" {
-			continue // Empty endpoint_id is the explicit atomic unbind operation.
+			continue
 		}
 		if _, seen := seenEndpoints[assignment.EndpointID]; seen {
 			continue
@@ -626,14 +515,15 @@ func (s *Service) PreviewBindingBatch(ctx context.Context, assignments []Binding
 		readiness, readinessErr := s.EndpointReadiness(ctx, assignment.EndpointID)
 		if readinessErr != nil {
 			if errors.Is(readinessErr, ErrEndpointNotFound) {
-				continue // Store preview already records the stable not-found conflict.
+				continue
 			}
 			return BindingBatchPreview{}, readinessErr
 		}
 		if !readiness.RuntimeReady {
 			preview.Conflicts = append(preview.Conflicts, BindingConflict{
-				EndpointID: assignment.EndpointID, Code: "endpoint_not_ready",
-				Message: "endpoint is not runtime ready: " + strings.Join(readiness.Reasons, ","),
+				EndpointID: assignment.EndpointID,
+				Code:       "endpoint_not_ready",
+				Message:    "endpoint is not runtime ready: " + strings.Join(readiness.Reasons, ","),
 			})
 		}
 	}
@@ -660,7 +550,7 @@ func bindingConflictError(conflict BindingConflict) error {
 	switch conflict.Code {
 	case "endpoint_not_found":
 		base = ErrEndpointNotFound
-	case "endpoint_disabled", "endpoint_ineligible", "endpoint_not_ready":
+	case "endpoint_disabled", "endpoint_not_ready":
 		base = ErrEndpointDisabled
 	case "expected_public_ip_required", "invalid_assignment":
 		base = ErrEndpointInvalid
@@ -707,9 +597,8 @@ func (s *Service) TechnicalReadiness(ctx context.Context) (TechnicalReadiness, e
 	return snapshot, nil
 }
 
-// managementEndpointTransport applies the same endpoint ownership and strict
-// proxy checks as runtime resolution without requiring the global egress switch.
-// It is used only for operator actions such as pre-binding and health probes.
+// managementEndpointTransport builds a strict proxy transport for operator
+// health checks without requiring a previously healthy endpoint.
 func (s *Service) managementEndpointTransport(ctx context.Context, endpointID string) (ResolvedEndpoint, *http.Transport, error) {
 	endpoint, err := s.store.GetEndpoint(ctx, endpointID)
 	if err != nil {
@@ -720,9 +609,6 @@ func (s *Service) managementEndpointTransport(ctx context.Context, endpointID st
 	}
 	if strings.TrimSpace(endpoint.ExpectedPublicIP) == "" {
 		return ResolvedEndpoint{}, nil, fmt.Errorf("%w: endpoint requires expected_public_ip", ErrEndpointInvalid)
-	}
-	if err = s.validateEndpointOwnership(ctx, endpoint, true); err != nil {
-		return ResolvedEndpoint{}, nil, err
 	}
 	proxyURL, err := endpointProxyURL(endpoint)
 	if err != nil {
@@ -739,139 +625,14 @@ func (s *Service) managementEndpointTransport(ctx context.Context, endpointID st
 	return resolved, transport, nil
 }
 
-func (s *Service) SyncNodes(ctx context.Context) ([]Node, error) {
-	s.mu.RLock()
-	client := s.headscale
-	tag := strings.TrimSpace(s.cfg.EgressNetwork.Headscale.ServiceTag)
-	s.mu.RUnlock()
-	now := s.now()
-	nodes, err := client.ListNodes(ctx)
-	if err != nil {
-		_ = s.store.SetSyncState(context.WithoutCancel(ctx), SyncState{Error: err.Error()})
-		return nil, err
-	}
-	filtered := make([]Node, 0, len(nodes))
-	for _, node := range nodes {
-		if !containsTag(node.Tags, tag) {
-			continue
-		}
-		node.SyncedAt = now
-		filtered = append(filtered, node)
-	}
-	if err = s.store.UpsertNodes(ctx, filtered, now); err != nil {
-		_ = s.store.SetSyncState(context.WithoutCancel(ctx), SyncState{Error: err.Error()})
-		return nil, err
-	}
-	if err = s.store.SetSyncState(ctx, SyncState{LastSync: now}); err != nil {
-		return nil, err
-	}
-	return s.store.ListNodes(ctx)
-}
-
-func (s *Service) CreateEnrollment(ctx context.Context, name string) (Enrollment, error) {
-	s.mu.RLock()
-	client := s.headscale
-	ttlText := s.cfg.EgressNetwork.Headscale.EnrollmentTTL
-	s.mu.RUnlock()
-	ttl, err := time.ParseDuration(ttlText)
-	if err != nil || ttl <= 0 {
-		ttl = time.Hour
-	}
-	return client.CreateEnrollment(ctx, strings.TrimSpace(name), s.now().Add(ttl))
-}
-
 func (s *Service) Counts(ctx context.Context) (Counts, error) {
 	return s.store.Counts(ctx)
 }
 
-func (s *Service) SyncState(ctx context.Context) (SyncState, error) {
-	return s.store.SyncState(ctx)
-}
-
-func (s *Service) HeadscaleConfigured() bool {
-	s.mu.RLock()
-	client := s.headscale
-	s.mu.RUnlock()
-	return client != nil && client.Configured()
-}
-
-func (s *Service) HeadscaleStatus() HeadscaleStatus {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	status := HeadscaleStatus{}
-	if s.cfg != nil {
-		status.URL = s.cfg.EgressNetwork.Headscale.URL
-		status.ServiceTag = s.cfg.EgressNetwork.Headscale.ServiceTag
-	}
-	if s.headscale != nil {
-		status.APIKeyConfigured = strings.TrimSpace(s.headscale.apiKey()) != ""
-	}
-	return status
-}
-
-func (s *Service) LocalEndpointEnabled() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.cfg != nil && s.cfg.EgressNetwork.LocalEndpointEnabled
-}
-
 func (s *Service) enabled() bool {
-	if s == nil {
-		return false
-	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.cfg != nil && s.cfg.EgressNetwork.Enabled
-}
-
-func (s *Service) validateEndpointOwnership(ctx context.Context, endpoint Endpoint, requireOnline bool) error {
-	if err := validateEndpoint(endpoint); err != nil {
-		return err
-	}
-	host, err := parseEndpointIP(endpoint.Host)
-	if err != nil {
-		return fmt.Errorf("%w: endpoint host must be an IP address", ErrEndpointInvalid)
-	}
-	if endpoint.LocalServer {
-		s.mu.RLock()
-		localEnabled := s.cfg != nil && s.cfg.EgressNetwork.LocalEndpointEnabled
-		localIPs := s.localIPs
-		s.mu.RUnlock()
-		if !localEnabled {
-			return fmt.Errorf("%w: local endpoint support is disabled", ErrEndpointDisabled)
-		}
-		if !host.IsLoopback() && !addressListContains(localIPs(), host) {
-			return fmt.Errorf("%w: local endpoint host is not assigned to this server", ErrEndpointInvalid)
-		}
-		return nil
-	}
-
-	node, err := s.store.GetNode(ctx, endpoint.NodeID)
-	if err != nil {
-		return err
-	}
-	s.mu.RLock()
-	serviceTag := s.cfg.EgressNetwork.Headscale.ServiceTag
-	s.mu.RUnlock()
-	if !containsTag(node.Tags, serviceTag) {
-		return fmt.Errorf("%w: node is not an eligible egress node", ErrEndpointDisabled)
-	}
-	if requireOnline && !node.Online {
-		return fmt.Errorf("%w: node is offline or stale", ErrEndpointDisabled)
-	}
-	if requireOnline && !s.nodeFresh(node) {
-		return fmt.Errorf("%w: node synchronization state is stale", ErrEndpointDisabled)
-	}
-	nodeAddresses := make([]netip.Addr, 0, len(node.Addresses))
-	for _, raw := range node.Addresses {
-		if parsed, errParse := parseEndpointIP(raw); errParse == nil {
-			nodeAddresses = append(nodeAddresses, parsed)
-		}
-	}
-	if !addressListContains(nodeAddresses, host) {
-		return fmt.Errorf("%w: endpoint host is not assigned to the selected Headscale node", ErrEndpointInvalid)
-	}
-	return nil
 }
 
 func endpointProxyURL(endpoint Endpoint) (string, error) {
@@ -895,39 +656,4 @@ func parseEndpointIP(value string) (netip.Addr, error) {
 		return netip.Addr{}, err
 	}
 	return address.Unmap(), nil
-}
-
-func addressListContains(addresses []netip.Addr, target netip.Addr) bool {
-	target = target.Unmap()
-	for _, address := range addresses {
-		if address.Unmap() == target {
-			return true
-		}
-	}
-	return false
-}
-
-func containsTag(tags []string, target string) bool {
-	target = strings.TrimSpace(target)
-	for _, tag := range tags {
-		if strings.TrimSpace(tag) == target {
-			return true
-		}
-	}
-	return false
-}
-
-func interfaceAddresses() []netip.Addr {
-	addresses, err := net.InterfaceAddrs()
-	if err != nil {
-		return nil
-	}
-	out := make([]netip.Addr, 0, len(addresses))
-	for _, address := range addresses {
-		prefix, errParse := netip.ParsePrefix(address.String())
-		if errParse == nil {
-			out = append(out, prefix.Addr().Unmap())
-		}
-	}
-	return out
 }

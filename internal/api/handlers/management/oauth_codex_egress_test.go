@@ -46,7 +46,7 @@ func (f *countingCodexOAuthService) ExchangeCodeForTokens(ctx context.Context, c
 	return f.fakeCodexOAuthService.ExchangeCodeForTokens(ctx, code, pkceCodes)
 }
 
-func TestRequestCodexTokenRejectsPreparationMode(t *testing.T) {
+func TestRequestCodexTokenRejectsRuntimeDisabled(t *testing.T) {
 	handler, service, endpoint, _ := newCodexOAuthEgressFlow(t)
 	updated := *handler.codexOAuthConfig()
 	updated.EgressNetwork.Enabled = false
@@ -166,17 +166,14 @@ func newCodexOAuthEgressFlow(t *testing.T) (*Handler, *egress.Service, egress.En
 		t.Fatalf("SplitHostPort() error=%v", err)
 	}
 	port, _ := strconv.Atoi(portText)
-	cfg := &config.Config{AuthDir: authDir, EgressNetwork: config.EgressNetworkConfig{Enabled: true, Headscale: config.HeadscaleConfig{ServiceTag: config.DefaultEgressServiceTag}}}
+	cfg := &config.Config{AuthDir: authDir, EgressNetwork: config.EgressNetworkConfig{Enabled: true}}
 	service, err := egress.NewService(cfg, filepath.Join(tempDir, "usage.db"))
 	if err != nil {
 		t.Fatalf("NewService() error=%v", err)
 	}
 	t.Cleanup(func() { _ = service.Close() })
 	ctx := context.Background()
-	if err = service.Store().UpsertNodes(ctx, []egress.Node{{ID: "17", Name: "test", Addresses: []string{host}, Online: true, Tags: []string{config.DefaultEgressServiceTag}}}, time.Now()); err != nil {
-		t.Fatalf("UpsertNodes() error=%v", err)
-	}
-	endpoint, err := service.CreateEndpoint(ctx, egress.Endpoint{Name: "test", NodeID: "17", Protocol: egress.ProtocolHTTP, Host: host, Port: port, Enabled: true, ExpectedPublicIP: "198.51.100.17"})
+	endpoint, err := service.CreateEndpoint(ctx, egress.Endpoint{Name: "test", Protocol: egress.ProtocolHTTP, Host: host, Port: port, Enabled: true, ExpectedPublicIP: "198.51.100.17"})
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error=%v", err)
 	}
@@ -258,7 +255,6 @@ func TestSaveCodexTokenWithBindingSerializesSameFileCompensation(t *testing.T) {
 		Host:             "127.0.0.1",
 		Port:             8080,
 		Enabled:          true,
-		LocalServer:      true,
 		ExpectedPublicIP: "198.51.100.10",
 	})
 	if err != nil {
@@ -353,6 +349,36 @@ func TestSaveCodexTokenWithBindingSerializesSameFileCompensation(t *testing.T) {
 	}
 }
 
+func TestSaveCodexTokenWithBindingDoesNotPersistEgressID(t *testing.T) {
+	handler, service, endpoint, authDir := newCodexOAuthEgressFlow(t)
+	record, storage := codexBindingTestRecord("codex.json", "acct-db-source")
+
+	savedPath, err := handler.saveCodexTokenWithBinding(context.Background(), service, endpoint.ID, record, storage)
+	if err != nil {
+		t.Fatalf("saveCodexTokenWithBinding() error = %v", err)
+	}
+	if savedPath == "" {
+		savedPath = filepath.Join(authDir, record.FileName)
+	}
+	raw, err := os.ReadFile(savedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err = json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := saved["egress_id"]; ok {
+		t.Fatalf("persisted auth file contains egress_id: %s", raw)
+	}
+	if _, ok := record.Metadata["egress_id"]; ok {
+		t.Fatalf("runtime auth metadata retains egress_id: %#v", record.Metadata)
+	}
+	if _, ok := storage.Metadata["egress_id"]; ok {
+		t.Fatalf("token storage metadata retains egress_id: %#v", storage.Metadata)
+	}
+}
+
 func TestCodexTokenBindingKeyedLocksCleanupIdleEntries(t *testing.T) {
 	var locks keyedMutexTable
 	unlock := locks.lock("path:/tmp/codex.json", "identity:codex:test")
@@ -376,7 +402,7 @@ func newCodexBindingTestHandler(t *testing.T) (*Handler, *egress.Service, string
 	t.Helper()
 	tempDir := t.TempDir()
 	authDir := filepath.Join(tempDir, "auth")
-	cfg := &config.Config{AuthDir: authDir, EgressNetwork: config.EgressNetworkConfig{Enabled: true, LocalEndpointEnabled: true, Headscale: config.HeadscaleConfig{ServiceTag: config.DefaultEgressServiceTag}}}
+	cfg := &config.Config{AuthDir: authDir, EgressNetwork: config.EgressNetworkConfig{Enabled: true}}
 	service, err := egress.NewService(cfg, filepath.Join(tempDir, "usage.db"))
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)

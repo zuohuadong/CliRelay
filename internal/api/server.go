@@ -894,9 +894,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/api-call", s.mgmt.APICall)
 
 		mgmt.GET("/egress/overview", s.mgmt.GetEgressOverview)
-		mgmt.GET("/egress/nodes", s.mgmt.GetEgressNodes)
-		mgmt.POST("/egress/nodes/sync", s.mgmt.PostEgressNodeSync)
-		mgmt.POST("/egress/enrollment", s.mgmt.PostEgressEnrollment)
 		mgmt.GET("/egress/endpoints", s.mgmt.GetEgressEndpoints)
 		mgmt.POST("/egress/endpoints", s.mgmt.PostEgressEndpoint)
 		mgmt.PATCH("/egress/endpoints/:id", s.mgmt.PatchEgressEndpoint)

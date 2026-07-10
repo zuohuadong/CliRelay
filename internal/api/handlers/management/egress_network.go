@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,12 +17,10 @@ import (
 
 type egressEndpointRequest struct {
 	Name             string          `json:"name"`
-	NodeID           string          `json:"node_id"`
 	Protocol         egress.Protocol `json:"protocol"`
 	Host             string          `json:"host"`
 	Port             int             `json:"port"`
 	Enabled          bool            `json:"enabled"`
-	LocalServer      bool            `json:"local_server"`
 	Username         string          `json:"username"`
 	Password         string          `json:"password"`
 	ExpectedPublicIP string          `json:"expected_public_ip"`
@@ -31,12 +28,10 @@ type egressEndpointRequest struct {
 
 type egressEndpointPatch struct {
 	Name             *string          `json:"name"`
-	NodeID           *string          `json:"node_id"`
 	Protocol         *egress.Protocol `json:"protocol"`
 	Host             *string          `json:"host"`
 	Port             *int             `json:"port"`
 	Enabled          *bool            `json:"enabled"`
-	LocalServer      *bool            `json:"local_server"`
 	Username         *string          `json:"username"`
 	Password         *string          `json:"password"`
 	ExpectedPublicIP *string          `json:"expected_public_ip"`
@@ -85,13 +80,6 @@ func (h *Handler) GetEgressOverview(c *gin.Context) {
 		writeEgressError(c, err)
 		return
 	}
-	state, err := service.SyncState(c.Request.Context())
-	if err != nil {
-		writeEgressError(c, err)
-		return
-	}
-	configured := service.HeadscaleConfigured()
-	headscaleStatus := service.HeadscaleStatus()
 	technical, err := service.TechnicalReadiness(c.Request.Context())
 	if err != nil {
 		writeEgressError(c, err)
@@ -123,34 +111,23 @@ func (h *Handler) GetEgressOverview(c *gin.Context) {
 	}
 	readyToEnable := len(blockers) == 0
 	combinedCounts := gin.H{
-		"nodes": counts.Nodes, "online_nodes": counts.OnlineNodes,
 		"endpoints": counts.Endpoints, "enabled_endpoints": counts.EnabledEndpoints, "bindings": counts.Bindings,
 		"codex_auths": inventory.Total, "bound_codex_auths": inventory.Bound,
 		"unbound_codex_auths": inventory.Unbound, "missing_account_id": inventory.MissingAccountID,
 		"bound_endpoint_not_ready": inventory.BoundNotReady,
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"enabled":                runtimeEnabled,
-		"revision":               technical.Revision,
-		"scope":                  "application_egress",
-		"local_endpoint_enabled": service.LocalEndpointEnabled(),
+		"enabled":  runtimeEnabled,
+		"revision": technical.Revision,
+		"scope":    "application_egress",
 		"policy": gin.H{
 			"binding_mode": "exclusive", "failure_mode": "fail_closed",
 			"readiness_scope": "application_egress", "host_kill_switch_enforced": false,
 		},
-		"headscale": gin.H{
-			"configured":         configured,
-			"url":                headscaleStatus.URL,
-			"api_key_configured": headscaleStatus.APIKeyConfigured,
-			"service_tag":        headscaleStatus.ServiceTag,
-			"reachable":          configured && state.Error == "" && !state.LastSync.IsZero(),
-			"last_sync_at":       state.LastSync,
-			"error":              state.Error,
-		},
 		"counts": combinedCounts,
 		"readiness": gin.H{
 			"scope": "application_egress", "ready": readyToEnable, "ready_to_enable": readyToEnable,
-			"codex_oauth_allowed": runtimeEnabled && readyToEnable,
+			"codex_oauth_allowed": runtimeEnabled && technical.ReadyCount > 0,
 			"revision":            technical.Revision, "reasons": reasons, "blockers": blockers, "warnings": warnings,
 			"ready_endpoints": technical.ReadyCount, "endpoint_count": technical.EndpointCount,
 			"endpoints": technical.Endpoints,
@@ -165,70 +142,13 @@ func egressReadinessIssue(code string) gin.H {
 		"unbound_codex_auths":        "One or more Codex accounts are unbound.",
 		"missing_account_id":         "One or more Codex accounts have no stable account identity.",
 		"bound_endpoint_not_ready":   "One or more bound endpoints are not runtime ready.",
-		"runtime_disabled":           "Egress runtime is disabled; configuration can still be prepared.",
+		"runtime_disabled":           "Egress runtime is disabled; Codex OAuth traffic is blocked.",
 	}
 	message := messages[code]
 	if message == "" {
 		message = code
 	}
 	return gin.H{"code": code, "message": message}
-}
-
-func (h *Handler) GetEgressNodes(c *gin.Context) {
-	service := h.egress()
-	if service == nil {
-		writeEgressError(c, egress.ErrEgressRequired)
-		return
-	}
-	items, err := service.ListNodes(c.Request.Context())
-	if err != nil {
-		writeEgressError(c, err)
-		return
-	}
-	views := make([]gin.H, 0, len(items))
-	for _, item := range items {
-		views = append(views, egressNodeView(service, item))
-	}
-	c.JSON(http.StatusOK, gin.H{"items": views})
-}
-
-func (h *Handler) PostEgressNodeSync(c *gin.Context) {
-	service := h.egress()
-	if service == nil {
-		writeEgressError(c, egress.ErrEgressRequired)
-		return
-	}
-	items, err := service.SyncNodes(c.Request.Context())
-	if err != nil {
-		writeEgressError(c, err)
-		return
-	}
-	views := make([]gin.H, 0, len(items))
-	for _, item := range items {
-		views = append(views, egressNodeView(service, item))
-	}
-	c.JSON(http.StatusOK, gin.H{"items": views})
-}
-
-func (h *Handler) PostEgressEnrollment(c *gin.Context) {
-	service := h.egress()
-	if service == nil {
-		writeEgressError(c, egress.ErrEgressRequired)
-		return
-	}
-	var request struct {
-		Name string `json:"name"`
-	}
-	if err := c.ShouldBindJSON(&request); err != nil && !errors.Is(err, io.EOF) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_request", "message": err.Error()}})
-		return
-	}
-	enrollment, err := service.CreateEnrollment(c.Request.Context(), request.Name)
-	if err != nil {
-		writeEgressError(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, enrollment)
 }
 
 func (h *Handler) GetEgressEndpoints(c *gin.Context) {
@@ -524,15 +444,12 @@ func (h *Handler) PutEgressBindingBatch(c *gin.Context) {
 }
 
 func endpointFromRequest(request egressEndpointRequest) egress.Endpoint {
-	return egress.Endpoint{Name: request.Name, NodeID: request.NodeID, Protocol: request.Protocol, Host: request.Host, Port: request.Port, Enabled: request.Enabled, LocalServer: request.LocalServer, Username: request.Username, Password: request.Password, ExpectedPublicIP: request.ExpectedPublicIP}
+	return egress.Endpoint{Name: request.Name, Protocol: request.Protocol, Host: request.Host, Port: request.Port, Enabled: request.Enabled, Username: request.Username, Password: request.Password, ExpectedPublicIP: request.ExpectedPublicIP}
 }
 
 func applyEndpointPatch(endpoint *egress.Endpoint, patch egressEndpointPatch) {
 	if patch.Name != nil {
 		endpoint.Name = *patch.Name
-	}
-	if patch.NodeID != nil {
-		endpoint.NodeID = *patch.NodeID
 	}
 	if patch.Protocol != nil {
 		endpoint.Protocol = *patch.Protocol
@@ -545,9 +462,6 @@ func applyEndpointPatch(endpoint *egress.Endpoint, patch egressEndpointPatch) {
 	}
 	if patch.Enabled != nil {
 		endpoint.Enabled = *patch.Enabled
-	}
-	if patch.LocalServer != nil {
-		endpoint.LocalServer = *patch.LocalServer
 	}
 	if patch.Username != nil {
 		endpoint.Username = *patch.Username
@@ -567,9 +481,9 @@ func egressEndpointView(ctx context.Context, service *egress.Service, endpoint e
 	}
 	masked := (&url.URL{Scheme: string(endpoint.Protocol), Host: net.JoinHostPort(endpoint.Host, strconv.Itoa(endpoint.Port))}).String()
 	return gin.H{
-		"id": endpoint.ID, "name": endpoint.Name, "node_id": endpoint.NodeID,
+		"id": endpoint.ID, "name": endpoint.Name,
 		"protocol": endpoint.Protocol, "host": endpoint.Host, "port": endpoint.Port,
-		"enabled": endpoint.Enabled, "local_server": endpoint.LocalServer,
+		"enabled":  endpoint.Enabled,
 		"username": endpoint.Username, "has_credentials": endpoint.Username != "" || endpoint.Password != "",
 		"masked_url": masked, "expected_public_ip": endpoint.ExpectedPublicIP,
 		"observed_public_ip": endpoint.PublicIP, "public_ip": endpoint.PublicIP, "latency_ms": endpoint.LatencyMS,
@@ -579,15 +493,6 @@ func egressEndpointView(ctx context.Context, service *egress.Service, endpoint e
 	}, nil
 }
 
-func egressNodeView(service *egress.Service, node egress.Node) gin.H {
-	readiness := service.NodeReadiness(node)
-	return gin.H{
-		"id": node.ID, "name": node.Name, "given_name": node.Name, "ip_addresses": node.Addresses,
-		"online": node.Online, "last_seen": node.LastSeen, "tags": node.Tags, "synced_at": node.SyncedAt,
-		"fresh": readiness.Fresh, "sync_age_seconds": readiness.SyncAgeSeconds,
-	}
-}
-
 func writeEgressError(c *gin.Context, err error) {
 	status := http.StatusInternalServerError
 	code := egress.ErrorCode(err)
@@ -595,9 +500,9 @@ func writeEgressError(c *gin.Context, err error) {
 	case errors.Is(err, egress.ErrEgressRequired), errors.Is(err, egress.ErrEndpointDisabled):
 		status = http.StatusServiceUnavailable
 		code = "egress_not_ready"
-	case errors.Is(err, egress.ErrNodeNotFound), errors.Is(err, egress.ErrEndpointNotFound):
+	case errors.Is(err, egress.ErrEndpointNotFound):
 		status = http.StatusNotFound
-	case errors.Is(err, egress.ErrEndpointInvalid):
+	case errors.Is(err, egress.ErrEndpointInvalid), errors.Is(err, egress.ErrIdentityMismatch):
 		status = http.StatusBadRequest
 	case errors.Is(err, egress.ErrEndpointInUse), errors.Is(err, egress.ErrBindingConflict):
 		status = http.StatusConflict

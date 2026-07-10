@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"sync"
 	"testing"
-	"time"
 )
 
 func testStableIdentity(accountID string) string {
@@ -63,11 +62,7 @@ func TestStoreExclusiveBindingBatchIsAtomicAndRevisioned(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	now := time.Now().UTC()
-	if err = store.UpsertNodes(ctx, []Node{{ID: "n1", Addresses: []string{"100.64.0.1"}, Online: true, Tags: []string{"tag:clirelay-egress"}}}, now); err != nil {
-		t.Fatal(err)
-	}
-	e1, err := store.CreateEndpoint(ctx, Endpoint{Name: "one", NodeID: "n1", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.1"})
+	e1, err := store.CreateEndpoint(ctx, Endpoint{Name: "one", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,10 +99,8 @@ func TestStoreConcurrentBatchOnlyOneRevisionWins(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	now := time.Now().UTC()
-	_ = store.UpsertNodes(ctx, []Node{{ID: "n1", Addresses: []string{"100.64.0.1", "100.64.0.2"}, Online: true, Tags: []string{"tag:clirelay-egress"}}}, now)
-	e1, _ := store.CreateEndpoint(ctx, Endpoint{Name: "one", NodeID: "n1", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.1"})
-	e2, _ := store.CreateEndpoint(ctx, Endpoint{Name: "two", NodeID: "n1", Protocol: ProtocolSOCKS5, Host: "100.64.0.2", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.2"})
+	e1, _ := store.CreateEndpoint(ctx, Endpoint{Name: "one", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.1"})
+	e2, _ := store.CreateEndpoint(ctx, Endpoint{Name: "two", Protocol: ProtocolSOCKS5, Host: "100.64.0.2", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.2"})
 	preview, _ := store.PreviewBindingBatch(ctx, nil)
 
 	var wg sync.WaitGroup
@@ -146,12 +139,8 @@ func TestStoreBindingBatchAtomicallyDeletesAndReassigns(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	now := time.Now().UTC()
-	if err = store.UpsertNodes(ctx, []Node{{ID: "n1", Addresses: []string{"100.64.0.1", "100.64.0.2"}, Online: true, Tags: []string{"tag:clirelay-egress"}}}, now); err != nil {
-		t.Fatal(err)
-	}
-	e1, _ := store.CreateEndpoint(ctx, Endpoint{Name: "one", NodeID: "n1", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.1"})
-	e2, _ := store.CreateEndpoint(ctx, Endpoint{Name: "two", NodeID: "n1", Protocol: ProtocolSOCKS5, Host: "100.64.0.2", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.2"})
+	e1, _ := store.CreateEndpoint(ctx, Endpoint{Name: "one", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.1"})
+	e2, _ := store.CreateEndpoint(ctx, Endpoint{Name: "two", Protocol: ProtocolSOCKS5, Host: "100.64.0.2", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.2"})
 	if _, err = store.ApplyBindingBatch(ctx, "", []BindingAssignment{{Identity: testStableIdentity("a"), EndpointID: e1.ID}, {Identity: testStableIdentity("b"), EndpointID: e2.ID}}); err != nil {
 		t.Fatal(err)
 	}
@@ -186,9 +175,7 @@ func TestStoreBindingBatchRejectsInvalidDeleteWithoutPartialMutation(t *testing.
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	now := time.Now().UTC()
-	_ = store.UpsertNodes(ctx, []Node{{ID: "n1", Addresses: []string{"100.64.0.1"}, Online: true, Tags: []string{"tag:clirelay-egress"}}}, now)
-	endpoint, _ := store.CreateEndpoint(ctx, Endpoint{Name: "one", NodeID: "n1", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.1"})
+	endpoint, _ := store.CreateEndpoint(ctx, Endpoint{Name: "one", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.1"})
 	_, _ = store.ApplyBindingBatch(ctx, "", []BindingAssignment{{Identity: testStableIdentity("a"), EndpointID: endpoint.ID}})
 	preview, err := store.PreviewBindingBatch(ctx, []BindingAssignment{{Identity: testStableIdentity("a"), EndpointID: ""}, {Identity: "", EndpointID: ""}})
 	if err != nil || preview.Valid || len(preview.Conflicts) == 0 || preview.Conflicts[0].Code != "invalid_assignment" {
@@ -211,9 +198,7 @@ func TestEndpointImpactAllowsConfirmedDisableButProtectsBoundDelete(t *testing.T
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	now := time.Now().UTC()
-	_ = store.UpsertNodes(ctx, []Node{{ID: "n1", Addresses: []string{"100.64.0.1"}, Online: true, Tags: []string{"tag:clirelay-egress"}}}, now)
-	endpoint, _ := store.CreateEndpoint(ctx, Endpoint{Name: "one", NodeID: "n1", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.1"})
+	endpoint, _ := store.CreateEndpoint(ctx, Endpoint{Name: "one", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.1"})
 	if err = store.PutBinding(ctx, Binding{Identity: testStableIdentity("a"), EndpointID: endpoint.ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -254,10 +239,8 @@ func TestStoreBindingBatchCanAtomicallySwapExclusiveEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	now := time.Now().UTC()
-	_ = store.UpsertNodes(ctx, []Node{{ID: "n1", Addresses: []string{"100.64.0.1", "100.64.0.2"}, Online: true, Tags: []string{"tag:clirelay-egress"}}}, now)
-	e1, _ := store.CreateEndpoint(ctx, Endpoint{Name: "one", NodeID: "n1", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.1"})
-	e2, _ := store.CreateEndpoint(ctx, Endpoint{Name: "two", NodeID: "n1", Protocol: ProtocolSOCKS5, Host: "100.64.0.2", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.2"})
+	e1, _ := store.CreateEndpoint(ctx, Endpoint{Name: "one", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.1"})
+	e2, _ := store.CreateEndpoint(ctx, Endpoint{Name: "two", Protocol: ProtocolSOCKS5, Host: "100.64.0.2", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.2"})
 	_ = store.PutBinding(ctx, Binding{Identity: testStableIdentity("a"), EndpointID: e1.ID})
 	_ = store.PutBinding(ctx, Binding{Identity: testStableIdentity("b"), EndpointID: e2.ID})
 	assignments := []BindingAssignment{{Identity: testStableIdentity("a"), EndpointID: e2.ID}, {Identity: testStableIdentity("b"), EndpointID: e1.ID}}

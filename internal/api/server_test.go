@@ -624,6 +624,9 @@ func TestEgressHardeningManagementRoutesAreRegistered(t *testing.T) {
 	removed := map[string]struct{}{
 		http.MethodPut + " /v0/management/egress/bindings/:identity":    {},
 		http.MethodDelete + " /v0/management/egress/bindings/:identity": {},
+		http.MethodGet + " /v0/management/egress/nodes":                  {},
+		http.MethodPost + " /v0/management/egress/nodes/sync":            {},
+		http.MethodPost + " /v0/management/egress/enrollment":            {},
 	}
 	for _, route := range server.engine.Routes() {
 		if _, exists := removed[route.Method+" "+route.Path]; exists {

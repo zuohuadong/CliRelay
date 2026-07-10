@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -18,7 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 func DatabasePathForConfig(configPath string) string {
 	configPath = strings.TrimSpace(configPath)
@@ -130,30 +129,30 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("begin egress migration: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	var legacyTables int
+	if err = tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM sqlite_master
+WHERE type = 'table' AND name IN ('egress_nodes', 'egress_state')
+`).Scan(&legacyTables); err != nil {
+		return fmt.Errorf("inspect egress schema: %w", err)
+	}
+	if legacyTables > 0 {
+		return fmt.Errorf("legacy Headscale egress schema is unsupported; stop CliRelay, back up and remove egress.db files, then rebuild endpoints and bindings")
+	}
 
 	if _, err = tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS egress_schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS egress_nodes (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL DEFAULT '',
-  addresses_json TEXT NOT NULL DEFAULT '[]',
-  online INTEGER NOT NULL DEFAULT 0,
-  last_seen TEXT NOT NULL DEFAULT '',
-  tags_json TEXT NOT NULL DEFAULT '[]',
-  synced_at TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS egress_endpoints (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  node_id TEXT,
   protocol TEXT NOT NULL,
   host TEXT NOT NULL,
   port INTEGER NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 0,
-  local_server INTEGER NOT NULL DEFAULT 0,
   username TEXT NOT NULL DEFAULT '',
   password TEXT NOT NULL DEFAULT '',
   expected_public_ip TEXT NOT NULL DEFAULT '',
@@ -163,10 +162,8 @@ CREATE TABLE IF NOT EXISTS egress_endpoints (
   check_status TEXT NOT NULL DEFAULT '',
   check_error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY(node_id) REFERENCES egress_nodes(id) ON UPDATE CASCADE ON DELETE RESTRICT
+  updated_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_egress_endpoints_node ON egress_endpoints(node_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_egress_endpoints_expected_public_ip_unique ON egress_endpoints(expected_public_ip) WHERE expected_public_ip <> '';
 CREATE TABLE IF NOT EXISTS egress_bindings (
   identity TEXT PRIMARY KEY,
@@ -178,10 +175,6 @@ CREATE TABLE IF NOT EXISTS egress_bindings (
 );
 CREATE INDEX IF NOT EXISTS idx_egress_bindings_endpoint ON egress_bindings(endpoint_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_egress_bindings_endpoint_unique ON egress_bindings(endpoint_id);
-CREATE TABLE IF NOT EXISTS egress_state (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL DEFAULT ''
-);
 `); err != nil {
 		return fmt.Errorf("create egress schema: %w", err)
 	}
@@ -216,88 +209,6 @@ func IsStableIdentity(identity string) bool {
 	return err == nil && len(decoded) == sha256.Size
 }
 
-func (s *Store) UpsertNodes(ctx context.Context, nodes []Node, syncedAt time.Time) error {
-	if syncedAt.IsZero() {
-		syncedAt = time.Now().UTC()
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err = tx.ExecContext(ctx, `UPDATE egress_nodes SET online=0, synced_at=?`, syncedAt.UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("mark stale egress nodes offline: %w", err)
-	}
-	for _, node := range nodes {
-		node.ID = strings.TrimSpace(node.ID)
-		if node.ID == "" {
-			return fmt.Errorf("node id is required")
-		}
-		addresses, _ := json.Marshal(node.Addresses)
-		tags, _ := json.Marshal(node.Tags)
-		lastSeen := ""
-		if !node.LastSeen.IsZero() {
-			lastSeen = node.LastSeen.UTC().Format(time.RFC3339Nano)
-		}
-		if _, err = tx.ExecContext(ctx, `
-INSERT INTO egress_nodes(id, name, addresses_json, online, last_seen, tags_json, synced_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-  name=excluded.name,
-  addresses_json=excluded.addresses_json,
-  online=excluded.online,
-  last_seen=excluded.last_seen,
-  tags_json=excluded.tags_json,
-  synced_at=excluded.synced_at`, node.ID, strings.TrimSpace(node.Name), string(addresses), boolInt(node.Online), lastSeen, string(tags), syncedAt.UTC().Format(time.RFC3339Nano)); err != nil {
-			return fmt.Errorf("upsert egress node %s: %w", node.ID, err)
-		}
-	}
-	return tx.Commit()
-}
-
-func (s *Store) GetNode(ctx context.Context, id string) (Node, error) {
-	var node Node
-	var addresses, tags, lastSeen, syncedAt string
-	var online int
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, addresses_json, online, last_seen, tags_json, synced_at FROM egress_nodes WHERE id=?`, strings.TrimSpace(id)).Scan(&node.ID, &node.Name, &addresses, &online, &lastSeen, &tags, &syncedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Node{}, ErrNodeNotFound
-	}
-	if err != nil {
-		return Node{}, err
-	}
-	node.Online = online != 0
-	_ = json.Unmarshal([]byte(addresses), &node.Addresses)
-	_ = json.Unmarshal([]byte(tags), &node.Tags)
-	node.LastSeen = parseTime(lastSeen)
-	node.SyncedAt = parseTime(syncedAt)
-	return node, nil
-}
-
-func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, addresses_json, online, last_seen, tags_json, synced_at FROM egress_nodes ORDER BY name, id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]Node, 0)
-	for rows.Next() {
-		var node Node
-		var addresses, tags, lastSeen, syncedAt string
-		var online int
-		if err = rows.Scan(&node.ID, &node.Name, &addresses, &online, &lastSeen, &tags, &syncedAt); err != nil {
-			return nil, err
-		}
-		node.Online = online != 0
-		_ = json.Unmarshal([]byte(addresses), &node.Addresses)
-		_ = json.Unmarshal([]byte(tags), &node.Tags)
-		node.LastSeen = parseTime(lastSeen)
-		node.SyncedAt = parseTime(syncedAt)
-		out = append(out, node)
-	}
-	return out, rows.Err()
-}
-
 func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint) (Endpoint, error) {
 	endpoint.ID = strings.TrimSpace(endpoint.ID)
 	if endpoint.ID == "" {
@@ -307,21 +218,12 @@ func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint) (Endpoint
 		return Endpoint{}, err
 	}
 	endpoint.ExpectedPublicIP = canonicalIP(endpoint.ExpectedPublicIP)
-	if endpoint.NodeID != "" {
-		var exists int
-		if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM egress_nodes WHERE id=?`, endpoint.NodeID).Scan(&exists); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return Endpoint{}, ErrNodeNotFound
-			}
-			return Endpoint{}, err
-		}
-	}
 	now := time.Now().UTC()
 	endpoint.CreatedAt = now
 	endpoint.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO egress_endpoints(id, name, node_id, protocol, host, port, enabled, local_server, username, password, expected_public_ip, public_ip, latency_ms, last_checked_at, check_status, check_error, created_at, updated_at)
-VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, endpoint.ID, strings.TrimSpace(endpoint.Name), strings.TrimSpace(endpoint.NodeID), endpoint.Protocol, strings.TrimSpace(endpoint.Host), endpoint.Port, boolInt(endpoint.Enabled), boolInt(endpoint.LocalServer), endpoint.Username, endpoint.Password, strings.TrimSpace(endpoint.ExpectedPublicIP), endpoint.PublicIP, endpoint.LatencyMS, formatTime(endpoint.LastCheckedAt), endpoint.CheckStatus, endpoint.CheckError, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+INSERT INTO egress_endpoints(id, name, protocol, host, port, enabled, username, password, expected_public_ip, public_ip, latency_ms, last_checked_at, check_status, check_error, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, endpoint.ID, strings.TrimSpace(endpoint.Name), endpoint.Protocol, strings.TrimSpace(endpoint.Host), endpoint.Port, boolInt(endpoint.Enabled), endpoint.Username, endpoint.Password, strings.TrimSpace(endpoint.ExpectedPublicIP), endpoint.PublicIP, endpoint.LatencyMS, formatTime(endpoint.LastCheckedAt), endpoint.CheckStatus, endpoint.CheckError, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		if isExpectedIPConstraint(err) {
 			return Endpoint{}, fmt.Errorf("%w: expected_public_ip is already assigned", ErrBindingConflict)
@@ -344,15 +246,6 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint) (Endpoint
 		return Endpoint{}, err
 	}
 	endpoint.ExpectedPublicIP = canonicalIP(endpoint.ExpectedPublicIP)
-	if endpoint.NodeID != "" {
-		var exists int
-		if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM egress_nodes WHERE id=?`, endpoint.NodeID).Scan(&exists); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return Endpoint{}, ErrNodeNotFound
-			}
-			return Endpoint{}, err
-		}
-	}
 	publicIP := current.PublicIP
 	latencyMS := current.LatencyMS
 	lastCheckedAt := current.LastCheckedAt
@@ -367,7 +260,7 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint) (Endpoint
 	}
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
-UPDATE egress_endpoints SET name=?, node_id=NULLIF(?, ''), protocol=?, host=?, port=?, enabled=?, local_server=?, username=?, password=?, expected_public_ip=?, public_ip=?, latency_ms=?, last_checked_at=?, check_status=?, check_error=?, updated_at=? WHERE id=?`, strings.TrimSpace(endpoint.Name), strings.TrimSpace(endpoint.NodeID), endpoint.Protocol, strings.TrimSpace(endpoint.Host), endpoint.Port, boolInt(endpoint.Enabled), boolInt(endpoint.LocalServer), endpoint.Username, endpoint.Password, strings.TrimSpace(endpoint.ExpectedPublicIP), publicIP, latencyMS, formatTime(lastCheckedAt), checkStatus, checkError, now.Format(time.RFC3339Nano), endpoint.ID)
+UPDATE egress_endpoints SET name=?, protocol=?, host=?, port=?, enabled=?, username=?, password=?, expected_public_ip=?, public_ip=?, latency_ms=?, last_checked_at=?, check_status=?, check_error=?, updated_at=? WHERE id=?`, strings.TrimSpace(endpoint.Name), endpoint.Protocol, strings.TrimSpace(endpoint.Host), endpoint.Port, boolInt(endpoint.Enabled), endpoint.Username, endpoint.Password, strings.TrimSpace(endpoint.ExpectedPublicIP), publicIP, latencyMS, formatTime(lastCheckedAt), checkStatus, checkError, now.Format(time.RFC3339Nano), endpoint.ID)
 	if err != nil {
 		if isExpectedIPConstraint(err) {
 			return Endpoint{}, fmt.Errorf("%w: expected_public_ip is already assigned", ErrBindingConflict)
@@ -382,11 +275,9 @@ UPDATE egress_endpoints SET name=?, node_id=NULLIF(?, ''), protocol=?, host=?, p
 }
 
 func endpointRouteChanged(current, next Endpoint) bool {
-	return strings.TrimSpace(current.NodeID) != strings.TrimSpace(next.NodeID) ||
-		current.Protocol != next.Protocol ||
+	return current.Protocol != next.Protocol ||
 		strings.TrimSpace(current.Host) != strings.TrimSpace(next.Host) ||
 		current.Port != next.Port ||
-		current.LocalServer != next.LocalServer ||
 		current.Username != next.Username ||
 		current.Password != next.Password ||
 		canonicalIP(current.ExpectedPublicIP) != canonicalIP(next.ExpectedPublicIP)
@@ -394,10 +285,10 @@ func endpointRouteChanged(current, next Endpoint) bool {
 
 func (s *Store) GetEndpoint(ctx context.Context, id string) (Endpoint, error) {
 	var endpoint Endpoint
-	var enabled, local int
+	var enabled int
 	var createdAt, updatedAt string
 	var lastCheckedAt string
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, COALESCE(node_id,''), protocol, host, port, enabled, local_server, username, password, expected_public_ip, public_ip, latency_ms, last_checked_at, check_status, check_error, created_at, updated_at FROM egress_endpoints WHERE id=?`, strings.TrimSpace(id)).Scan(&endpoint.ID, &endpoint.Name, &endpoint.NodeID, &endpoint.Protocol, &endpoint.Host, &endpoint.Port, &enabled, &local, &endpoint.Username, &endpoint.Password, &endpoint.ExpectedPublicIP, &endpoint.PublicIP, &endpoint.LatencyMS, &lastCheckedAt, &endpoint.CheckStatus, &endpoint.CheckError, &createdAt, &updatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, protocol, host, port, enabled, username, password, expected_public_ip, public_ip, latency_ms, last_checked_at, check_status, check_error, created_at, updated_at FROM egress_endpoints WHERE id=?`, strings.TrimSpace(id)).Scan(&endpoint.ID, &endpoint.Name, &endpoint.Protocol, &endpoint.Host, &endpoint.Port, &enabled, &endpoint.Username, &endpoint.Password, &endpoint.ExpectedPublicIP, &endpoint.PublicIP, &endpoint.LatencyMS, &lastCheckedAt, &endpoint.CheckStatus, &endpoint.CheckError, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Endpoint{}, ErrEndpointNotFound
 	}
@@ -405,7 +296,6 @@ func (s *Store) GetEndpoint(ctx context.Context, id string) (Endpoint, error) {
 		return Endpoint{}, err
 	}
 	endpoint.Enabled = enabled != 0
-	endpoint.LocalServer = local != 0
 	endpoint.LastCheckedAt = parseTime(lastCheckedAt)
 	endpoint.CreatedAt = parseTime(createdAt)
 	endpoint.UpdatedAt = parseTime(updatedAt)
@@ -433,11 +323,10 @@ func (s *Store) UpdateEndpointCheckIfRouteUnchanged(ctx context.Context, expecte
 UPDATE egress_endpoints
 SET public_ip=?, latency_ms=?, last_checked_at=?, check_status=?, check_error=?, updated_at=?
 WHERE id=?
-  AND COALESCE(node_id,'')=?
-  AND protocol=? AND host=? AND port=? AND enabled=? AND local_server=?
+  AND protocol=? AND host=? AND port=? AND enabled=?
   AND username=? AND password=? AND expected_public_ip=?`,
 		strings.TrimSpace(publicIP), latencyMS, formatTime(checkedAt), strings.TrimSpace(status), strings.TrimSpace(checkError), time.Now().UTC().Format(time.RFC3339Nano),
-		strings.TrimSpace(expected.ID), strings.TrimSpace(expected.NodeID), expected.Protocol, strings.TrimSpace(expected.Host), expected.Port, boolInt(expected.Enabled), boolInt(expected.LocalServer), expected.Username, expected.Password, canonicalIP(expected.ExpectedPublicIP),
+		strings.TrimSpace(expected.ID), expected.Protocol, strings.TrimSpace(expected.Host), expected.Port, boolInt(expected.Enabled), expected.Username, expected.Password, canonicalIP(expected.ExpectedPublicIP),
 	)
 	if err != nil {
 		return Endpoint{}, err
@@ -621,6 +510,9 @@ func (s *Store) PreviewBindingBatch(ctx context.Context, assignments []BindingAs
 		return BindingBatchPreview{}, err
 	}
 	normalized := normalizeAssignments(assignments)
+	if err = preserveExistingAuthFileIDsTx(ctx, tx, normalized); err != nil {
+		return BindingBatchPreview{}, err
+	}
 	conflicts, err := validateBindingAssignmentsTx(ctx, tx, normalized)
 	if err != nil {
 		return BindingBatchPreview{}, err
@@ -647,6 +539,9 @@ func (s *Store) ApplyBindingBatch(ctx context.Context, expectedRevision string, 
 		return BindingBatchResult{}, fmt.Errorf("%w: expected %s, current %s", ErrRevisionConflict, expectedRevision, currentRevision)
 	}
 	normalized := normalizeAssignments(assignments)
+	if err = preserveExistingAuthFileIDsTx(ctx, tx, normalized); err != nil {
+		return BindingBatchResult{}, err
+	}
 	conflicts, err := validateBindingAssignmentsTx(ctx, tx, normalized)
 	if err != nil {
 		return BindingBatchResult{}, err
@@ -713,6 +608,43 @@ func normalizeAssignments(assignments []BindingAssignment) []BindingAssignment {
 		return out[i].Identity < out[j].Identity
 	})
 	return out
+}
+
+func preserveExistingAuthFileIDsTx(ctx context.Context, tx *sql.Tx, assignments []BindingAssignment) error {
+	needsExisting := false
+	for i := range assignments {
+		if assignments[i].EndpointID != "" && assignments[i].AuthFileID == "" {
+			needsExisting = true
+			break
+		}
+	}
+	if !needsExisting {
+		return nil
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT identity, auth_file_id FROM egress_bindings`)
+	if err != nil {
+		return fmt.Errorf("load existing egress binding auth files: %w", err)
+	}
+	existing := make(map[string]string)
+	for rows.Next() {
+		var identity, authFileID string
+		if err = rows.Scan(&identity, &authFileID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		existing[identity] = authFileID
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for i := range assignments {
+		if assignments[i].EndpointID == "" || assignments[i].AuthFileID != "" {
+			continue
+		}
+		assignments[i].AuthFileID = strings.TrimSpace(existing[assignments[i].Identity])
+	}
+	return nil
 }
 
 func validateBindingAssignmentsTx(ctx context.Context, tx *sql.Tx, assignments []BindingAssignment) ([]BindingConflict, error) {
@@ -818,37 +750,21 @@ func bindingRevisionTx(ctx context.Context, tx *sql.Tx) (string, error) {
 	if err = rows.Close(); err != nil {
 		return "", err
 	}
-	rows, err = tx.QueryContext(ctx, `SELECT id, online, addresses_json, tags_json, synced_at FROM egress_nodes ORDER BY id`)
-	if err != nil {
-		return "", err
-	}
-	for rows.Next() {
-		var id, addresses, tags, syncedAt string
-		var online int
-		if err = rows.Scan(&id, &online, &addresses, &tags, &syncedAt); err != nil {
-			_ = rows.Close()
-			return "", err
-		}
-		_, _ = fmt.Fprintf(hash, "n\x00%s\x00%d\x00%s\x00%s\x00%s\n", id, online, addresses, tags, syncedAt)
-	}
-	if err = rows.Close(); err != nil {
-		return "", err
-	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func (s *Store) ResolveIdentity(ctx context.Context, identity string) (ResolvedBinding, error) {
 	var out ResolvedBinding
-	var endpointEnabled, local int
+	var endpointEnabled int
 	var bindingCreated, bindingUpdated, endpointCreated, endpointUpdated, lastCheckedAt string
 	err := s.db.QueryRowContext(ctx, `
 SELECT b.identity, b.endpoint_id, b.auth_file_id, b.created_at, b.updated_at,
-       e.id, e.name, COALESCE(e.node_id,''), e.protocol, e.host, e.port, e.enabled, e.local_server, e.username, e.password, e.expected_public_ip, e.public_ip, e.latency_ms, e.last_checked_at, e.check_status, e.check_error, e.created_at, e.updated_at
+       e.id, e.name, e.protocol, e.host, e.port, e.enabled, e.username, e.password, e.expected_public_ip, e.public_ip, e.latency_ms, e.last_checked_at, e.check_status, e.check_error, e.created_at, e.updated_at
 FROM egress_bindings b
 JOIN egress_endpoints e ON e.id=b.endpoint_id
 WHERE b.identity=?`, strings.TrimSpace(identity)).Scan(
 		&out.Binding.Identity, &out.Binding.EndpointID, &out.Binding.AuthFileID, &bindingCreated, &bindingUpdated,
-		&out.Endpoint.ID, &out.Endpoint.Name, &out.Endpoint.NodeID, &out.Endpoint.Protocol, &out.Endpoint.Host, &out.Endpoint.Port, &endpointEnabled, &local, &out.Endpoint.Username, &out.Endpoint.Password, &out.Endpoint.ExpectedPublicIP, &out.Endpoint.PublicIP, &out.Endpoint.LatencyMS, &lastCheckedAt, &out.Endpoint.CheckStatus, &out.Endpoint.CheckError, &endpointCreated, &endpointUpdated,
+		&out.Endpoint.ID, &out.Endpoint.Name, &out.Endpoint.Protocol, &out.Endpoint.Host, &out.Endpoint.Port, &endpointEnabled, &out.Endpoint.Username, &out.Endpoint.Password, &out.Endpoint.ExpectedPublicIP, &out.Endpoint.PublicIP, &out.Endpoint.LatencyMS, &lastCheckedAt, &out.Endpoint.CheckStatus, &out.Endpoint.CheckError, &endpointCreated, &endpointUpdated,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ResolvedBinding{}, ErrEgressRequired
@@ -857,7 +773,6 @@ WHERE b.identity=?`, strings.TrimSpace(identity)).Scan(
 		return ResolvedBinding{}, err
 	}
 	out.Endpoint.Enabled = endpointEnabled != 0
-	out.Endpoint.LocalServer = local != 0
 	out.Endpoint.LastCheckedAt = parseTime(lastCheckedAt)
 	out.Binding.CreatedAt = parseTime(bindingCreated)
 	out.Binding.UpdatedAt = parseTime(bindingUpdated)
@@ -889,8 +804,6 @@ func (s *Store) ListBindings(ctx context.Context) ([]Binding, error) {
 func (s *Store) Counts(ctx context.Context) (Counts, error) {
 	var counts Counts
 	for query, target := range map[string]*int{
-		`SELECT COUNT(*) FROM egress_nodes`:                     &counts.Nodes,
-		`SELECT COUNT(*) FROM egress_nodes WHERE online=1`:      &counts.OnlineNodes,
 		`SELECT COUNT(*) FROM egress_endpoints`:                 &counts.Endpoints,
 		`SELECT COUNT(*) FROM egress_endpoints WHERE enabled=1`: &counts.EnabledEndpoints,
 		`SELECT COUNT(*) FROM egress_bindings`:                  &counts.Bindings,
@@ -902,61 +815,14 @@ func (s *Store) Counts(ctx context.Context) (Counts, error) {
 	return counts, nil
 }
 
-func (s *Store) SetSyncState(ctx context.Context, state SyncState) error {
-	values := map[string]string{"sync_error": strings.TrimSpace(state.Error)}
-	if !state.LastSync.IsZero() {
-		values["last_sync"] = state.LastSync.UTC().Format(time.RFC3339Nano)
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	for key, value := range values {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO egress_state(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-func (s *Store) SyncState(ctx context.Context) (SyncState, error) {
-	state := SyncState{}
-	rows, err := s.db.QueryContext(ctx, `SELECT key,value FROM egress_state WHERE key IN ('last_sync','sync_error')`)
-	if err != nil {
-		return state, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var key, value string
-		if err = rows.Scan(&key, &value); err != nil {
-			return state, err
-		}
-		switch key {
-		case "last_sync":
-			state.LastSync = parseTime(value)
-		case "sync_error":
-			state.Error = value
-		}
-	}
-	return state, rows.Err()
-}
-
 func validateEndpoint(endpoint Endpoint) error {
 	if strings.TrimSpace(endpoint.Name) == "" || strings.TrimSpace(endpoint.Host) == "" || endpoint.Port < 1 || endpoint.Port > 65535 {
 		return ErrEndpointInvalid
 	}
 	switch endpoint.Protocol {
-	case ProtocolSOCKS5, ProtocolHTTP, ProtocolHTTPS:
+	case ProtocolSOCKS5, ProtocolHTTP:
 	default:
 		return ErrEndpointInvalid
-	}
-	if endpoint.LocalServer {
-		if strings.TrimSpace(endpoint.NodeID) != "" {
-			return ErrEndpointInvalid
-		}
-	} else if strings.TrimSpace(endpoint.NodeID) == "" {
-		return ErrNodeNotFound
 	}
 	expectedIP := strings.TrimSpace(endpoint.ExpectedPublicIP)
 	if endpoint.Enabled && expectedIP == "" {

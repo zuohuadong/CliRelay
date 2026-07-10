@@ -7,10 +7,10 @@ import (
 
 var (
 	ErrEgressRequired       = errors.New("egress_required")
-	ErrNodeNotFound         = errors.New("egress_node_not_found")
 	ErrEndpointNotFound     = errors.New("egress_not_found")
 	ErrEndpointDisabled     = errors.New("egress_disabled")
 	ErrEndpointInvalid      = errors.New("egress_invalid")
+	ErrIdentityMismatch     = errors.New("egress_identity_mismatch")
 	ErrEndpointInUse        = errors.New("egress_endpoint_in_use")
 	ErrStoreLocked          = errors.New("egress_store_locked")
 	ErrRevisionConflict     = errors.New("egress_revision_conflict")
@@ -64,10 +64,10 @@ func ErrorCode(err error) string {
 		return "egress_disabled"
 	case errors.Is(err, ErrEndpointInvalid):
 		return "egress_invalid"
+	case errors.Is(err, ErrIdentityMismatch):
+		return "egress_identity_mismatch"
 	case errors.Is(err, ErrEndpointInUse):
 		return "egress_endpoint_in_use"
-	case errors.Is(err, ErrNodeNotFound):
-		return "egress_node_not_found"
 	case errors.Is(err, ErrStoreLocked):
 		return "egress_store_locked"
 	case errors.Is(err, ErrRevisionConflict):

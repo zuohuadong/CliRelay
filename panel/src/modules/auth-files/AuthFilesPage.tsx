@@ -7,10 +7,13 @@ import type { AuthFileItem } from "@/lib/http/types";
 import {
   egressApi,
   type EgressBinding,
+  type EgressBindingAssignment,
+  type EgressBindingPreview,
   type EgressEndpoint,
   type EgressOverview,
 } from "@/lib/http/apis/egress";
 import { OAuthLoginDialog } from "@/modules/oauth/OAuthLoginDialog";
+import { useToast } from "@/modules/ui/ToastProvider";
 import { AuthFileDetailModal } from "@/modules/auth-files/components/AuthFileDetailModal";
 import { AuthFilesExcludedTab } from "@/modules/auth-files/components/AuthFilesExcludedTab";
 import { AuthFilesAliasTab } from "@/modules/auth-files/components/AuthFilesAliasTab";
@@ -76,6 +79,7 @@ const buildAuthFilesSignature = (items: AuthFileItem[]): string =>
 
 export function AuthFilesPage() {
   const { t } = useTranslation();
+  const { notify } = useToast();
   const [searchParams] = useSearchParams();
   const navigationType = useNavigationType();
 
@@ -147,6 +151,7 @@ export function AuthFilesPage() {
   const [egressEndpoints, setEgressEndpoints] = useState<EgressEndpoint[]>([]);
   const [egressBindings, setEgressBindings] = useState<EgressBinding[]>([]);
   const [egressOverview, setEgressOverview] = useState<EgressOverview | null>(null);
+  const [detailEgressSaving, setDetailEgressSaving] = useState(false);
   const [tagsEditorFileName, setTagsEditorFileName] = useState<string | null>(null);
   const [refreshingCurrentPage, setRefreshingCurrentPage] = useState(false);
   const isMountedRef = useRef(true);
@@ -294,6 +299,46 @@ export function AuthFilesPage() {
         setEgressBindings([]);
       });
   }, []);
+
+  const previewDetailEgressBinding = useCallback(
+    async (assignment: EgressBindingAssignment): Promise<EgressBindingPreview> => {
+      try {
+        return await egressApi.previewBindings([assignment]);
+      } catch (error) {
+        notify({
+          type: "error",
+          message:
+            error instanceof Error ? error.message : t("auth_files.egress_preview_failed"),
+        });
+        throw error;
+      }
+    },
+    [notify, t],
+  );
+
+  const applyDetailEgressBinding = useCallback(
+    async (assignments: EgressBindingAssignment[], expectedRevision: string) => {
+      setDetailEgressSaving(true);
+      try {
+        await egressApi.applyBindings(
+          assignments,
+          expectedRevision || egressOverview?.revision || "",
+          true,
+        );
+        await refreshEgressState();
+        notify({ type: "success", message: t("auth_files.egress_saved") });
+      } catch (error) {
+        notify({
+          type: "error",
+          message: error instanceof Error ? error.message : t("auth_files.egress_save_failed"),
+        });
+        throw error;
+      } finally {
+        setDetailEgressSaving(false);
+      }
+    },
+    [egressOverview?.revision, notify, refreshEgressState, t],
+  );
 
   useEffect(() => {
     void refreshEgressState();
@@ -534,6 +579,23 @@ export function AuthFilesPage() {
           binding.authId === detailFile.name || binding.authId.endsWith(`/${detailFile.name}`),
       ) ?? null)
     : null;
+  const detailEgressEndpoints = useMemo(() => {
+    const occupiedEndpointIds = new Set(
+      egressBindings
+        .filter(
+          (binding) =>
+            binding.bound &&
+            binding.endpointId &&
+            binding.identity !== detailEgressBinding?.identity,
+        )
+        .map((binding) => binding.endpointId),
+    );
+    return egressEndpoints.filter(
+      (endpoint) =>
+        endpoint.id === detailEgressBinding?.endpointId ||
+        (endpoint.runtimeReady && !occupiedEndpointIds.has(endpoint.id)),
+    );
+  }, [detailEgressBinding?.endpointId, detailEgressBinding?.identity, egressBindings, egressEndpoints]);
   const oauthEgressEndpoints = useMemo(() => {
     const occupiedEndpointIds = new Set(
       egressBindings
@@ -542,7 +604,7 @@ export function AuthFilesPage() {
     );
     return egressEndpoints.filter(
       (endpoint) =>
-        endpoint.eligibility?.selectable === true && !occupiedEndpointIds.has(endpoint.id),
+        endpoint.runtimeReady && !occupiedEndpointIds.has(endpoint.id),
     );
   }, [egressBindings, egressEndpoints]);
   const {
@@ -730,6 +792,10 @@ export function AuthFilesPage() {
         prefixProxyDirty={prefixProxyDirty}
         savePrefixProxy={savePrefixProxy}
         egressBinding={detailEgressBinding}
+        egressEndpoints={detailEgressEndpoints}
+        egressBindingSaving={detailEgressSaving}
+        previewEgressBinding={previewDetailEgressBinding}
+        applyEgressBinding={applyDetailEgressBinding}
         channelEditor={channelEditor}
         setChannelEditor={setChannelEditor}
         saveChannelEditor={saveChannelEditor}

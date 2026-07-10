@@ -2358,8 +2358,8 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 
 		log.Debug("Authorization code received, exchanging for tokens...")
 		// Re-resolve the selected endpoint immediately before exchanging the
-		// authorization code. A session created before shutdown, node staleness,
-		// health failure, or endpoint replacement must never retain its old route.
+		// authorization code. Endpoint health or route changes must never leave
+		// an OAuth session using an obsolete route.
 		currentEgressService, exchangeHTTPClient, errRoute := h.codexOAuthEgressClient(ctx, egressID)
 		if errRoute != nil {
 			SetOAuthSessionError(state, oauthSessionErrorWithCause("Codex OAuth egress is not ready", errRoute))
@@ -2404,7 +2404,6 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 			Metadata: map[string]any{
 				"email":      tokenStorage.Email,
 				"account_id": tokenStorage.AccountID,
-				"egress_id":  egressID,
 			},
 		}
 		tokenStorage.SetMetadata(record.Metadata)
@@ -2483,6 +2482,12 @@ func (h *Handler) saveCodexTokenWithBinding(ctx context.Context, service *egress
 	if service == nil || record == nil || storage == nil {
 		return "", fmt.Errorf("Codex token binding inputs are incomplete")
 	}
+	// The binding database is the only durable source of the selected endpoint.
+	// Strip legacy copies before persistence; resolveEgressAuth injects the current
+	// endpoint into a runtime clone when a request is executed.
+	delete(record.Metadata, "egress_id")
+	delete(record.Attributes, "egress_id")
+	storage.SetMetadata(record.Metadata)
 	identity, err := egress.StableIdentity(storage.AccountID)
 	if err != nil {
 		return "", fmt.Errorf("derive Codex egress identity: %w", err)

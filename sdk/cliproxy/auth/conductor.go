@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	internalegress "github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -2109,7 +2110,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if errCtx := ctx.Err(); errCtx != nil {
 				return nil, errCtx
 			}
-			if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, errStream, didRefreshOnUnauthorized); okRefresh {
+			refreshed, okRefresh, errRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, errStream, didRefreshOnUnauthorized)
+			if errRefresh != nil {
+				return nil, errRefresh
+			}
+			if okRefresh {
 				auth = refreshed
 				didRefreshOnUnauthorized = true
 				streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
@@ -2121,6 +2126,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 		}
 		if errStream != nil {
+			if isTerminalEgressError(errStream) {
+				return nil, errStream
+			}
 			rerr := &Error{Message: errStream.Error()}
 			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errStream); ok && se != nil {
 				rerr.HTTPStatus = se.StatusCode()
@@ -2144,7 +2152,12 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				discardStreamChunks(streamResult.Chunks)
 				return nil, errCtx
 			}
-			if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, bootstrapErr, didRefreshOnUnauthorized); okRefresh {
+			refreshed, okRefresh, errRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, bootstrapErr, didRefreshOnUnauthorized)
+			if errRefresh != nil {
+				discardStreamChunks(streamResult.Chunks)
+				return nil, errRefresh
+			}
+			if okRefresh {
 				discardStreamChunks(streamResult.Chunks)
 				auth = refreshed
 				didRefreshOnUnauthorized = true
@@ -2162,6 +2175,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 		}
 		if bootstrapErr != nil {
+			if isTerminalEgressError(bootstrapErr) {
+				discardStreamChunks(streamResult.Chunks)
+				return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
+			}
 			if isRequestInvalidError(bootstrapErr) {
 				rerr := &Error{Message: bootstrapErr.Error()}
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](bootstrapErr); ok && se != nil {
@@ -2610,6 +2627,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		if errExec == nil {
 			return resp, nil
 		}
+		if isTerminalEgressError(errExec) {
+			return cliproxyexecutor.Response{}, errExec
+		}
 		lastErr = errExec
 		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, retryModel, maxWait)
 		if !shouldRetry {
@@ -2646,6 +2666,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		if errExec == nil {
 			return resp, nil
 		}
+		if isTerminalEgressError(errExec) {
+			return cliproxyexecutor.Response{}, errExec
+		}
 		lastErr = errExec
 		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, retryModel, maxWait)
 		if !shouldRetry {
@@ -2677,6 +2700,13 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
 		if errStream == nil {
 			return result, nil
+		}
+		if isTerminalEgressError(errStream) {
+			var bootstrapErr *streamBootstrapError
+			if errors.As(errStream, &bootstrapErr) && bootstrapErr != nil {
+				return streamErrorResult(bootstrapErr.Headers(), bootstrapErr.cause), nil
+			}
+			return nil, errStream
 		}
 		lastErr = errStream
 		wait, shouldRetry := m.shouldRetryAfterError(errStream, attempt, normalized, retryModel, maxWait)
@@ -2857,6 +2887,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
+			if isTerminalEgressError(errPrepare) {
+				return cliproxyexecutor.Response{}, errPrepare
+			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: &Error{Message: errPrepare.Error()}}
 			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errPrepare); ok && se != nil {
 				result.Error.HTTPStatus = se.StatusCode()
@@ -2886,7 +2919,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+				refreshed, okRefresh, errRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized)
+				if errRefresh != nil {
+					return cliproxyexecutor.Response{}, errRefresh
+				}
+				if okRefresh {
 					auth = refreshed
 					didRefreshOnUnauthorized = true
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
@@ -2896,6 +2933,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 						}
 					}
 				}
+			}
+			if isTerminalEgressError(errExec) {
+				return cliproxyexecutor.Response{}, errExec
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
 			if errExec != nil {
@@ -2996,6 +3036,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
+			if isTerminalEgressError(errPrepare) {
+				return cliproxyexecutor.Response{}, errPrepare
+			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: &Error{Message: errPrepare.Error()}}
 			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errPrepare); ok && se != nil {
 				result.Error.HTTPStatus = se.StatusCode()
@@ -3020,7 +3063,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+				refreshed, okRefresh, errRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized)
+				if errRefresh != nil {
+					return cliproxyexecutor.Response{}, errRefresh
+				}
+				if okRefresh {
 					auth = refreshed
 					didRefreshOnUnauthorized = true
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
@@ -3030,6 +3077,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 						}
 					}
 				}
+			}
+			if isTerminalEgressError(errExec) {
+				return cliproxyexecutor.Response{}, errExec
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
 			if errExec != nil {
@@ -3128,6 +3178,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
+			if isTerminalEgressError(errPrepare) {
+				return nil, errPrepare
+			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: &Error{Message: errPrepare.Error()}}
 			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errPrepare); ok && se != nil {
 				result.Error.HTTPStatus = se.StatusCode()
@@ -3200,6 +3253,9 @@ func shouldStopMixedProviderFallback(provider, routeModel string, err error) boo
 	if err == nil {
 		return false
 	}
+	if isTerminalEgressError(err) {
+		return true
+	}
 	if !strings.EqualFold(strings.TrimSpace(provider), "astron-code") {
 		return false
 	}
@@ -3227,6 +3283,14 @@ func shouldStopMixedProviderFallback(provider, routeModel string, err error) boo
 	default:
 		return false
 	}
+}
+
+func isTerminalEgressError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var target *internalegress.Error
+	return errors.As(err, &target) && target != nil && strings.HasPrefix(strings.TrimSpace(target.Code), "egress_")
 }
 
 func authSelectionModelFromOptions(opts cliproxyexecutor.Options, fallback string) string {
@@ -6372,20 +6436,23 @@ func clearUnauthorizedModelStates(auth *Auth, now time.Time) []string {
 
 // tryRefreshAfterUnauthorized refreshes OAuth credentials once after a 401 so the
 // current auth can be retried before fallback/suspend.
-func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool) (*Auth, bool) {
+func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool) (*Auth, bool, error) {
 	if m == nil || auth == nil || alreadyTried || execErr == nil {
-		return auth, false
+		return auth, false, nil
 	}
 	if !isUnauthorizedError(execErr) || !authHasRefreshCredential(auth) {
-		return auth, false
+		return auth, false, nil
 	}
 	log.Debugf("unauthorized response for %s (%s), refreshing credentials before fallback", auth.Provider, auth.ID)
 	refreshed, errRefresh := m.refreshAuthForRequest(ctx, auth.ID, authAccessToken(auth))
 	if errRefresh != nil || refreshed == nil {
 		log.Debugf("credential refresh before fallback failed for %s (%s): %v", auth.Provider, auth.ID, errRefresh)
-		return auth, false
+		if isTerminalEgressError(errRefresh) {
+			return auth, false, errRefresh
+		}
+		return auth, false, nil
 	}
-	return refreshed, true
+	return refreshed, true, nil
 }
 
 func (m *Manager) refreshAuth(ctx context.Context, id string) {

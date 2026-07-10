@@ -25,351 +25,203 @@ describe("egressApi", () => {
     putMock.mockReset();
   });
 
-  test("normalizes overview settings and counts", async () => {
+  test("normalizes the per-auth fail-closed overview", async () => {
     const { egressApi } = await import("@/lib/http/apis/egress");
     getMock.mockResolvedValue({
       enabled: true,
-      headscale: {
-        configured: true,
-        reachable: true,
-        enabled: true,
-        url: " https://headscale.internal ",
-        api_key_configured: true,
-        service_tag: "tag:clirelay-egress",
-        last_sync_at: "2026-07-10T10:00:00Z",
-      },
-      counts: {
-        nodes: "4",
-        online_nodes: 3,
-        endpoints: 5,
-        enabled_endpoints: 4,
-        bindings: 8,
-        accounts: 10,
-        routable_accounts: 7,
-        unbound_accounts: 2,
-        missing_identity_accounts: 1,
-      },
+      revision: "rev-7",
+      scope: "application_egress",
       policy: {
         binding_mode: "exclusive",
-        node_freshness_ttl_seconds: 300,
-        endpoint_check_ttl_seconds: 300,
-      },
-      revision: "rev-7",
-      readiness: {
-        scope: "application_egress",
-        verdict: "blocked",
-        ready_to_enable: false,
-        codex_oauth_allowed: false,
-        blockers: [{ code: "unbound_accounts", message: "2 accounts are unbound" }],
-        warnings: ["Headscale sync is nearing its freshness limit"],
-        not_evaluated: [],
-      },
-      local_endpoint_enabled: false,
-    });
-
-    await expect(egressApi.getOverview()).resolves.toEqual({
-      enabled: true,
-      headscale: {
-        configured: true,
-        reachable: true,
-        url: "https://headscale.internal",
-        apiKeyConfigured: true,
-        serviceTag: "tag:clirelay-egress",
-        lastSyncAt: "2026-07-10T10:00:00Z",
+        failure_mode: "fail_closed",
+        readiness_scope: "application_egress",
+        host_kill_switch_enforced: false,
       },
       counts: {
-        nodes: 4,
-        onlineNodes: 3,
-        endpoints: 5,
-        enabledEndpoints: 4,
-        bindings: 8,
-        accounts: 10,
-        routableAccounts: 7,
-        unboundAccounts: 2,
-        missingIdentityAccounts: 1,
+        endpoints: "5",
+        enabled_endpoints: 4,
+        bindings: 2,
+        codex_auths: 3,
+        bound_codex_auths: 2,
+        unbound_codex_auths: 1,
+        missing_account_id: 0,
+        bound_endpoint_not_ready: 1,
       },
+      readiness: {
+        ready: false,
+        ready_to_enable: false,
+        codex_oauth_allowed: false,
+        blockers: [{ code: "bound_endpoint_not_ready", message: "not ready" }],
+        warnings: [{ code: "runtime_disabled", message: "disabled" }],
+      },
+    });
+
+    const overview = await egressApi.getOverview();
+
+    expect(overview).toEqual({
+      enabled: true,
+      revision: "rev-7",
+      scope: "application_egress",
       policy: {
         bindingMode: "exclusive",
-        nodeFreshnessTtlSeconds: 300,
-        endpointCheckTtlSeconds: 300,
+        failureMode: "fail_closed",
+        readinessScope: "application_egress",
+        hostKillSwitchEnforced: false,
       },
-      revision: "rev-7",
+      counts: {
+        endpoints: 5,
+        enabledEndpoints: 4,
+        bindings: 2,
+        codexAuths: 3,
+        boundCodexAuths: 2,
+        unboundCodexAuths: 1,
+        missingAccountId: 0,
+        boundEndpointNotReady: 1,
+      },
       readiness: {
         scope: "application_egress",
         verdict: "blocked",
         readyToEnable: false,
         codexOAuthAllowed: false,
-        blockers: [{ code: "unbound_accounts", message: "2 accounts are unbound" }],
-        warnings: [
-          {
-            code: "Headscale sync is nearing its freshness limit",
-            message: "Headscale sync is nearing its freshness limit",
-          },
-        ],
+        blockers: [{ code: "bound_endpoint_not_ready", message: "not ready" }],
+        warnings: [{ code: "runtime_disabled", message: "disabled" }],
         notEvaluated: [],
       },
-      localEndpointEnabled: false,
     });
-    expect(getMock).toHaveBeenCalledWith("/egress/overview");
   });
 
-  test("normalizes a disabled runtime separately from prepared Headscale configuration", async () => {
+  test("normalizes standalone endpoints and runtime readiness", async () => {
     const { egressApi } = await import("@/lib/http/apis/egress");
     getMock.mockResolvedValue({
-      enabled: false,
-      headscale: {
-        configured: true,
-        reachable: true,
-        url: "https://headscale.internal",
-      },
-      counts: {},
+      items: [
+        {
+          id: "hk-socks",
+          name: "Hong Kong",
+          protocol: "SOCKS5",
+          host: "10.77.0.2",
+          port: "1080",
+          enabled: true,
+          username: "relay",
+          has_credentials: true,
+          status: "healthy",
+          latency_ms: "31",
+          observed_public_ip: "203.0.113.8",
+          expected_public_ip: "203.0.113.8",
+          eligible: true,
+          runtime_ready: true,
+          eligibility: {
+            eligible: true,
+            runtime_ready: true,
+            health_fresh: true,
+            public_ip_matches: true,
+            duplicate_public_ip: false,
+            reasons: [],
+          },
+        },
+        {
+          id: "unsupported-https",
+          name: "Unsupported HTTPS CONNECT",
+          protocol: "https",
+          host: "10.77.0.3",
+          port: 443,
+        },
+        { id: "", name: "invalid" },
+      ],
     });
 
-    await expect(egressApi.getOverview()).resolves.toMatchObject({
-      enabled: false,
-      headscale: { configured: true, reachable: true },
-    });
-  });
-
-  test("normalizes node, endpoint, and binding list payloads", async () => {
-    const { egressApi } = await import("@/lib/http/apis/egress");
-    getMock
-      .mockResolvedValueOnce({
-        items: [
-          {
-            id: "node-1",
-            name: "egress-hk",
-            given_name: "hk",
-            addresses: ["100.64.0.2"],
-            online: true,
-            fresh: true,
-            synced_at: "2026-07-10T09:59:40Z",
-            sync_age_seconds: 20,
-            tags: ["tag:clirelay-egress"],
-            last_seen: "2026-07-10T10:00:00Z",
-          },
-          { id: "", name: "invalid" },
-        ],
-      })
-      .mockResolvedValueOnce({
-        items: [
-          {
-            id: "hk-socks",
-            node_id: "node-1",
-            name: "Hong Kong",
-            protocol: "SOCKS5",
-            host: "100.64.0.2",
-            port: "1080",
-            enabled: true,
-            is_local: false,
-            status: "healthy",
-            latency_ms: "31",
-            public_ip: "203.0.113.8",
-            expected_public_ip: "203.0.113.8",
-            eligibility: {
-              state: "eligible",
-              selectable: true,
-              reason_codes: [],
-              checked_age_seconds: 12,
-              node_online: true,
-              node_stale: false,
-              binding_count: 1,
-              exclusive_owner_identity: "codex:abc",
-              duplicate_public_ip: false,
-            },
-          },
-          {
-            id: "origin-socks",
-            node_id: "",
-            name: "Origin server",
-            protocol: "socks5",
-            host: "127.0.0.1",
-            port: 1081,
-            enabled: false,
-            local_server: true,
-            status: "unknown",
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        items: [
-          {
-            identity: "codex:abc",
-            auth_id: "codex-user.json",
-            account_label: "user@example.com",
-            endpoint_id: "hk-socks",
-            endpoint_name: "Hong Kong",
-            updated_at: "2026-07-10T10:00:00Z",
-          },
-          {
-            identity: "codex:def",
-            auth_id: "codex-new.json",
-            account_label: "new@example.com",
-            endpoint_id: "",
-            bound: false,
-          },
-          {
-            identity: "",
-            auth_id: "codex-invalid.json",
-            account_label: "codex-invalid.json",
-            endpoint_id: "",
-            bound: false,
-            error: "missing account_id",
-          },
-        ],
-      });
-
-    await expect(egressApi.listNodes()).resolves.toEqual([
-      {
-        id: "node-1",
-        name: "egress-hk",
-        givenName: "hk",
-        ipAddresses: ["100.64.0.2"],
-        online: true,
-        fresh: true,
-        syncedAt: "2026-07-10T09:59:40Z",
-        syncAgeSeconds: 20,
-        tags: ["tag:clirelay-egress"],
-        lastSeen: "2026-07-10T10:00:00Z",
-      },
-    ]);
     await expect(egressApi.listEndpoints()).resolves.toEqual([
       {
         id: "hk-socks",
-        nodeId: "node-1",
         name: "Hong Kong",
         protocol: "socks5",
-        host: "100.64.0.2",
+        host: "10.77.0.2",
         port: 1080,
         enabled: true,
-        isLocal: false,
+        username: "relay",
+        hasCredentials: true,
         status: "healthy",
         latencyMs: 31,
         publicIp: "203.0.113.8",
         expectedPublicIp: "203.0.113.8",
+        eligible: true,
+        runtimeReady: true,
         eligibility: {
-          state: "eligible",
           selectable: true,
-          reasonCodes: [],
-          checkedAgeSeconds: 12,
-          nodeOnline: true,
-          nodeStale: false,
-          bindingCount: 1,
-          exclusiveOwnerIdentity: "codex:abc",
+          eligible: true,
+          runtimeReady: true,
+          healthFresh: true,
+          publicIpMatches: true,
           duplicatePublicIp: false,
-        },
-      },
-      {
-        id: "origin-socks",
-        nodeId: "",
-        name: "Origin server",
-        protocol: "socks5",
-        host: "127.0.0.1",
-        port: 1081,
-        enabled: false,
-        isLocal: true,
-        status: "unknown",
-        eligibility: {
-          state: "unknown",
-          selectable: false,
           reasonCodes: [],
-          nodeOnline: false,
-          nodeStale: false,
-          bindingCount: 0,
-          duplicatePublicIp: false,
         },
-      },
-    ]);
-    await expect(egressApi.listBindings()).resolves.toEqual([
-      {
-        identity: "codex:abc",
-        authId: "codex-user.json",
-        accountLabel: "user@example.com",
-        endpointId: "hk-socks",
-        bound: true,
-        endpointName: "Hong Kong",
-        updatedAt: "2026-07-10T10:00:00Z",
-      },
-      {
-        identity: "codex:def",
-        authId: "codex-new.json",
-        accountLabel: "new@example.com",
-        endpointId: "",
-        bound: false,
-      },
-      {
-        identity: "",
-        authId: "codex-invalid.json",
-        accountLabel: "codex-invalid.json",
-        endpointId: "",
-        bound: false,
-        error: "missing account_id",
       },
     ]);
   });
 
-  test("serializes endpoint CRUD, health check, node sync, and enrollment", async () => {
+  test("serializes standalone endpoint CRUD", async () => {
     const { egressApi } = await import("@/lib/http/apis/egress");
     postMock.mockResolvedValue({});
     patchMock.mockResolvedValue({});
     deleteMock.mockResolvedValue({});
 
-    await egressApi.syncNodes();
-    await egressApi.createEnrollment({ name: "egress-hk" });
     await egressApi.createEndpoint({
-      nodeId: "node-1",
       name: "Hong Kong",
       protocol: "socks5",
-      host: "100.64.0.2",
+      host: "10.77.0.2",
       port: 1080,
       enabled: true,
-      isLocal: false,
       expectedPublicIp: "203.0.113.8",
+      username: "relay",
+      password: "secret",
     });
-    await egressApi.updateEndpoint("hk/socks", { enabled: false });
-    await egressApi.updateEndpoint("hk/socks", { password: "" });
     await egressApi.updateEndpoint("hk/socks", { clearCredentials: true });
     await egressApi.checkEndpoint("hk/socks");
     await egressApi.deleteEndpoint("hk/socks");
 
-    expect(postMock).toHaveBeenNthCalledWith(1, "/egress/nodes/sync");
-    expect(postMock).toHaveBeenNthCalledWith(2, "/egress/enrollment", {
-      name: "egress-hk",
-    });
-    expect(postMock).toHaveBeenNthCalledWith(3, "/egress/endpoints", {
-      node_id: "node-1",
+    expect(postMock).toHaveBeenNthCalledWith(1, "/egress/endpoints", {
       name: "Hong Kong",
       protocol: "socks5",
-      host: "100.64.0.2",
+      host: "10.77.0.2",
       port: 1080,
       enabled: true,
-      local_server: false,
       expected_public_ip: "203.0.113.8",
+      username: "relay",
+      password: "secret",
     });
-    expect(patchMock).toHaveBeenNthCalledWith(1, "/egress/endpoints/hk%2Fsocks", {
-      enabled: false,
-    });
-    expect(patchMock).toHaveBeenNthCalledWith(2, "/egress/endpoints/hk%2Fsocks", {});
-    expect(patchMock).toHaveBeenNthCalledWith(3, "/egress/endpoints/hk%2Fsocks", {
+    expect(patchMock).toHaveBeenCalledWith("/egress/endpoints/hk%2Fsocks", {
       username: "",
       password: "",
     });
-    expect(postMock).toHaveBeenNthCalledWith(4, "/egress/endpoints/hk%2Fsocks/check");
+    expect(postMock).toHaveBeenNthCalledWith(2, "/egress/endpoints/hk%2Fsocks/check");
     expect(deleteMock).toHaveBeenCalledWith("/egress/endpoints/hk%2Fsocks");
   });
 
-  test("previews and atomically applies staged binding assignments", async () => {
+  test("rejects unsupported HTTPS CONNECT endpoint inputs before the request", async () => {
+    const { egressApi } = await import("@/lib/http/apis/egress");
+
+    expect(() =>
+      egressApi.createEndpoint({
+        name: "Unsupported HTTPS CONNECT",
+        protocol: "https" as never,
+        host: "10.77.0.3",
+        port: 443,
+        enabled: true,
+        expectedPublicIp: "198.51.100.46",
+      }),
+    ).toThrow("Unsupported egress protocol: https");
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  test("previews and atomically applies fixed endpoint assignments including unbind", async () => {
     const { egressApi } = await import("@/lib/http/apis/egress");
     postMock.mockResolvedValueOnce({
-      expected_revision: "rev-7",
-      change_count: 2,
-      affected_accounts: ["a@example.com", "b@example.com"],
+      revision: "rev-7",
       assignments: [
         { identity: "codex:a", endpoint_id: "" },
         { identity: "codex:b", endpoint_id: "sg" },
       ],
-      blockers: [],
-      warnings: ["Review the affected accounts"],
+      conflicts: [],
+      valid: true,
     });
     putMock.mockResolvedValueOnce({ revision: "rev-8", applied: 2 });
 
@@ -379,19 +231,13 @@ describe("egressApi", () => {
     ];
     await expect(egressApi.previewBindings(assignments)).resolves.toMatchObject({
       expectedRevision: "rev-7",
+      assignments,
       changeCount: 2,
-      affectedAccounts: ["a@example.com", "b@example.com"],
+      valid: true,
     });
-    await expect(egressApi.applyBindings(assignments, "rev-7", true)).resolves.toMatchObject({
+    await expect(egressApi.applyBindings(assignments, "rev-7", true)).resolves.toEqual({
       revision: "rev-8",
       applied: 2,
-    });
-
-    expect(postMock).toHaveBeenNthCalledWith(1, "/egress/bindings/preview", {
-      assignments: [
-        { identity: "codex:a", endpoint_id: "" },
-        { identity: "codex:b", endpoint_id: "sg" },
-      ],
     });
     expect(putMock).toHaveBeenCalledWith("/egress/bindings/batch", {
       assignments: [
@@ -403,48 +249,7 @@ describe("egressApi", () => {
     });
   });
 
-  test("treats IP mismatch and duplicate public IP as unhealthy and never selectable by fallback", async () => {
-    const { egressApi } = await import("@/lib/http/apis/egress");
-    getMock.mockResolvedValue({
-      items: [
-        {
-          id: "mismatch",
-          node_id: "node-1",
-          name: "Mismatch",
-          protocol: "socks5",
-          host: "100.64.0.2",
-          port: 1080,
-          enabled: true,
-          status: "ip_mismatch",
-          expected_public_ip: "203.0.113.8",
-          observed_public_ip: "203.0.113.9",
-          eligibility: {
-            reasons: ["public_ip_mismatch"],
-            runtime_ready: false,
-          },
-        },
-        {
-          id: "duplicate",
-          node_id: "node-1",
-          name: "Duplicate",
-          protocol: "socks5",
-          host: "100.64.0.3",
-          port: 1080,
-          enabled: true,
-          status: "duplicate_public_ip",
-          eligibility: {
-            reasons: ["duplicate_public_ip"],
-            runtime_ready: false,
-          },
-        },
-      ],
-    });
-    const endpoints = await egressApi.listEndpoints();
-    expect(endpoints.map((endpoint) => endpoint.status)).toEqual(["unhealthy", "unhealthy"]);
-    expect(endpoints.every((endpoint) => endpoint.eligibility?.selectable === false)).toBe(true);
-  });
-
-  test("previews endpoint impact before a confirmed disable or delete action", async () => {
+  test("keeps confirmed endpoint impact actions", async () => {
     const { egressApi } = await import("@/lib/http/apis/egress");
     postMock
       .mockResolvedValueOnce({
@@ -454,22 +259,19 @@ describe("egressApi", () => {
         binding_count: 2,
         binding_identities: ["codex:a", "codex:b"],
         allowed: true,
-        requires_confirmation: true,
         blockers: [],
       })
-      .mockResolvedValueOnce({ revision: "rev-8", action: "delete" });
+      .mockResolvedValueOnce({});
 
     await expect(egressApi.endpointImpact("hk/socks", "delete")).resolves.toMatchObject({
       endpointId: "hk/socks",
       action: "delete",
       expectedRevision: "rev-7",
       affectedBindings: 2,
+      blocked: false,
     });
     await egressApi.endpointAction("hk/socks", "delete", "rev-7", true);
 
-    expect(postMock).toHaveBeenNthCalledWith(1, "/egress/endpoints/hk%2Fsocks/impact", {
-      action: "delete",
-    });
     expect(postMock).toHaveBeenNthCalledWith(2, "/egress/endpoints/hk%2Fsocks/actions", {
       action: "delete",
       revision: "rev-7",

@@ -2,12 +2,81 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
+
+func TestManagerExecute_EgressRuntimeErrorStopsCredentialFallback(t *testing.T) {
+	const model = "gpt-5.3-codex"
+	m := NewManager(nil, nil, nil)
+	executor := &authFallbackExecutor{
+		id: "codex",
+		executeErrors: map[string]error{
+			"aa-bound-auth": egress.RuntimeError(egress.ErrEndpointDisabled),
+		},
+	}
+	m.RegisterExecutor(executor)
+	registerFallbackAuths(t, m, model)
+
+	_, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	var runtimeErr *egress.Error
+	if !errors.As(err, &runtimeErr) || runtimeErr.Code != "egress_disabled" {
+		t.Fatalf("Execute() error = %v, want egress_disabled", err)
+	}
+	if calls := executor.ExecuteCalls(); len(calls) != 1 || calls[0] != "aa-bound-auth" {
+		t.Fatalf("Execute() calls = %v, want only bound auth", calls)
+	}
+}
+
+func TestManagerExecuteStream_EgressRuntimeErrorStopsCredentialFallback(t *testing.T) {
+	const model = "gpt-5.3-codex"
+	m := NewManager(nil, nil, nil)
+	executor := &authFallbackExecutor{
+		id: "codex",
+		streamFirstErrors: map[string]error{
+			"aa-bound-auth": egress.RuntimeError(egress.ErrEndpointDisabled),
+		},
+	}
+	m.RegisterExecutor(executor)
+	registerFallbackAuths(t, m, model)
+
+	result, err := m.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	chunk, ok := <-result.Chunks
+	if !ok {
+		t.Fatal("ExecuteStream() closed before error chunk")
+	}
+	var runtimeErr *egress.Error
+	if !errors.As(chunk.Err, &runtimeErr) || runtimeErr.Code != "egress_disabled" {
+		t.Fatalf("stream error = %v, want egress_disabled", chunk.Err)
+	}
+	if calls := executor.StreamCalls(); len(calls) != 1 || calls[0] != "aa-bound-auth" {
+		t.Fatalf("ExecuteStream() calls = %v, want only bound auth", calls)
+	}
+}
+
+func registerFallbackAuths(t *testing.T, manager *Manager, model string) {
+	t.Helper()
+	badAuth := &Auth{ID: "aa-bound-auth", Provider: "codex", Status: StatusActive}
+	goodAuth := &Auth{ID: "bb-other-auth", Provider: "codex", Status: StatusActive}
+	for _, auth := range []*Auth{badAuth, goodAuth} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+	}
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(badAuth.ID)
+		registry.GetGlobalRegistry().UnregisterClient(goodAuth.ID)
+	})
+}
 
 type emptyThenPayloadStreamExecutor struct {
 	id      string

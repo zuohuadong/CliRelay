@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type {
   EgressEndpoint,
   EgressEndpointInput,
-  EgressNode,
   EgressProtocol,
 } from "@/lib/http/apis/egress";
 import { Button } from "@/modules/ui/Button";
@@ -13,13 +12,11 @@ import { Select } from "@/modules/ui/Select";
 import { ToggleSwitch } from "@/modules/ui/ToggleSwitch";
 
 interface EndpointDraft {
-  nodeId: string;
   name: string;
   protocol: EgressProtocol;
   host: string;
   port: string;
   enabled: boolean;
-  isLocal: boolean;
   expectedPublicIp: string;
   username: string;
   password: string;
@@ -72,13 +69,11 @@ const isValidIPv6 = (value: string): boolean => {
 const isValidIPAddress = (value: string): boolean => isValidIPv4(value) || isValidIPv6(value);
 
 const emptyDraft = (): EndpointDraft => ({
-  nodeId: "",
   name: "",
   protocol: "socks5",
   host: "",
   port: "1080",
   enabled: true,
-  isLocal: false,
   expectedPublicIp: "",
   username: "",
   password: "",
@@ -86,13 +81,11 @@ const emptyDraft = (): EndpointDraft => ({
 });
 
 const endpointDraft = (endpoint: EgressEndpoint): EndpointDraft => ({
-  nodeId: endpoint.nodeId,
   name: endpoint.name,
   protocol: endpoint.protocol,
   host: endpoint.host,
   port: String(endpoint.port),
   enabled: endpoint.enabled,
-  isLocal: endpoint.isLocal,
   expectedPublicIp: endpoint.expectedPublicIp ?? "",
   username: endpoint.username ?? "",
   password: "",
@@ -102,17 +95,13 @@ const endpointDraft = (endpoint: EgressEndpoint): EndpointDraft => ({
 export function EndpointModal({
   open,
   endpoint,
-  nodes,
   saving,
-  localEndpointEnabled,
   onClose,
   onSave,
 }: {
   open: boolean;
   endpoint: EgressEndpoint | null;
-  nodes: EgressNode[];
   saving: boolean;
-  localEndpointEnabled: boolean;
   onClose: () => void;
   onSave: (input: EgressEndpointInput) => void;
 }) {
@@ -126,23 +115,10 @@ export function EndpointModal({
     setError("");
   }, [endpoint, open]);
 
-  const nodeOptions = useMemo(
-    () =>
-      nodes.map((node) => ({
-        value: node.id,
-        label: `${node.name}${node.ipAddresses[0] ? ` · ${node.ipAddresses[0]}` : ""}`,
-      })),
-    [nodes],
-  );
-
   const save = () => {
     const port = Number(draft.port);
     if (!draft.name.trim() || !draft.host.trim() || port < 1 || port > 65535) {
       setError(t("egress.endpoints.validation_required"));
-      return;
-    }
-    if (!draft.isLocal && !draft.nodeId) {
-      setError(t("egress.endpoints.validation_node"));
       return;
     }
     const expectedPublicIp = draft.expectedPublicIp.trim();
@@ -155,13 +131,11 @@ export function EndpointModal({
       return;
     }
     onSave({
-      nodeId: draft.isLocal ? "" : draft.nodeId,
       name: draft.name.trim(),
       protocol: draft.protocol,
       host: draft.host.trim(),
       port,
       enabled: draft.enabled,
-      isLocal: draft.isLocal,
       expectedPublicIp,
       ...(draft.clearCredentials
         ? { clearCredentials: true }
@@ -185,11 +159,7 @@ export function EndpointModal({
           <Button variant="secondary" onClick={onClose} disabled={saving}>
             {t("common.cancel")}
           </Button>
-          <Button
-            variant="primary"
-            onClick={save}
-            disabled={saving || (draft.isLocal && !localEndpointEnabled)}
-          >
+          <Button variant="primary" onClick={save} disabled={saving}>
             {t("egress.endpoints.save")}
           </Button>
         </>
@@ -214,43 +184,10 @@ export function EndpointModal({
             options={[
               { value: "socks5", label: "SOCKS5" },
               { value: "http", label: "HTTP CONNECT" },
-              { value: "https", label: "HTTPS CONNECT" },
             ]}
             aria-label={t("egress.endpoints.protocol")}
           />
         </label>
-        <div className="sm:col-span-2 rounded-xl border border-slate-200 p-3 dark:border-neutral-800">
-          <ToggleSwitch
-            checked={draft.isLocal}
-            onCheckedChange={(isLocal) =>
-              setDraft((current) => ({
-                ...current,
-                isLocal,
-                enabled: isLocal ? false : current.enabled,
-                nodeId: isLocal ? "" : current.nodeId,
-              }))
-            }
-            label={t("egress.endpoints.local_server")}
-            description={t(
-              localEndpointEnabled
-                ? "egress.endpoints.local_server_hint"
-                : "egress.local_server_disabled_hint",
-            )}
-            disabled={!localEndpointEnabled}
-          />
-        </div>
-        {!draft.isLocal ? (
-          <label className="space-y-2 text-xs font-semibold text-slate-700 dark:text-white/75 sm:col-span-2">
-            <span>{t("egress.endpoints.node")}</span>
-            <Select
-              value={draft.nodeId}
-              onChange={(value) => setDraft((current) => ({ ...current, nodeId: value }))}
-              options={nodeOptions}
-              placeholder={t("egress.endpoints.select_node")}
-              aria-label={t("egress.endpoints.node")}
-            />
-          </label>
-        ) : null}
         <label className="space-y-2 text-xs font-semibold text-slate-700 dark:text-white/75">
           <span>{t("egress.endpoints.host")}</span>
           <TextInput
@@ -336,11 +273,7 @@ export function EndpointModal({
             checked={draft.enabled}
             onCheckedChange={(enabled) => setDraft((current) => ({ ...current, enabled }))}
             label={t("egress.endpoints.enabled")}
-            description={
-              draft.isLocal
-                ? t("egress.endpoints.local_enable_hint")
-                : t("egress.endpoints.enabled_hint")
-            }
+            description={t("egress.endpoints.enabled_hint")}
           />
         </div>
       </div>

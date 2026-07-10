@@ -1,5 +1,7 @@
 import type { ComponentProps } from "react";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { HashRouter } from "react-router-dom";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { AuthFileDetailModal } from "@/modules/auth-files/components/AuthFileDetailModal";
 import i18n from "@/i18n";
@@ -108,6 +110,65 @@ const renderDetailModal = (overrides: Partial<DetailModalProps> = {}) => {
       endpointName: "Primary egress",
       bound: true,
     },
+    egressEndpoints: [
+      {
+        id: "primary",
+        name: "Primary egress",
+        protocol: "socks5",
+        host: "10.77.0.2",
+        port: 1080,
+        enabled: true,
+        status: "healthy",
+        latencyMs: 32,
+        publicIp: "203.0.113.8",
+        expectedPublicIp: "203.0.113.8",
+        eligible: true,
+        runtimeReady: true,
+        eligibility: {
+          selectable: true,
+          eligible: true,
+          runtimeReady: true,
+          healthFresh: true,
+          publicIpMatches: true,
+          duplicatePublicIp: false,
+          reasonCodes: [],
+        },
+      },
+      {
+        id: "secondary",
+        name: "Secondary egress",
+        protocol: "socks5",
+        host: "10.77.0.3",
+        port: 1080,
+        enabled: true,
+        status: "healthy",
+        latencyMs: 48,
+        publicIp: "203.0.113.9",
+        expectedPublicIp: "203.0.113.9",
+        eligible: true,
+        runtimeReady: true,
+        eligibility: {
+          selectable: true,
+          eligible: true,
+          runtimeReady: true,
+          healthFresh: true,
+          publicIpMatches: true,
+          duplicatePublicIp: false,
+          reasonCodes: [],
+        },
+      },
+    ],
+    egressBindingSaving: false,
+    previewEgressBinding: vi.fn(async (assignment) => ({
+      expectedRevision: "rev-2",
+      assignments: [assignment],
+      changeCount: 1,
+      affectedAccounts: ["Codex Primary"],
+      blockers: [],
+      warnings: [],
+      valid: true,
+    })),
+    applyEgressBinding: vi.fn(async () => undefined),
     channelEditor: {
       open: true,
       fileName: "codex.json",
@@ -120,13 +181,18 @@ const renderDetailModal = (overrides: Partial<DetailModalProps> = {}) => {
     ...overrides,
   };
 
-  render(<AuthFileDetailModal {...props} />);
+  render(
+    <HashRouter>
+      <AuthFileDetailModal {...props} />
+    </HashRouter>,
+  );
   return props;
 };
 
 describe("AuthFileDetailModal", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("en");
+    window.location.hash = "#/auth-files";
     window.localStorage.clear();
     chartOptions.length = 0;
   });
@@ -225,7 +291,7 @@ describe("AuthFileDetailModal", () => {
     expect(screen.queryByText(/owned_by:/)).not.toBeInTheDocument();
   });
 
-  test("keeps field editing controls without showing JSON in the modal", () => {
+  test("keeps field editing controls and exposes an actionable fixed-egress selector", () => {
     renderDetailModal({ detailTab: "fields" });
 
     const body = screen.getByTestId("auth-file-detail-body");
@@ -237,14 +303,7 @@ describe("AuthFileDetailModal", () => {
     expect(grid.className).not.toMatch(/\bborder\b/);
     expect(grid.className).not.toContain("divide-y");
     expect(within(grid).getByPlaceholderText("e.g. team-a")).toHaveValue("team-a");
-    expect(within(grid).getByText("Primary egress")).toBeInTheDocument();
-    expect(within(grid).getByRole("link", { name: "Manage in Egress Bindings" })).toHaveAttribute(
-      "href",
-      "/egress",
-    );
-    expect(
-      within(grid).queryByRole("combobox", { name: "Codex egress endpoint" }),
-    ).not.toBeInTheDocument();
+    expect(within(grid).getByRole("combobox", { name: "Fixed egress endpoint" })).toBeInTheDocument();
     expect(
       within(grid).queryByPlaceholderText("e.g. http://127.0.0.1:7890"),
     ).not.toBeInTheDocument();
@@ -252,6 +311,64 @@ describe("AuthFileDetailModal", () => {
     expect(screen.queryByTestId("auth-file-fields-preview")).not.toBeInTheDocument();
     expect(screen.queryByText(/"prefix"/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  test("routes egress management through HashRouter", async () => {
+    const user = userEvent.setup();
+    renderDetailModal({ detailTab: "fields" });
+
+    const link = screen.getByRole("link", { name: "Manage in Egress Bindings" });
+    expect(link).toHaveAttribute("href", "#/egress");
+    await user.click(link);
+    await waitFor(() => expect(window.location.hash).toBe("#/egress"));
+  });
+
+  test("previews and applies a fixed endpoint change, including explicit unbind", async () => {
+    const user = userEvent.setup();
+    const previewEgressBinding = vi.fn(async (assignment) => ({
+      expectedRevision: "rev-2",
+      assignments: [assignment],
+      changeCount: 1,
+      affectedAccounts: ["Codex Primary"],
+      blockers: [],
+      warnings: [],
+      valid: true,
+    }));
+    const applyEgressBinding = vi.fn(async () => undefined);
+    renderDetailModal({
+      detailTab: "fields",
+      previewEgressBinding,
+      applyEgressBinding,
+    });
+
+    await user.click(screen.getByRole("combobox", { name: "Fixed egress endpoint" }));
+    await user.click(await screen.findByRole("option", { name: /Secondary egress.*203\.0\.113\.9/i }));
+    await user.click(screen.getByRole("button", { name: "Preview egress change" }));
+    await waitFor(() =>
+      expect(previewEgressBinding).toHaveBeenCalledWith({
+        identity: "codex:abc",
+        endpointId: "secondary",
+      }),
+    );
+
+    const confirm = await screen.findByRole("dialog", { name: "Apply fixed egress change" });
+    await user.click(within(confirm).getByRole("button", { name: "Apply binding" }));
+    await waitFor(() =>
+      expect(applyEgressBinding).toHaveBeenCalledWith(
+        [{ identity: "codex:abc", endpointId: "secondary" }],
+        "rev-2",
+      ),
+    );
+
+    await user.click(screen.getByRole("combobox", { name: "Fixed egress endpoint" }));
+    await user.click(await screen.findByRole("option", { name: "No endpoint" }));
+    await user.click(screen.getByRole("button", { name: "Preview egress change" }));
+    await waitFor(() =>
+      expect(previewEgressBinding).toHaveBeenLastCalledWith({
+        identity: "codex:abc",
+        endpointId: "",
+      }),
+    );
   });
 
   test("keeps the OAuth channel rename action available in fields", () => {

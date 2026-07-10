@@ -54,16 +54,16 @@ func TestBuilderWithoutEgressConfigurationDoesNotCreateOrLockStore(t *testing.T)
 	}
 }
 
-func TestBuilderPreparationModeWithHeadscaleInitializesEgressStore(t *testing.T) {
+func TestBuilderDisabledEgressIgnoresHealthConfiguration(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	cfg := &config.Config{}
-	cfg.EgressNetwork.Headscale.URL = "https://headscale.example.test"
+	cfg.EgressNetwork.EndpointCheckInterval = "30s"
+	cfg.EgressNetwork.EndpointHealthTTL = "1m"
 	service, err := NewBuilder().WithConfig(cfg).WithConfigPath(configPath).Build()
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	if service.egressService == nil {
-		t.Fatal("preparation mode with Headscale URL did not initialize egress service")
+	if service.egressService != nil {
+		t.Fatal("disabled egress initialized a store from health-only configuration")
 	}
-	t.Cleanup(func() { _ = service.egressService.Close() })
 }

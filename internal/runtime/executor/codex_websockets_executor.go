@@ -374,6 +374,10 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		if respHS != nil {
 			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
 		}
+		if isCodexEgressRuntimeError(errDial) {
+			helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
+			return resp, errDial
+		}
 		if respHS != nil && codexWebsocketShouldFallbackToHTTP(respHS.StatusCode) {
 			log.Infof("codex websockets executor: falling back to HTTP transport after websocket upgrade failure (status=%d url=%s)", respHS.StatusCode, wsURL)
 			return e.CodexExecutor.Execute(ctx, auth, req, opts)
@@ -407,7 +411,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		defer sess.clearActive(readCh)
 	}
 
-	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
+	if errSend := e.writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
 		if sess != nil {
 			e.invalidateUpstreamConn(sess, conn, "send_error", errSend)
 
@@ -431,7 +435,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				})
 				recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
 				reporter.StartResponseTTFT()
-				if errSendRetry := writeCodexWebsocketMessage(sess, connRetry, wsReqBodyRetry); errSendRetry == nil {
+				if errSendRetry := e.writeCodexWebsocketMessage(sess, connRetry, wsReqBodyRetry); errSendRetry == nil {
 					conn = connRetry
 					wsReqBody = wsReqBodyRetry
 				} else {
@@ -456,7 +460,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}
 		msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
 		if errRead != nil {
-			mappedErr := mapCodexWebsocketReadError(errRead)
+			mappedErr := e.mapWebsocketReadError(errRead)
 			helps.RecordAPIWebsocketError(ctx, e.cfg, "read", mappedErr)
 			return resp, mappedErr
 		}
@@ -612,6 +616,13 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		if respHS != nil {
 			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
 		}
+		if isCodexEgressRuntimeError(errDial) {
+			helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
+			if sess != nil {
+				sess.reqMu.Unlock()
+			}
+			return nil, errDial
+		}
 		if respHS != nil && codexWebsocketShouldFallbackToHTTP(respHS.StatusCode) {
 			log.Infof("codex websockets executor: falling back to HTTP transport after websocket upgrade failure (status=%d url=%s)", respHS.StatusCode, wsURL)
 			if sess != nil {
@@ -644,7 +655,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		sess.setActiveForConn(conn, readCh)
 	}
 
-	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
+	if errSend := e.writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
 		if sess != nil {
 			e.invalidateUpstreamConn(sess, conn, "send_error", errSend)
@@ -673,7 +684,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			})
 			recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
 			reporter.StartResponseTTFT()
-			if errSendRetry := writeCodexWebsocketMessage(sess, connRetry, wsReqBodyRetry); errSendRetry != nil {
+			if errSendRetry := e.writeCodexWebsocketMessage(sess, connRetry, wsReqBodyRetry); errSendRetry != nil {
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
 				e.invalidateUpstreamConn(sess, connRetry, "send_error", errSendRetry)
 				sess.clearActive(readCh)
@@ -738,7 +749,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					_ = send(cliproxyexecutor.StreamChunk{Err: ctx.Err()})
 					return
 				}
-				mappedErr := mapCodexWebsocketReadError(errRead)
+				mappedErr := e.mapWebsocketReadError(errRead)
 				terminateReason = "read_error"
 				terminateErr = mappedErr
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "read", mappedErr)
@@ -842,6 +853,12 @@ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *
 		ctx = context.Background()
 	}
 	conn, resp, err := dialer.DialContext(ctx, wsURL, headers)
+	// Gorilla returns a nil response for transport and HTTP CONNECT proxy
+	// failures. A non-nil response is the real upstream WebSocket handshake and
+	// must keep its upstream semantics instead of being mislabeled as egress.
+	if e != nil && e.strictEgress && err != nil && resp == nil {
+		err = e.wrapStrictEgressTransportError(err, "websocket proxy dial")
+	}
 	if conn != nil {
 		// Avoid gorilla/websocket flate tail validation issues on some upstreams/Go versions.
 		// Negotiating permessage-deflate is fine; we just don't compress outbound messages.
@@ -882,7 +899,7 @@ func newStrictProxyWebsocketDialer(proxyURL string) (*websocket.Dialer, error) {
 		dialer.NetDialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
 			return socksDialer.Dial(network, addr)
 		}
-	case "http", "https":
+	case "http":
 		dialer.Proxy = http.ProxyURL(setting.URL)
 	default:
 		return nil, fmt.Errorf("%w: unsupported websocket proxy scheme %s", egress.ErrEndpointInvalid, setting.URL.Scheme)
@@ -898,6 +915,19 @@ func writeCodexWebsocketMessage(sess *codexWebsocketSession, conn *websocket.Con
 		return fmt.Errorf("codex websockets executor: websocket conn is nil")
 	}
 	return conn.WriteMessage(websocket.TextMessage, payload)
+}
+
+func (e *CodexWebsocketsExecutor) writeCodexWebsocketMessage(sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
+	err := writeCodexWebsocketMessage(sess, conn, payload)
+	if e == nil || e.CodexExecutor == nil {
+		return err
+	}
+	return e.wrapStrictEgressTransportError(err, "websocket send")
+}
+
+func isCodexEgressRuntimeError(err error) bool {
+	var runtimeErr *egress.Error
+	return errors.As(err, &runtimeErr)
 }
 
 func mapCodexWebsocketReadError(err error) error {
@@ -916,6 +946,22 @@ func mapCodexWebsocketReadError(err error) error {
 		return statusErr{code: http.StatusRequestTimeout, msg: `{"error":{"message":"stream closed before response.completed","type":"server_error","code":"upstream_disconnected"}}`}
 	}
 	return err
+}
+
+func (e *CodexWebsocketsExecutor) mapWebsocketReadError(err error) error {
+	mapped := mapCodexWebsocketReadError(err)
+	if e == nil || !e.strictEgress || err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return mapped
+	}
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) && closeErr.Code == websocket.CloseMessageTooBig {
+		return mapped
+	}
+	transportErr := err
+	if errors.Is(err, io.EOF) {
+		transportErr = io.ErrUnexpectedEOF
+	}
+	return e.wrapStrictEgressTransportError(transportErr, "websocket read")
 }
 
 // isCodexWebsocketDirtyDisconnect reports whether err represents an upstream

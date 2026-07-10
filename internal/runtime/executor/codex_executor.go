@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -263,10 +264,11 @@ func codexErrorTextIndicatesContextLength(text string) bool {
 // CodexExecutor is a stateless executor for Codex (OpenAI Responses API entrypoint).
 // If api_key is unavailable on auth, it falls back to legacy via ClientAdapter.
 type CodexExecutor struct {
-	cfg          *config.Config
-	egress       egress.Resolver
-	strictEgress bool
-	homeRefresh  func(context.Context, *config.Config, *cliproxyauth.Auth) (*cliproxyauth.Auth, bool, error)
+	cfg           *config.Config
+	egress        egress.Resolver
+	strictEgress  bool
+	homeRefresh   func(context.Context, *config.Config, *cliproxyauth.Auth) (*cliproxyauth.Auth, bool, error)
+	refreshTokens func(context.Context, *http.Client, string) (*codexauth.CodexTokenData, error)
 }
 
 func NewCodexExecutor(cfg *config.Config) *CodexExecutor { return &CodexExecutor{cfg: cfg} }
@@ -288,6 +290,13 @@ func (e *CodexExecutor) refreshViaHome(ctx context.Context, auth *cliproxyauth.A
 	return helps.RefreshAuthViaHome(ctx, cfg, auth)
 }
 
+func (e *CodexExecutor) refreshCodexTokens(ctx context.Context, client *http.Client, refreshToken string) (*codexauth.CodexTokenData, error) {
+	if e != nil && e.refreshTokens != nil {
+		return e.refreshTokens(ctx, client, refreshToken)
+	}
+	return codexauth.NewCodexAuthWithHTTPClient(client).RefreshTokensWithRetry(ctx, refreshToken, 3)
+}
+
 func (e *CodexExecutor) outboundHTTPClient(ctx context.Context, auth *cliproxyauth.Auth, timeout, responseHeaderTimeout time.Duration, useUTLS bool) (*http.Client, error) {
 	if e != nil && e.strictEgress {
 		proxyURL := ""
@@ -306,12 +315,66 @@ func (e *CodexExecutor) outboundHTTPClient(ctx context.Context, auth *cliproxyau
 		if err != nil {
 			return nil, egress.RuntimeError(fmt.Errorf("%w: %v", egress.ErrEndpointInvalid, err))
 		}
+		if client == nil || client.Transport == nil {
+			return nil, egress.RuntimeError(fmt.Errorf("%w: strict proxy transport is unavailable", egress.ErrEndpointInvalid))
+		}
+		client.Transport = strictEgressRoundTripper{base: client.Transport}
 		return client, nil
 	}
 	if useUTLS {
 		return helps.NewUtlsHTTPClient(ctx, e.cfg, auth, timeout), nil
 	}
 	return helps.NewProxyAwareHTTPClientWithResponseHeaderTimeout(ctx, e.cfg, auth, timeout, responseHeaderTimeout), nil
+}
+
+type strictEgressRoundTripper struct {
+	base http.RoundTripper
+}
+
+func (t strictEgressRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return resp, wrapStrictEgressTransportError(err, "proxy request")
+	}
+	if resp != nil && resp.Body != nil {
+		resp.Body = strictEgressReadCloser{ReadCloser: resp.Body}
+	}
+	return resp, nil
+}
+
+type strictEgressReadCloser struct {
+	io.ReadCloser
+}
+
+func (r strictEgressReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	return n, wrapStrictEgressTransportError(err, "proxy response read")
+}
+
+func wrapStrictEgressTransportError(err error, operation string) error {
+	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var runtimeErr *egress.Error
+	if errors.As(err, &runtimeErr) {
+		return err
+	}
+	var statusError interface{ StatusCode() int }
+	if errors.As(err, &statusError) && statusError.StatusCode() > 0 {
+		return err
+	}
+	operation = strings.TrimSpace(operation)
+	if operation == "" {
+		operation = "transport"
+	}
+	return egress.RuntimeError(fmt.Errorf("%w: strict egress %s failed: %v", egress.ErrEndpointDisabled, operation, err))
+}
+
+func (e *CodexExecutor) wrapStrictEgressTransportError(err error, operation string) error {
+	if e == nil || !e.strictEgress {
+		return err
+	}
+	return wrapStrictEgressTransportError(err, operation)
 }
 
 func (e *CodexExecutor) resolveEgressAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
@@ -1478,7 +1541,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 		close(streamDone)
 		if idleTimedOut.Load() {
-			idleErr := statusErr{code: http.StatusRequestTimeout, msg: `{"error":{"message":"upstream stream idle timeout","type":"server_error","code":"stream_idle_timeout"}}`}
+			var idleErr error = statusErr{code: http.StatusRequestTimeout, msg: `{"error":{"message":"upstream stream idle timeout","type":"server_error","code":"stream_idle_timeout"}}`}
+			if e != nil && e.strictEgress && !emittedPayload {
+				idleErr = wrapStrictEgressTransportError(errors.New("upstream stream idle timeout"), "stream idle timeout")
+			}
 			helps.RecordAPIResponseError(ctx, e.cfg, idleErr)
 			reporter.PublishFailure(ctx, idleErr)
 			select {
@@ -1488,6 +1554,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			return
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			errScan = e.wrapStrictEgressTransportError(errScan, "stream read")
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			select {
@@ -1681,14 +1748,22 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	if refreshToken == "" {
 		return auth, nil
 	}
+	boundAccountID := ""
+	if auth.Metadata != nil {
+		boundAccountID, _ = auth.Metadata["account_id"].(string)
+		boundAccountID = strings.TrimSpace(boundAccountID)
+	}
 	httpClient, err := e.outboundHTTPClient(ctx, auth, 0, 0, false)
 	if err != nil {
 		return nil, err
 	}
-	svc := codexauth.NewCodexAuthWithHTTPClient(httpClient)
-	td, err := svc.RefreshTokensWithRetry(ctx, refreshToken, 3)
+	td, err := e.refreshCodexTokens(ctx, httpClient, refreshToken)
 	if err != nil {
 		return nil, err
+	}
+	refreshedAccountID := strings.TrimSpace(td.AccountID)
+	if e != nil && e.strictEgress && boundAccountID != "" && refreshedAccountID != "" && refreshedAccountID != boundAccountID {
+		return nil, egress.RuntimeError(fmt.Errorf("%w: refreshed Codex account_id does not match the bound identity", egress.ErrIdentityMismatch))
 	}
 	if auth.Metadata == nil {
 		auth.Metadata = make(map[string]any)

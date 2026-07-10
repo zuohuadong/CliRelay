@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/contextretrieval"
+	internalegress "github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -1762,6 +1763,10 @@ func statusFromError(err error) int {
 }
 
 func streamBootstrapRetryEligible(err error) bool {
+	var egressErr *internalegress.Error
+	if errors.As(err, &egressErr) {
+		return false
+	}
 	status := statusFromError(err)
 	if status == 0 {
 		return true

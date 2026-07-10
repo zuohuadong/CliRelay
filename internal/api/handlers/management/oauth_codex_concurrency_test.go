@@ -67,16 +67,13 @@ func TestRequestCodexTokenCompletionKeepsConcurrentSessionPending(t *testing.T) 
 	defer proxyServer.Close()
 	host, portText, _ := net.SplitHostPort(strings.TrimPrefix(proxyServer.URL, "http://"))
 	port, _ := strconv.Atoi(portText)
-	cfg := &config.Config{AuthDir: authDir, EgressNetwork: config.EgressNetworkConfig{Enabled: true, Headscale: config.HeadscaleConfig{ServiceTag: config.DefaultEgressServiceTag}}}
+	cfg := &config.Config{AuthDir: authDir, EgressNetwork: config.EgressNetworkConfig{Enabled: true}}
 	service, err := egress.NewService(cfg, filepath.Join(tempDir, "usage.db"))
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
 	defer service.Close()
-	if err = service.Store().UpsertNodes(context.Background(), []egress.Node{{ID: "17", Name: "test", Addresses: []string{host}, Online: true, Tags: []string{config.DefaultEgressServiceTag}}}, time.Now()); err != nil {
-		t.Fatalf("UpsertNodes() error = %v", err)
-	}
-	endpoint, err := service.CreateEndpoint(context.Background(), egress.Endpoint{Name: "test", NodeID: "17", Protocol: egress.ProtocolHTTP, Host: host, Port: port, Enabled: true, ExpectedPublicIP: "198.51.100.17"})
+	endpoint, err := service.CreateEndpoint(context.Background(), egress.Endpoint{Name: "test", Protocol: egress.ProtocolHTTP, Host: host, Port: port, Enabled: true, ExpectedPublicIP: "198.51.100.17"})
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error = %v", err)
 	}
@@ -88,7 +85,7 @@ func TestRequestCodexTokenCompletionKeepsConcurrentSessionPending(t *testing.T) 
 	handler.SetEgressService(service)
 	router := gin.New()
 	router.GET("/codex-auth-url", handler.RequestCodexToken)
-	secondEndpoint, err := service.CreateEndpoint(context.Background(), egress.Endpoint{Name: "test-2", NodeID: "17", Protocol: egress.ProtocolHTTP, Host: host, Port: port, Enabled: true, ExpectedPublicIP: "198.51.100.18"})
+	secondEndpoint, err := service.CreateEndpoint(context.Background(), egress.Endpoint{Name: "test-2", Protocol: egress.ProtocolHTTP, Host: host, Port: port, Enabled: true, ExpectedPublicIP: "198.51.100.18"})
 	if err != nil {
 		t.Fatalf("CreateEndpoint(second) error = %v", err)
 	}

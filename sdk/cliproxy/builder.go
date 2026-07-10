@@ -313,8 +313,7 @@ func egressNetworkConfigured(cfg *config.Config) bool {
 	if cfg == nil {
 		return false
 	}
-	egressCfg := cfg.EgressNetwork
-	return egressCfg.Enabled || egressCfg.LocalEndpointEnabled || strings.TrimSpace(egressCfg.Headscale.URL) != ""
+	return cfg.EgressNetwork.Enabled
 }
 
 func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {

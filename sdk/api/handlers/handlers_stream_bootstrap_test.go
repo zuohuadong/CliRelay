@@ -10,6 +10,7 @@ import (
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	internalegress "github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -20,6 +21,50 @@ import (
 type failOnceStreamExecutor struct {
 	mu    sync.Mutex
 	calls int
+}
+
+type terminalEgressStreamExecutor struct {
+	mu      sync.Mutex
+	calls   int
+	asChunk bool
+}
+
+func (e *terminalEgressStreamExecutor) Identifier() string { return "codex" }
+
+func (e *terminalEgressStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, internalegress.RuntimeError(internalegress.ErrEndpointDisabled)
+}
+
+func (e *terminalEgressStreamExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.mu.Lock()
+	e.calls++
+	e.mu.Unlock()
+	err := internalegress.RuntimeError(internalegress.ErrEndpointDisabled)
+	if !e.asChunk {
+		return nil, err
+	}
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	chunks <- coreexecutor.StreamChunk{Err: err}
+	close(chunks)
+	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *terminalEgressStreamExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *terminalEgressStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, internalegress.RuntimeError(internalegress.ErrEndpointDisabled)
+}
+
+func (e *terminalEgressStreamExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, internalegress.RuntimeError(internalegress.ErrEndpointDisabled)
+}
+
+func (e *terminalEgressStreamExecutor) Calls() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
 }
 
 func (e *failOnceStreamExecutor) Identifier() string { return "codex" }
@@ -1006,6 +1051,48 @@ func TestExecuteStreamWithAuthManager_RetriesBeforeFirstByte(t *testing.T) {
 	upstreamAttemptHeader := upstreamHeaders.Get("X-Upstream-Attempt")
 	if upstreamAttemptHeader != "2" {
 		t.Fatalf("expected upstream header from retry attempt, got %q", upstreamAttemptHeader)
+	}
+}
+
+func TestExecuteStreamWithAuthManager_DoesNotReplayTerminalEgressFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		asChunk bool
+	}{
+		{name: "initial execute stream error"},
+		{name: "bootstrap chunk error", asChunk: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			executor := &terminalEgressStreamExecutor{asChunk: tc.asChunk}
+			manager := coreauth.NewManager(nil, nil, nil)
+			manager.RegisterExecutor(executor)
+			auth := &coreauth.Auth{ID: "egress-auth", Provider: "codex", Status: coreauth.StatusActive}
+			if _, err := manager.Register(context.Background(), auth); err != nil {
+				t.Fatal(err)
+			}
+			registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-egress-model"}})
+			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+
+			handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 1}}, manager)
+			dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-egress-model", []byte(`{"model":"test-egress-model"}`), "")
+			if dataChan != nil {
+				for range dataChan {
+				}
+			}
+			var gotErr error
+			for msg := range errChan {
+				if msg != nil {
+					gotErr = msg.Error
+				}
+			}
+			var runtimeErr *internalegress.Error
+			if !errors.As(gotErr, &runtimeErr) {
+				t.Fatalf("error = %v, want terminal egress error", gotErr)
+			}
+			if calls := executor.Calls(); calls != 1 {
+				t.Fatalf("ExecuteStream calls = %d, want no replay", calls)
+			}
+		})
 	}
 }
 

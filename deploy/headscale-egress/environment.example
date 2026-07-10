@@ -1,3 +1,0 @@
-# Install as /etc/clirelay-codex/environment, owned by root:root with mode 0600.
-# Do not place this file in the application data directory or commit the rendered copy.
-CLIRELAY_HEADSCALE_API_KEY=__REPLACE_WITH_HEADSCALE_API_KEY__

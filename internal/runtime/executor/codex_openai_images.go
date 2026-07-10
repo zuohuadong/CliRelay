@@ -311,6 +311,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			errScan = e.wrapStrictEgressTransportError(errScan, "image stream read")
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			sendError(errScan)

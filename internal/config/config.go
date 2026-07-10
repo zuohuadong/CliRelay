@@ -160,7 +160,7 @@ type Config struct {
 	// MCPProxy exposes configured MCP upstream servers through the authenticated /mcp gateway.
 	MCPProxy MCPProxyConfig `yaml:"mcp-proxy,omitempty" json:"mcp-proxy,omitempty"`
 
-	// EgressNetwork configures Headscale-managed, per-Codex-OAuth outbound endpoints.
+	// EgressNetwork configures fail-closed, per-Codex-OAuth outbound endpoints.
 	EgressNetwork EgressNetworkConfig `yaml:"egress-network,omitempty" json:"egress-network,omitempty"`
 
 	// BigModelCodingAPIKey defines Zhipu Coding Plan API key configurations.

@@ -4,39 +4,77 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestStoreMigratesAndPersistsNodeEndpointBinding(t *testing.T) {
+func TestStoreCreatesEndpointBindingOnlySchema(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	store, err := OpenStore(filepath.Join(t.TempDir(), "data", "usage.db"))
+	store, err := OpenStore(filepath.Join(t.TempDir(), "egress.db"))
 	if err != nil {
 		t.Fatalf("OpenStore() error = %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	now := time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC)
-	node := Node{
-		ID:        "17",
-		Name:      "sg-01",
-		Addresses: []string{"100.64.0.17", "fd7a:115c:a1e0::17"},
-		Online:    true,
-		LastSeen:  now,
-		Tags:      []string{"tag:clirelay-egress"},
+	for _, table := range []string{"egress_nodes", "egress_state"} {
+		var count int
+		if err = store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil {
+			t.Fatalf("query table %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("legacy table %s must not exist", table)
+		}
 	}
-	if err = store.UpsertNodes(ctx, []Node{node}, now); err != nil {
-		t.Fatalf("UpsertNodes() error = %v", err)
+
+	rows, err := store.DB().QueryContext(ctx, `PRAGMA table_info(egress_endpoints)`)
+	if err != nil {
+		t.Fatalf("query endpoint columns: %v", err)
 	}
+	defer rows.Close()
+	columns := make(map[string]struct{})
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err = rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan endpoint column: %v", err)
+		}
+		columns[name] = struct{}{}
+	}
+	for _, legacyColumn := range []string{"node_id", "local_server"} {
+		if _, ok := columns[legacyColumn]; ok {
+			t.Fatalf("legacy endpoint column %s must not exist", legacyColumn)
+		}
+	}
+
+	var version int
+	if err = store.DB().QueryRowContext(ctx, `SELECT version FROM egress_schema_migrations ORDER BY version DESC LIMIT 1`).Scan(&version); err != nil {
+		t.Fatalf("schema version query error = %v", err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
+	}
+}
+
+func TestStorePersistsEndpointAndExclusiveBinding(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "data", "egress.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
 
 	endpoint, err := store.CreateEndpoint(ctx, Endpoint{
 		Name:             "Singapore SOCKS5",
-		NodeID:           node.ID,
 		Protocol:         ProtocolSOCKS5,
-		Host:             "100.64.0.17",
+		Host:             "10.77.0.2",
 		Port:             1080,
 		Enabled:          true,
 		ExpectedPublicIP: "198.51.100.44",
@@ -46,22 +84,11 @@ func TestStoreMigratesAndPersistsNodeEndpointBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error = %v", err)
 	}
-	if endpoint.ID == "" {
-		t.Fatal("CreateEndpoint() ID is empty")
-	}
-
 	identity, err := StableIdentity("acct-123")
 	if err != nil {
 		t.Fatalf("StableIdentity() error = %v", err)
 	}
-	if want := "codex:3abf465e869e7b65598ec70e64b86462802516681a49069caa7947457c9d17aa"; identity != want {
-		t.Fatalf("StableIdentity() = %q, want %q", identity, want)
-	}
-	if err = store.PutBinding(ctx, Binding{
-		Identity:   identity,
-		EndpointID: endpoint.ID,
-		AuthFileID: "codex-user@example.com.json",
-	}); err != nil {
+	if err = store.PutBinding(ctx, Binding{Identity: identity, EndpointID: endpoint.ID, AuthFileID: "codex-user@example.com.json"}); err != nil {
 		t.Fatalf("PutBinding() error = %v", err)
 	}
 
@@ -69,123 +96,154 @@ func TestStoreMigratesAndPersistsNodeEndpointBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveIdentity() error = %v", err)
 	}
-	if resolved.Endpoint.ID != endpoint.ID || resolved.Binding.AuthFileID != "codex-user@example.com.json" {
+	if resolved.Endpoint.ID != endpoint.ID || resolved.Endpoint.Password != "secret" || resolved.Binding.AuthFileID != "codex-user@example.com.json" {
 		t.Fatalf("ResolveIdentity() = %#v", resolved)
 	}
-	if resolved.Endpoint.Password != "secret" {
-		t.Fatalf("ResolveIdentity() password = %q", resolved.Endpoint.Password)
+
+	secondIdentity, _ := StableIdentity("acct-456")
+	preview, err := store.PreviewBindingBatch(ctx, []BindingAssignment{{Identity: secondIdentity, EndpointID: endpoint.ID}})
+	if err != nil {
+		t.Fatalf("PreviewBindingBatch() error = %v", err)
+	}
+	if preview.Valid || len(preview.Conflicts) != 1 || preview.Conflicts[0].Code != "endpoint_already_bound" {
+		t.Fatalf("exclusive binding preview = %#v", preview)
 	}
 
 	counts, err := store.Counts(ctx)
 	if err != nil {
 		t.Fatalf("Counts() error = %v", err)
 	}
-	if counts.Nodes != 1 || counts.Endpoints != 1 || counts.Bindings != 1 {
+	if counts.Endpoints != 1 || counts.EnabledEndpoints != 1 || counts.Bindings != 1 {
 		t.Fatalf("Counts() = %#v", counts)
 	}
 }
 
-func TestStoreEnforcesEndpointForeignKeys(t *testing.T) {
+func TestStoreRejectsHTTPSEndpointProtocol(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	store, err := OpenStore(filepath.Join(t.TempDir(), "usage.db"))
+	store, err := OpenStore(filepath.Join(t.TempDir(), "egress.db"))
 	if err != nil {
-		t.Fatalf("OpenStore() error = %v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
 	_, err = store.CreateEndpoint(ctx, Endpoint{
-		Name:             "missing node",
-		NodeID:           "999",
-		Protocol:         ProtocolHTTP,
-		Host:             "100.64.0.99",
-		Port:             8080,
-		Enabled:          true,
-		ExpectedPublicIP: "198.51.100.99",
+		Name: "Unsupported HTTPS CONNECT", Protocol: Protocol("https"), Host: "10.77.0.2", Port: 443,
+		Enabled: true, ExpectedPublicIP: "198.51.100.44",
 	})
-	if !errors.Is(err, ErrNodeNotFound) {
-		t.Fatalf("CreateEndpoint() error = %v, want ErrNodeNotFound", err)
+	if !errors.Is(err, ErrEndpointInvalid) {
+		t.Fatalf("CreateEndpoint() error = %v, want ErrEndpointInvalid", err)
 	}
 
-	identity, err := StableIdentity("acct-404")
+	endpoint, err := store.CreateEndpoint(ctx, Endpoint{
+		Name: "Supported HTTP CONNECT", Protocol: ProtocolHTTP, Host: "10.77.0.2", Port: 8080,
+		Enabled: true, ExpectedPublicIP: "198.51.100.45",
+	})
 	if err != nil {
-		t.Fatalf("StableIdentity() error = %v", err)
+		t.Fatal(err)
 	}
-	err = store.PutBinding(ctx, Binding{Identity: identity, EndpointID: "missing"})
-	if !errors.Is(err, ErrEndpointNotFound) {
-		t.Fatalf("PutBinding() error = %v, want ErrEndpointNotFound", err)
-	}
-
-	var foreignKeys int
-	if err = store.DB().QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
-		t.Fatalf("PRAGMA foreign_keys error = %v", err)
-	}
-	if foreignKeys != 1 {
-		t.Fatalf("PRAGMA foreign_keys = %d, want 1", foreignKeys)
-	}
-
-	var version int
-	if err = store.DB().QueryRowContext(ctx, `SELECT version FROM egress_schema_migrations ORDER BY version DESC LIMIT 1`).Scan(&version); err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("schema version query error = %v", err)
-		}
-	}
-	if version != 1 {
-		t.Fatalf("schema version = %d, want 1", version)
+	endpoint.Protocol = Protocol("https")
+	if _, err = store.UpdateEndpoint(ctx, endpoint); !errors.Is(err, ErrEndpointInvalid) {
+		t.Fatalf("UpdateEndpoint() error = %v, want ErrEndpointInvalid", err)
 	}
 }
 
-func TestUpsertNodesMarksMissingProjectionOffline(t *testing.T) {
+func TestStoreBatchRebindPreservesExistingAuthFileID(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	store, err := OpenStore(filepath.Join(t.TempDir(), "usage.db"))
+	store, err := OpenStore(filepath.Join(t.TempDir(), "egress.db"))
 	if err != nil {
-		t.Fatalf("OpenStore() error = %v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	firstSync := time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC)
-	if err = store.UpsertNodes(ctx, []Node{{
-		ID:        "17",
-		Name:      "sg-01",
-		Addresses: []string{"100.64.0.17"},
-		Online:    true,
-		Tags:      []string{"tag:clirelay-egress"},
-	}}, firstSync); err != nil {
-		t.Fatalf("first UpsertNodes() error = %v", err)
+	endpointA, err := store.CreateEndpoint(ctx, Endpoint{
+		Name: "A", Protocol: ProtocolSOCKS5, Host: "10.77.0.2", Port: 1080,
+		Enabled: true, ExpectedPublicIP: "198.51.100.10",
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	secondSync := firstSync.Add(time.Minute)
-	if err = store.UpsertNodes(ctx, nil, secondSync); err != nil {
-		t.Fatalf("second UpsertNodes() error = %v", err)
+	endpointB, err := store.CreateEndpoint(ctx, Endpoint{
+		Name: "B", Protocol: ProtocolSOCKS5, Host: "10.77.0.3", Port: 1080,
+		Enabled: true, ExpectedPublicIP: "198.51.100.11",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := StableIdentity("acct-preserve-auth-file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.PutBinding(ctx, Binding{Identity: identity, EndpointID: endpointA.ID, AuthFileID: "codex-user.json"}); err != nil {
+		t.Fatal(err)
 	}
 
-	node, err := store.GetNode(ctx, "17")
+	if _, err = store.ApplyBindingBatch(ctx, "", []BindingAssignment{{Identity: identity, EndpointID: endpointB.ID}}); err != nil {
+		t.Fatalf("ApplyBindingBatch() error = %v", err)
+	}
+	resolved, err := store.ResolveIdentity(ctx, identity)
 	if err != nil {
-		t.Fatalf("GetNode() error = %v", err)
+		t.Fatal(err)
 	}
-	if node.Online {
-		t.Fatal("missing node should be marked offline")
+	if resolved.Binding.EndpointID != endpointB.ID {
+		t.Fatalf("endpoint_id = %q, want %q", resolved.Binding.EndpointID, endpointB.ID)
 	}
-	if !node.SyncedAt.Equal(secondSync) {
-		t.Fatalf("synced_at = %v, want %v", node.SyncedAt, secondSync)
+	if resolved.Binding.AuthFileID != "codex-user.json" {
+		t.Fatalf("auth_file_id = %q, want preserved value", resolved.Binding.AuthFileID)
 	}
 }
 
-func TestStableIdentityRejectsEmptyAccountID(t *testing.T) {
+func TestStoreRejectsLegacyHeadscaleDatabase(t *testing.T) {
 	t.Parallel()
 
-	identity, err := StableIdentity("  ")
-	if !errors.Is(err, ErrEgressRequired) {
-		t.Fatalf("StableIdentity() error = %v, want ErrEgressRequired", err)
+	path := filepath.Join(t.TempDir(), "egress.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if identity != "" {
-		t.Fatalf("StableIdentity() = %q, want empty", identity)
+	if _, err = db.Exec(`CREATE TABLE egress_nodes (id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	if err = os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = OpenStore(path)
+	if err == nil || !strings.Contains(err.Error(), "legacy Headscale egress schema is unsupported") {
+		t.Fatalf("OpenStore() error = %v", err)
 	}
 }
 
-func TestUpdateEndpointInvalidatesHealthWhenRouteChanges(t *testing.T) {
+func TestStoreEndpointForeignKeyAndStableIdentity(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "egress.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	identity, err := StableIdentity("  ")
+	if !errors.Is(err, ErrEgressRequired) || identity != "" {
+		t.Fatalf("StableIdentity() = %q, %v", identity, err)
+	}
+	identity, _ = StableIdentity("acct-404")
+	err = store.PutBinding(ctx, Binding{Identity: identity, EndpointID: "missing"})
+	if !errors.Is(err, ErrEndpointNotFound) {
+		t.Fatalf("PutBinding() error = %v", err)
+	}
+	var foreignKeys int
+	if err = store.DB().QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil || foreignKeys != 1 {
+		t.Fatalf("PRAGMA foreign_keys = %d, %v", foreignKeys, err)
+	}
+}
+
+func TestUpdateEndpointInvalidatesHealthOnlyWhenRouteChangesOrReenabled(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -195,13 +253,8 @@ func TestUpdateEndpointInvalidatesHealthWhenRouteChanges(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	now := time.Now().UTC()
-	if err = store.UpsertNodes(ctx, []Node{{
-		ID: "n1", Addresses: []string{"100.64.0.1", "100.64.0.2"}, Online: true, Tags: []string{"tag:clirelay-egress"},
-	}}, now); err != nil {
-		t.Fatal(err)
-	}
 	endpoint, err := store.CreateEndpoint(ctx, Endpoint{
-		Name: "one", NodeID: "n1", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080,
+		Name: "one", Protocol: ProtocolSOCKS5, Host: "10.77.0.2", Port: 1080,
 		Enabled: true, Username: "relay", Password: "secret", ExpectedPublicIP: "198.51.100.1",
 	})
 	if err != nil {
@@ -218,49 +271,26 @@ func TestUpdateEndpointInvalidatesHealthWhenRouteChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	if endpoint.CheckStatus != EndpointStatusHealthy || endpoint.PublicIP == "" || endpoint.LastCheckedAt.IsZero() {
-		t.Fatalf("name-only update unexpectedly invalidated health: %#v", endpoint)
+		t.Fatalf("name-only update invalidated health: %#v", endpoint)
 	}
 
-	endpoint.Host = "100.64.0.2"
+	endpoint.Host = "10.77.0.3"
 	endpoint, err = store.UpdateEndpoint(ctx, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if endpoint.PublicIP != "" || endpoint.LatencyMS != 0 || !endpoint.LastCheckedAt.IsZero() || endpoint.CheckStatus != "" || endpoint.CheckError != "" {
+	if endpoint.PublicIP != "" || endpoint.CheckStatus != "" || !endpoint.LastCheckedAt.IsZero() {
 		t.Fatalf("route update inherited stale health: %#v", endpoint)
 	}
-}
 
-func TestUpdateEndpointInvalidatesHealthWhenReEnabled(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	store, err := OpenStore(filepath.Join(t.TempDir(), "egress.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	now := time.Now().UTC()
-	_ = store.UpsertNodes(ctx, []Node{{ID: "n1", Addresses: []string{"100.64.0.1"}, Online: true, Tags: []string{"tag:clirelay-egress"}}}, now)
-	endpoint, err := store.CreateEndpoint(ctx, Endpoint{
-		Name: "one", NodeID: "n1", Protocol: ProtocolSOCKS5, Host: "100.64.0.1", Port: 1080,
-		Enabled: true, ExpectedPublicIP: "198.51.100.1",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	endpoint, _ = store.UpdateEndpointCheck(ctx, endpoint.ID, endpoint.ExpectedPublicIP, EndpointStatusHealthy, "", 1, now)
 	endpoint.Enabled = false
-	endpoint, err = store.UpdateEndpoint(ctx, endpoint)
-	if err != nil {
-		t.Fatal(err)
-	}
+	endpoint, _ = store.UpdateEndpoint(ctx, endpoint)
 	endpoint.Enabled = true
 	endpoint, err = store.UpdateEndpoint(ctx, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if endpoint.CheckStatus != "" || endpoint.PublicIP != "" || !endpoint.LastCheckedAt.IsZero() {
+	if endpoint.PublicIP != "" || endpoint.CheckStatus != "" || !endpoint.LastCheckedAt.IsZero() {
 		t.Fatalf("re-enabled endpoint inherited stale health: %#v", endpoint)
 	}
 }

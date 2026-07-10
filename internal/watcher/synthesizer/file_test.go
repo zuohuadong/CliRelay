@@ -721,7 +721,7 @@ func TestFileSynthesizer_Synthesize_NoteParsing(t *testing.T) {
 	}
 }
 
-func TestFileSynthesizerCodexExposesStableEgressIdentity(t *testing.T) {
+func TestFileSynthesizerCodexIgnoresPersistedEgressIDAndExposesStableIdentity(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -736,8 +736,8 @@ func TestFileSynthesizerCodexExposesStableEgressIdentity(t *testing.T) {
 	if len(auths) != 1 {
 		t.Fatalf("auths = %#v", auths)
 	}
-	if got := auths[0].Attributes["egress_id"]; got != "endpoint-1" {
-		t.Fatalf("egress_id = %q", got)
+	if got, ok := auths[0].Attributes["egress_id"]; ok {
+		t.Fatalf("legacy egress_id leaked into runtime attributes: %q", got)
 	}
 	if got, want := auths[0].Attributes["stable_identity"], "codex:3abf465e869e7b65598ec70e64b86462802516681a49069caa7947457c9d17aa"; got != want {
 		t.Fatalf("stable_identity = %q, want %q", got, want)

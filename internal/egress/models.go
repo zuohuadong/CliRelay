@@ -7,33 +7,15 @@ type Protocol string
 const (
 	ProtocolSOCKS5 Protocol = "socks5"
 	ProtocolHTTP   Protocol = "http"
-	ProtocolHTTPS  Protocol = "https"
 )
-
-type Node struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Addresses []string  `json:"addresses"`
-	Online    bool      `json:"online"`
-	LastSeen  time.Time `json:"last_seen,omitempty"`
-	Tags      []string  `json:"tags"`
-	SyncedAt  time.Time `json:"synced_at"`
-}
-
-type NodeReadiness struct {
-	Fresh          bool  `json:"fresh"`
-	SyncAgeSeconds int64 `json:"sync_age_seconds"`
-}
 
 type Endpoint struct {
 	ID               string    `json:"id"`
 	Name             string    `json:"name"`
-	NodeID           string    `json:"node_id,omitempty"`
 	Protocol         Protocol  `json:"protocol"`
 	Host             string    `json:"host"`
 	Port             int       `json:"port"`
 	Enabled          bool      `json:"enabled"`
-	LocalServer      bool      `json:"local_server"`
 	Username         string    `json:"username,omitempty"`
 	Password         string    `json:"-"`
 	ExpectedPublicIP string    `json:"expected_public_ip,omitempty"`
@@ -90,8 +72,6 @@ type EndpointReadiness struct {
 	EndpointID        string   `json:"endpoint_id"`
 	Eligible          bool     `json:"eligible"`
 	RuntimeReady      bool     `json:"runtime_ready"`
-	NodeOnline        bool     `json:"node_online"`
-	NodeFresh         bool     `json:"node_fresh"`
 	HealthFresh       bool     `json:"health_fresh"`
 	PublicIPMatches   bool     `json:"public_ip_matches"`
 	DuplicatePublicIP bool     `json:"duplicate_public_ip"`
@@ -131,20 +111,7 @@ type ResolvedBinding struct {
 }
 
 type Counts struct {
-	Nodes            int `json:"nodes"`
-	OnlineNodes      int `json:"online_nodes"`
 	Endpoints        int `json:"endpoints"`
 	EnabledEndpoints int `json:"enabled_endpoints"`
 	Bindings         int `json:"bindings"`
-}
-
-type HeadscaleStatus struct {
-	URL              string `json:"url"`
-	APIKeyConfigured bool   `json:"api_key_configured"`
-	ServiceTag       string `json:"service_tag"`
-}
-
-type SyncState struct {
-	LastSync time.Time `json:"last_sync,omitempty"`
-	Error    string    `json:"error,omitempty"`
 }

@@ -46,7 +46,7 @@ auths/*
 
 # Documentation
 docs/*
-!docs/headscale-egress-network_CN.md
+!docs/codex-socks-egress_CN.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md

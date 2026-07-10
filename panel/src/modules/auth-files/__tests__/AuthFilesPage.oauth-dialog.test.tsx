@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   listEndpoints: vi.fn<() => Promise<EgressEndpoint[]>>(async () => []),
   getOverview: vi.fn<() => Promise<EgressOverview>>(),
   listBindings: vi.fn<() => Promise<EgressBinding[]>>(async () => []),
+  previewBindings: vi.fn(),
+  applyBindings: vi.fn(),
 }));
 
 vi.mock("@/lib/http/apis", async (importOriginal) => {
@@ -45,6 +47,8 @@ vi.mock("@/lib/http/apis/egress", () => ({
     listEndpoints: mocks.listEndpoints,
     getOverview: mocks.getOverview,
     listBindings: mocks.listBindings,
+    previewBindings: mocks.previewBindings,
+    applyBindings: mocks.applyBindings,
   },
 }));
 
@@ -61,26 +65,28 @@ beforeEach(() => {
   mocks.listEndpoints.mockReset();
   mocks.getOverview.mockReset();
   mocks.listBindings.mockReset();
+  mocks.previewBindings.mockReset();
+  mocks.applyBindings.mockReset();
   mocks.listEndpoints.mockResolvedValue([
     {
       id: "hk",
-      nodeId: "node-1",
       name: "HK Egress",
       protocol: "socks5",
       host: "100.64.0.2",
       port: 1080,
       enabled: true,
-      isLocal: false,
       status: "healthy",
       latencyMs: 88,
       publicIp: "203.0.113.8",
+      eligible: true,
+      runtimeReady: true,
       eligibility: {
-        state: "eligible",
         selectable: true,
+        eligible: true,
+        runtimeReady: true,
+        healthFresh: true,
+        publicIpMatches: true,
         reasonCodes: [],
-        nodeOnline: true,
-        nodeStale: false,
-        bindingCount: 0,
         duplicatePublicIp: false,
       },
     },
@@ -88,10 +94,12 @@ beforeEach(() => {
   mocks.getOverview.mockResolvedValue({
     enabled: true,
     revision: "rev-1",
+    scope: "application_egress",
     policy: {
       bindingMode: "exclusive",
-      nodeFreshnessTtlSeconds: 300,
-      endpointCheckTtlSeconds: 300,
+      failureMode: "fail_closed",
+      readinessScope: "application_egress",
+      hostKillSwitchEnforced: false,
     },
     readiness: {
       scope: "application_egress",
@@ -102,27 +110,28 @@ beforeEach(() => {
       warnings: [],
       notEvaluated: [],
     },
-    headscale: {
-      configured: true,
-      reachable: true,
-      url: "https://headscale.internal",
-      apiKeyConfigured: true,
-      serviceTag: "tag:clirelay-egress",
-    },
-    localEndpointEnabled: false,
     counts: {
-      nodes: 1,
-      onlineNodes: 1,
       endpoints: 1,
       enabledEndpoints: 1,
       bindings: 0,
-      accounts: 0,
-      routableAccounts: 0,
-      unboundAccounts: 0,
-      missingIdentityAccounts: 0,
+      codexAuths: 0,
+      boundCodexAuths: 0,
+      unboundCodexAuths: 0,
+      missingAccountId: 0,
+      boundEndpointNotReady: 0,
     },
   });
   mocks.listBindings.mockResolvedValue([]);
+  mocks.previewBindings.mockResolvedValue({
+    expectedRevision: "rev-1",
+    assignments: [],
+    changeCount: 0,
+    affectedAccounts: [],
+    blockers: [],
+    warnings: [],
+    valid: true,
+  });
+  mocks.applyBindings.mockResolvedValue({ revision: "rev-2", applied: 1 });
 });
 
 describe("AuthFilesPage OAuth login dialog", () => {
@@ -217,28 +226,43 @@ describe("AuthFilesPage OAuth login dialog", () => {
     );
   });
 
-  test("requires an enabled endpoint and sends egress_id for Codex authorization", async () => {
+  test("allows a ready endpoint to start Codex OAuth while global migration readiness is blocked", async () => {
     const user = userEvent.setup();
+    mocks.getOverview.mockResolvedValue({
+      ...(await mocks.getOverview()),
+      readiness: {
+        scope: "application_egress",
+        verdict: "blocked",
+        readyToEnable: false,
+        codexOAuthAllowed: true,
+        blockers: [
+          { code: "missing_account_id", message: "One Codex account has no stable identity." },
+          { code: "bound_endpoint_not_ready", message: "One bound endpoint is unhealthy." },
+        ],
+        warnings: [],
+        notEvaluated: [],
+      },
+    });
     mocks.listEndpoints.mockResolvedValue([
       {
         id: "hk",
-        nodeId: "node-1",
         name: "HK Egress",
         protocol: "socks5",
         host: "100.64.0.2",
         port: 1080,
         enabled: true,
-        isLocal: false,
         status: "healthy",
         latencyMs: 88,
         publicIp: "203.0.113.8",
+        eligible: true,
+        runtimeReady: true,
         eligibility: {
-          state: "eligible",
           selectable: true,
+          eligible: true,
+          runtimeReady: true,
+          healthFresh: true,
+          publicIpMatches: true,
           reasonCodes: [],
-          nodeOnline: true,
-          nodeStale: false,
-          bindingCount: 0,
           duplicatePublicIp: false,
         },
       },
@@ -332,7 +356,7 @@ describe("AuthFilesPage OAuth login dialog", () => {
     expect(within(dialog).getByRole("button", { name: "Start authorization" })).toBeDisabled();
   });
 
-  test("blocks Codex in preparation mode and explains browser versus server egress scope", async () => {
+  test("blocks Codex when fixed egress runtime is disabled and explains browser versus server egress scope", async () => {
     const user = userEvent.setup();
     mocks.getOverview.mockResolvedValue({
       ...(await mocks.getOverview()),
@@ -363,7 +387,7 @@ describe("AuthFilesPage OAuth login dialog", () => {
     const dialog = await screen.findByRole("dialog");
     const scoped = within(dialog);
     expect(
-      scoped.getByText(/Codex authorization is disabled in preparation mode/),
+      scoped.getByText(/Fixed egress runtime is disabled, so Codex authorization is blocked/),
     ).toBeInTheDocument();
     expect(scoped.getByText(/Browser authorization uses the operator network/)).toBeInTheDocument();
     expect(scoped.getByRole("button", { name: "Start authorization" })).toBeDisabled();

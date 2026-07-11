@@ -25,6 +25,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/sync/singleflight"
 )
 
 type attemptInfo struct {
@@ -42,32 +43,38 @@ const attemptMaxIdleTime = 2 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
-	cfg                     *config.Config
-	configFilePath          string
-	mu                      sync.Mutex
-	reloadMu                sync.Mutex
-	reloadGeneration        uint64
-	appliedReloadGeneration uint64
-	attemptsMu              sync.Mutex
-	failedAttempts          map[string]*attemptInfo // keyed by client IP
-	authManager             *coreauth.Manager
-	tokenStore              coreauth.Store
-	localPassword           string
-	allowRemoteOverride     bool
-	envSecret               string
-	logDir                  string
-	postAuthHook            coreauth.PostAuthHook
-	postAuthPersistHook     coreauth.PostAuthHook
-	pluginHost              *pluginhost.Host
-	configReloadHook        func(context.Context, *config.Config)
-	pluginStoreRegistryURL  string
-	pluginStoreHTTPClient   pluginstore.HTTPDoer
-	pluginReleaseCacheMu    sync.Mutex
-	pluginReleaseCache      map[string]pluginReleaseCacheEntry
-	imageTasksMu            sync.Mutex
-	imageGenerationTasks    map[string]*imageGenerationTestTask
-	startTime               time.Time
-	egressService           *egress.Service
+	cfg                           *config.Config
+	configFilePath                string
+	mu                            sync.Mutex
+	reloadMu                      sync.Mutex
+	reloadGeneration              uint64
+	appliedReloadGeneration       uint64
+	attemptsMu                    sync.Mutex
+	failedAttempts                map[string]*attemptInfo // keyed by client IP
+	authManager                   *coreauth.Manager
+	tokenStore                    coreauth.Store
+	localPassword                 string
+	allowRemoteOverride           bool
+	envSecret                     string
+	logDir                        string
+	postAuthHook                  coreauth.PostAuthHook
+	postAuthPersistHook           coreauth.PostAuthHook
+	pluginHost                    *pluginhost.Host
+	configReloadHook              func(context.Context, *config.Config)
+	pluginStoreRegistryURL        string
+	pluginStoreHTTPClient         pluginstore.HTTPDoer
+	pluginReleaseCacheMu          sync.Mutex
+	pluginReleaseCache            map[string]pluginReleaseCacheEntry
+	imageTasksMu                  sync.Mutex
+	imageGenerationTasks          map[string]*imageGenerationTestTask
+	startTime                     time.Time
+	egressService                 *egress.Service
+	usageAggregateCacheMu         sync.Mutex
+	usageAggregateCache           map[string]usageAggregateCacheEntry
+	usageAggregateCacheGeneration uint64
+	usageAggregateCacheTTL        time.Duration
+	usageAggregateCacheNow        func() time.Time
+	usageAggregateFlight          singleflight.Group
 }
 
 type configReloadSnapshot struct {
@@ -145,6 +152,7 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 	h.mu.Lock()
 	h.cfg = cfg
 	h.mu.Unlock()
+	h.invalidateUsageAggregateCache()
 }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
@@ -155,6 +163,7 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 	h.mu.Lock()
 	h.authManager = manager
 	h.mu.Unlock()
+	h.invalidateUsageAggregateCache()
 }
 
 // SetPluginHost updates the plugin host used by plugin-backed management endpoints.

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ToastProvider } from "@/modules/ui/ToastProvider";
 import { ThemeProvider } from "@/modules/ui/ThemeProvider";
 import { AuthFilesPage } from "@/modules/auth-files/AuthFilesPage";
+import type { AuthFileItem } from "@/lib/http/types";
 import {
   AUTH_FILES_DATA_CACHE_KEY,
   AUTH_FILES_QUOTA_AUTO_REFRESH_KEY,
@@ -1825,6 +1826,80 @@ describe("AuthFilesPage files table", () => {
     expect(mocks.fetchQuota.mock.calls.map(([, file]) => (file as { name: string }).name)).toEqual(
       codexFiles.slice(0, 9).map((file) => file.name),
     );
+  });
+
+  test("keeps automatic quota refresh from recalculating usage while manual refresh still does", async () => {
+    const now = Date.parse("2026-07-11T04:00:00.000Z");
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+    const intervalSpy = vi.spyOn(window, "setInterval");
+    const file = {
+      name: "codex-auto-refresh.json",
+      type: "codex",
+      provider: "codex",
+      account_type: "oauth",
+      auth_index: "auth-auto-refresh",
+      size: 1024,
+      modified: now,
+      disabled: false,
+    } satisfies AuthFileItem;
+
+    mocks.list.mockImplementation(async () => ({ files: [file] }));
+    mocks.fetchQuota.mockResolvedValue({
+      items: [{ key: "code_5h", label: "m_quota.code_5h", percent: 66 }],
+    });
+    window.localStorage.setItem(AUTH_FILES_QUOTA_AUTO_REFRESH_KEY, JSON.stringify(10000));
+    window.sessionStorage.setItem(
+      AUTH_FILES_DATA_CACHE_KEY,
+      JSON.stringify({
+        savedAtMs: now,
+        files: [file],
+        usageData: { source: [], auth_index: [] },
+        quotaByFileName: {
+          [file.name]: {
+            status: "success",
+            updatedAt: now,
+            items: [{ key: "code_5h", label: "m_quota.code_5h", percent: 22 }],
+          },
+        },
+      }),
+    );
+
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(file.name)).toBeInTheDocument();
+    await waitFor(() => expect(mocks.getEntityStats).toHaveBeenCalledTimes(1));
+    expect(mocks.fetchQuota).not.toHaveBeenCalled();
+
+    dateNowSpy.mockReturnValue(now + 20_000);
+    const autoRefreshTicks = intervalSpy.mock.calls
+      .filter(([, delay]) => delay === 10_000)
+      .map(([handler]) => handler);
+    expect(autoRefreshTicks.length).toBeGreaterThan(0);
+
+    await act(async () => {
+      autoRefreshTicks.forEach((tick) => tick());
+    });
+
+    await waitFor(() => expect(mocks.fetchQuota).toHaveBeenCalledTimes(1));
+    expect(mocks.getEntityStats).toHaveBeenCalledTimes(1);
+
+    const toolbarRefreshButton = screen.getAllByRole("button", { name: "Refresh" })[0];
+    fireEvent.click(toolbarRefreshButton);
+
+    await waitFor(() => {
+      expect(mocks.fetchQuota).toHaveBeenCalledTimes(2);
+      expect(mocks.getEntityStats).toHaveBeenCalledTimes(2);
+    });
   });
 
   test("switching provider after entering from request logs refreshes visible cards with auto-refresh off", async () => {

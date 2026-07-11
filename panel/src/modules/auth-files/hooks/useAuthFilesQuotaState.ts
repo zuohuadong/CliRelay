@@ -562,6 +562,7 @@ export function useAuthFilesQuotaState({
     await runQuotaRefreshBatch(candidates, {
       markAsAutoRefreshing: true,
       showLoading: false,
+      refreshUsage: false,
     });
   }, [collectQuotaFetchTargets, loading, pageItems, runQuotaRefreshBatch, tab]);
 

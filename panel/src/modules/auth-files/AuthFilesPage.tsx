@@ -287,7 +287,11 @@ export function AuthFilesPage() {
   }, [searchParams]);
 
   const refreshEgressState = useCallback(async () => {
-    await Promise.all([egressApi.getOverview(), egressApi.listEndpoints(), egressApi.listBindings()])
+    await Promise.all([
+      egressApi.getOverview(),
+      egressApi.listEndpoints(),
+      egressApi.listBindings(),
+    ])
       .then(([nextOverview, nextEndpoints, nextBindings]) => {
         setEgressOverview(nextOverview);
         setEgressEndpoints(nextEndpoints);
@@ -307,8 +311,7 @@ export function AuthFilesPage() {
       } catch (error) {
         notify({
           type: "error",
-          message:
-            error instanceof Error ? error.message : t("auth_files.egress_preview_failed"),
+          message: error instanceof Error ? error.message : t("auth_files.egress_preview_failed"),
         });
         throw error;
       }
@@ -509,14 +512,23 @@ export function AuthFilesPage() {
     try {
       const quotaRefreshPromise = forceRefreshPage();
       const filesRefreshPromise = refreshFilesForItems(currentPageItems);
-      await Promise.all([filesRefreshPromise, quotaRefreshPromise]);
+      const egressRefreshPromise = refreshEgressState();
+      await Promise.all([filesRefreshPromise, quotaRefreshPromise, egressRefreshPromise]);
     } finally {
       refreshingFilesAndQuotaRef.current = false;
       if (isMountedRef.current) {
         setRefreshingCurrentPage(false);
       }
     }
-  }, [forceRefreshPage, loading, pageItems, refreshFilesForItems, refreshingAll, usageLoading]);
+  }, [
+    forceRefreshPage,
+    loading,
+    pageItems,
+    refreshEgressState,
+    refreshFilesForItems,
+    refreshingAll,
+    usageLoading,
+  ]);
 
   useEffect(() => {
     const previousTab = previousTabRef.current;
@@ -573,6 +585,23 @@ export function AuthFilesPage() {
   const detailModelOwnerGroup = detailModelOwnerValue
     ? (modelOwnerGroups.find((group) => group.value === detailModelOwnerValue) ?? null)
     : null;
+  const egressBindingByFileName = useMemo(() => {
+    const bindings = new Map<string, EgressBinding>();
+    files.forEach((file) => {
+      const binding = egressBindings.find(
+        (item) =>
+          item.authId === file.name ||
+          item.authId.endsWith(`/${file.name}`) ||
+          item.authId.endsWith(`\\${file.name}`),
+      );
+      if (binding) bindings.set(file.name, binding);
+    });
+    return bindings;
+  }, [egressBindings, files]);
+  const egressEndpointById = useMemo(
+    () => new Map(egressEndpoints.map((endpoint) => [endpoint.id, endpoint])),
+    [egressEndpoints],
+  );
   const detailEgressBinding = detailFile
     ? (egressBindings.find(
         (binding) =>
@@ -595,7 +624,12 @@ export function AuthFilesPage() {
         endpoint.id === detailEgressBinding?.endpointId ||
         (endpoint.runtimeReady && !occupiedEndpointIds.has(endpoint.id)),
     );
-  }, [detailEgressBinding?.endpointId, detailEgressBinding?.identity, egressBindings, egressEndpoints]);
+  }, [
+    detailEgressBinding?.endpointId,
+    detailEgressBinding?.identity,
+    egressBindings,
+    egressEndpoints,
+  ]);
   const oauthEgressEndpoints = useMemo(() => {
     const occupiedEndpointIds = new Set(
       egressBindings
@@ -603,8 +637,7 @@ export function AuthFilesPage() {
         .map((binding) => binding.endpointId),
     );
     return egressEndpoints.filter(
-      (endpoint) =>
-        endpoint.runtimeReady && !occupiedEndpointIds.has(endpoint.id),
+      (endpoint) => endpoint.runtimeReady && !occupiedEndpointIds.has(endpoint.id),
     );
   }, [egressBindings, egressEndpoints]);
   const {
@@ -613,6 +646,7 @@ export function AuthFilesPage() {
     renderRestrictionBadges,
     renderSubscriptionBadge,
     renderQuotaBar,
+    renderEgressStatus,
     renderFilesViewModeTabs,
     fileColumns,
   } = useAuthFilesFilesPresentation({
@@ -639,6 +673,10 @@ export function AuthFilesPage() {
     codexFastModeUpdating,
     setCodexFastMode,
     usageIndex,
+    egressLoaded: egressOverview !== null,
+    egressRuntimeEnabled: Boolean(egressOverview?.enabled),
+    egressBindingByFileName,
+    egressEndpointById,
   });
 
   return (
@@ -718,6 +756,7 @@ export function AuthFilesPage() {
             renderRestrictionBadges={renderRestrictionBadges}
             renderSubscriptionBadge={renderSubscriptionBadge}
             renderQuotaBar={renderQuotaBar}
+            renderEgressStatus={renderEgressStatus}
             openTagsEditor={(file) => setTagsEditorFileName(file.name)}
             openDetail={openDetailWithQuotaRefresh}
             downloadAuthFile={downloadAuthFile}

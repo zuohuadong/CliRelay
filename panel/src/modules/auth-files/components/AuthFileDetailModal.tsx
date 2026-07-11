@@ -16,7 +16,7 @@ import { DateTimePicker } from "@/modules/ui/DateTimePicker";
 import { EmptyState } from "@/modules/ui/EmptyState";
 import { TextInput } from "@/modules/ui/Input";
 import { Modal } from "@/modules/ui/Modal";
-import { Select } from "@/modules/ui/Select";
+import { Select, type SelectOption } from "@/modules/ui/Select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/modules/ui/Tabs";
 import { EChart } from "@/modules/ui/charts/EChart";
 import { EndpointSelect } from "@/modules/egress/EndpointSelect";
@@ -136,6 +136,14 @@ export function AuthFileDetailModal({
   const isCodexDetail = detailFile
     ? normalizeProviderKey(resolveFileType(detailFile)) === "codex"
     : false;
+  const usesSharedProxy = isCodexDetail && prefixProxyEditor.egressMode === "shared_proxy";
+  const egressModeOptions = useMemo<SelectOption[]>(
+    () => [
+      { value: "fixed_endpoint", label: t("auth_files.egress_mode_fixed") },
+      { value: "shared_proxy", label: t("auth_files.egress_mode_shared_proxy") },
+    ],
+    [t],
+  );
   const usesMappedModelOwner = Boolean(mappedModelOwnerValue);
   const visibleModelsList = usesMappedModelOwner
     ? (mappedModelOwnerGroup?.models ?? [])
@@ -592,52 +600,83 @@ export function AuthFileDetailModal({
                           <div className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-neutral-800">
                             <div>
                               <p className="text-xs font-semibold text-slate-700 dark:text-white/75">
-                                {t("auth_files.egress_endpoint_label")}
-                              </p>
-                              <p className="mt-1 text-xs text-slate-500 dark:text-white/55">
-                                {t("auth_files.egress_endpoint_hint")}
+                                {t("auth_files.egress_mode_label")}
                               </p>
                             </div>
-                            {egressBinding?.identity ? (
-                              <div className="space-y-3 rounded-lg bg-slate-50 p-3 dark:bg-neutral-900">
-                                <EndpointSelect
-                                  value={selectedEgressEndpointId}
-                                  endpoints={egressEndpoints}
-                                  ariaLabel={t("auth_files.egress_endpoint_label")}
-                                  allowEmpty
-                                  disabled={egressBindingSaving || egressPreviewing}
-                                  onChange={setSelectedEgressEndpointId}
+                            <Select
+                              value={prefixProxyEditor.egressMode}
+                              onChange={(value) => {
+                                setPrefixProxyEditor((prev) => ({
+                                  ...prev,
+                                  egressMode:
+                                    value === "shared_proxy" ? "shared_proxy" : "fixed_endpoint",
+                                }));
+                              }}
+                              options={egressModeOptions}
+                              aria-label={t("auth_files.egress_mode_label")}
+                              disabled={prefixProxyEditor.saving}
+                            />
+                            {usesSharedProxy ? (
+                              <div className="grid gap-2 rounded-lg bg-slate-50 p-3 dark:bg-neutral-900">
+                                <p className="text-xs text-slate-500 dark:text-white/55">
+                                  {t("auth_files.egress_shared_proxy_hint")}
+                                </p>
+                                <TextInput
+                                  value={prefixProxyEditor.proxyUrl}
+                                  onChange={(e) => {
+                                    const value = e.currentTarget.value;
+                                    setPrefixProxyEditor((prev) => ({ ...prev, proxyUrl: value }));
+                                  }}
+                                  placeholder={t("auth_files.proxy_url_placeholder")}
                                 />
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <p className="min-w-0 truncate font-mono text-[11px] text-slate-500">
-                                    {egressBinding.identity}
-                                  </p>
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <Link
-                                      to="/egress"
-                                      className="text-xs font-semibold text-slate-600 underline-offset-4 hover:underline dark:text-white/65"
-                                    >
-                                      {t("auth_files.manage_egress_bindings")}
-                                    </Link>
-                                    <Button
-                                      size="sm"
-                                      variant="secondary"
-                                      disabled={
-                                        egressBindingSaving ||
-                                        egressPreviewing ||
-                                        selectedEgressEndpointId === egressBinding.endpointId
-                                      }
-                                      onClick={() => void previewFixedEgress()}
-                                    >
-                                      {t("auth_files.egress_preview_change")}
-                                    </Button>
-                                  </div>
-                                </div>
                               </div>
                             ) : (
-                              <p className="text-sm text-amber-700 dark:text-amber-200">
-                                {t("auth_files.egress_identity_missing")}
-                              </p>
+                              <>
+                                <p className="text-xs text-slate-500 dark:text-white/55">
+                                  {t("auth_files.egress_endpoint_hint")}
+                                </p>
+                                {egressBinding?.identity ? (
+                                  <div className="space-y-3 rounded-lg bg-slate-50 p-3 dark:bg-neutral-900">
+                                    <EndpointSelect
+                                      value={selectedEgressEndpointId}
+                                      endpoints={egressEndpoints}
+                                      ariaLabel={t("auth_files.egress_endpoint_label")}
+                                      allowEmpty
+                                      disabled={egressBindingSaving || egressPreviewing}
+                                      onChange={setSelectedEgressEndpointId}
+                                    />
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <p className="min-w-0 truncate font-mono text-[11px] text-slate-500">
+                                        {egressBinding.identity}
+                                      </p>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <Link
+                                          to="/egress"
+                                          className="text-xs font-semibold text-slate-600 underline-offset-4 hover:underline dark:text-white/65"
+                                        >
+                                          {t("auth_files.manage_egress_bindings")}
+                                        </Link>
+                                        <Button
+                                          size="sm"
+                                          variant="secondary"
+                                          disabled={
+                                            egressBindingSaving ||
+                                            egressPreviewing ||
+                                            selectedEgressEndpointId === egressBinding.endpointId
+                                          }
+                                          onClick={() => void previewFixedEgress()}
+                                        >
+                                          {t("auth_files.egress_preview_change")}
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <p className="text-sm text-amber-700 dark:text-amber-200">
+                                    {t("auth_files.egress_identity_missing")}
+                                  </p>
+                                )}
+                              </>
                             )}
                           </div>
                         ) : (

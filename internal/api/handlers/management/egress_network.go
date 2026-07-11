@@ -16,25 +16,27 @@ import (
 )
 
 type egressEndpointRequest struct {
-	Name             string          `json:"name"`
-	Protocol         egress.Protocol `json:"protocol"`
-	Host             string          `json:"host"`
-	Port             int             `json:"port"`
-	Enabled          bool            `json:"enabled"`
-	Username         string          `json:"username"`
-	Password         string          `json:"password"`
-	ExpectedPublicIP string          `json:"expected_public_ip"`
+	Name             string                     `json:"name"`
+	Protocol         egress.Protocol            `json:"protocol"`
+	Host             string                     `json:"host"`
+	Port             int                        `json:"port"`
+	Enabled          bool                       `json:"enabled"`
+	SharingMode      egress.EndpointSharingMode `json:"sharing_mode"`
+	Username         string                     `json:"username"`
+	Password         string                     `json:"password"`
+	ExpectedPublicIP string                     `json:"expected_public_ip"`
 }
 
 type egressEndpointPatch struct {
-	Name             *string          `json:"name"`
-	Protocol         *egress.Protocol `json:"protocol"`
-	Host             *string          `json:"host"`
-	Port             *int             `json:"port"`
-	Enabled          *bool            `json:"enabled"`
-	Username         *string          `json:"username"`
-	Password         *string          `json:"password"`
-	ExpectedPublicIP *string          `json:"expected_public_ip"`
+	Name             *string                     `json:"name"`
+	Protocol         *egress.Protocol            `json:"protocol"`
+	Host             *string                     `json:"host"`
+	Port             *int                        `json:"port"`
+	Enabled          *bool                       `json:"enabled"`
+	SharingMode      *egress.EndpointSharingMode `json:"sharing_mode"`
+	Username         *string                     `json:"username"`
+	Password         *string                     `json:"password"`
+	ExpectedPublicIP *string                     `json:"expected_public_ip"`
 }
 
 type egressBindingBatchRequest struct {
@@ -121,7 +123,7 @@ func (h *Handler) GetEgressOverview(c *gin.Context) {
 		"revision": technical.Revision,
 		"scope":    "application_egress",
 		"policy": gin.H{
-			"binding_mode": "exclusive", "failure_mode": "fail_closed",
+			"binding_mode": "per_endpoint", "failure_mode": "fail_closed",
 			"readiness_scope": "application_egress", "host_kill_switch_enforced": false,
 		},
 		"counts": combinedCounts,
@@ -464,7 +466,7 @@ func (h *Handler) PutEgressBindingBatch(c *gin.Context) {
 }
 
 func endpointFromRequest(request egressEndpointRequest) egress.Endpoint {
-	return egress.Endpoint{Name: request.Name, Protocol: request.Protocol, Host: request.Host, Port: request.Port, Enabled: request.Enabled, Username: request.Username, Password: request.Password, ExpectedPublicIP: request.ExpectedPublicIP}
+	return egress.Endpoint{Name: request.Name, Protocol: request.Protocol, Host: request.Host, Port: request.Port, Enabled: request.Enabled, SharingMode: request.SharingMode, Username: request.Username, Password: request.Password, ExpectedPublicIP: request.ExpectedPublicIP}
 }
 
 func applyEndpointPatch(endpoint *egress.Endpoint, patch egressEndpointPatch) {
@@ -482,6 +484,9 @@ func applyEndpointPatch(endpoint *egress.Endpoint, patch egressEndpointPatch) {
 	}
 	if patch.Enabled != nil {
 		endpoint.Enabled = *patch.Enabled
+	}
+	if patch.SharingMode != nil {
+		endpoint.SharingMode = *patch.SharingMode
 	}
 	if patch.Username != nil {
 		endpoint.Username = *patch.Username
@@ -503,7 +508,7 @@ func egressEndpointView(ctx context.Context, service *egress.Service, endpoint e
 	return gin.H{
 		"id": endpoint.ID, "name": endpoint.Name,
 		"protocol": endpoint.Protocol, "host": endpoint.Host, "port": endpoint.Port,
-		"enabled":  endpoint.Enabled,
+		"enabled": endpoint.Enabled, "sharing_mode": endpoint.SharingMode,
 		"username": endpoint.Username, "has_credentials": endpoint.Username != "" || endpoint.Password != "",
 		"masked_url": masked, "expected_public_ip": endpoint.ExpectedPublicIP,
 		"observed_public_ip": endpoint.PublicIP, "public_ip": endpoint.PublicIP, "latency_ms": endpoint.LatencyMS,

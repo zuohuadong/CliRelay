@@ -565,6 +565,10 @@
     "prefix_proxy_source_label": "认证文件 JSON（预览）",
     "prefix_label": "prefix（可选）",
     "proxy_url_label": "proxy_url（可选）",
+    "egress_mode_label": "出口模式",
+    "egress_mode_fixed": "固定端点",
+    "egress_mode_shared_proxy": "共享代理",
+    "egress_shared_proxy_hint": "此账号使用自身 proxy_url；留空时使用全局代理。固定端点绑定会保留，但不会参与请求。",
     "egress_endpoint_label": "固定出口端点",
     "egress_endpoint_hint": "为此 Codex 账号选择一个显式端点。变更会先预览再原子应用，密码不会回显。",
     "egress_identity_missing": "此认证文件尚无稳定的 Codex 绑定身份，请选择出口端点重新授权。",
@@ -1884,7 +1888,7 @@
   },
   "egress": {
     "title": "Codex 出口",
-    "description": "将每个 Codex OAuth 账号固定到一个显式代理端点，并通过预览确认后原子应用绑定变更。",
+    "description": "Codex OAuth 账号可使用独占固定端点或共享动态端点，并通过预览确认后原子应用绑定变更。",
     "runtime": {
       "enabled": "运行态已启用",
       "disabled": "运行态未启用"
@@ -1908,6 +1912,7 @@
       "policies": {
         "exclusive": "独占端点绑定",
         "shared": "共享端点绑定",
+        "per_endpoint": "按端点绑定策略",
         "unknown": "未知绑定策略"
       }
     },
@@ -1979,6 +1984,12 @@
       "observed_short": "观测",
       "expected_public_ip": "预期公网 IP",
       "expected_public_ip_hint": "端点只有观测到这个完全一致的公网 IPv4 或 IPv6 地址后才会进入就绪状态。",
+      "expected_public_ip_shared_hint": "共享端点会自动接受观测到的公网 IP 变化，只记录最新观测值。",
+      "sharing_mode": "分配模式",
+      "sharing_mode_exclusive": "独占固定端点",
+      "sharing_mode_shared": "共享动态端点",
+      "sharing_mode_exclusive_hint": "仅一个 Codex 账号可绑定此端点，且观测公网 IP 必须完全一致。",
+      "sharing_mode_shared_hint": "多个 Codex 账号可绑定此端点；公网 IP 变化会被记录，但不会使端点不健康。",
       "not_checked": "未检测",
       "availability": "可用状态",
       "unknown": "未检测",

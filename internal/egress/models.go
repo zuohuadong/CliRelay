@@ -9,23 +9,31 @@ const (
 	ProtocolHTTP   Protocol = "http"
 )
 
+type EndpointSharingMode string
+
+const (
+	EndpointSharingModeExclusive EndpointSharingMode = "exclusive"
+	EndpointSharingModeShared    EndpointSharingMode = "shared"
+)
+
 type Endpoint struct {
-	ID               string    `json:"id"`
-	Name             string    `json:"name"`
-	Protocol         Protocol  `json:"protocol"`
-	Host             string    `json:"host"`
-	Port             int       `json:"port"`
-	Enabled          bool      `json:"enabled"`
-	Username         string    `json:"username,omitempty"`
-	Password         string    `json:"-"`
-	ExpectedPublicIP string    `json:"expected_public_ip,omitempty"`
-	PublicIP         string    `json:"public_ip,omitempty"`
-	LatencyMS        int64     `json:"latency_ms,omitempty"`
-	LastCheckedAt    time.Time `json:"last_checked_at,omitempty"`
-	CheckStatus      string    `json:"status,omitempty"`
-	CheckError       string    `json:"error,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID               string              `json:"id"`
+	Name             string              `json:"name"`
+	Protocol         Protocol            `json:"protocol"`
+	Host             string              `json:"host"`
+	Port             int                 `json:"port"`
+	Enabled          bool                `json:"enabled"`
+	SharingMode      EndpointSharingMode `json:"sharing_mode"`
+	Username         string              `json:"username,omitempty"`
+	Password         string              `json:"-"`
+	ExpectedPublicIP string              `json:"expected_public_ip,omitempty"`
+	PublicIP         string              `json:"public_ip,omitempty"`
+	LatencyMS        int64               `json:"latency_ms,omitempty"`
+	LastCheckedAt    time.Time           `json:"last_checked_at,omitempty"`
+	CheckStatus      string              `json:"status,omitempty"`
+	CheckError       string              `json:"error,omitempty"`
+	CreatedAt        time.Time           `json:"created_at"`
+	UpdatedAt        time.Time           `json:"updated_at"`
 }
 
 const (

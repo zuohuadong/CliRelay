@@ -1,6 +1,7 @@
 import { apiClient } from "@/lib/http/client";
 
 export type EgressProtocol = "socks5" | "http";
+export type EgressEndpointSharingMode = "exclusive" | "shared";
 export type EgressEndpointStatus = "unknown" | "healthy" | "unhealthy";
 export type EgressReadinessVerdict = "ready" | "blocked";
 export type EgressEndpointAction = "disable" | "delete";
@@ -21,7 +22,7 @@ export interface EgressReadiness {
 }
 
 export interface EgressPolicy {
-  bindingMode: "exclusive" | "shared";
+  bindingMode: "exclusive" | "shared" | "per_endpoint";
   failureMode: "fail_closed";
   readinessScope: string;
   hostKillSwitchEnforced: boolean;
@@ -62,6 +63,7 @@ export interface EgressEndpoint {
   host: string;
   port: number;
   enabled: boolean;
+  sharingMode?: EgressEndpointSharingMode;
   hasCredentials?: boolean;
   username?: string;
   status: EgressEndpointStatus;
@@ -93,6 +95,7 @@ export interface EgressEndpointInput {
   host: string;
   port: number;
   enabled: boolean;
+  sharingMode?: EgressEndpointSharingMode;
   expectedPublicIp?: string;
   username?: string;
   password?: string;
@@ -192,6 +195,9 @@ const requireProtocol = (value: unknown): EgressProtocol => {
   throw new Error(`Unsupported egress protocol: ${normalizeString(value).toLowerCase()}`);
 };
 
+const normalizeSharingMode = (value: unknown): EgressEndpointSharingMode =>
+  normalizeString(value).toLowerCase() === "shared" ? "shared" : "exclusive";
+
 const normalizeStatus = (value: unknown): EgressEndpointStatus => {
   const status = normalizeString(value).toLowerCase();
   if (status === "healthy" || status === "ok" || status === "online") return "healthy";
@@ -212,20 +218,22 @@ export const normalizeEgressOverview = (value: unknown): EgressOverview => {
   const counts = asRecord(raw.counts);
   const policy = asRecord(raw.policy);
   const readiness = asRecord(raw.readiness);
-  const ready = normalizeBoolean(readiness.ready ?? readiness.ready_to_enable ?? readiness.readyToEnable);
+  const ready = normalizeBoolean(
+    readiness.ready ?? readiness.ready_to_enable ?? readiness.readyToEnable,
+  );
   const scope = normalizeString(raw.scope ?? readiness.scope) || "application_egress";
   return {
     enabled: normalizeBoolean(raw.enabled ?? raw.runtime_enabled ?? raw.runtimeEnabled),
     revision: normalizeString(raw.revision ?? readiness.revision),
     scope,
     policy: {
-      bindingMode:
-        normalizeString(policy.binding_mode ?? policy.bindingMode).toLowerCase() === "shared"
-          ? "shared"
-          : "exclusive",
+      bindingMode: (() => {
+        const bindingMode = normalizeString(policy.binding_mode ?? policy.bindingMode).toLowerCase();
+        if (bindingMode === "shared" || bindingMode === "per_endpoint") return bindingMode;
+        return "exclusive";
+      })(),
       failureMode: "fail_closed",
-      readinessScope:
-        normalizeString(policy.readiness_scope ?? policy.readinessScope) || scope,
+      readinessScope: normalizeString(policy.readiness_scope ?? policy.readinessScope) || scope,
       hostKillSwitchEnforced: normalizeBoolean(
         policy.host_kill_switch_enforced ?? policy.hostKillSwitchEnforced,
       ),
@@ -276,6 +284,7 @@ export const normalizeEgressEndpoint = (raw: UnknownRecord): EgressEndpoint | nu
     host,
     port,
     enabled: normalizeBoolean(raw.enabled, true),
+    sharingMode: normalizeSharingMode(raw.sharing_mode ?? raw.sharingMode),
     ...(typeof (raw.has_credentials ?? raw.hasCredentials) === "boolean"
       ? { hasCredentials: Boolean(raw.has_credentials ?? raw.hasCredentials) }
       : {}),
@@ -292,7 +301,9 @@ export const normalizeEgressEndpoint = (raw: UnknownRecord): EgressEndpoint | nu
         }
       : {}),
     ...(normalizeOptionalString(raw.expected_public_ip ?? raw.expectedPublicIp)
-      ? { expectedPublicIp: normalizeOptionalString(raw.expected_public_ip ?? raw.expectedPublicIp) }
+      ? {
+          expectedPublicIp: normalizeOptionalString(raw.expected_public_ip ?? raw.expectedPublicIp),
+        }
       : {}),
     ...(normalizeOptionalString(raw.last_checked_at ?? raw.lastCheckedAt)
       ? { lastCheckedAt: normalizeOptionalString(raw.last_checked_at ?? raw.lastCheckedAt) }
@@ -353,6 +364,7 @@ const serializeEndpointInput = (input: Partial<EgressEndpointInput>): UnknownRec
   ...(input.host !== undefined ? { host: input.host.trim() } : {}),
   ...(input.port !== undefined ? { port: input.port } : {}),
   ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+  ...(input.sharingMode !== undefined ? { sharing_mode: input.sharingMode } : {}),
   ...(input.expectedPublicIp !== undefined
     ? { expected_public_ip: input.expectedPublicIp.trim() }
     : {}),

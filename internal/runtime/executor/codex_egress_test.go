@@ -145,6 +145,211 @@ func TestCodexStrictEgressHttpRequestWrapsProxyDialFailure(t *testing.T) {
 	}
 }
 
+func TestCodexSharedProxyHttpBypassesStrictEndpointResolver(t *testing.T) {
+	t.Parallel()
+
+	var proxyHits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits.Add(1)
+		if got, want := r.URL.String(), "http://upstream.invalid/shared"; got != want {
+			t.Fatalf("proxy URL = %q, want %q", got, want)
+		}
+		_, _ = w.Write([]byte("shared-proxy"))
+	}))
+	defer proxy.Close()
+
+	resolver := &recordingEgressResolver{resolved: egress.ResolvedEndpoint{
+		Endpoint: egress.Endpoint{ID: "strict-endpoint"},
+		ProxyURL: closedProxyURL(t),
+	}}
+	exec := NewCodexExecutorWithEgress(&config.Config{}, resolver)
+	auth := &cliproxyauth.Auth{
+		ProxyURL: proxy.URL,
+		Metadata: map[string]any{
+			"account_id":  "acct-shared",
+			"egress_mode": "shared_proxy",
+		},
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://upstream.invalid/shared", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := exec.HttpRequest(context.Background(), auth, req)
+	if err != nil {
+		t.Fatalf("HttpRequest() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if got := proxyHits.Load(); got != 1 {
+		t.Fatalf("shared proxy hits = %d, want 1", got)
+	}
+	if accounts := resolver.Accounts(); len(accounts) != 0 {
+		t.Fatalf("strict egress resolver accounts = %v, want none", accounts)
+	}
+}
+
+func TestCodexSharedProxyUsesGlobalProxyWhenAuthProxyIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.String(), "http://upstream.invalid/global"; got != want {
+			t.Fatalf("proxy URL = %q, want %q", got, want)
+		}
+		_, _ = w.Write([]byte("global-shared-proxy"))
+	}))
+	defer proxy.Close()
+
+	resolver := &recordingEgressResolver{resolved: egress.ResolvedEndpoint{
+		Endpoint: egress.Endpoint{ID: "strict-endpoint"},
+		ProxyURL: closedProxyURL(t),
+	}}
+	exec := NewCodexExecutorWithEgress(&config.Config{SDKConfig: config.SDKConfig{ProxyURL: proxy.URL}}, resolver)
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{
+		"account_id":  "acct-shared-global",
+		"egress_mode": "shared_proxy",
+	}}
+	req, err := http.NewRequest(http.MethodGet, "http://upstream.invalid/global", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := exec.HttpRequest(context.Background(), auth, req)
+	if err != nil {
+		t.Fatalf("HttpRequest() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if accounts := resolver.Accounts(); len(accounts) != 0 {
+		t.Fatalf("strict egress resolver accounts = %v, want none", accounts)
+	}
+}
+
+func TestCodexSharedProxyRefreshUsesHomeWithoutResolvingStrictEndpoint(t *testing.T) {
+	t.Parallel()
+
+	resolver := &recordingEgressResolver{resolved: egress.ResolvedEndpoint{
+		Endpoint: egress.Endpoint{ID: "strict-endpoint"},
+		ProxyURL: closedProxyURL(t),
+	}}
+	exec := NewCodexExecutorWithEgress(&config.Config{Home: config.HomeConfig{Enabled: true}}, resolver)
+	refreshed := &cliproxyauth.Auth{ID: "shared-refreshed", Provider: "codex"}
+	var homeRefreshCalls atomic.Int32
+	exec.homeRefresh = func(_ context.Context, _ *config.Config, got *cliproxyauth.Auth) (*cliproxyauth.Auth, bool, error) {
+		homeRefreshCalls.Add(1)
+		if got == nil || got.Metadata["egress_mode"] != "shared_proxy" {
+			t.Fatalf("home refresh auth = %#v, want shared proxy auth", got)
+		}
+		return refreshed, true, nil
+	}
+	auth := &cliproxyauth.Auth{
+		ProxyURL: "http://configured-proxy.invalid:8080",
+		Metadata: map[string]any{
+			"account_id":  "acct-shared",
+			"egress_mode": "shared_proxy",
+		},
+	}
+
+	got, err := exec.Refresh(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
+	if got != refreshed {
+		t.Fatalf("Refresh() auth = %#v, want home-refreshed auth", got)
+	}
+	if got := homeRefreshCalls.Load(); got != 1 {
+		t.Fatalf("home refresh calls = %d, want 1", got)
+	}
+	if accounts := resolver.Accounts(); len(accounts) != 0 {
+		t.Fatalf("strict egress resolver accounts = %v, want none", accounts)
+	}
+}
+
+func TestCodexSharedProxyRejectsMissingInvalidAndDirectProxyBeforeEndpointResolve(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		cfgProxy  string
+		authProxy string
+		want      error
+	}{
+		{name: "missing", want: egress.ErrEgressRequired},
+		{name: "invalid", authProxy: "://invalid", want: egress.ErrEndpointInvalid},
+		{name: "direct", cfgProxy: "http://configured-proxy.invalid:8080", authProxy: "direct", want: egress.ErrEndpointInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resolver := &recordingEgressResolver{resolved: egress.ResolvedEndpoint{
+				Endpoint: egress.Endpoint{ID: "strict-endpoint"},
+				ProxyURL: closedProxyURL(t),
+			}}
+			exec := NewCodexExecutorWithEgress(&config.Config{SDKConfig: config.SDKConfig{ProxyURL: tc.cfgProxy}}, resolver)
+			_, err := exec.resolveEgressAuth(context.Background(), &cliproxyauth.Auth{
+				ProxyURL: tc.authProxy,
+				Metadata: map[string]any{
+					"account_id":  "acct-shared",
+					"egress_mode": "shared_proxy",
+				},
+			})
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("resolveEgressAuth() error = %v, want %v", err, tc.want)
+			}
+			if accounts := resolver.Accounts(); len(accounts) != 0 {
+				t.Fatalf("strict egress resolver accounts = %v, want none", accounts)
+			}
+		})
+	}
+}
+
+func TestCodexWebsocketSharedProxyUsesNormalReadErrorClassification(t *testing.T) {
+	t.Parallel()
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer upstream.Close()
+	proxy := newCodexHTTPConnectProxy(t)
+	defer proxy.Close()
+
+	resolver := &recordingEgressResolver{resolved: egress.ResolvedEndpoint{
+		Endpoint: egress.Endpoint{ID: "strict-endpoint"},
+		ProxyURL: closedProxyURL(t),
+	}}
+	exec := NewCodexWebsocketsExecutorWithEgress(&config.Config{}, resolver)
+	auth := &cliproxyauth.Auth{
+		ProxyURL: proxy.URL,
+		Metadata: map[string]any{
+			"account_id":   "acct-shared",
+			"access_token": "token",
+			"egress_mode":  "shared_proxy",
+		},
+		Attributes: map[string]string{"base_url": upstream.URL},
+	}
+
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model: "gpt-5.4", Payload: []byte(`{"model":"gpt-5.4","input":"hi"}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want normal upstream disconnect error")
+	}
+	var runtimeErr *egress.Error
+	if errors.As(err, &runtimeErr) {
+		t.Fatalf("Execute() error = %v, want normal websocket error instead of egress runtime error", err)
+	}
+	var statusError interface{ StatusCode() int }
+	if !errors.As(err, &statusError) || statusError.StatusCode() != http.StatusRequestTimeout {
+		t.Fatalf("Execute() error = %v, want replayable websocket disconnect status", err)
+	}
+	if accounts := resolver.Accounts(); len(accounts) != 0 {
+		t.Fatalf("strict egress resolver accounts = %v, want none", accounts)
+	}
+}
+
 func TestCodexStrictEgressTransportErrorDoesNotExposeProxyCredentials(t *testing.T) {
 	t.Parallel()
 

@@ -32,7 +32,7 @@ describe("egressApi", () => {
       revision: "rev-7",
       scope: "application_egress",
       policy: {
-        binding_mode: "exclusive",
+        binding_mode: "per_endpoint",
         failure_mode: "fail_closed",
         readiness_scope: "application_egress",
         host_kill_switch_enforced: false,
@@ -63,7 +63,7 @@ describe("egressApi", () => {
       revision: "rev-7",
       scope: "application_egress",
       policy: {
-        bindingMode: "exclusive",
+        bindingMode: "per_endpoint",
         failureMode: "fail_closed",
         readinessScope: "application_egress",
         hostKillSwitchEnforced: false,
@@ -101,6 +101,7 @@ describe("egressApi", () => {
           host: "10.77.0.2",
           port: "1080",
           enabled: true,
+          sharing_mode: "shared",
           username: "relay",
           has_credentials: true,
           status: "healthy",
@@ -137,6 +138,7 @@ describe("egressApi", () => {
         host: "10.77.0.2",
         port: 1080,
         enabled: true,
+        sharingMode: "shared",
         username: "relay",
         hasCredentials: true,
         status: "healthy",

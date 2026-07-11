@@ -27,6 +27,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -43,6 +44,7 @@ const (
 	codexDefaultImageToolModel        = "gpt-image-2"
 	codexCompactResponseHeaderTimeout = 30 * time.Second
 	codexFastModeServiceTier          = "priority"
+	codexEgressModeSharedProxy        = "shared_proxy"
 )
 
 // codexHTTPStreamIdleTimeout aborts an upstream SSE stream that accepts the
@@ -394,8 +396,44 @@ func (e *CodexExecutor) refreshCodexTokens(ctx context.Context, client *http.Cli
 	return codexauth.NewCodexAuthWithHTTPClient(client).RefreshTokensWithRetry(ctx, refreshToken, 3)
 }
 
+func codexUsesSharedProxyEgress(auth *cliproxyauth.Auth) bool {
+	if auth == nil || auth.Metadata == nil {
+		return false
+	}
+	egressMode, _ := auth.Metadata["egress_mode"].(string)
+	return egressMode == codexEgressModeSharedProxy
+}
+
+func (e *CodexExecutor) usesStrictEgress(auth *cliproxyauth.Auth) bool {
+	return e != nil && e.strictEgress && !codexUsesSharedProxyEgress(auth)
+}
+
+func (e *CodexExecutor) validateSharedProxyEgress(auth *cliproxyauth.Auth) error {
+	if !codexUsesSharedProxyEgress(auth) {
+		return nil
+	}
+	proxyURL := ""
+	if auth != nil {
+		proxyURL = strings.TrimSpace(auth.ProxyURL)
+	}
+	if proxyURL == "" && e != nil && e.cfg != nil {
+		proxyURL = strings.TrimSpace(e.cfg.ProxyURL)
+	}
+	if proxyURL == "" {
+		return egress.RuntimeError(fmt.Errorf("%w: shared Codex proxy is required", egress.ErrEgressRequired))
+	}
+	setting, err := proxyutil.Parse(proxyURL)
+	if err != nil || setting.Mode != proxyutil.ModeProxy || setting.URL == nil {
+		return egress.RuntimeError(fmt.Errorf("%w: shared Codex proxy must be a valid non-direct proxy", egress.ErrEndpointInvalid))
+	}
+	return nil
+}
+
 func (e *CodexExecutor) outboundHTTPClient(ctx context.Context, auth *cliproxyauth.Auth, timeout, responseHeaderTimeout time.Duration, useUTLS bool) (*http.Client, error) {
-	if e != nil && e.strictEgress {
+	if err := e.validateSharedProxyEgress(auth); err != nil {
+		return nil, err
+	}
+	if e.usesStrictEgress(auth) {
 		proxyURL := ""
 		if auth != nil {
 			proxyURL = strings.TrimSpace(auth.ProxyURL)
@@ -474,8 +512,21 @@ func (e *CodexExecutor) wrapStrictEgressTransportError(err error, operation stri
 	return wrapStrictEgressTransportError(err, operation)
 }
 
+func (e *CodexExecutor) wrapStrictEgressTransportErrorForAuth(auth *cliproxyauth.Auth, err error, operation string) error {
+	if !e.usesStrictEgress(auth) {
+		return err
+	}
+	return wrapStrictEgressTransportError(err, operation)
+}
+
 func (e *CodexExecutor) resolveEgressAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
-	if e == nil || !e.strictEgress {
+	if codexUsesSharedProxyEgress(auth) {
+		if err := e.validateSharedProxyEgress(auth); err != nil {
+			return nil, err
+		}
+		return auth, nil
+	}
+	if !e.usesStrictEgress(auth) {
 		return auth, nil
 	}
 	if e.egress == nil {
@@ -1657,7 +1708,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		close(streamDone)
 		if idleTimedOut.Load() {
 			var idleErr error = statusErr{code: http.StatusRequestTimeout, msg: `{"error":{"message":"upstream stream idle timeout","type":"server_error","code":"stream_idle_timeout"}}`}
-			if e != nil && e.strictEgress && !emittedPayload {
+			if e.usesStrictEgress(auth) && !emittedPayload {
 				idleErr = wrapStrictEgressTransportError(errors.New("upstream stream idle timeout"), "stream idle timeout")
 			}
 			helps.RecordAPIResponseError(ctx, e.cfg, idleErr)
@@ -1669,7 +1720,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			return
 		}
 		if errScan := scanner.Err(); errScan != nil {
-			errScan = e.wrapStrictEgressTransportError(errScan, "stream read")
+			errScan = e.wrapStrictEgressTransportErrorForAuth(auth, errScan, "stream read")
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			select {
@@ -1854,7 +1905,7 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	if err != nil {
 		return nil, err
 	}
-	if e == nil || !e.strictEgress {
+	if !e.usesStrictEgress(auth) {
 		if refreshed, handled, err := e.refreshViaHome(ctx, auth); handled {
 			return refreshed, err
 		}
@@ -1885,7 +1936,7 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 		return nil, err
 	}
 	refreshedAccountID := strings.TrimSpace(td.AccountID)
-	if e != nil && e.strictEgress && boundAccountID != "" && refreshedAccountID != "" && refreshedAccountID != boundAccountID {
+	if e.usesStrictEgress(auth) && boundAccountID != "" && refreshedAccountID != "" && refreshedAccountID != boundAccountID {
 		return nil, egress.RuntimeError(fmt.Errorf("%w: refreshed Codex account_id does not match the bound identity", egress.ErrIdentityMismatch))
 	}
 	if auth.Metadata == nil {

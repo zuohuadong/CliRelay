@@ -411,7 +411,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		defer sess.clearActive(readCh)
 	}
 
-	if errSend := e.writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
+	if errSend := e.writeCodexWebsocketMessageForAuth(auth, sess, conn, wsReqBody); errSend != nil {
 		if sess != nil {
 			e.invalidateUpstreamConn(sess, conn, "send_error", errSend)
 
@@ -435,7 +435,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				})
 				recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
 				reporter.StartResponseTTFT()
-				if errSendRetry := e.writeCodexWebsocketMessage(sess, connRetry, wsReqBodyRetry); errSendRetry == nil {
+				if errSendRetry := e.writeCodexWebsocketMessageForAuth(auth, sess, connRetry, wsReqBodyRetry); errSendRetry == nil {
 					conn = connRetry
 					wsReqBody = wsReqBodyRetry
 				} else {
@@ -460,7 +460,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}
 		msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
 		if errRead != nil {
-			mappedErr := e.mapWebsocketReadError(errRead)
+			mappedErr := e.mapWebsocketReadErrorForAuth(auth, errRead)
 			helps.RecordAPIWebsocketError(ctx, e.cfg, "read", mappedErr)
 			return resp, mappedErr
 		}
@@ -655,7 +655,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		sess.setActiveForConn(conn, readCh)
 	}
 
-	if errSend := e.writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
+	if errSend := e.writeCodexWebsocketMessageForAuth(auth, sess, conn, wsReqBody); errSend != nil {
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
 		if sess != nil {
 			e.invalidateUpstreamConn(sess, conn, "send_error", errSend)
@@ -684,7 +684,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			})
 			recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
 			reporter.StartResponseTTFT()
-			if errSendRetry := e.writeCodexWebsocketMessage(sess, connRetry, wsReqBodyRetry); errSendRetry != nil {
+			if errSendRetry := e.writeCodexWebsocketMessageForAuth(auth, sess, connRetry, wsReqBodyRetry); errSendRetry != nil {
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
 				e.invalidateUpstreamConn(sess, connRetry, "send_error", errSendRetry)
 				sess.clearActive(readCh)
@@ -749,7 +749,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					_ = send(cliproxyexecutor.StreamChunk{Err: ctx.Err()})
 					return
 				}
-				mappedErr := e.mapWebsocketReadError(errRead)
+				mappedErr := e.mapWebsocketReadErrorForAuth(auth, errRead)
 				terminateReason = "read_error"
 				terminateErr = mappedErr
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "read", mappedErr)
@@ -835,7 +835,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *cliproxyauth.Auth, wsURL string, headers http.Header) (*websocket.Conn, *http.Response, error) {
 	var dialer *websocket.Dialer
 	var err error
-	if e != nil && e.strictEgress {
+	if e != nil && e.CodexExecutor != nil && e.CodexExecutor.usesStrictEgress(auth) {
 		proxyURL := ""
 		if auth != nil {
 			proxyURL = auth.ProxyURL
@@ -856,8 +856,8 @@ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *
 	// Gorilla returns a nil response for transport and HTTP CONNECT proxy
 	// failures. A non-nil response is the real upstream WebSocket handshake and
 	// must keep its upstream semantics instead of being mislabeled as egress.
-	if e != nil && e.strictEgress && err != nil && resp == nil {
-		err = e.wrapStrictEgressTransportError(err, "websocket proxy dial")
+	if e != nil && e.CodexExecutor != nil && e.CodexExecutor.usesStrictEgress(auth) && err != nil && resp == nil {
+		err = e.CodexExecutor.wrapStrictEgressTransportErrorForAuth(auth, err, "websocket proxy dial")
 	}
 	if conn != nil {
 		// Avoid gorilla/websocket flate tail validation issues on some upstreams/Go versions.
@@ -917,12 +917,23 @@ func writeCodexWebsocketMessage(sess *codexWebsocketSession, conn *websocket.Con
 	return conn.WriteMessage(websocket.TextMessage, payload)
 }
 
+// writeCodexWebsocketMessage preserves the strict-egress helper for legacy
+// callers and focused transport tests. Runtime request paths use the auth-aware
+// variant below so shared-proxy accounts are never classified as fixed egress.
 func (e *CodexWebsocketsExecutor) writeCodexWebsocketMessage(sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
 	err := writeCodexWebsocketMessage(sess, conn, payload)
 	if e == nil || e.CodexExecutor == nil {
 		return err
 	}
-	return e.wrapStrictEgressTransportError(err, "websocket send")
+	return e.CodexExecutor.wrapStrictEgressTransportError(err, "websocket send")
+}
+
+func (e *CodexWebsocketsExecutor) writeCodexWebsocketMessageForAuth(auth *cliproxyauth.Auth, sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
+	err := writeCodexWebsocketMessage(sess, conn, payload)
+	if e == nil || e.CodexExecutor == nil {
+		return err
+	}
+	return e.CodexExecutor.wrapStrictEgressTransportErrorForAuth(auth, err, "websocket send")
 }
 
 func isCodexEgressRuntimeError(err error) bool {
@@ -948,9 +959,12 @@ func mapCodexWebsocketReadError(err error) error {
 	return err
 }
 
+// mapWebsocketReadError preserves the strict-egress helper for legacy callers
+// and focused transport tests. Runtime request paths use the auth-aware method
+// below so shared-proxy accounts keep normal upstream error semantics.
 func (e *CodexWebsocketsExecutor) mapWebsocketReadError(err error) error {
 	mapped := mapCodexWebsocketReadError(err)
-	if e == nil || !e.strictEgress || err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if e == nil || e.CodexExecutor == nil || !e.CodexExecutor.strictEgress || err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return mapped
 	}
 	var closeErr *websocket.CloseError
@@ -961,7 +975,23 @@ func (e *CodexWebsocketsExecutor) mapWebsocketReadError(err error) error {
 	if errors.Is(err, io.EOF) {
 		transportErr = io.ErrUnexpectedEOF
 	}
-	return e.wrapStrictEgressTransportError(transportErr, "websocket read")
+	return e.CodexExecutor.wrapStrictEgressTransportError(transportErr, "websocket read")
+}
+
+func (e *CodexWebsocketsExecutor) mapWebsocketReadErrorForAuth(auth *cliproxyauth.Auth, err error) error {
+	mapped := mapCodexWebsocketReadError(err)
+	if e == nil || e.CodexExecutor == nil || !e.CodexExecutor.usesStrictEgress(auth) || err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return mapped
+	}
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) && closeErr.Code == websocket.CloseMessageTooBig {
+		return mapped
+	}
+	transportErr := err
+	if errors.Is(err, io.EOF) {
+		transportErr = io.ErrUnexpectedEOF
+	}
+	return e.CodexExecutor.wrapStrictEgressTransportErrorForAuth(auth, transportErr, "websocket read")
 }
 
 // isCodexWebsocketDirtyDisconnect reports whether err represents an upstream

@@ -4,6 +4,7 @@ import type {
   EgressEndpoint,
   EgressEndpointInput,
   EgressProtocol,
+  EgressEndpointSharingMode,
 } from "@/lib/http/apis/egress";
 import { Button } from "@/modules/ui/Button";
 import { TextInput } from "@/modules/ui/Input";
@@ -17,6 +18,7 @@ interface EndpointDraft {
   host: string;
   port: string;
   enabled: boolean;
+  sharingMode: EgressEndpointSharingMode;
   expectedPublicIp: string;
   username: string;
   password: string;
@@ -28,8 +30,7 @@ const isValidIPv4 = (value: string): boolean => {
   return (
     octets.length === 4 &&
     octets.every(
-      (octet) =>
-        /^(0|[1-9]\d{0,2})$/.test(octet) && Number(octet) >= 0 && Number(octet) <= 255,
+      (octet) => /^(0|[1-9]\d{0,2})$/.test(octet) && Number(octet) >= 0 && Number(octet) <= 255,
     )
   );
 };
@@ -74,6 +75,7 @@ const emptyDraft = (): EndpointDraft => ({
   host: "",
   port: "1080",
   enabled: true,
+  sharingMode: "exclusive",
   expectedPublicIp: "",
   username: "",
   password: "",
@@ -86,6 +88,7 @@ const endpointDraft = (endpoint: EgressEndpoint): EndpointDraft => ({
   host: endpoint.host,
   port: String(endpoint.port),
   enabled: endpoint.enabled,
+  sharingMode: endpoint.sharingMode ?? "exclusive",
   expectedPublicIp: endpoint.expectedPublicIp ?? "",
   username: endpoint.username ?? "",
   password: "",
@@ -122,7 +125,7 @@ export function EndpointModal({
       return;
     }
     const expectedPublicIp = draft.expectedPublicIp.trim();
-    if (draft.enabled && !expectedPublicIp) {
+    if (draft.enabled && draft.sharingMode === "exclusive" && !expectedPublicIp) {
       setError(t("egress.endpoints.validation_expected_public_ip_required"));
       return;
     }
@@ -136,7 +139,8 @@ export function EndpointModal({
       host: draft.host.trim(),
       port,
       enabled: draft.enabled,
-      expectedPublicIp,
+      sharingMode: draft.sharingMode,
+      expectedPublicIp: draft.sharingMode === "shared" ? "" : expectedPublicIp,
       ...(draft.clearCredentials
         ? { clearCredentials: true }
         : {
@@ -206,6 +210,26 @@ export function EndpointModal({
           />
         </label>
         <label className="space-y-2 text-xs font-semibold text-slate-700 dark:text-white/75 sm:col-span-2">
+          <span>{t("egress.endpoints.sharing_mode")}</span>
+          <Select
+            value={draft.sharingMode}
+            onChange={(value) =>
+              setDraft((current) => ({
+                ...current,
+                sharingMode: value === "shared" ? "shared" : "exclusive",
+              }))
+            }
+            options={[
+              { value: "exclusive", label: t("egress.endpoints.sharing_mode_exclusive") },
+              { value: "shared", label: t("egress.endpoints.sharing_mode_shared") },
+            ]}
+            aria-label={t("egress.endpoints.sharing_mode")}
+          />
+          <span className="block font-normal text-slate-500 dark:text-white/50">
+            {t(`egress.endpoints.sharing_mode_${draft.sharingMode}_hint`)}
+          </span>
+        </label>
+        <label className="space-y-2 text-xs font-semibold text-slate-700 dark:text-white/75 sm:col-span-2">
           <span>{t("egress.endpoints.expected_public_ip")}</span>
           <TextInput
             aria-label={t("egress.endpoints.expected_public_ip")}
@@ -213,12 +237,17 @@ export function EndpointModal({
             spellCheck={false}
             placeholder="203.0.113.8 or 2001:db8::8"
             value={draft.expectedPublicIp}
+            disabled={draft.sharingMode === "shared"}
             onChange={(event) =>
               setDraft((current) => ({ ...current, expectedPublicIp: event.target.value }))
             }
           />
           <span className="block font-normal text-slate-500 dark:text-white/50">
-            {t("egress.endpoints.expected_public_ip_hint")}
+            {t(
+              draft.sharingMode === "shared"
+                ? "egress.endpoints.expected_public_ip_shared_hint"
+                : "egress.endpoints.expected_public_ip_hint",
+            )}
           </span>
         </label>
         <label className="space-y-2 text-xs font-semibold text-slate-700 dark:text-white/75">
@@ -259,7 +288,7 @@ export function EndpointModal({
                 setDraft((current) => ({
                   ...current,
                   clearCredentials,
-                  username: clearCredentials ? "" : endpoint.username ?? "",
+                  username: clearCredentials ? "" : (endpoint.username ?? ""),
                   password: "",
                 }))
               }

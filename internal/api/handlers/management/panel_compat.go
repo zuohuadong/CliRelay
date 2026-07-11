@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -2162,19 +2163,22 @@ func (f usageFilters) whereClause(db *sql.DB) (string, []any) {
 	cols := requestLogColumns(db)
 	parts := []string{"1=1"}
 	args := []any{}
+	// request_logs timestamps are UTC RFC3339/RFC3339Nano. Keep functions on
+	// the bounds so SQLite can use idx_logs_timestamp; the next-second upper
+	// bound preserves the previous datetime(...) comparison's second precision.
 	if f.Days > 0 && cols["timestamp"] {
-		parts = append(parts, "datetime(timestamp) >= datetime('now', ?)")
+		parts = append(parts, "timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)")
 		args = append(args, "-"+strconv.Itoa(f.Days)+" days")
 	}
 	if f.Start != "" && cols["timestamp"] {
-		parts = append(parts, "datetime(timestamp) >= datetime(?)")
+		parts = append(parts, "timestamp >= strftime('%Y-%m-%dT%H:%M:%S', ?)")
 		args = append(args, f.Start)
 	}
 	if f.End != "" && cols["timestamp"] {
-		parts = append(parts, "datetime(timestamp) <= datetime(?)")
+		parts = append(parts, "timestamp < strftime('%Y-%m-%dT%H:%M:%S', ?, '+1 second')")
 		args = append(args, f.End)
 	} else if (f.Days > 0 || f.Start != "") && cols["timestamp"] {
-		parts = append(parts, "datetime(timestamp) <= datetime('now')")
+		parts = append(parts, "timestamp < strftime('%Y-%m-%dT%H:%M:%S', 'now', '+1 second')")
 	}
 	if f.Model != "" && cols["model"] {
 		parts = append(parts, "model = ?")
@@ -2261,24 +2265,32 @@ func buildUsageChartPayload(db *sql.DB, filters usageFilters, public bool) gin.H
 }
 
 func queryUsageTotals(db *sql.DB, filters usageFilters) usageTotals {
+	return queryUsageTotalsContext(context.Background(), db, filters)
+}
+
+func queryUsageTotalsContext(ctx context.Context, db *sql.DB, filters usageFilters) usageTotals {
 	if !dbTableExists(db, "request_logs") {
 		return usageTotals{}
 	}
 	cols := requestLogColumns(db)
 	whereSQL, args := filters.whereClause(db)
-	row := db.QueryRow("SELECT count(*), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"=0 then 1 else 0 end),0), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "input_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "output_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "reasoning_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cached_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cost", "0")+"),0) FROM request_logs WHERE "+whereSQL, args...)
+	row := db.QueryRowContext(ctx, "SELECT count(*), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"=0 then 1 else 0 end),0), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "input_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "output_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "reasoning_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cached_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cost", "0")+"),0) FROM request_logs WHERE "+whereSQL, args...)
 	var out usageTotals
 	_ = row.Scan(&out.Total, &out.Success, &out.Failed, &out.InputTokens, &out.OutputTokens, &out.ReasoningTokens, &out.CachedTokens, &out.TotalTokens, &out.TotalCost)
 	return out
 }
 
 func queryUsageDailySeries(db *sql.DB, filters usageFilters) []gin.H {
+	return queryUsageDailySeriesContext(context.Background(), db, filters)
+}
+
+func queryUsageDailySeriesContext(ctx context.Context, db *sql.DB, filters usageFilters) []gin.H {
 	if !dbTableExists(db, "request_logs") {
 		return []gin.H{}
 	}
 	cols := requestLogColumns(db)
 	whereSQL, args := filters.whereClause(db)
-	rows, err := db.Query("SELECT date("+usageColumnExpr(cols, "timestamp", "datetime('now')")+") as d, count(*) as cnt, coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "input_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "output_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "reasoning_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cached_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cost", "0")+"),0) FROM request_logs WHERE "+whereSQL+" GROUP BY d ORDER BY d", args...)
+	rows, err := db.QueryContext(ctx, "SELECT date("+usageColumnExpr(cols, "timestamp", "datetime('now')")+") as d, count(*) as cnt, coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "input_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "output_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "reasoning_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cached_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cost", "0")+"),0) FROM request_logs WHERE "+whereSQL+" GROUP BY d ORDER BY d", args...)
 	if err != nil || rows == nil {
 		return []gin.H{}
 	}
@@ -2362,12 +2374,16 @@ func queryUsageHourlyModels(db *sql.DB, filters usageFilters) []gin.H {
 }
 
 func queryUsageHourlyThroughput(db *sql.DB, filters usageFilters) []gin.H {
+	return queryUsageHourlyThroughputContext(context.Background(), db, filters)
+}
+
+func queryUsageHourlyThroughputContext(ctx context.Context, db *sql.DB, filters usageFilters) []gin.H {
 	if !dbTableExists(db, "request_logs") {
 		return []gin.H{}
 	}
 	cols := requestLogColumns(db)
 	whereSQL, args := filters.whereClause(db)
-	rows, err := db.Query("SELECT strftime('%Y-%m-%d %H:00', "+usageColumnExpr(cols, "timestamp", "datetime('now')")+"), count(*), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0) FROM request_logs WHERE "+whereSQL+" GROUP BY 1 ORDER BY 1", args...)
+	rows, err := db.QueryContext(ctx, "SELECT strftime('%Y-%m-%d %H:00', "+usageColumnExpr(cols, "timestamp", "datetime('now')")+"), count(*), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0) FROM request_logs WHERE "+whereSQL+" GROUP BY 1 ORDER BY 1", args...)
 	if err != nil || rows == nil {
 		return []gin.H{}
 	}

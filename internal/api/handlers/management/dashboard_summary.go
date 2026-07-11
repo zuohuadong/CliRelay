@@ -73,8 +73,9 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 	throughputSeries := []gin.H{}
 	if db, ok := h.usageDB(); ok {
 		defer func() { _ = db.Close() }()
-		totals = queryUsageTotals(db, filters)
-		for _, point := range queryUsageDailySeries(db, filters) {
+		requestContext := c.Request.Context()
+		totals = queryUsageTotalsContext(requestContext, db, filters)
+		for _, point := range queryUsageDailySeriesContext(requestContext, db, filters) {
 			requests := int64FromGinValue(point["requests"])
 			failed := int64FromGinValue(point["failed_requests"])
 			successRate := float64(0)
@@ -88,7 +89,7 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 			totalCostTrend = append(totalCostTrend, gin.H{"date": label, "label": label, "value": point["total_cost"], "total_cost": point["total_cost"]})
 			failedRequestsTrend = append(failedRequestsTrend, gin.H{"date": label, "label": label, "value": failed, "failed_requests": failed})
 		}
-		throughputSeries = queryUsageHourlyThroughput(db, filters)
+		throughputSeries = queryUsageHourlyThroughputContext(requestContext, db, filters)
 	}
 	successRate := float64(0)
 	if totals.Total > 0 {

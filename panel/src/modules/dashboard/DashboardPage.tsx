@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Activity, DollarSign, RefreshCw, Sigma, Sparkles, TriangleAlert } from "lucide-react";
 import type { ECBasicOption } from "echarts/types/dist/shared";
@@ -21,6 +21,11 @@ import { ChartLegend } from "@/modules/ui/charts/ChartLegend";
 import { useInterval } from "@/hooks/useInterval";
 
 type DashboardRange = 1 | 7 | 30;
+
+type DashboardRefreshRequest = {
+  days: DashboardRange;
+  silent: boolean;
+};
 
 const RANGE_KEYS: Record<DashboardRange, string> = {
   1: "dashboard.today",
@@ -63,8 +68,7 @@ const formatThroughputTooltip = (params: any) => {
 };
 
 const resolveTrendLabel = (point: DashboardTrendPoint) => point.label ?? point.date ?? "";
-const resolveThroughputLabel = (point: DashboardThroughputPoint) =>
-  point.label ?? point.hour ?? "";
+const resolveThroughputLabel = (point: DashboardThroughputPoint) => point.label ?? point.hour ?? "";
 
 function createSparklineOption(points: DashboardTrendPoint[], color: string): ECBasicOption {
   const labels = points.map(resolveTrendLabel);
@@ -369,24 +373,53 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [throughputLegend, setThroughputLegend] = useState({ rpm: true, tpm: true });
+  const refreshInFlightRef = useRef(false);
+  const activeRefreshDaysRef = useRef<DashboardRange | null>(null);
+  const queuedRefreshRef = useRef<DashboardRefreshRequest | null>(null);
 
   const refresh = useCallback(
     async (days: DashboardRange, silent = false) => {
-      if (!silent) {
-        setLoading(true);
-      }
-      setError(null);
-      try {
-        const data = await usageApi.getDashboardSummary(days);
-        setSummary(data);
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : t("dashboard.load_failed");
-        setError(message);
-        notify({ type: "error", message });
-      } finally {
-        if (!silent) {
-          setLoading(false);
+      if (refreshInFlightRef.current) {
+        if (!silent || days !== activeRefreshDaysRef.current) {
+          const queuedRefresh = queuedRefreshRef.current;
+          if (!queuedRefresh || queuedRefresh.days !== days || (!silent && queuedRefresh.silent)) {
+            queuedRefreshRef.current = { days, silent };
+          }
         }
+        return;
+      }
+
+      refreshInFlightRef.current = true;
+      let nextRefresh: DashboardRefreshRequest | null = { days, silent };
+
+      try {
+        while (nextRefresh) {
+          const currentRefresh = nextRefresh;
+          activeRefreshDaysRef.current = currentRefresh.days;
+          if (!currentRefresh.silent) {
+            setLoading(true);
+          }
+          setError(null);
+
+          try {
+            const data = await usageApi.getDashboardSummary(currentRefresh.days);
+            setSummary(data);
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : t("dashboard.load_failed");
+            setError(message);
+            notify({ type: "error", message });
+          } finally {
+            if (!currentRefresh.silent) {
+              setLoading(false);
+            }
+          }
+
+          nextRefresh = queuedRefreshRef.current;
+          queuedRefreshRef.current = null;
+        }
+      } finally {
+        activeRefreshDaysRef.current = null;
+        refreshInFlightRef.current = false;
       }
     },
     [notify, t],

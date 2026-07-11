@@ -12,6 +12,7 @@ import {
   Zap,
 } from "lucide-react";
 import type { AuthFileItem } from "@/lib/http/types";
+import type { EgressBinding, EgressEndpoint } from "@/lib/http/apis/egress";
 import { formatLatency } from "@/modules/providers/hooks/useProviderLatency";
 import { ProviderStatusBar } from "@/modules/providers/ProviderStatusBar";
 import { Button } from "@/modules/ui/Button";
@@ -162,6 +163,10 @@ interface UseAuthFilesFilesPresentationOptions {
   codexFastModeUpdating: Record<string, boolean>;
   setCodexFastMode: (file: AuthFileItem, enabled: boolean) => Promise<void>;
   usageIndex: UsageIndex;
+  egressLoaded: boolean;
+  egressRuntimeEnabled: boolean;
+  egressBindingByFileName: ReadonlyMap<string, EgressBinding>;
+  egressEndpointById: ReadonlyMap<string, EgressEndpoint>;
 }
 
 export function useAuthFilesFilesPresentation({
@@ -188,6 +193,10 @@ export function useAuthFilesFilesPresentation({
   codexFastModeUpdating,
   setCodexFastMode,
   usageIndex,
+  egressLoaded,
+  egressRuntimeEnabled,
+  egressBindingByFileName,
+  egressEndpointById,
 }: UseAuthFilesFilesPresentationOptions) {
   const { t } = useTranslation();
 
@@ -344,7 +353,9 @@ export function useAuthFilesFilesPresentation({
 
   const renderTokenHealthBadge = useCallback(
     (file: AuthFileItem): ReactNode | null => {
-      const rawHealth = String(file.token_health ?? file.tokenHealth ?? "").trim().toLowerCase();
+      const rawHealth = String(file.token_health ?? file.tokenHealth ?? "")
+        .trim()
+        .toLowerCase();
       if (!rawHealth) return null;
       const health = TOKEN_HEALTH_TONE_CLASSES[rawHealth] ? rawHealth : "unknown";
       const expiresAtMs = Number(file.token_expires_at_ms ?? file.tokenExpiresAtMs);
@@ -563,6 +574,124 @@ export function useAuthFilesFilesPresentation({
     [formatQuotaResetTextCompact, translateQuotaText],
   );
 
+  const renderEgressStatus = useCallback(
+    (file: AuthFileItem, options: { showLabel?: boolean } = {}): ReactNode | null => {
+      if (resolveFileType(file) !== "codex") return null;
+
+      const label = t("auth_files.egress_endpoint_label");
+      const latencyLabel = t("egress.endpoints.latency");
+      const binding = egressBindingByFileName.get(file.name);
+      const endpoint = binding?.endpointId ? egressEndpointById.get(binding.endpointId) : undefined;
+
+      let endpointName = "";
+      let protocol = "";
+      let health = "";
+      let readiness = "";
+      let latency = "";
+      let healthClass =
+        "border-slate-200 bg-slate-50 text-slate-700 dark:border-white/10 dark:bg-white/[0.08] dark:text-white/70";
+      let readinessClass = healthClass;
+
+      if (!egressLoaded) {
+        endpointName = t("egress.endpoints.not_checked");
+      } else if (!binding?.bound || !binding.endpointId) {
+        endpointName = t("egress.bindings.unbound");
+      } else if (!endpoint) {
+        endpointName = binding.endpointName || binding.endpointId;
+        protocol = "--";
+        health = t("egress.endpoints.unknown");
+        readiness = t("egress.endpoints.current_unavailable");
+        latency = "--";
+        readinessClass =
+          "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/15 dark:text-amber-200";
+      } else {
+        const runtimeReady = egressRuntimeEnabled && endpoint.runtimeReady;
+        endpointName = endpoint.name;
+        protocol = endpoint.protocol.toUpperCase();
+        health = t(`egress.endpoints.${endpoint.status}`);
+        readiness = t(
+          runtimeReady ? "egress.endpoints.runtime_ready" : "egress.endpoints.current_unavailable",
+        );
+        latency =
+          typeof endpoint.latencyMs === "number" && Number.isFinite(endpoint.latencyMs)
+            ? `${endpoint.latencyMs} ms`
+            : "--";
+        healthClass =
+          endpoint.status === "healthy"
+            ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/15 dark:text-emerald-200"
+            : endpoint.status === "unhealthy"
+              ? "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-500/20 dark:bg-rose-500/15 dark:text-rose-200"
+              : healthClass;
+        readinessClass = runtimeReady
+          ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/15 dark:text-emerald-200"
+          : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/15 dark:text-amber-200";
+      }
+
+      const detail = [
+        endpointName,
+        protocol,
+        health,
+        readiness,
+        latency ? `${latencyLabel} ${latency}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      const accessibleLabel = `${label}: ${detail}`;
+
+      return (
+        <div
+          className="min-w-0"
+          aria-label={accessibleLabel}
+          title={accessibleLabel}
+          data-testid="auth-file-egress-status"
+        >
+          {options.showLabel !== false ? (
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-white/45">
+              {label}
+            </p>
+          ) : null}
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span
+              className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-900 dark:text-white"
+              title={endpointName}
+            >
+              {endpointName}
+            </span>
+            {protocol ? (
+              <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-700 dark:bg-white/10 dark:text-white/70">
+                {protocol}
+              </span>
+            ) : null}
+          </div>
+          {health || readiness || latency ? (
+            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
+              {health ? (
+                <span
+                  className={`inline-flex max-w-full items-center rounded-full border px-1.5 py-0.5 text-[10px] font-semibold ${healthClass}`}
+                >
+                  {health}
+                </span>
+              ) : null}
+              {readiness ? (
+                <span
+                  className={`inline-flex max-w-full items-center rounded-full border px-1.5 py-0.5 text-[10px] font-semibold ${readinessClass}`}
+                >
+                  {readiness}
+                </span>
+              ) : null}
+              {latency ? (
+                <span className="inline-flex max-w-full items-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-slate-700 dark:bg-white/10 dark:text-white/70">
+                  {latencyLabel} {latency}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      );
+    },
+    [egressBindingByFileName, egressEndpointById, egressLoaded, egressRuntimeEnabled, t],
+  );
+
   const fileColumns = useMemo<VirtualTableColumn<AuthFileItem>[]>(() => {
     return [
       {
@@ -669,6 +798,16 @@ export function useAuthFilesFilesPresentation({
             </div>
           );
         },
+      },
+      {
+        key: "egress",
+        label: t("auth_files.egress_endpoint_label"),
+        width: "w-64",
+        overflowTooltip: false,
+        render: (file) =>
+          renderEgressStatus(file, { showLabel: false }) ?? (
+            <span className="text-xs text-slate-400 dark:text-white/40">--</span>
+          ),
       },
       {
         key: "subscription",
@@ -995,6 +1134,7 @@ export function useAuthFilesFilesPresentation({
     quotaProgressCircle,
     refreshQuota,
     renderRestrictionBadges,
+    renderEgressStatus,
     renderSubscriptionBadge,
     renderTokenHealthBadge,
     selectCurrentPage,
@@ -1017,6 +1157,7 @@ export function useAuthFilesFilesPresentation({
     renderRestrictionBadges,
     renderSubscriptionBadge,
     renderQuotaBar,
+    renderEgressStatus,
     renderFilesViewModeTabs,
     fileColumns,
   };

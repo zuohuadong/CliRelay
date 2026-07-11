@@ -135,6 +135,188 @@ beforeEach(() => {
 });
 
 describe("AuthFilesPage OAuth login dialog", () => {
+  test("shows a bound Codex egress summary directly on the auth file card", async () => {
+    window.localStorage.setItem("authFilesPage.filesViewMode.v1", JSON.stringify("cards"));
+    mocks.list.mockResolvedValueOnce({
+      files: [
+        {
+          name: "codex-account.json",
+          path: "/tmp/codex-account.json",
+          type: "codex",
+          provider: "codex",
+          size: 2048,
+          modified: Date.now(),
+          disabled: false,
+        },
+      ],
+    });
+    mocks.listBindings.mockResolvedValue([
+      {
+        identity: "codex:account-1",
+        authId: "codex-account.json",
+        accountLabel: "account@example.com",
+        endpointId: "hk",
+        endpointName: "HK Egress",
+        bound: true,
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    const cards = await screen.findByTestId("auth-files-cards");
+    const summary = await within(cards).findByLabelText(
+      "Fixed egress endpoint: HK Egress · SOCKS5 · Healthy · Runtime ready · Latency 88 ms",
+    );
+    expect(summary).toHaveTextContent("HK Egress");
+    expect(summary).toHaveTextContent("SOCKS5");
+    expect(summary).toHaveTextContent("Healthy");
+    expect(summary).toHaveTextContent("Runtime ready");
+    expect(summary).toHaveTextContent("88 ms");
+  });
+
+  test("shows the Codex egress summary in the auth files table", async () => {
+    window.localStorage.setItem("authFilesPage.filesViewMode.v1", JSON.stringify("table"));
+    mocks.list.mockResolvedValueOnce({
+      files: [
+        {
+          name: "codex-table.json",
+          path: "/tmp/codex-table.json",
+          type: "codex",
+          provider: "codex",
+          size: 2048,
+          modified: Date.now(),
+          disabled: false,
+        },
+      ],
+    });
+    mocks.listBindings.mockResolvedValue([
+      {
+        identity: "codex:table-account",
+        authId: "codex-table.json",
+        accountLabel: "table@example.com",
+        endpointId: "hk",
+        endpointName: "HK Egress",
+        bound: true,
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByRole("columnheader", { name: "Fixed egress endpoint" }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByLabelText(
+        "Fixed egress endpoint: HK Egress · SOCKS5 · Healthy · Runtime ready · Latency 88 ms",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test("marks a healthy endpoint unavailable when the fixed egress runtime is disabled", async () => {
+    window.localStorage.setItem("authFilesPage.filesViewMode.v1", JSON.stringify("cards"));
+    mocks.list.mockResolvedValueOnce({
+      files: [
+        {
+          name: "codex-disabled-runtime.json",
+          path: "/tmp/codex-disabled-runtime.json",
+          type: "codex",
+          provider: "codex",
+          size: 2048,
+          modified: Date.now(),
+          disabled: false,
+        },
+      ],
+    });
+    mocks.getOverview.mockResolvedValue({
+      ...(await mocks.getOverview()),
+      enabled: false,
+      readiness: {
+        scope: "application_egress",
+        verdict: "ready",
+        readyToEnable: true,
+        codexOAuthAllowed: false,
+        blockers: [],
+        warnings: [],
+        notEvaluated: [],
+      },
+    });
+    mocks.listBindings.mockResolvedValue([
+      {
+        identity: "codex:disabled-runtime",
+        authId: "codex-disabled-runtime.json",
+        accountLabel: "disabled-runtime@example.com",
+        endpointId: "hk",
+        endpointName: "HK Egress",
+        bound: true,
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    const summary = await screen.findByLabelText(
+      "Fixed egress endpoint: HK Egress · SOCKS5 · Healthy · Current · unavailable · Latency 88 ms",
+    );
+    expect(summary).toHaveTextContent("Healthy");
+    expect(summary).toHaveTextContent("Current · unavailable");
+    expect(summary).not.toHaveTextContent("Runtime ready");
+  });
+
+  test("refreshes egress status together with the auth files list", async () => {
+    const user = userEvent.setup();
+    mocks.list.mockResolvedValue({ files: [] });
+
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(mocks.getOverview).toHaveBeenCalledTimes(1));
+    const refreshButton = screen.getByRole("button", { name: "Refresh" });
+    await waitFor(() => expect(refreshButton).toBeEnabled());
+    await user.click(refreshButton);
+
+    await waitFor(() => expect(mocks.getOverview).toHaveBeenCalledTimes(2));
+    expect(mocks.listEndpoints).toHaveBeenCalledTimes(2);
+    expect(mocks.listBindings).toHaveBeenCalledTimes(2);
+  });
+
   test("opens OAuth dialog with provider/iFlow/Vertex tabs", async () => {
     const user = userEvent.setup();
     render(

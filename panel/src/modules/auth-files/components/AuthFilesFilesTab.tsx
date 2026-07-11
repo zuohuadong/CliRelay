@@ -535,6 +535,7 @@ interface AuthFilesFilesTabProps {
   renderRestrictionBadges: (file: AuthFileItem) => ReactNode | null;
   renderSubscriptionBadge: (file: AuthFileItem) => ReactNode | null;
   renderQuotaBar: (label: string, item: QuotaItem | null) => ReactNode;
+  renderEgressStatus: (file: AuthFileItem, options?: { showLabel?: boolean }) => ReactNode | null;
   openTagsEditor: (file: AuthFileItem) => void;
   openDetail: (file: AuthFileItem) => Promise<void>;
   downloadAuthFile: (file: AuthFileItem) => Promise<void>;
@@ -611,6 +612,7 @@ export function AuthFilesFilesTab({
   renderRestrictionBadges,
   renderSubscriptionBadge,
   renderQuotaBar,
+  renderEgressStatus,
   openTagsEditor,
   openDetail,
   downloadAuthFile,
@@ -1133,7 +1135,7 @@ export function AuthFilesFilesTab({
                 rowHeight={84}
                 caption={t("auth_files.table_caption")}
                 emptyText={t("auth_files_page.no_files_desc")}
-                minWidth="min-w-[1840px]"
+                minWidth="min-w-[2080px]"
                 height="h-[calc(100dvh-452px)]"
                 rowClassName={(row) => {
                   const runtimeOnly = isRuntimeOnlyAuthFile(row);
@@ -1175,6 +1177,7 @@ export function AuthFilesFilesTab({
                     ? shouldShowAuthFileDisplayTag(file, planType)
                     : false;
                   const subscriptionBadge = renderSubscriptionBadge(file);
+                  const egressStatus = renderEgressStatus(file);
                   const stats = resolveAuthFileStats(file, usageIndex);
                   const totalCalls = stats.success + stats.failure;
                   const successRate = totalCalls > 0 ? (stats.success / totalCalls) * 100 : null;
@@ -1300,6 +1303,7 @@ export function AuthFilesFilesTab({
                             ))}
                           </div>
                         ) : null}
+                        {egressStatus ? <div className="pt-1">{egressStatus}</div> : null}
                       </div>
 
                       <div

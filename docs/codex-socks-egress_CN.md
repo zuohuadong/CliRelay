@@ -6,7 +6,7 @@ CliRelay 为每个 Codex OAuth 账号保存一条稳定绑定：
 codex:sha256(account_id) -> endpoint -> auth.ProxyURL
 ```
 
-运行时先按 `account_id` 解析绑定，再克隆当前 auth 并覆盖 `ProxyURL`。OAuth code exchange、token refresh、Responses HTTP/stream、compact、images、quota probe 和 WebSocket 都使用同一个严格代理传输。绑定缺失、端点禁用、健康状态过期、出口 IP 不匹配或代理不可用时，请求直接失败，不会改用全局代理、环境代理、宿主机直连或另一个端点。
+运行时先按 `account_id` 解析绑定，再克隆当前 auth 并覆盖 `ProxyURL`。OAuth code exchange、token refresh、Responses HTTP/stream、compact、images、quota probe 和 WebSocket 都使用同一个严格代理传输。绑定缺失、端点禁用、健康状态过期、出口 IP 不匹配或代理不可用时，当前账号立即 fail-closed，不会改用全局代理、环境代理、宿主机直连或另一个端点。请求尚未产生响应内容时，调度器可跳过该故障账号，继续尝试另一个拥有独立健康绑定的 Codex 账号；所有候选账号均不可用时，返回最后一个出口错误。
 
 当前 CLI 登录、device OAuth 和 `fetch_codex_models` 不接入该控制面，仍明确禁用。请从管理面板启动 Codex OAuth。
 
@@ -27,7 +27,7 @@ CliRelay / wg0: 10.77.0.1
 | Codex A | `socks5://10.77.0.2:1080` | `198.51.100.2` |
 | Codex B | `socks5://10.77.0.3:1080` | `198.51.100.3` |
 
-先执行端点健康检查，确认观测公网 IP 与预期值一致，再将每个 OAuth 账号固定绑定到对应端点。绑定采用排他 1:1 规则，不提供权重、代理池或自动故障转移。
+先执行端点健康检查，确认观测公网 IP 与预期值一致，再将每个 OAuth 账号固定绑定到对应端点。绑定采用排他 1:1 规则，不提供权重、代理池或同一账号的端点自动故障转移；账号级请求回退不会改变这条绑定。
 
 基础配置只包含健康检查参数：
 
@@ -55,7 +55,7 @@ egress-network:
 
 ## 隔离边界
 
-应用层 fail-closed 能保证 CliRelay 的受支持 Codex 路径不会在代理失败时静默直连，也不会换用其他 OAuth/端点。刷新 token 返回不同的非空 `account_id` 时，会在写入新 token 和 metadata 前失败，避免沿用旧绑定。
+应用层 fail-closed 能保证 CliRelay 的受支持 Codex 路径不会在代理失败时静默直连，也不会为同一 OAuth 账号换用其他端点。调度器只会在首个响应内容产生前跳过整个故障账号，并让下一个 Codex 账号使用其自身独立绑定的健康端点。刷新 token 返回不同的非空 `account_id` 时，会在写入新 token 和 metadata 前失败，避免沿用旧绑定。
 
 这不等于内核级强隔离。若 Codex 与其他 provider 运行在同一个进程和同一个系统用户下，按 UID 设置的统一 kill-switch 无法只限制 Codex 而不影响其他 provider；进程漏洞或未纳入控制面的新代码路径也超出应用层保证。
 

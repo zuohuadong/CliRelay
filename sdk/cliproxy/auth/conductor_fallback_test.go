@@ -11,7 +11,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
-func TestManagerExecute_EgressRuntimeErrorStopsCredentialFallback(t *testing.T) {
+func TestManagerExecute_EgressDisabledFallsBackToNextCredential(t *testing.T) {
 	const model = "gpt-5.3-codex"
 	m := NewManager(nil, nil, nil)
 	executor := &authFallbackExecutor{
@@ -23,17 +23,91 @@ func TestManagerExecute_EgressRuntimeErrorStopsCredentialFallback(t *testing.T) 
 	m.RegisterExecutor(executor)
 	registerFallbackAuths(t, m, model)
 
-	_, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
-	var runtimeErr *egress.Error
-	if !errors.As(err, &runtimeErr) || runtimeErr.Code != "egress_disabled" {
-		t.Fatalf("Execute() error = %v, want egress_disabled", err)
+	resp, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
 	}
-	if calls := executor.ExecuteCalls(); len(calls) != 1 || calls[0] != "aa-bound-auth" {
-		t.Fatalf("Execute() calls = %v, want only bound auth", calls)
+	if got := string(resp.Payload); got != "bb-other-auth" {
+		t.Fatalf("Execute() payload = %q, want next healthy auth", got)
+	}
+	if calls := executor.ExecuteCalls(); len(calls) != 2 || calls[0] != "aa-bound-auth" || calls[1] != "bb-other-auth" {
+		t.Fatalf("Execute() calls = %v, want failed auth followed by next auth", calls)
 	}
 }
 
-func TestManagerExecuteStream_EgressRuntimeErrorStopsCredentialFallback(t *testing.T) {
+func TestManagerExecute_EgressDisabledDuringPrepareFallsBackToNextCredential(t *testing.T) {
+	const model = "gpt-5.3-codex"
+	m := NewManager(nil, nil, nil)
+	executor := &egressPrepareFallbackExecutor{
+		authFallbackExecutor: &authFallbackExecutor{id: "codex"},
+		prepareErrors: map[string]error{
+			"aa-bound-auth": egress.RuntimeError(egress.ErrEndpointDisabled),
+		},
+	}
+	m.RegisterExecutor(executor)
+	registerFallbackAuths(t, m, model)
+
+	resp, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := string(resp.Payload); got != "bb-other-auth" {
+		t.Fatalf("Execute() payload = %q, want next healthy auth", got)
+	}
+	if calls := executor.PrepareCalls(); len(calls) != 2 || calls[0] != "aa-bound-auth" || calls[1] != "bb-other-auth" {
+		t.Fatalf("PrepareRequestAuth() calls = %v, want failed auth followed by next auth", calls)
+	}
+	if calls := executor.ExecuteCalls(); len(calls) != 1 || calls[0] != "bb-other-auth" {
+		t.Fatalf("Execute() calls = %v, want only prepared healthy auth", calls)
+	}
+}
+
+func TestManagerExecute_EgressDisabledAllCredentialsReturnsLastError(t *testing.T) {
+	const model = "gpt-5.3-codex"
+	m := NewManager(nil, nil, nil)
+	executor := &authFallbackExecutor{
+		id: "codex",
+		executeErrors: map[string]error{
+			"aa-bound-auth": &egress.Error{Code: "egress_disabled", Message: "first endpoint unavailable"},
+			"bb-other-auth": &egress.Error{Code: "egress_disabled", Message: "second endpoint unavailable"},
+		},
+	}
+	m.RegisterExecutor(executor)
+	registerFallbackAuths(t, m, model)
+
+	_, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	var runtimeErr *egress.Error
+	if !errors.As(err, &runtimeErr) || runtimeErr.Message != "second endpoint unavailable" {
+		t.Fatalf("Execute() error = %v, want last egress_disabled error", err)
+	}
+	if calls := executor.ExecuteCalls(); len(calls) != 2 || calls[0] != "aa-bound-auth" || calls[1] != "bb-other-auth" {
+		t.Fatalf("Execute() calls = %v, want both bound auths", calls)
+	}
+}
+
+func TestManagerExecute_OtherEgressErrorsRemainTerminal(t *testing.T) {
+	const model = "gpt-5.3-codex"
+	m := NewManager(nil, nil, nil)
+	executor := &authFallbackExecutor{
+		id: "codex",
+		executeErrors: map[string]error{
+			"aa-bound-auth": egress.RuntimeError(egress.ErrEgressRequired),
+		},
+	}
+	m.RegisterExecutor(executor)
+	registerFallbackAuths(t, m, model)
+
+	_, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	var runtimeErr *egress.Error
+	if !errors.As(err, &runtimeErr) || runtimeErr.Code != "egress_required" {
+		t.Fatalf("Execute() error = %v, want egress_required", err)
+	}
+	if calls := executor.ExecuteCalls(); len(calls) != 1 || calls[0] != "aa-bound-auth" {
+		t.Fatalf("Execute() calls = %v, want terminal egress error to stop fallback", calls)
+	}
+}
+
+func TestManagerExecuteStream_EgressDisabledBeforeFirstChunkFallsBackToNextCredential(t *testing.T) {
 	const model = "gpt-5.3-codex"
 	m := NewManager(nil, nil, nil)
 	executor := &authFallbackExecutor{
@@ -51,14 +125,80 @@ func TestManagerExecuteStream_EgressRuntimeErrorStopsCredentialFallback(t *testi
 	}
 	chunk, ok := <-result.Chunks
 	if !ok {
+		t.Fatal("ExecuteStream() closed before payload chunk")
+	}
+	if chunk.Err != nil {
+		t.Fatalf("stream error = %v", chunk.Err)
+	}
+	if got := string(chunk.Payload); got != "bb-other-auth" {
+		t.Fatalf("stream payload = %q, want next healthy auth", got)
+	}
+	if calls := executor.StreamCalls(); len(calls) != 2 || calls[0] != "aa-bound-auth" || calls[1] != "bb-other-auth" {
+		t.Fatalf("ExecuteStream() calls = %v, want failed auth followed by next auth", calls)
+	}
+}
+
+func TestManagerExecuteStream_EgressDisabledDuringPrepareFallsBackToNextCredential(t *testing.T) {
+	const model = "gpt-5.3-codex"
+	m := NewManager(nil, nil, nil)
+	executor := &egressPrepareFallbackExecutor{
+		authFallbackExecutor: &authFallbackExecutor{id: "codex"},
+		prepareErrors: map[string]error{
+			"aa-bound-auth": egress.RuntimeError(egress.ErrEndpointDisabled),
+		},
+	}
+	m.RegisterExecutor(executor)
+	registerFallbackAuths(t, m, model)
+
+	result, err := m.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	chunk, ok := <-result.Chunks
+	if !ok {
+		t.Fatal("ExecuteStream() closed before payload chunk")
+	}
+	if chunk.Err != nil {
+		t.Fatalf("stream error = %v", chunk.Err)
+	}
+	if got := string(chunk.Payload); got != "bb-other-auth" {
+		t.Fatalf("stream payload = %q, want next healthy auth", got)
+	}
+	if calls := executor.PrepareCalls(); len(calls) != 2 || calls[0] != "aa-bound-auth" || calls[1] != "bb-other-auth" {
+		t.Fatalf("PrepareRequestAuth() calls = %v, want failed auth followed by next auth", calls)
+	}
+	if calls := executor.StreamCalls(); len(calls) != 1 || calls[0] != "bb-other-auth" {
+		t.Fatalf("ExecuteStream() calls = %v, want only prepared healthy auth", calls)
+	}
+}
+
+func TestManagerExecuteStream_EgressDisabledAllCredentialsReturnsLastError(t *testing.T) {
+	const model = "gpt-5.3-codex"
+	m := NewManager(nil, nil, nil)
+	executor := &authFallbackExecutor{
+		id: "codex",
+		streamFirstErrors: map[string]error{
+			"aa-bound-auth": &egress.Error{Code: "egress_disabled", Message: "first endpoint unavailable"},
+			"bb-other-auth": &egress.Error{Code: "egress_disabled", Message: "second endpoint unavailable"},
+		},
+	}
+	m.RegisterExecutor(executor)
+	registerFallbackAuths(t, m, model)
+
+	result, err := m.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	chunk, ok := <-result.Chunks
+	if !ok {
 		t.Fatal("ExecuteStream() closed before error chunk")
 	}
 	var runtimeErr *egress.Error
-	if !errors.As(chunk.Err, &runtimeErr) || runtimeErr.Code != "egress_disabled" {
-		t.Fatalf("stream error = %v, want egress_disabled", chunk.Err)
+	if !errors.As(chunk.Err, &runtimeErr) || runtimeErr.Message != "second endpoint unavailable" {
+		t.Fatalf("stream error = %v, want last egress_disabled error", chunk.Err)
 	}
-	if calls := executor.StreamCalls(); len(calls) != 1 || calls[0] != "aa-bound-auth" {
-		t.Fatalf("ExecuteStream() calls = %v, want only bound auth", calls)
+	if calls := executor.StreamCalls(); len(calls) != 2 || calls[0] != "aa-bound-auth" || calls[1] != "bb-other-auth" {
+		t.Fatalf("ExecuteStream() calls = %v, want both bound auths", calls)
 	}
 }
 
@@ -76,6 +216,26 @@ func registerFallbackAuths(t *testing.T, manager *Manager, model string) {
 		registry.GetGlobalRegistry().UnregisterClient(badAuth.ID)
 		registry.GetGlobalRegistry().UnregisterClient(goodAuth.ID)
 	})
+}
+
+type egressPrepareFallbackExecutor struct {
+	*authFallbackExecutor
+	prepareErrors map[string]error
+	prepareCalls  []string
+}
+
+func (e *egressPrepareFallbackExecutor) ShouldPrepareRequestAuth(*Auth) bool { return true }
+
+func (e *egressPrepareFallbackExecutor) PrepareRequestAuth(_ context.Context, auth *Auth) (*Auth, error) {
+	e.prepareCalls = append(e.prepareCalls, auth.ID)
+	if err := e.prepareErrors[auth.ID]; err != nil {
+		return auth, err
+	}
+	return auth, nil
+}
+
+func (e *egressPrepareFallbackExecutor) PrepareCalls() []string {
+	return append([]string(nil), e.prepareCalls...)
 }
 
 type emptyThenPayloadStreamExecutor struct {

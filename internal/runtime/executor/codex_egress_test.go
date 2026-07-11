@@ -348,7 +348,7 @@ func newCodexHTTPConnectProxy(t *testing.T) *httptest.Server {
 	}))
 }
 
-func TestCodexStrictEgressManagerStopsAfterFirstProxyDialFailure(t *testing.T) {
+func TestCodexStrictEgressManagerFallsBackAfterProxyDialFailure(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		stream := stream
 		name := "execute"
@@ -382,14 +382,14 @@ func TestCodexStrictEgressManagerStopsAfterFirstProxyDialFailure(t *testing.T) {
 				_, err = manager.Execute(context.Background(), []string{"codex"}, req, opts)
 			}
 			assertEgressRuntimeError(t, err)
-			if accounts := resolver.Accounts(); len(accounts) != 1 || accounts[0] != "acct-a" {
-				t.Fatalf("resolved accounts = %v, want only acct-a", accounts)
+			if accounts := resolver.Accounts(); len(accounts) != 2 || accounts[0] != "acct-a" || accounts[1] != "acct-b" {
+				t.Fatalf("resolved accounts = %v, want acct-a followed by acct-b", accounts)
 			}
 		})
 	}
 }
 
-func TestCodexStrictEgressManagerStopsAfterFirstResponseBodyFailure(t *testing.T) {
+func TestCodexStrictEgressManagerFallsBackAfterFirstResponseBodyFailure(t *testing.T) {
 	const model = "gpt-5.4"
 	proxy := newCodexTruncatedResponseProxy(t)
 	defer proxy.Close()
@@ -414,8 +414,8 @@ func TestCodexStrictEgressManagerStopsAfterFirstResponseBodyFailure(t *testing.T
 		Model: model, Payload: []byte(`{"model":"gpt-5.4","input":"hi"}`),
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")})
 	assertEgressRuntimeError(t, err)
-	if accounts := resolver.Accounts(); len(accounts) != 1 || accounts[0] != "acct-a" {
-		t.Fatalf("resolved accounts = %v, want only acct-a", accounts)
+	if accounts := resolver.Accounts(); len(accounts) != 2 || accounts[0] != "acct-a" || accounts[1] != "acct-b" {
+		t.Fatalf("resolved accounts = %v, want acct-a followed by acct-b", accounts)
 	}
 }
 

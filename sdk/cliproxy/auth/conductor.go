@@ -2888,6 +2888,13 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
 			if isTerminalEgressError(errPrepare) {
+				if isCredentialLocalEgressFallbackError(errPrepare) {
+					lastErr = errPrepare
+					if homeMode {
+						homeAuthCount++
+					}
+					continue
+				}
 				return cliproxyexecutor.Response{}, errPrepare
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: &Error{Message: errPrepare.Error()}}
@@ -2935,6 +2942,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 			}
 			if isTerminalEgressError(errExec) {
+				if isCredentialLocalEgressFallbackError(errExec) {
+					authErr = errExec
+					break
+				}
 				return cliproxyexecutor.Response{}, errExec
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
@@ -2961,7 +2972,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
 			}
-			if shouldStopMixedProviderFallback(provider, routeModel, authErr) {
+			if shouldStopMixedProviderFallback(provider, routeModel, authErr) && !isCredentialLocalEgressFallbackError(authErr) {
 				logEntryWithRequestID(ctx).Debugf("stopping mixed provider fallback after provider failure provider=%s model=%s error=%s", provider, routeModel, authErr.Error())
 				return cliproxyexecutor.Response{}, authErr
 			}
@@ -3179,6 +3190,13 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
 			if isTerminalEgressError(errPrepare) {
+				if isCredentialLocalEgressFallbackError(errPrepare) {
+					lastErr = errPrepare
+					if homeMode {
+						homeAuthCount++
+					}
+					continue
+				}
 				return nil, errPrepare
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: &Error{Message: errPrepare.Error()}}
@@ -3202,7 +3220,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
 			}
-			if shouldStopMixedProviderFallback(provider, routeModel, errStream) {
+			if shouldStopMixedProviderFallback(provider, routeModel, errStream) && !isCredentialLocalEgressFallbackError(errStream) {
 				logEntryWithRequestID(ctx).Debugf("stopping mixed provider fallback after provider failure provider=%s model=%s error=%s", provider, routeModel, errStream.Error())
 				return nil, errStream
 			}
@@ -3291,6 +3309,14 @@ func isTerminalEgressError(err error) bool {
 	}
 	var target *internalegress.Error
 	return errors.As(err, &target) && target != nil && strings.HasPrefix(strings.TrimSpace(target.Code), "egress_")
+}
+
+func isCredentialLocalEgressFallbackError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var target *internalegress.Error
+	return errors.As(err, &target) && target != nil && strings.EqualFold(strings.TrimSpace(target.Code), "egress_disabled")
 }
 
 func authSelectionModelFromOptions(opts cliproxyexecutor.Options, fallback string) string {

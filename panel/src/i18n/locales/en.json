@@ -557,6 +557,10 @@
     "prefix_proxy_source_label": "Auth file JSON (preview)",
     "prefix_label": "prefix (optional)",
     "proxy_url_label": "proxy_url (optional)",
+    "egress_mode_label": "Egress mode",
+    "egress_mode_fixed": "Fixed endpoint",
+    "egress_mode_shared_proxy": "Shared proxy",
+    "egress_shared_proxy_hint": "This account uses its proxy_url, or the global proxy when empty. Its fixed endpoint binding is retained but not used.",
     "egress_endpoint_label": "Fixed egress endpoint",
     "egress_endpoint_hint": "Select one explicit endpoint for this Codex account. Changes are previewed and applied atomically; passwords are never displayed.",
     "egress_identity_missing": "This auth file has no stable Codex binding identity yet. Re-authorize it with an egress endpoint.",
@@ -1869,7 +1873,7 @@
   },
   "egress": {
     "title": "Codex egress",
-    "description": "Pin each Codex OAuth account to one explicit proxy endpoint and manage changes with a reviewed, atomic binding flow.",
+    "description": "Use exclusive fixed endpoints or shared dynamic endpoints for Codex OAuth accounts, then manage reviewed atomic binding changes.",
     "runtime": {
       "enabled": "Runtime enabled",
       "disabled": "Runtime disabled"
@@ -1893,6 +1897,7 @@
       "policies": {
         "exclusive": "Exclusive endpoint binding",
         "shared": "Shared endpoint binding",
+        "per_endpoint": "Per-endpoint binding policy",
         "unknown": "Unknown binding policy"
       }
     },
@@ -1964,6 +1969,12 @@
       "observed_short": "Observed",
       "expected_public_ip": "Expected public IP",
       "expected_public_ip_hint": "The endpoint must observe this exact public IPv4 or IPv6 address before it becomes ready.",
+      "expected_public_ip_shared_hint": "Shared endpoints accept observed public IP changes automatically; the latest observed address is recorded only.",
+      "sharing_mode": "Allocation mode",
+      "sharing_mode_exclusive": "Exclusive fixed endpoint",
+      "sharing_mode_shared": "Shared dynamic endpoint",
+      "sharing_mode_exclusive_hint": "Only one Codex account can bind this endpoint, and the observed public IP must match exactly.",
+      "sharing_mode_shared_hint": "Multiple Codex accounts can bind this endpoint. Public IP changes are observed but do not make it unhealthy.",
       "not_checked": "Not checked",
       "availability": "Availability",
       "unknown": "Not checked",

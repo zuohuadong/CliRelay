@@ -17,7 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 func DatabasePathForConfig(configPath string) string {
 	configPath = strings.TrimSpace(configPath)
@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS egress_endpoints (
   host TEXT NOT NULL,
   port INTEGER NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 0,
+  sharing_mode TEXT NOT NULL DEFAULT 'exclusive',
   username TEXT NOT NULL DEFAULT '',
   password TEXT NOT NULL DEFAULT '',
   expected_public_ip TEXT NOT NULL DEFAULT '',
@@ -174,9 +175,20 @@ CREATE TABLE IF NOT EXISTS egress_bindings (
   FOREIGN KEY(endpoint_id) REFERENCES egress_endpoints(id) ON UPDATE CASCADE ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS idx_egress_bindings_endpoint ON egress_bindings(endpoint_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_egress_bindings_endpoint_unique ON egress_bindings(endpoint_id);
 `); err != nil {
 		return fmt.Errorf("create egress schema: %w", err)
+	}
+	var sharingModeColumn int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('egress_endpoints') WHERE name = 'sharing_mode'`).Scan(&sharingModeColumn); err != nil {
+		return fmt.Errorf("inspect egress sharing mode column: %w", err)
+	}
+	if sharingModeColumn == 0 {
+		if _, err = tx.ExecContext(ctx, `ALTER TABLE egress_endpoints ADD COLUMN sharing_mode TEXT NOT NULL DEFAULT 'exclusive'`); err != nil {
+			return fmt.Errorf("add egress sharing mode column: %w", err)
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `DROP INDEX IF EXISTS idx_egress_bindings_endpoint_unique`); err != nil {
+		return fmt.Errorf("drop exclusive egress binding index: %w", err)
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO egress_schema_migrations(version, applied_at) VALUES (?, ?)`, schemaVersion, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record egress schema: %w", err)
@@ -214,6 +226,14 @@ func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint) (Endpoint
 	if endpoint.ID == "" {
 		endpoint.ID = uuid.NewString()
 	}
+	mode, err := normalizeEndpointSharingMode(endpoint.SharingMode)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	endpoint.SharingMode = mode
+	if endpoint.SharingMode == EndpointSharingModeShared {
+		endpoint.ExpectedPublicIP = ""
+	}
 	if err := validateEndpoint(endpoint); err != nil {
 		return Endpoint{}, err
 	}
@@ -221,9 +241,9 @@ func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint) (Endpoint
 	now := time.Now().UTC()
 	endpoint.CreatedAt = now
 	endpoint.UpdatedAt = now
-	_, err := s.db.ExecContext(ctx, `
-INSERT INTO egress_endpoints(id, name, protocol, host, port, enabled, username, password, expected_public_ip, public_ip, latency_ms, last_checked_at, check_status, check_error, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, endpoint.ID, strings.TrimSpace(endpoint.Name), endpoint.Protocol, strings.TrimSpace(endpoint.Host), endpoint.Port, boolInt(endpoint.Enabled), endpoint.Username, endpoint.Password, strings.TrimSpace(endpoint.ExpectedPublicIP), endpoint.PublicIP, endpoint.LatencyMS, formatTime(endpoint.LastCheckedAt), endpoint.CheckStatus, endpoint.CheckError, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO egress_endpoints(id, name, protocol, host, port, enabled, sharing_mode, username, password, expected_public_ip, public_ip, latency_ms, last_checked_at, check_status, check_error, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, endpoint.ID, strings.TrimSpace(endpoint.Name), endpoint.Protocol, strings.TrimSpace(endpoint.Host), endpoint.Port, boolInt(endpoint.Enabled), endpoint.SharingMode, endpoint.Username, endpoint.Password, strings.TrimSpace(endpoint.ExpectedPublicIP), endpoint.PublicIP, endpoint.LatencyMS, formatTime(endpoint.LastCheckedAt), endpoint.CheckStatus, endpoint.CheckError, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		if isExpectedIPConstraint(err) {
 			return Endpoint{}, fmt.Errorf("%w: expected_public_ip is already assigned", ErrBindingConflict)
@@ -241,6 +261,23 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint) (Endpoint
 	current, err := s.GetEndpoint(ctx, endpoint.ID)
 	if err != nil {
 		return Endpoint{}, err
+	}
+	mode, err := normalizeEndpointSharingMode(endpoint.SharingMode)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	endpoint.SharingMode = mode
+	if current.SharingMode == EndpointSharingModeShared && endpoint.SharingMode == EndpointSharingModeExclusive {
+		var bindings int
+		if err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM egress_bindings WHERE endpoint_id=?`, endpoint.ID).Scan(&bindings); err != nil {
+			return Endpoint{}, fmt.Errorf("count endpoint bindings: %w", err)
+		}
+		if bindings > 1 {
+			return Endpoint{}, fmt.Errorf("%w: endpoint has %d bindings and cannot become exclusive", ErrEndpointInUse, bindings)
+		}
+	}
+	if endpoint.SharingMode == EndpointSharingModeShared {
+		endpoint.ExpectedPublicIP = ""
 	}
 	if err := validateEndpoint(endpoint); err != nil {
 		return Endpoint{}, err
@@ -260,7 +297,7 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint) (Endpoint
 	}
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
-UPDATE egress_endpoints SET name=?, protocol=?, host=?, port=?, enabled=?, username=?, password=?, expected_public_ip=?, public_ip=?, latency_ms=?, last_checked_at=?, check_status=?, check_error=?, updated_at=? WHERE id=?`, strings.TrimSpace(endpoint.Name), endpoint.Protocol, strings.TrimSpace(endpoint.Host), endpoint.Port, boolInt(endpoint.Enabled), endpoint.Username, endpoint.Password, strings.TrimSpace(endpoint.ExpectedPublicIP), publicIP, latencyMS, formatTime(lastCheckedAt), checkStatus, checkError, now.Format(time.RFC3339Nano), endpoint.ID)
+UPDATE egress_endpoints SET name=?, protocol=?, host=?, port=?, enabled=?, sharing_mode=?, username=?, password=?, expected_public_ip=?, public_ip=?, latency_ms=?, last_checked_at=?, check_status=?, check_error=?, updated_at=? WHERE id=?`, strings.TrimSpace(endpoint.Name), endpoint.Protocol, strings.TrimSpace(endpoint.Host), endpoint.Port, boolInt(endpoint.Enabled), endpoint.SharingMode, endpoint.Username, endpoint.Password, strings.TrimSpace(endpoint.ExpectedPublicIP), publicIP, latencyMS, formatTime(lastCheckedAt), checkStatus, checkError, now.Format(time.RFC3339Nano), endpoint.ID)
 	if err != nil {
 		if isExpectedIPConstraint(err) {
 			return Endpoint{}, fmt.Errorf("%w: expected_public_ip is already assigned", ErrBindingConflict)
@@ -278,6 +315,7 @@ func endpointRouteChanged(current, next Endpoint) bool {
 	return current.Protocol != next.Protocol ||
 		strings.TrimSpace(current.Host) != strings.TrimSpace(next.Host) ||
 		current.Port != next.Port ||
+		current.SharingMode != next.SharingMode ||
 		current.Username != next.Username ||
 		current.Password != next.Password ||
 		canonicalIP(current.ExpectedPublicIP) != canonicalIP(next.ExpectedPublicIP)
@@ -288,7 +326,7 @@ func (s *Store) GetEndpoint(ctx context.Context, id string) (Endpoint, error) {
 	var enabled int
 	var createdAt, updatedAt string
 	var lastCheckedAt string
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, protocol, host, port, enabled, username, password, expected_public_ip, public_ip, latency_ms, last_checked_at, check_status, check_error, created_at, updated_at FROM egress_endpoints WHERE id=?`, strings.TrimSpace(id)).Scan(&endpoint.ID, &endpoint.Name, &endpoint.Protocol, &endpoint.Host, &endpoint.Port, &enabled, &endpoint.Username, &endpoint.Password, &endpoint.ExpectedPublicIP, &endpoint.PublicIP, &endpoint.LatencyMS, &lastCheckedAt, &endpoint.CheckStatus, &endpoint.CheckError, &createdAt, &updatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, protocol, host, port, enabled, sharing_mode, username, password, expected_public_ip, public_ip, latency_ms, last_checked_at, check_status, check_error, created_at, updated_at FROM egress_endpoints WHERE id=?`, strings.TrimSpace(id)).Scan(&endpoint.ID, &endpoint.Name, &endpoint.Protocol, &endpoint.Host, &endpoint.Port, &enabled, &endpoint.SharingMode, &endpoint.Username, &endpoint.Password, &endpoint.ExpectedPublicIP, &endpoint.PublicIP, &endpoint.LatencyMS, &lastCheckedAt, &endpoint.CheckStatus, &endpoint.CheckError, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Endpoint{}, ErrEndpointNotFound
 	}
@@ -323,10 +361,10 @@ func (s *Store) UpdateEndpointCheckIfRouteUnchanged(ctx context.Context, expecte
 UPDATE egress_endpoints
 SET public_ip=?, latency_ms=?, last_checked_at=?, check_status=?, check_error=?, updated_at=?
 WHERE id=?
-  AND protocol=? AND host=? AND port=? AND enabled=?
+  AND protocol=? AND host=? AND port=? AND enabled=? AND sharing_mode=?
   AND username=? AND password=? AND expected_public_ip=?`,
 		strings.TrimSpace(publicIP), latencyMS, formatTime(checkedAt), strings.TrimSpace(status), strings.TrimSpace(checkError), time.Now().UTC().Format(time.RFC3339Nano),
-		strings.TrimSpace(expected.ID), expected.Protocol, strings.TrimSpace(expected.Host), expected.Port, boolInt(expected.Enabled), expected.Username, expected.Password, canonicalIP(expected.ExpectedPublicIP),
+		strings.TrimSpace(expected.ID), expected.Protocol, strings.TrimSpace(expected.Host), expected.Port, boolInt(expected.Enabled), expected.SharingMode, expected.Username, expected.Password, canonicalIP(expected.ExpectedPublicIP),
 	)
 	if err != nil {
 		return Endpoint{}, err
@@ -666,6 +704,23 @@ func validateBindingAssignmentsTx(ctx context.Context, tx *sql.Tx, assignments [
 	if err = rows.Close(); err != nil {
 		return nil, err
 	}
+	endpointModes := make(map[string]EndpointSharingMode)
+	rows, err = tx.QueryContext(ctx, `SELECT id, sharing_mode FROM egress_endpoints`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var endpointID string
+		var mode EndpointSharingMode
+		if err = rows.Scan(&endpointID, &mode); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		endpointModes[endpointID] = mode
+	}
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
 	for _, assignment := range assignments {
 		if !IsStableIdentity(assignment.Identity) {
 			conflicts = append(conflicts, BindingConflict{Identity: assignment.Identity, EndpointID: assignment.EndpointID, Code: "invalid_assignment", Message: "identity must be codex:<sha256(account_id)>"})
@@ -680,13 +735,14 @@ func validateBindingAssignmentsTx(ctx context.Context, tx *sql.Tx, assignments [
 			delete(final, assignment.Identity)
 			continue
 		}
-		var enabled int
-		var expectedIP string
-		err = tx.QueryRowContext(ctx, `SELECT enabled, expected_public_ip FROM egress_endpoints WHERE id=?`, assignment.EndpointID).Scan(&enabled, &expectedIP)
-		if errors.Is(err, sql.ErrNoRows) {
+		mode, exists := endpointModes[assignment.EndpointID]
+		if !exists {
 			conflicts = append(conflicts, BindingConflict{Identity: assignment.Identity, EndpointID: assignment.EndpointID, Code: "endpoint_not_found", Message: "endpoint does not exist"})
 			continue
 		}
+		var enabled int
+		var expectedIP string
+		err = tx.QueryRowContext(ctx, `SELECT enabled, expected_public_ip FROM egress_endpoints WHERE id=?`, assignment.EndpointID).Scan(&enabled, &expectedIP)
 		if err != nil {
 			return nil, err
 		}
@@ -694,7 +750,7 @@ func validateBindingAssignmentsTx(ctx context.Context, tx *sql.Tx, assignments [
 			conflicts = append(conflicts, BindingConflict{Identity: assignment.Identity, EndpointID: assignment.EndpointID, Code: "endpoint_disabled", Message: "endpoint is disabled"})
 			continue
 		}
-		if strings.TrimSpace(expectedIP) == "" {
+		if mode != EndpointSharingModeShared && strings.TrimSpace(expectedIP) == "" {
 			conflicts = append(conflicts, BindingConflict{Identity: assignment.Identity, EndpointID: assignment.EndpointID, Code: "expected_public_ip_required", Message: "enabled endpoint requires expected_public_ip"})
 			continue
 		}
@@ -708,6 +764,9 @@ func validateBindingAssignmentsTx(ctx context.Context, tx *sql.Tx, assignments [
 	sort.Strings(identities)
 	for _, identity := range identities {
 		endpointID := final[identity]
+		if endpointModes[endpointID] == EndpointSharingModeShared {
+			continue
+		}
 		if owner, exists := owners[endpointID]; exists && owner != identity {
 			conflicts = append(conflicts, BindingConflict{Identity: identity, EndpointID: endpointID, Code: "endpoint_already_bound", Message: fmt.Sprintf("endpoint is exclusively assigned to %s", owner)})
 			continue
@@ -734,18 +793,18 @@ func bindingRevisionTx(ctx context.Context, tx *sql.Tx) (string, error) {
 	if err = rows.Close(); err != nil {
 		return "", err
 	}
-	rows, err = tx.QueryContext(ctx, `SELECT id, enabled, expected_public_ip, public_ip, check_status, last_checked_at, updated_at FROM egress_endpoints ORDER BY id`)
+	rows, err = tx.QueryContext(ctx, `SELECT id, enabled, sharing_mode, expected_public_ip, public_ip, check_status, last_checked_at, updated_at FROM egress_endpoints ORDER BY id`)
 	if err != nil {
 		return "", err
 	}
 	for rows.Next() {
-		var id, expectedIP, publicIP, checkStatus, lastCheckedAt, updatedAt string
+		var id, sharingMode, expectedIP, publicIP, checkStatus, lastCheckedAt, updatedAt string
 		var enabled int
-		if err = rows.Scan(&id, &enabled, &expectedIP, &publicIP, &checkStatus, &lastCheckedAt, &updatedAt); err != nil {
+		if err = rows.Scan(&id, &enabled, &sharingMode, &expectedIP, &publicIP, &checkStatus, &lastCheckedAt, &updatedAt); err != nil {
 			_ = rows.Close()
 			return "", err
 		}
-		_, _ = fmt.Fprintf(hash, "e\x00%s\x00%d\x00%s\x00%s\x00%s\x00%s\x00%s\n", id, enabled, expectedIP, publicIP, checkStatus, lastCheckedAt, updatedAt)
+		_, _ = fmt.Fprintf(hash, "e\x00%s\x00%d\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\n", id, enabled, sharingMode, expectedIP, publicIP, checkStatus, lastCheckedAt, updatedAt)
 	}
 	if err = rows.Close(); err != nil {
 		return "", err
@@ -759,12 +818,12 @@ func (s *Store) ResolveIdentity(ctx context.Context, identity string) (ResolvedB
 	var bindingCreated, bindingUpdated, endpointCreated, endpointUpdated, lastCheckedAt string
 	err := s.db.QueryRowContext(ctx, `
 SELECT b.identity, b.endpoint_id, b.auth_file_id, b.created_at, b.updated_at,
-       e.id, e.name, e.protocol, e.host, e.port, e.enabled, e.username, e.password, e.expected_public_ip, e.public_ip, e.latency_ms, e.last_checked_at, e.check_status, e.check_error, e.created_at, e.updated_at
+       e.id, e.name, e.protocol, e.host, e.port, e.enabled, e.sharing_mode, e.username, e.password, e.expected_public_ip, e.public_ip, e.latency_ms, e.last_checked_at, e.check_status, e.check_error, e.created_at, e.updated_at
 FROM egress_bindings b
 JOIN egress_endpoints e ON e.id=b.endpoint_id
 WHERE b.identity=?`, strings.TrimSpace(identity)).Scan(
 		&out.Binding.Identity, &out.Binding.EndpointID, &out.Binding.AuthFileID, &bindingCreated, &bindingUpdated,
-		&out.Endpoint.ID, &out.Endpoint.Name, &out.Endpoint.Protocol, &out.Endpoint.Host, &out.Endpoint.Port, &endpointEnabled, &out.Endpoint.Username, &out.Endpoint.Password, &out.Endpoint.ExpectedPublicIP, &out.Endpoint.PublicIP, &out.Endpoint.LatencyMS, &lastCheckedAt, &out.Endpoint.CheckStatus, &out.Endpoint.CheckError, &endpointCreated, &endpointUpdated,
+		&out.Endpoint.ID, &out.Endpoint.Name, &out.Endpoint.Protocol, &out.Endpoint.Host, &out.Endpoint.Port, &endpointEnabled, &out.Endpoint.SharingMode, &out.Endpoint.Username, &out.Endpoint.Password, &out.Endpoint.ExpectedPublicIP, &out.Endpoint.PublicIP, &out.Endpoint.LatencyMS, &lastCheckedAt, &out.Endpoint.CheckStatus, &out.Endpoint.CheckError, &endpointCreated, &endpointUpdated,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ResolvedBinding{}, ErrEgressRequired
@@ -824,7 +883,14 @@ func validateEndpoint(endpoint Endpoint) error {
 	default:
 		return ErrEndpointInvalid
 	}
+	mode, err := normalizeEndpointSharingMode(endpoint.SharingMode)
+	if err != nil {
+		return err
+	}
 	expectedIP := strings.TrimSpace(endpoint.ExpectedPublicIP)
+	if mode == EndpointSharingModeShared {
+		return nil
+	}
 	if endpoint.Enabled && expectedIP == "" {
 		return fmt.Errorf("%w: enabled endpoint requires expected_public_ip", ErrEndpointInvalid)
 	}
@@ -834,6 +900,17 @@ func validateEndpoint(endpoint Endpoint) error {
 		}
 	}
 	return nil
+}
+
+func normalizeEndpointSharingMode(mode EndpointSharingMode) (EndpointSharingMode, error) {
+	switch EndpointSharingMode(strings.ToLower(strings.TrimSpace(string(mode)))) {
+	case "", EndpointSharingModeExclusive:
+		return EndpointSharingModeExclusive, nil
+	case EndpointSharingModeShared:
+		return EndpointSharingModeShared, nil
+	default:
+		return "", fmt.Errorf("%w: sharing_mode must be exclusive or shared", ErrEndpointInvalid)
+	}
 }
 
 func canonicalIP(value string) string {

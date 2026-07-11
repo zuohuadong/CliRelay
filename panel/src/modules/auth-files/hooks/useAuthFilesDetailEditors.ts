@@ -41,6 +41,7 @@ const createPrefixProxyEditorState = (): PrefixProxyEditorState => ({
   json: null,
   prefix: "",
   proxyUrl: "",
+  egressMode: "fixed_endpoint",
   subscriptionStartedAt: "",
   subscriptionPeriod: "monthly",
 });
@@ -58,6 +59,9 @@ const readSubscriptionStartValue = (json: Record<string, unknown>): unknown =>
   json.subscriptionStartedAt ??
   json.subscription_start_at ??
   json.subscriptionStartAt;
+
+const normalizeCodexEgressMode = (value: unknown): "fixed_endpoint" | "shared_proxy" =>
+  value === "shared_proxy" ? "shared_proxy" : "fixed_endpoint";
 
 const removeSubscriptionFields = (json: Record<string, unknown>) => {
   delete json.subscription_started_at;
@@ -292,6 +296,7 @@ export function useAuthFilesDetailEditors(
         json: null,
         prefix: "",
         proxyUrl: "",
+        egressMode: "fixed_endpoint",
         subscriptionStartedAt: "",
         subscriptionPeriod: "monthly",
       });
@@ -324,6 +329,7 @@ export function useAuthFilesDetailEditors(
         const json = parsed as Record<string, unknown>;
         const prefix = typeof json.prefix === "string" ? json.prefix : "";
         const proxyUrl = typeof json.proxy_url === "string" ? json.proxy_url : "";
+        const egressMode = normalizeCodexEgressMode(json.egress_mode);
         const subscriptionStartedAt = dateLikeToDateTimeLocalInput(
           readSubscriptionStartValue(json),
         );
@@ -337,6 +343,7 @@ export function useAuthFilesDetailEditors(
           json,
           prefix,
           proxyUrl,
+          egressMode,
           subscriptionStartedAt,
           subscriptionPeriod,
           error: null,
@@ -431,6 +438,7 @@ export function useAuthFilesDetailEditors(
       typeof prefixProxyEditor.json.prefix === "string" ? prefixProxyEditor.json.prefix : "";
     const originalProxyUrl =
       typeof prefixProxyEditor.json.proxy_url === "string" ? prefixProxyEditor.json.proxy_url : "";
+    const originalEgressMode = normalizeCodexEgressMode(prefixProxyEditor.json.egress_mode);
     const originalSubscriptionStartedAt = dateLikeToDateTimeLocalInput(
       readSubscriptionStartValue(prefixProxyEditor.json),
     );
@@ -440,6 +448,7 @@ export function useAuthFilesDetailEditors(
     return (
       originalPrefix !== prefixProxyEditor.prefix ||
       originalProxyUrl !== prefixProxyEditor.proxyUrl ||
+      originalEgressMode !== prefixProxyEditor.egressMode ||
       originalSubscriptionStartedAt !== prefixProxyEditor.subscriptionStartedAt ||
       originalSubscriptionPeriod !== prefixProxyEditor.subscriptionPeriod
     );
@@ -447,6 +456,7 @@ export function useAuthFilesDetailEditors(
     prefixProxyEditor.json,
     prefixProxyEditor.prefix,
     prefixProxyEditor.proxyUrl,
+    prefixProxyEditor.egressMode,
     prefixProxyEditor.subscriptionPeriod,
     prefixProxyEditor.subscriptionStartedAt,
   ]);
@@ -463,6 +473,9 @@ export function useAuthFilesDetailEditors(
     if (proxyUrl) next.proxy_url = proxyUrl;
     else delete next.proxy_url;
 
+    if (prefixProxyEditor.egressMode === "shared_proxy") next.egress_mode = "shared_proxy";
+    else delete next.egress_mode;
+
     removeSubscriptionFields(next);
     const subscriptionStartedAt = prefixProxyEditor.subscriptionStartedAt.trim();
     if (subscriptionStartedAt) {
@@ -478,6 +491,7 @@ export function useAuthFilesDetailEditors(
     prefixProxyEditor.json,
     prefixProxyEditor.prefix,
     prefixProxyEditor.proxyUrl,
+    prefixProxyEditor.egressMode,
     prefixProxyEditor.subscriptionPeriod,
     prefixProxyEditor.subscriptionStartedAt,
   ]);

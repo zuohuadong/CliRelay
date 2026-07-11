@@ -632,4 +632,63 @@ describe("Auth Files helper coverage", () => {
     });
     expect(loadAll).toHaveBeenCalledTimes(1);
   });
+
+  test("persists an explicit shared-proxy egress mode for a Codex auth file", async () => {
+    let uploadedText = "";
+    mocks.downloadText.mockImplementation(async () =>
+      JSON.stringify({
+        prefix: "codex-shared",
+        proxy_url: "socks5://proxy.example:1080",
+        egress_mode: "shared_proxy",
+      }),
+    );
+    mocks.upload.mockImplementation(async (file: File) => {
+      uploadedText = await file.text();
+      return {};
+    });
+
+    const loadAll = vi.fn(async () => [] as AuthFileItem[]);
+    const { result } = renderHook(() => useAuthFilesDetailEditors(loadAll), { wrapper });
+
+    await act(async () => {
+      result.current.setDetailFile({ name: "codex-shared.json" } as AuthFileItem);
+      result.current.setDetailOpen(true);
+      result.current.setDetailTab("fields");
+    });
+
+    await waitFor(() => {
+      expect(result.current.prefixProxyEditor.egressMode).toBe("shared_proxy");
+    });
+
+    await act(async () => {
+      result.current.setPrefixProxyEditor((prev) => ({
+        ...prev,
+        egressMode: "fixed_endpoint",
+      }));
+    });
+
+    expect(result.current.prefixProxyUpdatedText).not.toContain('"egress_mode"');
+
+    await act(async () => {
+      result.current.setPrefixProxyEditor((prev) => ({
+        ...prev,
+        egressMode: "shared_proxy",
+        proxyUrl: "socks5://proxy-next.example:1080",
+      }));
+    });
+
+    await waitFor(() => {
+      expect(result.current.prefixProxyEditor.egressMode).toBe("shared_proxy");
+    });
+
+    await act(async () => {
+      await result.current.savePrefixProxy();
+    });
+
+    expect(JSON.parse(uploadedText)).toEqual({
+      prefix: "codex-shared",
+      proxy_url: "socks5://proxy-next.example:1080",
+      egress_mode: "shared_proxy",
+    });
+  });
 });

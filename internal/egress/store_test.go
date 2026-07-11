@@ -118,6 +118,143 @@ func TestStorePersistsEndpointAndExclusiveBinding(t *testing.T) {
 	}
 }
 
+func TestStoreAllowsMultipleBindingsForSharedEndpoint(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "egress.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	endpoint, err := store.CreateEndpoint(ctx, Endpoint{
+		Name:        "Shared SOCKS5",
+		Protocol:    ProtocolSOCKS5,
+		Host:        "10.77.0.2",
+		Port:        1080,
+		Enabled:     true,
+		SharingMode: EndpointSharingModeShared,
+	})
+	if err != nil {
+		t.Fatalf("CreateEndpoint() error = %v", err)
+	}
+	first, _ := StableIdentity("acct-shared-one")
+	second, _ := StableIdentity("acct-shared-two")
+	preview, err := store.PreviewBindingBatch(ctx, []BindingAssignment{
+		{Identity: first, EndpointID: endpoint.ID},
+		{Identity: second, EndpointID: endpoint.ID},
+	})
+	if err != nil || !preview.Valid {
+		t.Fatalf("PreviewBindingBatch() = %#v, %v", preview, err)
+	}
+	if _, err = store.ApplyBindingBatch(ctx, preview.Revision, preview.Assignments); err != nil {
+		t.Fatalf("ApplyBindingBatch() error = %v", err)
+	}
+	bindings, err := store.ListBindings(ctx)
+	if err != nil || len(bindings) != 2 {
+		t.Fatalf("ListBindings() = %#v, %v", bindings, err)
+	}
+}
+
+func TestStoreRejectsSharedEndpointDowngradeWithMultipleBindings(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "egress.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	endpoint, err := store.CreateEndpoint(ctx, Endpoint{
+		Name:        "Shared SOCKS5",
+		Protocol:    ProtocolSOCKS5,
+		Host:        "10.77.0.2",
+		Port:        1080,
+		Enabled:     true,
+		SharingMode: EndpointSharingModeShared,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := StableIdentity("acct-shared-one")
+	second, _ := StableIdentity("acct-shared-two")
+	preview, err := store.PreviewBindingBatch(ctx, []BindingAssignment{
+		{Identity: first, EndpointID: endpoint.ID},
+		{Identity: second, EndpointID: endpoint.ID},
+	})
+	if err != nil || !preview.Valid {
+		t.Fatalf("PreviewBindingBatch() = %#v, %v", preview, err)
+	}
+	if _, err = store.ApplyBindingBatch(ctx, preview.Revision, preview.Assignments); err != nil {
+		t.Fatalf("ApplyBindingBatch() error = %v", err)
+	}
+
+	endpoint.SharingMode = EndpointSharingModeExclusive
+	endpoint.ExpectedPublicIP = "198.51.100.44"
+	if _, err = store.UpdateEndpoint(ctx, endpoint); !errors.Is(err, ErrEndpointInUse) {
+		t.Fatalf("UpdateEndpoint() error = %v, want ErrEndpointInUse", err)
+	}
+	stored, err := store.GetEndpoint(ctx, endpoint.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.SharingMode != EndpointSharingModeShared || stored.ExpectedPublicIP != "" {
+		t.Fatalf("endpoint changed after rejected downgrade: %#v", stored)
+	}
+	bindings, err := store.ListBindings(ctx)
+	if err != nil || len(bindings) != 2 {
+		t.Fatalf("ListBindings() = %#v, %v", bindings, err)
+	}
+}
+
+func TestStoreMigratesLegacyExclusiveBindingIndexForSharedEndpoints(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "egress.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE egress_schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`,
+		`CREATE TABLE egress_endpoints (id TEXT PRIMARY KEY, name TEXT NOT NULL, protocol TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '', expected_public_ip TEXT NOT NULL DEFAULT '', public_ip TEXT NOT NULL DEFAULT '', latency_ms INTEGER NOT NULL DEFAULT 0, last_checked_at TEXT NOT NULL DEFAULT '', check_status TEXT NOT NULL DEFAULT '', check_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE egress_bindings (identity TEXT PRIMARY KEY, endpoint_id TEXT NOT NULL, auth_file_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE UNIQUE INDEX idx_egress_bindings_endpoint_unique ON egress_bindings(endpoint_id)`,
+	} {
+		if _, err = db.Exec(statement); err != nil {
+			t.Fatalf("prepare legacy store: %v", err)
+		}
+	}
+	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var indexCount int
+	if err = store.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_egress_bindings_endpoint_unique'`).Scan(&indexCount); err != nil {
+		t.Fatal(err)
+	}
+	if indexCount != 0 {
+		t.Fatalf("legacy exclusive binding index remains after migration")
+	}
+	var columnCount int
+	if err = store.DB().QueryRow(`SELECT COUNT(*) FROM pragma_table_info('egress_endpoints') WHERE name = 'sharing_mode'`).Scan(&columnCount); err != nil {
+		t.Fatal(err)
+	}
+	if columnCount != 1 {
+		t.Fatalf("sharing_mode column count = %d, want 1", columnCount)
+	}
+}
+
 func TestStoreRejectsHTTPSEndpointProtocol(t *testing.T) {
 	t.Parallel()
 

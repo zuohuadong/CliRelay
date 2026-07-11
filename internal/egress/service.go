@@ -226,7 +226,7 @@ func (s *Service) resolveEndpoint(ctx context.Context, endpoint Endpoint) (Resol
 	}
 	if !readiness.RuntimeReady {
 		base := ErrEndpointDisabled
-		if strings.TrimSpace(endpoint.ExpectedPublicIP) == "" || containsReason(readiness.Reasons, "expected_public_ip_invalid") {
+		if (endpoint.SharingMode != EndpointSharingModeShared && strings.TrimSpace(endpoint.ExpectedPublicIP) == "") || containsReason(readiness.Reasons, "expected_public_ip_invalid") {
 			base = ErrEndpointInvalid
 		}
 		return ResolvedEndpoint{}, fmt.Errorf("%w: endpoint %s is not runtime ready: %s", base, endpoint.ID, strings.Join(readiness.Reasons, ","))
@@ -251,24 +251,28 @@ func (s *Service) endpointReadiness(ctx context.Context, endpoint Endpoint) (End
 	if !endpoint.Enabled {
 		readiness.Reasons = append(readiness.Reasons, "endpoint_disabled")
 	}
+	shared := endpoint.SharingMode == EndpointSharingModeShared
 	expectedIP := strings.TrimSpace(endpoint.ExpectedPublicIP)
-	if expectedIP == "" {
+	if !shared && expectedIP == "" {
 		readiness.Reasons = append(readiness.Reasons, "expected_public_ip_required")
-	} else if parsed, err := parseEndpointIP(expectedIP); err != nil {
-		readiness.Reasons = append(readiness.Reasons, "expected_public_ip_invalid")
-	} else {
-		expectedIP = parsed.String()
+	} else if !shared {
+		parsed, err := parseEndpointIP(expectedIP)
+		if err != nil {
+			readiness.Reasons = append(readiness.Reasons, "expected_public_ip_invalid")
+		} else {
+			expectedIP = parsed.String()
+		}
 	}
-	readiness.Eligible = endpoint.Enabled && expectedIP != ""
+	readiness.Eligible = endpoint.Enabled && (shared || expectedIP != "")
 	readiness.HealthFresh = endpoint.CheckStatus == EndpointStatusHealthy && s.endpointHealthFresh(endpoint)
 	if !readiness.HealthFresh {
 		readiness.Reasons = append(readiness.Reasons, "endpoint_health_stale_or_unhealthy")
 	}
-	readiness.PublicIPMatches = expectedIP != "" && canonicalIP(endpoint.PublicIP) == expectedIP
+	readiness.PublicIPMatches = shared || (expectedIP != "" && canonicalIP(endpoint.PublicIP) == expectedIP)
 	if !readiness.PublicIPMatches {
 		readiness.Reasons = append(readiness.Reasons, "public_ip_mismatch")
 	}
-	if strings.TrimSpace(endpoint.PublicIP) != "" {
+	if !shared && strings.TrimSpace(endpoint.PublicIP) != "" {
 		count, err := s.store.CountEndpointsByPublicIP(ctx, canonicalIP(endpoint.PublicIP), endpoint.ID)
 		if err != nil {
 			return EndpointReadiness{}, err
@@ -331,6 +335,7 @@ func (s *Service) CheckEndpoint(ctx context.Context, endpointID string) (Endpoin
 	}
 	client := &http.Client{Transport: transport, Timeout: 15 * time.Second}
 	startedAt := s.now()
+	shared := resolved.Endpoint.SharingMode == EndpointSharingModeShared
 	expectedIP := canonicalIP(resolved.Endpoint.ExpectedPublicIP)
 	validIPs := make([]string, 0)
 	failures := make([]string, 0)
@@ -367,7 +372,7 @@ func (s *Service) CheckEndpoint(ctx context.Context, endpointID string) (Endpoin
 		}
 		candidate = parsed.String()
 		validIPs = append(validIPs, candidate)
-		if candidate == expectedIP {
+		if shared || candidate == expectedIP {
 			publicIP = candidate
 			break
 		}
@@ -391,11 +396,15 @@ func (s *Service) CheckEndpoint(ctx context.Context, endpointID string) (Endpoin
 		publicIP = validIPs[0]
 		status = EndpointStatusIPMismatch
 		checkError = fmt.Sprintf("observed public IP(s) %s do not match expected %s", strings.Join(validIPs, ","), resolved.Endpoint.ExpectedPublicIP)
-	} else if duplicates, countErr := s.store.CountEndpointsByPublicIP(ctx, publicIP, endpointID); countErr != nil {
-		return Endpoint{}, countErr
-	} else if duplicates > 0 {
-		status = EndpointStatusDuplicatePublicIP
-		checkError = "observed public IP is already used by another endpoint"
+	} else if !shared {
+		duplicates, countErr := s.store.CountEndpointsByPublicIP(ctx, publicIP, endpointID)
+		if countErr != nil {
+			return Endpoint{}, countErr
+		}
+		if duplicates > 0 {
+			status = EndpointStatusDuplicatePublicIP
+			checkError = "observed public IP is already used by another endpoint"
+		}
 	}
 	updated, updateErr := s.store.UpdateEndpointCheckIfRouteUnchanged(ctx, resolved.Endpoint, publicIP, status, checkError, latency, checkedAt)
 	if updateErr != nil {
@@ -607,7 +616,7 @@ func (s *Service) managementEndpointTransport(ctx context.Context, endpointID st
 	if !endpoint.Enabled {
 		return ResolvedEndpoint{}, nil, fmt.Errorf("%w: endpoint %s is disabled", ErrEndpointDisabled, endpoint.ID)
 	}
-	if strings.TrimSpace(endpoint.ExpectedPublicIP) == "" {
+	if endpoint.SharingMode != EndpointSharingModeShared && strings.TrimSpace(endpoint.ExpectedPublicIP) == "" {
 		return ResolvedEndpoint{}, nil, fmt.Errorf("%w: endpoint requires expected_public_ip", ErrEndpointInvalid)
 	}
 	proxyURL, err := endpointProxyURL(endpoint)

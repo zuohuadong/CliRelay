@@ -37,13 +37,7 @@ describe("EndpointModal", () => {
 
   test("contains only standalone endpoint fields", () => {
     render(
-      <EndpointModal
-        open
-        endpoint={endpoint}
-        saving={false}
-        onClose={vi.fn()}
-        onSave={vi.fn()}
-      />,
+      <EndpointModal open endpoint={endpoint} saving={false} onClose={vi.fn()} onSave={vi.fn()} />,
     );
 
     expect(screen.getByLabelText("Protocol")).toBeInTheDocument();
@@ -54,13 +48,7 @@ describe("EndpointModal", () => {
   test("offers only SOCKS5 and HTTP CONNECT protocols", async () => {
     const user = userEvent.setup();
     render(
-      <EndpointModal
-        open
-        endpoint={null}
-        saving={false}
-        onClose={vi.fn()}
-        onSave={vi.fn()}
-      />,
+      <EndpointModal open endpoint={null} saving={false} onClose={vi.fn()} onSave={vi.fn()} />,
     );
 
     await user.click(screen.getByRole("combobox", { name: "Protocol" }));
@@ -75,19 +63,15 @@ describe("EndpointModal", () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
     render(
-      <EndpointModal
-        open
-        endpoint={endpoint}
-        saving={false}
-        onClose={vi.fn()}
-        onSave={onSave}
-      />,
+      <EndpointModal open endpoint={endpoint} saving={false} onClose={vi.fn()} onSave={onSave} />,
     );
 
     const input = screen.getByLabelText("Expected public IP");
     await user.clear(input);
     await user.click(screen.getByRole("button", { name: "Save endpoint" }));
-    expect(screen.getByText("Expected public IP is required for an enabled endpoint.")).toBeVisible();
+    expect(
+      screen.getByText("Expected public IP is required for an enabled endpoint."),
+    ).toBeVisible();
     expect(onSave).not.toHaveBeenCalled();
 
     await user.type(input, "not-an-ip");
@@ -97,27 +81,44 @@ describe("EndpointModal", () => {
     await user.clear(input);
     await user.type(input, "2001:db8::8");
     await user.click(screen.getByRole("button", { name: "Save endpoint" }));
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ expectedPublicIp: "2001:db8::8" }));
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedPublicIp: "2001:db8::8" }),
+    );
+  });
+
+  test("allows a shared endpoint without a fixed expected public IP", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <EndpointModal open endpoint={endpoint} saving={false} onClose={vi.fn()} onSave={onSave} />,
+    );
+
+    await user.click(screen.getByRole("combobox", { name: "Allocation mode" }));
+    await user.click(screen.getByRole("option", { name: "Shared dynamic endpoint" }));
+
+    expect(screen.getByLabelText("Expected public IP")).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Save endpoint" }));
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ sharingMode: "shared", expectedPublicIp: "" }),
+    );
   });
 
   test("never prefills the stored password and can explicitly clear credentials", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
     render(
-      <EndpointModal
-        open
-        endpoint={endpoint}
-        saving={false}
-        onClose={vi.fn()}
-        onSave={onSave}
-      />,
+      <EndpointModal open endpoint={endpoint} saving={false} onClose={vi.fn()} onSave={onSave} />,
     );
 
     expect(screen.getByLabelText("Password")).toHaveValue("");
     expect(screen.getByText("Leave blank to keep the existing password.")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Save endpoint" }));
     expect(onSave).toHaveBeenLastCalledWith(
-      expect.not.objectContaining({ password: expect.anything(), clearCredentials: expect.anything() }),
+      expect.not.objectContaining({
+        password: expect.anything(),
+        clearCredentials: expect.anything(),
+      }),
     );
 
     await user.click(screen.getByRole("switch", { name: "Clear stored credentials" }));

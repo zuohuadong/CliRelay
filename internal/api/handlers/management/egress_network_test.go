@@ -53,7 +53,7 @@ func TestEgressOverviewUsesEndpointBindingContractOnly(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if !response.Enabled || response.Counts["endpoints"] != 1 || response.Counts["bindings"] != 1 || response.Policy.BindingMode != "exclusive" || response.Policy.FailureMode != "fail_closed" || !response.Readiness.CodexOAuthAllowed {
+	if !response.Enabled || response.Counts["endpoints"] != 1 || response.Counts["bindings"] != 1 || response.Policy.BindingMode != "per_endpoint" || response.Policy.FailureMode != "fail_closed" || !response.Readiness.CodexOAuthAllowed {
 		t.Fatalf("overview = %#v", response)
 	}
 }

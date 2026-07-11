@@ -35,6 +35,7 @@ const basePrefixProxyEditor: DetailModalProps["prefixProxyEditor"] = {
   json: { prefix: "team-a", proxy_url: "http://127.0.0.1:7890" },
   prefix: "team-a",
   proxyUrl: "http://127.0.0.1:7890",
+  egressMode: "fixed_endpoint",
   subscriptionStartedAt: "2026-04-01T08:30",
   subscriptionPeriod: "monthly",
 };
@@ -303,7 +304,9 @@ describe("AuthFileDetailModal", () => {
     expect(grid.className).not.toMatch(/\bborder\b/);
     expect(grid.className).not.toContain("divide-y");
     expect(within(grid).getByPlaceholderText("e.g. team-a")).toHaveValue("team-a");
-    expect(within(grid).getByRole("combobox", { name: "Fixed egress endpoint" })).toBeInTheDocument();
+    expect(
+      within(grid).getByRole("combobox", { name: "Fixed egress endpoint" }),
+    ).toBeInTheDocument();
     expect(
       within(grid).queryByPlaceholderText("e.g. http://127.0.0.1:7890"),
     ).not.toBeInTheDocument();
@@ -311,6 +314,26 @@ describe("AuthFileDetailModal", () => {
     expect(screen.queryByTestId("auth-file-fields-preview")).not.toBeInTheDocument();
     expect(screen.queryByText(/"prefix"/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  test("shows the ordinary proxy editor when a Codex auth uses shared-proxy mode", () => {
+    renderDetailModal({
+      detailTab: "fields",
+      prefixProxyEditor: {
+        ...basePrefixProxyEditor,
+        egressMode: "shared_proxy",
+      },
+    });
+
+    const grid = screen.getByTestId("auth-file-fields-grid");
+    expect(within(grid).getByRole("combobox", { name: "Egress mode" })).toBeInTheDocument();
+    expect(within(grid).getByText("Shared proxy")).toBeInTheDocument();
+    expect(within(grid).getByPlaceholderText("e.g. http://127.0.0.1:7890")).toHaveValue(
+      "http://127.0.0.1:7890",
+    );
+    expect(
+      within(grid).queryByRole("combobox", { name: "Fixed egress endpoint" }),
+    ).not.toBeInTheDocument();
   });
 
   test("routes egress management through HashRouter", async () => {
@@ -342,7 +365,9 @@ describe("AuthFileDetailModal", () => {
     });
 
     await user.click(screen.getByRole("combobox", { name: "Fixed egress endpoint" }));
-    await user.click(await screen.findByRole("option", { name: /Secondary egress.*203\.0\.113\.9/i }));
+    await user.click(
+      await screen.findByRole("option", { name: /Secondary egress.*203\.0\.113\.9/i }),
+    );
     await user.click(screen.getByRole("button", { name: "Preview egress change" }));
     await waitFor(() =>
       expect(previewEgressBinding).toHaveBeenCalledWith({

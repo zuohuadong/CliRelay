@@ -622,7 +622,8 @@ export function AuthFilesPage() {
     return egressEndpoints.filter(
       (endpoint) =>
         endpoint.id === detailEgressBinding?.endpointId ||
-        (endpoint.runtimeReady && !occupiedEndpointIds.has(endpoint.id)),
+        (endpoint.runtimeReady &&
+          (endpoint.sharingMode === "shared" || !occupiedEndpointIds.has(endpoint.id))),
     );
   }, [
     detailEgressBinding?.endpointId,
@@ -637,7 +638,9 @@ export function AuthFilesPage() {
         .map((binding) => binding.endpointId),
     );
     return egressEndpoints.filter(
-      (endpoint) => endpoint.runtimeReady && !occupiedEndpointIds.has(endpoint.id),
+      (endpoint) =>
+        endpoint.runtimeReady &&
+        (endpoint.sharingMode === "shared" || !occupiedEndpointIds.has(endpoint.id)),
     );
   }, [egressBindings, egressEndpoints]);
   const {

@@ -175,7 +175,9 @@ describe("EgressPage", () => {
     expect(screen.getByRole("tab", { name: "Egress endpoints" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Account bindings" })).toBeInTheDocument();
     expect(screen.getAllByRole("tab")).toHaveLength(3);
-    expect(screen.getByText(/Each Codex OAuth account is pinned to one endpoint/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Each Codex OAuth account is pinned to one endpoint/),
+    ).toBeInTheDocument();
     expect(screen.getByText(/fails closed instead of using the host network/)).toBeInTheDocument();
     expect(mocks.getOverview).toHaveBeenCalledTimes(1);
     expect(mocks.listEndpoints).toHaveBeenCalledTimes(1);
@@ -205,6 +207,7 @@ describe("EgressPage", () => {
         host: "10.77.0.4",
         port: 1080,
         enabled: true,
+        sharingMode: "exclusive",
         expectedPublicIp: "203.0.113.10",
         username: "relay",
         password: "new-secret",
@@ -217,7 +220,11 @@ describe("EgressPage", () => {
   });
 
   test.each([
-    ["en", "The endpoint health check is stale or failing.", "A safety condition requires attention."],
+    [
+      "en",
+      "The endpoint health check is stale or failing.",
+      "A safety condition requires attention.",
+    ],
     ["zh-CN", "端点健康检查已过期或检查失败。", "存在需要处理的安全状态。"],
     [
       "ru",
@@ -276,7 +283,9 @@ describe("EgressPage", () => {
 
     await waitFor(() => expect(mocks.listEndpoints).toHaveBeenCalledTimes(2));
     expect((await screen.findAllByText("203.0.113.99")).length).toBeGreaterThan(0);
-    expect(screen.getByText("Observed public IP does not match the expected IP.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Observed public IP does not match the expected IP."),
+    ).toBeInTheDocument();
     expect(toastMocks.error).toHaveBeenCalledWith("proxy probe failed", expect.any(Object));
   });
 
@@ -284,7 +293,9 @@ describe("EgressPage", () => {
     const user = userEvent.setup();
     renderPage();
     await user.click(await screen.findByRole("tab", { name: "Account bindings" }));
-    const select = (await screen.findAllByRole("combobox", { name: "Endpoint for user@example.com" }))[0];
+    const select = (
+      await screen.findAllByRole("combobox", { name: "Endpoint for user@example.com" })
+    )[0];
     await user.click(select);
     await user.click(await screen.findByRole("option", { name: /Singapore.*203\.0\.113\.9/i }));
     expect(screen.getByText("1 pending change")).toBeInTheDocument();

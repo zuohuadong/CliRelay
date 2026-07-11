@@ -47,6 +47,41 @@ func TestServiceCheckEndpointUsesStrictProxyAndPersistsPublicIP(t *testing.T) {
 	}
 }
 
+func TestServiceCheckSharedEndpointAcceptsObservedIPChanges(t *testing.T) {
+	t.Parallel()
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ip":"34.142.173.30"}`))
+	}))
+	defer proxyServer.Close()
+	host, port := splitTestServer(t, proxyServer.URL)
+	service := newTestService(t, true)
+	service.probeURLs = []string{"http://probe.invalid/ip"}
+	endpoint, err := service.CreateEndpoint(context.Background(), Endpoint{
+		Name:        "Shared dynamic exit",
+		Protocol:    ProtocolHTTP,
+		Host:        host,
+		Port:        port,
+		Enabled:     true,
+		SharingMode: EndpointSharingModeShared,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	checked, err := service.CheckEndpoint(context.Background(), endpoint.ID)
+	if err != nil {
+		t.Fatalf("CheckEndpoint() error = %v", err)
+	}
+	if checked.PublicIP != "34.142.173.30" || checked.CheckStatus != EndpointStatusHealthy {
+		t.Fatalf("checked endpoint = %#v", checked)
+	}
+	readiness, err := service.EndpointReadiness(context.Background(), endpoint.ID)
+	if err != nil || !readiness.RuntimeReady || !readiness.PublicIPMatches {
+		t.Fatalf("EndpointReadiness() = %#v, %v", readiness, err)
+	}
+}
+
 func TestServiceResolveUsesStableBindingAndNeverFailsOver(t *testing.T) {
 	t.Parallel()
 

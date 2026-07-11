@@ -40,8 +40,8 @@ const (
 	responsesWebsocketTimelinePayloadMaxBytes = 64 << 10
 
 	// 下游 websocket 心跳：定期发送 ping frame 防止客户端 idle timeout
-	responsesWebsocketReadTimeout      = 60 * time.Second
-	responsesWebsocketWriteTimeout     = 10 * time.Second
+	responsesWebsocketReadTimeout       = 60 * time.Second
+	responsesWebsocketWriteTimeout      = 10 * time.Second
 	responsesWebsocketHeartbeatInterval = 30 * time.Second
 )
 

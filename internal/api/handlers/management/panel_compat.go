@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -712,24 +713,54 @@ func (h *Handler) GetUsageSummaryPublic(c *gin.Context) {
 }
 
 func (h *Handler) GetUsageChartData(c *gin.Context) {
-	db, ok := h.usageDB()
-	if !ok {
+	filters := usageFiltersFromQuery(c)
+	requestContext := c.Request.Context()
+	payload, err := h.loadUsageAggregate(requestContext, usageAggregateChart, filters, func(ctx context.Context) (gin.H, error) {
+		db, ok := h.usageDB()
+		if !ok {
+			return nil, errUsageDatabaseUnavailable
+		}
+		defer func() { _ = db.Close() }()
+		return buildUsageChartPayloadContext(ctx, db, filters, false)
+	})
+	if err != nil {
+		if requestContext.Err() != nil {
+			return
+		}
 		c.JSON(http.StatusOK, emptyUsageChartPayload())
 		return
 	}
-	defer func() { _ = db.Close() }()
-	c.JSON(http.StatusOK, buildUsageChartPayload(db, usageFiltersFromQuery(c), false))
+	c.JSON(http.StatusOK, payload)
 }
 
 func (h *Handler) GetUsageEntityStats(c *gin.Context) {
-	db, ok := h.usageDB()
-	if !ok {
-		c.JSON(http.StatusOK, gin.H{"source": []gin.H{}, "auth_index": []gin.H{}})
+	filters := usageFiltersFromQuery(c)
+	requestContext := c.Request.Context()
+	payload, err := h.loadUsageAggregate(requestContext, usageAggregateEntity, filters, func(ctx context.Context) (gin.H, error) {
+		db, ok := h.usageDB()
+		if !ok {
+			return nil, errUsageDatabaseUnavailable
+		}
+		defer func() { _ = db.Close() }()
+		return h.buildUsageEntityStatsPayloadContext(ctx, db, filters)
+	})
+	if err != nil {
+		if requestContext.Err() != nil {
+			return
+		}
+		c.JSON(http.StatusOK, emptyUsageEntityStatsPayload())
 		return
 	}
-	defer func() { _ = db.Close() }()
+	c.JSON(http.StatusOK, payload)
+}
 
-	filters := usageFiltersFromQuery(c)
+var errUsageDatabaseUnavailable = errors.New("usage database unavailable")
+
+func emptyUsageEntityStatsPayload() gin.H {
+	return gin.H{"source": []gin.H{}, "auth_index": []gin.H{}}
+}
+
+func (h *Handler) buildUsageEntityStatsPayloadContext(ctx context.Context, db *sql.DB, filters usageFilters) (gin.H, error) {
 	sourceSeen := make(map[string]bool)
 	sourceStats := make([]gin.H, 0)
 	cols := requestLogColumns(db)
@@ -738,18 +769,23 @@ func (h *Handler) GetUsageEntityStats(c *gin.Context) {
 		sourceFilters.AuthIndexes = nil
 	}
 	sourceWhereSQL, sourceArgs := sourceFilters.whereClause(db)
-	rows, _ := db.Query("SELECT "+usageColumnExpr(cols, "source", "''")+", count(*), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"=0 then 1 else 0 end),0), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(avg("+usageColumnExpr(cols, "latency_ms", "0")+"),0) FROM request_logs WHERE "+sourceWhereSQL+" GROUP BY "+usageColumnExpr(cols, "source", "''")+" ORDER BY count(*) DESC LIMIT 100", sourceArgs...)
-	if rows != nil {
-		defer rows.Close()
-		for rows.Next() {
-			var source string
-			var total, successCnt, failCnt, toks int64
-			var avgLatency float64
-			if rows.Scan(&source, &total, &successCnt, &failCnt, &toks, &avgLatency) == nil {
-				sourceStats = append(sourceStats, gin.H{"entity_name": source, "source": source, "requests": total, "failed": failCnt, "tokens": toks, "total_tokens": toks, "avg_latency": avgLatency})
-				sourceSeen[source] = true
-			}
+	rows, err := db.QueryContext(ctx, "SELECT "+usageColumnExpr(cols, "source", "''")+", count(*), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"=0 then 1 else 0 end),0), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(avg("+usageColumnExpr(cols, "latency_ms", "0")+"),0) FROM request_logs WHERE "+sourceWhereSQL+" GROUP BY "+usageColumnExpr(cols, "source", "''")+" ORDER BY count(*) DESC LIMIT 100", sourceArgs...)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var source string
+		var total, successCnt, failCnt, toks int64
+		var avgLatency float64
+		if rows.Scan(&source, &total, &successCnt, &failCnt, &toks, &avgLatency) == nil {
+			sourceStats = append(sourceStats, gin.H{"entity_name": source, "source": source, "requests": total, "failed": failCnt, "tokens": toks, "total_tokens": toks, "avg_latency": avgLatency})
+			sourceSeen[source] = true
 		}
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return nil, err
 	}
 
 	authIndexToAPIKey := h.buildAuthIndexToAPIKeyMap()
@@ -760,24 +796,29 @@ func (h *Handler) GetUsageEntityStats(c *gin.Context) {
 		authFilters.Sources = nil
 	}
 	authWhereSQL, authArgs := authFilters.whereClause(db)
-	rows2, _ := db.Query("SELECT "+usageColumnExpr(cols, "auth_index", "''")+", count(*), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"=0 then 1 else 0 end),0), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(avg("+usageColumnExpr(cols, "latency_ms", "0")+"),0) FROM request_logs WHERE "+authWhereSQL+" GROUP BY "+usageColumnExpr(cols, "auth_index", "''")+" ORDER BY count(*) DESC LIMIT 100", authArgs...)
-	if rows2 != nil {
-		defer rows2.Close()
-		for rows2.Next() {
-			var idx string
-			var total, successCnt, failCnt, toks int64
-			var avgLatency float64
-			if rows2.Scan(&idx, &total, &successCnt, &failCnt, &toks, &avgLatency) == nil {
-				authStats = append(authStats, gin.H{"entity_name": idx, "auth_index": idx, "requests": total, "failed": failCnt, "tokens": toks, "total_tokens": toks, "avg_latency": avgLatency})
-				if apiKey, found := authIndexToAPIKey[idx]; found && apiKey != "" && !sourceSeen[apiKey] {
-					sourceStats = append(sourceStats, gin.H{"entity_name": apiKey, "source": apiKey, "requests": total, "failed": failCnt, "tokens": toks, "total_tokens": toks, "avg_latency": avgLatency})
-					sourceSeen[apiKey] = true
-				}
+	rows2, err := db.QueryContext(ctx, "SELECT "+usageColumnExpr(cols, "auth_index", "''")+", count(*), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"=0 then 1 else 0 end),0), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(avg("+usageColumnExpr(cols, "latency_ms", "0")+"),0) FROM request_logs WHERE "+authWhereSQL+" GROUP BY "+usageColumnExpr(cols, "auth_index", "''")+" ORDER BY count(*) DESC LIMIT 100", authArgs...)
+	if err != nil {
+		return nil, err
+	}
+	for rows2.Next() {
+		var idx string
+		var total, successCnt, failCnt, toks int64
+		var avgLatency float64
+		if rows2.Scan(&idx, &total, &successCnt, &failCnt, &toks, &avgLatency) == nil {
+			authStats = append(authStats, gin.H{"entity_name": idx, "auth_index": idx, "requests": total, "failed": failCnt, "tokens": toks, "total_tokens": toks, "avg_latency": avgLatency})
+			if apiKey, found := authIndexToAPIKey[idx]; found && apiKey != "" && !sourceSeen[apiKey] {
+				sourceStats = append(sourceStats, gin.H{"entity_name": apiKey, "source": apiKey, "requests": total, "failed": failCnt, "tokens": toks, "total_tokens": toks, "avg_latency": avgLatency})
+				sourceSeen[apiKey] = true
 			}
 		}
 	}
+	err = rows2.Err()
+	_ = rows2.Close()
+	if err != nil {
+		return nil, err
+	}
 
-	c.JSON(http.StatusOK, gin.H{"source": sourceStats, "auth_index": authStats})
+	return gin.H{"source": sourceStats, "auth_index": authStats}, nil
 }
 
 func (h *Handler) buildAuthIndexToAPIKeyMap() map[string]string {
@@ -1852,7 +1893,11 @@ func (h *Handler) DeleteUsageLogs(c *gin.Context) {
 		return
 	}
 	defer func() { _ = db.Close() }()
-	c.JSON(http.StatusOK, clearUsageLogData(db, req.ClearBodyContent, req.ClearDetailContent, req.ClearRequestRecords))
+	payload := clearUsageLogData(db, req.ClearBodyContent, req.ClearDetailContent, req.ClearRequestRecords)
+	if req.ClearRequestRecords {
+		h.invalidateUsageAggregateCache()
+	}
+	c.JSON(http.StatusOK, payload)
 }
 
 func (h *Handler) ExportUsage(c *gin.Context) {
@@ -2264,20 +2309,68 @@ func buildUsageChartPayload(db *sql.DB, filters usageFilters, public bool) gin.H
 	return payload
 }
 
+func buildUsageChartPayloadContext(ctx context.Context, db *sql.DB, filters usageFilters, public bool) (gin.H, error) {
+	payload := emptyUsageChartPayload()
+	daily, err := queryUsageDailySeriesResultContext(ctx, db, filters)
+	if err != nil {
+		return nil, err
+	}
+	models, err := queryUsageModelDistributionResultContext(ctx, db, filters)
+	if err != nil {
+		return nil, err
+	}
+	hourlyTokens, err := queryUsageHourlyTokensResultContext(ctx, db, filters)
+	if err != nil {
+		return nil, err
+	}
+	hourlyModels, err := queryUsageHourlyModelsResultContext(ctx, db, filters)
+	if err != nil {
+		return nil, err
+	}
+	payload["daily_series"] = daily
+	payload["model_distribution"] = models
+	payload["hourly_tokens"] = hourlyTokens
+	payload["hourly_models"] = hourlyModels
+	if !public {
+		apiKeys, errAPIKeys := queryUsageAPIKeyDistributionResultContext(ctx, db, filters)
+		if errAPIKeys != nil {
+			return nil, errAPIKeys
+		}
+		payload["apikey_distribution"] = apiKeys
+	}
+	totals, err := queryUsageTotalsResultContext(ctx, db, filters)
+	if err != nil {
+		return nil, err
+	}
+	successRate := float64(0)
+	if totals.Total > 0 {
+		successRate = float64(totals.Success) / float64(totals.Total) * 100
+	}
+	payload["stats"] = gin.H{"total": totals.Total, "success_rate": successRate, "total_tokens": totals.TotalTokens, "total_cost": totals.TotalCost}
+	return payload, nil
+}
+
 func queryUsageTotals(db *sql.DB, filters usageFilters) usageTotals {
 	return queryUsageTotalsContext(context.Background(), db, filters)
 }
 
 func queryUsageTotalsContext(ctx context.Context, db *sql.DB, filters usageFilters) usageTotals {
+	out, _ := queryUsageTotalsResultContext(ctx, db, filters)
+	return out
+}
+
+func queryUsageTotalsResultContext(ctx context.Context, db *sql.DB, filters usageFilters) (usageTotals, error) {
 	if !dbTableExists(db, "request_logs") {
-		return usageTotals{}
+		return usageTotals{}, nil
 	}
 	cols := requestLogColumns(db)
 	whereSQL, args := filters.whereClause(db)
 	row := db.QueryRowContext(ctx, "SELECT count(*), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"=0 then 1 else 0 end),0), coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "input_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "output_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "reasoning_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cached_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cost", "0")+"),0) FROM request_logs WHERE "+whereSQL, args...)
 	var out usageTotals
-	_ = row.Scan(&out.Total, &out.Success, &out.Failed, &out.InputTokens, &out.OutputTokens, &out.ReasoningTokens, &out.CachedTokens, &out.TotalTokens, &out.TotalCost)
-	return out
+	if err := row.Scan(&out.Total, &out.Success, &out.Failed, &out.InputTokens, &out.OutputTokens, &out.ReasoningTokens, &out.CachedTokens, &out.TotalTokens, &out.TotalCost); err != nil {
+		return usageTotals{}, err
+	}
+	return out, nil
 }
 
 func queryUsageDailySeries(db *sql.DB, filters usageFilters) []gin.H {
@@ -2285,14 +2378,19 @@ func queryUsageDailySeries(db *sql.DB, filters usageFilters) []gin.H {
 }
 
 func queryUsageDailySeriesContext(ctx context.Context, db *sql.DB, filters usageFilters) []gin.H {
+	out, _ := queryUsageDailySeriesResultContext(ctx, db, filters)
+	return out
+}
+
+func queryUsageDailySeriesResultContext(ctx context.Context, db *sql.DB, filters usageFilters) ([]gin.H, error) {
 	if !dbTableExists(db, "request_logs") {
-		return []gin.H{}
+		return []gin.H{}, nil
 	}
 	cols := requestLogColumns(db)
 	whereSQL, args := filters.whereClause(db)
 	rows, err := db.QueryContext(ctx, "SELECT date("+usageColumnExpr(cols, "timestamp", "datetime('now')")+") as d, count(*) as cnt, coalesce(sum(case when "+usageColumnExpr(cols, "failed", "0")+"!=0 then 1 else 0 end),0), coalesce(sum("+usageColumnExpr(cols, "input_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "output_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "reasoning_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cached_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cost", "0")+"),0) FROM request_logs WHERE "+whereSQL+" GROUP BY d ORDER BY d", args...)
 	if err != nil || rows == nil {
-		return []gin.H{}
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	out := []gin.H{}
@@ -2304,18 +2402,30 @@ func queryUsageDailySeriesContext(ctx context.Context, db *sql.DB, filters usage
 			out = append(out, gin.H{"date": date, "requests": requests, "failed_requests": failed, "input_tokens": input, "output_tokens": output, "reasoning_tokens": reasoning, "cached_tokens": cached, "total_tokens": total, "tokens": total, "cost": cost, "total_cost": cost})
 		}
 	}
-	return out
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func queryUsageModelDistribution(db *sql.DB, filters usageFilters) []gin.H {
+	return queryUsageModelDistributionContext(context.Background(), db, filters)
+}
+
+func queryUsageModelDistributionContext(ctx context.Context, db *sql.DB, filters usageFilters) []gin.H {
+	out, _ := queryUsageModelDistributionResultContext(ctx, db, filters)
+	return out
+}
+
+func queryUsageModelDistributionResultContext(ctx context.Context, db *sql.DB, filters usageFilters) ([]gin.H, error) {
 	if !dbTableExists(db, "request_logs") {
-		return []gin.H{}
+		return []gin.H{}, nil
 	}
 	cols := requestLogColumns(db)
 	whereSQL, args := filters.whereClause(db)
-	rows, err := db.Query("SELECT "+usageColumnExpr(cols, "model", "''")+", count(*) as cnt, coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0) FROM request_logs WHERE "+whereSQL+" GROUP BY "+usageColumnExpr(cols, "model", "''")+" ORDER BY cnt DESC LIMIT 20", args...)
+	rows, err := db.QueryContext(ctx, "SELECT "+usageColumnExpr(cols, "model", "''")+", count(*) as cnt, coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0) FROM request_logs WHERE "+whereSQL+" GROUP BY "+usageColumnExpr(cols, "model", "''")+" ORDER BY cnt DESC LIMIT 20", args...)
 	if err != nil || rows == nil {
-		return []gin.H{}
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	out := []gin.H{}
@@ -2326,18 +2436,30 @@ func queryUsageModelDistribution(db *sql.DB, filters usageFilters) []gin.H {
 			out = append(out, gin.H{"model": model, "requests": requests, "tokens": tokens, "count": requests})
 		}
 	}
-	return out
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func queryUsageHourlyTokens(db *sql.DB, filters usageFilters) []gin.H {
+	return queryUsageHourlyTokensContext(context.Background(), db, filters)
+}
+
+func queryUsageHourlyTokensContext(ctx context.Context, db *sql.DB, filters usageFilters) []gin.H {
+	out, _ := queryUsageHourlyTokensResultContext(ctx, db, filters)
+	return out
+}
+
+func queryUsageHourlyTokensResultContext(ctx context.Context, db *sql.DB, filters usageFilters) ([]gin.H, error) {
 	if !dbTableExists(db, "request_logs") {
-		return []gin.H{}
+		return []gin.H{}, nil
 	}
 	cols := requestLogColumns(db)
 	whereSQL, args := filters.whereClause(db)
-	rows, err := db.Query("SELECT strftime('%Y-%m-%d %H:00', "+usageColumnExpr(cols, "timestamp", "datetime('now')")+"), coalesce(sum("+usageColumnExpr(cols, "input_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "output_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "reasoning_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cached_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0) FROM request_logs WHERE "+whereSQL+" GROUP BY 1 ORDER BY 1", args...)
+	rows, err := db.QueryContext(ctx, "SELECT strftime('%Y-%m-%d %H:00', "+usageColumnExpr(cols, "timestamp", "datetime('now')")+"), coalesce(sum("+usageColumnExpr(cols, "input_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "output_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "reasoning_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "cached_tokens", "0")+"),0), coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0) FROM request_logs WHERE "+whereSQL+" GROUP BY 1 ORDER BY 1", args...)
 	if err != nil || rows == nil {
-		return []gin.H{}
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	out := []gin.H{}
@@ -2348,18 +2470,30 @@ func queryUsageHourlyTokens(db *sql.DB, filters usageFilters) []gin.H {
 			out = append(out, gin.H{"hour": hour, "input_tokens": input, "output_tokens": output, "reasoning_tokens": reasoning, "cached_tokens": cached, "total_tokens": total})
 		}
 	}
-	return out
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func queryUsageHourlyModels(db *sql.DB, filters usageFilters) []gin.H {
+	return queryUsageHourlyModelsContext(context.Background(), db, filters)
+}
+
+func queryUsageHourlyModelsContext(ctx context.Context, db *sql.DB, filters usageFilters) []gin.H {
+	out, _ := queryUsageHourlyModelsResultContext(ctx, db, filters)
+	return out
+}
+
+func queryUsageHourlyModelsResultContext(ctx context.Context, db *sql.DB, filters usageFilters) ([]gin.H, error) {
 	if !dbTableExists(db, "request_logs") {
-		return []gin.H{}
+		return []gin.H{}, nil
 	}
 	cols := requestLogColumns(db)
 	whereSQL, args := filters.whereClause(db)
-	rows, err := db.Query("SELECT strftime('%Y-%m-%d %H:00', "+usageColumnExpr(cols, "timestamp", "datetime('now')")+"), "+usageColumnExpr(cols, "model", "''")+", count(*) FROM request_logs WHERE "+whereSQL+" GROUP BY 1, 2 ORDER BY 1, 3 DESC", args...)
+	rows, err := db.QueryContext(ctx, "SELECT strftime('%Y-%m-%d %H:00', "+usageColumnExpr(cols, "timestamp", "datetime('now')")+"), "+usageColumnExpr(cols, "model", "''")+", count(*) FROM request_logs WHERE "+whereSQL+" GROUP BY 1, 2 ORDER BY 1, 3 DESC", args...)
 	if err != nil || rows == nil {
-		return []gin.H{}
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	out := []gin.H{}
@@ -2370,7 +2504,10 @@ func queryUsageHourlyModels(db *sql.DB, filters usageFilters) []gin.H {
 			out = append(out, gin.H{"hour": hour, "model": model, "requests": requests})
 		}
 	}
-	return out
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func queryUsageHourlyThroughput(db *sql.DB, filters usageFilters) []gin.H {
@@ -2400,15 +2537,24 @@ func queryUsageHourlyThroughputContext(ctx context.Context, db *sql.DB, filters 
 }
 
 func queryUsageAPIKeyDistribution(db *sql.DB, filters usageFilters) []gin.H {
+	return queryUsageAPIKeyDistributionContext(context.Background(), db, filters)
+}
+
+func queryUsageAPIKeyDistributionContext(ctx context.Context, db *sql.DB, filters usageFilters) []gin.H {
+	out, _ := queryUsageAPIKeyDistributionResultContext(ctx, db, filters)
+	return out
+}
+
+func queryUsageAPIKeyDistributionResultContext(ctx context.Context, db *sql.DB, filters usageFilters) ([]gin.H, error) {
 	if !dbTableExists(db, "request_logs") {
-		return []gin.H{}
+		return []gin.H{}, nil
 	}
 	cols := requestLogColumns(db)
 	whereSQL, args := filters.whereClause(db)
 	joinSQL, keyExpr, nameExpr := usageAPIKeyNameLookup(db, cols)
-	rows, err := db.Query("SELECT "+keyExpr+", "+nameExpr+", count(*) as cnt, coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0) FROM request_logs"+joinSQL+" WHERE "+whereSQL+" GROUP BY "+keyExpr+", "+nameExpr+" ORDER BY cnt DESC LIMIT 20", args...)
+	rows, err := db.QueryContext(ctx, "SELECT "+keyExpr+", "+nameExpr+", count(*) as cnt, coalesce(sum("+usageColumnExpr(cols, "total_tokens", "0")+"),0) FROM request_logs"+joinSQL+" WHERE "+whereSQL+" GROUP BY "+keyExpr+", "+nameExpr+" ORDER BY cnt DESC LIMIT 20", args...)
 	if err != nil || rows == nil {
-		return []gin.H{}
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	out := []gin.H{}
@@ -2419,7 +2565,10 @@ func queryUsageAPIKeyDistribution(db *sql.DB, filters usageFilters) []gin.H {
 			out = append(out, gin.H{"api_key": key, "name": name, "requests": requests, "tokens": tokens, "count": requests})
 		}
 	}
-	return out
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func buildUsageLogsPayload(db *sql.DB, filters usageFilters, public bool) gin.H {

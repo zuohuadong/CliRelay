@@ -359,6 +359,26 @@ func (h *Handler) GetEgressBindings(c *gin.Context) {
 			}
 			identity, identityErr := egress.StableIdentity(accountID)
 			item := gin.H{"auth_id": auth.ID, "account_label": auth.Label, "bound": false, "endpoint_id": ""}
+			planType := ""
+			if auth.Attributes != nil {
+				planType = strings.TrimSpace(auth.Attributes["plan_type"])
+				if planType == "" {
+					planType = strings.TrimSpace(auth.Attributes["planType"])
+				}
+			}
+			if planType == "" && auth.Metadata != nil {
+				if value, ok := auth.Metadata["plan_type"].(string); ok {
+					planType = strings.TrimSpace(value)
+				}
+				if planType == "" {
+					if value, ok := auth.Metadata["planType"].(string); ok {
+						planType = strings.TrimSpace(value)
+					}
+				}
+			}
+			if planType != "" {
+				item["plan_type"] = strings.ToLower(planType)
+			}
 			if identityErr != nil {
 				item["identity"] = ""
 				item["error"] = "missing account_id; refresh or re-login before migration"

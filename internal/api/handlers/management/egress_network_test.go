@@ -139,11 +139,11 @@ func TestEgressBindingsIncludesUnboundAndMissingIdentityCodexAuth(t *testing.T) 
 	t.Parallel()
 
 	manager := coreauth.NewManager(nil, nil, nil)
-	_, _ = manager.Register(context.Background(), &coreauth.Auth{ID: "codex-user.json", Provider: "codex", Metadata: map[string]any{"account_id": "acct-123"}})
+	_, _ = manager.Register(context.Background(), &coreauth.Auth{ID: "codex-user.json", Provider: "codex", Attributes: map[string]string{"plan_type": " Pro "}, Metadata: map[string]any{"account_id": "acct-123"}})
 	_, _ = manager.Register(context.Background(), &coreauth.Auth{ID: "codex-missing.json", Provider: "codex", Metadata: map[string]any{}})
 	handler, _ := newEgressManagementHandler(t, manager)
 	recorder := invokeEgressHandler(t, http.MethodGet, "/v0/management/egress/bindings", "", nil, handler.GetEgressBindings)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"auth_id":"codex-user.json"`) || !strings.Contains(recorder.Body.String(), `"bound":false`) || !strings.Contains(recorder.Body.String(), "missing account_id") {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"auth_id":"codex-user.json"`) || !strings.Contains(recorder.Body.String(), `"plan_type":"pro"`) || !strings.Contains(recorder.Body.String(), `"bound":false`) || !strings.Contains(recorder.Body.String(), "missing account_id") {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

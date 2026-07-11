@@ -493,7 +493,12 @@ export function EgressPage() {
         width: "w-64",
         render: (binding) => (
           <div>
-            <p className="font-semibold text-slate-950 dark:text-white">{binding.accountLabel}</p>
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <p className="min-w-0 truncate font-semibold text-slate-950 dark:text-white">{binding.accountLabel}</p>
+              {binding.planType ? (
+                <StatusBadge tone="amber">{`${t("codex_quota.plan_label")}: ${binding.planType.toUpperCase()}`}</StatusBadge>
+              ) : null}
+            </div>
             <p className="font-mono text-[11px] text-slate-500">{binding.authId}</p>
           </div>
         ),
@@ -805,7 +810,12 @@ export function EgressPage() {
                 <div key={binding.identity || binding.authId} className="min-w-0 rounded-xl border border-slate-200 p-3 dark:border-neutral-800">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="truncate font-semibold text-slate-950 dark:text-white">{binding.accountLabel}</p>
+                      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                        <p className="min-w-0 truncate font-semibold text-slate-950 dark:text-white">{binding.accountLabel}</p>
+                        {binding.planType ? (
+                          <StatusBadge tone="amber">{`${t("codex_quota.plan_label")}: ${binding.planType.toUpperCase()}`}</StatusBadge>
+                        ) : null}
+                      </div>
                       <p className="mt-1 truncate font-mono text-[11px] text-slate-500">{binding.identity || binding.authId}</p>
                     </div>
                     {(pendingAssignments[binding.identity] ?? binding.endpointId) ? (

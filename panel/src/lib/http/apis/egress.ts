@@ -79,6 +79,7 @@ export interface EgressBinding {
   identity: string;
   authId: string;
   accountLabel: string;
+  planType?: string;
   endpointId: string;
   bound: boolean;
   endpointName?: string;
@@ -331,6 +332,9 @@ export const normalizeEgressBinding = (raw: UnknownRecord): EgressBinding | null
     identity,
     authId,
     accountLabel: accountLabel || authId || identity,
+    ...(normalizeOptionalString(raw.plan_type ?? raw.planType)
+      ? { planType: normalizeOptionalString(raw.plan_type ?? raw.planType) }
+      : {}),
     endpointId,
     bound: normalizeBoolean(raw.bound, Boolean(endpointId)),
     ...(normalizeOptionalString(raw.endpoint_name ?? raw.endpointName)

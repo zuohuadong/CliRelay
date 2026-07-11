@@ -138,6 +138,7 @@ describe("EgressPage", () => {
         identity: "codex:abc",
         authId: "codex-user.json",
         accountLabel: "user@example.com",
+        planType: "pro",
         endpointId: "hk-socks",
         endpointName: "Hong Kong",
         bound: true,
@@ -284,6 +285,7 @@ describe("EgressPage", () => {
     const user = userEvent.setup();
     renderPage();
     await user.click(await screen.findByRole("tab", { name: "Account bindings" }));
+    expect((await screen.findAllByText("Plan: PRO")).length).toBeGreaterThan(0);
     const select = (await screen.findAllByRole("combobox", { name: "Endpoint for user@example.com" }))[0];
     await user.click(select);
     await user.click(await screen.findByRole("option", { name: /Singapore.*203\.0\.113\.9/i }));

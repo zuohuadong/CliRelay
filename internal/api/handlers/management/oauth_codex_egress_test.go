@@ -77,7 +77,7 @@ func TestRequestCodexTokenRechecksSelectedEgressBeforeExchange(t *testing.T) {
 	router.GET("/codex-auth-url", handler.RequestCodexToken)
 	state := requestCodexTokenState(t, router, endpoint.ID)
 	defer CompleteOAuthSession(state)
-	_, _, _, metadata, ok := GetOAuthSessionDetails(state)
+	_, _, _, metadata, _, ok := GetOAuthSessionDetails(state)
 	if !ok || metadata["egress_id"] != endpoint.ID {
 		t.Fatalf("oauth session metadata=%#v ok=%v", metadata, ok)
 	}

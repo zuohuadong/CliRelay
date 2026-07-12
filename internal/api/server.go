@@ -718,20 +718,6 @@ func (s *Server) setupRoutes() {
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
 	})
 
-	s.engine.GET("/xai/callback", func(c *gin.Context) {
-		code := c.Query("code")
-		state := c.Query("state")
-		errStr := c.Query("error")
-		if errStr == "" {
-			errStr = c.Query("error_description")
-		}
-		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "xai", state, code, errStr)
-		}
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, oauthCallbackSuccessHTML)
-	})
-
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
 }
 
@@ -1060,6 +1046,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/iflow-auth-url", s.mgmt.RequestIFlowTokenOrCookie)
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
+		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
 
 		mgmt.GET("/image-generation/channels", s.mgmt.GetImageGenerationChannels)
 		mgmt.POST("/image-generation/test", s.mgmt.StartImageGenerationTest)
@@ -1560,6 +1547,16 @@ func formatHomeClaudeModels(entries []homeModelEntry) []map[string]any {
 	for _, entry := range entries {
 		out = append(out, formatHomeClaudeModel(entry))
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		di, _ := out[i]["display_name"].(string)
+		dj, _ := out[j]["display_name"].(string)
+		if di != dj {
+			return di < dj
+		}
+		idi, _ := out[i]["id"].(string)
+		idj, _ := out[j]["id"].(string)
+		return idi < idj
+	})
 	return out
 }
 
@@ -1577,7 +1574,7 @@ func formatHomeClaudeModel(entry homeModelEntry) map[string]any {
 		maxOutput = registry.DefaultClaudeMaxOutputTokens
 	}
 	model := map[string]any{
-		"id":               entry.id,
+		"id":               util.EnsureClaudeModelIDPrefix(entry.id),
 		"object":           "model",
 		"owned_by":         entry.ownedBy,
 		"type":             "model",

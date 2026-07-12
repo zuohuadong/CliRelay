@@ -640,7 +640,7 @@ func TestCodexExecutorExecuteStreamRetriesWithoutClientReasoningEncryptedContent
 			_, _ = w.Write([]byte(`data: {"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"message":"The encrypted content located at input[0].summary could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","code":"invalid_request_error"}}}` + "\n\n"))
 			return
 		}
-		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_2","object":"response","created_at":0,"status":"completed","model":"gpt-5.5","output":[]}}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_2","object":"response","created_at":0,"status":"completed","model":"gpt-5.5","output":[{"type":"message","content":[{"type":"output_text","text":"retry succeeded"}]}]}}` + "\n\n"))
 	}))
 	defer server.Close()
 
@@ -704,7 +704,7 @@ func TestCodexExecutorExecuteStreamRetriesWithoutClientReasoningEncryptedContent
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_2","object":"response","created_at":0,"status":"completed","model":"gpt-5.5","output":[]}}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_2","object":"response","created_at":0,"status":"completed","model":"gpt-5.5","output":[{"type":"message","content":[{"type":"output_text","text":"retry succeeded"}]}]}}` + "\n\n"))
 	}))
 	defer server.Close()
 

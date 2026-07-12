@@ -151,6 +151,107 @@ func TestConvertCodexResponseToOpenAI_NonStreamImageGenerationCallAddsMessageIma
 	}
 }
 
+func TestConvertCodexResponseToOpenAI_StreamForwardsCacheWriteTokens(t *testing.T) {
+	ctx := context.Background()
+	var param any
+
+	// Seed response.created so response.completed can reuse response metadata.
+	_ = ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.created","response":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.4"}}`), &param)
+
+	chunk := []byte(`data: {"type":"response.completed","response":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.4","usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":30,"cache_write_tokens":40},"output_tokens_details":{"reasoning_tokens":5}}}}`)
+	out := ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, chunk, &param)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(out))
+	}
+
+	assertUsageMapping(t, out[0], 40, true)
+}
+
+func TestConvertCodexResponseToOpenAI_StreamOmitsMissingCacheWriteTokens(t *testing.T) {
+	ctx := context.Background()
+	var param any
+
+	_ = ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.created","response":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.4"}}`), &param)
+
+	chunk := []byte(`data: {"type":"response.completed","response":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.4","usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":30},"output_tokens_details":{"reasoning_tokens":5}}}}`)
+	out := ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, chunk, &param)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(out))
+	}
+
+	assertUsageMapping(t, out[0], 0, false)
+}
+
+func TestConvertCodexResponseToOpenAI_StreamPreservesExplicitZeroCacheWriteTokens(t *testing.T) {
+	ctx := context.Background()
+	var param any
+
+	_ = ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(`data: {"type":"response.created","response":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.4"}}`), &param)
+
+	chunk := []byte(`data: {"type":"response.completed","response":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.4","usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":30,"cache_write_tokens":0},"output_tokens_details":{"reasoning_tokens":5}}}}`)
+	out := ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, chunk, &param)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(out))
+	}
+
+	assertUsageMapping(t, out[0], 0, true)
+}
+
+func TestConvertCodexResponseToOpenAI_NonStreamForwardsCacheWriteTokens(t *testing.T) {
+	ctx := context.Background()
+	raw := []byte(`{"type":"response.completed","response":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.4","status":"completed","usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":30,"cache_write_tokens":40},"output_tokens_details":{"reasoning_tokens":5}},"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}`)
+	out := ConvertCodexResponseToOpenAINonStream(ctx, "gpt-5.4", nil, nil, raw, nil)
+	assertUsageMapping(t, out, 40, true)
+}
+
+func TestConvertCodexResponseToOpenAI_NonStreamOmitsMissingCacheWriteTokens(t *testing.T) {
+	ctx := context.Background()
+	raw := []byte(`{"type":"response.completed","response":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.4","status":"completed","usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":30},"output_tokens_details":{"reasoning_tokens":5}},"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}`)
+	out := ConvertCodexResponseToOpenAINonStream(ctx, "gpt-5.4", nil, nil, raw, nil)
+	assertUsageMapping(t, out, 0, false)
+}
+
+func TestConvertCodexResponseToOpenAI_NonStreamPreservesExplicitZeroCacheWriteTokens(t *testing.T) {
+	ctx := context.Background()
+	raw := []byte(`{"type":"response.completed","response":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.4","status":"completed","usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":30,"cache_write_tokens":0},"output_tokens_details":{"reasoning_tokens":5}},"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}`)
+	out := ConvertCodexResponseToOpenAINonStream(ctx, "gpt-5.4", nil, nil, raw, nil)
+	assertUsageMapping(t, out, 0, true)
+}
+
+func assertUsageMapping(t *testing.T, payload []byte, wantCachedCreation int64, expectCachedCreation bool) {
+	t.Helper()
+
+	if got := gjson.GetBytes(payload, "usage.prompt_tokens").Int(); got != 100 {
+		t.Fatalf("expected prompt_tokens=100, got %d; payload=%s", got, string(payload))
+	}
+	if got := gjson.GetBytes(payload, "usage.completion_tokens").Int(); got != 20 {
+		t.Fatalf("expected completion_tokens=20, got %d; payload=%s", got, string(payload))
+	}
+	if got := gjson.GetBytes(payload, "usage.total_tokens").Int(); got != 120 {
+		t.Fatalf("expected total_tokens=120, got %d; payload=%s", got, string(payload))
+	}
+	if got := gjson.GetBytes(payload, "usage.prompt_tokens_details.cached_tokens").Int(); got != 30 {
+		t.Fatalf("expected cached_tokens=30, got %d; payload=%s", got, string(payload))
+	}
+	if got := gjson.GetBytes(payload, "usage.completion_tokens_details.reasoning_tokens").Int(); got != 5 {
+		t.Fatalf("expected reasoning_tokens=5, got %d; payload=%s", got, string(payload))
+	}
+
+	gotCachedCreation := gjson.GetBytes(payload, "usage.prompt_tokens_details.cached_creation_tokens")
+	if expectCachedCreation {
+		if !gotCachedCreation.Exists() {
+			t.Fatalf("expected cached_creation_tokens to exist, payload=%s", string(payload))
+		}
+		if gotCachedCreation.Int() != wantCachedCreation {
+			t.Fatalf("expected cached_creation_tokens=%d, got %d; payload=%s", wantCachedCreation, gotCachedCreation.Int(), string(payload))
+		}
+		return
+	}
+	if gotCachedCreation.Exists() {
+		t.Fatalf("expected cached_creation_tokens to be omitted, payload=%s", string(payload))
+	}
+}
+
 func TestConvertCodexResponseToOpenAI_StreamIncompleteMapsToLengthFinishReason(t *testing.T) {
 	ctx := context.Background()
 	var param any
@@ -159,7 +260,6 @@ func TestConvertCodexResponseToOpenAI_StreamIncompleteMapsToLengthFinishReason(t
 	if len(out) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(out))
 	}
-
 	if got := gjson.GetBytes(out[0], "choices.0.finish_reason").String(); got != "length" {
 		t.Fatalf("finish_reason = %q, want length; chunk=%s", got, string(out[0]))
 	}
@@ -170,10 +270,8 @@ func TestConvertCodexResponseToOpenAI_StreamIncompleteMapsToLengthFinishReason(t
 
 func TestConvertCodexResponseToOpenAI_NonStreamIncompleteMapsToLengthFinishReason(t *testing.T) {
 	ctx := context.Background()
-
 	raw := []byte(`{"type":"response.incomplete","response":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.4","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}]}}`)
 	out := ConvertCodexResponseToOpenAINonStream(ctx, "gpt-5.4", nil, nil, raw, nil)
-
 	if got := gjson.GetBytes(out, "choices.0.finish_reason").String(); got != "length" {
 		t.Fatalf("finish_reason = %q, want length; payload=%s", got, string(out))
 	}

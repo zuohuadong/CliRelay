@@ -16,6 +16,7 @@ env:
   BASE_BRANCH: main
   SYNC_BRANCH: chore/sync-router-for-me-main-to-main
   FORK_EXCLUDED_PATHS: .github/workflows/deploy.yml
+  CONFLICT_REPORT_PATH: .github/upstream-sync-conflicts.md
 
 jobs:
   sync:
@@ -37,8 +38,8 @@ jobs:
       - name: Fetch upstream
         run: |
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
-          git fetch origin "${BASE_BRANCH}"
-          git fetch upstream "${UPSTREAM_BRANCH}"
+          git fetch origin "${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
+          git fetch upstream "${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}"
 
       - name: Merge upstream
         id: merge
@@ -49,6 +50,7 @@ jobs:
           conflict_file="${RUNNER_TEMP}/sync-conflicts.txt"
           unresolved_conflict_file="${RUNNER_TEMP}/sync-unresolved-conflicts.txt"
           workflow_skip_file="${RUNNER_TEMP}/sync-workflow-changes-skipped.txt"
+          conflicted=false
           : > "${conflict_file}"
           : > "${unresolved_conflict_file}"
           : > "${workflow_skip_file}"
@@ -59,63 +61,106 @@ jobs:
           set -e
 
           if [ "${merge_status}" -ne 0 ]; then
-            echo "conflicted=true" >> "$GITHUB_OUTPUT"
+            conflicted=true
             git diff --name-only --diff-filter=U > "${conflict_file}" || true
-          else
-            echo "conflicted=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "${merge_status}" -ne 0 ] && [ ! -s "${conflict_file}" ]; then
+            echo "Upstream merge failed without reporting conflicted paths."
+            exit 1
           fi
 
           if [ -s "${conflict_file}" ]; then
-            while IFS= read -r path; do
-              [ -n "${path}" ] || continue
-              if git cat-file -e "HEAD:${path}" 2>/dev/null; then
-                git restore --source=HEAD --staged --worktree -- "${path}" || true
-              else
-                git rm -f -- "${path}" || true
-              fi
-            done < <(grep -E '^\.github/workflows/' "${conflict_file}" || true)
-
             grep -Ev '^\.github/workflows/' "${conflict_file}" > "${unresolved_conflict_file}" || true
-            if [ -s "${unresolved_conflict_file}" ]; then
-              echo "Non-workflow merge conflicts require manual resolution before a sync PR can be opened:"
-              cat "${unresolved_conflict_file}"
+          fi
+
+          if [ -s "${unresolved_conflict_file}" ]; then
+            # A conflicted index must never be committed or pushed. Recreate the sync branch
+            # from the clean base and commit only a report that a maintainer can resolve.
+            git merge --abort
+            git checkout -B "${SYNC_BRANCH}" "origin/${BASE_BRANCH}"
+            {
+              echo "# Upstream Sync Conflict Report"
+              echo
+              echo "The automated merge from \`${UPSTREAM_REPOSITORY}:${UPSTREAM_BRANCH}\` could not be completed."
+              echo "This branch was recreated from clean base \`${base_sha}\`; it contains no partial upstream merge."
+              echo
+              echo "## Conflicted Files"
+              while IFS= read -r path; do
+                [ -n "${path}" ] && echo "- \`${path}\`"
+              done < "${unresolved_conflict_file}"
+              echo
+              echo "Resolve these files manually in a follow-up sync branch, then rerun the safety guard."
+            } > "${CONFLICT_REPORT_PATH}"
+
+            git add -- "${CONFLICT_REPORT_PATH}"
+            git diff --cached --check
+            report_files="$(git diff --cached --name-only)"
+            if [ "${report_files}" != "${CONFLICT_REPORT_PATH}" ]; then
+              echo "Conflict-report branch contains unexpected files:"
+              echo "${report_files}"
               exit 1
             fi
-          fi
-
-          git add -A
-
-          git diff --cached --name-only -- .github/workflows > "${workflow_skip_file}" || true
-          for path in ${FORK_EXCLUDED_PATHS}; do
-            if git diff --cached --name-only -- "${path}" | grep -qxF "${path}"; then
-              grep -qxF "${path}" "${workflow_skip_file}" || echo "${path}" >> "${workflow_skip_file}"
-            fi
-          done
-          if [ -s "${workflow_skip_file}" ]; then
-            while IFS= read -r path; do
-              [ -n "${path}" ] || continue
-              if git cat-file -e "HEAD:${path}" 2>/dev/null; then
-                git restore --source=HEAD --staged --worktree -- "${path}"
-              else
-                git rm -f --cached -- "${path}" || true
-                rm -f -- "${path}" || true
-              fi
-            done < "${workflow_skip_file}"
-          fi
-
-          if git diff --cached --quiet; then
-            if [ -s "${workflow_skip_file}" ]; then
-              git commit --allow-empty -m "chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH} with workflow changes skipped"
-            fi
+            git commit -m "chore: report upstream sync conflicts"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "conflict_report=${CONFLICT_REPORT_PATH}" >> "$GITHUB_OUTPUT"
           else
-            if [ "${merge_status}" -ne 0 ]; then
-              git commit -m "chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH} with conflicts"
+            # Workflow-only conflicts are intentionally restored to the fork copy;
+            # the resulting ordinary sync PR documents the skipped workflow files.
+            conflicted=false
+            if [ -s "${conflict_file}" ]; then
+              while IFS= read -r path; do
+                [ -n "${path}" ] || continue
+                if git cat-file -e "HEAD:${path}" 2>/dev/null; then
+                  git restore --source=HEAD --staged --worktree -- "${path}"
+                else
+                  git rm -f -- "${path}"
+                fi
+              done < <(grep -E '^\.github/workflows/' "${conflict_file}" || true)
+            fi
+
+            git add -A
+
+            git diff --cached --name-only -- .github/workflows > "${workflow_skip_file}" || true
+            for path in ${FORK_EXCLUDED_PATHS}; do
+              if git diff --cached --name-only -- "${path}" | grep -qxF "${path}"; then
+                grep -qxF "${path}" "${workflow_skip_file}" || echo "${path}" >> "${workflow_skip_file}"
+              fi
+            done
+            if [ -s "${workflow_skip_file}" ]; then
+              while IFS= read -r path; do
+                [ -n "${path}" ] || continue
+                if git cat-file -e "HEAD:${path}" 2>/dev/null; then
+                  git restore --source=HEAD --staged --worktree -- "${path}"
+                else
+                  git rm -f --cached -- "${path}"
+                  rm -f -- "${path}"
+                fi
+              done < "${workflow_skip_file}"
+            fi
+
+            if git diff --cached --quiet; then
+              if [ -s "${workflow_skip_file}" ]; then
+                git commit --allow-empty -m "chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH} with workflow changes skipped"
+              fi
             else
-              git commit -m "chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH}"
+              if [ "${merge_status}" -ne 0 ]; then
+                git commit -m "chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH} with workflow conflicts resolved"
+              else
+                git commit -m "chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH}"
+              fi
+            fi
+            head_sha="$(git rev-parse HEAD)"
+            if [ "${base_sha}" = "${head_sha}" ]; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            fi
+            if [ "${base_sha}" != "${head_sha}" ]; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
             fi
           fi
 
           {
+            echo "conflicted=${conflicted}"
             echo "conflict_files<<EOF"
             cat "${conflict_file}"
             echo "EOF"
@@ -123,13 +168,6 @@ jobs:
             cat "${workflow_skip_file}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
-
-          head_sha="$(git rev-parse HEAD)"
-          if [ "${base_sha}" = "${head_sha}" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Run sync safety guard
         if: steps.merge.outputs.changed == 'true'
@@ -144,6 +182,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SYNC_PR_TOKEN != '' && secrets.SYNC_PR_TOKEN || secrets.GITHUB_TOKEN }}
           CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
+          CONFLICT_REPORT: ${{ steps.merge.outputs.conflict_report }}
           WORKFLOW_CHANGES_SKIPPED: ${{ steps.merge.outputs.workflow_changes_skipped }}
         run: |
           set -euo pipefail
@@ -152,8 +191,11 @@ jobs:
           title="chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH}"
           body="Automated upstream sync from ${UPSTREAM_REPOSITORY}:${UPSTREAM_BRANCH} into ${BASE_BRANCH}."
           if [ "${{ steps.merge.outputs.conflicted }}" = "true" ]; then
-            title="${title} (conflicts)"
-            body="${body}"$'\n\n'"This sync branch contains merge conflicts and needs manual resolution before merge."
+            title="${title} (conflict report)"
+            body="${body}"$'\n\n'"This is a draft conflict-report PR. The branch was reset to a clean base before the report was committed, so it contains no unresolved index entries or partial upstream code."
+          fi
+          if [ -n "${CONFLICT_REPORT}" ]; then
+            body="${body}"$'\n\n'"Conflict report: \`${CONFLICT_REPORT}\`"
           fi
           if [ -n "${CONFLICT_FILES}" ]; then
             body="${body}"$'\n\n'"Conflicted files:"
@@ -172,6 +214,16 @@ jobs:
           existing_pr="$(gh pr list --repo "${repository}" --base "${BASE_BRANCH}" --head "${SYNC_BRANCH}" --state open --json number --jq '.[0].number // empty')"
           if [ -n "${existing_pr}" ]; then
             gh pr edit "${existing_pr}" --repo "${repository}" --title "${title}" --body "${body}"
+            is_draft="$(gh pr view "${existing_pr}" --repo "${repository}" --json isDraft --jq '.isDraft')"
+            if [ "${{ steps.merge.outputs.conflicted }}" = "true" ] && [ "${is_draft}" != "true" ]; then
+              gh pr ready "${existing_pr}" --repo "${repository}" --undo
+            elif [ "${{ steps.merge.outputs.conflicted }}" != "true" ] && [ "${is_draft}" = "true" ]; then
+              gh pr ready "${existing_pr}" --repo "${repository}"
+            fi
           else
-            gh pr create --repo "${repository}" --base "${BASE_BRANCH}" --head "${head_owner}:${SYNC_BRANCH}" --title "${title}" --body "${body}"
+            if [ "${{ steps.merge.outputs.conflicted }}" = "true" ]; then
+              gh pr create --draft --repo "${repository}" --base "${BASE_BRANCH}" --head "${head_owner}:${SYNC_BRANCH}" --title "${title}" --body "${body}"
+            else
+              gh pr create --repo "${repository}" --base "${BASE_BRANCH}" --head "${head_owner}:${SYNC_BRANCH}" --title "${title}" --body "${body}"
+            fi
           fi

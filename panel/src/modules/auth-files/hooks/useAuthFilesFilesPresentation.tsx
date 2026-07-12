@@ -772,7 +772,7 @@ export function useAuthFilesFilesPresentation({
           const planType = resolveAuthFilePlanType(file, quotaByFileName[file.name]);
           const runtimeOnly = isRuntimeOnlyAuthFile(file);
           const showTypeBadge = shouldShowAuthFileDisplayTag(file, typeKey);
-          const showPlanBadge = planType ? shouldShowAuthFileDisplayTag(file, planType) : false;
+          const showPlanBadge = Boolean(planType);
 
           return (
             <div className="flex flex-col gap-1">

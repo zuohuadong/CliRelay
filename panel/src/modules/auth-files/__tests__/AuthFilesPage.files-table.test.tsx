@@ -1987,7 +1987,7 @@ describe("AuthFilesPage files table", () => {
     );
   });
 
-  test("cards view hides default auth-file badges when display tags are empty", async () => {
+  test("cards view always shows the plan badge when display tags are empty", async () => {
     window.localStorage.setItem("authFilesPage.filesViewMode.v1", JSON.stringify("cards"));
     mocks.list.mockImplementation(async () => ({
       files: [
@@ -2024,11 +2024,11 @@ describe("AuthFilesPage files table", () => {
     const card = title.closest("section");
     expect(card).not.toBeNull();
     expect(within(card as HTMLElement).queryByText(/^codex$/i)).not.toBeInTheDocument();
-    expect(within(card as HTMLElement).queryByText("Plan Pro")).not.toBeInTheDocument();
+    expect(within(card as HTMLElement).getByText("Plan Pro")).toBeInTheDocument();
     expect(within(card as HTMLElement).getByText("0 calls")).toBeInTheDocument();
   });
 
-  test("table view hides default auth-file badges when display tags are empty", async () => {
+  test("table view always shows the plan badge when display tags are empty", async () => {
     useTableFilesView();
     mocks.list.mockImplementation(async () => ({
       files: [
@@ -2065,7 +2065,7 @@ describe("AuthFilesPage files table", () => {
     const row = title.closest("tr");
     expect(row).not.toBeNull();
     expect(within(row as HTMLElement).queryByText(/^codex$/i)).not.toBeInTheDocument();
-    expect(within(row as HTMLElement).queryByText("Plan Pro")).not.toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText("Plan Pro")).toBeInTheDocument();
   });
 
   test("saves auth-file tag visibility and custom tags from the tags modal", async () => {

@@ -1173,9 +1173,7 @@ export function AuthFilesFilesTab({
                   const planType = resolveAuthFilePlanType(file, state);
                   const displayTags = resolveAuthFileSupplementalTags(file, state);
                   const showTypeBadge = shouldShowAuthFileDisplayTag(file, typeKey);
-                  const showPlanBadge = planType
-                    ? shouldShowAuthFileDisplayTag(file, planType)
-                    : false;
+                  const showPlanBadge = Boolean(planType);
                   const subscriptionBadge = renderSubscriptionBadge(file);
                   const egressStatus = renderEgressStatus(file);
                   const stats = resolveAuthFileStats(file, usageIndex);

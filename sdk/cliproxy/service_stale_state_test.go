@@ -127,6 +127,110 @@ func TestServiceHandleWatcherConfigAuthUpdateRegistersAstronModelsForScheduler(t
 	}
 }
 
+func TestServiceHandleWatcherConfigAuthUpdateRegistersDedicatedProviderModelsFromSynthesizedAuth(t *testing.T) {
+	testCases := []struct {
+		name          string
+		provider      string
+		firstAlias    string
+		targetAPIKey  string
+		configFactory func() *config.Config
+	}{
+		{
+			name:         "astron code",
+			provider:     "astron-code",
+			firstAlias:   "gpt-5.3-codex",
+			targetAPIKey: "astron-glm-key",
+			configFactory: func() *config.Config {
+				cfg := &config.Config{
+					AstronCodeAPIKey: []config.OpenAICompatibility{
+						{
+							APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "astron-first-key"}},
+							Models:        []config.OpenAICompatibilityModel{{Name: "astron-code-latest", Alias: "gpt-5.3-codex"}},
+						},
+						{
+							APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "astron-glm-key"}},
+							Models:        []config.OpenAICompatibilityModel{{Name: "xopglm52", Alias: "glm-5.2"}},
+						},
+					},
+				}
+				cfg.SanitizeAstronCode()
+				return cfg
+			},
+		},
+		{
+			name:         "bigmodel coding",
+			provider:     "bigmodel-coding",
+			firstAlias:   "gpt-5.3-codex",
+			targetAPIKey: "bigmodel-glm-key",
+			configFactory: func() *config.Config {
+				cfg := &config.Config{
+					BigModelCodingAPIKey: []config.OpenAICompatibility{
+						{
+							APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "bigmodel-first-key"}},
+							Models:        []config.OpenAICompatibilityModel{{Name: "glm-4.7", Alias: "gpt-5.3-codex"}},
+						},
+						{
+							APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "bigmodel-glm-key"}},
+							Models:        []config.OpenAICompatibilityModel{{Name: "glm-5.2", Alias: "glm-5.2"}},
+						},
+					},
+				}
+				cfg.SanitizeBigModelCoding()
+				return cfg
+			},
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.configFactory()
+			manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
+			manager.SetConfig(cfg)
+			service := &Service{cfg: cfg, coreManager: manager}
+
+			auths, err := synthesizer.NewConfigSynthesizer().Synthesize(&synthesizer.SynthesisContext{
+				Config:      cfg,
+				Now:         time.Now(),
+				IDGenerator: synthesizer.NewStableIDGenerator(),
+			})
+			if err != nil {
+				t.Fatalf("synthesize config auths: %v", err)
+			}
+
+			var targetAuth *coreauth.Auth
+			for _, auth := range auths {
+				if auth != nil && auth.Provider == tt.provider && auth.Attributes["api_key"] == tt.targetAPIKey {
+					targetAuth = auth
+					break
+				}
+			}
+			if targetAuth == nil {
+				t.Fatalf("expected synthesized %s auth for GLM-5.2", tt.provider)
+			}
+			t.Cleanup(func() {
+				registry.GetGlobalRegistry().UnregisterClient(targetAuth.ID)
+			})
+
+			service.handleAuthUpdate(coreauth.WithSkipPersist(context.Background()), watcher.AuthUpdate{
+				Action: watcher.AuthUpdateActionAdd,
+				ID:     targetAuth.ID,
+				Auth:   targetAuth,
+			})
+
+			models := registry.GetGlobalRegistry().GetModelsForClient(targetAuth.ID)
+			if !hasServiceModelID(models, "glm-5.2") {
+				t.Fatalf("expected GLM-5.2 to be registered for %s, got %#v", targetAuth.ID, models)
+			}
+			if hasServiceModelID(models, tt.firstAlias) {
+				t.Fatalf("expected first entry alias %q not to be registered for %s, got %#v", tt.firstAlias, targetAuth.ID, models)
+			}
+			if registered, ok := manager.GetByID(targetAuth.ID); !ok || registered.Provider != tt.provider {
+				t.Fatalf("expected %s auth %s to be registered, got %#v", tt.provider, targetAuth.ID, registered)
+			}
+		})
+	}
+}
+
 func hasServiceModelID(models []*registry.ModelInfo, want string) bool {
 	for _, model := range models {
 		if model != nil && model.ID == want {

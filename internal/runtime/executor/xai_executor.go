@@ -219,7 +219,7 @@ func (e *XAIExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Aut
 
 func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*xaiPreparedRequest, []byte, http.Header, error) {
 	token, _ := xaiCreds(auth)
-	baseURL := xaiChatBaseURL(auth)
+	baseURL := xaiAPIBaseURL(auth)
 
 	prepared, err := e.prepareResponsesRequestTo(ctx, req, opts, false, sdktranslator.FormatOpenAIResponse)
 	if err != nil {
@@ -238,7 +238,7 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	applyXAIChatHeaders(httpReq, auth, token, false, prepared.sessionID)
+	applyXAIHeaders(httpReq, auth, token, false, prepared.sessionID)
 	e.recordXAIRequest(ctx, auth, requestURL, httpReq.Header.Clone(), prepared.body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
@@ -750,6 +750,7 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 	if auth == nil {
 		return nil, statusErr{code: http.StatusInternalServerError, msg: "xai executor: auth is nil"}
 	}
+	usingAPI := xaiUsingAPI(auth)
 	refreshToken := xaiMetadataString(auth.Metadata, "refresh_token")
 	if refreshToken == "" {
 		return auth, nil
@@ -765,6 +766,7 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 	}
 	auth.Metadata["type"] = "xai"
 	auth.Metadata["auth_kind"] = "oauth"
+	auth.Metadata[xaiUsingAPIAttr] = usingAPI
 	auth.Metadata["access_token"] = td.AccessToken
 	if td.RefreshToken != "" {
 		auth.Metadata["refresh_token"] = td.RefreshToken
@@ -798,6 +800,7 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 		auth.Attributes = make(map[string]string)
 	}
 	auth.Attributes["auth_kind"] = "oauth"
+	auth.Attributes[xaiUsingAPIAttr] = strconv.FormatBool(usingAPI)
 	if strings.TrimSpace(auth.Attributes["base_url"]) == "" {
 		auth.Attributes["base_url"] = xaiauth.DefaultAPIBaseURL
 	}
@@ -923,6 +926,9 @@ func xaiUsingAPI(auth *cliproxyauth.Auth) bool {
 	if auth == nil {
 		return true
 	}
+	if strings.TrimSpace(auth.Attributes["api_key"]) != "" {
+		return true
+	}
 	if len(auth.Attributes) > 0 {
 		if raw := strings.TrimSpace(auth.Attributes[xaiUsingAPIAttr]); raw != "" {
 			parsed, errParse := strconv.ParseBool(raw)
@@ -971,6 +977,16 @@ func xaiChatBaseURL(auth *cliproxyauth.Auth) string {
 		return baseURL
 	}
 	return xaiauth.CLIChatProxyBaseURL
+}
+
+// xaiAPIBaseURL is used by media, model discovery, and compaction endpoints.
+// These endpoints remain on the official API even when OAuth chat uses Grok CLI.
+func xaiAPIBaseURL(auth *cliproxyauth.Auth) string {
+	_, baseURL := xaiCreds(auth)
+	if baseURL == "" {
+		return xaiauth.DefaultAPIBaseURL
+	}
+	return baseURL
 }
 
 func xaiNormalizeBaseURL(baseURL string) string {

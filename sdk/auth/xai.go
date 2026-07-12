@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -89,44 +90,17 @@ func (a XAIAuthenticator) Login(ctx context.Context, cfg *config.Config, opts *L
 		return nil, fmt.Errorf("xai token storage missing access token")
 	}
 
-	fileName := xaiauth.CredentialFileName(tokenStorage.Email, tokenStorage.Subject)
-	label := strings.TrimSpace(tokenStorage.Email)
-	if label == "" {
-		label = "xAI"
-	}
-
-	metadata := map[string]any{
-		"type":           "xai",
-		"access_token":   tokenStorage.AccessToken,
-		"refresh_token":  tokenStorage.RefreshToken,
-		"id_token":       tokenStorage.IDToken,
-		"token_type":     tokenStorage.TokenType,
-		"expires_in":     tokenStorage.ExpiresIn,
-		"expired":        tokenStorage.Expire,
-		"last_refresh":   tokenStorage.LastRefresh,
-		"base_url":       tokenStorage.BaseURL,
-		"token_endpoint": tokenStorage.TokenEndpoint,
-		"auth_kind":      "oauth",
-	}
-	if tokenStorage.Email != "" {
-		metadata["email"] = tokenStorage.Email
-	}
-	if tokenStorage.Subject != "" {
-		metadata["sub"] = tokenStorage.Subject
+	usingAPI := false
+	if opts.Metadata != nil {
+		if parsed, errParse := strconv.ParseBool(strings.TrimSpace(opts.Metadata["using_api"])); errParse == nil {
+			usingAPI = parsed
+		}
 	}
 
 	fmt.Println("xAI authentication successful")
-
-	return &coreauth.Auth{
-		ID:       fileName,
-		Provider: a.Provider(),
-		FileName: fileName,
-		Label:    label,
-		Storage:  tokenStorage,
-		Metadata: metadata,
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-			"base_url":  tokenStorage.BaseURL,
-		},
-	}, nil
+	record := xaiauth.OAuthRecordFromTokenStorage(tokenStorage, usingAPI)
+	if record == nil {
+		return nil, fmt.Errorf("xai token storage missing access token")
+	}
+	return record, nil
 }

@@ -247,6 +247,28 @@ func (h *Handler) PutRequestLog(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.RequestLog = v })
 }
 
+func (h *Handler) GetRequestLogBody(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"enabled": h.cfg.SDKConfig.RequestLogBodyEnabled()})
+}
+
+func (h *Handler) PutRequestLogBody(c *gin.Context) {
+	var body struct {
+		Value         *bool `json:"value"`
+		ClearExisting bool  `json:"clear_existing"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if !*body.Value && !body.ClearExisting {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "confirmation_required", "message": "clear_existing must be true when disabling request log body storage"})
+		return
+	}
+	value := *body.Value
+	h.cfg.RequestLogBody = &value
+	h.persist(c)
+}
+
 // Websocket auth
 func (h *Handler) GetWebsocketAuth(c *gin.Context) {
 	c.JSON(200, gin.H{"ws-auth": h.cfg.WebsocketAuth})

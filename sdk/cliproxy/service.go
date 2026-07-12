@@ -2132,7 +2132,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
 	case "xai":
-		models = registry.GetXAIModels()
+		models = s.fetchXAIModelsForAuth(ctx, a)
 		models = applyExcludedModels(models, excluded)
 	case "bigmodel-coding":
 		log.Debugf("registerModelsForAuth: bigmodel-coding auth=%s, BigModelCodingAPIKey count=%d", a.ID, len(s.cfg.BigModelCodingAPIKey))

@@ -104,6 +104,7 @@ func defaultRequestLoggerFactory(cfg *config.Config, configPath string) logging.
 	configDir := filepath.Dir(configPath)
 	logsDir := logging.ResolveLogDirectory(cfg)
 	logger := logging.NewFileRequestLogger(cfg.RequestLog, logsDir, configDir, cfg.ErrorLogsMaxFiles)
+	logger.SetBodyEnabled(cfg.SDKConfig.RequestLogBodyEnabled())
 	logger.SetHomeEnabled(cfg != nil && cfg.Home.Enabled)
 	return logger
 }
@@ -951,6 +952,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/request-log", s.mgmt.GetRequestLog)
 		mgmt.PUT("/request-log", s.mgmt.PutRequestLog)
 		mgmt.PATCH("/request-log", s.mgmt.PutRequestLog)
+		mgmt.GET("/request-log-body", s.mgmt.GetRequestLogBody)
+		mgmt.PUT("/request-log-body", s.mgmt.PutRequestLogBody)
+		mgmt.PATCH("/request-log-body", s.mgmt.PutRequestLogBody)
 		mgmt.GET("/ws-auth", s.mgmt.GetWebsocketAuth)
 		mgmt.PUT("/ws-auth", s.mgmt.PutWebsocketAuth)
 		mgmt.PATCH("/ws-auth", s.mgmt.PutWebsocketAuth)
@@ -2046,6 +2050,23 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 			s.loggerToggle(cfg.RequestLog)
 		} else if toggler, ok := s.requestLogger.(interface{ SetEnabled(bool) }); ok {
 			toggler.SetEnabled(cfg.RequestLog)
+		}
+	}
+	previousRequestLogBody := true
+	if oldCfg != nil {
+		previousRequestLogBody = oldCfg.SDKConfig.RequestLogBodyEnabled()
+	}
+	currentRequestLogBody := cfg.SDKConfig.RequestLogBodyEnabled()
+	if s.requestLogger != nil && (oldCfg == nil || previousRequestLogBody != currentRequestLogBody) {
+		if setter, ok := s.requestLogger.(interface{ SetBodyEnabled(bool) }); ok {
+			setter.SetBodyEnabled(currentRequestLogBody)
+		}
+		if !currentRequestLogBody {
+			if purger, ok := s.requestLogger.(interface{ PurgeStoredBodies() error }); ok {
+				if err := purger.PurgeStoredBodies(); err != nil {
+					log.Errorf("failed to purge stored request log bodies: %v", err)
+				}
+			}
 		}
 	}
 

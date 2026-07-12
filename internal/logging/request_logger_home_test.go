@@ -356,6 +356,7 @@ func TestHomeStreamingLogWriterCapsBufferedResponseBody(t *testing.T) {
 		map[string][]string{"Content-Type": {"application/json"}},
 		[]byte(`{"input":"hello"}`),
 		"stream-req-1",
+		true,
 	)
 
 	writer.WriteChunkAsync(bytes.Repeat([]byte("a"), maxBufferedResponseBodyBytes-1))
@@ -384,6 +385,7 @@ func TestHomeStreamingLogWriterCloseClosesChunkWriterWhenHeartbeatDrops(t *testi
 		map[string][]string{"Content-Type": {"application/json"}},
 		[]byte(`{"input":"hello"}`),
 		"stream-req-2",
+		true,
 	)
 	writer.WriteChunkAsync([]byte("data: ok\n\n"))
 

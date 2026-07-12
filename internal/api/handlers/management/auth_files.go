@@ -2821,6 +2821,10 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 func (h *Handler) RequestXAIToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
+	usingAPI := false
+	if parsed, errParse := strconv.ParseBool(strings.TrimSpace(c.Query("using_api"))); errParse == nil {
+		usingAPI = parsed
+	}
 
 	fmt.Println("Initializing xAI authentication...")
 
@@ -2866,43 +2870,11 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 			return
 		}
 
-		fileName := xaiauth.CredentialFileName(tokenStorage.Email, tokenStorage.Subject)
-		label := strings.TrimSpace(tokenStorage.Email)
-		if label == "" {
-			label = "xAI"
-		}
-
-		metadata := map[string]any{
-			"type":           "xai",
-			"access_token":   tokenStorage.AccessToken,
-			"refresh_token":  tokenStorage.RefreshToken,
-			"id_token":       tokenStorage.IDToken,
-			"token_type":     tokenStorage.TokenType,
-			"expires_in":     tokenStorage.ExpiresIn,
-			"expired":        tokenStorage.Expire,
-			"last_refresh":   tokenStorage.LastRefresh,
-			"base_url":       tokenStorage.BaseURL,
-			"token_endpoint": tokenStorage.TokenEndpoint,
-			"auth_kind":      "oauth",
-		}
-		if tokenStorage.Email != "" {
-			metadata["email"] = tokenStorage.Email
-		}
-		if tokenStorage.Subject != "" {
-			metadata["sub"] = tokenStorage.Subject
-		}
-
-		record := &coreauth.Auth{
-			ID:       fileName,
-			Provider: "xai",
-			FileName: fileName,
-			Label:    label,
-			Storage:  tokenStorage,
-			Metadata: metadata,
-			Attributes: map[string]string{
-				"auth_kind": "oauth",
-				"base_url":  tokenStorage.BaseURL,
-			},
+		record := xaiauth.OAuthRecordFromTokenStorage(tokenStorage, usingAPI)
+		if record == nil {
+			log.Error("xAI token exchange returned an invalid auth record")
+			SetOAuthSessionError(state, "Failed to exchange token")
+			return
 		}
 		if errGuard := guardOAuthSessionPendingForSave(state, "xai"); errGuard != nil {
 			return

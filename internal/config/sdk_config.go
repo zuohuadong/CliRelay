@@ -46,6 +46,10 @@ type SDKConfig struct {
 	// OpenAI Responses HTTP and WebSocket routes. Values <= 0 use the safe default.
 	ResponsesMaxInboundBytes int64 `yaml:"responses-max-inbound-bytes" json:"responses-max-inbound-bytes"`
 
+	// RequestLogBody controls full payload retention independently from request
+	// log metadata. Nil keeps the historical behavior of retaining bodies.
+	RequestLogBody *bool `yaml:"request-log-body,omitempty" json:"request-log-body,omitempty"`
+
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
 
@@ -88,6 +92,12 @@ type SDKConfig struct {
 	// OpenRouterAPIKey is an optional API key for authenticating with the
 	// OpenRouter API. When set, it is included as a Bearer token in sync requests.
 	OpenRouterAPIKey string `yaml:"openrouter-api-key" json:"openRouterApiKey"`
+}
+
+// RequestLogBodyEnabled keeps existing deployments compatible when the new
+// setting is absent from their config file.
+func (c SDKConfig) RequestLogBodyEnabled() bool {
+	return c.RequestLogBody == nil || *c.RequestLogBody
 }
 
 // StreamingConfig holds server streaming behavior configuration.

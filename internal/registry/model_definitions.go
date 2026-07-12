@@ -184,7 +184,8 @@ func GetXAIModels() []*ModelInfo {
 // not depend on remote models.json updates. Built-ins replace any matching IDs
 // already present in the provided slice.
 func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
-	return upsertModelInfos(models, codexBuiltinImage15ModelInfo(), codexBuiltinImageModelInfo())
+	extras := append([]*ModelInfo{codexBuiltinImage15ModelInfo(), codexBuiltinImageModelInfo()}, codexBuiltinGPT56ModelInfos()...)
+	return upsertModelInfos(models, extras...)
 }
 
 // WithXAIBuiltins injects hard-coded xAI image/video model definitions that should

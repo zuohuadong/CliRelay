@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -509,9 +511,17 @@ func (h *OpenAIResponsesAPIHandler) OpenAIResponsesModels(c *gin.Context) {
 // Parameters:
 //   - c: The Gin context containing the HTTP request and response
 func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
-	rawJSON, err := handlers.ReadRequestBody(c)
+	rawJSON, err := handlers.ReadRequestBodyWithLimit(c, h.responsesMaxInboundBytes())
 	// If data retrieval fails, return a 400 Bad Request error.
 	if err != nil {
+		if errors.Is(err, handlers.ErrRequestBodyTooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, handlers.ErrorResponse{Error: handlers.ErrorDetail{
+				Message: "request body exceeds the configured size limit",
+				Type:    "invalid_request_error",
+				Code:    "request_body_too_large",
+			}})
+			return
+		}
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
 				Message: fmt.Sprintf("Invalid request: %v", err),
@@ -538,8 +548,16 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 }
 
 func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
-	rawJSON, err := handlers.ReadRequestBody(c)
+	rawJSON, err := handlers.ReadRequestBodyWithLimit(c, h.responsesMaxInboundBytes())
 	if err != nil {
+		if errors.Is(err, handlers.ErrRequestBodyTooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, handlers.ErrorResponse{Error: handlers.ErrorDetail{
+				Message: "request body exceeds the configured size limit",
+				Type:    "invalid_request_error",
+				Code:    "request_body_too_large",
+			}})
+			return
+		}
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
 				Message: fmt.Sprintf("Invalid request: %v", err),
@@ -585,6 +603,13 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
+}
+
+func (h *OpenAIResponsesAPIHandler) responsesMaxInboundBytes() int64 {
+	if h != nil && h.BaseAPIHandler != nil && h.Cfg != nil && h.Cfg.ResponsesMaxInboundBytes > 0 {
+		return h.Cfg.ResponsesMaxInboundBytes
+	}
+	return sdkconfig.DefaultResponsesMaxInboundBytes
 }
 
 // handleNonStreamingResponse handles non-streaming chat completion responses

@@ -31,6 +31,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.WebsocketAuth = true
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
+	cfg.ResponsesMaxInboundBytes = DefaultResponsesMaxInboundBytes
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -63,6 +64,8 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if cfg.ErrorLogsMaxFiles < 0 {
 		cfg.ErrorLogsMaxFiles = 10
 	}
+
+	cfg.ResponsesMaxInboundBytes = normalizeResponsesMaxInboundBytes(cfg.ResponsesMaxInboundBytes)
 
 	if cfg.RedisUsageQueueRetentionSeconds <= 0 {
 		cfg.RedisUsageQueueRetentionSeconds = 60

@@ -229,6 +229,9 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	if err != nil {
 		return
 	}
+	// Bound each downstream frame before ReadMessage allocates its payload. This
+	// is independent of upstream request policies, which run only after parsing.
+	conn.SetReadLimit(h.responsesMaxInboundBytes())
 	passthroughSessionID := uuid.NewString()
 	downstreamSessionKey := websocketDownstreamSessionKey(c.Request)
 	retainResponsesWebsocketToolCaches(downstreamSessionKey)

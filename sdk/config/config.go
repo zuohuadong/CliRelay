@@ -41,7 +41,8 @@ type BedrockModel = internalconfig.BedrockModel
 type TLS = internalconfig.TLSConfig
 
 const (
-	DefaultPanelGitHubRepository = internalconfig.DefaultPanelGitHubRepository
+	DefaultPanelGitHubRepository    = internalconfig.DefaultPanelGitHubRepository
+	DefaultResponsesMaxInboundBytes = internalconfig.DefaultResponsesMaxInboundBytes
 )
 
 func LoadConfig(configFile string) (*Config, error) { return internalconfig.LoadConfig(configFile) }

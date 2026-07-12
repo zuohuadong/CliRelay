@@ -25,7 +25,17 @@ const (
 	DefaultPanelGitHubRepository = "https://github.com/zuohuadong/codeProxy"
 	DefaultPprofAddr             = "127.0.0.1:8316"
 	DefaultAuthDir               = "~/.cli-proxy-api"
+	// DefaultResponsesMaxInboundBytes leaves room for response translation and
+	// concurrent requests inside the common 1 GiB deployment profile.
+	DefaultResponsesMaxInboundBytes int64 = 8 << 20
 )
+
+func normalizeResponsesMaxInboundBytes(value int64) int64 {
+	if value <= 0 {
+		return DefaultResponsesMaxInboundBytes
+	}
+	return value
+}
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
@@ -1185,6 +1195,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 			if os.IsNotExist(err) || errors.Is(err, syscall.EISDIR) {
 				// Missing and optional: return empty config (cloud deploy standby).
 				cfg := &Config{}
+				cfg.ResponsesMaxInboundBytes = DefaultResponsesMaxInboundBytes
 				cfg.NormalizePluginsConfig()
 				return cfg, nil
 			}
@@ -1195,6 +1206,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// In cloud deploy mode (optional=true), if file is empty or contains only whitespace, return empty config.
 	if optional && len(data) == 0 {
 		cfg := &Config{}
+		cfg.ResponsesMaxInboundBytes = DefaultResponsesMaxInboundBytes
 		cfg.NormalizePluginsConfig()
 		return cfg, nil
 	}
@@ -1215,12 +1227,14 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.WebsocketAuth = true
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
+	cfg.ResponsesMaxInboundBytes = DefaultResponsesMaxInboundBytes
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
 			cfgOptional := &Config{}
+			cfgOptional.ResponsesMaxInboundBytes = DefaultResponsesMaxInboundBytes
 			cfgOptional.NormalizePluginsConfig()
 			return cfgOptional, nil
 		}
@@ -1274,6 +1288,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if cfg.ErrorLogsMaxFiles < 0 {
 		cfg.ErrorLogsMaxFiles = 10
 	}
+
+	cfg.ResponsesMaxInboundBytes = normalizeResponsesMaxInboundBytes(cfg.ResponsesMaxInboundBytes)
 
 	if cfg.RedisUsageQueueRetentionSeconds <= 0 {
 		cfg.RedisUsageQueueRetentionSeconds = 60

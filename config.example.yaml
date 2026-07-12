@@ -49,6 +49,10 @@ pprof:
   enable: false
   addr: "127.0.0.1:8316"
 
+# Maximum bytes accepted for one OpenAI Responses HTTP body or WebSocket message.
+# The same cap applies after zstd decompression. Default: 8388608 (8 MiB).
+responses-max-inbound-bytes: 8388608
+
 # Standard dynamic library plugins are trusted in-process code. They are disabled by default.
 # Build Go examples with go build -buildmode=c-shared for the target GOOS/GOARCH.
 # Other languages can implement the same C ABI and JSON method protocol.

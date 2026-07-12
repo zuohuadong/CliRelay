@@ -4336,31 +4336,36 @@ func TestResponsesWebsocketPerCacheBudgetSplitsCombinedLimit(t *testing.T) {
 	}
 }
 
-func TestResponsesWebsocketStateReservationChargesTwoX(t *testing.T) {
+func TestResponsesWebsocketStateReservationChargesSum(t *testing.T) {
 	budget := &responsesWebsocketMemoryBudget{}
 	reservation := budget.newReservation()
-	if resizeResponsesWebsocketStateReservation(reservation, 100, 60) {
-		t.Fatal("60-byte state fit into 100-byte budget despite 2x charge")
+	if !resizeResponsesWebsocketStateReservation(reservation, 100, 60) {
+		t.Fatal("60-byte state did not fit into 100-byte budget")
 	}
-	if !resizeResponsesWebsocketStateReservation(reservation, 120, 60) {
-		t.Fatal("60-byte state did not fit exact 120-byte estimated budget")
+	if resizeResponsesWebsocketStateReservation(reservation, 100, 110) {
+		t.Fatal("110-byte state should not fit into 100-byte budget")
 	}
 	reservation.release()
 }
 
-func TestResponsesWebsocketDefaultBudgetAllowsOneMaximumTurnButRejectsTwo(t *testing.T) {
+func TestResponsesWebsocketDefaultBudgetAllowsTwoMaximumTurnsButRejectsThree(t *testing.T) {
 	budget := &responsesWebsocketMemoryBudget{}
 	first := budget.newReservation()
 	second := budget.newReservation()
+	third := budget.newReservation()
 	const max = int64(32 << 20)
 	if !resizeResponsesWebsocketStateReservation(first, sdkconfig.DefaultResponsesWebsocketMemoryBudgetBytes, 2, max, max) {
-		t.Fatal("one maximum request/output turn was rejected by default websocket budget")
+		t.Fatal("first maximum turn was rejected by default websocket budget")
 	}
-	if resizeResponsesWebsocketStateReservation(second, sdkconfig.DefaultResponsesWebsocketMemoryBudgetBytes, 2, max, max) {
-		t.Fatal("two maximum turns exceeded default websocket aggregate budget but were accepted")
+	if !resizeResponsesWebsocketStateReservation(second, sdkconfig.DefaultResponsesWebsocketMemoryBudgetBytes, 2, max, max) {
+		t.Fatal("second maximum turn was rejected by default websocket budget")
+	}
+	if resizeResponsesWebsocketStateReservation(third, sdkconfig.DefaultResponsesWebsocketMemoryBudgetBytes, 2, max, max) {
+		t.Fatal("third maximum turn exceeded default websocket aggregate budget but was accepted")
 	}
 	first.release()
 	second.release()
+	third.release()
 }
 
 func TestAccumulateResponsesWebsocketPayloadRejectsBeforeCollectorClone(t *testing.T) {

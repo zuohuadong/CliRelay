@@ -641,10 +641,7 @@ func resizeResponsesWebsocketStateReservation(r *responsesWebsocketMemoryReserva
 		}
 		total += size
 	}
-	if total > math.MaxInt64/2 {
-		return false
-	}
-	return r.resize(total*2, limit)
+	return r.resize(total, limit)
 }
 
 func responsesWebsocketEffectiveTurnOutputLimit(turnLimit, sessionLimit int64, requestBytes int) int64 {

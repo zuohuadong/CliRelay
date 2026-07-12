@@ -186,6 +186,7 @@ func (s *ConfigSynthesizer) synthesizeBigModelCoding(ctx *SynthesisContext) []*c
 				"provider_key": providerName,
 			}
 			metadata := map[string]any{}
+			metadata["models"] = append([]config.OpenAICompatibilityModel(nil), compat.Models...)
 			if disableCooling {
 				metadata["disable_cooling"] = true
 			}
@@ -229,6 +230,7 @@ func (s *ConfigSynthesizer) synthesizeBigModelCoding(ctx *SynthesisContext) []*c
 				"provider_key": providerName,
 			}
 			metadata := map[string]any{}
+			metadata["models"] = append([]config.OpenAICompatibilityModel(nil), compat.Models...)
 			if disableCooling {
 				metadata["disable_cooling"] = true
 			}
@@ -297,6 +299,7 @@ func (s *ConfigSynthesizer) synthesizeAstronCode(ctx *SynthesisContext) []*corea
 				"provider_key": providerName,
 			}
 			metadata := map[string]any{}
+			metadata["models"] = append([]config.OpenAICompatibilityModel(nil), compat.Models...)
 			if disableCooling {
 				metadata["disable_cooling"] = true
 			}
@@ -343,6 +346,7 @@ func (s *ConfigSynthesizer) synthesizeAstronCode(ctx *SynthesisContext) []*corea
 				"provider_key": providerName,
 			}
 			metadata := map[string]any{}
+			metadata["models"] = append([]config.OpenAICompatibilityModel(nil), compat.Models...)
 			if disableCooling {
 				metadata["disable_cooling"] = true
 			}

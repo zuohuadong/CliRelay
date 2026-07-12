@@ -2135,6 +2135,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = s.fetchXAIModelsForAuth(ctx, a)
 		models = applyExcludedModels(models, excluded)
 	case "bigmodel-coding":
+		if s.registerDedicatedOpenAICompatibilityMetadataModels(a, "bigmodel-coding") {
+			return
+		}
 		log.Debugf("registerModelsForAuth: bigmodel-coding auth=%s, BigModelCodingAPIKey count=%d", a.ID, len(s.cfg.BigModelCodingAPIKey))
 		for i := range s.cfg.BigModelCodingAPIKey {
 			entry := &s.cfg.BigModelCodingAPIKey[i]
@@ -2154,6 +2157,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
 	case "astron-code":
+		if s.registerDedicatedOpenAICompatibilityMetadataModels(a, "astron-code") {
+			return
+		}
 		log.Debugf("registerModelsForAuth: astron-code auth=%s, AstronCodeAPIKey count=%d", a.ID, len(s.cfg.AstronCodeAPIKey))
 		for i := range s.cfg.AstronCodeAPIKey {
 			entry := &s.cfg.AstronCodeAPIKey[i]
@@ -2765,6 +2771,25 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		})
 	}
 	return models
+}
+
+// registerDedicatedOpenAICompatibilityMetadataModels keeps synthesized dedicated-provider
+// auths bound to the model aliases from their owning config entry.
+func (s *Service) registerDedicatedOpenAICompatibilityMetadataModels(auth *coreauth.Auth, provider string) bool {
+	if auth == nil || auth.Metadata == nil {
+		return false
+	}
+	if _, ok := auth.Metadata["models"]; !ok {
+		return false
+	}
+	models := buildOpenAICompatibilityAuthMetadataModels(auth, provider)
+	if len(models) == 0 {
+		GlobalModelRegistry().UnregisterClient(auth.ID)
+		return true
+	}
+	forceModelPrefix := s != nil && s.cfg != nil && s.cfg.ForceModelPrefix
+	s.registerResolvedModelsForAuth(auth, provider, applyModelPrefixes(models, auth.Prefix, forceModelPrefix))
+	return true
 }
 
 func buildOpenAICompatibilityAuthMetadataModels(auth *coreauth.Auth, compatName string) []*ModelInfo {

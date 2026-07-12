@@ -2,13 +2,138 @@ package management
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
+
+// The APICall HTTP handler is the stable public seam for credential-specific
+// management tests. A disabled credential must be rejected before this handler
+// resolves a token or creates an upstream request.
+func TestAPICallRejectsDisabledAuthWithoutUpstreamRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		auth *coreauth.Auth
+	}{
+		{
+			name: "disabled flag",
+			auth: &coreauth.Auth{
+				ID:       "api-call-disabled-flag",
+				Provider: "astron-code",
+				Disabled: true,
+				Attributes: map[string]string{
+					"api_key": "disabled-flag-token",
+				},
+			},
+		},
+		{
+			name: "disabled status",
+			auth: &coreauth.Auth{
+				ID:       "api-call-disabled-status",
+				Provider: "astron-code",
+				Status:   coreauth.StatusDisabled,
+				Attributes: map[string]string{
+					"api_key": "disabled-status-token",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var upstreamCalls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamCalls.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
+
+			manager := coreauth.NewManager(nil, nil, nil)
+			if _, errRegister := manager.Register(t.Context(), tt.auth); errRegister != nil {
+				t.Fatalf("register auth: %v", errRegister)
+			}
+			h := &Handler{authManager: manager}
+
+			body := fmt.Sprintf(`{"auth_index":%q,"method":"GET","url":%q,"header":{"Authorization":"Bearer $TOKEN$"}}`, tt.auth.EnsureIndex(), upstream.URL)
+			rec := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(rec)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-call", strings.NewReader(body))
+			ctx.Request.Header.Set("Content-Type", "application/json")
+
+			h.APICall(ctx)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "auth is disabled") {
+				t.Fatalf("response body = %s, want disabled auth error", rec.Body.String())
+			}
+			if got := upstreamCalls.Load(); got != 0 {
+				t.Fatalf("upstream requests = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestAPICallEnabledAuthReplacesTokenAndCallsUpstream(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer enabled-token" {
+			t.Errorf("Authorization = %q, want %q", got, "Bearer enabled-token")
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "api-call-enabled",
+		Provider: "astron-code",
+		Attributes: map[string]string{
+			"api_key": "enabled-token",
+		},
+	}
+	if _, errRegister := manager.Register(t.Context(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	h := &Handler{authManager: manager}
+
+	body := fmt.Sprintf(`{"auth_index":%q,"method":"GET","url":%q,"header":{"Authorization":"Bearer $TOKEN$"}}`, auth.EnsureIndex(), upstream.URL)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-call", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.APICall(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("upstream requests = %d, want 1", got)
+	}
+	var response apiCallResponse
+	if errUnmarshal := json.Unmarshal(rec.Body.Bytes(), &response); errUnmarshal != nil {
+		t.Fatalf("unmarshal response: %v", errUnmarshal)
+	}
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("upstream status = %d, want %d", response.StatusCode, http.StatusCreated)
+	}
+	if response.Body != "ok" {
+		t.Fatalf("upstream body = %q, want %q", response.Body, "ok")
+	}
+}
 
 func TestAPICallTransportDirectBypassesGlobalProxy(t *testing.T) {
 	t.Parallel()

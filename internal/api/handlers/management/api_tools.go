@@ -118,6 +118,10 @@ func (h *Handler) APICall(c *gin.Context) {
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndex(authIndex)
+	if auth != nil && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "auth is disabled"})
+		return
+	}
 
 	reqHeaders := body.Header
 	if reqHeaders == nil {

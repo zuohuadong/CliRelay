@@ -1036,8 +1036,15 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got, _ := custom["display_name"].(string); got != "Custom Codex Model" {
 		t.Fatalf("custom display_name = %q, want Custom Codex Model", got)
 	}
-	if got := int(codexClientTestPriority(custom["priority"])); got != 129 {
-		t.Fatalf("custom priority = %v, want 129", custom["priority"])
+	for index, model := range resp.Models[1:] {
+		previousPriority := codexClientTestPriority(resp.Models[index]["priority"])
+		currentPriority := codexClientTestPriority(model["priority"])
+		if currentPriority < previousPriority {
+			t.Fatalf("catalog priorities are not sorted at index %d: %d then %d", index, previousPriority, currentPriority)
+		}
+	}
+	if got, gpt55Priority := codexClientTestPriority(custom["priority"]), codexClientTestPriority(gpt55["priority"]); got <= gpt55Priority {
+		t.Fatalf("custom priority = %d, want greater than template priority %d", got, gpt55Priority)
 	}
 	if got, _ := custom["description"].(string); got != "Custom model from registry" {
 		t.Fatalf("custom description = %q, want Custom model from registry", got)

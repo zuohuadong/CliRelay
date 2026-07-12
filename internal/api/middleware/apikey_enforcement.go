@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/requestbody"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	log "github.com/sirupsen/logrus"
 )
@@ -352,14 +354,18 @@ func APIKeySystemPromptMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		bodyBytes, errRead := io.ReadAll(c.Request.Body)
-		if errRead != nil {
-			log.WithError(errRead).Debug("apikey enforcement: failed to read request body for system prompt injection")
-			c.Next()
-			return
+		bodyBytes, canonical := CanonicalResponsesBody(c)
+		if !canonical {
+			var errRead error
+			bodyBytes, errRead = io.ReadAll(c.Request.Body)
+			if errRead != nil {
+				log.WithError(errRead).Debug("apikey enforcement: failed to read request body for system prompt injection")
+				c.Next()
+				return
+			}
+			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			c.Request.ContentLength = int64(len(bodyBytes))
 		}
-		c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		c.Request.ContentLength = int64(len(bodyBytes))
 
 		modified, errInject := injectSystemPrompt(bodyBytes, systemPrompt)
 		if errInject != nil {
@@ -369,8 +375,20 @@ func APIKeySystemPromptMiddleware() gin.HandlerFunc {
 		}
 
 		if modified != nil {
-			c.Request.Body = io.NopCloser(bytes.NewReader(modified))
-			c.Request.ContentLength = int64(len(modified))
+			if canonical {
+				if errUpdate := UpdateCanonicalResponsesBody(c, modified); errUpdate != nil {
+					if errors.Is(errUpdate, requestbody.ErrTooLarge) {
+						c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": gin.H{"message": errUpdate.Error(), "type": "invalid_request_error", "code": "request_body_too_large"}})
+					} else {
+						c.Header("Retry-After", "1")
+						c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"message": errUpdate.Error(), "type": "rate_limit_exceeded", "code": "request_memory_budget_exceeded"}})
+					}
+					return
+				}
+			} else {
+				c.Request.Body = io.NopCloser(bytes.NewReader(modified))
+				c.Request.ContentLength = int64(len(modified))
+			}
 		}
 
 		c.Next()
@@ -431,6 +449,14 @@ func extractModelFromRequest(c *gin.Context) string {
 	case http.MethodGet:
 		return strings.TrimSpace(c.Query("model"))
 	case http.MethodPost:
+		if bodyBytes, ok := CanonicalResponsesBody(c); ok {
+			var payload map[string]any
+			if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+				return ""
+			}
+			model, _ := payload["model"].(string)
+			return strings.TrimSpace(model)
+		}
 		if c.Request.Body == nil {
 			return ""
 		}

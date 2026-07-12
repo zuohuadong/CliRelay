@@ -46,6 +46,16 @@ type SDKConfig struct {
 	// OpenAI Responses HTTP and WebSocket routes. Values <= 0 use the safe default.
 	ResponsesMaxInboundBytes int64 `yaml:"responses-max-inbound-bytes" json:"responses-max-inbound-bytes"`
 
+	// ResponsesMemoryBudgetBytes limits aggregate in-flight memory reservations
+	// for OpenAI Responses HTTP requests.
+	ResponsesMemoryBudgetBytes int64 `yaml:"responses-memory-budget-bytes" json:"responses-memory-budget-bytes"`
+
+	ResponsesWebsocketMaxSessionBytes    int64 `yaml:"responses-websocket-max-session-bytes" json:"responses-websocket-max-session-bytes"`
+	ResponsesWebsocketMaxTurnOutputBytes int64 `yaml:"responses-websocket-max-turn-output-bytes" json:"responses-websocket-max-turn-output-bytes"`
+	ResponsesWebsocketToolCacheBytes     int64 `yaml:"responses-websocket-tool-cache-bytes" json:"responses-websocket-tool-cache-bytes"`
+	ResponsesWebsocketMemoryBudgetBytes  int64 `yaml:"responses-websocket-memory-budget-bytes" json:"responses-websocket-memory-budget-bytes"`
+	ResponsesWebsocketMaxConnections     int   `yaml:"responses-websocket-max-connections" json:"responses-websocket-max-connections"`
+
 	// RequestLogBody controls full payload retention independently from request
 	// log metadata. Nil keeps the historical behavior of retaining bodies.
 	RequestLogBody *bool `yaml:"request-log-body,omitempty" json:"request-log-body,omitempty"`

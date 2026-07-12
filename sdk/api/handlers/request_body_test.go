@@ -52,6 +52,38 @@ func TestReadRequestBodyWithLimitAcceptsBodyAtLimit(t *testing.T) {
 	}
 }
 
+func TestReadRequestBodyWithLimitReturnsCanonicalBodyWithoutSecondRead(t *testing.T) {
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	SetCanonicalRequestBody(ctx, []byte(`{"model":"gpt-canonical"}`))
+	ctx.Request.Body = &panicReadCloser{}
+	body, err := ReadRequestBodyWithLimit(ctx, 8)
+	if err != nil {
+		t.Fatalf("ReadRequestBodyWithLimit() error = %v", err)
+	}
+	if string(body) != `{"model":"gpt-canonical"}` {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestReadRequestBodyWithLimitAcceptsMislabeledJSONZstdBody(t *testing.T) {
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"gpt-test"}`)))
+	ctx.Request.Header.Set("Content-Encoding", "zstd")
+	body, err := ReadRequestBodyWithLimit(ctx, 1024)
+	if err != nil {
+		t.Fatalf("ReadRequestBodyWithLimit() error = %v", err)
+	}
+	if string(body) != `{"model":"gpt-test"}` {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+type panicReadCloser struct{}
+
+func (*panicReadCloser) Read([]byte) (int, error) { panic("unexpected second request body read") }
+func (*panicReadCloser) Close() error             { return nil }
+
 func TestReadRequestBodyWithLimitRejectsOversizedZstdPayload(t *testing.T) {
 	t.Parallel()
 

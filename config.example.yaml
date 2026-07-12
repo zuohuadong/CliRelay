@@ -50,8 +50,22 @@ pprof:
   addr: "127.0.0.1:8316"
 
 # Maximum bytes accepted for one OpenAI Responses HTTP body or WebSocket message.
-# The same cap applies after zstd decompression. Default: 8388608 (8 MiB).
-responses-max-inbound-bytes: 8388608
+# The same cap applies after zstd decompression. Default: 33554432 (32 MiB).
+responses-max-inbound-bytes: 33554432
+# Aggregate in-flight Responses request memory budget after applying a 4x amplification estimate.
+responses-memory-budget-bytes: 268435456
+# Maximum retained websocket transcript/session state and per-turn output.
+responses-websocket-max-session-bytes: 67108864
+responses-websocket-max-turn-output-bytes: 33554432
+# Combined cached websocket tool call/output bytes per downstream session.
+# The implementation assigns half of this budget to each cache.
+responses-websocket-tool-cache-bytes: 8388608
+# Aggregate estimated retained/active state budget shared by all Responses websocket sessions.
+# Session state is charged at 2x its serialized byte size. Default: 192 MiB.
+responses-websocket-memory-budget-bytes: 201326592
+# Maximum concurrent Responses websocket connections.
+# Four 32 MiB inbound frames cap concurrent frame allocation near 128 MiB.
+responses-websocket-max-connections: 4
 
 # Standard dynamic library plugins are trusted in-process code. They are disabled by default.
 # Build Go examples with go build -buildmode=c-shared for the target GOOS/GOARCH.

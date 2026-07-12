@@ -22,17 +22,28 @@ import (
 )
 
 const (
-	DefaultPanelGitHubRepository = "https://github.com/zuohuadong/codeProxy"
-	DefaultPprofAddr             = "127.0.0.1:8316"
-	DefaultAuthDir               = "~/.cli-proxy-api"
-	// DefaultResponsesMaxInboundBytes leaves room for response translation and
-	// concurrent requests inside the common 1 GiB deployment profile.
-	DefaultResponsesMaxInboundBytes int64 = 8 << 20
+	DefaultPanelGitHubRepository                      = "https://github.com/zuohuadong/codeProxy"
+	DefaultPprofAddr                                  = "127.0.0.1:8316"
+	DefaultAuthDir                                    = "~/.cli-proxy-api"
+	DefaultResponsesMaxInboundBytes             int64 = 32 << 20
+	DefaultResponsesMemoryBudgetBytes           int64 = 256 << 20
+	DefaultResponsesWebsocketMaxSessionBytes    int64 = 64 << 20
+	DefaultResponsesWebsocketMaxTurnOutputBytes int64 = 32 << 20
+	DefaultResponsesWebsocketToolCacheBytes     int64 = 8 << 20
+	DefaultResponsesWebsocketMemoryBudgetBytes  int64 = 192 << 20
+	DefaultResponsesWebsocketMaxConnections           = 4
 )
 
 func normalizeResponsesMaxInboundBytes(value int64) int64 {
 	if value <= 0 {
 		return DefaultResponsesMaxInboundBytes
+	}
+	return value
+}
+
+func normalizePositiveBytes(value, fallback int64) int64 {
+	if value <= 0 {
+		return fallback
 	}
 	return value
 }
@@ -1195,7 +1206,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 			if os.IsNotExist(err) || errors.Is(err, syscall.EISDIR) {
 				// Missing and optional: return empty config (cloud deploy standby).
 				cfg := &Config{}
-				cfg.ResponsesMaxInboundBytes = DefaultResponsesMaxInboundBytes
+				applyResponsesMemoryDefaults(cfg)
 				cfg.NormalizePluginsConfig()
 				return cfg, nil
 			}
@@ -1206,7 +1217,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// In cloud deploy mode (optional=true), if file is empty or contains only whitespace, return empty config.
 	if optional && len(data) == 0 {
 		cfg := &Config{}
-		cfg.ResponsesMaxInboundBytes = DefaultResponsesMaxInboundBytes
+		applyResponsesMemoryDefaults(cfg)
 		cfg.NormalizePluginsConfig()
 		return cfg, nil
 	}
@@ -1228,13 +1239,19 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.ResponsesMaxInboundBytes = DefaultResponsesMaxInboundBytes
+	cfg.ResponsesMemoryBudgetBytes = DefaultResponsesMemoryBudgetBytes
+	cfg.ResponsesWebsocketMaxSessionBytes = DefaultResponsesWebsocketMaxSessionBytes
+	cfg.ResponsesWebsocketMaxTurnOutputBytes = DefaultResponsesWebsocketMaxTurnOutputBytes
+	cfg.ResponsesWebsocketToolCacheBytes = DefaultResponsesWebsocketToolCacheBytes
+	cfg.ResponsesWebsocketMemoryBudgetBytes = DefaultResponsesWebsocketMemoryBudgetBytes
+	cfg.ResponsesWebsocketMaxConnections = DefaultResponsesWebsocketMaxConnections
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
 			cfgOptional := &Config{}
-			cfgOptional.ResponsesMaxInboundBytes = DefaultResponsesMaxInboundBytes
+			applyResponsesMemoryDefaults(cfgOptional)
 			cfgOptional.NormalizePluginsConfig()
 			return cfgOptional, nil
 		}
@@ -1290,6 +1307,14 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	}
 
 	cfg.ResponsesMaxInboundBytes = normalizeResponsesMaxInboundBytes(cfg.ResponsesMaxInboundBytes)
+	cfg.ResponsesMemoryBudgetBytes = normalizePositiveBytes(cfg.ResponsesMemoryBudgetBytes, DefaultResponsesMemoryBudgetBytes)
+	cfg.ResponsesWebsocketMaxSessionBytes = normalizePositiveBytes(cfg.ResponsesWebsocketMaxSessionBytes, DefaultResponsesWebsocketMaxSessionBytes)
+	cfg.ResponsesWebsocketMaxTurnOutputBytes = normalizePositiveBytes(cfg.ResponsesWebsocketMaxTurnOutputBytes, DefaultResponsesWebsocketMaxTurnOutputBytes)
+	cfg.ResponsesWebsocketToolCacheBytes = normalizePositiveBytes(cfg.ResponsesWebsocketToolCacheBytes, DefaultResponsesWebsocketToolCacheBytes)
+	cfg.ResponsesWebsocketMemoryBudgetBytes = normalizePositiveBytes(cfg.ResponsesWebsocketMemoryBudgetBytes, DefaultResponsesWebsocketMemoryBudgetBytes)
+	if cfg.ResponsesWebsocketMaxConnections <= 0 {
+		cfg.ResponsesWebsocketMaxConnections = DefaultResponsesWebsocketMaxConnections
+	}
 
 	if cfg.RedisUsageQueueRetentionSeconds <= 0 {
 		cfg.RedisUsageQueueRetentionSeconds = 60
@@ -1392,6 +1417,19 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Return the populated configuration struct.
 	return &cfg, nil
+}
+
+func applyResponsesMemoryDefaults(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	cfg.ResponsesMaxInboundBytes = DefaultResponsesMaxInboundBytes
+	cfg.ResponsesMemoryBudgetBytes = DefaultResponsesMemoryBudgetBytes
+	cfg.ResponsesWebsocketMaxSessionBytes = DefaultResponsesWebsocketMaxSessionBytes
+	cfg.ResponsesWebsocketMaxTurnOutputBytes = DefaultResponsesWebsocketMaxTurnOutputBytes
+	cfg.ResponsesWebsocketToolCacheBytes = DefaultResponsesWebsocketToolCacheBytes
+	cfg.ResponsesWebsocketMemoryBudgetBytes = DefaultResponsesWebsocketMemoryBudgetBytes
+	cfg.ResponsesWebsocketMaxConnections = DefaultResponsesWebsocketMaxConnections
 }
 
 // SanitizeRequestPolicies normalizes request policy matching and drops inactive rules.

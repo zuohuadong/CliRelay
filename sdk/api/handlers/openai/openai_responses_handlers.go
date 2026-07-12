@@ -443,6 +443,8 @@ func responsesSSENeedsLineBreak(pending, chunk []byte) bool {
 // It holds a pool of clients to interact with the backend service.
 type OpenAIResponsesAPIHandler struct {
 	*handlers.BaseAPIHandler
+	websocketMemoryBudget *responsesWebsocketMemoryBudget
+	websocketConnections  *responsesWebsocketConnectionLimiter
 }
 
 // NewOpenAIResponsesAPIHandler creates a new OpenAIResponses API handlers instance.
@@ -455,7 +457,9 @@ type OpenAIResponsesAPIHandler struct {
 //   - *OpenAIResponsesAPIHandler: A new OpenAIResponses API handlers instance
 func NewOpenAIResponsesAPIHandler(apiHandlers *handlers.BaseAPIHandler) *OpenAIResponsesAPIHandler {
 	return &OpenAIResponsesAPIHandler{
-		BaseAPIHandler: apiHandlers,
+		BaseAPIHandler:        apiHandlers,
+		websocketMemoryBudget: &responsesWebsocketMemoryBudget{},
+		websocketConnections:  &responsesWebsocketConnectionLimiter{},
 	}
 }
 
@@ -610,6 +614,67 @@ func (h *OpenAIResponsesAPIHandler) responsesMaxInboundBytes() int64 {
 		return h.Cfg.ResponsesMaxInboundBytes
 	}
 	return sdkconfig.DefaultResponsesMaxInboundBytes
+}
+
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketMaxSessionBytes() int64 {
+	if h != nil && h.BaseAPIHandler != nil && h.Cfg != nil && h.Cfg.ResponsesWebsocketMaxSessionBytes > 0 {
+		return h.Cfg.ResponsesWebsocketMaxSessionBytes
+	}
+	return sdkconfig.DefaultResponsesWebsocketMaxSessionBytes
+}
+
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketMaxTurnOutputBytes() int64 {
+	if h != nil && h.BaseAPIHandler != nil && h.Cfg != nil && h.Cfg.ResponsesWebsocketMaxTurnOutputBytes > 0 {
+		return h.Cfg.ResponsesWebsocketMaxTurnOutputBytes
+	}
+	return sdkconfig.DefaultResponsesWebsocketMaxTurnOutputBytes
+}
+
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketToolCacheBytes() int64 {
+	if h != nil && h.BaseAPIHandler != nil && h.Cfg != nil && h.Cfg.ResponsesWebsocketToolCacheBytes > 0 {
+		return h.Cfg.ResponsesWebsocketToolCacheBytes
+	}
+	return sdkconfig.DefaultResponsesWebsocketToolCacheBytes
+}
+
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketMemoryBudgetBytes() int64 {
+	if h != nil && h.BaseAPIHandler != nil && h.Cfg != nil && h.Cfg.ResponsesWebsocketMemoryBudgetBytes > 0 {
+		return h.Cfg.ResponsesWebsocketMemoryBudgetBytes
+	}
+	return sdkconfig.DefaultResponsesWebsocketMemoryBudgetBytes
+}
+
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketMaxConnections() int {
+	if h != nil && h.BaseAPIHandler != nil && h.Cfg != nil && h.Cfg.ResponsesWebsocketMaxConnections > 0 {
+		return h.Cfg.ResponsesWebsocketMaxConnections
+	}
+	return sdkconfig.DefaultResponsesWebsocketMaxConnections
+}
+
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketTurnLimitsSnapshot() responsesWebsocketTurnLimits {
+	limits := responsesWebsocketTurnLimits{
+		sessionBytes:      sdkconfig.DefaultResponsesWebsocketMaxSessionBytes,
+		turnOutputBytes:   sdkconfig.DefaultResponsesWebsocketMaxTurnOutputBytes,
+		memoryBudgetBytes: sdkconfig.DefaultResponsesWebsocketMemoryBudgetBytes,
+		toolCacheBytes:    sdkconfig.DefaultResponsesWebsocketToolCacheBytes,
+	}
+	if h == nil || h.BaseAPIHandler == nil || h.Cfg == nil {
+		return limits
+	}
+	cfg := h.Cfg
+	if cfg.ResponsesWebsocketMaxSessionBytes > 0 {
+		limits.sessionBytes = cfg.ResponsesWebsocketMaxSessionBytes
+	}
+	if cfg.ResponsesWebsocketMaxTurnOutputBytes > 0 {
+		limits.turnOutputBytes = cfg.ResponsesWebsocketMaxTurnOutputBytes
+	}
+	if cfg.ResponsesWebsocketMemoryBudgetBytes > 0 {
+		limits.memoryBudgetBytes = cfg.ResponsesWebsocketMemoryBudgetBytes
+	}
+	if cfg.ResponsesWebsocketToolCacheBytes > 0 {
+		limits.toolCacheBytes = cfg.ResponsesWebsocketToolCacheBytes
+	}
+	return limits
 }
 
 // handleNonStreamingResponse handles non-streaming chat completion responses

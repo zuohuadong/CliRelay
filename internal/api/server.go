@@ -240,6 +240,8 @@ type Server struct {
 	requestLogger logging.RequestLogger
 	loggerToggle  func(bool)
 
+	responsesIngress *middleware.ResponsesIngressController
+
 	// mcpProxyCounter is the round-robin counter for MCP proxy upstream selection.
 	mcpProxyCounter atomic.Uint64
 
@@ -317,6 +319,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Add middleware
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
+	responsesIngress := middleware.NewResponsesIngressController(responsesIngressConfigFromConfig(cfg))
+	engine.Use(responsesIngress.Middleware())
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
 	}
@@ -355,6 +359,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		accessManager:       accessManager,
 		requestLogger:       requestLogger,
 		loggerToggle:        toggle,
+		responsesIngress:    responsesIngress,
 		configFilePath:      configFilePath,
 		currentPath:         wd,
 		envManagementSecret: envManagementSecret,
@@ -2034,6 +2039,9 @@ func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) bool {
 //   - clients: The new slice of AI service clients
 //   - cfg: The new application configuration
 func (s *Server) UpdateClients(cfg *config.Config) {
+	if s.responsesIngress != nil {
+		s.responsesIngress.Update(responsesIngressConfigFromConfig(cfg))
+	}
 	// Reconstruct old config from YAML snapshot to avoid reference sharing issues
 	var oldCfg *config.Config
 	if len(s.oldConfigYaml) > 0 {
@@ -2218,6 +2226,20 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		vertexAICompatCount,
 		openAICompatCount,
 	)
+}
+
+func responsesIngressConfigFromConfig(cfg *config.Config) middleware.ResponsesIngressConfig {
+	maxInbound := config.DefaultResponsesMaxInboundBytes
+	memoryBudget := config.DefaultResponsesMemoryBudgetBytes
+	if cfg != nil {
+		if cfg.ResponsesMaxInboundBytes > 0 {
+			maxInbound = cfg.ResponsesMaxInboundBytes
+		}
+		if cfg.ResponsesMemoryBudgetBytes > 0 {
+			memoryBudget = cfg.ResponsesMemoryBudgetBytes
+		}
+	}
+	return middleware.ResponsesIngressConfig{MaxInboundBytes: maxInbound, MemoryBudgetBytes: memoryBudget}
 }
 
 func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {

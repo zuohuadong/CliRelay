@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -12,7 +13,9 @@ import (
 	"time"
 
 	gin "github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/zstd"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -421,6 +424,56 @@ func TestOpenAIV1RoutesApplyAPIKeyModelAccessMiddleware(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "model_not_allowed") {
 		t.Fatalf("expected model_not_allowed response, body=%s", rr.Body.String())
+	}
+}
+
+func TestResponsesIngressRunsBeforeEnabledRequestLogging(t *testing.T) {
+	server := newTestServer(t)
+	server.responsesIngress.Update(middleware.ResponsesIngressConfig{MaxInboundBytes: 1024, MemoryBudgetBytes: 4096})
+	if setter, ok := server.requestLogger.(interface{ SetEnabled(bool) }); ok {
+		setter.SetEnabled(true)
+	}
+
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressed := encoder.EncodeAll(bytes.Repeat([]byte("a"), 8<<10), nil)
+	encoder.Close()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(compressed))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "zstd")
+	rec := httptest.NewRecorder()
+	server.engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "request_body_too_large") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestResponsesIngressControllerHotReloadsConfig(t *testing.T) {
+	server := newTestServer(t)
+	server.responsesIngress.Update(middleware.ResponsesIngressConfig{MaxInboundBytes: 4, MemoryBudgetBytes: 64})
+	request := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"x"}`))
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.engine.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if got := request(); got != http.StatusRequestEntityTooLarge {
+		t.Fatalf("before reload status = %d", got)
+	}
+	updated := *server.cfg
+	updated.ResponsesMaxInboundBytes = 64
+	updated.ResponsesMemoryBudgetBytes = 256
+	server.UpdateClients(&updated)
+	if got := request(); got == http.StatusRequestEntityTooLarge || got == http.StatusTooManyRequests {
+		t.Fatalf("after reload status = %d, ingress config was not updated", got)
 	}
 }
 

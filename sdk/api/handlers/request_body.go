@@ -12,10 +12,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/requestbody"
 )
 
 // ErrRequestBodyTooLarge indicates that an inbound body exceeds its configured limit.
 var ErrRequestBodyTooLarge = errors.New("request body exceeds configured size limit")
+
+// SetCanonicalRequestBody publishes a decoded body admitted by the global
+// Responses ingress controller for reuse by downstream middleware and handlers.
+func SetCanonicalRequestBody(c *gin.Context, body []byte) { requestbody.SetCanonical(c, body) }
 
 type requestBodyTooLargeError struct {
 	limit int64
@@ -45,6 +50,9 @@ func ReadRequestBody(c *gin.Context) ([]byte, error) {
 func ReadRequestBodyWithLimit(c *gin.Context, maxBytes int64) ([]byte, error) {
 	if c == nil || c.Request == nil {
 		return nil, fmt.Errorf("request is nil")
+	}
+	if body, ok := requestbody.Canonical(c); ok {
+		return body, nil
 	}
 	if maxBytes > 0 {
 		if c.Request.ContentLength > maxBytes {

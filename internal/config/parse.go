@@ -32,6 +32,12 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.ResponsesMaxInboundBytes = DefaultResponsesMaxInboundBytes
+	cfg.ResponsesMemoryBudgetBytes = DefaultResponsesMemoryBudgetBytes
+	cfg.ResponsesWebsocketMaxSessionBytes = DefaultResponsesWebsocketMaxSessionBytes
+	cfg.ResponsesWebsocketMaxTurnOutputBytes = DefaultResponsesWebsocketMaxTurnOutputBytes
+	cfg.ResponsesWebsocketToolCacheBytes = DefaultResponsesWebsocketToolCacheBytes
+	cfg.ResponsesWebsocketMemoryBudgetBytes = DefaultResponsesWebsocketMemoryBudgetBytes
+	cfg.ResponsesWebsocketMaxConnections = DefaultResponsesWebsocketMaxConnections
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -66,6 +72,14 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	}
 
 	cfg.ResponsesMaxInboundBytes = normalizeResponsesMaxInboundBytes(cfg.ResponsesMaxInboundBytes)
+	cfg.ResponsesMemoryBudgetBytes = normalizePositiveBytes(cfg.ResponsesMemoryBudgetBytes, DefaultResponsesMemoryBudgetBytes)
+	cfg.ResponsesWebsocketMaxSessionBytes = normalizePositiveBytes(cfg.ResponsesWebsocketMaxSessionBytes, DefaultResponsesWebsocketMaxSessionBytes)
+	cfg.ResponsesWebsocketMaxTurnOutputBytes = normalizePositiveBytes(cfg.ResponsesWebsocketMaxTurnOutputBytes, DefaultResponsesWebsocketMaxTurnOutputBytes)
+	cfg.ResponsesWebsocketToolCacheBytes = normalizePositiveBytes(cfg.ResponsesWebsocketToolCacheBytes, DefaultResponsesWebsocketToolCacheBytes)
+	cfg.ResponsesWebsocketMemoryBudgetBytes = normalizePositiveBytes(cfg.ResponsesWebsocketMemoryBudgetBytes, DefaultResponsesWebsocketMemoryBudgetBytes)
+	if cfg.ResponsesWebsocketMaxConnections <= 0 {
+		cfg.ResponsesWebsocketMaxConnections = DefaultResponsesWebsocketMaxConnections
+	}
 
 	if cfg.RedisUsageQueueRetentionSeconds <= 0 {
 		cfg.RedisUsageQueueRetentionSeconds = 60

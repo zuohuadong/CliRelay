@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -41,9 +45,10 @@ const (
 	responsesWebsocketTimelinePayloadMaxBytes = 64 << 10
 
 	// 下游 websocket 心跳：定期发送 ping frame 防止客户端 idle timeout
-	responsesWebsocketReadTimeout       = 60 * time.Second
-	responsesWebsocketWriteTimeout      = 10 * time.Second
-	responsesWebsocketHeartbeatInterval = 30 * time.Second
+	responsesWebsocketReadTimeout               = 60 * time.Second
+	responsesWebsocketWriteTimeout              = 10 * time.Second
+	responsesWebsocketHeartbeatInterval         = 30 * time.Second
+	responsesWebsocketTurnOutputLimitContextKey = "clirelay.responses.websocket_turn_output_limit"
 )
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
@@ -225,6 +230,14 @@ func writeWebsocketTimelineBuilder(builder *strings.Builder, data []byte) {
 // It accepts `response.create` and `response.append` requests and streams
 // response events back as JSON websocket text messages.
 func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+	if h != nil && h.websocketConnections != nil && !h.websocketConnections.tryAcquire(h.responsesWebsocketMaxConnections()) {
+		c.Header("Retry-After", "1")
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"message": "responses websocket connection limit exceeded", "type": "rate_limit_exceeded", "code": "websocket_connection_limit_exceeded"}})
+		return
+	}
+	if h != nil && h.websocketConnections != nil {
+		defer h.websocketConnections.release()
+	}
 	conn, err := responsesWebsocketUpgrader.Upgrade(c.Writer, c.Request, websocketUpgradeHeaders(c.Request))
 	if err != nil {
 		return
@@ -235,6 +248,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	passthroughSessionID := uuid.NewString()
 	downstreamSessionKey := websocketDownstreamSessionKey(c.Request)
 	retainResponsesWebsocketToolCaches(downstreamSessionKey)
+	configureResponsesWebsocketToolCaches(downstreamSessionKey, h.responsesWebsocketToolCacheBytes())
 	clientIP := websocketClientAddress(c)
 	log.Infof("responses websocket: client connected id=%s remote=%s", passthroughSessionID, clientIP)
 
@@ -298,8 +312,14 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		return h.AuthManager.GetByID(authID)
 	}
 	forceTranscriptReplayNextRequest := false
+	var stateReservation *responsesWebsocketMemoryReservation
+	if h != nil && h.websocketMemoryBudget != nil {
+		stateReservation = h.websocketMemoryBudget.newReservation()
+		defer stateReservation.release()
+	}
 
 	for {
+		conn.SetReadLimit(h.responsesMaxInboundBytes())
 		msgType, payload, errReadMessage := conn.ReadMessage()
 		if errReadMessage != nil {
 			wsTerminateErr = errReadMessage
@@ -325,6 +345,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 
 		maxReplayRetries := handlers.ResponsesWebsocketReplayRetries(h.Cfg)
 		for replayAttempt := 0; replayAttempt <= maxReplayRetries; replayAttempt++ {
+			limits := h.responsesWebsocketTurnLimitsSnapshot()
+			configureResponsesWebsocketToolCaches(downstreamSessionKey, limits.toolCacheBytes)
 			allowIncrementalInputWithPreviousResponseID := false
 			if pinnedAuthID != "" {
 				if pinnedAuth, ok := sessionAuthByID(pinnedAuthID); ok && pinnedAuth != nil {
@@ -340,7 +362,6 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			if forceTranscriptReplayNextRequest {
 				allowIncrementalInputWithPreviousResponseID = false
 			}
-
 			allowCompactionReplayBypass := false
 			if pinnedAuthID != "" {
 				if pinnedAuth, ok := sessionAuthByID(pinnedAuthID); ok && pinnedAuth != nil {
@@ -352,6 +373,13 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 					requestModelName = strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
 				}
 				allowCompactionReplayBypass = h.websocketUpstreamSupportsCompactionReplayForModel(requestModelName)
+			}
+			if !responsesWebsocketStatePreflight(payload, lastRequest, lastResponseOutput, allowIncrementalInputWithPreviousResponseID, allowCompactionReplayBypass, limits.sessionBytes) {
+				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_session_state_limit_exceeded", "websocket session state exceeds configured limit"); errWrite != nil {
+					wsTerminateErr = errWrite
+					return
+				}
+				break
 			}
 
 			var requestJSON []byte
@@ -393,23 +421,64 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				if updated, errDelete := sjson.DeleteBytes(updatedLastRequest, "generate"); errDelete == nil {
 					updatedLastRequest = updated
 				}
+				if !responsesWebsocketStateWithinLimit(updatedLastRequest, nil, limits.sessionBytes) {
+					if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_session_state_limit_exceeded", "websocket session state exceeds configured limit"); errWrite != nil {
+						wsTerminateErr = errWrite
+						return
+					}
+					break
+				}
+				if !resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(lastRequest)), int64(len(lastResponseOutput)), int64(len(updatedLastRequest)), 2) {
+					if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_memory_budget_exceeded", "websocket aggregate memory budget exceeded"); errWrite != nil {
+						wsTerminateErr = errWrite
+						return
+					}
+					break
+				}
 				lastRequest = updatedLastRequest
 				lastResponseOutput = []byte("[]")
 				if errWrite := writeResponsesWebsocketSyntheticPrewarm(c, conn, requestJSON, wsTimelineLog, passthroughSessionID); errWrite != nil {
 					wsTerminateErr = errWrite
 					return
 				}
+				resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(lastRequest)), int64(len(lastResponseOutput)))
 				break
 			}
 
 			requestJSON = sanitizeResponsesInputToolCallNames(requestJSON)
 			requestJSON = repairResponsesWebsocketToolCalls(downstreamSessionKey, requestJSON)
 			requestJSON = dedupeResponsesWebsocketInputItemsByID(requestJSON)
-			updatedLastRequest = bytes.Clone(requestJSON)
-			previousLastRequest := bytes.Clone(lastRequest)
-			previousLastResponseOutput := bytes.Clone(lastResponseOutput)
+			updatedLastRequest = requestJSON
+			if !responsesWebsocketStateWithinLimit(updatedLastRequest, nil, limits.sessionBytes) {
+				clearResponsesWebsocketToolCaches(downstreamSessionKey)
+				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_session_state_limit_exceeded", "websocket session state exceeds configured limit"); errWrite != nil {
+					wsTerminateErr = errWrite
+					return
+				}
+				break
+			}
+			previousLastRequest := lastRequest
+			previousLastResponseOutput := lastResponseOutput
+			effectiveTurnLimit := responsesWebsocketEffectiveTurnOutputLimit(limits.turnOutputBytes, limits.sessionBytes, len(updatedLastRequest))
+			if !responsesWebsocketCanStartTurn(effectiveTurnLimit) {
+				clearResponsesWebsocketToolCaches(downstreamSessionKey)
+				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_session_state_limit_exceeded", "websocket session has no room for response output"); errWrite != nil {
+					wsTerminateErr = errWrite
+					return
+				}
+				break
+			}
+			if !resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(previousLastRequest)), int64(len(previousLastResponseOutput)), int64(len(updatedLastRequest)), effectiveTurnLimit) {
+				clearResponsesWebsocketToolCaches(downstreamSessionKey)
+				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_memory_budget_exceeded", "websocket aggregate memory budget exceeded"); errWrite != nil {
+					wsTerminateErr = errWrite
+					return
+				}
+				break
+			}
 			forcedTranscriptReplay := forceTranscriptReplayNextRequest
 			lastRequest = updatedLastRequest
+			setResponsesWebsocketTurnOutputLimit(c, effectiveTurnLimit)
 			if forcedTranscriptReplay {
 				forceTranscriptReplayNextRequest = false
 			}
@@ -448,6 +517,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				forceTranscriptReplayNextRequest = true
 				lastRequest = previousLastRequest
 				lastResponseOutput = previousLastResponseOutput
+				resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(previousLastRequest)), int64(len(previousLastResponseOutput)))
 				continue
 			}
 			if shouldReleaseResponsesWebsocketPinnedAuth(forwardErrMsg) {
@@ -455,12 +525,158 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				forceTranscriptReplayNextRequest = true
 				lastRequest = previousLastRequest
 				lastResponseOutput = previousLastResponseOutput
+				resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(previousLastRequest)), int64(len(previousLastResponseOutput)))
+				break
+			}
+			if isResponsesWebsocketBudgetError(forwardErrMsg) {
+				lastRequest = previousLastRequest
+				lastResponseOutput = previousLastResponseOutput
+				clearResponsesWebsocketToolCaches(downstreamSessionKey)
+				resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(previousLastRequest)), int64(len(previousLastResponseOutput)))
+				break
+			}
+			if !responsesWebsocketStateWithinLimit(lastRequest, completedOutput, limits.sessionBytes) {
+				lastRequest = previousLastRequest
+				lastResponseOutput = previousLastResponseOutput
+				clearResponsesWebsocketToolCaches(downstreamSessionKey)
+				resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(previousLastRequest)), int64(len(previousLastResponseOutput)))
 				break
 			}
 			lastResponseOutput = completedOutput
+			resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(lastRequest)), int64(len(lastResponseOutput)))
 			break
 		}
 	}
+}
+
+type responsesWebsocketTurnLimits struct {
+	sessionBytes      int64
+	turnOutputBytes   int64
+	memoryBudgetBytes int64
+	toolCacheBytes    int64
+}
+
+type responsesWebsocketConnectionLimiter struct{ current atomic.Int64 }
+
+func (l *responsesWebsocketConnectionLimiter) tryAcquire(limit int) bool {
+	if l == nil || limit <= 0 {
+		return false
+	}
+	for {
+		current := l.current.Load()
+		if current >= int64(limit) {
+			return false
+		}
+		if l.current.CompareAndSwap(current, current+1) {
+			return true
+		}
+	}
+}
+
+func (l *responsesWebsocketConnectionLimiter) release() {
+	if l != nil {
+		l.current.Add(-1)
+	}
+}
+
+type responsesWebsocketMemoryBudget struct {
+	mu    sync.Mutex
+	inUse int64
+}
+
+type responsesWebsocketMemoryReservation struct {
+	budget *responsesWebsocketMemoryBudget
+	amount int64
+}
+
+func (b *responsesWebsocketMemoryBudget) newReservation() *responsesWebsocketMemoryReservation {
+	return &responsesWebsocketMemoryReservation{budget: b}
+}
+
+func (b *responsesWebsocketMemoryBudget) inUseBytes() int64 {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.inUse
+}
+
+func (r *responsesWebsocketMemoryReservation) resize(amount, limit int64) bool {
+	if r == nil || r.budget == nil || amount < 0 || limit <= 0 {
+		return false
+	}
+	r.budget.mu.Lock()
+	defer r.budget.mu.Unlock()
+	delta := amount - r.amount
+	if delta > 0 && (delta > limit || r.budget.inUse > limit-delta) {
+		return false
+	}
+	r.budget.inUse += delta
+	r.amount = amount
+	return true
+}
+
+func (r *responsesWebsocketMemoryReservation) release() {
+	if r == nil || r.budget == nil {
+		return
+	}
+	r.budget.mu.Lock()
+	r.budget.inUse -= r.amount
+	if r.budget.inUse < 0 {
+		r.budget.inUse = 0
+	}
+	r.amount = 0
+	r.budget.mu.Unlock()
+}
+
+func resizeResponsesWebsocketStateReservation(r *responsesWebsocketMemoryReservation, limit int64, sizes ...int64) bool {
+	if r == nil {
+		return true
+	}
+	var total int64
+	for _, size := range sizes {
+		if size < 0 || size > math.MaxInt64-total {
+			return false
+		}
+		total += size
+	}
+	if total > math.MaxInt64/2 {
+		return false
+	}
+	return r.resize(total*2, limit)
+}
+
+func responsesWebsocketEffectiveTurnOutputLimit(turnLimit, sessionLimit int64, requestBytes int) int64 {
+	remaining := sessionLimit - int64(requestBytes)
+	if remaining < 0 {
+		return 0
+	}
+	if turnLimit < remaining {
+		return turnLimit
+	}
+	return remaining
+}
+
+func responsesWebsocketCanStartTurn(effectiveOutputLimit int64) bool {
+	return effectiveOutputLimit >= 2
+}
+
+func setResponsesWebsocketTurnOutputLimit(c *gin.Context, limit int64) {
+	if c != nil {
+		c.Set(responsesWebsocketTurnOutputLimitContextKey, limit)
+	}
+}
+
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketTurnOutputLimit(c *gin.Context) int64 {
+	if c != nil {
+		if value, ok := c.Get(responsesWebsocketTurnOutputLimitContextKey); ok {
+			if limit, ok := value.(int64); ok {
+				return limit
+			}
+		}
+	}
+	return h.responsesWebsocketMaxTurnOutputBytes()
 }
 
 // startResponsesWebsocketHeartbeat 定期向下游客户端发送 websocket ping frame，
@@ -737,6 +953,33 @@ func shouldReplaceWebsocketTranscript(rawJSON []byte, nextInput gjson.Result) bo
 	}
 
 	return false
+}
+
+func responsesWebsocketStatePreflight(rawJSON, lastRequest, lastResponseOutput []byte, allowIncremental, allowCompactionBypass bool, maxBytes int64) bool {
+	if maxBytes <= 0 {
+		return true
+	}
+	nextInput := gjson.GetBytes(rawJSON, "input")
+	if shouldReplaceWebsocketTranscript(rawJSON, nextInput) ||
+		(allowIncremental && strings.HasPrefix(strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String()), "resp_")) ||
+		(allowCompactionBypass && inputContainsFullTranscript(nextInput)) {
+		return int64(len(rawJSON)) <= maxBytes
+	}
+	total := int64(len(rawJSON))
+	for _, size := range []int{len(lastRequest), len(lastResponseOutput)} {
+		if int64(size) > maxBytes-total {
+			return false
+		}
+		total += int64(size)
+	}
+	return total <= maxBytes
+}
+
+func responsesWebsocketStateWithinLimit(request, output []byte, maxBytes int64) bool {
+	if maxBytes <= 0 {
+		return true
+	}
+	return int64(len(request)) <= maxBytes && int64(len(output)) <= maxBytes-int64(len(request))
 }
 
 func normalizeResponseTranscriptReplacement(rawJSON []byte, lastRequest []byte) []byte {
@@ -1334,10 +1577,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	completed := false
 	sawReplayBlockingPayload := false
 	pendingReplayablePayloads := make([][]byte, 0, 2)
-	outputAccumulator := newResponsesWebsocketOutputAccumulator()
+	outputAccumulator := newResponsesWebsocketOutputAccumulatorWithLimit(h.responsesWebsocketTurnOutputLimit(c))
 	outputItemsByIndex := make(map[int64][]byte)
 	var outputItemsFallback [][]byte
-	pendingToolCallIDs := make(map[string]struct{})
 	downstreamSessionKey := ""
 	if c != nil && c.Request != nil {
 		downstreamSessionKey = websocketDownstreamSessionKey(c.Request)
@@ -1507,11 +1749,12 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
 			for i := range payloads {
-				collectResponsesWebsocketOutputItem(payloads[i], outputItemsByIndex, &outputItemsFallback)
-				eventType := gjson.GetBytes(payloads[i], "type").String()
-				if isResponsesWebsocketCompletionEvent(eventType) {
-					payloads[i] = restoreResponsesWebsocketCompletionOutput(payloads[i], outputItemsByIndex, outputItemsFallback)
+				var accepted bool
+				payloads[i], accepted = accumulateResponsesWebsocketPayload(payloads[i], outputAccumulator, outputItemsByIndex, &outputItemsFallback)
+				if !accepted {
+					return h.failResponsesWebsocketTurnOutputLimit(c, conn, cancel, wsTimelineLog, downstreamSessionKey, outputAccumulator.Output())
 				}
+				eventType := gjson.GetBytes(payloads[i], "type").String()
 				recordResponsesWebsocketToolCallsFromPayload(downstreamSessionKey, payloads[i])
 				if suppressReplayableErrors && !sawReplayBlockingPayload {
 					if replayErrMsg := replayableResponsesWebsocketPayloadError(payloads[i], outputAccumulator.Output(), sawReplayBlockingPayload); replayErrMsg != nil {
@@ -1519,7 +1762,6 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						return outputAccumulator.Output(), replayErrMsg, true, nil
 					}
 				}
-				recordPendingToolCallIDsFromPayload(pendingToolCallIDs, payloads[i])
 				if eventType == wsEventTypeError && h != nil {
 					h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), responsesWebsocketErrorMessageFromPayload(payloads[i]))
 				}
@@ -1528,9 +1770,6 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				}
 				if eventType == wsEventTypeCompleted {
 					completed = true
-					outputAccumulator.SetCompleted(payloads[i])
-				} else if eventType == "response.output_item.done" {
-					outputAccumulator.AppendOutputItemDone(payloads[i])
 				}
 				if suppressReplayableErrors && !sawReplayBlockingPayload && responsesWebsocketReplayableLifecycleEvent(eventType) {
 					pendingReplayablePayloads = append(pendingReplayablePayloads, bytes.Clone(payloads[i]))
@@ -1561,6 +1800,78 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			}
 		}
 	}
+}
+
+func accumulateResponsesWebsocketPayload(
+	payload []byte,
+	accumulator *responsesWebsocketOutputAccumulator,
+	outputItemsByIndex map[int64][]byte,
+	outputItemsFallback *[][]byte,
+) ([]byte, bool) {
+	eventType := gjson.GetBytes(payload, "type").String()
+	switch eventType {
+	case "response.output_item.done":
+		if !accumulator.AppendOutputItemDone(payload) {
+			return payload, false
+		}
+		collectResponsesWebsocketOutputItem(payload, outputItemsByIndex, outputItemsFallback)
+	case wsEventTypeCompleted, wsDoneMarker:
+		payload = restoreResponsesWebsocketCompletionOutput(payload, outputItemsByIndex, *outputItemsFallback)
+		if !accumulator.SetCompleted(payload) {
+			return payload, false
+		}
+	}
+	return payload, true
+}
+
+type responsesWebsocketBudgetError struct {
+	code    string
+	message string
+}
+
+func (e *responsesWebsocketBudgetError) Error() string {
+	if e == nil {
+		return "websocket memory budget exceeded"
+	}
+	return e.message
+}
+
+func isResponsesWebsocketBudgetError(errMsg *interfaces.ErrorMessage) bool {
+	if errMsg == nil || errMsg.Error == nil {
+		return false
+	}
+	var budgetErr *responsesWebsocketBudgetError
+	return errors.As(errMsg.Error, &budgetErr)
+}
+
+func writeResponsesWebsocketBudgetError(conn *websocket.Conn, timeline websocketTimelineAppender, code, message string) error {
+	payload := buildResponsesWebsocketBudgetErrorPayload(code, message)
+	return writeResponsesWebsocketPayload(conn, timeline, payload, time.Now())
+}
+
+func buildResponsesWebsocketBudgetErrorPayload(code, message string) []byte {
+	payload := handlers.BuildOpenAIResponsesResponseFailedChunk(http.StatusRequestEntityTooLarge, message, 0)
+	payload, _ = sjson.SetBytes(payload, "response.error.code", code)
+	payload, _ = sjson.SetBytes(payload, "response.error.type", "invalid_request_error")
+	return payload
+}
+
+func (h *OpenAIResponsesAPIHandler) failResponsesWebsocketTurnOutputLimit(
+	c *gin.Context,
+	conn *websocket.Conn,
+	cancel handlers.APIHandlerCancelFunc,
+	timeline websocketTimelineAppender,
+	sessionKey string,
+	output []byte,
+) ([]byte, *interfaces.ErrorMessage, bool, error) {
+	budgetErr := &responsesWebsocketBudgetError{code: "websocket_turn_output_limit_exceeded", message: "websocket turn output exceeds configured limit"}
+	cancel(budgetErr)
+	clearResponsesWebsocketToolCaches(sessionKey)
+	if err := writeResponsesWebsocketBudgetError(conn, timeline, budgetErr.code, budgetErr.message); err != nil {
+		return output, &interfaces.ErrorMessage{StatusCode: http.StatusRequestEntityTooLarge, Error: budgetErr}, false, err
+	}
+	markAPIResponseTimestamp(c)
+	return output, &interfaces.ErrorMessage{StatusCode: http.StatusRequestEntityTooLarge, Error: budgetErr}, false, nil
 }
 
 func shouldReleaseResponsesWebsocketPinnedAuth(errMsg *interfaces.ErrorMessage) bool {
@@ -1666,29 +1977,50 @@ func responseCompletedOutputFromPayload(payload []byte, outputItemsByIndex map[i
 type responsesWebsocketOutputAccumulator struct {
 	completedOutput []byte
 	items           []string
+	maxBytes        int64
+	usedBytes       int64
 }
 
 func newResponsesWebsocketOutputAccumulator() *responsesWebsocketOutputAccumulator {
-	return &responsesWebsocketOutputAccumulator{completedOutput: []byte("[]")}
+	return newResponsesWebsocketOutputAccumulatorWithLimit(-1)
 }
 
-func (a *responsesWebsocketOutputAccumulator) SetCompleted(payload []byte) {
+func newResponsesWebsocketOutputAccumulatorWithLimit(maxBytes int64) *responsesWebsocketOutputAccumulator {
+	return &responsesWebsocketOutputAccumulator{completedOutput: []byte("[]"), maxBytes: maxBytes, usedBytes: 2}
+}
+
+func (a *responsesWebsocketOutputAccumulator) SetCompleted(payload []byte) bool {
 	if a == nil {
-		return
+		return false
 	}
-	a.completedOutput = responseCompletedOutputFromPayload(payload, nil, nil)
+	output := responseCompletedOutputFromPayload(payload, nil, nil)
+	if a.maxBytes >= 0 && int64(len(output)) > a.maxBytes {
+		return false
+	}
+	a.completedOutput = output
 	a.items = nil
+	a.usedBytes = int64(len(output))
+	return true
 }
 
-func (a *responsesWebsocketOutputAccumulator) AppendOutputItemDone(payload []byte) {
+func (a *responsesWebsocketOutputAccumulator) AppendOutputItemDone(payload []byte) bool {
 	if a == nil {
-		return
+		return false
 	}
 	item := gjson.GetBytes(payload, "item")
 	if !item.Exists() || !item.IsObject() {
-		return
+		return true
+	}
+	projected := int64(2 + len(item.Raw))
+	if len(a.items) > 0 {
+		projected = a.usedBytes + 1 + int64(len(item.Raw))
+	}
+	if a.maxBytes >= 0 && projected > a.maxBytes {
+		return false
 	}
 	a.items = append(a.items, item.Raw)
+	a.usedBytes = projected
+	return true
 }
 
 func (a *responsesWebsocketOutputAccumulator) Output() []byte {
@@ -1858,35 +2190,6 @@ func websocketPayloadPreview(payload []byte) string {
 
 func isResponsesWebsocketCompletionEvent(eventType string) bool {
 	return eventType == wsEventTypeCompleted || eventType == wsDoneMarker
-}
-
-func recordPendingToolCallIDsFromPayload(pending map[string]struct{}, payload []byte) {
-	if pending == nil || len(payload) == 0 {
-		return
-	}
-	updatePendingToolCallIDsFromItem(pending, gjson.GetBytes(payload, "item"))
-	output := gjson.GetBytes(payload, "response.output")
-	if output.IsArray() {
-		for _, item := range output.Array() {
-			updatePendingToolCallIDsFromItem(pending, item)
-		}
-	}
-}
-
-func updatePendingToolCallIDsFromItem(pending map[string]struct{}, item gjson.Result) {
-	if pending == nil || !item.Exists() {
-		return
-	}
-	switch strings.TrimSpace(item.Get("type").String()) {
-	case "function_call", "custom_tool_call":
-		if callID := strings.TrimSpace(item.Get("call_id").String()); callID != "" {
-			pending[callID] = struct{}{}
-		}
-	case "function_call_output", "custom_tool_call_output":
-		if callID := strings.TrimSpace(item.Get("call_id").String()); callID != "" {
-			delete(pending, callID)
-		}
-	}
 }
 
 func responsesWebsocketErrorMessageFromPayload(payload []byte) *interfaces.ErrorMessage {

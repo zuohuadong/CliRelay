@@ -144,13 +144,24 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 
 	// Capture headers
 	headers := make(map[string][]string)
-	for key, values := range c.Request.Header {
+	sourceHeaders := c.Request.Header
+	if original, ok := OriginalResponsesHeaders(c); ok {
+		sourceHeaders = original
+	}
+	for key, values := range sourceHeaders {
 		headers[key] = values
 	}
 
 	// Capture request body
 	var body []byte
 	if captureBody && c.Request.Body != nil {
+		if canonical, ok := CanonicalResponsesBody(c); ok {
+			body = canonical
+			return &RequestInfo{
+				URL: url, Method: method, Headers: headers, Body: body,
+				RequestID: logging.GetGinRequestID(c), Timestamp: time.Now(),
+			}, nil
+		}
 		// Read the body
 		bodyBytes, err := io.ReadAll(c.Request.Body)
 		if err != nil {

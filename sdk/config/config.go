@@ -41,8 +41,14 @@ type BedrockModel = internalconfig.BedrockModel
 type TLS = internalconfig.TLSConfig
 
 const (
-	DefaultPanelGitHubRepository    = internalconfig.DefaultPanelGitHubRepository
-	DefaultResponsesMaxInboundBytes = internalconfig.DefaultResponsesMaxInboundBytes
+	DefaultPanelGitHubRepository                = internalconfig.DefaultPanelGitHubRepository
+	DefaultResponsesMaxInboundBytes             = internalconfig.DefaultResponsesMaxInboundBytes
+	DefaultResponsesMemoryBudgetBytes           = internalconfig.DefaultResponsesMemoryBudgetBytes
+	DefaultResponsesWebsocketMaxSessionBytes    = internalconfig.DefaultResponsesWebsocketMaxSessionBytes
+	DefaultResponsesWebsocketMaxTurnOutputBytes = internalconfig.DefaultResponsesWebsocketMaxTurnOutputBytes
+	DefaultResponsesWebsocketToolCacheBytes     = internalconfig.DefaultResponsesWebsocketToolCacheBytes
+	DefaultResponsesWebsocketMemoryBudgetBytes  = internalconfig.DefaultResponsesWebsocketMemoryBudgetBytes
+	DefaultResponsesWebsocketMaxConnections     = internalconfig.DefaultResponsesWebsocketMaxConnections
 )
 
 func LoadConfig(configFile string) (*Config, error) { return internalconfig.LoadConfig(configFile) }

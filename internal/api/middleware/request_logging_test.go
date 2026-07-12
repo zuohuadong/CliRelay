@@ -152,6 +152,41 @@ func TestShouldCaptureRequestBody(t *testing.T) {
 	}
 }
 
+func TestCaptureRequestInfoUsesCanonicalResponsesBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("Content-Encoding", "zstd")
+	c.Request.ContentLength = 123
+	c.Request.Body = &failReadCloser{t: t}
+	SetCanonicalResponsesBody(c, []byte(`{"model":"gpt-test"}`))
+	// Restore a failing body after setting the canonical copy to prove logging
+	// does not perform another read.
+	c.Request.Body = &failReadCloser{t: t}
+
+	info, err := captureRequestInfo(c, true)
+	if err != nil {
+		t.Fatalf("captureRequestInfo() error = %v", err)
+	}
+	if string(info.Body) != `{"model":"gpt-test"}` {
+		t.Fatalf("captured body = %q", info.Body)
+	}
+	if got := http.Header(info.Headers).Get("Content-Encoding"); got != "zstd" {
+		t.Fatalf("logged Content-Encoding = %q, want original zstd", got)
+	}
+	if got := http.Header(info.Headers).Get("Content-Length"); got != "123" {
+		t.Fatalf("logged Content-Length = %q, want original 123", got)
+	}
+}
+
+type failReadCloser struct{ t *testing.T }
+
+func (f *failReadCloser) Read([]byte) (int, error) {
+	f.t.Fatal("request body was read after canonicalization")
+	return 0, io.EOF
+}
+func (f *failReadCloser) Close() error { return nil }
+
 func TestAttachRequestLogSourcesUsesLoggerLogsDir(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

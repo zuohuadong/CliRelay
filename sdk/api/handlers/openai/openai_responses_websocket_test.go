@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -4234,4 +4235,263 @@ func TestResponsesWebsocketHeartbeatSendsPing(t *testing.T) {
 	}
 	_ = conn.Close()
 	<-readDone
+}
+
+func TestResponsesWebsocketStatePreflightAllowsReplacementAndIncrementalRecovery(t *testing.T) {
+	lastRequest := bytes.Repeat([]byte("x"), 100)
+	lastOutput := bytes.Repeat([]byte("y"), 100)
+	replacement := []byte(`{"type":"response.create","input":[{"type":"message","role":"assistant","content":"compact"}]}`)
+	if !responsesWebsocketStatePreflight(replacement, lastRequest, lastOutput, false, false, 128) {
+		t.Fatal("replacement request was falsely rejected by state preflight")
+	}
+	incremental := []byte(`{"type":"response.create","previous_response_id":"resp_1","input":[]}`)
+	if !responsesWebsocketStatePreflight(incremental, lastRequest, lastOutput, true, false, 128) {
+		t.Fatal("valid previous_response_id request was falsely rejected by state preflight")
+	}
+	appendRequest := []byte(`{"type":"response.append","input":[{"type":"message","role":"user"}]}`)
+	if responsesWebsocketStatePreflight(appendRequest, lastRequest, lastOutput, false, false, 128) {
+		t.Fatal("projected merged state exceeding limit was accepted")
+	}
+	fullTranscript := []byte(`{"type":"response.create","input":[{"type":"message","role":"user"},{"type":"message","role":"assistant"}]}`)
+	if !responsesWebsocketStatePreflight(fullTranscript, lastRequest, lastOutput, false, true, 128) {
+		t.Fatal("supported full transcript bypass was falsely rejected")
+	}
+	if !responsesWebsocketStateWithinLimit(bytes.Repeat([]byte("r"), 64), bytes.Repeat([]byte("o"), 64), 128) {
+		t.Fatal("exact state at limit was rejected")
+	}
+	if responsesWebsocketStateWithinLimit(bytes.Repeat([]byte("r"), 65), bytes.Repeat([]byte("o"), 64), 128) {
+		t.Fatal("exact state above limit was accepted")
+	}
+}
+
+func TestResponsesWebsocketBudgetErrorPayloadUsesStructuredCode(t *testing.T) {
+	payload := buildResponsesWebsocketBudgetErrorPayload("websocket_session_state_limit_exceeded", "too large")
+	if got := gjson.GetBytes(payload, "type").String(); got != "response.failed" {
+		t.Fatalf("type = %q, payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.error.code").String(); got != "websocket_session_state_limit_exceeded" {
+		t.Fatalf("code = %q, payload=%s", got, payload)
+	}
+}
+
+func TestResponsesWebsocketOutputAccumulatorRejectsCumulativeLimit(t *testing.T) {
+	acc := newResponsesWebsocketOutputAccumulatorWithLimit(20)
+	if !acc.AppendOutputItemDone([]byte(`{"item":{"x":"1234"}}`)) {
+		t.Fatal("first output item rejected")
+	}
+	if acc.AppendOutputItemDone([]byte(`{"item":{"x":"5678901234"}}`)) {
+		t.Fatal("cumulative output over limit was accepted")
+	}
+	if got := string(acc.Output()); got != `[{"x":"1234"}]` {
+		t.Fatalf("output after rejection = %s", got)
+	}
+}
+
+func TestWebsocketToolOutputCacheEnforcesByteBudgetAndOverwriteAccounting(t *testing.T) {
+	cache := newWebsocketToolOutputCacheWithBytes(time.Minute, 10, 12)
+	cache.record("session", "a", json.RawMessage(`{"x":"1"}`))
+	cache.record("session", "b", json.RawMessage(`{"x":"2"}`))
+	if _, ok := cache.get("session", "a"); ok {
+		t.Fatal("oldest entry was not evicted to fit byte budget")
+	}
+	cache.record("session", "b", json.RawMessage(`{"x":"22"}`))
+	if got, ok := cache.get("session", "b"); !ok || string(got) != `{"x":"22"}` {
+		t.Fatalf("overwritten entry = %s, ok=%v", got, ok)
+	}
+	cache.record("session", "huge", json.RawMessage(bytes.Repeat([]byte("x"), 13)))
+	if _, ok := cache.get("session", "huge"); ok {
+		t.Fatal("single entry larger than byte budget was cached")
+	}
+}
+
+func TestDefaultWebsocketToolCachesEnableTTL(t *testing.T) {
+	if defaultWebsocketToolOutputCache.ttl != websocketToolOutputCacheTTL || defaultWebsocketToolCallCache.ttl != websocketToolOutputCacheTTL {
+		t.Fatalf("default cache TTLs = %v/%v, want %v", defaultWebsocketToolOutputCache.ttl, defaultWebsocketToolCallCache.ttl, websocketToolOutputCacheTTL)
+	}
+}
+
+func TestWebsocketToolOutputCacheClearPreservesSessionByteLimit(t *testing.T) {
+	cache := newWebsocketToolOutputCacheWithBytes(time.Minute, 10, 100)
+	cache.setSessionMaxBytes("session", 4)
+	cache.record("session", "small", json.RawMessage(`1234`))
+	cache.clearSessionItems("session")
+	if _, ok := cache.get("session", "small"); ok {
+		t.Fatal("rejected turn cache item remained after clear")
+	}
+	cache.record("session", "too-large", json.RawMessage(`12345`))
+	if _, ok := cache.get("session", "too-large"); ok {
+		t.Fatal("session-specific byte limit was lost after cache clear")
+	}
+	cache.mu.Lock()
+	session := cache.sessions["session"]
+	cache.mu.Unlock()
+	if session == nil || session.maxBytes != 4 {
+		t.Fatalf("session maxBytes after clear = %+v", session)
+	}
+}
+
+func TestResponsesWebsocketPerCacheBudgetSplitsCombinedLimit(t *testing.T) {
+	if got := responsesWebsocketPerCacheBudget(8 << 20); got != 4<<20 {
+		t.Fatalf("per-cache budget = %d, want %d", got, int64(4<<20))
+	}
+}
+
+func TestResponsesWebsocketStateReservationChargesTwoX(t *testing.T) {
+	budget := &responsesWebsocketMemoryBudget{}
+	reservation := budget.newReservation()
+	if resizeResponsesWebsocketStateReservation(reservation, 100, 60) {
+		t.Fatal("60-byte state fit into 100-byte budget despite 2x charge")
+	}
+	if !resizeResponsesWebsocketStateReservation(reservation, 120, 60) {
+		t.Fatal("60-byte state did not fit exact 120-byte estimated budget")
+	}
+	reservation.release()
+}
+
+func TestResponsesWebsocketDefaultBudgetAllowsOneMaximumTurnButRejectsTwo(t *testing.T) {
+	budget := &responsesWebsocketMemoryBudget{}
+	first := budget.newReservation()
+	second := budget.newReservation()
+	const max = int64(32 << 20)
+	if !resizeResponsesWebsocketStateReservation(first, sdkconfig.DefaultResponsesWebsocketMemoryBudgetBytes, 2, max, max) {
+		t.Fatal("one maximum request/output turn was rejected by default websocket budget")
+	}
+	if resizeResponsesWebsocketStateReservation(second, sdkconfig.DefaultResponsesWebsocketMemoryBudgetBytes, 2, max, max) {
+		t.Fatal("two maximum turns exceeded default websocket aggregate budget but were accepted")
+	}
+	first.release()
+	second.release()
+}
+
+func TestAccumulateResponsesWebsocketPayloadRejectsBeforeCollectorClone(t *testing.T) {
+	acc := newResponsesWebsocketOutputAccumulatorWithLimit(8)
+	byIndex := make(map[int64][]byte)
+	var fallback [][]byte
+	payload := []byte(`{"type":"response.output_item.done","output_index":0,"item":{"text":"oversized"}}`)
+	_, ok := accumulateResponsesWebsocketPayload(payload, acc, byIndex, &fallback)
+	if ok {
+		t.Fatal("oversized output item was accepted")
+	}
+	if len(byIndex) != 0 || len(fallback) != 0 {
+		t.Fatalf("collector cloned rejected item: byIndex=%d fallback=%d", len(byIndex), len(fallback))
+	}
+}
+
+func TestResponsesWebsocketMemoryBudgetContendsAndReleases(t *testing.T) {
+	budget := &responsesWebsocketMemoryBudget{}
+	first := budget.newReservation()
+	second := budget.newReservation()
+	if !first.resize(60, 100) {
+		t.Fatal("first session reservation rejected")
+	}
+	if second.resize(50, 100) {
+		t.Fatal("aggregate websocket state budget accepted overcommit")
+	}
+	first.release()
+	if !second.resize(50, 100) {
+		t.Fatal("released websocket state budget was not reusable")
+	}
+	second.release()
+	if got := budget.inUseBytes(); got != 0 {
+		t.Fatalf("budget in use after release = %d", got)
+	}
+}
+
+func TestResponsesWebsocketConnectionLimiterReleases(t *testing.T) {
+	limiter := &responsesWebsocketConnectionLimiter{}
+	if !limiter.tryAcquire(1) {
+		t.Fatal("first connection rejected")
+	}
+	if limiter.tryAcquire(1) {
+		t.Fatal("second connection exceeded configured limit")
+	}
+	limiter.release()
+	if !limiter.tryAcquire(1) {
+		t.Fatal("connection slot was not released")
+	}
+	limiter.release()
+}
+
+func TestResponsesWebsocketTurnLimitAtSessionBoundaryRejectsBeforeUpstream(t *testing.T) {
+	limit := responsesWebsocketEffectiveTurnOutputLimit(32, 64, 64)
+	if limit != 0 || responsesWebsocketCanStartTurn(limit) {
+		t.Fatalf("effective limit = %d, turn should be rejected before upstream", limit)
+	}
+	acc := newResponsesWebsocketOutputAccumulatorWithLimit(limit)
+	if acc.SetCompleted([]byte(`{"type":"response.completed","response":{"output":[]}}`)) {
+		t.Fatal("strict zero accumulator accepted minimum completed output")
+	}
+}
+
+func TestResponsesWebsocketTurnLimitFailureDoesNotWriteCompleted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	serverErr := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer conn.Close()
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = r
+		setResponsesWebsocketTurnOutputLimit(ctx, 8)
+		data := make(chan []byte, 2)
+		errs := make(chan *interfaces.ErrorMessage)
+		data <- []byte(`{"type":"response.output_item.done","output_index":0,"item":{"text":"oversized"}}`)
+		data <- []byte(`{"type":"response.completed","response":{"output":[]}}`)
+		close(data)
+		close(errs)
+		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+		h := NewOpenAIResponsesAPIHandler(base)
+		_, errMsg, _, err := h.forwardResponsesWebsocket(ctx, conn, func(...interface{}) {}, data, errs, nil, "session", false)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if !isResponsesWebsocketBudgetError(errMsg) {
+			serverErr <- fmt.Errorf("error = %v, want websocket budget error", errMsg)
+			return
+		}
+		serverErr <- nil
+	}))
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(payload, "type").String(); got != "response.failed" {
+		t.Fatalf("first payload type = %q, payload=%s", got, payload)
+	}
+	if strings.Contains(string(payload), "response.completed") {
+		t.Fatalf("completed was written before failure: %s", payload)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResponsesWebsocketTurnLimitsSnapshotIsStableAcrossConfigChange(t *testing.T) {
+	cfg := &sdkconfig.SDKConfig{
+		ResponsesWebsocketMaxSessionBytes:    100,
+		ResponsesWebsocketMaxTurnOutputBytes: 40,
+		ResponsesWebsocketMemoryBudgetBytes:  200,
+		ResponsesWebsocketToolCacheBytes:     20,
+	}
+	h := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(cfg, nil))
+	first := h.responsesWebsocketTurnLimitsSnapshot()
+	h.Cfg.ResponsesWebsocketMaxSessionBytes = 80
+	h.Cfg.ResponsesWebsocketMaxTurnOutputBytes = 30
+	second := h.responsesWebsocketTurnLimitsSnapshot()
+	if first.sessionBytes != 100 || first.turnOutputBytes != 40 || first.memoryBudgetBytes != 200 || first.toolCacheBytes != 20 {
+		t.Fatalf("first snapshot changed: %+v", first)
+	}
+	if second.sessionBytes != 80 || second.turnOutputBytes != 30 {
+		t.Fatalf("second snapshot did not refresh: %+v", second)
+	}
 }

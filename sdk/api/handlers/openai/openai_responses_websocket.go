@@ -375,7 +375,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				allowCompactionReplayBypass = h.websocketUpstreamSupportsCompactionReplayForModel(requestModelName)
 			}
 			if !responsesWebsocketStatePreflight(payload, lastRequest, lastResponseOutput, allowIncrementalInputWithPreviousResponseID, allowCompactionReplayBypass, limits.sessionBytes) {
-				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_session_state_limit_exceeded", "websocket session state exceeds configured limit"); errWrite != nil {
+				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_session_state_limit_exceeded", "websocket session state exceeds configured limit", passthroughSessionID); errWrite != nil {
 					wsTerminateErr = errWrite
 					return
 				}
@@ -422,17 +422,17 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 					updatedLastRequest = updated
 				}
 				if !responsesWebsocketStateWithinLimit(updatedLastRequest, nil, limits.sessionBytes) {
-					if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_session_state_limit_exceeded", "websocket session state exceeds configured limit"); errWrite != nil {
+					if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_session_state_limit_exceeded", "websocket session state exceeds configured limit", passthroughSessionID); errWrite != nil {
 						wsTerminateErr = errWrite
 						return
 					}
 					break
 				}
-				if !resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(lastRequest)), int64(len(lastResponseOutput)), int64(len(updatedLastRequest)), 2) {
-					if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_memory_budget_exceeded", "websocket aggregate memory budget exceeded"); errWrite != nil {
-						wsTerminateErr = errWrite
-						return
-					}
+			if !resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(updatedLastRequest)), 2) {
+				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_memory_budget_exceeded", "websocket aggregate memory budget exceeded", passthroughSessionID); errWrite != nil {
+					wsTerminateErr = errWrite
+					return
+				}
 					break
 				}
 				lastRequest = updatedLastRequest
@@ -451,7 +451,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			updatedLastRequest = requestJSON
 			if !responsesWebsocketStateWithinLimit(updatedLastRequest, nil, limits.sessionBytes) {
 				clearResponsesWebsocketToolCaches(downstreamSessionKey)
-				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_session_state_limit_exceeded", "websocket session state exceeds configured limit"); errWrite != nil {
+				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_session_state_limit_exceeded", "websocket session state exceeds configured limit", passthroughSessionID); errWrite != nil {
 					wsTerminateErr = errWrite
 					return
 				}
@@ -462,15 +462,15 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			effectiveTurnLimit := responsesWebsocketEffectiveTurnOutputLimit(limits.turnOutputBytes, limits.sessionBytes, len(updatedLastRequest))
 			if !responsesWebsocketCanStartTurn(effectiveTurnLimit) {
 				clearResponsesWebsocketToolCaches(downstreamSessionKey)
-				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_session_state_limit_exceeded", "websocket session has no room for response output"); errWrite != nil {
+				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_session_state_limit_exceeded", "websocket session has no room for response output", passthroughSessionID); errWrite != nil {
 					wsTerminateErr = errWrite
 					return
 				}
 				break
 			}
-			if !resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(previousLastRequest)), int64(len(previousLastResponseOutput)), int64(len(updatedLastRequest)), effectiveTurnLimit) {
+			if !resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(updatedLastRequest)), effectiveTurnLimit) {
 				clearResponsesWebsocketToolCaches(downstreamSessionKey)
-				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_memory_budget_exceeded", "websocket aggregate memory budget exceeded"); errWrite != nil {
+				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_memory_budget_exceeded", "websocket aggregate memory budget exceeded", passthroughSessionID); errWrite != nil {
 					wsTerminateErr = errWrite
 					return
 				}
@@ -1841,7 +1841,8 @@ func isResponsesWebsocketBudgetError(errMsg *interfaces.ErrorMessage) bool {
 	return errors.As(errMsg.Error, &budgetErr)
 }
 
-func writeResponsesWebsocketBudgetError(conn *websocket.Conn, timeline websocketTimelineAppender, code, message string) error {
+func writeResponsesWebsocketBudgetError(conn *websocket.Conn, timeline websocketTimelineAppender, code, message, sessionID string) error {
+	log.Warnf("responses websocket: budget error id=%s code=%s", sessionID, code)
 	payload := buildResponsesWebsocketBudgetErrorPayload(code, message)
 	return writeResponsesWebsocketPayload(conn, timeline, payload, time.Now())
 }
@@ -1864,7 +1865,7 @@ func (h *OpenAIResponsesAPIHandler) failResponsesWebsocketTurnOutputLimit(
 	budgetErr := &responsesWebsocketBudgetError{code: "websocket_turn_output_limit_exceeded", message: "websocket turn output exceeds configured limit"}
 	cancel(budgetErr)
 	clearResponsesWebsocketToolCaches(sessionKey)
-	if err := writeResponsesWebsocketBudgetError(conn, timeline, budgetErr.code, budgetErr.message); err != nil {
+	if err := writeResponsesWebsocketBudgetError(conn, timeline, budgetErr.code, budgetErr.message, sessionKey); err != nil {
 		return output, &interfaces.ErrorMessage{StatusCode: http.StatusRequestEntityTooLarge, Error: budgetErr}, false, err
 	}
 	markAPIResponseTimestamp(c)

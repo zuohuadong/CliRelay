@@ -4348,24 +4348,39 @@ func TestResponsesWebsocketStateReservationChargesSum(t *testing.T) {
 	reservation.release()
 }
 
-func TestResponsesWebsocketDefaultBudgetAllowsTwoMaximumTurnsButRejectsThree(t *testing.T) {
+func TestResponsesWebsocketDefaultBudgetAllowsOneMaximumTransitionButRejectsTwo(t *testing.T) {
 	budget := &responsesWebsocketMemoryBudget{}
 	first := budget.newReservation()
 	second := budget.newReservation()
-	third := budget.newReservation()
 	const max = int64(32 << 20)
-	if !resizeResponsesWebsocketStateReservation(first, sdkconfig.DefaultResponsesWebsocketMemoryBudgetBytes, 2, max, max) {
-		t.Fatal("first maximum turn was rejected by default websocket budget")
+	if !resizeResponsesWebsocketTransitionReservation(first, sdkconfig.DefaultResponsesWebsocketMemoryBudgetBytes, max, max, max, max) {
+		t.Fatal("one maximum old-to-new state transition was rejected by default websocket budget")
 	}
-	if !resizeResponsesWebsocketStateReservation(second, sdkconfig.DefaultResponsesWebsocketMemoryBudgetBytes, 2, max, max) {
-		t.Fatal("second maximum turn was rejected by default websocket budget")
-	}
-	if resizeResponsesWebsocketStateReservation(third, sdkconfig.DefaultResponsesWebsocketMemoryBudgetBytes, 2, max, max) {
-		t.Fatal("third maximum turn exceeded default websocket aggregate budget but was accepted")
+	if resizeResponsesWebsocketTransitionReservation(second, sdkconfig.DefaultResponsesWebsocketMemoryBudgetBytes, max, max, max, max) {
+		t.Fatal("two maximum transitions exceeded default websocket aggregate budget but were accepted")
 	}
 	first.release()
 	second.release()
-	third.release()
+}
+
+func TestResponsesWebsocketAggregateBudgetAccountsForOldAndNewTurnState(t *testing.T) {
+	budget := &responsesWebsocketMemoryBudget{}
+	first := budget.newReservation()
+	second := budget.newReservation()
+	const mib = int64(1 << 20)
+	const limit = 192 * mib
+
+	reserveTransition := func(reservation *responsesWebsocketMemoryReservation) bool {
+		return resizeResponsesWebsocketTransitionReservation(reservation, limit, 20*mib, 20*mib, 40*mib, 24*mib)
+	}
+	if !reserveTransition(first) {
+		t.Fatal("first 104 MiB old-to-new state transition was rejected")
+	}
+	if reserveTransition(second) {
+		t.Fatal("two overlapping 104 MiB transitions exceeded the 192 MiB aggregate budget but were accepted")
+	}
+	first.release()
+	second.release()
 }
 
 func TestAccumulateResponsesWebsocketPayloadRejectsBeforeCollectorClone(t *testing.T) {

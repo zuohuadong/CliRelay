@@ -428,11 +428,11 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 					}
 					break
 				}
-			if !resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(updatedLastRequest)), 2) {
-				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_memory_budget_exceeded", "websocket aggregate memory budget exceeded", passthroughSessionID); errWrite != nil {
-					wsTerminateErr = errWrite
-					return
-				}
+				if !resizeResponsesWebsocketTransitionReservation(stateReservation, limits.memoryBudgetBytes, int64(len(lastRequest)), int64(len(lastResponseOutput)), int64(len(updatedLastRequest)), 2) {
+					if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_memory_budget_exceeded", "websocket aggregate memory budget exceeded", passthroughSessionID); errWrite != nil {
+						wsTerminateErr = errWrite
+						return
+					}
 					break
 				}
 				lastRequest = updatedLastRequest
@@ -468,7 +468,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				}
 				break
 			}
-			if !resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(updatedLastRequest)), effectiveTurnLimit) {
+			if !resizeResponsesWebsocketTransitionReservation(stateReservation, limits.memoryBudgetBytes, int64(len(previousLastRequest)), int64(len(previousLastResponseOutput)), int64(len(updatedLastRequest)), effectiveTurnLimit) {
 				clearResponsesWebsocketToolCaches(downstreamSessionKey)
 				if errWrite := writeResponsesWebsocketBudgetError(conn, wsTimelineLog, "websocket_memory_budget_exceeded", "websocket aggregate memory budget exceeded", passthroughSessionID); errWrite != nil {
 					wsTerminateErr = errWrite
@@ -642,6 +642,10 @@ func resizeResponsesWebsocketStateReservation(r *responsesWebsocketMemoryReserva
 		total += size
 	}
 	return r.resize(total, limit)
+}
+
+func resizeResponsesWebsocketTransitionReservation(r *responsesWebsocketMemoryReservation, limit, previousRequestBytes, previousOutputBytes, updatedRequestBytes, turnOutputBytes int64) bool {
+	return resizeResponsesWebsocketStateReservation(r, limit, previousRequestBytes, previousOutputBytes, updatedRequestBytes, turnOutputBytes)
 }
 
 func responsesWebsocketEffectiveTurnOutputLimit(turnLimit, sessionLimit int64, requestBytes int) int64 {
@@ -1749,7 +1753,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				var accepted bool
 				payloads[i], accepted = accumulateResponsesWebsocketPayload(payloads[i], outputAccumulator, outputItemsByIndex, &outputItemsFallback)
 				if !accepted {
-					return h.failResponsesWebsocketTurnOutputLimit(c, conn, cancel, wsTimelineLog, downstreamSessionKey, outputAccumulator.Output())
+					return h.failResponsesWebsocketTurnOutputLimit(c, conn, cancel, wsTimelineLog, downstreamSessionKey, sessionID, outputAccumulator.Output())
 				}
 				eventType := gjson.GetBytes(payloads[i], "type").String()
 				recordResponsesWebsocketToolCallsFromPayload(downstreamSessionKey, payloads[i])
@@ -1860,12 +1864,13 @@ func (h *OpenAIResponsesAPIHandler) failResponsesWebsocketTurnOutputLimit(
 	cancel handlers.APIHandlerCancelFunc,
 	timeline websocketTimelineAppender,
 	sessionKey string,
+	sessionID string,
 	output []byte,
 ) ([]byte, *interfaces.ErrorMessage, bool, error) {
 	budgetErr := &responsesWebsocketBudgetError{code: "websocket_turn_output_limit_exceeded", message: "websocket turn output exceeds configured limit"}
 	cancel(budgetErr)
 	clearResponsesWebsocketToolCaches(sessionKey)
-	if err := writeResponsesWebsocketBudgetError(conn, timeline, budgetErr.code, budgetErr.message, sessionKey); err != nil {
+	if err := writeResponsesWebsocketBudgetError(conn, timeline, budgetErr.code, budgetErr.message, sessionID); err != nil {
 		return output, &interfaces.ErrorMessage{StatusCode: http.StatusRequestEntityTooLarge, Error: budgetErr}, false, err
 	}
 	markAPIResponseTimestamp(c)

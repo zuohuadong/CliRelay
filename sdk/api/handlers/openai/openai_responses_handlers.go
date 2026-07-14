@@ -29,6 +29,50 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+const (
+	responsesSSECommentKeepAliveFrame    = ": keep-alive\n\n"
+	responsesSSEDataKeepAliveFrame       = "event: keepalive\ndata: {\"type\":\"keepalive\"}\n\n"
+	responsesSSEKeepAliveDefaultInterval = 15 * time.Second
+)
+
+func writeResponsesSSEKeepAlive(c *gin.Context) {
+	if c == nil || c.Writer == nil {
+		return
+	}
+	frame := responsesSSECommentKeepAliveFrame
+	if isCodexResponsesSSEClient(c) {
+		frame = responsesSSEDataKeepAliveFrame
+	}
+	_, _ = io.WriteString(c.Writer, frame)
+}
+
+func isCodexResponsesSSEClient(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	originator := strings.ToLower(strings.TrimSpace(c.GetHeader("Originator")))
+	switch originator {
+	case "codex desktop", "codex_cli_rs", "codex-tui":
+		return true
+	}
+	userAgent := strings.ToLower(strings.TrimSpace(c.GetHeader("User-Agent")))
+	return strings.HasPrefix(userAgent, "codex desktop/") ||
+		strings.HasPrefix(userAgent, "codex_cli_rs/") ||
+		strings.HasPrefix(userAgent, "codex-tui/")
+}
+
+func responsesStreamKeepAliveInterval(h *OpenAIResponsesAPIHandler, c *gin.Context) time.Duration {
+	if h != nil && h.BaseAPIHandler != nil {
+		if interval := handlers.StreamingKeepAliveInterval(h.Cfg); interval > 0 {
+			return interval
+		}
+	}
+	if isCodexResponsesSSEClient(c) {
+		return responsesSSEKeepAliveDefaultInterval
+	}
+	return 0
+}
+
 func writeResponsesSSEChunk(w io.Writer, chunk []byte) {
 	if w == nil || len(chunk) == 0 {
 		return
@@ -747,12 +791,14 @@ func (h *OpenAIResponsesAPIHandler) startResponsesStreamBootstrapHeartbeat(c *gi
 		return func() {}
 	}
 	writeHeartbeat := func() {
-		_, _ = c.Writer.Write([]byte(": keep-alive\n\n"))
+		// Codex resets its idle timeout only when the SSE parser yields an event;
+		// comment-only heartbeats are discarded before that timeout is refreshed.
+		writeResponsesSSEKeepAlive(c)
 		flusher.Flush()
 	}
 	writeHeartbeat()
 
-	interval := handlers.StreamingKeepAliveInterval(h.Cfg)
+	interval := responsesStreamKeepAliveInterval(h, c)
 	if interval <= 0 {
 		return func() {}
 	}
@@ -789,7 +835,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 	if framer == nil {
 		framer = &responsesSSEFramer{}
 	}
+	keepAliveInterval := responsesStreamKeepAliveInterval(h, c)
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
+		KeepAliveInterval: &keepAliveInterval,
 		WriteChunk: func(chunk []byte) {
 			framer.WriteChunk(c.Writer, chunk)
 		},
@@ -803,6 +851,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 		},
 		WriteDone: func() {
 			framer.WriteDone(c.Writer)
+		},
+		WriteKeepAlive: func() {
+			writeResponsesSSEKeepAlive(c)
 		},
 	})
 }

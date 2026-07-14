@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
@@ -20,7 +21,9 @@ import (
 )
 
 type blockingResponsesBootstrapExecutor struct {
-	chunks chan coreexecutor.StreamChunk
+	chunks         chan coreexecutor.StreamChunk
+	executeStarted chan struct{}
+	releaseExecute chan struct{}
 }
 
 func (e *blockingResponsesBootstrapExecutor) Identifier() string {
@@ -31,7 +34,20 @@ func (e *blockingResponsesBootstrapExecutor) Execute(context.Context, *coreauth.
 	return coreexecutor.Response{}, errors.New("not implemented")
 }
 
-func (e *blockingResponsesBootstrapExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+func (e *blockingResponsesBootstrapExecutor) ExecuteStream(ctx context.Context, _ *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	if e.executeStarted != nil {
+		select {
+		case e.executeStarted <- struct{}{}:
+		default:
+		}
+	}
+	if e.releaseExecute != nil {
+		select {
+		case <-e.releaseExecute:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return &coreexecutor.StreamResult{
 		Headers: http.Header{"Content-Type": {"text/event-stream"}},
 		Chunks:  e.chunks,
@@ -69,13 +85,19 @@ func newResponsesStreamTestHandler(t *testing.T) (*OpenAIResponsesAPIHandler, *h
 	return h, recorder, c, flusher
 }
 
-func TestHandleStreamingResponseWritesKeepAliveBeforeBootstrap(t *testing.T) {
+func TestHandleStreamingResponseWritesDataKeepAliveBeforeBootstrap(t *testing.T) {
 	const model = "bootstrap-model"
 	gin.SetMode(gin.TestMode)
 
 	chunks := make(chan coreexecutor.StreamChunk)
+	executeStarted := make(chan struct{}, 1)
+	releaseExecute := make(chan struct{})
 	manager := coreauth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(&blockingResponsesBootstrapExecutor{chunks: chunks})
+	manager.RegisterExecutor(&blockingResponsesBootstrapExecutor{
+		chunks:         chunks,
+		executeStarted: executeStarted,
+		releaseExecute: releaseExecute,
+	})
 	auth := &coreauth.Auth{
 		ID:       "bootstrap-auth",
 		Provider: "responses-bootstrap-blocker",
@@ -96,13 +118,15 @@ func TestHandleStreamingResponseWritesKeepAliveBeforeBootstrap(t *testing.T) {
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/responses", strings.NewReader(`{"model":"`+model+`","input":"hi","stream":true}`))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Originator", "Codex Desktop")
+	req.Header.Set("User-Agent", "Codex Desktop/0.144.2")
 
 	resp, err := server.Client().Do(req)
 	if err != nil {
@@ -115,18 +139,113 @@ func TestHandleStreamingResponseWritesKeepAliveBeforeBootstrap(t *testing.T) {
 	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
 		t.Fatalf("content-type = %q, want text/event-stream", got)
 	}
+	select {
+	case <-executeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("executor did not enter synchronous bootstrap")
+	}
 
 	reader := bufio.NewReader(resp.Body)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		t.Fatalf("read first heartbeat line: %v", err)
-	}
-	if line != ": keep-alive\n" {
-		t.Fatalf("first line = %q, want bootstrap keep-alive", line)
+	for i := 0; i < 2; i++ {
+		eventLine, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read heartbeat %d event line: %v", i+1, err)
+		}
+		if eventLine != "event: keepalive\n" {
+			t.Fatalf("heartbeat %d event line = %q, want data-bearing keepalive event", i+1, eventLine)
+		}
+		dataLine, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read heartbeat %d data line: %v", i+1, err)
+		}
+		if dataLine != "data: {\"type\":\"keepalive\"}\n" {
+			t.Fatalf("heartbeat %d data line = %q, want Codex-visible SSE data", i+1, dataLine)
+		}
+		blankLine, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read heartbeat %d terminator: %v", i+1, err)
+		}
+		if blankLine != "\n" {
+			t.Fatalf("heartbeat %d terminator = %q, want blank line", i+1, blankLine)
+		}
 	}
 
-	cancel()
+	close(releaseExecute)
 	close(chunks)
+	cancel()
+}
+
+func TestForwardResponsesStreamWritesDataKeepAliveWhileUpstreamIsIdle(t *testing.T) {
+	h, recorder, c, flusher := newResponsesStreamTestHandler(t)
+	h.Cfg.Streaming.KeepAliveSeconds = 1
+	c.Request.Header.Set("Originator", "Codex Desktop")
+	c.Request.Header.Set("User-Agent", "Codex Desktop/0.144.2")
+
+	data := make(chan []byte)
+	errs := make(chan *interfaces.ErrorMessage)
+	time.AfterFunc(1500*time.Millisecond, func() {
+		close(data)
+		close(errs)
+	})
+
+	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, "event: keepalive\ndata: {\"type\":\"keepalive\"}\n\n") {
+		t.Fatalf("idle stream did not emit a data-bearing keepalive event: %q", body)
+	}
+}
+
+func TestResponsesStreamKeepAliveIntervalDefaultsToFifteenSeconds(t *testing.T) {
+	h, _, c, _ := newResponsesStreamTestHandler(t)
+	c.Request.Header.Set("Originator", "Codex Desktop")
+
+	if got := responsesStreamKeepAliveInterval(h, c); got != 15*time.Second {
+		t.Fatalf("default Responses SSE keepalive interval = %s, want 15s", got)
+	}
+}
+
+func TestResponsesStreamKeepAlivePreservesGenericDisabledDefault(t *testing.T) {
+	h, recorder, c, _ := newResponsesStreamTestHandler(t)
+	c.Request.Header.Set("User-Agent", "openai-python/2.0")
+
+	if got := responsesStreamKeepAliveInterval(h, c); got != 0 {
+		t.Fatalf("generic Responses SSE keepalive interval = %s, want disabled", got)
+	}
+	writeResponsesSSEKeepAlive(c)
+	if got := recorder.Body.String(); got != ": keep-alive\n\n" {
+		t.Fatalf("generic Responses SSE heartbeat = %q, want comment-only heartbeat", got)
+	}
+	h.Cfg.Streaming.KeepAliveSeconds = 2
+	if got := responsesStreamKeepAliveInterval(h, c); got != 2*time.Second {
+		t.Fatalf("configured generic Responses SSE keepalive interval = %s, want 2s", got)
+	}
+}
+
+func TestIsCodexResponsesSSEClient(t *testing.T) {
+	tests := []struct {
+		name       string
+		originator string
+		userAgent  string
+		want       bool
+	}{
+		{name: "desktop originator", originator: "Codex Desktop", want: true},
+		{name: "desktop user agent", userAgent: "Codex Desktop/0.144.2", want: true},
+		{name: "rust cli", userAgent: "codex_cli_rs/0.144.0", want: true},
+		{name: "tui originator", originator: "codex-tui", want: true},
+		{name: "generic sdk", userAgent: "openai-python/2.0", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, c, _ := newResponsesStreamTestHandler(t)
+			c.Request.Header.Set("Originator", tt.originator)
+			c.Request.Header.Set("User-Agent", tt.userAgent)
+			if got := isCodexResponsesSSEClient(c); got != tt.want {
+				t.Fatalf("isCodexResponsesSSEClient() = %t, want %t", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestForwardResponsesStreamSeparatesDataOnlySSEChunks(t *testing.T) {

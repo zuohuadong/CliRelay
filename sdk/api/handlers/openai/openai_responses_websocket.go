@@ -45,10 +45,12 @@ const (
 	responsesWebsocketTimelinePayloadMaxBytes = 64 << 10
 
 	// 下游 websocket 心跳：定期发送 ping frame 防止客户端 idle timeout
-	responsesWebsocketReadTimeout               = 60 * time.Second
-	responsesWebsocketWriteTimeout              = 10 * time.Second
-	responsesWebsocketHeartbeatInterval         = 30 * time.Second
-	responsesWebsocketTurnOutputLimitContextKey = "clirelay.responses.websocket_turn_output_limit"
+	responsesWebsocketReadTimeout                      = 60 * time.Second
+	responsesWebsocketWriteTimeout                     = 10 * time.Second
+	responsesWebsocketHeartbeatInterval                = 30 * time.Second
+	responsesWebsocketProgressHeartbeatDefaultInterval = 15 * time.Second
+	responsesWebsocketTurnOutputLimitContextKey        = "clirelay.responses.websocket_turn_output_limit"
+	responsesWebsocketProgressHeartbeatPayload         = `{"type":"response.in_progress","response":{"status":"in_progress"}}`
 )
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
@@ -317,22 +319,66 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		stateReservation = h.websocketMemoryBudget.newReservation()
 		defer stateReservation.release()
 	}
+	type downstreamRead struct {
+		msgType int
+		payload []byte
+	}
+	// Keep at most one application message queued while a response is active.
+	// The reader remains available for pong/close frames without multiplying the
+	// per-frame inbound limit into a large in-memory backlog.
+	downstreamReadCh := make(chan downstreamRead, 1)
+	clientDisconnected := make(chan struct{})
+	var clientDisconnectOnce sync.Once
+	var clientDisconnectMu sync.Mutex
+	var clientDisconnectErr error
+	setClientDisconnected := func(err error) {
+		clientDisconnectMu.Lock()
+		clientDisconnectErr = err
+		clientDisconnectMu.Unlock()
+		clientDisconnectOnce.Do(func() { close(clientDisconnected) })
+	}
+	getClientDisconnectErr := func() error {
+		clientDisconnectMu.Lock()
+		defer clientDisconnectMu.Unlock()
+		return clientDisconnectErr
+	}
+	go func() {
+		defer close(downstreamReadCh)
+		for {
+			conn.SetReadLimit(h.responsesMaxInboundBytes())
+			msgType, payload, errReadMessage := conn.ReadMessage()
+			if errReadMessage != nil {
+				setClientDisconnected(errReadMessage)
+				return
+			}
+			select {
+			case downstreamReadCh <- downstreamRead{msgType: msgType, payload: payload}:
+			case <-wsDone:
+				return
+			}
+		}
+	}()
 
 	for {
-		conn.SetReadLimit(h.responsesMaxInboundBytes())
-		msgType, payload, errReadMessage := conn.ReadMessage()
-		if errReadMessage != nil {
-			wsTerminateErr = errReadMessage
-			if websocket.IsCloseError(errReadMessage, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
-				log.Infof("responses websocket: client disconnected id=%s error=%v", passthroughSessionID, errReadMessage)
-			} else {
-				// log.Warnf("responses websocket: read message failed id=%s error=%v", passthroughSessionID, errReadMessage)
+		var msg downstreamRead
+		select {
+		case <-clientDisconnected:
+			wsTerminateErr = getClientDisconnectErr()
+			if websocket.IsCloseError(wsTerminateErr, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
+				log.Infof("responses websocket: client disconnected id=%s error=%v", passthroughSessionID, wsTerminateErr)
 			}
 			return
+		case next, ok := <-downstreamReadCh:
+			if !ok {
+				wsTerminateErr = getClientDisconnectErr()
+				return
+			}
+			msg = next
 		}
-		if msgType != websocket.TextMessage && msgType != websocket.BinaryMessage {
+		if msg.msgType != websocket.TextMessage && msg.msgType != websocket.BinaryMessage {
 			continue
 		}
+		payload := msg.payload
 		// log.Infof(
 		// 	"responses websocket: downstream_in id=%s type=%d event=%s payload=%s",
 		// 	passthroughSessionID,
@@ -507,7 +553,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
 
 			canReplayForwardErr := replayAttempt < maxReplayRetries
-			completedOutput, forwardErrMsg, shouldReplayForwardErr, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, wsTimelineLog, passthroughSessionID, canReplayForwardErr)
+			completedOutput, forwardErrMsg, shouldReplayForwardErr, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, wsTimelineLog, passthroughSessionID, canReplayForwardErr, clientDisconnected)
 			if errForward != nil {
 				wsTerminateErr = errForward
 				log.Warnf("responses websocket: forward failed id=%s error=%v", passthroughSessionID, errForward)
@@ -707,6 +753,15 @@ func startResponsesWebsocketHeartbeat(conn *websocket.Conn, done <-chan struct{}
 			}
 		}
 	}()
+}
+
+func responsesWebsocketProgressHeartbeatInterval(h *OpenAIResponsesAPIHandler) time.Duration {
+	if h != nil && h.BaseAPIHandler != nil {
+		if interval := handlers.StreamingKeepAliveInterval(h.Cfg); interval > 0 {
+			return interval
+		}
+	}
+	return responsesWebsocketProgressHeartbeatDefaultInterval
 }
 
 func websocketClientAddress(c *gin.Context) string {
@@ -1574,6 +1629,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	wsTimelineLog websocketTimelineAppender,
 	sessionID string,
 	suppressReplayableErrors bool,
+	clientDisconnected <-chan struct{},
 ) ([]byte, *interfaces.ErrorMessage, bool, error) {
 	completed := false
 	sawReplayBlockingPayload := false
@@ -1585,10 +1641,21 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	if c != nil && c.Request != nil {
 		downstreamSessionKey = websocketDownstreamSessionKey(c.Request)
 	}
+	progressInterval := responsesWebsocketProgressHeartbeatInterval(h)
+	progressTicker := time.NewTicker(progressInterval)
+	defer progressTicker.Stop()
+	lastDownstreamWrite := time.Now()
+	writePayload := func(payload []byte) error {
+		errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now())
+		if errWrite == nil {
+			lastDownstreamWrite = time.Now()
+		}
+		return errWrite
+	}
 	flushPendingReplayablePayloads := func() error {
 		for _, payload := range pendingReplayablePayloads {
 			markAPIResponseTimestamp(c)
-			if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now()); errWrite != nil {
+			if errWrite := writePayload(payload); errWrite != nil {
 				log.Warnf(
 					"responses websocket: downstream_out write failed id=%s event=%s error=%v",
 					sessionID,
@@ -1607,6 +1674,20 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 		case <-c.Request.Context().Done():
 			cancel(c.Request.Context().Err())
 			return outputAccumulator.Output(), nil, false, c.Request.Context().Err()
+		case <-clientDisconnected:
+			errClient := fmt.Errorf("responses websocket: client disconnected during forward id=%s", sessionID)
+			log.Infof("%v", errClient)
+			cancel(errClient)
+			return outputAccumulator.Output(), nil, false, errClient
+		case <-progressTicker.C:
+			if time.Since(lastDownstreamWrite) < progressInterval {
+				continue
+			}
+			if errWrite := writePayload([]byte(responsesWebsocketProgressHeartbeatPayload)); errWrite != nil {
+				log.Warnf("responses websocket: progress heartbeat failed id=%s error=%v", sessionID, errWrite)
+				cancel(errWrite)
+				return outputAccumulator.Output(), nil, false, errWrite
+			}
 		case errMsg, ok := <-errs:
 			if !ok {
 				errs = nil
@@ -1684,7 +1765,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 								return output, nil, false, errFlush
 							}
 							markAPIResponseTimestamp(c)
-							if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, completedPayload, time.Now()); errWrite != nil {
+							if errWrite := writePayload(completedPayload); errWrite != nil {
 								log.Warnf(
 									"responses websocket: downstream_out write failed id=%s event=%s error=%v",
 									sessionID,
@@ -1788,7 +1869,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				// 	websocketPayloadEventType(payloads[i]),
 				// 	websocketPayloadPreview(payloads[i]),
 				// )
-				if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, payloads[i], time.Now()); errWrite != nil {
+				if errWrite := writePayload(payloads[i]); errWrite != nil {
 					log.Warnf(
 						"responses websocket: downstream_out write failed id=%s event=%s error=%v",
 						sessionID,

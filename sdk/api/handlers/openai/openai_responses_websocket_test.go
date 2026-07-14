@@ -31,6 +31,12 @@ type websocketCaptureExecutor struct {
 	payloads    [][]byte
 }
 
+type websocketBlockingExecutor struct {
+	startedOnce sync.Once
+	started     chan struct{}
+	release     <-chan struct{}
+}
+
 type websocketCompactionCaptureExecutor struct {
 	mu             sync.Mutex
 	streamPayloads [][]byte
@@ -490,6 +496,41 @@ func (e *websocketCaptureExecutor) CountTokens(context.Context, *coreauth.Auth, 
 }
 
 func (e *websocketCaptureExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (e *websocketBlockingExecutor) Identifier() string { return "test-blocking" }
+
+func (e *websocketBlockingExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *websocketBlockingExecutor) ExecuteStream(ctx context.Context, _ *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.startedOnce.Do(func() {
+		if e.started != nil {
+			close(e.started)
+		}
+	})
+	chunks := make(chan coreexecutor.StreamChunk)
+	go func() {
+		defer close(chunks)
+		select {
+		case <-ctx.Done():
+		case <-e.release:
+		}
+	}()
+	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *websocketBlockingExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *websocketBlockingExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *websocketBlockingExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
 	return nil, errors.New("not implemented")
 }
 
@@ -1406,6 +1447,7 @@ func TestForwardResponsesWebsocketRestoresAndForwardsCompletedOutput(t *testing.
 			timelineLog,
 			"session-1",
 			false,
+			nil,
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -1504,6 +1546,7 @@ func TestForwardResponsesWebsocketSynthesizesCompletedForErrors(t *testing.T) {
 			timelineLog,
 			"session-1",
 			false,
+			nil,
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -1600,6 +1643,7 @@ func TestForwardResponsesWebsocketSynthesizesCompletedForActionableEOF(t *testin
 			timelineLog,
 			"session-1",
 			false,
+			nil,
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -1695,6 +1739,7 @@ func TestForwardResponsesWebsocketEmitsErrorOnEOFAfterPartialMessage(t *testing.
 			timelineLog,
 			"session-1",
 			false,
+			nil,
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -1797,6 +1842,7 @@ func TestForwardResponsesWebsocketEmitsErrorOnEOFWithZeroOutput(t *testing.T) {
 			timelineLog,
 			"session-1",
 			false,
+			nil,
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -1891,6 +1937,7 @@ func TestForwardResponsesWebsocketLogsAttemptedResponseOnWriteFailure(t *testing
 			timelineLog,
 			"session-1",
 			false,
+			nil,
 		)
 		if err == nil {
 			serverErrCh <- errors.New("expected websocket write failure")
@@ -4237,6 +4284,145 @@ func TestResponsesWebsocketHeartbeatSendsPing(t *testing.T) {
 	<-readDone
 }
 
+func TestForwardResponsesWebsocketSendsApplicationHeartbeatWhileWaiting(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseForward := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseForward()
+
+	serverErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = r
+		data := make(chan []byte, 1)
+		errs := make(chan *interfaces.ErrorMessage)
+		go func() {
+			<-release
+			data <- []byte(`{"type":"response.completed","response":{"id":"resp-heartbeat","output":[{"type":"message","id":"msg-1"}]}}`)
+			close(data)
+			close(errs)
+		}()
+
+		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{
+			Streaming: sdkconfig.StreamingConfig{KeepAliveSeconds: 1},
+		}, nil)
+		h := NewOpenAIResponsesAPIHandler(base)
+		_, errMsg, _, err := h.forwardResponsesWebsocket(ctx, conn, func(...interface{}) {}, data, errs, nil, "session-heartbeat", false, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		if errMsg != nil {
+			serverErrCh <- fmt.Errorf("unexpected error message: %v", errMsg.Error)
+			return
+		}
+		serverErrCh <- nil
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		releaseForward()
+		<-serverErrCh
+		t.Fatalf("read application heartbeat: %v", err)
+	}
+	if got := gjson.GetBytes(payload, "type").String(); got != "response.in_progress" {
+		releaseForward()
+		<-serverErrCh
+		t.Fatalf("heartbeat type = %q, want response.in_progress; payload=%s", got, payload)
+	}
+
+	releaseForward()
+	if errServer := <-serverErrCh; errServer != nil {
+		t.Fatalf("server error: %v", errServer)
+	}
+}
+
+func TestResponsesWebsocketSendsHeartbeatAndReturnsAfterClientCloseDuringBootstrap(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseExecutor := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseExecutor()
+
+	executor := &websocketBlockingExecutor{
+		started: started,
+		release: release,
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	auth := &coreauth.Auth{ID: "auth-blocking", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{
+		Streaming: sdkconfig.StreamingConfig{KeepAliveSeconds: 1},
+	}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	handlerDone := make(chan struct{})
+	router.GET("/v1/responses/ws", func(c *gin.Context) {
+		h.ResponsesWebsocket(c)
+		close(handlerDone)
+	})
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses/ws", nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"test-model","input":[{"type":"message","role":"user","content":"hello"}]}`)); errWrite != nil {
+		_ = conn.Close()
+		t.Fatalf("write request: %v", errWrite)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		_ = conn.Close()
+		t.Fatal("executor did not start")
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, payload, errRead := conn.ReadMessage()
+	if errRead != nil {
+		_ = conn.Close()
+		t.Fatalf("read application heartbeat during stream bootstrap: %v", errRead)
+	}
+	if got := gjson.GetBytes(payload, "type").String(); got != "response.in_progress" {
+		_ = conn.Close()
+		t.Fatalf("bootstrap heartbeat type = %q, want response.in_progress; payload=%s", got, payload)
+	}
+	_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "done"), time.Now().Add(time.Second))
+	_ = conn.Close()
+
+	select {
+	case <-handlerDone:
+	case <-time.After(500 * time.Millisecond):
+		releaseExecutor()
+		t.Fatal("websocket handler did not return after downstream client closed")
+	}
+}
+
 func TestResponsesWebsocketStatePreflightAllowsReplacementAndIncrementalRecovery(t *testing.T) {
 	lastRequest := bytes.Repeat([]byte("x"), 100)
 	lastOutput := bytes.Repeat([]byte("y"), 100)
@@ -4464,7 +4650,7 @@ func TestResponsesWebsocketTurnLimitFailureDoesNotWriteCompleted(t *testing.T) {
 		close(errs)
 		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 		h := NewOpenAIResponsesAPIHandler(base)
-		_, errMsg, _, err := h.forwardResponsesWebsocket(ctx, conn, func(...interface{}) {}, data, errs, nil, "session", false)
+		_, errMsg, _, err := h.forwardResponsesWebsocket(ctx, conn, func(...interface{}) {}, data, errs, nil, "session", false, nil)
 		if err != nil {
 			serverErr <- err
 			return

@@ -1520,7 +1520,14 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			}
 		}
 	}
-	readInitialStreamChunks()
+	// HTTP streaming callers need the first upstream chunk synchronously so
+	// interceptor-adjusted response headers are ready before the response is
+	// committed. A downstream websocket has already completed its HTTP upgrade,
+	// so waiting here only delays its own application heartbeat and disconnect
+	// handling until the upstream emits payload data.
+	if !coreexecutor.DownstreamWebsocket(ctx) {
+		readInitialStreamChunks()
+	}
 
 	go func() {
 		defer close(dataChan)

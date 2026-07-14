@@ -430,3 +430,153 @@ func TestCodexExecutorExecuteStreamIdleTimeout(t *testing.T) {
 		t.Fatalf("error message should contain 'idle timeout': %v", streamErr)
 	}
 }
+
+func TestCodexExecutorExecuteStreamResponseHeaderTimeout(t *testing.T) {
+	roundTripper := codexHeaderTimeoutRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	})
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(roundTripper))
+
+	executor := NewCodexExecutor(&config.Config{Codex: config.CodexConfig{ResponseHeaderTimeoutSeconds: 1}})
+	started := time.Now()
+	_, err := executor.ExecuteStream(ctx, &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": "https://codex-header-timeout.invalid",
+		"api_key":  "test",
+	}}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	})
+	if err == nil {
+		t.Fatal("ExecuteStream() error = nil, want response header timeout")
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("ExecuteStream() took %v, want bounded response header wait", elapsed)
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusGatewayTimeout {
+		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusGatewayTimeout, err)
+	}
+	if !strings.Contains(err.Error(), "response header timeout") {
+		t.Fatalf("error = %v, want response header timeout detail", err)
+	}
+}
+
+func TestCodexResponseHeaderTimeoutConfig(t *testing.T) {
+	if got := codexResponseHeaderTimeout(&config.Config{}); got != codexDefaultResponseHeaderTimeout {
+		t.Fatalf("default timeout = %v, want %v", got, codexDefaultResponseHeaderTimeout)
+	}
+	if got := codexResponseHeaderTimeout(&config.Config{Codex: config.CodexConfig{ResponseHeaderTimeoutSeconds: 45}}); got != 45*time.Second {
+		t.Fatalf("configured timeout = %v, want 45s", got)
+	}
+	if got := codexResponseHeaderTimeout(&config.Config{Codex: config.CodexConfig{ResponseHeaderTimeoutSeconds: -1}}); got != 0 {
+		t.Fatalf("disabled timeout = %v, want 0", got)
+	}
+}
+
+func TestCodexExecutorExecuteResponseHeaderTimeout(t *testing.T) {
+	roundTripper := codexHeaderTimeoutRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	})
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(roundTripper))
+
+	executor := NewCodexExecutor(&config.Config{Codex: config.CodexConfig{ResponseHeaderTimeoutSeconds: 1}})
+	_, err := executor.Execute(ctx, &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": "https://codex-header-timeout.invalid",
+		"api_key":  "test",
+	}}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+	})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want response header timeout")
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusGatewayTimeout {
+		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusGatewayTimeout, err)
+	}
+}
+
+func TestCodexExecutorExecuteStreamResponseHeaderTimeoutDoesNotLimitBody(t *testing.T) {
+	payload := []byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n")
+	roundTripper := codexHeaderTimeoutRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"text/event-stream"}},
+			Body: &delayedCodexResponseBody{
+				ctx:   req.Context(),
+				delay: 1200 * time.Millisecond,
+				data:  bytes.NewReader(payload),
+			},
+			Request: req,
+		}, nil
+	})
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(roundTripper))
+
+	executor := NewCodexExecutor(&config.Config{Codex: config.CodexConfig{ResponseHeaderTimeoutSeconds: 1}})
+	result, err := executor.ExecuteStream(ctx, &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": "https://codex-header-success.invalid",
+		"api_key":  "test",
+	}}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	var streamErr error
+	var payloads int
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			break
+		}
+		if len(chunk.Payload) > 0 {
+			payloads++
+		}
+	}
+	if streamErr != nil {
+		t.Fatalf("stream error after response headers = %v", streamErr)
+	}
+	if payloads == 0 {
+		t.Fatal("stream produced no payload after delayed response body")
+	}
+}
+
+type codexHeaderTimeoutRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f codexHeaderTimeoutRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type delayedCodexResponseBody struct {
+	ctx   context.Context
+	delay time.Duration
+	data  *bytes.Reader
+	once  bool
+}
+
+func (b *delayedCodexResponseBody) Read(p []byte) (int, error) {
+	if !b.once {
+		b.once = true
+		timer := time.NewTimer(b.delay)
+		defer timer.Stop()
+		select {
+		case <-b.ctx.Done():
+			return 0, b.ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return b.data.Read(p)
+}
+
+func (b *delayedCodexResponseBody) Close() error { return nil }

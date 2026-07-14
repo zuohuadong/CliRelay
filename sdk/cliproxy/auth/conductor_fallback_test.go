@@ -138,6 +138,46 @@ func TestManagerExecuteStream_EgressDisabledBeforeFirstChunkFallsBackToNextCrede
 	}
 }
 
+func TestManagerExecuteStream_ResponseHeaderTimeoutFallsBackToNextCredential(t *testing.T) {
+	const model = "gpt-5.3-codex"
+	m := NewManager(nil, nil, nil)
+	executor := &authFallbackExecutor{
+		id: "codex",
+		streamExecuteErrors: map[string]error{
+			"aa-bound-auth": &Error{HTTPStatus: http.StatusGatewayTimeout, Message: "upstream response header timeout"},
+		},
+	}
+	m.RegisterExecutor(executor)
+	registerFallbackAuths(t, m, model)
+
+	result, err := m.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	chunk, ok := <-result.Chunks
+	if !ok {
+		t.Fatal("ExecuteStream() closed before payload chunk")
+	}
+	if chunk.Err != nil {
+		t.Fatalf("stream error = %v", chunk.Err)
+	}
+	if got := string(chunk.Payload); got != "bb-other-auth" {
+		t.Fatalf("stream payload = %q, want next healthy auth", got)
+	}
+	if calls := executor.StreamCalls(); len(calls) != 2 || calls[0] != "aa-bound-auth" || calls[1] != "bb-other-auth" {
+		t.Fatalf("ExecuteStream() calls = %v, want timed-out auth followed by next auth", calls)
+	}
+
+	timedOutAuth, ok := m.GetByID("aa-bound-auth")
+	if !ok || timedOutAuth == nil {
+		t.Fatal("timed-out auth not found")
+	}
+	state := timedOutAuth.ModelStates[model]
+	if state == nil || state.NextRetryAfter.IsZero() {
+		t.Fatalf("timed-out auth state = %#v, want transient cooldown", state)
+	}
+}
+
 func TestManagerExecuteStream_EgressDisabledDuringPrepareFallsBackToNextCredential(t *testing.T) {
 	const model = "gpt-5.3-codex"
 	m := NewManager(nil, nil, nil)

@@ -38,6 +38,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.ResponsesWebsocketToolCacheBytes = DefaultResponsesWebsocketToolCacheBytes
 	cfg.ResponsesWebsocketMemoryBudgetBytes = DefaultResponsesWebsocketMemoryBudgetBytes
 	cfg.ResponsesWebsocketMaxConnections = DefaultResponsesWebsocketMaxConnections
+	cfg.Codex.ResponseHeaderTimeoutSeconds = DefaultCodexResponseHeaderTimeoutSeconds
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {

@@ -235,11 +235,12 @@ func (e *credentialRetryLimitExecutor) Calls() int {
 type authFallbackExecutor struct {
 	id string
 
-	mu                sync.Mutex
-	executeCalls      []string
-	streamCalls       []string
-	executeErrors     map[string]error
-	streamFirstErrors map[string]error
+	mu                  sync.Mutex
+	executeCalls        []string
+	streamCalls         []string
+	executeErrors       map[string]error
+	streamExecuteErrors map[string]error
+	streamFirstErrors   map[string]error
 }
 
 func (e *authFallbackExecutor) Identifier() string {
@@ -260,8 +261,12 @@ func (e *authFallbackExecutor) Execute(_ context.Context, auth *Auth, _ cliproxy
 func (e *authFallbackExecutor) ExecuteStream(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	e.mu.Lock()
 	e.streamCalls = append(e.streamCalls, auth.ID)
+	executeErr := e.streamExecuteErrors[auth.ID]
 	err := e.streamFirstErrors[auth.ID]
 	e.mu.Unlock()
+	if executeErr != nil {
+		return nil, executeErr
+	}
 
 	ch := make(chan cliproxyexecutor.StreamChunk, 1)
 	if err != nil {

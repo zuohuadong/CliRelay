@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"golang.org/x/net/proxy"
 )
@@ -111,8 +112,11 @@ func BuildHTTPTransport(raw string) (*http.Transport, Mode, error) {
 			}
 			transport := cloneDefaultTransport()
 			transport.Proxy = nil
-			transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
-				return dialer.Dial(network, addr)
+			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+					return contextDialer.DialContext(ctx, network, addr)
+				}
+				return nil, fmt.Errorf("SOCKS5 dialer does not support context cancellation")
 			}
 			return transport, setting.Mode, nil
 		}
@@ -137,10 +141,11 @@ func BuildDialer(raw string) (proxy.Dialer, Mode, error) {
 	case ModeDirect:
 		return proxy.Direct, setting.Mode, nil
 	case ModeProxy:
+		forward := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 		if setting.URL.Scheme == "http" || setting.URL.Scheme == "https" {
-			return &httpConnectDialer{proxyURL: setting.URL, dialer: proxy.Direct}, setting.Mode, nil
+			return &httpConnectDialer{proxyURL: setting.URL, dialer: forward}, setting.Mode, nil
 		}
-		dialer, errDialer := proxy.FromURL(setting.URL, proxy.Direct)
+		dialer, errDialer := proxy.FromURL(setting.URL, forward)
 		if errDialer != nil {
 			return nil, setting.Mode, fmt.Errorf("create proxy dialer failed: %w", errDialer)
 		}
@@ -156,15 +161,29 @@ type httpConnectDialer struct {
 }
 
 func (d *httpConnectDialer) Dial(network, addr string) (net.Conn, error) {
-	proxyConn, errDial := d.dialer.Dial(network, proxyDialAddr(d.proxyURL))
+	return d.DialContext(context.Background(), network, addr)
+}
+
+func (d *httpConnectDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	contextDialer, ok := d.dialer.(proxy.ContextDialer)
+	if !ok {
+		return nil, fmt.Errorf("HTTP proxy base dialer does not support context cancellation")
+	}
+	proxyConn, errDial := contextDialer.DialContext(ctx, network, proxyDialAddr(d.proxyURL))
 	if errDial != nil {
 		return nil, fmt.Errorf("dial HTTP proxy failed: %w", errDial)
 	}
+	stopCancel := context.AfterFunc(ctx, func() { _ = proxyConn.Close() })
 
 	conn := proxyConn
 	if d.proxyURL.Scheme == "https" {
 		tlsConn := tls.Client(conn, &tls.Config{ServerName: d.proxyURL.Hostname()})
-		if errHandshake := tlsConn.Handshake(); errHandshake != nil {
+		if errHandshake := tlsConn.HandshakeContext(ctx); errHandshake != nil {
+			_ = stopCancel()
+			if errCtx := ctx.Err(); errCtx != nil {
+				_ = conn.Close()
+				return nil, errCtx
+			}
 			if errClose := conn.Close(); errClose != nil {
 				return nil, fmt.Errorf("HTTPS proxy TLS handshake failed: %w; close failed: %v", errHandshake, errClose)
 			}
@@ -183,6 +202,11 @@ func (d *httpConnectDialer) Dial(network, addr string) (net.Conn, error) {
 		req.Header.Set("Proxy-Authorization", proxyAuthorization(d.proxyURL.User))
 	}
 	if errWrite := req.Write(conn); errWrite != nil {
+		_ = stopCancel()
+		if errCtx := ctx.Err(); errCtx != nil {
+			_ = conn.Close()
+			return nil, errCtx
+		}
 		if errClose := conn.Close(); errClose != nil {
 			return nil, fmt.Errorf("write CONNECT request failed: %w; close failed: %v", errWrite, errClose)
 		}
@@ -192,12 +216,18 @@ func (d *httpConnectDialer) Dial(network, addr string) (net.Conn, error) {
 	reader := bufio.NewReader(conn)
 	resp, errRead := http.ReadResponse(reader, req)
 	if errRead != nil {
+		_ = stopCancel()
+		if errCtx := ctx.Err(); errCtx != nil {
+			_ = conn.Close()
+			return nil, errCtx
+		}
 		if errClose := conn.Close(); errClose != nil {
 			return nil, fmt.Errorf("read CONNECT response failed: %w; close failed: %v", errRead, errClose)
 		}
 		return nil, fmt.Errorf("read CONNECT response failed: %w", errRead)
 	}
 	if resp.StatusCode != http.StatusOK {
+		_ = stopCancel()
 		if resp.Body != nil {
 			_ = resp.Body.Close()
 		}
@@ -208,7 +238,16 @@ func (d *httpConnectDialer) Dial(network, addr string) (net.Conn, error) {
 	}
 
 	if reader.Buffered() > 0 {
-		return &bufferedConn{Conn: conn, reader: reader}, nil
+		conn = &bufferedConn{Conn: conn, reader: reader}
+	}
+	stopped := stopCancel()
+	if errCtx := ctx.Err(); errCtx != nil {
+		_ = conn.Close()
+		return nil, errCtx
+	}
+	if !stopped {
+		_ = conn.Close()
+		return nil, context.Canceled
 	}
 	return conn, nil
 }

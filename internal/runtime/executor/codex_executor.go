@@ -56,6 +56,8 @@ const (
 // and surfaces a clear error instead.
 var codexHTTPStreamIdleTimeout = 3 * time.Minute
 
+const codexDefaultResponseHeaderTimeout = time.Duration(config.DefaultCodexResponseHeaderTimeoutSeconds) * time.Second
+
 var dataTag = []byte("data:")
 
 // Streamed Codex responses may emit response.output_item.done events while leaving
@@ -457,12 +459,35 @@ func (e *CodexExecutor) outboundHTTPClient(ctx context.Context, auth *cliproxyau
 			return nil, egress.RuntimeError(fmt.Errorf("%w: strict proxy transport is unavailable", egress.ErrEndpointInvalid))
 		}
 		client.Transport = strictEgressRoundTripper{base: client.Transport}
+		if useUTLS {
+			client = helps.WithResponseHeaderTimeout(client, responseHeaderTimeout)
+		}
 		return client, nil
 	}
 	if useUTLS {
-		return helps.NewUtlsHTTPClient(ctx, e.cfg, auth, timeout), nil
+		return helps.WithResponseHeaderTimeout(helps.NewUtlsHTTPClient(ctx, e.cfg, auth, timeout), responseHeaderTimeout), nil
 	}
 	return helps.NewProxyAwareHTTPClientWithResponseHeaderTimeout(ctx, e.cfg, auth, timeout, responseHeaderTimeout), nil
+}
+
+func codexResponseHeaderTimeout(cfg *config.Config) time.Duration {
+	if cfg != nil {
+		seconds := cfg.Codex.ResponseHeaderTimeoutSeconds
+		if seconds < 0 {
+			return 0
+		}
+		if seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+	}
+	return codexDefaultResponseHeaderTimeout
+}
+
+func codexResponseHeaderTimeoutError(err error) error {
+	if !helps.IsResponseHeaderTimeout(err) {
+		return err
+	}
+	return statusErr{code: http.StatusGatewayTimeout, msg: `{"error":{"message":"upstream response header timeout","type":"server_error","code":"upstream_response_header_timeout"}}`}
 }
 
 type strictEgressRoundTripper struct {
@@ -1108,6 +1133,7 @@ func (e *CodexExecutor) openCodexResponse(ctx context.Context, from sdktranslato
 	})
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		err = codexResponseHeaderTimeoutError(err)
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return nil, identityState, err
 	}
@@ -1199,13 +1225,14 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		AuthType:  authType,
 		AuthValue: authValue,
 	})
-	httpClient, err := e.outboundHTTPClient(ctx, auth, 0, 0, true)
+	httpClient, err := e.outboundHTTPClient(ctx, auth, 0, codexResponseHeaderTimeout(e.cfg), true)
 	if err != nil {
 		return resp, err
 	}
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		err = codexResponseHeaderTimeoutError(err)
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return resp, err
 	}
@@ -1473,7 +1500,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpClient, err := e.outboundHTTPClient(ctx, auth, 0, 0, true)
+	httpClient, err := e.outboundHTTPClient(ctx, auth, 0, codexResponseHeaderTimeout(e.cfg), true)
 	if err != nil {
 		return nil, err
 	}

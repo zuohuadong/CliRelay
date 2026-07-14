@@ -660,6 +660,37 @@ func TestCodexStrictEgressWrapsStreamBodyReadFailureBeforeFirstPayload(t *testin
 	assertEgressRuntimeError(t, readErr)
 }
 
+func TestCodexStrictEgressResponseHeaderTimeoutRemainsRetryableGatewayTimeout(t *testing.T) {
+	release := make(chan struct{})
+	proxy := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		<-release
+	}))
+	defer proxy.Close()
+
+	exec := NewCodexExecutorWithEgress(
+		&config.Config{Codex: config.CodexConfig{ResponseHeaderTimeoutSeconds: 1}},
+		staticEgressResolver{resolved: egress.ResolvedEndpoint{Endpoint: egress.Endpoint{ID: "endpoint-a"}, ProxyURL: proxy.URL}},
+	)
+	auth := &cliproxyauth.Auth{
+		Metadata:   map[string]any{"account_id": "acct-123", "access_token": "token"},
+		Attributes: map[string]string{"base_url": "http://upstream.invalid"},
+	}
+	_, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model: "gpt-5.4", Payload: []byte(`{"model":"gpt-5.4","input":"hi"}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")})
+	close(release)
+	if err == nil {
+		t.Fatal("ExecuteStream() error = nil, want response header timeout")
+	}
+	var runtimeErr *egress.Error
+	if errors.As(err, &runtimeErr) {
+		t.Fatalf("ExecuteStream() error = %v, must not become terminal strict-egress error", err)
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusGatewayTimeout {
+		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusGatewayTimeout, err)
+	}
+}
+
 func TestCodexStrictEgressWrapsNonStreamBodyReadFailures(t *testing.T) {
 	proxy := newCodexTruncatedResponseProxy(t)
 	defer proxy.Close()

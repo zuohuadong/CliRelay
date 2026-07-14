@@ -2,7 +2,9 @@ package proxyutil
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/net/proxy"
 )
 
 func mustDefaultTransport(t *testing.T) *http.Transport {
@@ -266,6 +270,48 @@ func TestBuildDialerHTTPProxyCONNECT(t *testing.T) {
 
 	if errServer := <-done; errServer != nil {
 		t.Fatalf("proxy server returned error: %v", errServer)
+	}
+}
+
+func TestBuildDialerHTTPProxySupportsContextCancellation(t *testing.T) {
+	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
+	if errListen != nil {
+		t.Fatalf("net.Listen returned error: %v", errListen)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		conn, errAccept := listener.Accept()
+		if errAccept != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = http.ReadRequest(bufio.NewReader(conn))
+		buffer := make([]byte, 1)
+		_, _ = conn.Read(buffer)
+	}()
+
+	dialer, _, errBuild := BuildDialer("http://" + listener.Addr().String())
+	if errBuild != nil {
+		t.Fatalf("BuildDialer returned error: %v", errBuild)
+	}
+	contextDialer, ok := dialer.(proxy.ContextDialer)
+	if !ok {
+		t.Fatalf("dialer type %T does not implement proxy.ContextDialer", dialer)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, errDial := contextDialer.DialContext(ctx, "tcp", "target.example.com:443")
+	if !errors.Is(errDial, context.DeadlineExceeded) {
+		t.Fatalf("DialContext() error = %v, want context deadline exceeded", errDial)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(time.Second):
+		t.Fatal("proxy connection remained open after context cancellation")
 	}
 }
 

@@ -279,6 +279,9 @@ codex:
   # Some superstitious users believe request tracking identifiers can be used
   # as evidence for TOS enforcement bans; this option only satisfies those odd concerns.
   identity-confuse: false
+  # Maximum wait for upstream HTTP response headers before rotating credentials.
+  # Default: 90 seconds. Set a negative value to disable this guard.
+  response-header-timeout-seconds: 90
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: true

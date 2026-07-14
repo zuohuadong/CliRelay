@@ -32,6 +32,7 @@ const (
 	DefaultResponsesWebsocketToolCacheBytes     int64 = 8 << 20
 	DefaultResponsesWebsocketMemoryBudgetBytes  int64 = 192 << 20
 	DefaultResponsesWebsocketMaxConnections           = 4
+	DefaultCodexResponseHeaderTimeoutSeconds          = 90
 )
 
 func normalizeResponsesMaxInboundBytes(value int64) int64 {
@@ -451,7 +452,8 @@ func DefaultClaudeIdentityFingerprint() ClaudeIdentityFingerprintConfig {
 
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
-	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
+	IdentityConfuse              bool `yaml:"identity-confuse" json:"identity-confuse"`
+	ResponseHeaderTimeoutSeconds int  `yaml:"response-header-timeout-seconds" json:"response-header-timeout-seconds"`
 }
 
 // TLSConfig holds HTTPS server settings.
@@ -1206,6 +1208,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 			if os.IsNotExist(err) || errors.Is(err, syscall.EISDIR) {
 				// Missing and optional: return empty config (cloud deploy standby).
 				cfg := &Config{}
+				cfg.Codex.ResponseHeaderTimeoutSeconds = DefaultCodexResponseHeaderTimeoutSeconds
 				applyResponsesMemoryDefaults(cfg)
 				cfg.NormalizePluginsConfig()
 				return cfg, nil
@@ -1217,6 +1220,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// In cloud deploy mode (optional=true), if file is empty or contains only whitespace, return empty config.
 	if optional && len(data) == 0 {
 		cfg := &Config{}
+		cfg.Codex.ResponseHeaderTimeoutSeconds = DefaultCodexResponseHeaderTimeoutSeconds
 		applyResponsesMemoryDefaults(cfg)
 		cfg.NormalizePluginsConfig()
 		return cfg, nil
@@ -1245,12 +1249,14 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.ResponsesWebsocketToolCacheBytes = DefaultResponsesWebsocketToolCacheBytes
 	cfg.ResponsesWebsocketMemoryBudgetBytes = DefaultResponsesWebsocketMemoryBudgetBytes
 	cfg.ResponsesWebsocketMaxConnections = DefaultResponsesWebsocketMaxConnections
+	cfg.Codex.ResponseHeaderTimeoutSeconds = DefaultCodexResponseHeaderTimeoutSeconds
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
 			cfgOptional := &Config{}
+			cfgOptional.Codex.ResponseHeaderTimeoutSeconds = DefaultCodexResponseHeaderTimeoutSeconds
 			applyResponsesMemoryDefaults(cfgOptional)
 			cfgOptional.NormalizePluginsConfig()
 			return cfgOptional, nil

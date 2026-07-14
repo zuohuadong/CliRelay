@@ -32,9 +32,12 @@ type websocketCaptureExecutor struct {
 }
 
 type websocketBlockingExecutor struct {
-	startedOnce sync.Once
-	started     chan struct{}
-	release     <-chan struct{}
+	startedOnce  sync.Once
+	canceledOnce sync.Once
+	started      chan struct{}
+	canceled     chan struct{}
+	release      <-chan struct{}
+	payload      []byte
 }
 
 type websocketCompactionCaptureExecutor struct {
@@ -511,14 +514,21 @@ func (e *websocketBlockingExecutor) ExecuteStream(ctx context.Context, _ *coreau
 			close(e.started)
 		}
 	})
-	chunks := make(chan coreexecutor.StreamChunk)
-	go func() {
-		defer close(chunks)
-		select {
-		case <-ctx.Done():
-		case <-e.release:
-		}
-	}()
+	select {
+	case <-ctx.Done():
+		e.canceledOnce.Do(func() {
+			if e.canceled != nil {
+				close(e.canceled)
+			}
+		})
+		return nil, ctx.Err()
+	case <-e.release:
+	}
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	if len(e.payload) > 0 {
+		chunks <- coreexecutor.StreamChunk{Payload: bytes.Clone(e.payload)}
+	}
+	close(chunks)
 	return &coreexecutor.StreamResult{Chunks: chunks}, nil
 }
 
@@ -4356,14 +4366,16 @@ func TestForwardResponsesWebsocketSendsApplicationHeartbeatWhileWaiting(t *testi
 func TestResponsesWebsocketSendsHeartbeatAndReturnsAfterClientCloseDuringBootstrap(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	started := make(chan struct{})
+	canceled := make(chan struct{})
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	releaseExecutor := func() { releaseOnce.Do(func() { close(release) }) }
 	defer releaseExecutor()
 
 	executor := &websocketBlockingExecutor{
-		started: started,
-		release: release,
+		started:  started,
+		canceled: canceled,
+		release:  release,
 	}
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(executor)
@@ -4420,6 +4432,88 @@ func TestResponsesWebsocketSendsHeartbeatAndReturnsAfterClientCloseDuringBootstr
 	case <-time.After(500 * time.Millisecond):
 		releaseExecutor()
 		t.Fatal("websocket handler did not return after downstream client closed")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(500 * time.Millisecond):
+		releaseExecutor()
+		t.Fatal("synchronous stream bootstrap was not canceled after downstream client closed")
+	}
+}
+
+func TestResponsesWebsocketContinuesAfterSynchronousBootstrap(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseExecutor := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseExecutor()
+
+	executor := &websocketBlockingExecutor{
+		started: started,
+		release: release,
+		payload: []byte(`{"type":"response.completed","response":{"id":"resp-bootstrap","output":[{"type":"message","id":"msg-bootstrap"}]}}`),
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	auth := &coreauth.Auth{ID: "auth-bootstrap-complete", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-bootstrap-model"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{
+		Streaming: sdkconfig.StreamingConfig{KeepAliveSeconds: 1},
+	}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	handlerDone := make(chan struct{})
+	router.GET("/v1/responses/ws", func(c *gin.Context) {
+		h.ResponsesWebsocket(c)
+		close(handlerDone)
+	})
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses/ws", nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"test-bootstrap-model","input":[{"type":"message","role":"user","content":"hello"}]}`)); errWrite != nil {
+		t.Fatalf("write request: %v", errWrite)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("executor did not start")
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, heartbeat, errReadHeartbeat := conn.ReadMessage()
+	if errReadHeartbeat != nil {
+		t.Fatalf("read bootstrap heartbeat: %v", errReadHeartbeat)
+	}
+	if got := gjson.GetBytes(heartbeat, "type").String(); got != "response.in_progress" {
+		t.Fatalf("bootstrap heartbeat type = %q, want response.in_progress; payload=%s", got, heartbeat)
+	}
+
+	releaseExecutor()
+	_, completed, errReadCompleted := conn.ReadMessage()
+	if errReadCompleted != nil {
+		t.Fatalf("read response.completed after bootstrap: %v", errReadCompleted)
+	}
+	if got := gjson.GetBytes(completed, "type").String(); got != "response.completed" {
+		t.Fatalf("event after bootstrap = %q, want response.completed; payload=%s", got, completed)
+	}
+
+	_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "done"), time.Now().Add(time.Second))
+	_ = conn.Close()
+	select {
+	case <-handlerDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("websocket handler did not return after completed bootstrap session closed")
 	}
 }
 

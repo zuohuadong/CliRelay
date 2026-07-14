@@ -550,7 +550,22 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 					}
 				})
 			}
-			dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
+			dataChan, errChan, errStart := h.awaitResponsesWebsocketStreamStart(
+				c,
+				conn,
+				cliCtx,
+				cliCancel,
+				modelName,
+				requestJSON,
+				wsTimelineLog,
+				passthroughSessionID,
+				clientDisconnected,
+			)
+			if errStart != nil {
+				wsTerminateErr = errStart
+				log.Warnf("responses websocket: stream bootstrap failed id=%s error=%v", passthroughSessionID, errStart)
+				return
+			}
 
 			canReplayForwardErr := replayAttempt < maxReplayRetries
 			completedOutput, forwardErrMsg, shouldReplayForwardErr, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, wsTimelineLog, passthroughSessionID, canReplayForwardErr, clientDisconnected)
@@ -1618,6 +1633,69 @@ func normalizeJSONArrayRaw(raw []byte) string {
 		return trimmed
 	}
 	return "[]"
+}
+
+type responsesWebsocketStreamStart struct {
+	data <-chan []byte
+	errs <-chan *interfaces.ErrorMessage
+}
+
+// awaitResponsesWebsocketStreamStart keeps the downstream websocket active
+// while provider selection, upstream dialing, or HTTP response headers are
+// still pending inside ExecuteStreamWithAuthManager. Some Codex HTTP streams do
+// not return from that synchronous bootstrap until the upstream is ready to
+// emit response data, which can exceed the client's application-level idle
+// timeout even though websocket ping frames continue to flow.
+func (h *OpenAIResponsesAPIHandler) awaitResponsesWebsocketStreamStart(
+	c *gin.Context,
+	conn *websocket.Conn,
+	cliCtx context.Context,
+	cancel handlers.APIHandlerCancelFunc,
+	modelName string,
+	requestJSON []byte,
+	wsTimelineLog websocketTimelineAppender,
+	sessionID string,
+	clientDisconnected <-chan struct{},
+) (<-chan []byte, <-chan *interfaces.ErrorMessage, error) {
+	resultCh := make(chan responsesWebsocketStreamStart, 1)
+	go func() {
+		data, _, errs := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
+		resultCh <- responsesWebsocketStreamStart{data: data, errs: errs}
+	}()
+
+	progressInterval := responsesWebsocketProgressHeartbeatInterval(h)
+	progressTicker := time.NewTicker(progressInterval)
+	defer progressTicker.Stop()
+
+	var requestDone <-chan struct{}
+	if c != nil && c.Request != nil {
+		requestDone = c.Request.Context().Done()
+	}
+
+	for {
+		select {
+		case result := <-resultCh:
+			return result.data, result.errs, nil
+		case <-requestDone:
+			errRequest := context.Canceled
+			if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+				errRequest = c.Request.Context().Err()
+			}
+			cancel(errRequest)
+			return nil, nil, errRequest
+		case <-clientDisconnected:
+			errClient := fmt.Errorf("responses websocket: client disconnected during stream bootstrap id=%s", sessionID)
+			log.Infof("%v", errClient)
+			cancel(errClient)
+			return nil, nil, errClient
+		case <-progressTicker.C:
+			if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, []byte(responsesWebsocketProgressHeartbeatPayload), time.Now()); errWrite != nil {
+				log.Warnf("responses websocket: bootstrap progress heartbeat failed id=%s error=%v", sessionID, errWrite)
+				cancel(errWrite)
+				return nil, nil, errWrite
+			}
+		}
+	}
 }
 
 func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(

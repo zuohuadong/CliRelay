@@ -1,9 +1,13 @@
 package management
 
 import (
+	"crypto/sha256"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +15,190 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 )
+
+func TestAuthenticateManagementKeyCachesSuccessfulBcryptVerification(t *testing.T) {
+	now := time.Unix(1_000, 0)
+	verifyCalls := 0
+	h := &Handler{
+		cfg: &config.Config{
+			RemoteManagement: config.RemoteManagement{
+				AllowRemote: true,
+				SecretKey:   "hash-a",
+			},
+		},
+		failedAttempts: make(map[string]*attemptInfo),
+		managementPasswordVerifier: func(hash, password []byte) error {
+			verifyCalls++
+			if string(hash) == "hash-a" && string(password) == "secret-a" {
+				return nil
+			}
+			return errors.New("password mismatch")
+		},
+		managementAuthCacheTTL: time.Minute,
+		managementAuthCacheNow: func() time.Time {
+			return now
+		},
+	}
+
+	for i := 0; i < 4; i++ {
+		allowed, statusCode, errMsg := h.AuthenticateManagementKey("203.0.113.10", false, "secret-a")
+		if !allowed {
+			t.Fatalf("request %d rejected: status=%d message=%q", i+1, statusCode, errMsg)
+		}
+	}
+	if verifyCalls != 1 {
+		t.Fatalf("bcrypt verifier calls = %d, want 1 for repeated valid credential", verifyCalls)
+	}
+
+	allowed, statusCode, _ := h.AuthenticateManagementKey("203.0.113.10", false, "wrong-secret")
+	if allowed || statusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong credential result = allowed:%t status:%d", allowed, statusCode)
+	}
+	if verifyCalls != 2 {
+		t.Fatalf("failed credential must not reuse success cache, verifier calls = %d", verifyCalls)
+	}
+
+	now = now.Add(2 * time.Minute)
+	allowed, statusCode, errMsg := h.AuthenticateManagementKey("203.0.113.10", false, "secret-a")
+	if !allowed {
+		t.Fatalf("valid credential after expiry rejected: status=%d message=%q", statusCode, errMsg)
+	}
+	if verifyCalls != 3 {
+		t.Fatalf("expired cache verifier calls = %d, want 3", verifyCalls)
+	}
+}
+
+func TestAuthenticateManagementKeyCoalescesConcurrentBcryptVerification(t *testing.T) {
+	var verifyCalls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	h := &Handler{
+		cfg: &config.Config{
+			RemoteManagement: config.RemoteManagement{
+				AllowRemote: true,
+				SecretKey:   "hash-a",
+			},
+		},
+		failedAttempts: make(map[string]*attemptInfo),
+		managementPasswordVerifier: func(hash, password []byte) error {
+			if verifyCalls.Add(1) == 1 {
+				close(started)
+			}
+			<-release
+			if string(hash) == "hash-a" && string(password) == "secret-a" {
+				return nil
+			}
+			return errors.New("password mismatch")
+		},
+	}
+
+	const callers = 8
+	results := make(chan bool, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			allowed, _, _ := h.AuthenticateManagementKey("203.0.113.10", false, "secret-a")
+			results <- allowed
+		}()
+	}
+	<-started
+	time.Sleep(25 * time.Millisecond)
+	close(release)
+	for i := 0; i < callers; i++ {
+		if !<-results {
+			t.Fatalf("caller %d was rejected", i+1)
+		}
+	}
+	if got := verifyCalls.Load(); got != 1 {
+		t.Fatalf("concurrent bcrypt verifier calls = %d, want 1", got)
+	}
+}
+
+func TestAuthenticateManagementKeyRejectsInFlightVerificationAfterSecretRotation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	h := &Handler{
+		cfg: &config.Config{
+			RemoteManagement: config.RemoteManagement{
+				AllowRemote: true,
+				SecretKey:   "hash-a",
+			},
+		},
+		failedAttempts: make(map[string]*attemptInfo),
+		managementPasswordVerifier: func(hash, password []byte) error {
+			if string(hash) == "hash-a" {
+				close(started)
+				<-release
+			}
+			if string(hash) == "hash-a" && string(password) == "secret-a" {
+				return nil
+			}
+			return errors.New("password mismatch")
+		},
+	}
+
+	result := make(chan bool, 1)
+	go func() {
+		allowed, _, _ := h.AuthenticateManagementKey("203.0.113.10", false, "secret-a")
+		result <- allowed
+	}()
+	<-started
+	h.SetConfig(&config.Config{
+		RemoteManagement: config.RemoteManagement{
+			AllowRemote: true,
+			SecretKey:   "hash-b",
+		},
+	})
+	close(release)
+	if <-result {
+		t.Fatal("old management secret succeeded after SetConfig rotated the key")
+	}
+}
+
+func TestManagementAuthCacheUsesProcessSecretAndPurgesExpiredEntries(t *testing.T) {
+	now := time.Unix(3_000, 0)
+	left := &Handler{
+		managementAuthCacheTTL: time.Minute,
+		managementAuthCacheNow: func() time.Time {
+			return now
+		},
+	}
+	right := &Handler{}
+	leftKey, leftOK := left.managementAuthCacheDigest(7, "hash-a", "human-password")
+	rightKey, rightOK := right.managementAuthCacheDigest(7, "hash-a", "human-password")
+	if !leftOK || !rightOK {
+		t.Fatal("failed to initialize process-secret cache digest")
+	}
+	if leftKey == rightKey {
+		t.Fatal("independent handlers produced the same management auth cache digest")
+	}
+	fastDigest := sha256.Sum256([]byte("hash-a\x00human-password"))
+	if leftKey == fastDigest {
+		t.Fatal("management auth cache digest must not be an unkeyed SHA-256 password verifier")
+	}
+
+	for i := 0; i < managementAuthCacheMaxEntries+8; i++ {
+		key, ok := left.managementAuthCacheDigest(7, "hash-a", fmt.Sprintf("secret-%d", i))
+		if !ok {
+			t.Fatal("failed to derive bounded cache key")
+		}
+		left.storeManagementAuthCache(key)
+	}
+	left.managementAuthCacheMu.Lock()
+	cacheLen := len(left.managementAuthCache)
+	left.managementAuthCacheMu.Unlock()
+	if cacheLen > managementAuthCacheMaxEntries {
+		t.Fatalf("management auth cache entries = %d, want at most %d", cacheLen, managementAuthCacheMaxEntries)
+	}
+
+	now = now.Add(2 * time.Minute)
+	left.purgeExpiredManagementAuthCache()
+	left.managementAuthCacheMu.Lock()
+	cacheLen = len(left.managementAuthCache)
+	left.managementAuthCacheMu.Unlock()
+	if cacheLen != 0 {
+		t.Fatalf("expired management auth cache entries retained = %d", cacheLen)
+	}
+}
 
 func TestAuthenticateManagementKey_CorrectKeyBypassesBan(t *testing.T) {
 	h := &Handler{

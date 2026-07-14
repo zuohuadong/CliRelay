@@ -1880,9 +1880,9 @@ describe("AuthFilesPage files table", () => {
     await waitFor(() => expect(mocks.getEntityStats).toHaveBeenCalledTimes(1));
     expect(mocks.fetchQuota).not.toHaveBeenCalled();
 
-    dateNowSpy.mockReturnValue(now + 20_000);
+    dateNowSpy.mockReturnValue(now + 70_000);
     const autoRefreshTicks = intervalSpy.mock.calls
-      .filter(([, delay]) => delay === 10_000)
+      .filter(([, delay]) => delay === 60_000)
       .map(([handler]) => handler);
     expect(autoRefreshTicks.length).toBeGreaterThan(0);
 

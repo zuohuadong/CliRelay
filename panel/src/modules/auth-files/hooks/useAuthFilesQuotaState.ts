@@ -74,7 +74,7 @@ export function useAuthFilesQuotaState({
   );
   const [quotaAutoRefreshMsRaw, setQuotaAutoRefreshMsRaw] = useLocalStorage<number>(
     AUTH_FILES_QUOTA_AUTO_REFRESH_KEY,
-    10000,
+    60000,
   );
   const [filesViewMode, setFilesViewMode] = useLocalStorage<FilesViewMode>(
     AUTH_FILES_FILES_VIEW_MODE_KEY,
@@ -580,6 +580,7 @@ export function useAuthFilesQuotaState({
 
   useInterval(
     () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       void refreshCurrentPageQuota();
     },
     tab === "files" && quotaAutoRefreshMs > 0 ? quotaAutoRefreshMs : null,

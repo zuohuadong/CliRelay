@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -59,6 +60,14 @@ var (
 )
 
 func (h *Handler) collectSystemStats() SystemStats {
+	stats, _ := h.collectSystemStatsContext(context.Background())
+	return stats
+}
+
+func (h *Handler) collectSystemStatsContext(ctx context.Context) (SystemStats, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	startTime := h.startTime
 	if startTime.IsZero() {
 		startTime = time.Now()
@@ -70,31 +79,25 @@ func (h *Handler) collectSystemStats() SystemStats {
 		ChannelLatency:    []map[string]interface{}{},
 		ActiveConcurrency: []map[string]interface{}{},
 	}
+	slowMetrics, err := h.loadSystemStatsSlowMetrics(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return SystemStats{}, err
+		}
+		slowMetrics = gin.H{}
+	}
+	stats.DBSizeBytes = int64FromGinValue(slowMetrics["db_size_bytes"])
+	stats.LogDirSizeBytes = int64FromGinValue(slowMetrics["log_dir_size_bytes"])
+	stats.LogSizeBytes = stats.LogDirSizeBytes
+	if channelLatency, ok := slowMetrics["channel_latency"].([]map[string]interface{}); ok {
+		stats.ChannelLatency = channelLatency
+	}
 
 	// Go runtime memory
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	stats.GoHeapBytes = mem.HeapAlloc
 	stats.ProcessMemBytes = mem.Sys
-
-	// DB file size
-	dbPath := h.apiKeysDBPath()
-	if dbPath != "" {
-		if info, err := os.Stat(dbPath); err == nil {
-			stats.DBSizeBytes = info.Size()
-		}
-		for _, suffix := range []string{"-wal", "-shm"} {
-			if info, err := os.Stat(dbPath + suffix); err == nil {
-				stats.DBSizeBytes += info.Size()
-			}
-		}
-	}
-
-	// Log directory size
-	if h.logDir != "" {
-		stats.LogDirSizeBytes = dirSize(h.logDir)
-		stats.LogSizeBytes = stats.LogDirSizeBytes
-	}
 
 	// Process CPU/Memory (gopsutil)
 	if proc, err := psproc.NewProcess(int32(os.Getpid())); err == nil {
@@ -150,17 +153,6 @@ func (h *Handler) collectSystemStats() SystemStats {
 		stats.DiskPct = du.UsedPercent
 	}
 
-	// Channel latency (from usage DB)
-	if cl, err := usage.GetChannelAvgLatency(7); err == nil && len(cl) > 0 {
-		for _, entry := range cl {
-			stats.ChannelLatency = append(stats.ChannelLatency, map[string]interface{}{
-				"source": entry.Source,
-				"count":  entry.Count,
-				"avg_ms": entry.AvgMs,
-			})
-		}
-	}
-
 	// Concurrency snapshot from middleware
 	stats.ActiveConcurrency, stats.TotalInFlight = middleware.GetConcurrencySnapshot()
 
@@ -182,22 +174,99 @@ func (h *Handler) collectSystemStats() SystemStats {
 	stats.TotalRPM = sysRPM
 	stats.TotalTPM = sysTPM
 
-	return stats
+	return stats, nil
+}
+
+func (h *Handler) loadSystemStatsSlowMetrics(ctx context.Context) (gin.H, error) {
+	payload, err := h.loadUsageAggregateWithTTL(
+		ctx,
+		usageAggregateSystemStats,
+		usageFilters{Days: 7},
+		systemStatsSlowCacheTTL,
+		func(buildContext context.Context) (gin.H, error) {
+			if errContext := buildContext.Err(); errContext != nil {
+				return nil, errContext
+			}
+			dbSizeBytes := int64(0)
+			dbPath := h.apiKeysDBPath()
+			if dbPath != "" {
+				if info, statErr := os.Stat(dbPath); statErr == nil {
+					dbSizeBytes = info.Size()
+				}
+				for _, suffix := range []string{"-wal", "-shm"} {
+					if info, statErr := os.Stat(dbPath + suffix); statErr == nil {
+						dbSizeBytes += info.Size()
+					}
+				}
+			}
+
+			logDirSizeBytes := int64(0)
+			if h.logDir != "" {
+				var dirErr error
+				logDirSizeBytes, dirErr = dirSizeContext(buildContext, h.logDir)
+				if dirErr != nil {
+					return nil, dirErr
+				}
+			}
+
+			channelLatency := []map[string]interface{}{}
+			loader := h.channelLatencyLoader
+			if loader == nil {
+				loader = usage.GetChannelAvgLatencyContext
+			}
+			if entries, loadErr := loader(buildContext, 7); loadErr == nil {
+				for _, entry := range entries {
+					channelLatency = append(channelLatency, map[string]interface{}{
+						"source": entry.Source,
+						"count":  entry.Count,
+						"avg_ms": entry.AvgMs,
+					})
+				}
+			} else if loadErr != nil {
+				return nil, loadErr
+			}
+
+			return gin.H{
+				"db_size_bytes":      dbSizeBytes,
+				"log_dir_size_bytes": logDirSizeBytes,
+				"channel_latency":    channelLatency,
+			}, nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return payload, nil
 }
 
 func (h *Handler) GetSystemStats(c *gin.Context) {
-	c.JSON(http.StatusOK, h.collectSystemStats())
+	stats, err := h.collectSystemStatsContext(c.Request.Context())
+	if err != nil {
+		if c.Request.Context().Err() == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to collect system stats"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, stats)
 }
 
 // dirSize calculates the total size of all files in a directory tree.
 func dirSize(root string) int64 {
+	size, _ := dirSizeContext(context.Background(), root)
+	return size
+}
+
+func dirSizeContext(ctx context.Context, root string) (int64, error) {
 	var size int64
-	_ = filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+	errWalk := filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+		if errContext := ctx.Err(); errContext != nil {
+			return errContext
+		}
 		if err != nil || info == nil || info.IsDir() {
 			return nil
 		}
 		size += info.Size()
 		return nil
 	})
-	return size
+	return size, errWalk
 }

@@ -319,6 +319,15 @@ type ChannelLatency struct {
 // GetChannelAvgLatency returns average request latency grouped by source (channel)
 // for the last N days.
 func GetChannelAvgLatency(days int) ([]ChannelLatency, error) {
+	return GetChannelAvgLatencyContext(context.Background(), days)
+}
+
+// GetChannelAvgLatencyContext is the cancelable variant used by request-scoped
+// management statistics.
+func GetChannelAvgLatencyContext(ctx context.Context, days int) ([]ChannelLatency, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	db := getDB()
 	if db == nil {
 		return nil, nil
@@ -327,7 +336,7 @@ func GetChannelAvgLatency(days int) ([]ChannelLatency, error) {
 		days = 7
 	}
 	cutoff := time.Now().AddDate(0, 0, -days).UTC().Format(time.RFC3339)
-	rows, err := db.Query(`
+	rows, err := db.QueryContext(ctx, `
 		SELECT source, COUNT(*) as cnt, AVG(latency_ms) as avg_lat
 		FROM request_logs
 		WHERE timestamp > ? AND source != ''

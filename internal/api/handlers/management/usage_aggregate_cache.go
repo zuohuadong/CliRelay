@@ -17,13 +17,17 @@ import (
 const (
 	usageAggregateCacheDefaultTTL = 10 * time.Second
 	usageAggregateCacheMaxEntries = 32
+	dashboardSummaryCacheTTL      = 30 * time.Second
+	systemStatsSlowCacheTTL       = 30 * time.Second
 )
 
 type usageAggregateKind string
 
 const (
-	usageAggregateChart  usageAggregateKind = "chart"
-	usageAggregateEntity usageAggregateKind = "entity"
+	usageAggregateChart       usageAggregateKind = "chart"
+	usageAggregateEntity      usageAggregateKind = "entity"
+	usageAggregateDashboard   usageAggregateKind = "dashboard"
+	usageAggregateSystemStats usageAggregateKind = "system-stats"
 )
 
 type usageAggregateCacheEntry struct {
@@ -86,6 +90,10 @@ func canonicalUsageFilterValues(values []string) []string {
 }
 
 func (h *Handler) loadUsageAggregate(ctx context.Context, kind usageAggregateKind, filters usageFilters, build func(context.Context) (gin.H, error)) (gin.H, error) {
+	return h.loadUsageAggregateWithTTL(ctx, kind, filters, 0, build)
+}
+
+func (h *Handler) loadUsageAggregateWithTTL(ctx context.Context, kind usageAggregateKind, filters usageFilters, requestedTTL time.Duration, build func(context.Context) (gin.H, error)) (gin.H, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -111,7 +119,7 @@ func (h *Handler) loadUsageAggregate(ctx context.Context, kind usageAggregateKin
 			if err = ctx.Err(); err != nil {
 				return nil, err
 			}
-			h.storeUsageAggregateCache(key, generation, built)
+			h.storeUsageAggregateCache(key, generation, requestedTTL, built)
 			return built, nil
 		})
 
@@ -168,7 +176,7 @@ func (h *Handler) lookupUsageAggregateCacheLocked(key string, now time.Time) (gi
 	return entry.payload, true
 }
 
-func (h *Handler) storeUsageAggregateCache(key string, generation uint64, payload gin.H) {
+func (h *Handler) storeUsageAggregateCache(key string, generation uint64, requestedTTL time.Duration, payload gin.H) {
 	h.usageAggregateCacheMu.Lock()
 	defer h.usageAggregateCacheMu.Unlock()
 	if h.usageAggregateCacheGeneration != generation {
@@ -194,7 +202,10 @@ func (h *Handler) storeUsageAggregateCache(key string, generation uint64, payloa
 		}
 		delete(h.usageAggregateCache, oldestKey)
 	}
-	ttl := h.usageAggregateCacheTTL
+	ttl := requestedTTL
+	if h.usageAggregateCacheTTL > 0 {
+		ttl = h.usageAggregateCacheTTL
+	}
 	if ttl <= 0 {
 		ttl = usageAggregateCacheDefaultTTL
 	}

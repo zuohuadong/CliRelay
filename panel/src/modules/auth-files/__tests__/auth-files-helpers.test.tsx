@@ -6,6 +6,7 @@ import {
   AUTH_FILES_DATA_CACHE_KEY,
   AUTH_FILES_UI_STATE_KEY,
   buildUsageIndex,
+  normalizeQuotaAutoRefreshMs,
   pickQuotaPreviewItem,
   readAuthFilesDataCache,
   readAuthFilesUiState,
@@ -83,6 +84,15 @@ describe("Auth Files helper coverage", () => {
   afterEach(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
+  });
+
+  test("normalizes legacy aggressive quota polling to safe intervals", () => {
+    expect(normalizeQuotaAutoRefreshMs(undefined)).toBe(60000);
+    expect(normalizeQuotaAutoRefreshMs(5000)).toBe(60000);
+    expect(normalizeQuotaAutoRefreshMs(10000)).toBe(60000);
+    expect(normalizeQuotaAutoRefreshMs(30000)).toBe(30000);
+    expect(normalizeQuotaAutoRefreshMs(60000)).toBe(60000);
+    expect(normalizeQuotaAutoRefreshMs(0)).toBe(0);
   });
 
   test("round-trips ui state and sanitized session cache", () => {

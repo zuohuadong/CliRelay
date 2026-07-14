@@ -117,6 +117,12 @@ describe("DashboardPage refresh", () => {
       vi.advanceTimersByTime(5_000);
     });
 
+    expect(mocks.getDashboardSummary).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      vi.advanceTimersByTime(25_000);
+    });
+
     expect(mocks.getDashboardSummary).toHaveBeenCalledTimes(2);
     expect(mocks.getDashboardSummary).toHaveBeenLastCalledWith(7);
   });

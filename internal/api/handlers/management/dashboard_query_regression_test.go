@@ -182,3 +182,73 @@ func TestDashboardSummaryStopsSQLiteQueryWhenRequestContextIsCanceled(t *testing
 		t.Fatalf("dashboard query kept running after request cancellation; probe calls=%d", dashboardCancelProbeCalls.Load())
 	}
 }
+
+func TestDashboardSummaryCachesRepeatedAggregateQueries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data dir: %v", err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, "usage.db"))
+	if err != nil {
+		t.Fatalf("open usage db: %v", err)
+	}
+	if _, err = db.Exec(`
+		CREATE TABLE request_logs (
+			id INTEGER PRIMARY KEY,
+			timestamp TEXT COLLATE dashboard_cancel_probe_v1 NOT NULL,
+			failed INTEGER NOT NULL DEFAULT 0,
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+			cached_tokens INTEGER NOT NULL DEFAULT 0,
+			total_tokens INTEGER NOT NULL DEFAULT 0,
+			cost REAL NOT NULL DEFAULT 0
+		);
+		CREATE INDEX idx_logs_timestamp ON request_logs(timestamp DESC);
+		WITH RECURSIVE seq(id) AS (
+			SELECT 1
+			UNION ALL
+			SELECT id + 1 FROM seq WHERE id < 200
+		)
+		INSERT INTO request_logs (id, timestamp)
+		SELECT id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM seq;
+	`); err != nil {
+		_ = db.Close()
+		t.Fatalf("create usage fixture: %v", err)
+	}
+	if err = db.Close(); err != nil {
+		t.Fatalf("close usage fixture: %v", err)
+	}
+
+	dashboardCancelProbeCalls.Store(0)
+	dashboardCancelProbeDelayNS.Store(0)
+	h := &Handler{
+		cfg:                    &config.Config{},
+		configFilePath:         filepath.Join(dir, "config.yaml"),
+		usageAggregateCacheTTL: time.Minute,
+	}
+
+	request := func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		ginContext, _ := gin.CreateTestContext(recorder)
+		ginContext.Request = httptest.NewRequest(http.MethodGet, "/v0/management/dashboard-summary?days=7", nil)
+		h.GetDashboardSummary(ginContext)
+		return recorder
+	}
+
+	if recorder := request(); recorder.Code != http.StatusOK {
+		t.Fatalf("first dashboard status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	firstQueryCalls := dashboardCancelProbeCalls.Load()
+	if firstQueryCalls == 0 {
+		t.Fatal("first dashboard request did not execute aggregate queries")
+	}
+	if recorder := request(); recorder.Code != http.StatusOK {
+		t.Fatalf("second dashboard status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := dashboardCancelProbeCalls.Load(); got != firstQueryCalls {
+		t.Fatalf("second dashboard request repeated SQLite work: first=%d total=%d", firstQueryCalls, got)
+	}
+}

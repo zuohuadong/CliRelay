@@ -48,7 +48,7 @@ export const AUTH_FILES_FILES_VIEW_MODE_KEY = "authFilesPage.filesViewMode.v1";
 export const AUTH_FILES_MODEL_OWNER_GROUP_MAP_KEY = "authFilesPage.modelOwnerGroupMap.v1";
 
 export type QuotaPreviewMode = "5h" | "week";
-export type QuotaAutoRefreshMs = 0 | 5000 | 10000 | 30000 | 60000;
+export type QuotaAutoRefreshMs = 0 | 30000 | 60000;
 export type FilesViewMode = "table" | "cards";
 export type AuthFilesModelOwnerGroupMap = Record<string, string>;
 export type AuthFileStatusFilter =
@@ -1098,14 +1098,12 @@ export const pickQuotaPreviewItem = (
 
 export const normalizeQuotaAutoRefreshMs = (value: unknown): QuotaAutoRefreshMs => {
   const parsed = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(parsed)) return 10000;
+  if (!Number.isFinite(parsed)) return 60000;
   const rounded = Math.max(0, Math.round(parsed));
   if (rounded === 0) return 0;
-  if (rounded === 5000) return 5000;
-  if (rounded === 10000) return 10000;
   if (rounded === 30000) return 30000;
   if (rounded === 60000) return 60000;
-  return 10000;
+  return 60000;
 };
 
 export type UsageIndex = {

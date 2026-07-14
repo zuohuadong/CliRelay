@@ -367,7 +367,7 @@ function ThroughputTrendChart({
 export function DashboardPage() {
   const { t } = useTranslation();
   const { notify } = useToast();
-  const { stats, connected } = useSystemStats(5);
+  const { stats, connected } = useSystemStats(10);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [range, setRange] = useState<DashboardRange>(7);
   const [loading, setLoading] = useState(true);
@@ -430,8 +430,9 @@ export function DashboardPage() {
   }, [refresh, range]);
 
   useInterval(() => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     void refresh(range, true);
-  }, 5000);
+  }, 30000);
 
   const kpi = summary?.kpi;
   const trends = summary?.trends;

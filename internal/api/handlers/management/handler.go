@@ -21,10 +21,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -75,6 +75,16 @@ type Handler struct {
 	usageAggregateCacheTTL        time.Duration
 	usageAggregateCacheNow        func() time.Time
 	usageAggregateFlight          singleflight.Group
+	managementAuthCacheMu         sync.Mutex
+	managementAuthCache           map[[sha256.Size]byte]managementAuthCacheEntry
+	managementAuthCacheTTL        time.Duration
+	managementAuthCacheNow        func() time.Time
+	managementAuthCacheHMACKey    [sha256.Size]byte
+	managementAuthCacheKeyReady   bool
+	managementPasswordVerifier    func([]byte, []byte) error
+	managementAuthFlight          singleflight.Group
+	managementAuthGeneration      uint64
+	channelLatencyLoader          func(context.Context, int) ([]usage.ChannelLatency, error)
 }
 
 type configReloadSnapshot struct {
@@ -106,6 +116,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		imageGenerationTasks: make(map[string]*imageGenerationTestTask),
 	}
 	h.startAttemptCleanup()
+	h.startManagementAuthCacheCleanup()
 	return h
 }
 
@@ -151,7 +162,9 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 	}
 	h.mu.Lock()
 	h.cfg = cfg
+	h.managementAuthGeneration++
 	h.mu.Unlock()
+	h.invalidateManagementAuthCache()
 	h.invalidateUsageAggregateCache()
 }
 
@@ -269,7 +282,16 @@ func (h *Handler) reloadConfigAfterManagementSaveAsync(ctx context.Context, snap
 }
 
 // SetLocalPassword configures the runtime-local password accepted for localhost requests.
-func (h *Handler) SetLocalPassword(password string) { h.localPassword = password }
+func (h *Handler) SetLocalPassword(password string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.localPassword = password
+	h.managementAuthGeneration++
+	h.mu.Unlock()
+	h.invalidateManagementAuthCache()
+}
 
 // SetLogDirectory updates the directory where main.log should be looked up.
 func (h *Handler) SetLogDirectory(dir string) {
@@ -378,19 +400,10 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		return false, http.StatusForbidden, "remote management disabled"
 	}
 
-	cfg := h.cfg
-	var (
-		allowRemote bool
-		secretHash  string
-	)
-	if cfg != nil {
-		allowRemote = cfg.RemoteManagement.AllowRemote
-		secretHash = cfg.RemoteManagement.SecretKey
-	}
-	if h.allowRemoteOverride {
-		allowRemote = true
-	}
-	envSecret := h.envSecret
+	authSnapshot := h.managementAuthSnapshot()
+	allowRemote := authSnapshot.allowRemote
+	secretHash := authSnapshot.secretHash
+	envSecret := authSnapshot.envSecret
 
 	if !localClient && !allowRemote {
 		return false, http.StatusForbidden, "remote management disabled"
@@ -406,7 +419,7 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 
 	keyValid := false
 	if localClient {
-		if lp := h.localPassword; lp != "" {
+		if lp := authSnapshot.localPassword; lp != "" {
 			if subtle.ConstantTimeCompare([]byte(provided), []byte(lp)) == 1 {
 				keyValid = true
 			}
@@ -423,7 +436,7 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		}
 	}
 	if !keyValid {
-		if shareToken := h.shareToken(); shareToken != "" {
+		if shareToken := authSnapshot.shareToken; shareToken != "" {
 			if strings.HasPrefix(shareToken, "sha256:") {
 				storedHash := strings.TrimPrefix(shareToken, "sha256:")
 				providedHash := sha256.Sum256([]byte(provided))
@@ -445,8 +458,11 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 			}
 		}
 	}
-	if !keyValid && secretHash != "" && bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) == nil {
+	if !keyValid && secretHash != "" && h.verifyHashedManagementPassword(authSnapshot.generation, secretHash, provided) {
 		keyValid = true
+	}
+	if keyValid && !h.managementAuthGenerationStillCurrent(authSnapshot.generation) {
+		keyValid = false
 	}
 
 	if keyValid {

@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -11,7 +12,25 @@ import (
 
 func (h *Handler) GetDashboardSummary(c *gin.Context) {
 	filters := usageFiltersFromQuery(c)
+	payload, err := h.loadUsageAggregateWithTTL(
+		c.Request.Context(),
+		usageAggregateDashboard,
+		filters,
+		dashboardSummaryCacheTTL,
+		func(ctx context.Context) (gin.H, error) {
+			return h.buildDashboardSummary(ctx, filters), nil
+		},
+	)
+	if err != nil {
+		if c.Request.Context().Err() == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build dashboard summary"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, payload)
+}
 
+func (h *Handler) buildDashboardSummary(requestContext context.Context, filters usageFilters) gin.H {
 	cfg := h.cfg
 	geminiCount := 0
 	claudeCount := 0
@@ -73,7 +92,6 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 	throughputSeries := []gin.H{}
 	if db, ok := h.usageDB(); ok {
 		defer func() { _ = db.Close() }()
-		requestContext := c.Request.Context()
 		totals = queryUsageTotalsContext(requestContext, db, filters)
 		for _, point := range queryUsageDailySeriesContext(requestContext, db, filters) {
 			requests := int64FromGinValue(point["requests"])
@@ -96,7 +114,7 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 		successRate = float64(totals.Success) / float64(totals.Total) * 100
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	return gin.H{
 		"kpi": gin.H{
 			"total_requests":   totals.Total,
 			"success_requests": totals.Success,
@@ -135,7 +153,7 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 			"generated_at": time.Now().UTC().Format(time.RFC3339),
 		},
 		"days": filters.Days,
-	})
+	}
 }
 
 func int64FromGinValue(value any) int64 {

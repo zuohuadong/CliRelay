@@ -48,6 +48,9 @@ export interface ConcurrencySnapshot {
   tpm_limit: number;
 }
 
+const isPageVisible = () =>
+  typeof document === "undefined" || document.visibilityState !== "hidden";
+
 /** Build WebSocket URL from auth context */
 function buildWsUrl(apiBase: string, managementKey: string): string | null {
   const httpBase = computeManagementApiBase(apiBase);
@@ -83,9 +86,10 @@ export function useSystemStats(interval = 3): {
 
   // --- HTTP fallback: poll if WebSocket fails ---
   const fetchHttp = useCallback(async () => {
+    if (!isPageVisible()) return;
     try {
       const data = await apiClient.get<SystemStats>("/system-stats");
-      if (mountedRef.current) setStats(data);
+      if (mountedRef.current && isPageVisible()) setStats(data);
     } catch {
       // silently ignore
     }
@@ -93,6 +97,7 @@ export function useSystemStats(interval = 3): {
 
   const startHttpFallback = useCallback(() => {
     // Only start if WebSocket is not connected
+    if (!isPageVisible() || httpFallbackTimer.current) return;
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
     void fetchHttp();
     httpFallbackTimer.current = setInterval(
@@ -110,6 +115,13 @@ export function useSystemStats(interval = 3): {
 
   // --- WebSocket connection ---
   const connect = useCallback(() => {
+    if (!mountedRef.current || !isPageVisible()) return;
+    if (
+      wsRef.current?.readyState === WebSocket.CONNECTING ||
+      wsRef.current?.readyState === WebSocket.OPEN
+    ) {
+      return;
+    }
     const url = buildWsUrl(apiBase, managementKey);
     if (!url) {
       // No WebSocket URL — use HTTP polling instead
@@ -122,7 +134,12 @@ export function useSystemStats(interval = 3): {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || wsRef.current !== ws) return;
+        if (!isPageVisible()) {
+          wsRef.current = null;
+          ws.close();
+          return;
+        }
         setConnected(true);
         setError(null);
         stopHttpFallback();
@@ -130,7 +147,7 @@ export function useSystemStats(interval = 3): {
       };
 
       ws.onmessage = (ev) => {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || wsRef.current !== ws) return;
         try {
           const data = JSON.parse(ev.data as string) as SystemStats;
           setStats(data);
@@ -140,14 +157,15 @@ export function useSystemStats(interval = 3): {
       };
 
       ws.onerror = () => {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || wsRef.current !== ws) return;
         setError("WebSocket connection error");
       };
 
       ws.onclose = () => {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || wsRef.current !== ws) return;
         setConnected(false);
         wsRef.current = null;
+        if (!isPageVisible()) return;
         // Fall back to HTTP, then retry WebSocket in 5s
         startHttpFallback();
         reconnectTimer.current = setTimeout(() => {
@@ -163,9 +181,29 @@ export function useSystemStats(interval = 3): {
 
   useEffect(() => {
     mountedRef.current = true;
-    connect();
+    const pause = () => {
+      clearTimeout(reconnectTimer.current);
+      stopHttpFallback();
+      setConnected(false);
+      const ws = wsRef.current;
+      wsRef.current = null;
+      ws?.close();
+    };
+    const handleVisibilityChange = () => {
+      if (!isPageVisible()) {
+        pause();
+        return;
+      }
+      clearTimeout(reconnectTimer.current);
+      stopHttpFallback();
+      connect();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    handleVisibilityChange();
     return () => {
       mountedRef.current = false;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       clearTimeout(reconnectTimer.current);
       stopHttpFallback();
       if (wsRef.current) {

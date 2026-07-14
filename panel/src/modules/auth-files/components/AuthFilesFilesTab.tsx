@@ -923,8 +923,6 @@ export function AuthFilesFilesTab({
                     }
                     options={[
                       { value: "0", label: t("auth_files.quota_refresh_off") },
-                      { value: "5000", label: "5s" },
-                      { value: "10000", label: "10s" },
                       { value: "30000", label: "30s" },
                       { value: "60000", label: "60s" },
                     ]}

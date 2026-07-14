@@ -1,10 +1,13 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,7 +15,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	internalvideo "github.com/router-for-me/CLIProxyAPI/v7/internal/video"
 	apihandlers "github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -782,6 +787,75 @@ func TestXAIVideosNativeRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestVideosCreateRejectsMultipartInputReferenceFileExplicitly(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("model", "grok-imagine-video"); err != nil {
+		t.Fatalf("WriteField(model): %v", err)
+	}
+	if err := writer.WriteField("prompt", "animate this frame"); err != nil {
+		t.Fatalf("WriteField(prompt): %v", err)
+	}
+	part, err := writer.CreateFormFile("input_reference", "frame.png")
+	if err != nil {
+		t.Fatalf("CreateFormFile(): %v", err)
+	}
+	_, _ = part.Write([]byte("not-a-real-png"))
+	if err = writer.Close(); err != nil {
+		t.Fatalf("Close multipart writer: %v", err)
+	}
+
+	handler := &OpenAIAPIHandler{}
+	resp := performVideosEndpointRequest(t, http.MethodPost, videosPath, writer.FormDataContentType(), &body, handler.VideosCreate)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusBadRequest, resp.Body.String())
+	}
+	if got := gjson.GetBytes(resp.Body.Bytes(), "error.message").String(); !strings.Contains(got, "input_reference file uploads are not supported") {
+		t.Fatalf("error.message = %q", got)
+	}
+}
+
+func TestPublicVideosFailClosedWithoutDurableService(t *testing.T) {
+	handler := &OpenAIAPIHandler{}
+	createResp := performVideosEndpointRequest(t, http.MethodPost, videosPath, "application/json", strings.NewReader(`{"model":"grok-imagine-video","prompt":"make a video"}`), handler.VideosCreate)
+	if createResp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("create status = %d, want %d: %s", createResp.Code, http.StatusServiceUnavailable, createResp.Body.String())
+	}
+	retrieveResp := performVideosRouteRequest(t, http.MethodGet, videosPath+"/:video_id", videosPath+"/video_missing", "", nil, handler.VideosRetrieve)
+	if retrieveResp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("retrieve status = %d, want %d: %s", retrieveResp.Code, http.StatusServiceUnavailable, retrieveResp.Body.String())
+	}
+	contentResp := performVideosRouteRequest(t, http.MethodGet, videosPath+"/:video_id/content", videosPath+"/video_missing/content", "", nil, handler.VideosContent)
+	if contentResp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("content status = %d, want %d: %s", contentResp.Code, http.StatusServiceUnavailable, contentResp.Body.String())
+	}
+}
+
+func TestPublicVideosDistinguishMissingJobFromStoreFailure(t *testing.T) {
+	service, err := internalvideo.NewService(internalconfig.VideoStorageConfig{}, filepath.Join(t.TempDir(), "video.db"))
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	handler := &OpenAIAPIHandler{}
+	handler.SetVideoService(service)
+
+	missingResp := performVideosRouteRequest(t, http.MethodGet, videosPath+"/:video_id", videosPath+"/video_missing", "", nil, handler.VideosRetrieve)
+	if missingResp.Code != http.StatusNotFound {
+		t.Fatalf("missing status = %d, want %d: %s", missingResp.Code, http.StatusNotFound, missingResp.Body.String())
+	}
+	if err = service.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	createResp := performVideosEndpointRequest(t, http.MethodPost, videosPath, "application/json", strings.NewReader(`{"model":"grok-imagine-video","prompt":"make a video"}`), handler.VideosCreate)
+	if createResp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("closed store create status = %d, want %d: %s", createResp.Code, http.StatusServiceUnavailable, createResp.Body.String())
+	}
+	failedResp := performVideosRouteRequest(t, http.MethodGet, videosPath+"/:video_id", videosPath+"/video_missing", "", nil, handler.VideosRetrieve)
+	if failedResp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("store failure status = %d, want %d: %s", failedResp.Code, http.StatusServiceUnavailable, failedResp.Body.String())
+	}
+}
+
 func TestVideosCreateBindsRetrieveToSelectedAuth(t *testing.T) {
 	resetVideoAuthBindingsForTest(t)
 	executor := &videoAuthCaptureExecutor{requestID: "video-openai-bound"}
@@ -810,6 +884,119 @@ func TestVideosCreateBindsRetrieveToSelectedAuth(t *testing.T) {
 	}
 	if authIDs[1] != authIDs[0] {
 		t.Fatalf("retrieve auth = %q, want create auth %q; sequence=%v", authIDs[1], authIDs[0], authIDs)
+	}
+}
+
+func TestVideosCreatePersistsPublicIDAndRetrieveRouting(t *testing.T) {
+	resetVideoAuthBindingsForTest(t)
+	executor := &videoAuthCaptureExecutor{requestID: "video-upstream-persisted"}
+	handler := newVideoAuthBindingTestHandler(t, executor)
+	service, err := internalvideo.NewService(internalconfig.VideoStorageConfig{}, filepath.Join(t.TempDir(), "video.db"))
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	handler.SetVideoService(service)
+
+	createResp := performVideosEndpointRequest(t, http.MethodPost, videosPath, "application/json", strings.NewReader(`{"model":"grok-imagine-video","prompt":"make a video"}`), handler.VideosCreate)
+	if createResp.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d: %s", createResp.Code, http.StatusOK, createResp.Body.String())
+	}
+	publicID := gjson.GetBytes(createResp.Body.Bytes(), "id").String()
+	if !strings.HasPrefix(publicID, "video_") || publicID == executor.requestID {
+		t.Fatalf("public id = %q, upstream id = %q", publicID, executor.requestID)
+	}
+	job, err := service.GetJob(context.Background(), publicID)
+	if err != nil {
+		t.Fatalf("GetJob() error = %v", err)
+	}
+	if job.UpstreamID != executor.requestID || job.AuthID == "" || job.Model != defaultXAIVideosModel {
+		t.Fatalf("persisted job = %+v", job)
+	}
+
+	// Simulate a process-local binding loss. Durable routing must still pin the
+	// original credential and upstream task ID.
+	videoAuthBindings = newVideoAuthBindingStore()
+	retrieveResp := performVideosRouteRequest(t, http.MethodGet, videosPath+"/:video_id", videosPath+"/"+publicID, "", nil, handler.VideosRetrieve)
+	if retrieveResp.Code != http.StatusOK {
+		t.Fatalf("retrieve status = %d, want %d: %s", retrieveResp.Code, http.StatusOK, retrieveResp.Body.String())
+	}
+	if got := gjson.GetBytes(retrieveResp.Body.Bytes(), "id").String(); got != publicID {
+		t.Fatalf("retrieve id = %q, want public id %q", got, publicID)
+	}
+	authIDs := executor.AuthIDs()
+	if len(authIDs) != 2 || authIDs[1] != authIDs[0] {
+		t.Fatalf("auth IDs = %v, want durable pinning", authIDs)
+	}
+}
+
+func TestVideosRetrieveStoresCompletedObjectAndContentRedirects(t *testing.T) {
+	resetVideoAuthBindingsForTest(t)
+	t.Setenv("TEST_VIDEO_ACCESS_KEY", "access-key")
+	t.Setenv("TEST_VIDEO_SECRET_KEY", "secret-key")
+
+	var uploaded bool
+	objectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			uploaded = true
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(objectServer.Close)
+	sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("stored-video"))
+	}))
+	t.Cleanup(sourceServer.Close)
+
+	executor := &videoAuthCaptureExecutor{requestID: "video-upstream-stored", contentURL: "http://8.8.8.8/video.mp4"}
+	handler := newVideoAuthBindingTestHandler(t, executor)
+	handler.Cfg.ProxyURL = sourceServer.URL
+	service, err := internalvideo.NewService(internalconfig.VideoStorageConfig{
+		Enabled:            true,
+		Endpoint:           objectServer.URL,
+		Region:             "auto",
+		Bucket:             "videos",
+		PathStyle:          true,
+		Prefix:             "generated",
+		SignedURLTTL:       "10m",
+		AccessKeyIDEnv:     "TEST_VIDEO_ACCESS_KEY",
+		SecretAccessKeyEnv: "TEST_VIDEO_SECRET_KEY",
+	}, filepath.Join(t.TempDir(), "video.db"))
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	handler.SetVideoService(service)
+
+	createResp := performVideosEndpointRequest(t, http.MethodPost, videosPath, "application/json", strings.NewReader(`{"model":"grok-imagine-video","prompt":"make a video"}`), handler.VideosCreate)
+	if createResp.Code != http.StatusOK {
+		t.Fatalf("create status = %d: %s", createResp.Code, createResp.Body.String())
+	}
+	publicID := gjson.GetBytes(createResp.Body.Bytes(), "id").String()
+	retrieveResp := performVideosRouteRequest(t, http.MethodGet, videosPath+"/:video_id", videosPath+"/"+publicID, "", nil, handler.VideosRetrieve)
+	if retrieveResp.Code != http.StatusOK {
+		t.Fatalf("retrieve status = %d: %s", retrieveResp.Code, retrieveResp.Body.String())
+	}
+	if !uploaded {
+		t.Fatal("completed video was not uploaded to object storage")
+	}
+	if got := gjson.GetBytes(retrieveResp.Body.Bytes(), "video_url").String(); !strings.Contains(got, "X-Amz-Signature=") {
+		t.Fatalf("video_url = %q, want signed object URL", got)
+	}
+	if got := gjson.GetBytes(retrieveResp.Body.Bytes(), "content_url").String(); !strings.Contains(got, "/v1/videos/"+publicID+"/content") {
+		t.Fatalf("content_url = %q", got)
+	}
+
+	contentResp := performVideosRouteRequest(t, http.MethodGet, videosPath+"/:video_id/content", videosPath+"/"+publicID+"/content", "", nil, handler.VideosContent)
+	if contentResp.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("content status = %d, want %d body=%s", contentResp.Code, http.StatusTemporaryRedirect, contentResp.Body.String())
+	}
+	if location := contentResp.Header().Get("Location"); !strings.Contains(location, "X-Amz-Signature=") {
+		t.Fatalf("redirect Location = %q", location)
 	}
 }
 
@@ -893,6 +1080,33 @@ func TestXAIVideosNativeCreateBindsRetrieveToSelectedAuth(t *testing.T) {
 	}
 	if authIDs[1] != authIDs[0] {
 		t.Fatalf("retrieve auth = %q, want create auth %q; sequence=%v", authIDs[1], authIDs[0], authIDs)
+	}
+}
+
+func TestVideosRetrievePreservesLegacyXAINativePathAfterNativeCreate(t *testing.T) {
+	resetVideoAuthBindingsForTest(t)
+	executor := &videoAuthCaptureExecutor{requestID: "video-xai-legacy-path"}
+	handler := newVideoAuthBindingTestHandler(t, executor)
+	service, err := internalvideo.NewService(internalconfig.VideoStorageConfig{}, filepath.Join(t.TempDir(), "video.db"))
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	handler.SetVideoService(service)
+
+	createResp := performVideosEndpointRequest(t, http.MethodPost, xaiVideosGenerationsAPI, "application/json", strings.NewReader(`{"model":"grok-imagine-video","prompt":"make a video"}`), handler.XAIVideosGenerations)
+	if createResp.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d: %s", createResp.Code, http.StatusOK, createResp.Body.String())
+	}
+	videoID := gjson.GetBytes(createResp.Body.Bytes(), "request_id").String()
+
+	retrieveResp := performVideosRouteRequest(t, http.MethodGet, videosPath+"/:video_id", videosPath+"/"+videoID, "", nil, handler.VideosRetrieve)
+	if retrieveResp.Code != http.StatusOK {
+		t.Fatalf("legacy retrieve status = %d, want %d: %s", retrieveResp.Code, http.StatusOK, retrieveResp.Body.String())
+	}
+	authIDs := executor.AuthIDs()
+	if len(authIDs) != 2 || authIDs[1] != authIDs[0] {
+		t.Fatalf("auth IDs = %v, want legacy retrieve pinned to create auth", authIDs)
 	}
 }
 

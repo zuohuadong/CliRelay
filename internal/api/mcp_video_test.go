@@ -118,7 +118,10 @@ func TestVideoMCPContentURLUsesForwardedHost(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "https://cliapi.029555.xyz/openai/v1/videos/video_123/content") {
+	if !strings.Contains(rec.Body.String(), "https://cliapi.029555.xyz/v1/videos/video_123/content") {
 		t.Fatalf("content url response = %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"structuredContent"`) {
+		t.Fatalf("content url response missing Apps SDK structuredContent: %s", rec.Body.String())
 	}
 }

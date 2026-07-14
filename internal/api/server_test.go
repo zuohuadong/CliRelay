@@ -700,19 +700,31 @@ func TestManagementAuthAcceptsQueryTokenForBrowserWebSocket(t *testing.T) {
 	}
 }
 
-func TestVideosRoutesKeepXAINativeAndExposeOpenAIPrefix(t *testing.T) {
+func TestVideosRoutesExposeStandardAPIAndKeepXAINativeSubroutes(t *testing.T) {
 	server := newTestServer(t)
+	const clientID = "video-route-test"
+	registry.GetGlobalRegistry().RegisterClient(clientID, "agnes", []*registry.ModelInfo{{
+		ID:   "agnes-video-v2.0",
+		Type: registry.OpenAIVideoModelType,
+	}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(clientID) })
 
-	nativeReq := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"sora-2","prompt":"make a video"}`))
+	standardReq := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"agnes-video-v2.0","prompt":"make a video"}`))
+	standardReq.Header.Set("Authorization", "Bearer test-key")
+	standardReq.Header.Set("Content-Type", "application/json")
+	standardRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(standardRR, standardReq)
+	if standardRR.Code == http.StatusBadRequest && strings.Contains(standardRR.Body.String(), "/v1/videos/generations") {
+		t.Fatalf("/v1/videos still uses xAI-native validation: %s", standardRR.Body.String())
+	}
+
+	nativeReq := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{"model":"agnes-video-v2.0","prompt":"make a video"}`))
 	nativeReq.Header.Set("Authorization", "Bearer test-key")
 	nativeReq.Header.Set("Content-Type", "application/json")
 	nativeRR := httptest.NewRecorder()
 	server.engine.ServeHTTP(nativeRR, nativeReq)
-	if nativeRR.Code != http.StatusBadRequest {
-		t.Fatalf("native status = %d, want %d body=%s", nativeRR.Code, http.StatusBadRequest, nativeRR.Body.String())
-	}
-	if !strings.Contains(nativeRR.Body.String(), "/v1/videos/generations") {
-		t.Fatalf("expected /v1/videos to keep xAI native validation, body=%s", nativeRR.Body.String())
+	if nativeRR.Code != http.StatusBadRequest || !strings.Contains(nativeRR.Body.String(), "/v1/videos/generations") {
+		t.Fatalf("xAI native route status/body = %d %s", nativeRR.Code, nativeRR.Body.String())
 	}
 
 	openAIReq := httptest.NewRequest(http.MethodPost, "/openai/v1/videos", strings.NewReader(`{"model":`))
@@ -727,7 +739,7 @@ func TestVideosRoutesKeepXAINativeAndExposeOpenAIPrefix(t *testing.T) {
 		t.Fatalf("expected /openai/v1/videos create handler, body=%s", openAIRR.Body.String())
 	}
 
-	contentReq := httptest.NewRequest(http.MethodGet, "/openai/v1/videos/video_123/content?variant=thumbnail", nil)
+	contentReq := httptest.NewRequest(http.MethodGet, "/v1/videos/video_123/content?variant=thumbnail", nil)
 	contentReq.Header.Set("Authorization", "Bearer test-key")
 	contentRR := httptest.NewRecorder()
 	server.engine.ServeHTTP(contentRR, contentReq)
@@ -735,7 +747,7 @@ func TestVideosRoutesKeepXAINativeAndExposeOpenAIPrefix(t *testing.T) {
 		t.Fatalf("content status = %d, want %d body=%s", contentRR.Code, http.StatusBadRequest, contentRR.Body.String())
 	}
 	if !strings.Contains(contentRR.Body.String(), "variant") {
-		t.Fatalf("expected /openai/v1/videos content handler, body=%s", contentRR.Body.String())
+		t.Fatalf("expected /v1/videos content handler, body=%s", contentRR.Body.String())
 	}
 }
 

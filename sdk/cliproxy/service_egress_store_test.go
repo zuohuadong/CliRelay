@@ -19,6 +19,7 @@ func TestBuilderUsesDedicatedLockedEgressDatabase(t *testing.T) {
 		t.Fatalf("Build() error = %v", err)
 	}
 	t.Cleanup(func() { _ = service.egressService.Close() })
+	t.Cleanup(func() { _ = service.videoService.Close() })
 
 	egressPath := filepath.Join(filepath.Dir(configPath), "data", "egress.db")
 	if _, err = os.Stat(egressPath); err != nil {
@@ -32,7 +33,7 @@ func TestBuilderUsesDedicatedLockedEgressDatabase(t *testing.T) {
 	}
 }
 
-func TestBuilderWithoutEgressConfigurationDoesNotCreateOrLockStore(t *testing.T) {
+func TestBuilderWithoutEgressConfigurationDoesNotCreateOrLockEgressStore(t *testing.T) {
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "config.yaml")
 	first, err := NewBuilder().WithConfig(&config.Config{}).WithConfigPath(configPath).Build()
@@ -42,8 +43,12 @@ func TestBuilderWithoutEgressConfigurationDoesNotCreateOrLockStore(t *testing.T)
 	if first.egressService != nil {
 		t.Fatal("unconfigured builder initialized egress service")
 	}
-	if _, err = os.Stat(filepath.Join(configDir, "data")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("unconfigured builder created data directory: %v", err)
+	t.Cleanup(func() { _ = first.videoService.Close() })
+	if _, err = os.Stat(filepath.Join(configDir, "data", "egress.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unconfigured builder created egress.db: %v", err)
+	}
+	if _, err = os.Stat(filepath.Join(configDir, "data", "egress.db.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unconfigured builder created egress lock: %v", err)
 	}
 	second, err := NewBuilder().WithConfig(&config.Config{}).WithConfigPath(configPath).Build()
 	if err != nil {
@@ -52,6 +57,7 @@ func TestBuilderWithoutEgressConfigurationDoesNotCreateOrLockStore(t *testing.T)
 	if second.egressService != nil {
 		t.Fatal("second unconfigured builder initialized egress service")
 	}
+	t.Cleanup(func() { _ = second.videoService.Close() })
 }
 
 func TestBuilderDisabledEgressIgnoresHealthConfiguration(t *testing.T) {
@@ -66,4 +72,5 @@ func TestBuilderDisabledEgressIgnoresHealthConfiguration(t *testing.T) {
 	if service.egressService != nil {
 		t.Fatal("disabled egress initialized a store from health-only configuration")
 	}
+	t.Cleanup(func() { _ = service.videoService.Close() })
 }

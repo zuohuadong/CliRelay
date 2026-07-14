@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	internalvideo "github.com/router-for-me/CLIProxyAPI/v7/internal/video"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -281,6 +282,18 @@ func (b *Builder) Build() (*Service, error) {
 		}
 	}
 
+	var videoService *internalvideo.Service
+	if databasePath := internalvideo.DatabasePathForConfig(b.configPath); databasePath != "" {
+		var errVideo error
+		videoService, errVideo = internalvideo.NewService(b.cfg.VideoStorage, databasePath)
+		if errVideo != nil {
+			if egressService != nil {
+				_ = egressService.Close()
+			}
+			return nil, fmt.Errorf("cliproxy: initialize video service: %w", errVideo)
+		}
+	}
+
 	service := &Service{
 		cfg:            b.cfg,
 		configPath:     b.configPath,
@@ -294,6 +307,7 @@ func (b *Builder) Build() (*Service, error) {
 		pluginHost:     pluginHost,
 		serverOptions:  append([]api.ServerOption(nil), b.serverOptions...),
 		egressService:  egressService,
+		videoService:   videoService,
 	}
 	if b.postAuthHook != nil {
 		service.serverOptions = append(service.serverOptions, api.WithPostAuthHook(b.postAuthHook))
@@ -305,6 +319,7 @@ func (b *Builder) Build() (*Service, error) {
 			service.reloadConfigFromWatcher()
 		}),
 		api.WithEgressService(egressService),
+		api.WithVideoService(videoService),
 	)
 	return service, nil
 }

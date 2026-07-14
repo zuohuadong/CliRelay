@@ -78,9 +78,13 @@ func (s *Server) callVideoMCPTool(c *gin.Context, params mcpGatewayToolCallParam
 		if videoID == "" {
 			return nil, &mcpGatewayError{Code: -32602, Message: "video_id is required"}
 		}
+		contentURL := s.mcpGatewayExternalBaseURL(c) + "/v1/videos/" + url.PathEscape(videoID) + "/content"
+		if s.openaiHandler != nil {
+			contentURL = s.openaiHandler.VideoContentURL(c, videoID)
+		}
 		return mcpGatewayToolJSON(map[string]any{
 			"video_id":    videoID,
-			"content_url": s.mcpGatewayExternalBaseURL(c) + "/openai/v1/videos/" + url.PathEscape(videoID) + "/content",
+			"content_url": contentURL,
 		}), nil
 	default:
 		return nil, &mcpGatewayError{Code: -32602, Message: "unknown tool: " + params.Name}
@@ -115,7 +119,7 @@ func videoMCPTools() []map[string]any {
 		},
 		{
 			"name":        "clirelay_video_content_url",
-			"description": "Return the authenticated HTTP content endpoint for a completed video.",
+			"description": "Return a short-lived signed object URL when available, otherwise the authenticated public HTTP content endpoint.",
 			"inputSchema": mcpGatewayObjectSchema(map[string]any{
 				"video_id": mcpGatewayStringSchema("Video id returned by create."),
 			}, []string{"video_id"}),

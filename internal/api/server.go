@@ -38,6 +38,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/safemode"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	internalvideo "github.com/router-for-me/CLIProxyAPI/v7/internal/video"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/claude"
@@ -90,6 +91,7 @@ type serverOptionConfig struct {
 	configReloadHook      func(context.Context, *config.Config)
 	exampleAPIKeySafeMode bool
 	egressService         *egress.Service
+	videoService          *internalvideo.Service
 }
 
 type routeRateLimitBucket struct {
@@ -208,6 +210,12 @@ func WithEgressService(service *egress.Service) ServerOption {
 	}
 }
 
+func WithVideoService(service *internalvideo.Service) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.videoService = service
+	}
+}
+
 // Server represents the main API server.
 // It encapsulates the Gin engine, HTTP server, handlers, and configuration.
 type Server struct {
@@ -247,6 +255,7 @@ type Server struct {
 
 	// openaiHandler is the cached OpenAI API handler used by MCP video tools.
 	openaiHandler *openai.OpenAIAPIHandler
+	videoService  *internalvideo.Service
 
 	// configFilePath is the absolute path to the YAML config file for persistence.
 	configFilePath string
@@ -365,6 +374,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		envManagementSecret: envManagementSecret,
 		wsRoutes:            make(map[string]struct{}),
 		pluginHost:          optionState.pluginHost,
+		videoService:        optionState.videoService,
 
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 	}
@@ -562,6 +572,7 @@ func (s *Server) setupRoutes() {
 		publicUsage.POST("/logs/:id/content", s.mgmt.GetPublicUsageLogContent)
 	}
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
+	openaiHandlers.SetVideoService(s.videoService)
 	s.openaiHandler = openaiHandlers
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
@@ -584,11 +595,13 @@ func (s *Server) setupRoutes() {
 		v1.POST("/completions", openaiHandlers.Completions)
 		v1.POST("/images/generations", openaiHandlers.ImagesGenerations)
 		v1.POST("/images/edits", openaiHandlers.ImagesEdits)
-		v1.POST("/videos", openaiHandlers.XAIVideosGenerations)
+		v1.POST("/videos", openaiHandlers.VideosCreate)
+		v1.GET("/videos/:video_id/content", openaiHandlers.VideosContent)
+		v1.GET("/videos/:video_id", openaiHandlers.VideosRetrieve)
 		v1.POST("/videos/generations", openaiHandlers.XAIVideosGenerations)
+		v1.GET("/videos/generations/:request_id", openaiHandlers.XAIVideosRetrieve)
 		v1.POST("/videos/edits", openaiHandlers.XAIVideosEdits)
 		v1.POST("/videos/extensions", openaiHandlers.XAIVideosExtensions)
-		v1.GET("/videos/:request_id", openaiHandlers.XAIVideosRetrieve)
 		v1.POST("/messages", claudeCodeHandlers.ClaudeMessages)
 		v1.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
 		v1.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
@@ -2178,6 +2191,11 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	// Save YAML snapshot for next comparison
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
 
+	if s.videoService != nil {
+		if errVideoConfig := s.videoService.SetConfig(cfg.VideoStorage); errVideoConfig != nil {
+			log.WithError(errVideoConfig).Warn("reload video storage config")
+		}
+	}
 	s.handlers.UpdateClients(effectiveSDKConfig(cfg))
 	s.handlers.SetPluginHost(s.pluginHost)
 	if s.pluginHost != nil {

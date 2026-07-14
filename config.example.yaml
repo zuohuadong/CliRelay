@@ -170,6 +170,27 @@ save-cooldown-status: false
 # Set to 0 to keep the legacy 60-second cooldown; set to -1 to disable transient error cooldowns.
 transient-error-cooldown-seconds: 0
 
+# Persist public video task routing in data/video.db so create/poll/download
+# keeps using the same upstream credential after process restarts. The in-memory
+# cache remains as a compatibility fast path; this value only controls its TTL.
+# video-result-auth-cache-ttl: "3h"
+
+# Optional S3-compatible storage for completed video results. This works with
+# AWS S3, Cloudflare R2, MinIO, and compatible services. Credentials are read
+# from environment variables and are never embedded in this YAML.
+# video-storage:
+#   enabled: true
+#   endpoint: "https://<account-id>.r2.cloudflarestorage.com"
+#   region: "auto"                    # use the provider's signing region
+#   bucket: "generated-videos"
+#   path-style: true                  # recommended for R2/MinIO/custom endpoints
+#   prefix: "videos"
+#   signed-url-ttl: "15m"
+#   max-source-bytes: 2147483648    # maximum upstream video spool size (2 GiB default)
+#   access-key-id-env: "VIDEO_STORAGE_ACCESS_KEY_ID"
+#   secret-access-key-env: "VIDEO_STORAGE_SECRET_ACCESS_KEY"
+#   session-token-env: "VIDEO_STORAGE_SESSION_TOKEN" # optional
+
 # MCP endpoints are exposed through the authenticated /mcp gateway. The top-level
 # /mcp endpoint is a directory for available child routes, while concrete tools
 # live under routes such as /mcp/image, /mcp/video, /mcp/zai/<server>, and /mcp/custom/<name>.

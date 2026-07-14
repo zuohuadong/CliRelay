@@ -47,6 +47,8 @@ auths/*
 # Documentation
 docs/*
 !docs/codex-socks-egress_CN.md
+!docs/video-generation.md
+!docs/video-generation_CN.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md

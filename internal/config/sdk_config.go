@@ -34,6 +34,11 @@ type SDKConfig struct {
 	// Empty or invalid values use the default 3h.
 	VideoResultAuthCacheTTL string `yaml:"video-result-auth-cache-ttl,omitempty" json:"video-result-auth-cache-ttl,omitempty"`
 
+	// VideoStorage configures optional S3-compatible persistence for completed
+	// videos. Credentials are resolved from environment variable names so config
+	// and management responses do not need to contain secret values.
+	VideoStorage VideoStorageConfig `yaml:"video-storage,omitempty" json:"video-storage,omitempty"`
+
 	// ForceModelPrefix requires explicit model prefixes (e.g., "teamA/gemini-3-pro-preview")
 	// to target prefixed credentials. When false, unprefixed model requests may use prefixed
 	// credentials as well.
@@ -102,6 +107,22 @@ type SDKConfig struct {
 	// OpenRouterAPIKey is an optional API key for authenticating with the
 	// OpenRouter API. When set, it is included as a Bearer token in sync requests.
 	OpenRouterAPIKey string `yaml:"openrouter-api-key" json:"openRouterApiKey"`
+}
+
+// VideoStorageConfig supports AWS S3, Cloudflare R2, MinIO, and other
+// S3-compatible object stores.
+type VideoStorageConfig struct {
+	Enabled            bool   `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Endpoint           string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	Region             string `yaml:"region,omitempty" json:"region,omitempty"`
+	Bucket             string `yaml:"bucket,omitempty" json:"bucket,omitempty"`
+	PathStyle          bool   `yaml:"path-style,omitempty" json:"path-style,omitempty"`
+	Prefix             string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	SignedURLTTL       string `yaml:"signed-url-ttl,omitempty" json:"signed-url-ttl,omitempty"`
+	MaxSourceBytes     int64  `yaml:"max-source-bytes,omitempty" json:"max-source-bytes,omitempty"`
+	AccessKeyIDEnv     string `yaml:"access-key-id-env,omitempty" json:"access-key-id-env,omitempty"`
+	SecretAccessKeyEnv string `yaml:"secret-access-key-env,omitempty" json:"secret-access-key-env,omitempty"`
+	SessionTokenEnv    string `yaml:"session-token-env,omitempty" json:"session-token-env,omitempty"`
 }
 
 // RequestLogBodyEnabled keeps existing deployments compatible when the new

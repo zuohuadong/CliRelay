@@ -1518,6 +1518,39 @@ func TestOpenAICompatExecutorVideosRetrieveUsesGet(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatExecutorVideosRetrieveReplacesRouteTemplateWithUpstreamID(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"upstream_123","object":"video","status":"completed","progress":100,"video_url":"https://example.com/video.mp4"}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "generic-video-model",
+		Payload: []byte(`{"request_id":"upstream_123","video_id":"upstream_123"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-video"),
+		Stream:       false,
+		Headers:      http.Header{"Content-Type": []string{"application/json"}},
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestPathMetadataKey: "/v1/videos/:video_id",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/videos/upstream_123" {
+		t.Fatalf("path = %q, want %q", gotPath, "/v1/videos/upstream_123")
+	}
+}
+
 func TestOpenAICompatExecutorVideosContentRetrievesVideoMetadata(t *testing.T) {
 	var gotMethod string
 	var gotPath string

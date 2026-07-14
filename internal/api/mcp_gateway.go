@@ -295,11 +295,17 @@ func normalizedMCPGatewayID(id json.RawMessage) json.RawMessage {
 
 func mcpGatewayToolJSON(value any) map[string]any {
 	raw, _ := json.MarshalIndent(value, "", "  ")
-	return map[string]any{
+	out := map[string]any{
 		"content": []map[string]any{
 			{"type": "text", "text": string(raw)},
 		},
 	}
+	if structured, ok := value.(map[string]any); ok {
+		out["structuredContent"] = structured
+	} else {
+		out["structuredContent"] = map[string]any{"result": value}
+	}
+	return out
 }
 
 func stringMCPGatewayArg(args map[string]any, key string) string {

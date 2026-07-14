@@ -122,6 +122,7 @@ dev/v6 线的功能在迁移前会返回空只读模型或明确的 `unsupported
 
 ## SDK 文档
 
+- 视频生成：[docs/video-generation_CN.md](docs/video-generation_CN.md)
 - 使用文档：[docs/sdk-usage_CN.md](docs/sdk-usage_CN.md)
 - 高级（执行器与翻译器）：[docs/sdk-advanced_CN.md](docs/sdk-advanced_CN.md)
 - 认证: [docs/sdk-access_CN.md](docs/sdk-access_CN.md)

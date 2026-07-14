@@ -1087,14 +1087,23 @@ func openAICompatVideoProviderEndpointPath(opts cliproxyexecutor.Options, endpoi
 	if !strings.Contains(endpointPath, "/videos/") {
 		return endpointPath
 	}
-	if !isAgnesOpenAICompatVideo(model, auth) {
+	if strings.HasSuffix(endpointPath, "/videos/generations") {
 		return endpointPath
 	}
 	videoID := strings.TrimSpace(gjson.GetBytes(payload, "video_id").String())
+	if isAgnesOpenAICompatVideo(model, auth) {
+		if videoID == "" {
+			return endpointPath
+		}
+		return "/agnesapi?video_id=" + url.QueryEscape(videoID)
+	}
+	if videoID == "" {
+		videoID = strings.TrimSpace(gjson.GetBytes(payload, "request_id").String())
+	}
 	if videoID == "" {
 		return endpointPath
 	}
-	return "/agnesapi?video_id=" + url.QueryEscape(videoID)
+	return "/videos/" + url.PathEscape(videoID)
 }
 
 func isAgnesOpenAICompatVideo(model string, auth *cliproxyauth.Auth) bool {

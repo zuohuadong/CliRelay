@@ -2,7 +2,9 @@ package openai
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	internalvideo "github.com/router-for-me/CLIProxyAPI/v7/internal/video"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -246,6 +249,13 @@ func readXAIVideosNativeRequest(c *gin.Context) ([]byte, error) {
 }
 
 func videosCreateRequestFromForm(c *gin.Context) ([]byte, error) {
+	if strings.EqualFold(strings.TrimSpace(c.ContentType()), "multipart/form-data") {
+		for _, key := range []string{"input_reference", "input_reference[file]", "image"} {
+			if file, err := c.FormFile(key); err == nil && file != nil {
+				return nil, fmt.Errorf("input_reference file uploads are not supported by CliRelay yet; upload the image separately and pass input_reference.image_url")
+			}
+		}
+	}
 	rawJSON := []byte(`{}`)
 	for _, field := range []string{"model", "prompt", "seconds", "size", "aspect_ratio", "resolution"} {
 		if value := strings.TrimSpace(c.PostForm(field)); value != "" {
@@ -342,13 +352,21 @@ func (h *OpenAIAPIHandler) bindVideoAuthID(videoID string, authID string, model 
 }
 
 func (h *OpenAIAPIHandler) contextWithVideoAuthBinding(ctx context.Context, videoID string) context.Context {
+	if job, ok := h.durableVideoJob(ctx, videoID); ok && strings.TrimSpace(job.AuthID) != "" {
+		return handlers.WithPinnedAuthID(ctx, job.AuthID)
+	}
 	if authID, ok := videoAuthBindings.get(videoID); ok {
 		return handlers.WithPinnedAuthID(ctx, authID)
 	}
 	return ctx
 }
 
-func (h *OpenAIAPIHandler) modelWithVideoAuthBinding(videoID string, fallbackModel string) string {
+func (h *OpenAIAPIHandler) modelWithVideoAuthBinding(ctx context.Context, videoID string, fallbackModel string) string {
+	if job, ok := h.durableVideoJob(ctx, videoID); ok {
+		if model := strings.TrimSpace(job.Model); model != "" {
+			return model
+		}
+	}
 	if binding, ok := videoAuthBindings.getBinding(videoID); ok {
 		if model := strings.TrimSpace(binding.model); model != "" {
 			return model
@@ -357,7 +375,15 @@ func (h *OpenAIAPIHandler) modelWithVideoAuthBinding(videoID string, fallbackMod
 	return fallbackModel
 }
 
-func (h *OpenAIAPIHandler) payloadWithVideoAuthBinding(rawJSON []byte, videoID string) []byte {
+func (h *OpenAIAPIHandler) payloadWithVideoAuthBinding(ctx context.Context, rawJSON []byte, videoID string) []byte {
+	if job, ok := h.durableVideoJob(ctx, videoID); ok {
+		upstreamVideoID := strings.TrimSpace(job.UpstreamID)
+		if upstreamVideoID != "" && upstreamVideoID != videoID {
+			rawJSON, _ = sjson.SetBytes(rawJSON, "request_id", upstreamVideoID)
+			rawJSON, _ = sjson.SetBytes(rawJSON, "video_id", upstreamVideoID)
+		}
+		return rawJSON
+	}
 	binding, ok := videoAuthBindings.getBinding(videoID)
 	if !ok {
 		return rawJSON
@@ -373,11 +399,217 @@ func (h *OpenAIAPIHandler) payloadWithVideoAuthBinding(rawJSON []byte, videoID s
 	return rawJSON
 }
 
+func (h *OpenAIAPIHandler) durableVideoJob(ctx context.Context, videoID string) (internalvideo.Job, bool) {
+	if h == nil || h.videoService == nil || strings.TrimSpace(videoID) == "" {
+		return internalvideo.Job{}, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	job, err := h.videoService.GetJob(ctx, videoID)
+	return job, err == nil
+}
+
+func shouldUseLegacyXAIVideoRetrieve(videoID string) bool {
+	videoID = strings.TrimSpace(videoID)
+	if videoID == "" {
+		return false
+	}
+	if binding, ok := videoAuthBindings.getBinding(videoID); ok {
+		upstreamVideoID := strings.TrimSpace(binding.upstreamVideoID)
+		return isXAIVideosModel(binding.model) && (upstreamVideoID == "" || upstreamVideoID == videoID)
+	}
+	// Public task IDs are always generated in the video_ namespace. Preserve
+	// the historical xAI GET route for pre-existing upstream IDs outside it.
+	return !strings.HasPrefix(videoID, "video_")
+}
+
+func isCanonicalPublicVideoRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	path := strings.TrimRight(c.Request.URL.Path, "/")
+	return path == videosPath || strings.HasPrefix(path, videosPath+"/")
+}
+
+func writePublicVideoRoutingError(c *gin.Context, status int, message string) {
+	c.JSON(status, handlers.ErrorResponse{
+		Error: handlers.ErrorDetail{
+			Message: message,
+			Type:    "video_routing_error",
+		},
+	})
+}
+
+func (h *OpenAIAPIHandler) requirePublicVideoService(c *gin.Context) bool {
+	if !isCanonicalPublicVideoRequest(c) {
+		return true
+	}
+	if h == nil || h.videoService == nil {
+		writePublicVideoRoutingError(c, http.StatusServiceUnavailable, "Public video task persistence is unavailable")
+		return false
+	}
+	if err := h.videoService.Ready(c.Request.Context()); err != nil {
+		writePublicVideoRoutingError(c, http.StatusServiceUnavailable, "Public video task persistence is unavailable")
+		return false
+	}
+	return true
+}
+
+func (h *OpenAIAPIHandler) requirePublicVideoJob(c *gin.Context, videoID string) (internalvideo.Job, bool) {
+	if !isCanonicalPublicVideoRequest(c) {
+		return internalvideo.Job{}, false
+	}
+	if !h.requirePublicVideoService(c) {
+		return internalvideo.Job{}, false
+	}
+	job, err := h.videoService.GetJob(c.Request.Context(), videoID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writePublicVideoRoutingError(c, http.StatusNotFound, "Video task was not found")
+		} else {
+			writePublicVideoRoutingError(c, http.StatusServiceUnavailable, "Public video task persistence is unavailable")
+		}
+		return internalvideo.Job{}, false
+	}
+	if strings.TrimSpace(job.UpstreamID) == "" || strings.TrimSpace(job.AuthID) == "" || strings.TrimSpace(job.Model) == "" {
+		writePublicVideoRoutingError(c, http.StatusServiceUnavailable, "Video task routing record is incomplete")
+		return internalvideo.Job{}, false
+	}
+	return job, true
+}
+
 func canonicalVideoBindingModel(model string) string {
 	if isOpenAICompatVideosModel(model) {
 		return strings.TrimSpace(model)
 	}
 	return canonicalXAIVideosModel(model)
+}
+
+func (h *OpenAIAPIHandler) persistPublicVideoCreate(ctx context.Context, payload []byte, authID string, model string) ([]byte, error) {
+	if h == nil || h.videoService == nil {
+		h.bindVideoAuthIDAndModelFromPayload(payload, authID, model)
+		return payload, nil
+	}
+	upstreamID := upstreamVideoIDFromPayload(payload)
+	if upstreamID == "" {
+		return nil, fmt.Errorf("video create response did not include an upstream task id")
+	}
+	provider := ""
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return nil, fmt.Errorf("video create did not select an upstream credential")
+	}
+	if h.AuthManager != nil {
+		if selected, ok := h.AuthManager.GetByID(authID); ok && selected != nil {
+			provider = strings.TrimSpace(selected.Provider)
+		}
+	}
+	if provider == "" {
+		return nil, fmt.Errorf("video create selected credential %q without a provider", authID)
+	}
+	status := openAIVideoStatus(gjson.GetBytes(payload, "status").String())
+	if status == "" {
+		status = "queued"
+	}
+	job, err := h.videoService.CreateJob(ctx, internalvideo.Job{
+		UpstreamID: upstreamID,
+		Provider:   provider,
+		AuthID:     authID,
+		Model:      canonicalVideoBindingModel(model),
+		Status:     status,
+		Progress:   int(gjson.GetBytes(payload, "progress").Int()),
+		ResultURL:  videoURLFromPayload(payload),
+	})
+	if err != nil {
+		return nil, err
+	}
+	videoAuthBindings.setWithModelAndUpstream(job.ID, authID, job.Model, upstreamID, h.videoAuthBindingTTL())
+	payload, _ = sjson.SetBytes(payload, "id", job.ID)
+	payload, _ = sjson.SetBytes(payload, "object", "video")
+	payload, _ = sjson.DeleteBytes(payload, "request_id")
+	payload, _ = sjson.DeleteBytes(payload, "task_id")
+	payload, _ = sjson.DeleteBytes(payload, "video_id")
+	return payload, nil
+}
+
+func (h *OpenAIAPIHandler) updatePublicVideoResult(c *gin.Context, publicID string, payload []byte) []byte {
+	if h == nil || h.videoService == nil {
+		return payload
+	}
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	job, ok := h.durableVideoJob(ctx, publicID)
+	if !ok {
+		return payload
+	}
+	status := openAIVideoStatus(gjson.GetBytes(payload, "status").String())
+	if status == "" {
+		status = job.Status
+	}
+	resultURL := videoURLFromPayload(payload)
+	updated, err := h.videoService.UpdateResult(ctx, publicID, internalvideo.ResultUpdate{
+		Status:    status,
+		Progress:  int(gjson.GetBytes(payload, "progress").Int()),
+		ResultURL: resultURL,
+	})
+	if err != nil {
+		log.WithError(err).Warn("update durable video job")
+		updated = job
+	}
+	if status == "completed" && resultURL != "" && h.videoService.ObjectStorageEnabled() && strings.TrimSpace(updated.ObjectKey) == "" {
+		if stored, errStore := h.videoService.StoreCompleted(ctx, publicID, h.videoContentHTTPClient(c), resultURL); errStore != nil {
+			log.WithError(errStore).Warn("persist completed video object")
+		} else {
+			updated = stored
+		}
+	}
+	payload, _ = sjson.SetBytes(payload, "id", publicID)
+	payload, _ = sjson.SetBytes(payload, "content_url", publicVideoContentURL(c, publicID))
+	if strings.TrimSpace(updated.ObjectKey) != "" {
+		if signedURL, errSigned := h.videoService.SignedURL(updated); errSigned == nil {
+			payload, _ = sjson.SetBytes(payload, "video_url", signedURL)
+		}
+	}
+	return payload
+}
+
+func publicVideoContentURL(c *gin.Context, videoID string) string {
+	if c == nil || c.Request == nil {
+		return "/v1/videos/" + url.PathEscape(videoID) + "/content"
+	}
+	proto := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto"))
+	if proto == "" {
+		proto = "http"
+		if c.Request.TLS != nil {
+			proto = "https"
+		}
+	}
+	host := strings.TrimSpace(c.GetHeader("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(c.Request.Host)
+	}
+	if host == "" {
+		return "/v1/videos/" + url.PathEscape(videoID) + "/content"
+	}
+	return proto + "://" + host + "/v1/videos/" + url.PathEscape(videoID) + "/content"
+}
+
+// VideoContentURL returns a short-lived object URL when the completed result
+// has been persisted, otherwise it returns the authenticated public API route.
+func (h *OpenAIAPIHandler) VideoContentURL(c *gin.Context, videoID string) string {
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	if job, ok := h.durableVideoJob(ctx, videoID); ok && strings.TrimSpace(job.ObjectKey) != "" {
+		if signedURL, err := h.videoService.SignedURL(job); err == nil {
+			return signedURL
+		}
+	}
+	return publicVideoContentURL(c, videoID)
 }
 
 func buildXAIVideosCreateRequest(rawJSON []byte, model string) ([]byte, xaiVideoCreateMetadata, error) {
@@ -721,7 +953,7 @@ func xaiVideoContentURLFromPayload(payload []byte) (string, error) {
 }
 
 func videoURLFromPayload(payload []byte) string {
-	for _, path := range []string{"video.url", "url", "remixed_from_video_id"} {
+	for _, path := range []string{"video.url", "video_url", "url", "remixed_from_video_id"} {
 		rawURL := strings.TrimSpace(gjson.GetBytes(payload, path).String())
 		if rawURL == "" {
 			continue
@@ -753,6 +985,9 @@ func (h *OpenAIAPIHandler) VideosCreate(c *gin.Context) {
 	rawJSON, err := readVideosCreateRequest(c)
 	if err != nil {
 		writeVideosFailedError(c, http.StatusBadRequest, defaultOpenAIVideosModel, "invalid_request_error", fmt.Sprintf("Invalid request: %v", err))
+		return
+	}
+	if !h.requirePublicVideoService(c) {
 		return
 	}
 
@@ -844,6 +1079,19 @@ func (h *OpenAIAPIHandler) VideosRetrieve(c *gin.Context) {
 		})
 		return
 	}
+	if isCanonicalPublicVideoRequest(c) && shouldUseLegacyXAIVideoRetrieve(videoID) {
+		h.XAIVideosRetrieve(c)
+		return
+	}
+	var publicJob *internalvideo.Job
+	if isCanonicalPublicVideoRequest(c) {
+		job, ok := h.requirePublicVideoJob(c, videoID)
+		if !ok {
+			return
+		}
+		publicJob = &job
+		videoAuthBindings.setWithModelAndUpstream(job.ID, job.AuthID, job.Model, job.UpstreamID, h.videoAuthBindingTTL())
+	}
 
 	payload := []byte(`{}`)
 	payload, _ = sjson.SetBytes(payload, "request_id", videoID)
@@ -851,9 +1099,17 @@ func (h *OpenAIAPIHandler) VideosRetrieve(c *gin.Context) {
 	c.Header("Content-Type", "application/json")
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	selectedAuthID := ""
-	cliCtx = h.contextWithVideoAuthBinding(cliCtx, videoID)
-	executionModel := h.modelWithVideoAuthBinding(videoID, defaultXAIVideosModel)
-	payload = h.payloadWithVideoAuthBinding(payload, videoID)
+	executionModel := defaultXAIVideosModel
+	if publicJob != nil {
+		cliCtx = handlers.WithPinnedAuthID(cliCtx, publicJob.AuthID)
+		executionModel = publicJob.Model
+		payload, _ = sjson.SetBytes(payload, "request_id", publicJob.UpstreamID)
+		payload, _ = sjson.SetBytes(payload, "video_id", publicJob.UpstreamID)
+	} else {
+		cliCtx = h.contextWithVideoAuthBinding(cliCtx, videoID)
+		executionModel = h.modelWithVideoAuthBinding(cliCtx, videoID, defaultXAIVideosModel)
+		payload = h.payloadWithVideoAuthBinding(cliCtx, payload, videoID)
+	}
 	cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 		selectedAuthID = authID
 	})
@@ -870,7 +1126,7 @@ func (h *OpenAIAPIHandler) VideosRetrieve(c *gin.Context) {
 		return
 	}
 
-	out, err := buildVideosRetrieveAPIResponseFromXAI(videoID, resp, defaultOpenAIVideosModel)
+	out, err := buildVideosRetrieveAPIResponseFromXAI(videoID, resp, executionModel)
 	if err != nil {
 		errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err}
 		h.WriteErrorResponse(c, errMsg)
@@ -880,6 +1136,7 @@ func (h *OpenAIAPIHandler) VideosRetrieve(c *gin.Context) {
 
 	h.bindVideoAuthID(videoID, selectedAuthID, executionModel)
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	out = h.updatePublicVideoResult(c, videoID, out)
 	_, _ = c.Writer.Write(out)
 	cliCancel(nil)
 }
@@ -895,7 +1152,6 @@ func (h *OpenAIAPIHandler) VideosContent(c *gin.Context) {
 		})
 		return
 	}
-
 	variant := strings.TrimSpace(c.Query("variant"))
 	if variant == "" {
 		variant = "video"
@@ -910,14 +1166,47 @@ func (h *OpenAIAPIHandler) VideosContent(c *gin.Context) {
 		return
 	}
 
+	var publicJob *internalvideo.Job
+	if isCanonicalPublicVideoRequest(c) {
+		job, ok := h.requirePublicVideoJob(c, videoID)
+		if !ok {
+			return
+		}
+		publicJob = &job
+		videoAuthBindings.setWithModelAndUpstream(job.ID, job.AuthID, job.Model, job.UpstreamID, h.videoAuthBindingTTL())
+	}
+	if publicJob != nil {
+		if strings.TrimSpace(publicJob.ObjectKey) != "" {
+			if signedURL, errSigned := h.videoService.SignedURL(*publicJob); errSigned == nil {
+				c.Redirect(http.StatusTemporaryRedirect, signedURL)
+				return
+			}
+		}
+	} else {
+		if job, ok := h.durableVideoJob(c.Request.Context(), videoID); ok && strings.TrimSpace(job.ObjectKey) != "" {
+			if signedURL, errSigned := h.videoService.SignedURL(job); errSigned == nil {
+				c.Redirect(http.StatusTemporaryRedirect, signedURL)
+				return
+			}
+		}
+	}
+
 	payload := []byte(`{}`)
 	payload, _ = sjson.SetBytes(payload, "request_id", videoID)
 
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	selectedAuthID := ""
-	cliCtx = h.contextWithVideoAuthBinding(cliCtx, videoID)
-	executionModel := h.modelWithVideoAuthBinding(videoID, defaultXAIVideosModel)
-	payload = h.payloadWithVideoAuthBinding(payload, videoID)
+	executionModel := defaultXAIVideosModel
+	if publicJob != nil {
+		cliCtx = handlers.WithPinnedAuthID(cliCtx, publicJob.AuthID)
+		executionModel = publicJob.Model
+		payload, _ = sjson.SetBytes(payload, "request_id", publicJob.UpstreamID)
+		payload, _ = sjson.SetBytes(payload, "video_id", publicJob.UpstreamID)
+	} else {
+		cliCtx = h.contextWithVideoAuthBinding(cliCtx, videoID)
+		executionModel = h.modelWithVideoAuthBinding(cliCtx, videoID, defaultXAIVideosModel)
+		payload = h.payloadWithVideoAuthBinding(cliCtx, payload, videoID)
+	}
 	cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 		selectedAuthID = authID
 	})
@@ -1011,9 +1300,16 @@ func (h *OpenAIAPIHandler) videoContentDownloadAuth(c *gin.Context) *coreauth.Au
 	if videoID == "" {
 		return nil
 	}
-	authID, ok := videoAuthBindings.get(videoID)
-	if !ok {
-		return nil
+	authID := ""
+	if job, ok := h.durableVideoJob(c.Request.Context(), videoID); ok {
+		authID = strings.TrimSpace(job.AuthID)
+	}
+	if authID == "" {
+		var ok bool
+		authID, ok = videoAuthBindings.get(videoID)
+		if !ok {
+			return nil
+		}
 	}
 	auth, ok := h.AuthManager.GetByID(authID)
 	if !ok {
@@ -1039,7 +1335,7 @@ func (h *OpenAIAPIHandler) collectXAIVideosNative(c *gin.Context, rawJSON []byte
 	executionModel := model
 	if !bindCreatedVideoAuth {
 		cliCtx = h.contextWithVideoAuthBinding(cliCtx, videoID)
-		executionModel = h.modelWithVideoAuthBinding(videoID, model)
+		executionModel = h.modelWithVideoAuthBinding(cliCtx, videoID, model)
 	}
 	cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 		selectedAuthID = authID
@@ -1088,7 +1384,13 @@ func (h *OpenAIAPIHandler) collectOpenAICompatVideosCreate(c *gin.Context, rawJS
 		return
 	}
 
-	h.bindVideoAuthIDAndModelFromPayload(resp, selectedAuthID, model)
+	resp, errPersist := h.persistPublicVideoCreate(cliCtx, resp, selectedAuthID, model)
+	if errPersist != nil {
+		errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusInternalServerError, Error: errPersist}
+		h.WriteErrorResponse(c, errMsg)
+		cliCancel(errPersist)
+		return
+	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(resp)
 	cliCancel(nil)
@@ -1127,7 +1429,13 @@ func (h *OpenAIAPIHandler) collectXAIVideosCreate(c *gin.Context, xaiReq []byte,
 		return
 	}
 
-	h.bindVideoAuthIDFromPayload(out, selectedAuthID)
+	out, err = h.persistPublicVideoCreate(cliCtx, out, selectedAuthID, upstreamModel)
+	if err != nil {
+		errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusInternalServerError, Error: err}
+		h.WriteErrorResponse(c, errMsg)
+		cliCancel(err)
+		return
+	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(out)
 	cliCancel(nil)

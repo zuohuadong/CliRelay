@@ -26,6 +26,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	internalvideo "github.com/router-for-me/CLIProxyAPI/v7/internal/video"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
@@ -116,6 +117,7 @@ type Service struct {
 	homePluginSyncKey string
 
 	egressService *egress.Service
+	videoService  *internalvideo.Service
 }
 
 const (
@@ -1415,6 +1417,11 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 	if s.egressService != nil {
 		s.egressService.SetConfig(newCfg)
 	}
+	if s.videoService != nil {
+		if errVideoConfig := s.videoService.SetConfig(newCfg.VideoStorage); errVideoConfig != nil {
+			log.WithError(errVideoConfig).Warn("reload video storage config")
+		}
+	}
 	if s.coreManager != nil {
 		s.coreManager.SetConfig(newCfg)
 		s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
@@ -1954,6 +1961,11 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 		if s.egressService != nil {
 			if errClose := s.egressService.Close(); errClose != nil && shutdownErr == nil {
+				shutdownErr = errClose
+			}
+		}
+		if s.videoService != nil {
+			if errClose := s.videoService.Close(); errClose != nil && shutdownErr == nil {
 				shutdownErr = errClose
 			}
 		}

@@ -123,6 +123,7 @@ Full CLIProxyAPI management center with request-level monitoring and cost estima
 
 ## SDK Docs
 
+- Video generation: [docs/video-generation.md](docs/video-generation.md)
 - Usage: [docs/sdk-usage.md](docs/sdk-usage.md)
 - Advanced (executors & translators): [docs/sdk-advanced.md](docs/sdk-advanced.md)
 - Access: [docs/sdk-access.md](docs/sdk-access.md)

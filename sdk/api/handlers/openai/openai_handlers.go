@@ -19,6 +19,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	responsesconverter "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/openai/responses"
+	internalvideo "github.com/router-for-me/CLIProxyAPI/v7/internal/video"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -28,6 +29,16 @@ import (
 // It holds a pool of clients to interact with the backend service.
 type OpenAIAPIHandler struct {
 	*handlers.BaseAPIHandler
+	videoService *internalvideo.Service
+}
+
+// SetVideoService enables durable public video task routing and optional
+// object storage for the Videos API.
+func (h *OpenAIAPIHandler) SetVideoService(service *internalvideo.Service) {
+	if h == nil {
+		return
+	}
+	h.videoService = service
 }
 
 // NewOpenAIAPIHandler creates a new OpenAI API handlers instance.

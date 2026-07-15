@@ -64,6 +64,12 @@ loopback development endpoints. `max-source-bytes` limits each upstream video
 archive (2 GiB by default). Archive downloads reject private, loopback,
 link-local, and cloud metadata destinations, including redirect targets.
 
+CliRelay does not delete stored video objects. Configure an R2/S3 bucket
+lifecycle rule for `video-storage.prefix` (default: `videos/`) to enforce
+retention. R2 Standard is the appropriate storage class for short-lived videos;
+lifecycle deletion is asynchronous, so plan for objects to remain for up to
+roughly one extra day.
+
 If object storage is disabled or a copy cannot be completed, CliRelay safely
 falls back to its authenticated content proxy.
 

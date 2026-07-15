@@ -14,6 +14,9 @@ services:
     #   - .env
     environment:
       DEPLOY: ${DEPLOY:-}
+      VIDEO_STORAGE_ACCESS_KEY_ID: ${VIDEO_STORAGE_ACCESS_KEY_ID:-}
+      VIDEO_STORAGE_SECRET_ACCESS_KEY: ${VIDEO_STORAGE_SECRET_ACCESS_KEY:-}
+      VIDEO_STORAGE_SESSION_TOKEN: ${VIDEO_STORAGE_SESSION_TOKEN:-}
     ports:
       - "8317:8317"
       - "8085:8085"
@@ -25,4 +28,5 @@ services:
       - ${CLI_PROXY_CONFIG_PATH:-./config.yaml}:/CLIProxyAPI/config.yaml
       - ${CLI_PROXY_AUTH_PATH:-./auths}:/root/.cli-proxy-api
       - ${CLI_PROXY_LOG_PATH:-./logs}:/CLIProxyAPI/logs
+      - ${CLI_PROXY_DATA_PATH:-./data}:/CLIProxyAPI/data
     restart: unless-stopped

@@ -50,6 +50,8 @@ multipart 二进制 `input_reference` 上传会被明确拒绝，不再静默丢
 
 对象存储端点必须使用 HTTPS；只有本机回环地址允许 HTTP，便于本地开发。`max-source-bytes` 控制单个上游视频的最大归档大小，默认 2 GiB。归档下载会拒绝私网、回环、链路本地及云元数据地址，并对重定向执行同样校验。
 
+CliRelay 不会主动删除已归档的视频对象。请在 R2/S3 bucket 为 `video-storage.prefix`（默认 `videos/`）配置 Lifecycle 规则以执行保留期；短期视频应使用 R2 Standard。Lifecycle 删除是异步的，实际删除时间应预留约一天的缓冲。
+
 未启用对象存储或复制失败时，CliRelay 会安全降级到需要 API Key 的鉴权代理下载。
 
 ## MCP 与 ChatGPT App

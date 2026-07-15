@@ -113,6 +113,40 @@ func TestCanServeModelWithScopesHonorsGroupAllowedModels(t *testing.T) {
 	}
 }
 
+func TestCanServeModelWithScopesRejectsStatusDisabledAuth(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.GetGlobalRegistry()
+	now := time.Now().Unix()
+	reg.RegisterClient("disabled-team-auth", "openai", []*registry.ModelInfo{
+		{ID: "team/gpt-5", Created: now},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient("disabled-team-auth")
+	})
+
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{Name: "team", AllowedModels: []string{"gpt-5"}},
+			},
+		},
+	})
+	if _, err := manager.Register(context.Background(), &Auth{
+		ID:       "disabled-team-auth",
+		Provider: "openai",
+		Prefix:   "team",
+		Status:   StatusDisabled,
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if manager.CanServeModelWithScopes("gpt-5", nil, map[string]struct{}{"team": {}}, "") {
+		t.Fatal("expected status-disabled auth to be unavailable")
+	}
+}
+
 func TestAuthGroupsMatchesLegacyOAuthEmailAfterRename(t *testing.T) {
 	t.Parallel()
 

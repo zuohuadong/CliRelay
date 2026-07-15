@@ -268,4 +268,12 @@ func TestFilterModelsByAccess(t *testing.T) {
 	if res6[0]["name"] != "models/gemini-3-pro" {
 		t.Fatalf("gemini name match: unexpected elements: %v", res6)
 	}
+
+	// 7. Scoped access without an auth manager must fail closed.
+	c7 := &gin.Context{}
+	c7.Set("accessMetadata", map[string]string{"allowed-channel-groups": "team"})
+	res7 := h.FilterModelsByAccess(c7, models)
+	if len(res7) != 0 {
+		t.Fatalf("missing auth manager: expected 0, got %d", len(res7))
+	}
 }

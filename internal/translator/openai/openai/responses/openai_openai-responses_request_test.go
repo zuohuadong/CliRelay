@@ -343,3 +343,80 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesInputImag
 		t.Fatalf("messages.0.content.0.image_url.detail = %q, want high; output=%s", got, out)
 	}
 }
+
+func TestConvertOpenAIChatCompletionsRequestToOpenAIResponses(t *testing.T) {
+	raw := []byte(`{
+		"model":"deepseek-v4-pro",
+		"messages":[
+			{"role":"system","content":"be concise"},
+			{"role":"user","content":[
+				{"type":"text","text":"hello"},
+				{"type":"image_url","image_url":{"url":"https://example.com/a.png","detail":"high"}}
+			]},
+			{"role":"assistant","content":"working"},
+			{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":\\"x\\"}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"result"}
+		],
+		"tools":[{"type":"function","function":{"name":"lookup","description":"look up a value","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}],
+		"tool_choice":{"type":"function","function":{"name":"lookup"}},
+		"max_tokens":32,
+		"reasoning_effort":"high",
+		"parallel_tool_calls":true,
+		"stream":true
+	}`)
+
+	out := ConvertOpenAIChatCompletionsRequestToOpenAIResponses("deepseek-v4-pro", raw, true)
+	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
+	if got := gjson.GetBytes(out, "model").String(); got != "deepseek-v4-pro" {
+		t.Fatalf("model = %q, want deepseek-v4-pro", got)
+	}
+	if gjson.GetBytes(out, "messages").Exists() {
+		t.Fatalf("unexpected chat messages in responses request: %s", out)
+	}
+	if got := gjson.GetBytes(out, "input.0.role").String(); got != "developer" {
+		t.Fatalf("input.0.role = %q, want developer", got)
+	}
+	if got := gjson.GetBytes(out, "input.0.content.0.text").String(); got != "be concise" {
+		t.Fatalf("input.0.content.0.text = %q, want be concise", got)
+	}
+	if got := gjson.GetBytes(out, "input.1.role").String(); got != "user" {
+		t.Fatalf("input.1.role = %q, want user", got)
+	}
+	if got := gjson.GetBytes(out, "input.1.content.0.type").String(); got != "input_text" {
+		t.Fatalf("input.1.content.0.type = %q, want input_text", got)
+	}
+	if got := gjson.GetBytes(out, "input.1.content.1.type").String(); got != "input_image" {
+		t.Fatalf("input.1.content.1.type = %q, want input_image", got)
+	}
+	if got := gjson.GetBytes(out, "input.1.content.1.detail").String(); got != "high" {
+		t.Fatalf("input.1.content.1.detail = %q, want high", got)
+	}
+	if got := gjson.GetBytes(out, "input.3.type").String(); got != "function_call" {
+		t.Fatalf("input.3.type = %q, want function_call", got)
+	}
+	if got := gjson.GetBytes(out, "input.3.call_id").String(); got != "call_1" {
+		t.Fatalf("input.3.call_id = %q, want call_1", got)
+	}
+	if got := gjson.GetBytes(out, "input.4.type").String(); got != "function_call_output" {
+		t.Fatalf("input.4.type = %q, want function_call_output", got)
+	}
+	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "lookup" {
+		t.Fatalf("tools.0.name = %q, want lookup", got)
+	}
+	if got := gjson.GetBytes(out, "tool_choice.type").String(); got != "function" {
+		t.Fatalf("tool_choice.type = %q, want function", got)
+	}
+	if got := gjson.GetBytes(out, "tool_choice.name").String(); got != "lookup" {
+		t.Fatalf("tool_choice.name = %q, want lookup", got)
+	}
+	if got := gjson.GetBytes(out, "max_output_tokens").Int(); got != 32 {
+		t.Fatalf("max_output_tokens = %d, want 32", got)
+	}
+	if got := gjson.GetBytes(out, "reasoning.effort").String(); got != "high" {
+		t.Fatalf("reasoning.effort = %q, want high", got)
+	}
+	if !gjson.GetBytes(out, "parallel_tool_calls").Bool() || !gjson.GetBytes(out, "stream").Bool() {
+		t.Fatalf("expected parallel_tool_calls and stream to remain true: %s", out)
+	}
+}

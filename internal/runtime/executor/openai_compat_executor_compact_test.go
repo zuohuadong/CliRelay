@@ -972,6 +972,129 @@ func TestOpenAICompatExecutorResponseEndpointPreservesResponsesImageGeneration(t
 	}
 }
 
+func TestOpenAICompatExecutorResponseEndpointTranslatesChatCompletionsNonStream(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":123,"status":"completed","model":"custom-deepseek","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatible-custom-coding", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:             "custom-coding",
+			BaseURL:          server.URL + "/v1",
+			ResponseEndpoint: true,
+			Models:           []config.OpenAICompatibilityModel{{Name: "custom-deepseek", Alias: "deepseek-v4-pro"}},
+		}},
+	})
+	auth := &cliproxyauth.Auth{Provider: "openai-compatible-custom-coding", Attributes: map[string]string{
+		"base_url":     server.URL + "/v1",
+		"api_key":      "test",
+		"compat_name":  "custom-coding",
+		"provider_key": "openai-compatible-custom-coding",
+	}}
+	payload := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"max_tokens":16,"stream":false}`)
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "custom-deepseek",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAI,
+		OriginalRequest: payload,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	}
+	if !gjson.GetBytes(gotBody, "input").Exists() {
+		t.Fatalf("expected responses input body, got %s", gotBody)
+	}
+	if gjson.GetBytes(gotBody, "messages").Exists() {
+		t.Fatalf("unexpected chat messages body: %s", gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "max_output_tokens").Int(); got != 16 {
+		t.Fatalf("max_output_tokens = %d, want 16; body=%s", got, gotBody)
+	}
+	if got := gjson.GetBytes(resp.Payload, "object").String(); got != "chat.completion" {
+		t.Fatalf("response object = %q, want chat.completion; body=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "choices.0.message.content").String(); got != "ok" {
+		t.Fatalf("response content = %q, want ok; body=%s", got, resp.Payload)
+	}
+}
+
+func TestOpenAICompatExecutorResponseEndpointTranslatesChatCompletionsStream(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"created_at\":123,\"model\":\"custom-deepseek\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"created_at\":123,\"status\":\"completed\",\"model\":\"custom-deepseek\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4}}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatible-custom-coding", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:             "custom-coding",
+			BaseURL:          server.URL + "/v1",
+			ResponseEndpoint: true,
+			Models:           []config.OpenAICompatibilityModel{{Name: "custom-deepseek", Alias: "deepseek-v4-pro"}},
+		}},
+	})
+	auth := &cliproxyauth.Auth{Provider: "openai-compatible-custom-coding", Attributes: map[string]string{
+		"base_url":     server.URL + "/v1",
+		"api_key":      "test",
+		"compat_name":  "custom-coding",
+		"provider_key": "openai-compatible-custom-coding",
+	}}
+	payload := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	stream, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "custom-deepseek",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAI,
+		OriginalRequest: payload,
+		Stream:          true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	sawContent := false
+	sawFinish := false
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Err)
+		}
+		if got := gjson.GetBytes(chunk.Payload, "choices.0.delta.content").String(); got == "ok" {
+			sawContent = true
+		}
+		if got := gjson.GetBytes(chunk.Payload, "choices.0.finish_reason").String(); got == "stop" {
+			sawFinish = true
+		}
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	}
+	if !gjson.GetBytes(gotBody, "input").Exists() || gjson.GetBytes(gotBody, "messages").Exists() {
+		t.Fatalf("expected translated responses body, got %s", gotBody)
+	}
+	if !sawContent || !sawFinish {
+		t.Fatalf("missing translated chat stream content/finish: content=%v finish=%v", sawContent, sawFinish)
+	}
+}
+
 func TestOpenAICompatExecutorResponseEndpointStreamsResponsesImageGeneration(t *testing.T) {
 	var gotPath string
 	var gotBody []byte
@@ -1266,6 +1389,49 @@ func TestAstronCodeExecutorResponseEndpointUsesResponsesPath(t *testing.T) {
 	}
 }
 
+func TestAstronCodeExecutorResponseEndpointTranslatesChatCompletions(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":123,"status":"completed","model":"astron-code-latest","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewAstronCodeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url":          server.URL + "/v2",
+		"api_key":           "test",
+		"response_endpoint": "true",
+	}}
+	payload := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"max_tokens":16}`)
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "astron-code-latest",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAI,
+		OriginalRequest: payload,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	}
+	if !gjson.GetBytes(gotBody, "input").Exists() || gjson.GetBytes(gotBody, "messages").Exists() {
+		t.Fatalf("expected translated responses body, got %s", gotBody)
+	}
+	if got := gjson.GetBytes(resp.Payload, "object").String(); got != "chat.completion" {
+		t.Fatalf("response object = %q, want chat.completion; body=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "choices.0.message.content").String(); got != "ok" {
+		t.Fatalf("response content = %q, want ok; body=%s", got, resp.Payload)
+	}
+}
+
 func TestOpenAICompatExecutorPayloadOverrideWinsOverThinkingSuffix(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1312,7 +1478,9 @@ func TestOpenAICompatExecutorPayloadOverrideWinsOverThinkingSuffix(t *testing.T)
 
 func TestOpenAICompatExecutorIdentityFingerprintOverridesProviderHeaders(t *testing.T) {
 	var gotHeaders http.Header
+	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
 		gotHeaders = r.Header.Clone()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"glm-5.1","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
@@ -1340,7 +1508,7 @@ func TestOpenAICompatExecutorIdentityFingerprintOverridesProviderHeaders(t *test
 		"header:Originator":    "codex-tui",
 		"header:X-Keep":        "ok",
 	}}
-	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "gpt-5.3-codex",
 		Payload: []byte(`{"model":"gpt-5.3-codex","messages":[{"role":"user","content":"hi"}]}`),
 	}, cliproxyexecutor.Options{
@@ -1349,6 +1517,12 @@ func TestOpenAICompatExecutorIdentityFingerprintOverridesProviderHeaders(t *test
 	})
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("path = %q, want /v1/chat/completions when only identity fingerprint is configured", gotPath)
+	}
+	if got := gjson.GetBytes(resp.Payload, "choices.0.message.content").String(); got != "ok" {
+		t.Fatalf("response content = %q, want ok; body=%s", got, resp.Payload)
 	}
 
 	if got := gotHeaders.Get("User-Agent"); got != "codex-tui/test" {

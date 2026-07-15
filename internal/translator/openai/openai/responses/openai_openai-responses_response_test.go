@@ -683,6 +683,40 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_OmitsTop
 	}
 }
 
+func TestConvertOpenAIResponsesResponseToOpenAIChatCompletionsNonStream(t *testing.T) {
+	raw := []byte(`{
+		"id":"resp_1",
+		"object":"response",
+		"created_at":123,
+		"status":"completed",
+		"model":"deepseek-v4-pro",
+		"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],
+		"usage":{"input_tokens":9,"output_tokens":1,"total_tokens":10}
+	}`)
+
+	out := ConvertOpenAIResponsesResponseToOpenAIChatCompletionsNonStream(nil, "deepseek-v4-pro", nil, nil, raw, nil)
+	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
+	if got := gjson.GetBytes(out, "object").String(); got != "chat.completion" {
+		t.Fatalf("object = %q, want chat.completion", got)
+	}
+	if got := gjson.GetBytes(out, "id").String(); got != "chatcmpl-1" {
+		t.Fatalf("id = %q, want chatcmpl-1", got)
+	}
+	if got := gjson.GetBytes(out, "choices.0.message.role").String(); got != "assistant" {
+		t.Fatalf("role = %q, want assistant", got)
+	}
+	if got := gjson.GetBytes(out, "choices.0.message.content").String(); got != "ok" {
+		t.Fatalf("content = %q, want ok", got)
+	}
+	if got := gjson.GetBytes(out, "usage.prompt_tokens").Int(); got != 9 {
+		t.Fatalf("prompt_tokens = %d, want 9", got)
+	}
+	if got := gjson.GetBytes(out, "usage.completion_tokens").Int(); got != 1 {
+		t.Fatalf("completion_tokens = %d, want 1", got)
+	}
+}
+
 func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_RestoresNamespaceFunctionCall(t *testing.T) {
 	originalRequest := []byte(`{
 		"model":"deepseek-v4-flash",

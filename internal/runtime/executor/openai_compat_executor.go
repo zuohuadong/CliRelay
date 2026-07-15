@@ -1013,14 +1013,21 @@ func (e *OpenAICompatExecutor) applyIdentityFingerprint(req *http.Request, auth 
 }
 
 func (e *OpenAICompatExecutor) useResponsesEndpoint(auth *cliproxyauth.Auth, opts cliproxyexecutor.Options) bool {
-	if opts.SourceFormat.String() != "openai-response" || opts.Alt != "" {
+	if opts.Alt != "" {
+		return false
+	}
+	sourceFormat := opts.SourceFormat.String()
+	switch sourceFormat {
+	case "openai", "openai-response":
+		// These are the two schemas covered by the OpenAI Responses bridge.
+	default:
 		return false
 	}
 	if auth != nil && auth.Attributes != nil {
 		if strings.EqualFold(strings.TrimSpace(auth.Attributes["response_endpoint"]), "true") {
 			return true
 		}
-		if strings.EqualFold(strings.TrimSpace(auth.Attributes["identity_fingerprint"]), "codex") {
+		if sourceFormat == "openai-response" && strings.EqualFold(strings.TrimSpace(auth.Attributes["identity_fingerprint"]), "codex") {
 			return true
 		}
 	}
@@ -1028,7 +1035,10 @@ func (e *OpenAICompatExecutor) useResponsesEndpoint(auth *cliproxyauth.Auth, opt
 	if compat == nil {
 		return false
 	}
-	return compat.ResponseEndpoint || strings.EqualFold(strings.TrimSpace(compat.IdentityFingerprint), "codex")
+	if compat.ResponseEndpoint {
+		return true
+	}
+	return sourceFormat == "openai-response" && strings.EqualFold(strings.TrimSpace(compat.IdentityFingerprint), "codex")
 }
 
 // Refresh is a no-op for API-key based compatibility providers.

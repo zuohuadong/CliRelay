@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -27,19 +28,73 @@ type terminalEgressStreamExecutor struct {
 	mu      sync.Mutex
 	calls   int
 	asChunk bool
+	err     error
+}
+
+type transientTransportStreamExecutor struct {
+	mu      sync.Mutex
+	calls   int
+	asChunk bool
+	err     error
+}
+
+func (e *transientTransportStreamExecutor) Identifier() string { return "codex" }
+
+func (e *transientTransportStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *transientTransportStreamExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.mu.Lock()
+	e.calls++
+	call := e.calls
+	e.mu.Unlock()
+
+	if call == 1 {
+		if !e.asChunk {
+			return nil, e.err
+		}
+		chunks := make(chan coreexecutor.StreamChunk, 1)
+		chunks <- coreexecutor.StreamChunk{Err: e.err}
+		close(chunks)
+		return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	}
+
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	chunks <- coreexecutor.StreamChunk{Payload: []byte("ok")}
+	close(chunks)
+	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *transientTransportStreamExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *transientTransportStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *transientTransportStreamExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (e *transientTransportStreamExecutor) Calls() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
 }
 
 func (e *terminalEgressStreamExecutor) Identifier() string { return "codex" }
 
 func (e *terminalEgressStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, internalegress.RuntimeError(internalegress.ErrEndpointDisabled)
+	return coreexecutor.Response{}, e.runtimeError()
 }
 
 func (e *terminalEgressStreamExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
 	e.mu.Lock()
 	e.calls++
 	e.mu.Unlock()
-	err := internalegress.RuntimeError(internalegress.ErrEndpointDisabled)
+	err := e.runtimeError()
 	if !e.asChunk {
 		return nil, err
 	}
@@ -54,11 +109,18 @@ func (e *terminalEgressStreamExecutor) Refresh(_ context.Context, auth *coreauth
 }
 
 func (e *terminalEgressStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, internalegress.RuntimeError(internalegress.ErrEndpointDisabled)
+	return coreexecutor.Response{}, e.runtimeError()
 }
 
 func (e *terminalEgressStreamExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
-	return nil, internalegress.RuntimeError(internalegress.ErrEndpointDisabled)
+	return nil, e.runtimeError()
+}
+
+func (e *terminalEgressStreamExecutor) runtimeError() error {
+	if e.err != nil {
+		return internalegress.RuntimeError(e.err)
+	}
+	return internalegress.RuntimeError(internalegress.ErrEndpointDisabled)
 }
 
 func (e *terminalEgressStreamExecutor) Calls() int {
@@ -1058,12 +1120,15 @@ func TestExecuteStreamWithAuthManager_DoesNotReplayTerminalEgressFailure(t *test
 	for _, tc := range []struct {
 		name    string
 		asChunk bool
+		err     error
 	}{
-		{name: "initial execute stream error"},
-		{name: "bootstrap chunk error", asChunk: true},
+		{name: "initial required error", err: internalegress.ErrEgressRequired},
+		{name: "bootstrap disabled error", asChunk: true, err: internalegress.ErrEndpointDisabled},
+		{name: "bootstrap invalid error", asChunk: true, err: internalegress.ErrEndpointInvalid},
+		{name: "bootstrap identity mismatch", asChunk: true, err: internalegress.ErrIdentityMismatch},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			executor := &terminalEgressStreamExecutor{asChunk: tc.asChunk}
+			executor := &terminalEgressStreamExecutor{asChunk: tc.asChunk, err: tc.err}
 			manager := coreauth.NewManager(nil, nil, nil)
 			manager.RegisterExecutor(executor)
 			auth := &coreauth.Auth{ID: "egress-auth", Provider: "codex", Status: coreauth.StatusActive}
@@ -1091,6 +1156,52 @@ func TestExecuteStreamWithAuthManager_DoesNotReplayTerminalEgressFailure(t *test
 			}
 			if calls := executor.Calls(); calls != 1 {
 				t.Fatalf("ExecuteStream calls = %d, want no replay", calls)
+			}
+		})
+	}
+}
+
+func TestExecuteStreamWithAuthManager_RetriesTransientZeroOutputTransportFailure(t *testing.T) {
+	strictEgressReadErr := internalegress.RuntimeError(fmt.Errorf(
+		"%w: strict egress proxy response read failed: stream error: stream ID 1; INTERNAL_ERROR; received from peer",
+		internalegress.ErrEndpointDisabled,
+	))
+
+	for _, tc := range []struct {
+		name    string
+		asChunk bool
+		err     error
+	}{
+		{name: "strict egress HTTP2 response read", asChunk: true, err: strictEgressReadErr},
+		{name: "response body decode", err: errors.New("stream disconnected before completion: Transport error: network error: error decoding response body")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			executor := &transientTransportStreamExecutor{asChunk: tc.asChunk, err: tc.err}
+			manager := coreauth.NewManager(nil, nil, nil)
+			manager.RegisterExecutor(executor)
+			auth := &coreauth.Auth{ID: "transport-auth", Provider: "codex", Status: coreauth.StatusActive}
+			if _, err := manager.Register(context.Background(), auth); err != nil {
+				t.Fatal(err)
+			}
+			registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-transport-model"}})
+			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+
+			handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 1}}, manager)
+			dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-transport-model", []byte(`{"model":"test-transport-model"}`), "")
+			var got []byte
+			for chunk := range dataChan {
+				got = append(got, chunk...)
+			}
+			for msg := range errChan {
+				if msg != nil {
+					t.Fatalf("unexpected error after replay: %v", msg.Error)
+				}
+			}
+			if string(got) != "ok" {
+				t.Fatalf("payload = %q, want ok", got)
+			}
+			if calls := executor.Calls(); calls != 2 {
+				t.Fatalf("ExecuteStream calls = %d, want 2", calls)
 			}
 		})
 	}

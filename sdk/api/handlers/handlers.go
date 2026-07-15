@@ -1770,6 +1770,9 @@ func statusFromError(err error) int {
 }
 
 func streamBootstrapRetryEligible(err error) bool {
+	if IsRetryableZeroOutputTransportError(err) {
+		return true
+	}
 	var egressErr *internalegress.Error
 	if errors.As(err, &egressErr) {
 		return false
@@ -1785,6 +1788,36 @@ func streamBootstrapRetryEligible(err error) bool {
 	default:
 		return status >= http.StatusInternalServerError
 	}
+}
+
+// IsRetryableZeroOutputTransportError reports whether an upstream stream failed
+// due to a transient transport/body-read interruption before any output was sent.
+// Egress configuration and identity failures remain terminal; only strict-egress
+// response-read failures are eligible for replay.
+func IsRetryableZeroOutputTransportError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	if text == "" {
+		return false
+	}
+
+	var egressErr *internalegress.Error
+	if errors.As(err, &egressErr) {
+		if !strings.EqualFold(strings.TrimSpace(egressErr.Code), "egress_disabled") {
+			return false
+		}
+		return strings.Contains(text, "strict egress proxy response read failed") ||
+			strings.Contains(text, "strict egress stream read failed")
+	}
+
+	return strings.Contains(text, "stream disconnected before completion") ||
+		strings.Contains(text, "error decoding response body") ||
+		(strings.Contains(text, "transport error") && strings.Contains(text, "network error")) ||
+		(strings.Contains(text, "stream error: stream id") && strings.Contains(text, "internal_error")) ||
+		strings.Contains(text, "unexpected eof")
 }
 
 func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {

@@ -103,6 +103,54 @@ type websocketZeroOutputEOFReplayExecutor struct {
 	payloads                   [][]byte
 }
 
+type websocketTransientTransportFailoverExecutor struct {
+	mu      sync.Mutex
+	authIDs []string
+}
+
+func (e *websocketTransientTransportFailoverExecutor) Identifier() string { return "test-provider" }
+
+func (e *websocketTransientTransportFailoverExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *websocketTransientTransportFailoverExecutor) ExecuteStream(_ context.Context, auth *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	authID := ""
+	if auth != nil {
+		authID = auth.ID
+	}
+	e.mu.Lock()
+	e.authIDs = append(e.authIDs, authID)
+	e.mu.Unlock()
+
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	if authID == "auth-a" {
+		chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"error","error":{"message":"stream disconnected before completion: Transport error: network error: error decoding response body"}}`)}
+	} else {
+		chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"response.completed","response":{"id":"resp-auth-b","output":[{"type":"message","id":"out-auth-b"}]}}`)}
+	}
+	close(chunks)
+	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *websocketTransientTransportFailoverExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *websocketTransientTransportFailoverExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *websocketTransientTransportFailoverExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (e *websocketTransientTransportFailoverExecutor) AuthIDs() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.authIDs...)
+}
+
 type websocketBootstrapFallbackExecutor struct {
 	mu       sync.Mutex
 	authIDs  []string
@@ -3200,6 +3248,67 @@ func TestResponsesWebsocketRetriesLifecycleTransientErrorWithConfiguredReplayLim
 
 	if payloads := executor.Payloads(); len(payloads) != replayRetries+1 {
 		t.Fatalf("upstream payload count = %d, want %d", len(payloads), replayRetries+1)
+	}
+}
+
+func TestResponsesWebsocketRetriesTransportDecodeErrorOnAnotherAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	selector := &orderedWebsocketSelector{order: []string{"auth-a", "auth-b"}}
+	executor := &websocketTransientTransportFailoverExecutor{}
+	manager := coreauth.NewManager(nil, selector, nil)
+	manager.RegisterExecutor(executor)
+
+	for _, authID := range []string{"auth-a", "auth-b"} {
+		auth := &coreauth.Auth{
+			ID:         authID,
+			Provider:   executor.Identifier(),
+			Status:     coreauth.StatusActive,
+			Attributes: map[string]string{"websockets": "true"},
+		}
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("Register %s: %v", authID, err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "transport-model"}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	}
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{
+		Streaming: sdkconfig.StreamingConfig{ResponsesWebsocketReplayRetries: intPointer(1)},
+	}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Fatalf("close websocket: %v", errClose)
+		}
+	}()
+
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"transport-model","input":[{"type":"message","id":"msg-1"}]}`)); errWrite != nil {
+		t.Fatalf("write websocket message: %v", errWrite)
+	}
+	_, payload, errReadMessage := conn.ReadMessage()
+	if errReadMessage != nil {
+		t.Fatalf("read websocket message: %v", errReadMessage)
+	}
+	if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+		t.Fatalf("payload type = %s, want %s after replay: %s", got, wsEventTypeCompleted, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.id").String(); got != "resp-auth-b" {
+		t.Fatalf("response.id = %q, want auth-b replay response: %s", got, payload)
+	}
+	if got := executor.AuthIDs(); len(got) != 2 || got[0] != "auth-a" || got[1] != "auth-b" {
+		t.Fatalf("selected auth IDs = %v, want [auth-a auth-b]", got)
 	}
 }
 

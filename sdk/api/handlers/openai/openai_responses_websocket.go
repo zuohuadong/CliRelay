@@ -575,6 +575,9 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				return
 			}
 			if canReplayForwardErr && shouldReplayForwardErr {
+				if shouldReleaseResponsesWebsocketPinnedAuth(forwardErrMsg) {
+					pinnedAuthID = ""
+				}
 				forceTranscriptReplayNextRequest = true
 				lastRequest = previousLastRequest
 				lastResponseOutput = previousLastResponseOutput
@@ -2509,6 +2512,9 @@ func shouldReplayResponsesWebsocketZeroOutputEOF(errMsg *interfaces.ErrorMessage
 func shouldReplayResponsesWebsocketZeroOutputTransientError(errMsg *interfaces.ErrorMessage, completedOutput []byte, sawReplayBlockingPayload bool) bool {
 	if errMsg == nil || sawReplayBlockingPayload || responsesWebsocketOutputItemCount(completedOutput) > 0 {
 		return false
+	}
+	if handlers.IsRetryableZeroOutputTransportError(errMsg.Error) {
+		return true
 	}
 	text := responsesWebsocketErrorText(errMsg)
 	return strings.Contains(text, "system is busy") ||

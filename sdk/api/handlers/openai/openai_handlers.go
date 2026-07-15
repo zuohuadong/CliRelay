@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
@@ -645,7 +646,6 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, h.GetAlt(c))
 
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
@@ -653,8 +653,16 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 		c.Header("Connection", "keep-alive")
 		c.Header("Access-Control-Allow-Origin", "*")
 	}
+	bootstrapKeepAlive := handlers.StreamingKeepAliveInterval(h.Cfg) > 0
+	if bootstrapKeepAlive {
+		setSSEHeaders()
+	}
+	stopBootstrapHeartbeat := h.startStreamBootstrapHeartbeat(c, flusher)
+	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, h.GetAlt(c))
+	stopBootstrapHeartbeat()
 
-	// Peek at the first chunk to determine success or failure before setting headers
+	// Peek at the first chunk to preserve non-streaming HTTP error statuses when
+	// bootstrap keep-alives are disabled.
 	for {
 		select {
 		case <-c.Request.Context().Done():
@@ -666,8 +674,23 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 				errChan = nil
 				continue
 			}
-			// Upstream failed immediately. Return proper error status and JSON.
-			h.WriteErrorResponse(c, errMsg)
+			if bootstrapKeepAlive {
+				if errMsg != nil {
+					status := http.StatusInternalServerError
+					if errMsg.StatusCode > 0 {
+						status = errMsg.StatusCode
+					}
+					errText := http.StatusText(status)
+					if errMsg.Error != nil && errMsg.Error.Error() != "" {
+						errText = errMsg.Error.Error()
+					}
+					body := handlers.BuildErrorResponseBody(status, errText)
+					_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(body))
+				}
+				flusher.Flush()
+			} else {
+				h.WriteErrorResponse(c, errMsg)
+			}
 			if errMsg != nil {
 				cliCancel(errMsg.Error)
 			} else {
@@ -696,6 +719,47 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 			h.handleStreamResult(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
 			return
 		}
+	}
+}
+
+func (h *OpenAIAPIHandler) startStreamBootstrapHeartbeat(c *gin.Context, flusher http.Flusher) func() {
+	if h == nil || c == nil || flusher == nil {
+		return func() {}
+	}
+	interval := handlers.StreamingKeepAliveInterval(h.Cfg)
+	if interval <= 0 {
+		return func() {}
+	}
+
+	writeHeartbeat := func() {
+		_, _ = c.Writer.Write([]byte(": keep-alive\n\n"))
+		flusher.Flush()
+	}
+	writeHeartbeat()
+
+	stopChan := make(chan struct{})
+	var stopOnce sync.Once
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-c.Request.Context().Done():
+				return
+			case <-ticker.C:
+				writeHeartbeat()
+			}
+		}
+	}()
+
+	return func() {
+		stopOnce.Do(func() { close(stopChan) })
+		wg.Wait()
 	}
 }
 

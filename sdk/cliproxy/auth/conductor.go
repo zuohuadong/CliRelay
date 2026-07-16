@@ -1100,6 +1100,8 @@ func dedicatedOpenAICompatibleProviderKey(name string) (string, bool) {
 		return internalconfig.DefaultBigModelCodingProviderName, true
 	case internalconfig.DefaultAstronCodeProviderName:
 		return internalconfig.DefaultAstronCodeProviderName, true
+	case internalconfig.DefaultAgnesProviderName, "agnes-ai":
+		return internalconfig.DefaultAgnesProviderName, true
 	case "opencode-go":
 		return "opencode-go", true
 	default:

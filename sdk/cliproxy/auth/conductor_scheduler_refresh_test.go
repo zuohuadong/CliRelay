@@ -45,6 +45,40 @@ func (e unauthorizedRefreshTestExecutor) Refresh(ctx context.Context, auth *Auth
 	return nil, errors.New("token refresh failed with status 401: invalid_grant")
 }
 
+func TestManagerExecute_AgnesDedicatedProviderUsesConfiguredAuth(t *testing.T) {
+	const (
+		provider = "agnes"
+		model    = "agnes-video-v2.0"
+	)
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.RegisterExecutor(schedulerProviderTestExecutor{provider: provider})
+
+	auth := &Auth{
+		ID:       "agnes-video-auth",
+		Provider: provider,
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"api_key":      "agnes-test-key",
+			"compat_name":  provider,
+			"provider_key": provider,
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register Agnes auth: %v", errRegister)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, provider, []*registry.ModelInfo{{ID: model, Type: registry.OpenAIVideoModelType}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+
+	if _, errExecute := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{}); errExecute != nil {
+		t.Fatalf("execute Agnes video model: %v", errExecute)
+	}
+}
+
 func TestManager_RefreshAuthUnauthorizedFailureStopsAutoRefreshRetry(t *testing.T) {
 	ctx := context.Background()
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)

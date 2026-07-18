@@ -1511,6 +1511,57 @@ func TestSanitizeResponsesInputToolCallNamesDropsUnpairedToolHistory(t *testing.
 	}
 }
 
+func TestSanitizeResponsesInputToolCallNamesRewritesFunctionCallIDPrefix(t *testing.T) {
+	raw := []byte(`{"input":[{"type":"message","id":"msg-1"},{"type":"function_call","id":"call_c24e167877134ea69a7d2a9d","call_id":"call_c24e167877134ea69a7d2a9d","name":"exec_command","arguments":"{}"},{"type":"function_call_output","id":"out-1","call_id":"call_c24e167877134ea69a7d2a9d","output":"ok"},{"type":"function_call","id":"fc-keep","call_id":"call-keep","name":"exec_command","arguments":"{}"},{"type":"function_call_output","id":"out-keep","call_id":"call-keep","output":"done"}]}`)
+
+	sanitized := sanitizeResponsesInputToolCallNames(raw)
+
+	items := gjson.GetBytes(sanitized, "input").Array()
+	if len(items) != 5 {
+		t.Fatalf("sanitized input len = %d, want 5: %s", len(items), sanitized)
+	}
+	if got := items[1].Get("id").String(); got != "fc_c24e167877134ea69a7d2a9d" {
+		t.Fatalf("function_call id = %q, want fc_c24e167877134ea69a7d2a9d: %s", got, sanitized)
+	}
+	if got := items[1].Get("call_id").String(); got != "call_c24e167877134ea69a7d2a9d" {
+		t.Fatalf("function_call call_id = %q, want unchanged call_c24e167877134ea69a7d2a9d: %s", got, sanitized)
+	}
+	if got := items[2].Get("call_id").String(); got != "call_c24e167877134ea69a7d2a9d" {
+		t.Fatalf("function_call_output call_id = %q, want unchanged: %s", got, sanitized)
+	}
+	if got := items[3].Get("id").String(); got != "fc-keep" {
+		t.Fatalf("already-valid function_call id should be preserved, got %q: %s", got, sanitized)
+	}
+	if strings.Contains(string(sanitized), `"id":"call_c24e167877134ea69a7d2a9d"`) {
+		t.Fatalf("non-fc function_call id leaked through: %s", sanitized)
+	}
+}
+
+func TestNormalizeResponsesFunctionCallItemIDPreservesValidPrefixes(t *testing.T) {
+	cases := []struct {
+		name string
+		item string
+		want string
+	}{
+		{name: "fc underscore prefix preserved", item: `{"type":"function_call","id":"fc_abc","call_id":"call_abc","name":"t","arguments":"{}"}`, want: "fc_abc"},
+		{name: "fc dash prefix preserved", item: `{"type":"function_call","id":"fc-1","call_id":"call-1","name":"t","arguments":"{}"}`, want: "fc-1"},
+		{name: "call underscore rewritten", item: `{"type":"function_call","id":"call_c24e","call_id":"call_c24e","name":"t","arguments":"{}"}`, want: "fc_c24e"},
+		{name: "bare id rewritten", item: `{"type":"function_call","id":"abc","call_id":"call_abc","name":"t","arguments":"{}"}`, want: "fc_abc"},
+		{name: "empty id left alone", item: `{"type":"function_call","id":"","call_id":"call_x","name":"t","arguments":"{}"}`, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			updated, ok := normalizeResponsesFunctionCallItemID(json.RawMessage(tc.item))
+			if !ok && tc.want != gjson.GetBytes([]byte(tc.item), "id").String() {
+				t.Fatalf("expected rewrite, got ok=false for %s", tc.item)
+			}
+			if got := gjson.GetBytes(updated, "id").String(); got != tc.want {
+				t.Fatalf("id = %q, want %q: %s", got, tc.want, updated)
+			}
+		})
+	}
+}
+
 func TestNormalizeResponsesWebsocketPreviousResponseIDSanitizesEmptyNameToolCall(t *testing.T) {
 	lastRequest := []byte(`{"model":"test-model","stream":true,"input":[{"type":"message","id":"msg-1","role":"user"}]}`)
 	raw := []byte(`{"type":"response.create","previous_response_id":"resp_1","input":[{"type":"function_call","id":"fc-1","call_id":"call-1","name":"","arguments":"{}"},{"type":"function_call_output","id":"out-1","call_id":"call-1","output":"ok"},{"type":"message","id":"msg-2","role":"user"}]}`)

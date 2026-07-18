@@ -398,6 +398,16 @@ func sanitizeResponsesToolCallNamesArray(rawArray string) (string, error) {
 			if strings.TrimSpace(gjson.GetBytes(item, "call_id").String()) == "" || !responsesToolCallHasValidName(item) {
 				continue
 			}
+			// Upstream requires function_call ids to begin with the "fc" prefix.
+			// Some clients (e.g. Codex CLI) echo back function_call items whose id
+			// mirrors the chat-completions "call_<hash>" format. Rewrite those
+			// ids so the request is not rejected with
+			// "Invalid 'input[N].id': 'call_...'. Expected an ID that begins with 'fc'".
+			if itemType == "function_call" {
+				if normalized, ok := normalizeResponsesFunctionCallItemID(item); ok {
+					item = normalized
+				}
+			}
 		case isResponsesToolCallOutputType(itemType):
 			callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
 			if _, invalid := invalidCallIDs[callID]; invalid {
@@ -414,6 +424,29 @@ func sanitizeResponsesToolCallNamesArray(rawArray string) (string, error) {
 		return "", errMarshal
 	}
 	return string(out), nil
+}
+
+// normalizeResponsesFunctionCallItemID rewrites the id field of a
+// function_call input item so that it begins with the "fc" prefix required by
+// the Responses API. Returns the updated item and true when the id was
+// rewritten; returns the original item and false otherwise.
+func normalizeResponsesFunctionCallItemID(item json.RawMessage) (json.RawMessage, bool) {
+	if len(item) == 0 {
+		return item, false
+	}
+	id := strings.TrimSpace(gjson.GetBytes(item, "id").String())
+	if id == "" || strings.HasPrefix(id, "fc") {
+		return item, false
+	}
+	normalized := "fc_" + strings.TrimPrefix(id, "call_")
+	if normalized == id {
+		return item, false
+	}
+	updated, errSet := sjson.SetBytes(item, "id", normalized)
+	if errSet != nil {
+		return item, false
+	}
+	return updated, true
 }
 
 func repairResponsesWebsocketToolCallsWithCache(cache *websocketToolOutputCache, sessionKey string, payload []byte) []byte {

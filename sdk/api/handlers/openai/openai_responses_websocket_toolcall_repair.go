@@ -398,15 +398,16 @@ func sanitizeResponsesToolCallNamesArray(rawArray string) (string, error) {
 			if strings.TrimSpace(gjson.GetBytes(item, "call_id").String()) == "" || !responsesToolCallHasValidName(item) {
 				continue
 			}
-			// Upstream requires function_call ids to begin with the "fc" prefix.
-			// Some clients (e.g. Codex CLI) echo back function_call items whose id
-			// mirrors the chat-completions "call_<hash>" format. Rewrite those
-			// ids so the request is not rejected with
-			// "Invalid 'input[N].id': 'call_...'. Expected an ID that begins with 'fc'".
-			if itemType == "function_call" {
-				if normalized, ok := normalizeResponsesFunctionCallItemID(item); ok {
-					item = normalized
-				}
+			// Upstream requires function_call / custom_tool_call ids to begin
+			// with the "fc" prefix. Some clients (e.g. Codex CLI) echo back
+			// tool call items whose id mirrors the chat-completions "call_<hash>"
+			// format. Rewrite those ids so the request is not rejected with
+			// "Invalid 'input[N].id': 'call_...'. Expected an ID that begins
+			// with 'fc'" (function_call) or silently dropped, leaving the
+			// matching custom_tool_call_output orphaned
+			// ("No tool call found for custom tool call output with call_id ...").
+			if normalized, ok := normalizeResponsesToolCallItemID(item); ok {
+				item = normalized
 			}
 		case isResponsesToolCallOutputType(itemType):
 			callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
@@ -426,16 +427,23 @@ func sanitizeResponsesToolCallNamesArray(rawArray string) (string, error) {
 	return string(out), nil
 }
 
-// normalizeResponsesFunctionCallItemID rewrites the id field of a
-// function_call input item so that it begins with the "fc" prefix required by
-// the Responses API. Returns the updated item and true when the id was
-// rewritten; returns the original item and false otherwise.
-func normalizeResponsesFunctionCallItemID(item json.RawMessage) (json.RawMessage, bool) {
+// normalizeResponsesToolCallItemID rewrites the id field of a function_call
+// or custom_tool_call input item so that it begins with the "fc" prefix
+// required by the Responses API. Only ids that mirror the chat-completions
+// "call_<hash>" format are rewritten; other prefixes (e.g. "ctc-") are left
+// untouched because we cannot assume upstream rejects them. Returns the
+// updated item and true when the id was rewritten; returns the original item
+// and false otherwise.
+func normalizeResponsesToolCallItemID(item json.RawMessage) (json.RawMessage, bool) {
 	if len(item) == 0 {
 		return item, false
 	}
 	id := strings.TrimSpace(gjson.GetBytes(item, "id").String())
 	if id == "" || strings.HasPrefix(id, "fc") {
+		return item, false
+	}
+	// Only rewrite ids that mirror the chat-completions "call_<hash>" format.
+	if !strings.HasPrefix(id, "call_") {
 		return item, false
 	}
 	normalized := "fc_" + strings.TrimPrefix(id, "call_")

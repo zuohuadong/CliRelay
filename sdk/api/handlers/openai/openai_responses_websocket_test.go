@@ -1537,7 +1537,33 @@ func TestSanitizeResponsesInputToolCallNamesRewritesFunctionCallIDPrefix(t *test
 	}
 }
 
-func TestNormalizeResponsesFunctionCallItemIDPreservesValidPrefixes(t *testing.T) {
+func TestSanitizeResponsesInputToolCallNamesRewritesCustomToolCallIDPrefix(t *testing.T) {
+	raw := []byte(`{"input":[{"type":"message","id":"msg-1"},{"type":"custom_tool_call","id":"call_Fn6VYI71GuLSPcTCqkiZEogO","call_id":"call_Fn6VYI71GuLSPcTCqkiZEogO","name":"shell","arguments":"{}"},{"type":"custom_tool_call_output","call_id":"call_Fn6VYI71GuLSPcTCqkiZEogO","output":"done"}]}`)
+
+	sanitized := sanitizeResponsesInputToolCallNames(raw)
+
+	items := gjson.GetBytes(sanitized, "input").Array()
+	if len(items) != 3 {
+		t.Fatalf("sanitized input len = %d, want 3: %s", len(items), sanitized)
+	}
+	if got := items[1].Get("id").String(); got != "fc_Fn6VYI71GuLSPcTCqkiZEogO" {
+		t.Fatalf("custom_tool_call id = %q, want fc_Fn6VYI71GuLSPcTCqkiZEogO: %s", got, sanitized)
+	}
+	if got := items[1].Get("type").String(); got != "custom_tool_call" {
+		t.Fatalf("custom_tool_call type not preserved: %s", sanitized)
+	}
+	if got := items[1].Get("call_id").String(); got != "call_Fn6VYI71GuLSPcTCqkiZEogO" {
+		t.Fatalf("custom_tool_call call_id = %q, want unchanged: %s", got, sanitized)
+	}
+	if got := items[2].Get("call_id").String(); got != "call_Fn6VYI71GuLSPcTCqkiZEogO" {
+		t.Fatalf("custom_tool_call_output call_id = %q, want unchanged: %s", got, sanitized)
+	}
+	if strings.Contains(string(sanitized), `"id":"call_Fn6VYI71GuLSPcTCqkiZEogO"`) {
+		t.Fatalf("non-fc custom_tool_call id leaked through: %s", sanitized)
+	}
+}
+
+func TestNormalizeResponsesToolCallItemIDPreservesValidPrefixes(t *testing.T) {
 	cases := []struct {
 		name string
 		item string
@@ -1546,12 +1572,17 @@ func TestNormalizeResponsesFunctionCallItemIDPreservesValidPrefixes(t *testing.T
 		{name: "fc underscore prefix preserved", item: `{"type":"function_call","id":"fc_abc","call_id":"call_abc","name":"t","arguments":"{}"}`, want: "fc_abc"},
 		{name: "fc dash prefix preserved", item: `{"type":"function_call","id":"fc-1","call_id":"call-1","name":"t","arguments":"{}"}`, want: "fc-1"},
 		{name: "call underscore rewritten", item: `{"type":"function_call","id":"call_c24e","call_id":"call_c24e","name":"t","arguments":"{}"}`, want: "fc_c24e"},
-		{name: "bare id rewritten", item: `{"type":"function_call","id":"abc","call_id":"call_abc","name":"t","arguments":"{}"}`, want: "fc_abc"},
+		{name: "bare id left alone", item: `{"type":"function_call","id":"abc","call_id":"call_abc","name":"t","arguments":"{}"}`, want: "abc"},
+		{name: "ctc dash id left alone", item: `{"type":"custom_tool_call","id":"ctc-compact","call_id":"call-1","name":"apply_patch","arguments":"{}"}`, want: "ctc-compact"},
 		{name: "empty id left alone", item: `{"type":"function_call","id":"","call_id":"call_x","name":"t","arguments":"{}"}`, want: ""},
+		{name: "custom_tool_call fc underscore preserved", item: `{"type":"custom_tool_call","id":"fc_abc","call_id":"call_abc","name":"shell","arguments":"{}"}`, want: "fc_abc"},
+		{name: "custom_tool_call call underscore rewritten", item: `{"type":"custom_tool_call","id":"call_Fn6VYI71","call_id":"call_Fn6VYI71","name":"shell","arguments":"{}"}`, want: "fc_Fn6VYI71"},
+		{name: "custom_tool_call bare id left alone", item: `{"type":"custom_tool_call","id":"abc","call_id":"call_abc","name":"shell","arguments":"{}"}`, want: "abc"},
+		{name: "custom_tool_call empty id left alone", item: `{"type":"custom_tool_call","id":"","call_id":"call_x","name":"shell","arguments":"{}"}`, want: ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			updated, ok := normalizeResponsesFunctionCallItemID(json.RawMessage(tc.item))
+			updated, ok := normalizeResponsesToolCallItemID(json.RawMessage(tc.item))
 			if !ok && tc.want != gjson.GetBytes([]byte(tc.item), "id").String() {
 				t.Fatalf("expected rewrite, got ok=false for %s", tc.item)
 			}

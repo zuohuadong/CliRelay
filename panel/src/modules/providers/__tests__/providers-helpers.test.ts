@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   buildOpenAIDraft,
   buildProviderKeyDraft,
+  commitModelEntries,
   maskApiKey,
   normalizeDiscoveredModels,
 } from "@/modules/providers/providers-helpers";
@@ -101,6 +102,22 @@ describe("providers helpers", () => {
         testModel: "",
         contextLengthText: "1048576",
       },
+    ]);
+  });
+
+  test("preserves Agnes image and video model flags through the editor draft", () => {
+    const draft = buildOpenAIDraft({
+      name: "agnes",
+      baseUrl: "https://apihub.agnes-ai.com/v1",
+      models: [
+        { name: "agnes-image-2.1-flash", image: true },
+        { name: "agnes-video-v2.0", video: true },
+      ],
+    });
+
+    expect(commitModelEntries(draft.modelEntries).models).toEqual([
+      { name: "agnes-image-2.1-flash", image: true },
+      { name: "agnes-video-v2.0", video: true },
     ]);
   });
 

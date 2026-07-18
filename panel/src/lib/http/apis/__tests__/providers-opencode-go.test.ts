@@ -250,4 +250,62 @@ describe("providersApi OpenCode Go", () => {
       params: { index: 0 },
     });
   });
+
+  test("loads, serializes and deletes Agnes providers through the dedicated endpoint", async () => {
+    const { providersApi } = await import("@/lib/http/apis/providers");
+    getMock.mockResolvedValue({
+      "agnes-api-key": [
+        {
+          name: "agnes",
+          "base-url": "https://apihub.agnes-ai.com/v1",
+          "response-endpoint": true,
+          "api-key-entries": [{ "api-key": "sk-agnes" }],
+          models: [
+            { name: "agnes-2.0-flash" },
+            { name: "agnes-image-2.1-flash", image: true },
+            { name: "agnes-video-v2.0", video: true },
+          ],
+        },
+      ],
+    });
+    putMock.mockResolvedValue({ status: "ok" });
+    deleteMock.mockResolvedValue({ status: "ok" });
+
+    const providers = await providersApi.getAgnesProviders();
+
+    expect(getMock).toHaveBeenCalledWith("/agnes-api-key");
+    expect(providers).toEqual([
+      {
+        name: "agnes",
+        baseUrl: "https://apihub.agnes-ai.com/v1",
+        responseEndpoint: true,
+        apiKeyEntries: [{ apiKey: "sk-agnes" }],
+        models: [
+          { name: "agnes-2.0-flash" },
+          { name: "agnes-image-2.1-flash", image: true },
+          { name: "agnes-video-v2.0", video: true },
+        ],
+      },
+    ]);
+
+    await providersApi.saveAgnesProviders(providers);
+    expect(putMock).toHaveBeenCalledWith("/agnes-api-key", [
+      {
+        name: "agnes",
+        "base-url": "https://apihub.agnes-ai.com/v1",
+        "response-endpoint": true,
+        "api-key-entries": [{ "api-key": "sk-agnes" }],
+        models: [
+          { name: "agnes-2.0-flash" },
+          { name: "agnes-image-2.1-flash", image: true },
+          { name: "agnes-video-v2.0", video: true },
+        ],
+      },
+    ]);
+
+    await providersApi.deleteAgnesProvider("agnes", 0);
+    expect(deleteMock).toHaveBeenCalledWith("/agnes-api-key", undefined, {
+      params: { index: 0 },
+    });
+  });
 });

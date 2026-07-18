@@ -65,12 +65,16 @@ export const normalizeModels = (value: unknown): ProviderModel[] | undefined => 
         typeof contextLengthRaw === "number" && Number.isFinite(contextLengthRaw)
           ? contextLengthRaw
           : undefined;
+      const image = item.image === true;
+      const video = item.video === true;
       return {
         name,
         ...(alias ? { alias } : {}),
         ...(priority !== undefined ? { priority } : {}),
         ...(testModel ? { testModel } : {}),
         ...(contextLength !== undefined ? { contextLength } : {}),
+        ...(image ? { image } : {}),
+        ...(video ? { video } : {}),
       };
     })
     .filter(Boolean) as ProviderModel[];
@@ -121,6 +125,8 @@ export const serializeModels = (models?: ProviderModel[]) =>
           ) {
             payload["context-length"] = model.contextLength;
           }
+          if (model?.image === true) payload.image = true;
+          if (model?.video === true) payload.video = true;
           return payload;
         })
         .filter(Boolean)

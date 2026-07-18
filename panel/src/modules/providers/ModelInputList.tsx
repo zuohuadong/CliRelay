@@ -10,6 +10,8 @@ export type ModelEntryDraft = {
   priorityText: string;
   testModel: string;
   contextLengthText: string;
+  image?: boolean;
+  video?: boolean;
 };
 
 const uid = () => `model-${Date.now()}-${Math.random().toString(16).slice(2)}`;

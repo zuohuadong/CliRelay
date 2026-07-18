@@ -384,6 +384,32 @@ func TestManagementRoutesRestoredAfterMerge(t *testing.T) {
 	}
 }
 
+func TestAgnesManagementRoutesAreRegistered(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	server := newTestServer(t)
+	want := map[string]bool{
+		http.MethodGet + " /v0/management/agnes-api-key":    false,
+		http.MethodPut + " /v0/management/agnes-api-key":    false,
+		http.MethodPatch + " /v0/management/agnes-api-key":  false,
+		http.MethodDelete + " /v0/management/agnes-api-key": false,
+	}
+	registeredAPIKeyRoutes := make([]string, 0)
+	for _, route := range server.engine.Routes() {
+		key := route.Method + " " + route.Path
+		if strings.Contains(route.Path, "api-key") {
+			registeredAPIKeyRoutes = append(registeredAPIKeyRoutes, key)
+		}
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+	}
+	for route, found := range want {
+		if !found {
+			t.Errorf("management route not registered: %s; registered api-key routes: %v", route, registeredAPIKeyRoutes)
+		}
+	}
+}
+
 func TestManagePanelRoutesRestoredAfterMerge(t *testing.T) {
 	server := newTestServer(t)
 

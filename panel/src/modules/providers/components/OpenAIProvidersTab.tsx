@@ -9,7 +9,7 @@ import { ToggleSwitch } from "@/modules/ui/ToggleSwitch";
 
 interface OpenAIProvidersTabProps {
   providers: OpenAIProvider[];
-  kind?: "openai" | "bigmodel-coding" | "astron-code";
+  kind?: "openai" | "bigmodel-coding" | "astron-code" | "agnes";
   loading?: boolean;
   openOpenAIEditor: (index: number | null) => void;
   confirmDelete: (index: number) => void;
@@ -91,7 +91,7 @@ export function OpenAIProvidersTab({
           {providers.map((provider, idx) => {
             const providerNameKey = provider.name.trim().toLowerCase();
             const selectionKey =
-              kind === "bigmodel-coding" || kind === "astron-code"
+              kind === "bigmodel-coding" || kind === "astron-code" || kind === "agnes"
                 ? `${providerNameKey}:${idx}`
                 : providerNameKey;
             const selected = selectedKeys?.has(selectionKey) ?? false;

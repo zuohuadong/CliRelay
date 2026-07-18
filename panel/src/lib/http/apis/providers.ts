@@ -137,6 +137,59 @@ export const providersApi = {
       params: index !== undefined ? { index } : { name: _name },
     }),
 
+  async getAgnesProviders(): Promise<OpenAIProvider[]> {
+    const data = await apiClient.get("/agnes-api-key");
+    const list = extractArrayPayload(data, "agnes-api-key");
+    return list
+      .map((item) => {
+        if (!isRecord(item)) return null;
+        if (isOauthBackedProviderRow(item)) return null;
+        const name = normalizeString(item.name) ?? "";
+        if (!name) return null;
+        const disabled = item.disabled === true;
+        const baseUrl = normalizeString(item["base-url"] ?? item.baseUrl) ?? undefined;
+        const prefix = normalizeString(item.prefix) ?? undefined;
+        const billingMultiplier = normalizePositiveNumber(
+          item["billing-multiplier"] ?? item.billingMultiplier,
+        );
+        const headers = normalizeHeaders(item.headers);
+        const models = normalizeModels(item.models);
+        const apiKeyEntries = normalizeApiKeyEntries(item["api-key-entries"] ?? item.apiKeyEntries);
+        const priorityRaw = item.priority;
+        const priority =
+          typeof priorityRaw === "number" && Number.isFinite(priorityRaw) ? priorityRaw : undefined;
+        const testModel = normalizeString(item["test-model"] ?? item.testModel) ?? undefined;
+        const disableCooling = item["disable-cooling"] === true;
+        const responseEndpoint = item["response-endpoint"] === true;
+        return {
+          name,
+          ...(disabled ? { disabled } : {}),
+          ...(baseUrl ? { baseUrl } : {}),
+          ...(prefix ? { prefix } : {}),
+          ...(billingMultiplier !== undefined ? { billingMultiplier } : {}),
+          ...(headers ? { headers } : {}),
+          ...(models ? { models } : {}),
+          ...(apiKeyEntries ? { apiKeyEntries } : {}),
+          ...(priority !== undefined ? { priority } : {}),
+          ...(testModel ? { testModel } : {}),
+          ...(disableCooling ? { disableCooling } : {}),
+          ...(responseEndpoint ? { responseEndpoint } : {}),
+        };
+      })
+      .filter(Boolean) as OpenAIProvider[];
+  },
+
+  saveAgnesProviders: (providers: OpenAIProvider[]) =>
+    apiClient.put(
+      "/agnes-api-key",
+      providers.map((item) => serializeOpenAIProvider(item)),
+    ),
+
+  deleteAgnesProvider: (_name: string, index?: number) =>
+    apiClient.delete("/agnes-api-key", undefined, {
+      params: index !== undefined ? { index } : { name: _name },
+    }),
+
   async getGeminiKeys(): Promise<ProviderSimpleConfig[]> {
     const data = await apiClient.get("/gemini-api-key");
     const list = extractArrayPayload(data, "gemini-api-key");

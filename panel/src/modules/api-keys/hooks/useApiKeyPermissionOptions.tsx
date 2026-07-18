@@ -133,6 +133,7 @@ export function useApiKeyPermissionOptions() {
         openaiProviders,
         bigModelCodingProviders,
         astronCodeProviders,
+        agnesProviders,
         authFiles,
       ] = await Promise.all([
         providersApi.getGeminiKeys().catch(() => []),
@@ -144,6 +145,7 @@ export function useApiKeyPermissionOptions() {
         providersApi.getOpenAIProviders().catch(() => []),
         providersApi.getBigModelCodingProviders().catch(() => []),
         providersApi.getAstronCodeProviders().catch(() => []),
+        providersApi.getAgnesProviders().catch(() => []),
         authFilesApi.list().catch(() => ({ files: [] })),
       ]);
 
@@ -191,6 +193,9 @@ export function useApiKeyPermissionOptions() {
       );
       astronCodeProviders.forEach((item) =>
         push(firstNonEmpty(item.name, item.prefix, "astron-code"), "API", "astron-code"),
+      );
+      agnesProviders.forEach((item) =>
+        push(firstNonEmpty(item.name, item.prefix, "agnes"), "API", "agnes"),
       );
       (authFiles.files || []).forEach((file) => {
         if (

@@ -1,8 +1,10 @@
 package management
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -624,23 +626,33 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 	filtered := make([]config.OpenAICompatibility, 0, len(arr))
 	astronEntries := make([]config.OpenAICompatibility, 0)
 	bigmodelEntries := make([]config.OpenAICompatibility, 0)
+	agnesEntries := make([]config.OpenAICompatibility, 0)
 	for i := range arr {
 		normalizeOpenAICompatibilityEntry(&arr[i])
 		if strings.TrimSpace(arr[i].BaseURL) == "" {
 			continue
 		}
 		nameLower := strings.ToLower(strings.TrimSpace(arr[i].Name))
-		switch nameLower {
-		case strings.ToLower(config.DefaultAstronCodeProviderName):
+		switch {
+		case nameLower == strings.ToLower(config.DefaultAstronCodeProviderName):
 			astronEntries = append(astronEntries, arr[i])
-		case strings.ToLower(config.DefaultBigModelCodingProviderName):
+		case nameLower == strings.ToLower(config.DefaultBigModelCodingProviderName):
 			bigmodelEntries = append(bigmodelEntries, arr[i])
+		case isAgnesManagementEntry(arr[i]):
+			agnesEntries = append(agnesEntries, arr[i])
 		default:
 			filtered = append(filtered, arr[i])
 		}
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if len(agnesEntries) > 0 {
+		agnesEntries, err = restoreMaskedOpenAICompatibilityKeys(agnesEntries, h.cfg.AgnesAPIKey)
+		if err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+	}
 	h.cfg.OpenAICompatibility = filtered
 	h.cfg.SanitizeOpenAICompatibility()
 	if len(astronEntries) > 0 {
@@ -650,6 +662,10 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 	if len(bigmodelEntries) > 0 {
 		h.cfg.BigModelCodingAPIKey = bigmodelEntries
 		h.cfg.SanitizeBigModelCoding()
+	}
+	if len(agnesEntries) > 0 {
+		h.cfg.AgnesAPIKey = agnesEntries
+		h.cfg.SanitizeAgnes()
 	}
 	h.persistLocked(c)
 }
@@ -673,22 +689,43 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		Index *int               `json:"index"`
 		Value *openAICompatPatch `json:"value"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+	data, err := c.GetRawData()
+	if err != nil || json.Unmarshal(data, &body) != nil || body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
 	}
+	restoreBody := func() {
+		c.Request.Body = io.NopCloser(bytes.NewReader(data))
+	}
 
-	// Route astron-code and bigmodel-coding patches to their dedicated handlers.
+	// Route dedicated OpenAI-compatible providers to their dedicated handlers.
 	if body.Name != nil {
 		nameLower := strings.ToLower(strings.TrimSpace(*body.Name))
 		if nameLower == strings.ToLower(config.DefaultAstronCodeProviderName) {
+			restoreBody()
 			h.PatchAstronCodeKey(c)
 			return
 		}
 		if nameLower == strings.ToLower(config.DefaultBigModelCodingProviderName) {
+			restoreBody()
 			h.PatchBigModelCodingKey(c)
 			return
 		}
+		if nameLower == strings.ToLower(config.DefaultAgnesProviderName) || nameLower == "agnes-ai" {
+			restoreBody()
+			h.PatchAgnesKey(c)
+			return
+		}
+	}
+	if body.Value.Name != nil && (strings.EqualFold(strings.TrimSpace(*body.Value.Name), config.DefaultAgnesProviderName) || strings.EqualFold(strings.TrimSpace(*body.Value.Name), "agnes-ai")) {
+		restoreBody()
+		h.PatchAgnesKey(c)
+		return
+	}
+	if body.Value.BaseURL != nil && strings.Contains(strings.ToLower(strings.TrimSpace(*body.Value.BaseURL)), "agnes-ai.com") {
+		restoreBody()
+		h.PatchAgnesKey(c)
+		return
 	}
 
 	h.mu.Lock()
@@ -762,7 +799,7 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 }
 
 func (h *Handler) DeleteOpenAICompat(c *gin.Context) {
-	// Route astron-code and bigmodel-coding deletes to their dedicated handlers.
+	// Route dedicated OpenAI-compatible providers to their dedicated handlers.
 	if name := c.Query("name"); name != "" {
 		nameLower := strings.ToLower(strings.TrimSpace(name))
 		if nameLower == strings.ToLower(config.DefaultAstronCodeProviderName) {
@@ -771,6 +808,10 @@ func (h *Handler) DeleteOpenAICompat(c *gin.Context) {
 		}
 		if nameLower == strings.ToLower(config.DefaultBigModelCodingProviderName) {
 			h.DeleteBigModelCodingKey(c)
+			return
+		}
+		if nameLower == strings.ToLower(config.DefaultAgnesProviderName) || nameLower == "agnes-ai" {
+			h.DeleteAgnesKey(c)
 			return
 		}
 	}

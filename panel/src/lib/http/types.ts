@@ -189,6 +189,8 @@ export interface ProviderModel {
   priority?: number;
   testModel?: string;
   contextLength?: number;
+  image?: boolean;
+  video?: boolean;
 }
 
 export interface ProviderApiKeyEntry {

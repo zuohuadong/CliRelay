@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   ),
   getBigModelCodingProviders: vi.fn(async (): Promise<OpenAIProvider[]> => []),
   getAstronCodeProviders: vi.fn(async (): Promise<OpenAIProvider[]> => []),
+  getAgnesProviders: vi.fn(async (): Promise<OpenAIProvider[]> => []),
   getGeminiKeys: vi.fn(async () => []),
   getClaudeConfigs: vi.fn(async () => []),
   getCodexConfigs: vi.fn(async () => []),
@@ -28,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   saveCodexConfigs: vi.fn(async (_configs: unknown[]) => ({})),
   saveBigModelCodingProviders: vi.fn(async (_configs: unknown[]) => ({})),
   saveAstronCodeProviders: vi.fn(async (_configs: unknown[]) => ({})),
+  saveAgnesProviders: vi.fn(async (_configs: unknown[]) => ({})),
   saveOpenAIProviders: vi.fn(async (_configs: unknown[]) => ({})),
   getEntityStats: vi.fn(async () => ({ source: [] })),
   apiKeyEntriesList: vi.fn(async () => []),
@@ -46,6 +48,7 @@ vi.mock("@/lib/http/apis", async (importOriginal) => {
       ...mod.providersApi,
       getBigModelCodingProviders: mocks.getBigModelCodingProviders,
       getAstronCodeProviders: mocks.getAstronCodeProviders,
+      getAgnesProviders: mocks.getAgnesProviders,
       getGeminiKeys: mocks.getGeminiKeys,
       getClaudeConfigs: mocks.getClaudeConfigs,
       getCodexConfigs: mocks.getCodexConfigs,
@@ -56,6 +59,7 @@ vi.mock("@/lib/http/apis", async (importOriginal) => {
       saveCodexConfigs: mocks.saveCodexConfigs,
       saveBigModelCodingProviders: mocks.saveBigModelCodingProviders,
       saveAstronCodeProviders: mocks.saveAstronCodeProviders,
+      saveAgnesProviders: mocks.saveAgnesProviders,
       saveOpenAIProviders: mocks.saveOpenAIProviders,
     },
     usageApi: {
@@ -86,6 +90,7 @@ describe("ProvidersPage openai tab", () => {
     mocks.apiCallRequest.mockReset();
     mocks.getBigModelCodingProviders.mockReset();
     mocks.getAstronCodeProviders.mockReset();
+    mocks.getAgnesProviders.mockReset();
     mocks.getGeminiKeys.mockReset();
     mocks.getClaudeConfigs.mockReset();
     mocks.getCodexConfigs.mockReset();
@@ -96,6 +101,7 @@ describe("ProvidersPage openai tab", () => {
     mocks.saveCodexConfigs.mockReset();
     mocks.saveBigModelCodingProviders.mockReset();
     mocks.saveAstronCodeProviders.mockReset();
+    mocks.saveAgnesProviders.mockReset();
     mocks.saveOpenAIProviders.mockReset();
     mocks.getEntityStats.mockReset();
     mocks.apiKeyEntriesList.mockReset();
@@ -109,6 +115,7 @@ describe("ProvidersPage openai tab", () => {
     }));
     mocks.getBigModelCodingProviders.mockImplementation(async () => []);
     mocks.getAstronCodeProviders.mockImplementation(async () => []);
+    mocks.getAgnesProviders.mockImplementation(async () => []);
     mocks.getGeminiKeys.mockImplementation(async () => []);
     mocks.getClaudeConfigs.mockImplementation(async () => []);
     mocks.getCodexConfigs.mockImplementation(async () => []);
@@ -118,6 +125,7 @@ describe("ProvidersPage openai tab", () => {
     mocks.saveCodexConfigs.mockImplementation(async () => ({}));
     mocks.saveBigModelCodingProviders.mockImplementation(async () => ({}));
     mocks.saveAstronCodeProviders.mockImplementation(async () => ({}));
+    mocks.saveAgnesProviders.mockImplementation(async () => ({}));
     mocks.saveOpenAIProviders.mockImplementation(async () => ({}));
     mocks.apiKeyEntriesList.mockImplementation(async () => []);
     mocks.channelGroupsList.mockImplementation(async () => []);
@@ -167,6 +175,40 @@ describe("ProvidersPage openai tab", () => {
     expect(screen.getByText(/sk-ope\*\*\*7890/)).toBeInTheDocument();
     expect(screen.getByText("80.0%")).toBeInTheDocument();
     expect(screen.getByText("testModel: gpt-4.1")).toBeInTheDocument();
+  });
+
+  test("renders Agnes as a dedicated provider tab", async () => {
+    mocks.getAgnesProviders.mockImplementation(async () => [
+      {
+        name: "agnes",
+        baseUrl: "https://apihub.agnes-ai.com/v1",
+        testModel: "agnes-2.0-flash",
+        apiKeyEntries: [{ apiKey: "sk-agnes-provider-1234567890" }],
+        models: [
+          { name: "agnes-2.0-flash" },
+          { name: "agnes-image-2.1-flash", image: true },
+          { name: "agnes-video-v2.0", video: true },
+        ],
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={["/ai-providers/agnes"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/ai-providers/*" element={<ProvidersPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("agnes")).toBeInTheDocument();
+    expect(screen.getByText("baseUrl: https://apihub.agnes-ai.com/v1")).toBeInTheDocument();
+    expect(screen.getByText("agnes-video-v2.0")).toBeInTheDocument();
+    expect(mocks.getAgnesProviders).toHaveBeenCalled();
+    expect(mocks.getOpenAIProviders).not.toHaveBeenCalled();
   });
 
   test("toggles an OpenAI Compatible key entry without removing it", async () => {

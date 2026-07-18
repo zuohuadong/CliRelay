@@ -103,6 +103,7 @@ const OPENAI_COMPAT_PROVIDER_CHANNELS = [
   { fallbackOwner: "openai-compatibility", load: providersApi.getOpenAIProviders },
   { fallbackOwner: "bigmodel-coding", load: providersApi.getBigModelCodingProviders },
   { fallbackOwner: "astron-code", load: providersApi.getAstronCodeProviders },
+  { fallbackOwner: "agnes", load: providersApi.getAgnesProviders },
 ] as const;
 
 const emptyAvailability = (): ConfiguredModelAvailability => ({

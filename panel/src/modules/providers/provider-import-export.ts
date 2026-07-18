@@ -11,6 +11,7 @@ import {
   normalizeExcludedModels,
   normalizeHeaders,
   normalizeModels,
+  normalizePositiveNumber,
   normalizeString,
   serializeBedrockKey,
   serializeGeminiKey,
@@ -23,6 +24,7 @@ import { normalizeOpenAIBaseUrl } from "@/modules/providers/providers-helpers";
 export type ProviderImportKind =
   | "bigmodel-coding"
   | "astron-code"
+  | "agnes"
   | "gemini"
   | "claude"
   | "codex"
@@ -34,6 +36,7 @@ export type ProviderImportKind =
 type ProviderItemsByKind = {
   "bigmodel-coding": OpenAIProvider[];
   "astron-code": OpenAIProvider[];
+  agnes: OpenAIProvider[];
   gemini: ProviderSimpleConfig[];
   claude: ProviderSimpleConfig[];
   codex: ProviderSimpleConfig[];
@@ -102,6 +105,8 @@ const normalizeModelList = (
         model.contextLength > 0
           ? { contextLength: model.contextLength }
           : {}),
+        ...(model.image === true ? { image: true } : {}),
+        ...(model.video === true ? { video: true } : {}),
       };
       return normalized;
     })
@@ -160,6 +165,7 @@ const normalizeSimpleItem = (
   kind:
     | "bigmodel-coding"
     | "astron-code"
+    | "agnes"
     | "gemini"
     | "claude"
     | "codex"
@@ -258,11 +264,15 @@ const normalizeOpenAIItem = (
   const { entries, duplicateCount: entryDuplicates } = normalizeEntryList(
     value["api-key-entries"] ?? value.apiKeyEntries,
   );
+  const billingMultiplier = normalizePositiveNumber(
+    value["billing-multiplier"] ?? value.billingMultiplier,
+  );
 
   return {
     item: {
       name,
       ...(value.disabled === true ? { disabled: true } : {}),
+      ...(billingMultiplier !== undefined ? { billingMultiplier } : {}),
       ...(normalizeString(value["base-url"] ?? value.baseUrl)
         ? { baseUrl: normalizeOpenAIBaseUrl(normalizeString(value["base-url"] ?? value.baseUrl)!) }
         : {}),
@@ -276,7 +286,12 @@ const normalizeOpenAIItem = (
       ...(normalizeString(value["test-model"] ?? value.testModel)
         ? { testModel: normalizeString(value["test-model"] ?? value.testModel)! }
         : {}),
-      ...(value["disable-cooling"] === true ? { disableCooling: true } : {}),
+      ...(value["disable-cooling"] === true || value.disableCooling === true
+        ? { disableCooling: true }
+        : {}),
+      ...(value["response-endpoint"] === true || value.responseEndpoint === true
+        ? { responseEndpoint: true }
+        : {}),
     },
     duplicateCount: modelDuplicates + entryDuplicates,
   };
@@ -292,11 +307,16 @@ const normalizeItems = <K extends ProviderImportKind>(
   let duplicateCount = 0;
 
   list.forEach((value) => {
-    if (kind === "bigmodel-coding" || kind === "astron-code" || kind === "openai") {
+    if (
+      kind === "bigmodel-coding" ||
+      kind === "astron-code" ||
+      kind === "agnes" ||
+      kind === "openai"
+    ) {
       const normalized = normalizeOpenAIItem(value);
       if (!normalized.item) return;
       const key =
-        kind === "bigmodel-coding" || kind === "astron-code"
+        kind === "bigmodel-coding" || kind === "astron-code" || kind === "agnes"
           ? getBigModelCodingItemKey(normalized.item)
           : normalized.item.name.toLowerCase();
       if (seen.has(key)) {
@@ -334,15 +354,7 @@ const normalizeItems = <K extends ProviderImportKind>(
   });
 
   items.sort((left, right) => {
-    const leftKey =
-      "apiKey" in left
-        ? (left.name?.toLowerCase() ?? left.apiKey.toLowerCase())
-        : left.name.toLowerCase();
-    const rightKey =
-      "apiKey" in right
-        ? (right.name?.toLowerCase() ?? right.apiKey.toLowerCase())
-        : right.name.toLowerCase();
-    return leftKey.localeCompare(rightKey);
+    return getItemKey(kind, left).localeCompare(getItemKey(kind, right));
   });
 
   return { items: items as ProviderItemsByKind[K], duplicateCount };
@@ -352,6 +364,7 @@ const serializeItem = (kind: ProviderImportKind, item: CanonicalProviderItem) =>
   switch (kind) {
     case "bigmodel-coding":
     case "astron-code":
+    case "agnes":
     case "openai":
       return serializeOpenAIProvider(item as OpenAIProvider);
     case "gemini":
@@ -383,14 +396,14 @@ const getBigModelCodingItemKey = (item: OpenAIProvider) => {
 };
 
 const getItemKey = (kind: ProviderImportKind, item: CanonicalProviderItem) =>
-  kind === "bigmodel-coding" || kind === "astron-code"
+  kind === "bigmodel-coding" || kind === "astron-code" || kind === "agnes"
     ? getBigModelCodingItemKey(item as OpenAIProvider)
     : kind === "openai"
       ? (item as OpenAIProvider).name.toLowerCase()
       : (item as ProviderSimpleConfig).apiKey.toLowerCase();
 
 const getItemLabel = (kind: ProviderImportKind, item: CanonicalProviderItem) =>
-  kind === "bigmodel-coding" || kind === "astron-code"
+  kind === "bigmodel-coding" || kind === "astron-code" || kind === "agnes"
     ? (item as OpenAIProvider).baseUrl
       ? `${(item as OpenAIProvider).name} (${(item as OpenAIProvider).baseUrl})`
       : (item as OpenAIProvider).name

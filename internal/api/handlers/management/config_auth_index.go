@@ -363,6 +363,7 @@ func (h *Handler) openAICompatibilityEntriesLocked() []config.OpenAICompatibilit
 	if h == nil || h.cfg == nil {
 		return nil
 	}
+	h.cfg.MigrateAgnesFromOpenAICompatibility()
 	return append([]config.OpenAICompatibility(nil), h.cfg.OpenAICompatibility...)
 }
 
@@ -382,6 +383,15 @@ func (h *Handler) astronCodeEntriesLocked() []config.OpenAICompatibility {
 	h.cfg.MigrateAstronCodeFromOpenAICompatibility()
 	h.cfg.SanitizeAstronCode()
 	return append([]config.OpenAICompatibility(nil), h.cfg.AstronCodeAPIKey...)
+}
+
+func (h *Handler) agnesEntriesLocked() []config.OpenAICompatibility {
+	if h == nil || h.cfg == nil {
+		return nil
+	}
+	h.cfg.MigrateAgnesFromOpenAICompatibility()
+	h.cfg.SanitizeAgnes()
+	return append([]config.OpenAICompatibility(nil), h.cfg.AgnesAPIKey...)
 }
 
 func (h *Handler) iflowWithAuthIndex() []openAICompatibilityWithAuthIndex {

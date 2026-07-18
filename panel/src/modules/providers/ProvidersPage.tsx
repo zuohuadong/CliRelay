@@ -48,6 +48,7 @@ import { summarizeProviderAccess } from "@/modules/providers/provider-access";
 type ProviderTab =
   | "bigmodel-coding"
   | "astron-code"
+  | "agnes"
   | "gemini"
   | "claude"
   | "codex"
@@ -62,7 +63,7 @@ const getProviderSelectionKey = (
   item: ProviderSimpleConfig | BedrockProviderConfig | OpenAIProvider,
   index?: number,
 ) =>
-  kind === "bigmodel-coding" || kind === "astron-code"
+  kind === "bigmodel-coding" || kind === "astron-code" || kind === "agnes"
     ? `${String((item as OpenAIProvider).name ?? "")
         .trim()
         .toLowerCase()}:${index ?? 0}`
@@ -93,6 +94,7 @@ export function ProvidersPage() {
 
   const [bigmodelCodingProviders, setBigmodelCodingProviders] = useState<OpenAIProvider[]>([]);
   const [astronCodeProviders, setAstronCodeProviders] = useState<OpenAIProvider[]>([]);
+  const [agnesProviders, setAgnesProviders] = useState<OpenAIProvider[]>([]);
   const [geminiKeys, setGeminiKeys] = useState<ProviderSimpleConfig[]>([]);
   const [claudeKeys, setClaudeKeys] = useState<ProviderSimpleConfig[]>([]);
   const [codexKeys, setCodexKeys] = useState<ProviderSimpleConfig[]>([]);
@@ -121,6 +123,7 @@ export function ProvidersPage() {
     | { type: "deleteOpenAI"; index: number }
     | { type: "deleteBigModelCoding"; index: number }
     | { type: "deleteAstronCode"; index: number }
+    | { type: "deleteAgnes"; index: number }
   >(null);
   const handledRouteRef = useRef("");
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -142,6 +145,9 @@ export function ProvidersPage() {
             break;
           case "astron-code":
             setAstronCodeProviders(await providersApi.getAstronCodeProviders());
+            break;
+          case "agnes":
+            setAgnesProviders(await providersApi.getAgnesProviders());
             break;
           case "gemini":
             setGeminiKeys(await providersApi.getGeminiKeys());
@@ -406,6 +412,34 @@ export function ProvidersPage() {
     forceResponseEndpoint: true,
   });
 
+  const {
+    editOpenAIOpen: editAgnesOpen,
+    editOpenAIIndex: editAgnesIndex,
+    openaiDraft: agnesDraft,
+    setOpenaiDraft: setAgnesDraft,
+    openaiDraftError: agnesDraftError,
+    discoveredModels: agnesDiscoveredModels,
+    discovering: agnesDiscovering,
+    discoverSelected: agnesDiscoverSelected,
+    setDiscoverSelected: setAgnesDiscoverSelected,
+    closeOpenAIEditor: closeAgnesEditor,
+    openOpenAIEditor: openAgnesEditor,
+    saveOpenAIDraft: saveAgnesDraft,
+    deleteOpenAIProvider: deleteAgnesProvider,
+    toggleOpenAIProviderEnabled: toggleAgnesProviderEnabled,
+    toggleOpenAIKeyEntryEnabled: toggleAgnesKeyEntryEnabled,
+    discoverModels: discoverAgnesModels,
+    applyDiscoveredModels: applyAgnesDiscoveredModels,
+  } = useOpenAIProviderEditor({
+    openaiProviders: agnesProviders,
+    setOpenaiProviders: setAgnesProviders,
+    refreshAll,
+    startRefreshTransition: startTransition,
+    afterClose: handleKeyEditorRouteClose,
+    saveProviders: providersApi.saveAgnesProviders,
+    deleteProvider: providersApi.deleteAgnesProvider,
+  });
+
   useEffect(() => {
     if (loading) return;
     const pathname = location.pathname;
@@ -473,6 +507,21 @@ export function ProvidersPage() {
         return;
       }
 
+      if (provider === "agnes") {
+        setSelectedExportKeys([]);
+        setTab("agnes");
+        await refreshTab("agnes");
+        if (action === "new") {
+          openAgnesEditor(null);
+          return;
+        }
+        const index = parseProviderRouteIndex(action);
+        if (index !== null) {
+          openAgnesEditor(index);
+        }
+        return;
+      }
+
       if (provider === "openai") {
         setSelectedExportKeys([]);
         setTab("openai");
@@ -494,7 +543,16 @@ export function ProvidersPage() {
         await refreshTab("ampcode");
       }
     })();
-  }, [loading, location.pathname, openKeyEditor, openOpenAIEditor, refreshTab]);
+  }, [
+    loading,
+    location.pathname,
+    openAgnesEditor,
+    openAstronCodeEditor,
+    openBigModelCodingEditor,
+    openKeyEditor,
+    openOpenAIEditor,
+    refreshTab,
+  ]);
 
   const saveAmpcode = useCallback(async () => {
     try {
@@ -560,6 +618,8 @@ export function ProvidersPage() {
           return bigmodelCodingProviders;
         case "astron-code":
           return astronCodeProviders;
+        case "agnes":
+          return agnesProviders;
         case "gemini":
           return geminiKeys;
         case "claude":
@@ -580,6 +640,7 @@ export function ProvidersPage() {
       bedrockKeys,
       bigmodelCodingProviders,
       astronCodeProviders,
+      agnesProviders,
       claudeKeys,
       codexKeys,
       geminiKeys,
@@ -628,6 +689,9 @@ export function ProvidersPage() {
           return;
         case "astron-code":
           await providersApi.saveAstronCodeProviders(items as OpenAIProvider[]);
+          return;
+        case "agnes":
+          await providersApi.saveAgnesProviders(items as OpenAIProvider[]);
           return;
         case "gemini":
           await providersApi.saveGeminiKeys(items as ProviderSimpleConfig[]);
@@ -886,6 +950,10 @@ export function ProvidersPage() {
                 <img src={iconGlm} alt="" className="size-4" />
                 Astron Code
               </TabsTrigger>
+              <TabsTrigger value="agnes">
+                <Bot size={16} />
+                Agnes
+              </TabsTrigger>
               <TabsTrigger value="gemini">
                 <img src={iconGemini} alt="" className="size-4" />
                 Gemini
@@ -983,6 +1051,33 @@ export function ProvidersPage() {
               emptyTitle={t("providers.astron_code_keys")}
               emptyDescription={t("providers.astron_code_channel_hint")}
               addLabel={t("providers.add_provider", { provider: "Astron Code" })}
+            />
+          </TabsContent>
+
+          <TabsContent value="agnes" className="flex min-h-0 flex-1 flex-col">
+            <OpenAIProvidersTab
+              providers={agnesProviders}
+              kind="agnes"
+              loading={isActiveTabListLoading("agnes")}
+              openOpenAIEditor={openAgnesEditor}
+              confirmDelete={(index) => setConfirm({ type: "deleteAgnes", index })}
+              maskApiKey={maskApiKey}
+              getKeyEntryStats={getOpenAIKeyEntryStats}
+              getProviderStats={getOpenAIProviderStats}
+              getProviderStatusBar={getOpenAIProviderStatusBar}
+              onToggleProviderEnabled={(providerIndex, enabled) =>
+                void toggleAgnesProviderEnabled(providerIndex, enabled)
+              }
+              onToggleKeyEntryEnabled={(providerIndex, entryIndex, enabled) =>
+                void toggleAgnesKeyEntryEnabled(providerIndex, entryIndex, enabled)
+              }
+              selectedKeys={selectedExportKeySet}
+              onToggleSelected={toggleExportSelection}
+              title="Agnes"
+              description={t("providers.agnes_desc")}
+              emptyTitle={t("providers.agnes_keys")}
+              emptyDescription={t("providers.agnes_channel_hint")}
+              addLabel={t("providers.add_provider", { provider: "Agnes" })}
             />
           </TabsContent>
 
@@ -1237,6 +1332,26 @@ export function ProvidersPage() {
         responseEndpointLocked
       />
 
+      <OpenAIProviderModal
+        open={editAgnesOpen}
+        editOpenAIIndex={editAgnesIndex}
+        openaiDraft={agnesDraft}
+        setOpenaiDraft={setAgnesDraft}
+        openaiDraftError={agnesDraftError}
+        closeOpenAIEditor={closeAgnesEditor}
+        saveOpenAIDraft={saveAgnesDraft}
+        discovering={agnesDiscovering}
+        discoverModels={discoverAgnesModels}
+        applyDiscoveredModels={applyAgnesDiscoveredModels}
+        discoveredModels={agnesDiscoveredModels}
+        discoverSelected={agnesDiscoverSelected}
+        setDiscoverSelected={setAgnesDiscoverSelected}
+        copyText={copyText}
+        maskApiKey={maskApiKey}
+        title="Agnes"
+        description={t("providers.agnes_config_desc")}
+      />
+
       <ConfirmModal
         open={confirm !== null}
         title={t("providers.confirm_delete")}
@@ -1253,6 +1368,10 @@ export function ProvidersPage() {
                 ? t("providers.confirm_delete_openai", {
                     name: astronCodeProviders[confirm.index]?.name ?? "",
                   })
+                : confirm?.type === "deleteAgnes"
+                  ? t("providers.confirm_delete_openai", {
+                      name: agnesProviders[confirm.index]?.name ?? "",
+                    })
                 : confirm?.type === "deleteKey"
                   ? t("providers.confirm_delete_config")
                   : t("providers.confirm_delete_generic")
@@ -1273,6 +1392,10 @@ export function ProvidersPage() {
           }
           if (action.type === "deleteAstronCode") {
             void deleteAstronCodeProvider(action.index);
+            return;
+          }
+          if (action.type === "deleteAgnes") {
+            void deleteAgnesProvider(action.index);
             return;
           }
           void deleteKey(action.keyType, action.index);

@@ -111,4 +111,46 @@ describe("provider import/export helpers", () => {
       },
     ]);
   });
+
+  test("keeps multiple same-name Agnes entries distinct and preserves media model flags", () => {
+    const text = createProviderExportText("agnes", [
+      {
+        name: "agnes",
+        baseUrl: "https://apihub.agnes-ai.com/v1",
+        billingMultiplier: 2,
+        disableCooling: true,
+        responseEndpoint: true,
+        apiKeyEntries: [{ apiKey: "sk-first" }],
+        models: [{ name: "agnes-image-2.1-flash", image: true }],
+      },
+      {
+        name: "agnes",
+        baseUrl: "https://agnes-proxy.example/v1",
+        apiKeyEntries: [{ apiKey: "sk-second" }],
+        models: [{ name: "agnes-video-v2.0", video: true }],
+      },
+    ] satisfies OpenAIProvider[]);
+
+    expect(JSON.parse(text)).toEqual({
+      provider: "agnes",
+      version: 1,
+      items: [
+        {
+          name: "agnes",
+          "base-url": "https://agnes-proxy.example/v1",
+          "api-key-entries": [{ "api-key": "sk-second" }],
+          models: [{ name: "agnes-video-v2.0", video: true }],
+        },
+        {
+          name: "agnes",
+          "base-url": "https://apihub.agnes-ai.com/v1",
+          "billing-multiplier": 2,
+          "disable-cooling": true,
+          "response-endpoint": true,
+          "api-key-entries": [{ "api-key": "sk-first" }],
+          models: [{ image: true, name: "agnes-image-2.1-flash" }],
+        },
+      ],
+    });
+  });
 });

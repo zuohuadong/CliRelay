@@ -122,6 +122,8 @@ export const buildModelEntries = (models?: ProviderModel[]): ModelEntryDraft[] =
     priorityText: model.priority !== undefined ? String(model.priority) : "",
     testModel: model.testModel ?? "",
     contextLengthText: model.contextLength !== undefined ? String(model.contextLength) : "",
+    ...(model.image === true ? { image: true } : {}),
+    ...(model.video === true ? { video: true } : {}),
   }));
 };
 
@@ -161,6 +163,8 @@ export const commitModelEntries = (
       ...(priority !== undefined ? { priority } : {}),
       ...(testModel ? { testModel } : {}),
       ...(contextLength !== undefined ? { contextLength } : {}),
+      ...(draft.image === true ? { image: true } : {}),
+      ...(draft.video === true ? { video: true } : {}),
     });
   }
 

@@ -1191,7 +1191,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 	}
-	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
+	body = sanitizeOpenAIResponsesReasoningItems(ctx, "codex executor", body)
 	body = normalizeCodexParallelToolCallsForTools(body)
 	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
 	if errReplay != nil {
@@ -1373,7 +1373,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
 	body = normalizeCodexInstructions(body)
-	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
+	body = sanitizeOpenAIResponsesReasoningItems(ctx, "codex executor", body)
 	body = normalizeCodexParallelToolCallsForTools(body)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
@@ -1491,7 +1491,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 	}
-	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
+	body = sanitizeOpenAIResponsesReasoningItems(ctx, "codex executor", body)
 	body = normalizeCodexParallelToolCallsForTools(body)
 	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
 	if errReplay != nil {
@@ -1524,7 +1524,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 		if codexStatusErrorIsThinkingSignatureInvalid(httpResp.StatusCode, data) {
-			if retryBody, okDrop := dropOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body, "retry after upstream rejected thinking signature"); okDrop {
+			if retryBody, okDrop := dropOpenAIResponsesReasoningItemsWithEncryptedContent(ctx, "codex executor", body, "retry after upstream rejected thinking signature"); okDrop {
 				body = retryBody
 				httpResp, identityState, err = e.openCodexResponse(ctx, from, url, auth, req, originalPayloadSource, body, apiKey, true, httpClient)
 				if err != nil {
@@ -1632,7 +1632,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						return
 					}
 					if !emittedPayload && !retriedInvalidSignature && codexStatusErrorIsThinkingSignatureInvalid(streamErr.StatusCode(), terminalBody) {
-						retryBody, okDrop := dropOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body, "retry after upstream rejected thinking signature")
+						retryBody, okDrop := dropOpenAIResponsesReasoningItemsWithEncryptedContent(ctx, "codex executor", body, "retry after upstream rejected thinking signature")
 						if okDrop {
 							retriedInvalidSignature = true
 							body = retryBody

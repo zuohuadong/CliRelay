@@ -196,7 +196,11 @@ func BuildErrorResponseBody(status int, errText string) []byte {
 		code = "rate_limit_exceeded"
 	case http.StatusNotFound:
 		errType = "invalid_request_error"
-		code = "model_not_found"
+		if isRequestScopedItemNotFoundMessage(errText) {
+			code = "item_not_found"
+		} else {
+			code = "model_not_found"
+		}
 	default:
 		if status >= http.StatusInternalServerError {
 			errType = "server_error"
@@ -215,6 +219,13 @@ func BuildErrorResponseBody(status int, errText string) []byte {
 		return []byte(fmt.Sprintf(`{"error":{"message":%q,"type":"server_error","code":"internal_server_error"}}`, errText))
 	}
 	return payload
+}
+
+func isRequestScopedItemNotFoundMessage(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(lower, "item with id") &&
+		strings.Contains(lower, "not found") &&
+		strings.Contains(lower, "items are not persisted when `store` is set to false")
 }
 
 // StreamingKeepAliveInterval returns the SSE keep-alive interval for this server.

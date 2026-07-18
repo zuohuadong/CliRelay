@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,22 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
+
+const requestScopedItemNotFoundErrorMessage = "Item with id 'rs_resp_foreign_0' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input."
+
+func TestBuildErrorResponseBodyClassifiesRequestScopedItemNotFound(t *testing.T) {
+	body := BuildErrorResponseBody(http.StatusNotFound, requestScopedItemNotFoundErrorMessage)
+	var payload ErrorResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := payload.Error.Code; got != "item_not_found" {
+		t.Fatalf("error.code = %q, want item_not_found; body=%s", got, string(body))
+	}
+	if got := payload.Error.Type; got != "invalid_request_error" {
+		t.Fatalf("error.type = %q, want invalid_request_error; body=%s", got, string(body))
+	}
+}
 
 func TestWriteErrorResponse_AddonHeadersDisabledByDefault(t *testing.T) {
 	gin.SetMode(gin.TestMode)

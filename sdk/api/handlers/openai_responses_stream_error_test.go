@@ -162,6 +162,28 @@ func TestBuildOpenAIResponsesResponseFailedChunkUsesCodexContextCode(t *testing.
 	}
 }
 
+func TestBuildOpenAIResponsesResponseFailedChunkClassifiesRequestScopedItemNotFound(t *testing.T) {
+	chunk := BuildOpenAIResponsesResponseFailedChunk(http.StatusNotFound, requestScopedItemNotFoundErrorMessage, 0)
+	var payload map[string]any
+	if err := json.Unmarshal(chunk, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	response, ok := payload["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing response object: %#v", payload["response"])
+	}
+	errorPayload, ok := response["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing response.error object: %#v", response["error"])
+	}
+	if got := errorPayload["code"]; got != "item_not_found" {
+		t.Fatalf("response.error.code = %v, want item_not_found", got)
+	}
+	if got := errorPayload["type"]; got != "invalid_request_error" {
+		t.Fatalf("response.error.type = %v, want invalid_request_error", got)
+	}
+}
+
 func TestBuildOpenAIResponsesResponseFailedChunkRecognizesCodexContextWindowText(t *testing.T) {
 	errText := "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."
 	if !IsOpenAIResponsesContextWindowError(http.StatusInternalServerError, errText) {

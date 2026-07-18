@@ -11,60 +11,72 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-func sanitizeOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provider string, body []byte) []byte {
+func sanitizeOpenAIResponsesReasoningItems(ctx context.Context, provider string, body []byte) []byte {
 	input := gjson.GetBytes(body, "input")
 	if !input.Exists() || !input.IsArray() {
 		return body
 	}
 	provider = openAIResponsesSignatureProviderName(provider)
 
-	updated := body
-	for index, item := range input.Array() {
+	items := input.Array()
+	replayableItems := make([]string, 0, len(items))
+	dropped := false
+	for index, item := range items {
 		if strings.TrimSpace(item.Get("type").String()) != "reasoning" {
+			replayableItems = append(replayableItems, item.Raw)
 			continue
 		}
 
-		encryptedContentPath := fmt.Sprintf("input.%d.encrypted_content", index)
-		encryptedContent := gjson.GetBytes(updated, encryptedContentPath)
+		encryptedContent := item.Get("encrypted_content")
 		if !encryptedContent.Exists() {
+			replayableItems = append(replayableItems, item.Raw)
 			continue
 		}
 
-		reason := ""
-		switch encryptedContent.Type {
-		case gjson.String:
-			rawSignature := encryptedContent.String()
-			if rawSignature != strings.TrimSpace(rawSignature) {
-				reason = "encrypted_content has leading or trailing whitespace"
-			} else if _, err := signature.InspectGPTReasoningSignature(rawSignature); err != nil {
-				reason = err.Error()
-			}
-		case gjson.Null:
-			reason = "encrypted_content is null"
-		default:
-			reason = fmt.Sprintf("encrypted_content must be a string, got %s", encryptedContent.Type.String())
-		}
+		reason := invalidGPTReasoningEncryptedContentReason(encryptedContent)
 		if reason == "" {
+			replayableItems = append(replayableItems, item.Raw)
 			continue
 		}
 
-		next, err := sjson.DeleteBytes(updated, encryptedContentPath)
-		if err != nil {
-			helps.LogWithRequestID(ctx).Debugf("%s: failed to drop invalid reasoning encrypted_content at input[%d]: %v", provider, index, err)
-			continue
-		}
-		updated = next
-
-		itemID := strings.TrimSpace(gjson.GetBytes(updated, fmt.Sprintf("input.%d.id", index)).String())
+		dropped = true
+		itemID := strings.TrimSpace(item.Get("id").String())
 		if itemID == "" {
 			itemID = fmt.Sprintf("input[%d]", index)
 		}
-		helps.LogWithRequestID(ctx).Debugf("%s: dropped invalid reasoning encrypted_content at input[%d] item_id=%q reason=%s", provider, index, itemID, reason)
+		helps.LogWithRequestID(ctx).Debugf("%s: dropped unreplayable reasoning item at input[%d] item_id=%q reason=%s", provider, index, itemID, reason)
+	}
+	if !dropped {
+		return body
+	}
+
+	updated, err := sjson.SetRawBytes(body, "input", []byte("["+strings.Join(replayableItems, ",")+"]"))
+	if err != nil {
+		helps.LogWithRequestID(ctx).Debugf("%s: failed to replace input after dropping unreplayable reasoning items: %v", provider, err)
+		return body
 	}
 	return updated
 }
 
-func dropOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provider string, body []byte, reason string) ([]byte, bool) {
+func invalidGPTReasoningEncryptedContentReason(encryptedContent gjson.Result) string {
+	switch encryptedContent.Type {
+	case gjson.String:
+		rawSignature := encryptedContent.String()
+		if rawSignature != strings.TrimSpace(rawSignature) {
+			return "encrypted_content has leading or trailing whitespace"
+		}
+		if _, err := signature.InspectGPTReasoningSignature(rawSignature); err != nil {
+			return err.Error()
+		}
+		return ""
+	case gjson.Null:
+		return "encrypted_content is null"
+	default:
+		return fmt.Sprintf("encrypted_content must be a string, got %s", encryptedContent.Type.String())
+	}
+}
+
+func dropOpenAIResponsesReasoningItemsWithEncryptedContent(ctx context.Context, provider string, body []byte, reason string) ([]byte, bool) {
 	input := gjson.GetBytes(body, "input")
 	if !input.Exists() || !input.IsArray() {
 		return body, false
@@ -75,30 +87,35 @@ func dropOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provider 
 		reason = "upstream rejected reasoning encrypted_content"
 	}
 
-	updated := body
+	items := input.Array()
+	remainingItems := make([]string, 0, len(items))
 	dropped := false
-	for index, item := range input.Array() {
+	for index, item := range items {
 		if strings.TrimSpace(item.Get("type").String()) != "reasoning" {
+			remainingItems = append(remainingItems, item.Raw)
 			continue
 		}
-		encryptedContentPath := fmt.Sprintf("input.%d.encrypted_content", index)
-		if !gjson.GetBytes(updated, encryptedContentPath).Exists() {
+		if !item.Get("encrypted_content").Exists() {
+			remainingItems = append(remainingItems, item.Raw)
 			continue
 		}
 
-		next, err := sjson.DeleteBytes(updated, encryptedContentPath)
-		if err != nil {
-			helps.LogWithRequestID(ctx).Debugf("%s: failed to drop reasoning encrypted_content at input[%d]: %v", provider, index, err)
-			continue
-		}
-		updated = next
 		dropped = true
 
-		itemID := strings.TrimSpace(gjson.GetBytes(updated, fmt.Sprintf("input.%d.id", index)).String())
+		itemID := strings.TrimSpace(item.Get("id").String())
 		if itemID == "" {
 			itemID = fmt.Sprintf("input[%d]", index)
 		}
-		helps.LogWithRequestID(ctx).Debugf("%s: dropped reasoning encrypted_content at input[%d] item_id=%q reason=%s", provider, index, itemID, reason)
+		helps.LogWithRequestID(ctx).Debugf("%s: dropped reasoning item at input[%d] item_id=%q reason=%s", provider, index, itemID, reason)
+	}
+	if !dropped {
+		return body, false
+	}
+
+	updated, err := sjson.SetRawBytes(body, "input", []byte("["+strings.Join(remainingItems, ",")+"]"))
+	if err != nil {
+		helps.LogWithRequestID(ctx).Debugf("%s: failed to replace input after dropping reasoning items: %v", provider, err)
+		return body, false
 	}
 	return updated, dropped
 }

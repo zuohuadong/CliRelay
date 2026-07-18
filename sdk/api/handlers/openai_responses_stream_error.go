@@ -76,6 +76,8 @@ func normalizeOpenAIResponsesStreamErrorCode(status int, code string, message st
 		return "auth_unavailable"
 	case strings.Contains(lowerMessage, "invalid signature in thinking block"):
 		return "thinking_signature_invalid"
+	case isRequestScopedItemNotFoundMessage(message):
+		return "item_not_found"
 	case strings.Contains(lowerCode, "previous_response_not_found") ||
 		(strings.Contains(lowerMessage, "previous_response_id") && strings.Contains(lowerMessage, "not found")):
 		return "previous_response_not_found"

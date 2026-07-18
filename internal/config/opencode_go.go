@@ -17,12 +17,14 @@ type OpenCodeGoKey struct {
 }
 
 type OpenCodeGoModel struct {
-	Name  string `yaml:"name" json:"name"`
-	Alias string `yaml:"alias" json:"alias"`
+	Name        string `yaml:"name" json:"name"`
+	Alias       string `yaml:"alias" json:"alias"`
+	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
 }
 
-func (m OpenCodeGoModel) GetName() string  { return m.Name }
-func (m OpenCodeGoModel) GetAlias() string { return m.Alias }
+func (m OpenCodeGoModel) GetName() string        { return m.Name }
+func (m OpenCodeGoModel) GetAlias() string       { return m.Alias }
+func (m OpenCodeGoModel) GetDisplayName() string { return m.DisplayName }
 
 func (cfg *Config) SanitizeOpenCodeGoKeys() {
 	if cfg == nil {
@@ -64,6 +66,7 @@ func sanitizeOpenCodeGoModels(models []OpenCodeGoModel) []OpenCodeGoModel {
 	for _, model := range models {
 		model.Name = strings.TrimSpace(model.Name)
 		model.Alias = strings.TrimSpace(model.Alias)
+		model.DisplayName = strings.TrimSpace(model.DisplayName)
 		if model.Name == "" && model.Alias == "" {
 			continue
 		}

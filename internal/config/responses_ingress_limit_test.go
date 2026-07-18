@@ -53,8 +53,8 @@ func TestParseConfigBytesResponsesMemoryBudgetsDefaultWhenUnset(t *testing.T) {
 	if cfg.ResponsesWebsocketMemoryBudgetBytes != 192<<20 {
 		t.Fatalf("ResponsesWebsocketMemoryBudgetBytes = %d, want %d", cfg.ResponsesWebsocketMemoryBudgetBytes, int64(192<<20))
 	}
-	if cfg.ResponsesWebsocketMaxConnections != 4 {
-		t.Fatalf("ResponsesWebsocketMaxConnections = %d, want 4", cfg.ResponsesWebsocketMaxConnections)
+	if cfg.ResponsesWebsocketMaxConnections != 0 {
+		t.Fatalf("ResponsesWebsocketMaxConnections = %d, want unlimited (0)", cfg.ResponsesWebsocketMaxConnections)
 	}
 }
 
@@ -79,6 +79,16 @@ responses-websocket-max-connections: 0
 		cfg.ResponsesWebsocketMemoryBudgetBytes != DefaultResponsesWebsocketMemoryBudgetBytes ||
 		cfg.ResponsesWebsocketMaxConnections != DefaultResponsesWebsocketMaxConnections {
 		t.Fatalf("non-positive responses memory settings were not normalized: %+v", cfg.SDKConfig)
+	}
+}
+
+func TestParseConfigBytesResponsesWebsocketNegativeConnectionLimitMeansUnlimited(t *testing.T) {
+	cfg, err := ParseConfigBytes([]byte("responses-websocket-max-connections: -1\n"))
+	if err != nil {
+		t.Fatalf("ParseConfigBytes() error = %v", err)
+	}
+	if cfg.ResponsesWebsocketMaxConnections != 0 {
+		t.Fatalf("ResponsesWebsocketMaxConnections = %d, want unlimited (0)", cfg.ResponsesWebsocketMaxConnections)
 	}
 }
 

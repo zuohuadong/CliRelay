@@ -623,8 +623,12 @@ type responsesWebsocketTurnLimits struct {
 type responsesWebsocketConnectionLimiter struct{ current atomic.Int64 }
 
 func (l *responsesWebsocketConnectionLimiter) tryAcquire(limit int) bool {
-	if l == nil || limit <= 0 {
+	if l == nil {
 		return false
+	}
+	if limit <= 0 {
+		l.current.Add(1)
+		return true
 	}
 	for {
 		current := l.current.Load()

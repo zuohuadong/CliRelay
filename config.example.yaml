@@ -63,9 +63,9 @@ responses-websocket-tool-cache-bytes: 8388608
 # Aggregate estimated retained/active state budget shared by all Responses websocket sessions.
 # Session state is charged at 2x its serialized byte size. Default: 192 MiB.
 responses-websocket-memory-budget-bytes: 201326592
-# Maximum concurrent Responses websocket connections.
-# Four 32 MiB inbound frames cap concurrent frame allocation near 128 MiB.
-responses-websocket-max-connections: 4
+# Optional process-local concurrent Responses WebSocket cap.
+# Set to 0 for no connection-count limit, or a positive number to opt in.
+responses-websocket-max-connections: 0
 
 # Standard dynamic library plugins are trusted in-process code. They are disabled by default.
 # Build Go examples with go build -buildmode=c-shared for the target GOOS/GOARCH.

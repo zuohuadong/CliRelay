@@ -4806,6 +4806,94 @@ func TestResponsesWebsocketMemoryBudgetContendsAndReleases(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketDefaultDoesNotLimitConcurrentConnections(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses", h.ResponsesWebsocket)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	const connectionCount = 8
+	connections := make([]*websocket.Conn, 0, connectionCount)
+	defer func() {
+		for _, conn := range connections {
+			_ = conn.Close()
+		}
+	}()
+
+	websocketURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	for i := 0; i < connectionCount; i++ {
+		conn, response, err := websocket.DefaultDialer.Dial(websocketURL, nil)
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
+		if err != nil {
+			status := 0
+			if response != nil {
+				status = response.StatusCode
+			}
+			t.Fatalf("connection %d failed: status=%d err=%v", i+1, status, err)
+		}
+		connections = append(connections, conn)
+	}
+}
+
+func TestResponsesWebsocketPositiveLimitStillRejectsExcessConnections(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{ResponsesWebsocketMaxConnections: 1}, nil)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses", h.ResponsesWebsocket)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	websocketURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	first, _, err := websocket.DefaultDialer.Dial(websocketURL, nil)
+	if err != nil {
+		t.Fatalf("first connection failed: %v", err)
+	}
+	defer func() { _ = first.Close() }()
+
+	second, response, err := websocket.DefaultDialer.Dial(websocketURL, nil)
+	if second != nil {
+		_ = second.Close()
+	}
+	if response != nil && response.Body != nil {
+		_ = response.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("second connection unexpectedly bypassed the explicit limit")
+	}
+	if response == nil || response.StatusCode != http.StatusServiceUnavailable {
+		status := 0
+		if response != nil {
+			status = response.StatusCode
+		}
+		t.Fatalf("second connection status = %d, want %d", status, http.StatusServiceUnavailable)
+	}
+}
+
+func TestResponsesWebsocketConnectionLimiterTracksUnlimitedConnections(t *testing.T) {
+	limiter := &responsesWebsocketConnectionLimiter{}
+	const connectionCount = 8
+	for i := 0; i < connectionCount; i++ {
+		if !limiter.tryAcquire(0) {
+			t.Fatalf("unlimited connection %d was rejected", i+1)
+		}
+	}
+	if got := limiter.current.Load(); got != connectionCount {
+		t.Fatalf("tracked connections = %d, want %d", got, connectionCount)
+	}
+	for i := 0; i < connectionCount; i++ {
+		limiter.release()
+	}
+	if got := limiter.current.Load(); got != 0 {
+		t.Fatalf("tracked connections after release = %d, want 0", got)
+	}
+}
+
 func TestResponsesWebsocketConnectionLimiterReleases(t *testing.T) {
 	limiter := &responsesWebsocketConnectionLimiter{}
 	if !limiter.tryAcquire(1) {

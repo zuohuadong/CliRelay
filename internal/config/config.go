@@ -31,8 +31,10 @@ const (
 	DefaultResponsesWebsocketMaxTurnOutputBytes int64 = 32 << 20
 	DefaultResponsesWebsocketToolCacheBytes     int64 = 8 << 20
 	DefaultResponsesWebsocketMemoryBudgetBytes  int64 = 192 << 20
-	DefaultResponsesWebsocketMaxConnections           = 4
-	DefaultCodexResponseHeaderTimeoutSeconds          = 90
+	// DefaultResponsesWebsocketMaxConnections disables the process-local
+	// connection cap. Operators can set a positive value to opt into a limit.
+	DefaultResponsesWebsocketMaxConnections  = 0
+	DefaultCodexResponseHeaderTimeoutSeconds = 90
 )
 
 func normalizeResponsesMaxInboundBytes(value int64) int64 {

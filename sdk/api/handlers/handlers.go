@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/contextretrieval"
 	internalegress "github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
@@ -293,8 +294,10 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	// Only include it if the client explicitly provides it.
 	key := ""
 	requestPath := ""
+	var ginCtx *gin.Context
 	if ctx != nil {
-		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+		if requestGinCtx, ok := ctx.Value("gin").(*gin.Context); ok && requestGinCtx != nil && requestGinCtx.Request != nil {
+			ginCtx = requestGinCtx
 			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
 			requestPath = strings.TrimSpace(ginCtx.FullPath())
 			if requestPath == "" && ginCtx.Request.URL != nil {
@@ -329,6 +332,11 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	}
 	if selectedCallback := selectedAuthIDCallbackFromContext(ctx); selectedCallback != nil {
 		meta[coreexecutor.SelectedAuthCallbackMetadataKey] = selectedCallback
+	}
+	if ginCtx != nil && !websocket.IsWebSocketUpgrade(ginCtx.Request) {
+		if traceCallback := logging.GinCPATraceIDCallback(ginCtx); traceCallback != nil {
+			meta[coreexecutor.SelectedAuthIndexCallbackMetadataKey] = traceCallback
+		}
 	}
 	if executionSessionID := executionSessionIDFromContext(ctx); executionSessionID != "" {
 		meta[coreexecutor.ExecutionSessionMetadataKey] = executionSessionID
@@ -562,7 +570,7 @@ func setServiceTierMetadata(meta map[string]any, rawJSON []byte) {
 	if meta == nil {
 		return
 	}
-	serviceTier := coreusage.DefaultServiceTier
+	serviceTier := coreusage.AutoServiceTier
 	node := gjson.GetBytes(rawJSON, "service_tier")
 	if node.Exists() {
 		value := strings.TrimSpace(node.String())
@@ -571,6 +579,19 @@ func setServiceTierMetadata(meta map[string]any, rawJSON []byte) {
 		}
 	}
 	meta[coreexecutor.ServiceTierMetadataKey] = serviceTier
+}
+
+func setGenerateMetadata(meta map[string]any, rawJSON []byte) {
+	if meta == nil {
+		return
+	}
+	// Missing or true means generation is enabled; only an explicit false disables generation.
+	generate := true
+	node := gjson.GetBytes(rawJSON, "generate")
+	if node.Exists() && node.IsBool() && !node.Bool() {
+		generate = false
+	}
+	meta[coreexecutor.GenerateMetadataKey] = generate
 }
 
 // headersFromContext extracts the original HTTP request headers from the gin context
@@ -997,6 +1018,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	setEstimatedInputTokensMetadata(reqMeta, normalizedModel, rawJSON)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
+	setGenerateMetadata(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -1067,6 +1089,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	setEstimatedInputTokensMetadata(reqMeta, normalizedModel, rawJSON)
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
+	setGenerateMetadata(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -1154,6 +1177,7 @@ func (h *BaseAPIHandler) pluginExecutorRequest(ctx context.Context, entryProtoco
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, modelName, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
+	setGenerateMetadata(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -1404,6 +1428,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	setEstimatedInputTokensMetadata(reqMeta, normalizedModel, rawJSON)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
+	setGenerateMetadata(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -2699,7 +2724,7 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 	}
 	if msg != nil && msg.Addon != nil && PassthroughHeadersEnabled(h.Cfg) {
 		for key, values := range msg.Addon {
-			if len(values) == 0 {
+			if len(values) == 0 || IsCPAReservedResponseHeader(key) {
 				continue
 			}
 			c.Writer.Header().Del(key)

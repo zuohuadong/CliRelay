@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"reflect"
 	"strings"
@@ -265,5 +266,41 @@ func TestGetRequestDetails_UsesConfiguredOAuthAliasProvider(t *testing.T) {
 	}
 	if !reflect.DeepEqual(providers, []string{"antigravity"}) {
 		t.Fatalf("providers = %v, want [antigravity]", providers)
+	}
+}
+
+func TestExecuteImageWithAuthManager_AllowsImageOnlyModels(t *testing.T) {
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+
+	imageOnlyModels := []string{
+		"gpt-image-1.5",
+		"gpt-image-2",
+		"grok-imagine-image",
+		"grok-imagine-image-quality",
+		"xai/grok-imagine-image-quality",
+	}
+	for _, model := range imageOnlyModels {
+		t.Run(model, func(t *testing.T) {
+			body := []byte(`{"model":"` + model + `","prompt":"draw"}`)
+			_, _, errMsg := handler.ExecuteImageWithAuthManager(context.Background(), "openai-image", model, body, "")
+			if errMsg == nil {
+				t.Fatal("expected auth selection error, got nil")
+			}
+			if errMsg.Error == nil {
+				t.Fatal("expected error message, got nil")
+			}
+			msg := errMsg.Error.Error()
+			if strings.Contains(msg, "only supported on /v1/images/generations") {
+				t.Fatalf("ExecuteImageWithAuthManager rejected image-only model: %q", msg)
+			}
+
+			_, _, errMsg = handler.ExecuteWithAuthManager(context.Background(), "openai-image", model, body, "")
+			if errMsg == nil {
+				t.Fatal("expected image-only rejection for non-image execution path, got nil")
+			}
+			if errMsg.Error == nil || !strings.Contains(errMsg.Error.Error(), "only supported on /v1/images/generations") {
+				t.Fatalf("unexpected non-image execution error: %+v", errMsg)
+			}
+		})
 	}
 }

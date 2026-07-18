@@ -40,12 +40,14 @@ func (k BedrockKey) GetAPIKey() string {
 func (k BedrockKey) GetBaseURL() string { return k.BaseURL }
 
 type BedrockModel struct {
-	Name  string `yaml:"name" json:"name"`
-	Alias string `yaml:"alias" json:"alias"`
+	Name        string `yaml:"name" json:"name"`
+	Alias       string `yaml:"alias" json:"alias"`
+	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
 }
 
-func (m BedrockModel) GetName() string  { return m.Name }
-func (m BedrockModel) GetAlias() string { return m.Alias }
+func (m BedrockModel) GetName() string        { return m.Name }
+func (m BedrockModel) GetAlias() string       { return m.Alias }
+func (m BedrockModel) GetDisplayName() string { return m.DisplayName }
 
 func (cfg *Config) SanitizeBedrockKeys() {
 	if cfg == nil {
@@ -111,6 +113,7 @@ func sanitizeBedrockModels(models []BedrockModel) []BedrockModel {
 	for _, model := range models {
 		model.Name = strings.TrimSpace(model.Name)
 		model.Alias = strings.TrimSpace(model.Alias)
+		model.DisplayName = strings.TrimSpace(model.DisplayName)
 		if model.Name == "" && model.Alias == "" {
 			continue
 		}

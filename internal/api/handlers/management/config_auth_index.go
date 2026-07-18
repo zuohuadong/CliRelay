@@ -34,6 +34,14 @@ type codexKeyWithAuthIndex struct {
 	RecentRequests []coreauth.RecentRequestBucket `json:"recent_requests,omitempty"`
 }
 
+type xaiKeyWithAuthIndex struct {
+	config.XAIKey
+	AuthIndex      string                         `json:"auth-index,omitempty"`
+	Success        int64                          `json:"success"`
+	Failed         int64                          `json:"failed"`
+	RecentRequests []coreauth.RecentRequestBucket `json:"recent_requests,omitempty"`
+}
+
 type vertexCompatKeyWithAuthIndex struct {
 	config.VertexCompatKey
 	AuthIndex      string                         `json:"auth-index,omitempty"`
@@ -238,6 +246,38 @@ func (h *Handler) codexKeysWithAuthIndex() []codexKeyWithAuthIndex {
 		}
 		out[i] = codexKeyWithAuthIndex{
 			CodexKey:       entry,
+			AuthIndex:      usage.AuthIndex,
+			Success:        usage.Success,
+			Failed:         usage.Failed,
+			RecentRequests: cloneRecentRequestBuckets(usage.RecentRequests),
+		}
+	}
+	return out
+}
+
+func (h *Handler) xaiKeysWithAuthIndex() []xaiKeyWithAuthIndex {
+	if h == nil {
+		return nil
+	}
+	liveUsageByID := h.liveAuthUsageByID()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+
+	idGen := synthesizer.NewStableIDGenerator()
+	out := make([]xaiKeyWithAuthIndex, len(h.cfg.XAIKey))
+	for i := range h.cfg.XAIKey {
+		entry := h.cfg.XAIKey[i]
+		usage := authUsageSnapshot{}
+		if key := strings.TrimSpace(entry.APIKey); key != "" {
+			id, _ := idGen.Next("xai:apikey", key, entry.BaseURL)
+			usage = liveUsageByID[id]
+		}
+		out[i] = xaiKeyWithAuthIndex{
+			XAIKey:         entry,
 			AuthIndex:      usage.AuthIndex,
 			Success:        usage.Success,
 			Failed:         usage.Failed,

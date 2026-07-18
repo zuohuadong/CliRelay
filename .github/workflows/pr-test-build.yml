@@ -15,9 +15,7 @@ jobs:
       - name: Reject vendored panel assets
         run: ./scripts/ensure-no-vendored-panel-assets.sh
       - name: Refresh models catalog
-        run: |
-          git fetch --depth 1 https://github.com/router-for-me/models.git main
-          git show FETCH_HEAD:models.json > internal/registry/models/models.json
+        run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

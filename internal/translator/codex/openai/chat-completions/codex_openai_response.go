@@ -494,7 +494,7 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 		}
 	}
 
-	// Extract and set the finish reason based on status
+	// Extract and set the finish reason based on status.
 	if statusResult := responseResult.Get("status"); statusResult.Exists() {
 		status := statusResult.String()
 		if status == "completed" || status == "incomplete" {
@@ -508,13 +508,13 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 }
 
 func codexOpenAIFinishReason(responseResult gjson.Result, hasToolCalls bool) (string, string) {
-	if hasToolCalls {
-		return "tool_calls", "tool_calls"
-	}
-
 	reason := strings.TrimSpace(responseResult.Get("stop_reason").String())
 	if reason == "" {
 		reason = strings.TrimSpace(responseResult.Get("incomplete_details.reason").String())
+	}
+	status := strings.TrimSpace(responseResult.Get("status").String())
+	if !strings.EqualFold(status, "incomplete") && reason == "" && hasToolCalls {
+		return "tool_calls", "tool_calls"
 	}
 
 	switch reason {

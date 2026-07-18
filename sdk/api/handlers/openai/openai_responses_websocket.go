@@ -2854,6 +2854,16 @@ func shouldReplayResponsesWebsocketTranscript(errMsg *interfaces.ErrorMessage) b
 	}
 
 	text := responsesWebsocketErrorText(errMsg)
+	// "No tool call found for custom tool call output with call_id ..." means
+	// upstream cannot resolve the tool call referenced by an orphaned output.
+	// This happens when previous_response_id cannot be resolved upstream
+	// (expired, created under a different account after auth rotation, or the
+	// upstream does not implement cross-request tool call memory). Fall back to
+	// transcript replay so the full tool call transcript is resent inline.
+	// responsesWebsocketErrorText lowercases the message, so match lowercase.
+	if strings.Contains(text, "no tool call found for") {
+		return true
+	}
 	if !strings.Contains(text, "previous_response_id") {
 		return false
 	}

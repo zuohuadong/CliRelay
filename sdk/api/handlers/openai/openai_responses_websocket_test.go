@@ -5742,3 +5742,54 @@ func TestResponsesWebsocketTurnLimitsSnapshotIsStableAcrossConfigChange(t *testi
 		t.Fatalf("second snapshot did not refresh: %+v", second)
 	}
 }
+
+func TestShouldReplayResponsesWebsocketTranscriptNoToolCallFound(t *testing.T) {
+	cases := []struct {
+		name    string
+		message string
+		status  int
+		want    bool
+	}{
+		{
+			name:    "custom tool call output orphan triggers replay",
+			message: "No tool call found for custom tool call output with call_id call_1I9St3k5mUWsBkUEs9mFygMO.",
+			status:  http.StatusBadRequest,
+			want:    true,
+		},
+		{
+			name:    "function call output orphan triggers replay",
+			message: "No tool call found for function_call_output with call_id call_abc.",
+			status:  http.StatusBadRequest,
+			want:    true,
+		},
+		{
+			name:    "unrelated error does not trigger replay",
+			message: "Invalid model: gpt-foo",
+			status:  http.StatusBadRequest,
+			want:    false,
+		},
+		{
+			name:    "no tool call found but not 400 does not trigger replay",
+			message: "No tool call found for custom tool call output with call_id call_x.",
+			status:  http.StatusInternalServerError,
+			want:    false,
+		},
+		{
+			name:    "previous_response_not_found still triggers replay",
+			message: "previous_response_id not found: resp_xxx",
+			status:  http.StatusBadRequest,
+			want:    true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			errMsg := &interfaces.ErrorMessage{
+				StatusCode: tc.status,
+				Error:      errors.New(tc.message),
+			}
+			if got := shouldReplayResponsesWebsocketTranscript(errMsg); got != tc.want {
+				t.Fatalf("shouldReplayResponsesWebsocketTranscript = %v, want %v (message=%q)", got, tc.want, tc.message)
+			}
+		})
+	}
+}

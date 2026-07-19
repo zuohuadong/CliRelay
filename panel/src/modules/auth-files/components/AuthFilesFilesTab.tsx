@@ -502,7 +502,7 @@ const buildPastedAuthFileName = (
   return name;
 };
 
-const buildPastedAuthFiles = (input: string, existingFiles: AuthFileItem[] = []): File[] => {
+const buildPastedAuthFiles = (input: string): File[] => {
   const records = parsePastedAuthJsonRecords(input);
   if (records.length === 0) return [];
   const issuedAt = new Date();
@@ -517,9 +517,6 @@ const buildPastedAuthFiles = (input: string, existingFiles: AuthFileItem[] = [])
   });
   const usedNames = new Set<string>();
   const usedIdentityKeys = new Set<string>();
-  existingFiles.forEach((file) => {
-    collectAuthIdentityKeys(file).forEach((key) => usedIdentityKeys.add(key));
-  });
 
   const files: File[] = [];
   normalizedRecords.forEach((record, index) => {
@@ -597,7 +594,6 @@ interface AuthFilesFilesTabProps {
   setSearch: (value: string) => void;
   quotaLastUpdatedText: string;
   loading: boolean;
-  files: AuthFileItem[];
   filesLength: number;
   renderFilesViewModeTabs: ReactNode;
   quotaAutoRefreshMs: QuotaAutoRefreshMs;
@@ -680,7 +676,6 @@ export function AuthFilesFilesTab({
   setSearch,
   quotaLastUpdatedText,
   loading,
-  files,
   filesLength,
   renderFilesViewModeTabs,
   quotaAutoRefreshMs,
@@ -872,7 +867,7 @@ export function AuthFilesFilesTab({
     setJsonImportError("");
     let pastedFiles: File[];
     try {
-      pastedFiles = buildPastedAuthFiles(jsonImportText, files);
+      pastedFiles = buildPastedAuthFiles(jsonImportText);
     } catch {
       setJsonImportError(t("auth_files.paste_json_invalid"));
       return;
@@ -894,7 +889,7 @@ export function AuthFilesFilesTab({
     await handleUpload(uploadFiles);
     setJsonImportText("");
     setJsonImportOpen(false);
-  }, [files, getImportErrorMessage, handleUpload, importChannel, jsonImportText, t]);
+  }, [getImportErrorMessage, handleUpload, importChannel, jsonImportText, t]);
 
   const submitFileImport = useCallback(async () => {
     if (pendingFileImports.length === 0) return;

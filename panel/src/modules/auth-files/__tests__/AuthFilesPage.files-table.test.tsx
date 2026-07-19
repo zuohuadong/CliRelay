@@ -685,7 +685,7 @@ describe("AuthFilesPage files table", () => {
     );
   });
 
-  test("skips duplicate codex accounts that are already in the list or repeated in the pasted bundle", async () => {
+  test("allows pasted accounts to refresh existing files while skipping repeats in the same paste", async () => {
     const existingAlpha = {
       name: "codex-alpha@example.test-plus.json",
       type: "codex",
@@ -795,9 +795,18 @@ describe("AuthFilesPage files table", () => {
     });
     fireEvent.click(within(dialog).getByRole("button", { name: "Upload JSON" }));
 
-    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
-    const uploadCalls = mocks.upload.mock.calls as unknown as [[File]];
-    expect(uploadCalls.map(([file]) => file.name)).toEqual(["codex-beta@example.test-plus.json"]);
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(2));
+    const uploadCalls = mocks.upload.mock.calls as unknown as [[File], [File]];
+    expect(uploadCalls.map(([file]) => file.name)).toEqual([
+      "codex-alpha@example.test-plus.json",
+      "codex-beta@example.test-plus.json",
+    ]);
+    const uploadedAlpha = JSON.parse(await uploadCalls[0][0].text()) as Record<string, unknown>;
+    expect(uploadedAlpha).toMatchObject({
+      type: "codex",
+      account_id: "acct-111",
+      access_token: "access-token-one",
+    });
   });
 
   test("refreshes pasted auth files and quotas from the latest uploaded list", async () => {

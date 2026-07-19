@@ -89,9 +89,12 @@ type websocketPinnedFailoverExecutor struct {
 }
 
 type websocketPreviousResponseReplayExecutor struct {
-	mu       sync.Mutex
-	calls    int
-	payloads [][]byte
+	mu           sync.Mutex
+	calls        int
+	payloads     [][]byte
+	provider     string
+	errorMessage string
+	firstOutput  string
 }
 
 type websocketZeroOutputEOFReplayExecutor struct {
@@ -485,7 +488,12 @@ func (e *websocketPinnedFailoverExecutor) Payloads(authID string) [][]byte {
 	return out
 }
 
-func (e *websocketPreviousResponseReplayExecutor) Identifier() string { return "test-provider" }
+func (e *websocketPreviousResponseReplayExecutor) Identifier() string {
+	if e.provider != "" {
+		return e.provider
+	}
+	return "test-provider"
+}
 
 func (e *websocketPreviousResponseReplayExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
 	return coreexecutor.Response{}, errors.New("not implemented")
@@ -500,15 +508,23 @@ func (e *websocketPreviousResponseReplayExecutor) ExecuteStream(_ context.Contex
 
 	chunks := make(chan coreexecutor.StreamChunk, 1)
 	if call == 2 {
+		errorMessage := e.errorMessage
+		if errorMessage == "" {
+			errorMessage = `{"error":{"type":"invalid_request_error","code":"previous_response_not_found","message":"Previous response with id 'resp_missing' not found.","param":"previous_response_id"}}`
+		}
 		chunks <- coreexecutor.StreamChunk{Err: websocketPinnedFailoverStatusError{
 			status: http.StatusBadRequest,
-			msg:    `{"error":{"type":"invalid_request_error","code":"previous_response_not_found","message":"Previous response with id 'resp_missing' not found.","param":"previous_response_id"}}`,
+			msg:    errorMessage,
 		}}
 		close(chunks)
 		return &coreexecutor.StreamResult{Chunks: chunks}, nil
 	}
 
-	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp_replay_%d","output":[{"type":"message","id":"out-%d"}]}}`, call, call))}
+	output := fmt.Sprintf(`[{"type":"message","id":"out-%d"}]`, call)
+	if call == 1 && e.firstOutput != "" {
+		output = e.firstOutput
+	}
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp_replay_%d","output":%s}}`, call, output))}
 	close(chunks)
 	return &coreexecutor.StreamResult{Chunks: chunks}, nil
 }
@@ -1916,6 +1932,7 @@ func TestForwardResponsesWebsocketRestoresAndForwardsCompletedOutput(t *testing.
 			"session-1",
 			false,
 			nil,
+			nil,
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -2015,6 +2032,7 @@ func TestForwardResponsesWebsocketSynthesizesCompletedForErrors(t *testing.T) {
 			"session-1",
 			false,
 			nil,
+			nil,
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -2112,6 +2130,7 @@ func TestForwardResponsesWebsocketSynthesizesCompletedForActionableEOF(t *testin
 			"session-1",
 			false,
 			nil,
+			nil,
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -2207,6 +2226,7 @@ func TestForwardResponsesWebsocketEmitsErrorOnEOFAfterPartialMessage(t *testing.
 			timelineLog,
 			"session-1",
 			false,
+			nil,
 			nil,
 		)
 		if err != nil {
@@ -2311,6 +2331,7 @@ func TestForwardResponsesWebsocketEmitsErrorOnEOFWithZeroOutput(t *testing.T) {
 			"session-1",
 			false,
 			nil,
+			nil,
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -2405,6 +2426,7 @@ func TestForwardResponsesWebsocketLogsAttemptedResponseOnWriteFailure(t *testing
 			timelineLog,
 			"session-1",
 			false,
+			nil,
 			nil,
 		)
 		if err == nil {
@@ -3666,6 +3688,90 @@ func TestResponsesWebsocketRetriesPreviousResponseNotFoundWithTranscriptReplay(t
 	replayInput := gjson.GetBytes(payloads[2], "input").Raw
 	if !strings.Contains(replayInput, `"id":"msg-1"`) || !strings.Contains(replayInput, `"id":"msg-2"`) {
 		t.Fatalf("replay input missing expected transcript items: %s", replayInput)
+	}
+}
+
+func TestResponsesWebsocketRetriesZhipuMessagesErrorWithTranscriptReplay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &websocketPreviousResponseReplayExecutor{
+		provider:     "bigmodel-coding",
+		errorMessage: `{"error":{"code":"1214","message":"messages 参数非法。请检查文档。"}}`,
+		firstOutput:  `[{"type":"custom_tool_call","id":"ctc-1","call_id":"call-1","name":"apply_patch","input":"*** Begin Patch"}]`,
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth := &coreauth.Auth{
+		ID:       "auth-zhipu-replay",
+		Provider: executor.Identifier(),
+		Status:   coreauth.StatusActive,
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "glm-5.2"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Fatalf("close websocket: %v", errClose)
+		}
+	}()
+
+	requests := []string{
+		`{"type":"response.create","model":"glm-5.2","input":[{"type":"message","id":"msg-1","role":"user","content":[{"type":"input_text","text":"apply the patch"}]}]}`,
+		`{"type":"response.create","previous_response_id":"resp_replay_1","input":[{"type":"custom_tool_call_output","id":"tool-out-1","call_id":"call-1","output":"done"}]}`,
+	}
+	for i := range requests {
+		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(requests[i])); errWrite != nil {
+			t.Fatalf("write websocket message %d: %v", i+1, errWrite)
+		}
+		_, payload, errReadMessage := conn.ReadMessage()
+		if errReadMessage != nil {
+			t.Fatalf("read websocket message %d: %v", i+1, errReadMessage)
+		}
+		if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+			t.Fatalf("message %d payload type = %s, want %s: %s", i+1, got, wsEventTypeCompleted, payload)
+		}
+	}
+
+	payloads := executor.Payloads()
+	if len(payloads) != 3 {
+		t.Fatalf("upstream payload count = %d, want 3", len(payloads))
+	}
+	if got := gjson.GetBytes(payloads[1], "previous_response_id").String(); got != "resp_replay_1" {
+		t.Fatalf("incremental payload previous_response_id = %q, want resp_replay_1: %s", got, payloads[1])
+	}
+	if gjson.GetBytes(payloads[2], "previous_response_id").Exists() {
+		t.Fatalf("replay payload must drop previous_response_id: %s", payloads[2])
+	}
+	replayInput := gjson.GetBytes(payloads[2], "input").Array()
+	if len(replayInput) != 3 {
+		t.Fatalf("replay input len = %d, want 3: %s", len(replayInput), payloads[2])
+	}
+	if replayInput[0].Get("id").String() != "msg-1" ||
+		replayInput[1].Get("id").String() != "ctc-1" ||
+		replayInput[1].Get("call_id").String() != "call-1" ||
+		replayInput[2].Get("id").String() != "tool-out-1" ||
+		replayInput[2].Get("call_id").String() != "call-1" {
+		t.Fatalf("replay input missing paired tool transcript: %s", payloads[2])
 	}
 }
 
@@ -5184,7 +5290,7 @@ func TestForwardResponsesWebsocketSendsApplicationHeartbeatWhileWaiting(t *testi
 			Streaming: sdkconfig.StreamingConfig{KeepAliveSeconds: 1},
 		}, nil)
 		h := NewOpenAIResponsesAPIHandler(base)
-		_, _, _, errMsg, _, err := h.forwardResponsesWebsocket(ctx, conn, func(...interface{}) {}, data, errs, nil, "session-heartbeat", false, nil)
+		_, _, _, errMsg, _, err := h.forwardResponsesWebsocket(ctx, conn, func(...interface{}) {}, data, errs, nil, "session-heartbeat", false, nil, nil)
 		if err != nil {
 			serverErrCh <- err
 			return
@@ -5691,7 +5797,7 @@ func TestResponsesWebsocketTurnLimitFailureDoesNotWriteCompleted(t *testing.T) {
 		close(errs)
 		base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 		h := NewOpenAIResponsesAPIHandler(base)
-		_, _, _, errMsg, _, err := h.forwardResponsesWebsocket(ctx, conn, func(...interface{}) {}, data, errs, nil, "session", false, nil)
+		_, _, _, errMsg, _, err := h.forwardResponsesWebsocket(ctx, conn, func(...interface{}) {}, data, errs, nil, "session", false, nil, nil)
 		if err != nil {
 			serverErr <- err
 			return
@@ -5789,6 +5895,41 @@ func TestShouldReplayResponsesWebsocketTranscriptNoToolCallFound(t *testing.T) {
 			}
 			if got := shouldReplayResponsesWebsocketTranscript(errMsg); got != tc.want {
 				t.Fatalf("shouldReplayResponsesWebsocketTranscript = %v, want %v (message=%q)", got, tc.want, tc.message)
+			}
+		})
+	}
+}
+
+func TestShouldReplayZhipuMessagesValidation(t *testing.T) {
+	errMsg := &interfaces.ErrorMessage{
+		StatusCode: http.StatusBadRequest,
+		Error:      errors.New(`{"error":{"code":"1214","message":"messages 参数非法。请检查文档。"}}`),
+	}
+	incrementalToolOutput := []byte(`{"previous_response_id":"resp_1","input":[{"type":"custom_tool_call_output","call_id":"call_1","output":"done"}]}`)
+
+	cases := []struct {
+		name          string
+		provider      string
+		request       []byte
+		replayAttempt int
+		errMsg        *interfaces.ErrorMessage
+		want          bool
+	}{
+		{name: "bigmodel incremental tool output", provider: "bigmodel-coding", request: incrementalToolOutput, replayAttempt: 0, errMsg: errMsg, want: true},
+		{name: "non bigmodel provider", provider: "test-provider", request: incrementalToolOutput, replayAttempt: 0, errMsg: errMsg, want: false},
+		{name: "second replay attempt", provider: "bigmodel-coding", request: incrementalToolOutput, replayAttempt: 1, errMsg: errMsg, want: false},
+		{name: "missing previous response id", provider: "bigmodel-coding", request: []byte(`{"input":[{"type":"custom_tool_call_output","call_id":"call_1","output":"done"}]}`), replayAttempt: 0, errMsg: errMsg, want: false},
+		{name: "ordinary message", provider: "bigmodel-coding", request: []byte(`{"previous_response_id":"resp_1","input":[{"type":"message","role":"user","content":"hi"}]}`), replayAttempt: 0, errMsg: errMsg, want: false},
+		{name: "different error code", provider: "bigmodel-coding", request: incrementalToolOutput, replayAttempt: 0, errMsg: &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: errors.New(`{"error":{"code":"1215","message":"messages 参数非法。请检查文档。"}}`)}, want: false},
+		{name: "different error message", provider: "bigmodel-coding", request: incrementalToolOutput, replayAttempt: 0, errMsg: &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: errors.New(`{"error":{"code":"1214","message":"model 参数非法。请检查文档。"}}`)}, want: false},
+		{name: "non bad request status", provider: "bigmodel-coding", request: incrementalToolOutput, replayAttempt: 0, errMsg: &interfaces.ErrorMessage{StatusCode: http.StatusInternalServerError, Error: errors.New(`{"error":{"code":"1214","message":"messages 参数非法。请检查文档。"}}`)}, want: false},
+		{name: "malformed error body", provider: "bigmodel-coding", request: incrementalToolOutput, replayAttempt: 0, errMsg: &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: errors.New("1214 messages 参数非法")}, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldReplayZhipuMessagesValidation(tc.errMsg, tc.provider, tc.request, tc.replayAttempt); got != tc.want {
+				t.Fatalf("shouldReplayZhipuMessagesValidation = %v, want %v", got, tc.want)
 			}
 		})
 	}

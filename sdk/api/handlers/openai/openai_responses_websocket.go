@@ -72,6 +72,12 @@ type responsesWebsocketPinnedAuthState struct {
 	modelKey string
 }
 
+type responsesWebsocketZhipuReplayContext struct {
+	provider      string
+	request       []byte
+	replayAttempt int
+}
+
 type websocketTimelineLog struct {
 	enabled bool
 	source  *requestlogging.FileBodySource
@@ -665,7 +671,16 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 
 			canReplayForwardErr := replayAttempt < maxReplayRetries
-			completedOutput, completedResponseID, completedPendingToolCallIDs, forwardErrMsg, shouldReplayForwardErr, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, wsTimelineLog, passthroughSessionID, canReplayForwardErr, clientDisconnected)
+			selectedProvider := ""
+			if selectedAuth, ok := sessionAuthByID(lastAttemptedAuthID); ok && selectedAuth != nil {
+				selectedProvider = selectedAuth.Provider
+			}
+			zhipuReplayContext := &responsesWebsocketZhipuReplayContext{
+				provider:      selectedProvider,
+				request:       requestJSON,
+				replayAttempt: replayAttempt,
+			}
+			completedOutput, completedResponseID, completedPendingToolCallIDs, forwardErrMsg, shouldReplayForwardErr, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, wsTimelineLog, passthroughSessionID, canReplayForwardErr, clientDisconnected, zhipuReplayContext)
 			if errForward != nil {
 				wsTerminateErr = errForward
 				log.Warnf("responses websocket: forward failed id=%s error=%v", passthroughSessionID, errForward)
@@ -2044,6 +2059,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	sessionID string,
 	suppressReplayableErrors bool,
 	clientDisconnected <-chan struct{},
+	zhipuReplayContext *responsesWebsocketZhipuReplayContext,
 ) ([]byte, string, []string, *interfaces.ErrorMessage, bool, error) {
 	completed := false
 	completedResponseID := ""
@@ -2114,7 +2130,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			}
 			if errMsg != nil {
 				output := outputAccumulator.Output()
-				if suppressReplayableErrors && shouldReplayResponsesWebsocketRequest(errMsg, output, sawReplayBlockingPayload) {
+				if suppressReplayableErrors && shouldReplayResponsesWebsocketRequest(errMsg, output, sawReplayBlockingPayload, zhipuReplayContext) {
 					cancel(errMsg.Error)
 					return result(output, errMsg, true, nil)
 				}
@@ -2213,7 +2229,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						)
 					}
 					output := outputAccumulator.Output()
-					if suppressReplayableErrors && shouldReplayResponsesWebsocketRequest(errMsg, output, sawReplayBlockingPayload) {
+					if suppressReplayableErrors && shouldReplayResponsesWebsocketRequest(errMsg, output, sawReplayBlockingPayload, zhipuReplayContext) {
 						cancel(errMsg.Error)
 						return result(output, errMsg, true, nil)
 					}
@@ -2882,10 +2898,61 @@ func responsesWebsocketReplayableLifecycleEvent(eventType string) bool {
 	}
 }
 
-func shouldReplayResponsesWebsocketRequest(errMsg *interfaces.ErrorMessage, completedOutput []byte, sawReplayBlockingPayload bool) bool {
-	return shouldReplayResponsesWebsocketTranscript(errMsg) ||
+func shouldReplayResponsesWebsocketRequest(errMsg *interfaces.ErrorMessage, completedOutput []byte, sawReplayBlockingPayload bool, zhipuContext *responsesWebsocketZhipuReplayContext) bool {
+	return shouldReplayZhipuMessagesValidationWithContext(errMsg, zhipuContext) ||
+		shouldReplayResponsesWebsocketTranscript(errMsg) ||
 		shouldReplayResponsesWebsocketZeroOutputEOF(errMsg, completedOutput, sawReplayBlockingPayload) ||
 		shouldReplayResponsesWebsocketZeroOutputTransientError(errMsg, completedOutput, sawReplayBlockingPayload)
+}
+
+func shouldReplayZhipuMessagesValidationWithContext(errMsg *interfaces.ErrorMessage, replayContext *responsesWebsocketZhipuReplayContext) bool {
+	if replayContext == nil {
+		return false
+	}
+	return shouldReplayZhipuMessagesValidation(errMsg, replayContext.provider, replayContext.request, replayContext.replayAttempt)
+}
+
+func shouldReplayZhipuMessagesValidation(errMsg *interfaces.ErrorMessage, provider string, request []byte, replayAttempt int) bool {
+	if replayAttempt != 0 || !strings.EqualFold(strings.TrimSpace(provider), "bigmodel-coding") || errMsg == nil || errMsg.Error == nil {
+		return false
+	}
+
+	status := errMsg.StatusCode
+	if status <= 0 {
+		if statusError, ok := errMsg.Error.(interface{ StatusCode() int }); ok && statusError != nil {
+			status = statusError.StatusCode()
+		}
+	}
+	if status != http.StatusBadRequest {
+		return false
+	}
+
+	previousResponseID := strings.TrimSpace(gjson.GetBytes(request, "previous_response_id").String())
+	if !strings.HasPrefix(previousResponseID, "resp_") {
+		return false
+	}
+	hasToolOutput := false
+	input := gjson.GetBytes(request, "input")
+	if input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool {
+			switch strings.TrimSpace(item.Get("type").String()) {
+			case "function_call_output", "custom_tool_call_output":
+				hasToolOutput = true
+				return false
+			default:
+				return true
+			}
+		})
+	}
+	if !hasToolOutput {
+		return false
+	}
+
+	errorBody := gjson.Parse(strings.TrimSpace(errMsg.Error.Error()))
+	if strings.TrimSpace(errorBody.Get("error.code").String()) != "1214" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(strings.TrimSpace(errorBody.Get("error.message").String())), "messages 参数非法")
 }
 
 func shouldReplayResponsesWebsocketZeroOutputEOF(errMsg *interfaces.ErrorMessage, completedOutput []byte, sawReplayBlockingPayload bool) bool {
@@ -2941,7 +3008,7 @@ func replayableResponsesWebsocketPayloadError(payload []byte, completedOutput []
 		StatusCode: http.StatusRequestTimeout,
 		Error:      fmt.Errorf("%s", message),
 	}
-	if !shouldReplayResponsesWebsocketRequest(errMsg, completedOutput, sawReplayBlockingPayload) {
+	if !shouldReplayResponsesWebsocketRequest(errMsg, completedOutput, sawReplayBlockingPayload, nil) {
 		return nil
 	}
 	return errMsg

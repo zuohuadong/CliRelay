@@ -738,6 +738,8 @@ func TestManagementRoutesRestoredAfterMerge(t *testing.T) {
 		{http.MethodGet, "/v0/management/models"},
 		{http.MethodGet, "/v0/management/model-openrouter-sync"},
 		{http.MethodGet, "/v0/management/model-prices"},
+		{http.MethodGet, "/v0/management/auth-files/codex-reset-credits"},
+		{http.MethodPost, "/v0/management/auth-files/codex-reset-credits/consume"},
 		{http.MethodGet, "/v0/management/image-generation/channels"},
 		{http.MethodGet, "/v0/management/usage"},
 		{http.MethodGet, "/v0/management/public/usage"},

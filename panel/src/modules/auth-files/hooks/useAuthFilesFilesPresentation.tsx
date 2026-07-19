@@ -8,6 +8,7 @@ import {
   KeyRound,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Tags,
   Zap,
 } from "lucide-react";
@@ -30,6 +31,7 @@ import {
   formatAuthFileRestrictionRemaining,
   formatFileSize,
   formatModified,
+  isOauthAuthFile,
   isRuntimeOnlyAuthFile,
   parseAdditionalQuotaWindowLabel,
   resolveAuthFileDisplayName,
@@ -162,6 +164,7 @@ interface UseAuthFilesFilesPresentationOptions {
   setFileEnabled: (file: AuthFileItem, enabled: boolean) => Promise<void>;
   codexFastModeUpdating: Record<string, boolean>;
   setCodexFastMode: (file: AuthFileItem, enabled: boolean) => Promise<void>;
+  openCodexResetCredits: (file: AuthFileItem) => Promise<void>;
   usageIndex: UsageIndex;
   egressLoaded: boolean;
   egressRuntimeEnabled: boolean;
@@ -192,6 +195,7 @@ export function useAuthFilesFilesPresentation({
   setFileEnabled,
   codexFastModeUpdating,
   setCodexFastMode,
+  openCodexResetCredits,
   usageIndex,
   egressLoaded,
   egressRuntimeEnabled,
@@ -1065,6 +1069,21 @@ export function useAuthFilesFilesPresentation({
                 </HoverTooltip>
               ) : null}
 
+              {isCodexFile && isOauthAuthFile(file) ? (
+                <HoverTooltip content={t("auth_files.codex_reset_action_hint")}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void openCodexResetCredits(file)}
+                    disabled={Boolean(file.disabled)}
+                    title={t("auth_files.codex_reset_action")}
+                    aria-label={t("auth_files.codex_reset_action")}
+                  >
+                    <RotateCcw size={16} />
+                  </Button>
+                </HoverTooltip>
+              ) : null}
+
               {quotaProvider ? (
                 <HoverTooltip content={t("common.refresh")}>
                   <Button
@@ -1128,6 +1147,7 @@ export function useAuthFilesFilesPresentation({
     formatPlanTypeLabel,
     formatQuotaResetTextCompact,
     openDetail,
+    openCodexResetCredits,
     openTagsEditor,
     quotaByFileName,
     quotaPreviewMode,

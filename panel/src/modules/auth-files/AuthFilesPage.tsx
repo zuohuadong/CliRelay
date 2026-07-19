@@ -19,6 +19,7 @@ import { AuthFilesExcludedTab } from "@/modules/auth-files/components/AuthFilesE
 import { AuthFilesAliasTab } from "@/modules/auth-files/components/AuthFilesAliasTab";
 import { AuthFilesFilesTab } from "@/modules/auth-files/components/AuthFilesFilesTab";
 import { AuthFileTagsModal } from "@/modules/auth-files/components/AuthFileTagsModal";
+import { CodexResetCreditsModal } from "@/modules/auth-files/components/CodexResetCreditsModal";
 import { ImportModelsModal } from "@/modules/auth-files/components/ImportModelsModal";
 import { GroupOverviewModal } from "@/modules/auth-files/components/GroupOverviewModal";
 import { useAuthFilesDataState } from "@/modules/auth-files/hooks/useAuthFilesDataState";
@@ -31,6 +32,7 @@ import { useAuthFilesFilesPresentation } from "@/modules/auth-files/hooks/useAut
 import { useAuthFilesListState } from "@/modules/auth-files/hooks/useAuthFilesListState";
 import { useAuthFilesModelOwnerGroups } from "@/modules/auth-files/hooks/useAuthFilesModelOwnerGroups";
 import { useAuthFilesQuotaState } from "@/modules/auth-files/hooks/useAuthFilesQuotaState";
+import { useCodexResetCredits } from "@/modules/auth-files/hooks/useCodexResetCredits";
 import { useAuthFilesGroupOverview } from "@/modules/auth-files/hooks/useAuthFilesGroupOverview";
 import { useAuthFilesOAuthConfig } from "@/modules/auth-files/hooks/useAuthFilesOAuthConfig";
 import { resolveQuotaProvider } from "@/modules/quota/quota-fetch";
@@ -448,6 +450,8 @@ export function AuthFilesPage() {
     refreshUsageDataForFiles,
   });
 
+  const codexResetCredits = useCodexResetCredits({ refreshQuota });
+
   const refreshQuotaForFiles = useCallback(
     async (targetFiles: AuthFileItem[]) => {
       if (tab !== "files") return;
@@ -675,6 +679,7 @@ export function AuthFilesPage() {
     setFileEnabled,
     codexFastModeUpdating,
     setCodexFastMode,
+    openCodexResetCredits: codexResetCredits.openForFile,
     usageIndex,
     egressLoaded: egressOverview !== null,
     egressRuntimeEnabled: Boolean(egressOverview?.enabled),
@@ -748,6 +753,7 @@ export function AuthFilesPage() {
             refreshQuota={refreshQuota}
             setFileEnabled={setFileEnabled}
             setCodexFastMode={setCodexFastMode}
+            openCodexResetCredits={codexResetCredits.openForFile}
             statusUpdating={statusUpdating}
             codexFastModeUpdating={codexFastModeUpdating}
             usageIndex={usageIndex}
@@ -862,6 +868,13 @@ export function AuthFilesPage() {
         saving={Boolean(tagsEditorFile && tagSavingByName[tagsEditorFile.name])}
         onClose={() => setTagsEditorFileName(null)}
         onSave={saveAuthFileTags}
+      />
+
+      <CodexResetCreditsModal
+        state={codexResetCredits.state}
+        onClose={codexResetCredits.close}
+        onSelectCredit={codexResetCredits.selectCredit}
+        onRedeem={() => void codexResetCredits.redeemSelected()}
       />
 
       <OAuthLoginDialog

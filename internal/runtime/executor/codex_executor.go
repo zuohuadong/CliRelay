@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -57,6 +58,12 @@ const (
 var codexHTTPStreamIdleTimeout = 3 * time.Minute
 
 const codexDefaultResponseHeaderTimeout = time.Duration(config.DefaultCodexResponseHeaderTimeoutSeconds) * time.Second
+
+const (
+	codexResetCreditsURL        = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+	codexResetCreditsConsumeURL = codexResetCreditsURL + "/consume"
+	codexResetCreditsTimeout    = time.Minute
+)
 
 var dataTag = []byte("data:")
 
@@ -2407,6 +2414,160 @@ func (e *CodexExecutor) ProbeQuotaRecovery(ctx context.Context, auth *cliproxyau
 		return nil, newCodexStatusErr(resp.StatusCode, body)
 	}
 	return parseCodexQuotaProbe(body), nil
+}
+
+// CodexRateLimitResetCredit is one earned, account-scoped usage reset credit.
+type CodexRateLimitResetCredit struct {
+	ID          string  `json:"id"`
+	ResetType   string  `json:"reset_type"`
+	Status      string  `json:"status"`
+	GrantedAt   string  `json:"granted_at"`
+	ExpiresAt   *string `json:"expires_at"`
+	Title       *string `json:"title"`
+	Description *string `json:"description"`
+}
+
+// CodexRateLimitResetCredits is the account's reset-credit inventory.
+type CodexRateLimitResetCredits struct {
+	Credits        []CodexRateLimitResetCredit `json:"credits"`
+	AvailableCount int64                       `json:"available_count"`
+}
+
+// CodexRateLimitResetResult reports the outcome of one idempotent redemption.
+type CodexRateLimitResetResult struct {
+	Code         string `json:"code"`
+	WindowsReset int64  `json:"windows_reset"`
+}
+
+type codexRateLimitResetRequest struct {
+	RedeemRequestID string `json:"redeem_request_id"`
+	CreditID        string `json:"credit_id"`
+}
+
+// ListRateLimitResetCredits returns the reset credits currently attached to a Codex account.
+func (e *CodexExecutor) ListRateLimitResetCredits(ctx context.Context, auth *cliproxyauth.Auth) (*CodexRateLimitResetCredits, error) {
+	body, err := e.codexResetCreditsRequest(ctx, auth, http.MethodGet, codexResetCreditsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	return decodeCodexRateLimitResetCredits(body)
+}
+
+// ConsumeRateLimitResetCredit redeems one selected credit using an idempotent request ID.
+func (e *CodexExecutor) ConsumeRateLimitResetCredit(ctx context.Context, auth *cliproxyauth.Auth, creditID, redeemRequestID string) (*CodexRateLimitResetResult, error) {
+	payload, err := json.Marshal(codexRateLimitResetRequest{
+		RedeemRequestID: redeemRequestID,
+		CreditID:        creditID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("codex reset credits: encode consume request: %w", err)
+	}
+	body, err := e.codexResetCreditsRequest(ctx, auth, http.MethodPost, codexResetCreditsConsumeURL, payload)
+	if err != nil {
+		return nil, err
+	}
+	return decodeCodexRateLimitResetResult(body)
+}
+
+func decodeCodexRateLimitResetCredits(body []byte) (*CodexRateLimitResetCredits, error) {
+	var response struct {
+		Credits        *[]CodexRateLimitResetCredit `json:"credits"`
+		AvailableCount *int64                       `json:"available_count"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("codex reset credits: decode list response: %w", err)
+	}
+	if response.Credits == nil || response.AvailableCount == nil || *response.AvailableCount < 0 {
+		return nil, errors.New("codex reset credits: invalid list response")
+	}
+	for _, credit := range *response.Credits {
+		if !validCodexRateLimitResetCredit(credit) {
+			return nil, errors.New("codex reset credits: invalid credit entry")
+		}
+	}
+	return &CodexRateLimitResetCredits{Credits: *response.Credits, AvailableCount: *response.AvailableCount}, nil
+}
+
+func validCodexRateLimitResetCredit(credit CodexRateLimitResetCredit) bool {
+	return strings.TrimSpace(credit.ID) != "" &&
+		strings.TrimSpace(credit.ResetType) != "" &&
+		strings.TrimSpace(credit.Status) != "" &&
+		strings.TrimSpace(credit.GrantedAt) != ""
+}
+
+func decodeCodexRateLimitResetResult(body []byte) (*CodexRateLimitResetResult, error) {
+	var response struct {
+		Code         *string `json:"code"`
+		WindowsReset *int64  `json:"windows_reset"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("codex reset credits: decode consume response: %w", err)
+	}
+	if response.Code == nil || response.WindowsReset == nil || *response.WindowsReset < 0 {
+		return nil, errors.New("codex reset credits: invalid consume response")
+	}
+	code := strings.ToLower(strings.TrimSpace(*response.Code))
+	if code != "reset" && code != "nothing_to_reset" && code != "no_credit" && code != "already_redeemed" {
+		return nil, errors.New("codex reset credits: unknown consume outcome")
+	}
+	return &CodexRateLimitResetResult{Code: code, WindowsReset: *response.WindowsReset}, nil
+}
+
+func (e *CodexExecutor) codexResetCreditsRequest(ctx context.Context, auth *cliproxyauth.Auth, method, targetURL string, payload []byte) ([]byte, error) {
+	resolvedAuth, err := e.resolveEgressAuth(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	if resolvedAuth == nil || !strings.EqualFold(strings.TrimSpace(resolvedAuth.Provider), "codex") {
+		return nil, statusErr{code: http.StatusBadRequest, msg: "codex reset credits require Codex OAuth auth"}
+	}
+	if resolvedAuth.AuthKind() != cliproxyauth.AuthKindOAuth {
+		return nil, statusErr{code: http.StatusBadRequest, msg: "codex reset credits require Codex OAuth auth"}
+	}
+	token, _ := resolvedAuth.Metadata["access_token"].(string)
+	if strings.TrimSpace(token) == "" {
+		return nil, statusErr{code: http.StatusUnauthorized, msg: "codex reset credits require an access token"}
+	}
+	accountID, _ := resolvedAuth.Metadata["account_id"].(string)
+	if strings.TrimSpace(accountID) == "" {
+		return nil, statusErr{code: http.StatusBadRequest, msg: "codex reset credits require a ChatGPT account ID"}
+	}
+	req, err := http.NewRequestWithContext(ctx, method, targetURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	applyCodexHeaders(req, resolvedAuth, token, false, e.cfg)
+	applyCodexResetCreditSecurityHeaders(req, token, accountID)
+	client, err := e.outboundHTTPClient(ctx, resolvedAuth, codexResetCreditsTimeout, 0, false)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, e.wrapStrictEgressTransportErrorForAuth(resolvedAuth, err, "reset credits request")
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Errorf("codex executor: close reset-credit body error: %v", closeErr)
+		}
+	}()
+	body, err := readUpstreamResponseBody(e.Identifier(), resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, newCodexStatusErr(resp.StatusCode, body)
+	}
+	return body, nil
+}
+
+func applyCodexResetCreditSecurityHeaders(req *http.Request, token, accountID string) {
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	req.Header.Set("Chatgpt-Account-Id", strings.TrimSpace(accountID))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Host = req.URL.Host
+	req.Header.Del("Host")
 }
 
 func parseCodexQuotaProbe(body []byte) *cliproxyauth.QuotaProbeResult {

@@ -11,6 +11,7 @@ import {
   ListChecks,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Settings2,
   SlidersHorizontal,
@@ -41,6 +42,7 @@ import type {
 import {
   AUTH_FILE_STATUS_FILTERS,
   TYPE_BADGE_CLASSES,
+  isOauthAuthFile,
   isRuntimeOnlyAuthFile,
   normalizeProviderKey,
   resolveAuthFileDisplayName,
@@ -632,6 +634,7 @@ interface AuthFilesFilesTabProps {
   refreshQuota: (file: AuthFileItem, provider: QuotaProvider) => Promise<void>;
   setFileEnabled: (file: AuthFileItem, enabled: boolean) => Promise<void>;
   setCodexFastMode: (file: AuthFileItem, enabled: boolean) => Promise<void>;
+  openCodexResetCredits: (file: AuthFileItem) => Promise<void>;
   statusUpdating: Record<string, boolean>;
   codexFastModeUpdating: Record<string, boolean>;
   usageIndex: UsageIndex;
@@ -711,6 +714,7 @@ export function AuthFilesFilesTab({
   refreshQuota,
   setFileEnabled,
   setCodexFastMode,
+  openCodexResetCredits,
   statusUpdating,
   codexFastModeUpdating,
   usageIndex,
@@ -1530,6 +1534,21 @@ export function AuthFilesFilesTab({
                                   disabled={Boolean(codexFastModeUpdating[file.name])}
                                 />
                               </span>
+                            </HoverTooltip>
+                          ) : null}
+
+                          {isCodexFile && isOauthAuthFile(file) && !runtimeOnly ? (
+                            <HoverTooltip content={t("auth_files.codex_reset_action_hint")}>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => void openCodexResetCredits(file)}
+                                disabled={Boolean(file.disabled)}
+                                title={t("auth_files.codex_reset_action")}
+                                aria-label={t("auth_files.codex_reset_action")}
+                              >
+                                <RotateCcw size={16} />
+                              </Button>
                             </HoverTooltip>
                           ) : null}
 

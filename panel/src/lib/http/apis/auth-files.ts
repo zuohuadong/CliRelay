@@ -35,6 +35,15 @@ export const authFilesApi = {
     codex_fast_mode?: boolean;
   }) => apiClient.patch("/auth-files/fields", payload),
 
+  getCodexResetCredits: (name: string): Promise<Record<string, unknown>> =>
+    apiClient.get("/auth-files/codex-reset-credits", { params: { name } }),
+  consumeCodexResetCredit: (payload: {
+    name: string;
+    credit_id: string;
+    idempotency_key: string;
+  }): Promise<Record<string, unknown>> =>
+    apiClient.post("/auth-files/codex-reset-credits/consume", payload),
+
   getOauthExcludedModels: async (): Promise<Record<string, string[]>> => {
     const data = await apiClient.get("/oauth-excluded-models");
     return normalizeOauthExcludedModels(data);

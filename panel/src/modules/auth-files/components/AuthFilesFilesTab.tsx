@@ -25,7 +25,7 @@ import { EmptyState } from "@/modules/ui/EmptyState";
 import { TextInput } from "@/modules/ui/Input";
 import { Modal } from "@/modules/ui/Modal";
 import { HoverTooltip } from "@/modules/ui/Tooltip";
-import { Select } from "@/modules/ui/Select";
+import { Select, type SelectOption } from "@/modules/ui/Select";
 import { SearchableSelect, type SearchableSelectOption } from "@/modules/ui/SearchableSelect";
 import { Tabs, TabsList, TabsTrigger } from "@/modules/ui/Tabs";
 import { VirtualTable, type VirtualTableColumn } from "@/modules/ui/VirtualTable";
@@ -58,6 +58,19 @@ import {
 import type { QuotaProvider } from "@/modules/quota/quota-fetch";
 
 const MAX_FILENAME_PART_LENGTH = 72;
+const AUTH_IMPORT_CHANNELS = [
+  "aistudio",
+  "antigravity",
+  "claude",
+  "codex",
+  "gemini",
+  "gemini-cli",
+  "iflow",
+  "kimi",
+  "qwen",
+  "vertex",
+  "xai",
+] as const;
 const ACTION_MENU_CONTENT_CLASS =
   "z-[220] min-w-44 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl shadow-slate-900/10 dark:border-neutral-800 dark:bg-neutral-950 dark:shadow-black/35";
 const ACTION_MENU_ITEM_CLASS =
@@ -65,6 +78,54 @@ const ACTION_MENU_ITEM_CLASS =
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+class AuthImportChannelRequiredError extends Error {
+  constructor() {
+    super("auth import channel is required");
+    this.name = "AuthImportChannelRequiredError";
+  }
+}
+
+class AuthImportJsonError extends Error {
+  constructor() {
+    super("auth import JSON is invalid");
+    this.name = "AuthImportJsonError";
+  }
+}
+
+interface AuthImportChannelSelectProps {
+  value: string;
+  onChange: (value: string) => void;
+  options: SelectOption[];
+  label: string;
+  ariaLabel: string;
+  automaticLabel: string;
+  hint: string;
+}
+
+function AuthImportChannelSelect({
+  value,
+  onChange,
+  options,
+  label,
+  ariaLabel,
+  automaticLabel,
+  hint,
+}: AuthImportChannelSelectProps) {
+  return (
+    <div className="grid gap-2">
+      <label className="text-xs font-semibold text-slate-600 dark:text-white/65">{label}</label>
+      <Select
+        value={value}
+        onChange={onChange}
+        options={options}
+        aria-label={ariaLabel}
+        placeholder={automaticLabel}
+      />
+      <p className="text-xs text-slate-500 dark:text-white/45">{hint}</p>
+    </div>
+  );
+}
 
 const sanitizeFilenamePart = (value: unknown): string => {
   const text = String(value ?? "")
@@ -462,6 +523,47 @@ const buildPastedAuthFiles = (input: string, existingFiles: AuthFileItem[] = [])
   return files;
 };
 
+const readAuthImportRecord = async (file: File): Promise<Record<string, unknown>> => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await file.text()) as unknown;
+  } catch (error: unknown) {
+    if (error instanceof SyntaxError) throw new AuthImportJsonError();
+    throw error;
+  }
+  if (!isPlainObject(parsed)) throw new AuthImportJsonError();
+  return parsed;
+};
+
+const resolveAuthImportChannel = (
+  record: Record<string, unknown>,
+  selectedChannel: string,
+): string => {
+  const explicitChannel = normalizeProviderKey(selectedChannel);
+  const embeddedChannel = normalizeProviderKey(readStringField(record, ["type", "provider"]));
+  const channel = explicitChannel || embeddedChannel;
+  if (!channel || channel === "unknown") throw new AuthImportChannelRequiredError();
+  return channel;
+};
+
+const buildAuthImportFile = (file: File, record: Record<string, unknown>, channel: string): File =>
+  new File(
+    [JSON.stringify(record.type === channel ? record : { ...record, type: channel }, null, 2)],
+    file.name,
+    {
+      type: file.type || "application/json",
+      lastModified: file.lastModified,
+    },
+  );
+
+const prepareAuthImportFiles = async (files: File[], selectedChannel: string): Promise<File[]> =>
+  Promise.all(
+    files.map(async (file) => {
+      const record = await readAuthImportRecord(file);
+      return buildAuthImportFile(file, record, resolveAuthImportChannel(record, selectedChannel));
+    }),
+  );
+
 interface AuthFilesFilesTabProps {
   fileInputRef: RefObject<HTMLInputElement | null>;
   handleUpload: (input: FileList | File[] | null) => Promise<void>;
@@ -625,7 +727,10 @@ export function AuthFilesFilesTab({
   const [modelOwnerDialogOpen, setModelOwnerDialogOpen] = useState(false);
   const [draftModelOwner, setDraftModelOwner] = useState(selectedModelOwner);
   const [jsonImportOpen, setJsonImportOpen] = useState(false);
+  const [fileImportOpen, setFileImportOpen] = useState(false);
+  const [pendingFileImports, setPendingFileImports] = useState<File[]>([]);
   const [jsonImportText, setJsonImportText] = useState("");
+  const [importChannel, setImportChannel] = useState("");
   const [jsonImportError, setJsonImportError] = useState("");
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const normalizedFilter = normalizeProviderKey(filter);
@@ -707,13 +812,65 @@ export function AuthFilesFilesTab({
     setJsonImportError("");
   }, [uploading]);
 
+  const closeFileImport = useCallback(() => {
+    if (uploading) return;
+    setFileImportOpen(false);
+    setPendingFileImports([]);
+    setJsonImportError("");
+  }, [uploading]);
+
+  const defaultImportChannel = useMemo(() => {
+    const candidate = normalizeProviderKey(filter);
+    return candidate !== "all" &&
+      AUTH_IMPORT_CHANNELS.includes(candidate as (typeof AUTH_IMPORT_CHANNELS)[number])
+      ? candidate
+      : "";
+  }, [filter]);
+
+  const importChannelOptions = useMemo(
+    () => [
+      { value: "", label: t("auth_files.import_channel_auto") },
+      ...AUTH_IMPORT_CHANNELS.map((value) => ({
+        value,
+        label: resolveProviderLabel(value),
+      })),
+    ],
+    [t],
+  );
+
+  const getImportErrorMessage = useCallback(
+    (error: unknown) => {
+      if (error instanceof AuthImportChannelRequiredError) {
+        return t("auth_files.import_channel_required");
+      }
+      if (error instanceof AuthImportJsonError) {
+        return t("auth_files.paste_json_invalid");
+      }
+      throw error;
+    },
+    [t],
+  );
+
+  const changeImportChannel = useCallback((value: string) => {
+    setImportChannel(value);
+    setJsonImportError("");
+  }, []);
+
   const submitJsonImport = useCallback(async () => {
     setJsonImportError("");
-    let uploadFiles: File[];
+    let pastedFiles: File[];
     try {
-      uploadFiles = buildPastedAuthFiles(jsonImportText, files);
+      pastedFiles = buildPastedAuthFiles(jsonImportText, files);
     } catch {
       setJsonImportError(t("auth_files.paste_json_invalid"));
+      return;
+    }
+
+    let uploadFiles: File[];
+    try {
+      uploadFiles = await prepareAuthImportFiles(pastedFiles, importChannel);
+    } catch (error: unknown) {
+      setJsonImportError(getImportErrorMessage(error));
       return;
     }
 
@@ -725,7 +882,20 @@ export function AuthFilesFilesTab({
     await handleUpload(uploadFiles);
     setJsonImportText("");
     setJsonImportOpen(false);
-  }, [files, handleUpload, jsonImportText, t]);
+  }, [files, getImportErrorMessage, handleUpload, importChannel, jsonImportText, t]);
+
+  const submitFileImport = useCallback(async () => {
+    if (pendingFileImports.length === 0) return;
+    setJsonImportError("");
+    try {
+      const uploadFiles = await prepareAuthImportFiles(pendingFileImports, importChannel);
+      await handleUpload(uploadFiles);
+      setFileImportOpen(false);
+      setPendingFileImports([]);
+    } catch (error: unknown) {
+      setJsonImportError(getImportErrorMessage(error));
+    }
+  }, [getImportErrorMessage, handleUpload, importChannel, pendingFileImports]);
 
   return (
     <div className="mt-3 space-y-3">
@@ -735,7 +905,16 @@ export function AuthFilesFilesTab({
         accept="application/json,.json"
         multiple
         className="hidden"
-        onChange={(e) => void handleUpload(e.currentTarget.files)}
+        aria-label={t("auth_files.upload_input_label")}
+        onChange={(e) => {
+          const selected = Array.from(e.currentTarget.files ?? []);
+          e.currentTarget.value = "";
+          if (selected.length === 0) return;
+          setJsonImportError("");
+          setImportChannel(defaultImportChannel);
+          setPendingFileImports(selected);
+          setFileImportOpen(true);
+        }}
       />
 
       <Card padding="compact">
@@ -978,6 +1157,7 @@ export function AuthFilesFilesTab({
                   size="sm"
                   onClick={() => {
                     setJsonImportError("");
+                    setImportChannel(defaultImportChannel);
                     setJsonImportOpen(true);
                   }}
                   disabled={uploading}
@@ -1483,6 +1663,15 @@ export function AuthFilesFilesTab({
         }
       >
         <div className="space-y-2">
+          <AuthImportChannelSelect
+            value={importChannel}
+            onChange={changeImportChannel}
+            options={importChannelOptions}
+            label={t("auth_files.import_channel_label")}
+            ariaLabel={t("auth_files.import_channel_aria")}
+            automaticLabel={t("auth_files.import_channel_auto")}
+            hint={t("auth_files.import_channel_hint")}
+          />
           <label
             htmlFor="auth-files-json-import"
             className="text-xs font-semibold text-slate-600 dark:text-white/65"
@@ -1510,6 +1699,53 @@ export function AuthFilesFilesTab({
               {t("auth_files.paste_json_hint")}
             </p>
           )}
+        </div>
+      </Modal>
+
+      <Modal
+        open={fileImportOpen}
+        title={t("auth_files.import_json_title")}
+        description={t("auth_files.import_json_description")}
+        maxWidth="max-w-2xl"
+        onClose={closeFileImport}
+        footer={
+          <>
+            <Button variant="secondary" size="sm" onClick={closeFileImport} disabled={uploading}>
+              {t("auth_files.cancel")}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => void submitFileImport()}
+              disabled={uploading || pendingFileImports.length === 0}
+            >
+              {uploading ? t("auth_files.upload") : t("auth_files.paste_json_upload")}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <AuthImportChannelSelect
+            value={importChannel}
+            onChange={changeImportChannel}
+            options={importChannelOptions}
+            label={t("auth_files.import_channel_label")}
+            ariaLabel={t("auth_files.import_channel_aria")}
+            automaticLabel={t("auth_files.import_channel_auto")}
+            hint={t("auth_files.import_channel_hint")}
+          />
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm dark:border-neutral-800 dark:bg-neutral-900">
+            {pendingFileImports.map((file) => (
+              <div key={`${file.name}-${file.lastModified}`} className="truncate">
+                {file.name}
+              </div>
+            ))}
+          </div>
+          {jsonImportError ? (
+            <p className="text-xs font-medium text-rose-600 dark:text-rose-300">
+              {jsonImportError}
+            </p>
+          ) : null}
         </div>
       </Modal>
 

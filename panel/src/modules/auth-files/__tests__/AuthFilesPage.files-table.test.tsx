@@ -411,6 +411,94 @@ describe("AuthFilesPage files table", () => {
     );
   });
 
+  test("requires a channel for pasted JSON without a provider and writes the selected type", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("qwen.json")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Paste JSON" }));
+    const dialog = await screen.findByRole("dialog", { name: "Paste Auth JSON" });
+    const channelSelect = within(dialog).getByRole("combobox", { name: "Import channel" });
+    fireEvent.change(within(dialog).getByLabelText("Auth file JSON"), {
+      target: { value: JSON.stringify({ account_id: "missing-type", access_token: "token" }) },
+    });
+
+    await user.click(within(dialog).getByRole("button", { name: "Upload JSON" }));
+    expect(
+      await within(dialog).findByText("Please select an import channel before uploading."),
+    ).toBeInTheDocument();
+    expect(mocks.upload).not.toHaveBeenCalled();
+
+    await user.click(channelSelect);
+    await user.click(screen.getByRole("option", { name: "Codex" }));
+    await user.click(within(dialog).getByRole("button", { name: "Upload JSON" }));
+
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
+    const uploadCalls = mocks.upload.mock.calls as unknown as [[File]];
+    const uploaded = uploadCalls[0][0];
+    expect(JSON.parse(await uploaded.text())).toMatchObject({
+      type: "codex",
+      account_id: "missing-type",
+    });
+  });
+
+  test("requires a channel before uploading a JSON file without a provider", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("qwen.json")).toBeInTheDocument();
+    const input = screen.getByLabelText("Upload auth JSON files");
+    await user.upload(
+      input,
+      new File(
+        [JSON.stringify({ account_id: "file-missing-type", access_token: "token" })],
+        "account.json",
+        {
+          type: "application/json",
+        },
+      ),
+    );
+
+    const dialog = await screen.findByRole("dialog", { name: "Import Auth JSON" });
+    await user.click(within(dialog).getByRole("button", { name: "Upload JSON" }));
+    expect(
+      await within(dialog).findByText("Please select an import channel before uploading."),
+    ).toBeInTheDocument();
+    expect(mocks.upload).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole("combobox", { name: "Import channel" }));
+    await user.click(screen.getByRole("option", { name: "Codex" }));
+    await user.click(within(dialog).getByRole("button", { name: "Upload JSON" }));
+
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
+    const uploadCalls = mocks.upload.mock.calls as unknown as [[File]];
+    const uploaded = uploadCalls[0][0];
+    expect(JSON.parse(await uploaded.text())).toMatchObject({
+      type: "codex",
+      account_id: "file-missing-type",
+    });
+  });
+
   test("expands pasted codex export bundles into synthesized auth files", async () => {
     render(
       <MemoryRouter initialEntries={["/auth-files"]}>
@@ -721,6 +809,8 @@ describe("AuthFilesPage files table", () => {
         }),
       },
     });
+    fireEvent.click(within(dialog).getByRole("combobox", { name: "Import channel" }));
+    fireEvent.click(screen.getByRole("option", { name: "Codex" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Upload JSON" }));
 
     expect(await screen.findByText("auth-server-renamed.json")).toBeInTheDocument();

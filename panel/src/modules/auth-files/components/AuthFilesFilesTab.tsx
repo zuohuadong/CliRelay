@@ -303,25 +303,37 @@ const findNextJsonValueStart = (input: string, start: number): number => {
 
 const parsePastedJsonValues = (input: string): unknown[] => {
   const values: unknown[] = [];
-  let index = 0;
+  let sawJsonStart = false;
+  let searchFrom = 0;
 
-  while (index < input.length) {
-    while (index < input.length && (/[\s,]/u.test(input[index]) || input[index] === "\uFEFF")) {
-      index += 1;
-    }
-    if (index >= input.length) break;
-    const startChar = input[index];
-    if (startChar !== "{" && startChar !== "[") {
-      const nextIndex = findNextJsonValueStart(input, index + 1);
-      if (nextIndex === -1) break;
-      index = nextIndex;
+  while (searchFrom < input.length) {
+    const start = findNextJsonValueStart(input, searchFrom);
+    if (start === -1) break;
+    sawJsonStart = true;
+
+    let end: number;
+    try {
+      end = findJsonValueEnd(input, start);
+    } catch {
+      // A prose wrapper can contain an unmatched brace before the actual JSON.
+      // Keep scanning so that one stray character does not discard a valid paste.
+      searchFrom = start + 1;
       continue;
     }
-    const end = findJsonValueEnd(input, index);
-    values.push(JSON.parse(input.slice(index, end)) as unknown);
-    index = end;
+
+    try {
+      values.push(JSON.parse(input.slice(start, end)) as unknown);
+      searchFrom = end;
+    } catch {
+      // Ignore non-JSON brace pairs in surrounding instructions and continue
+      // looking for the next complete object or array.
+      searchFrom = start + 1;
+    }
   }
 
+  if (sawJsonStart && values.length === 0) {
+    throw new Error("invalid json");
+  }
   return values;
 };
 

@@ -411,6 +411,49 @@ describe("AuthFilesPage files table", () => {
     );
   });
 
+  test("extracts a pasted JSON object from surrounding instructions", async () => {
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("qwen.json")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Paste JSON" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Paste Auth JSON" });
+    fireEvent.change(within(dialog).getByLabelText("Auth file JSON"), {
+      target: {
+        value: [
+          "粘贴认证 JSON",
+          "可以粘贴单个认证 JSON 对象、JSON 数组，或连续多个 JSON 对象。",
+          "认证文件 JSON",
+          "说明：{这不是 JSON，只是复制内容里的提示符",
+          JSON.stringify({
+            type: "codex",
+            account_id: "wrapped-account",
+            access_token: "token-with-{braces}",
+          }),
+          "请至少粘贴一个 JSON 对象。",
+        ].join("\n"),
+      },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Upload JSON" }));
+
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
+    const uploadCalls = mocks.upload.mock.calls as unknown as [[File]];
+    expect(JSON.parse(await uploadCalls[0][0].text())).toMatchObject({
+      type: "codex",
+      account_id: "wrapped-account",
+    });
+  });
+
   test("requires a channel for pasted JSON without a provider and writes the selected type", async () => {
     const user = userEvent.setup();
     render(

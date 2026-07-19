@@ -507,7 +507,7 @@ func (e *websocketPreviousResponseReplayExecutor) ExecuteStream(_ context.Contex
 	e.mu.Unlock()
 
 	chunks := make(chan coreexecutor.StreamChunk, 1)
-	if call == 2 {
+	if call == 2 && gjson.GetBytes(req.Payload, "previous_response_id").Exists() {
 		errorMessage := e.errorMessage
 		if errorMessage == "" {
 			errorMessage = `{"error":{"type":"invalid_request_error","code":"previous_response_not_found","message":"Previous response with id 'resp_missing' not found.","param":"previous_response_id"}}`
@@ -3225,7 +3225,7 @@ func TestResponsesWebsocketMergesTranscriptForNonPassthroughUpstream(t *testing.
 
 	requests := []string{
 		`{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`,
-		`{"type":"response.create","input":[{"type":"message","id":"msg-2"}]}`,
+		`{"type":"response.create","previous_response_id":"resp_client_state","input":[{"type":"message","id":"msg-2"}]}`,
 	}
 	for i := range requests {
 		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(requests[i])); errWrite != nil {
@@ -3253,6 +3253,59 @@ func TestResponsesWebsocketMergesTranscriptForNonPassthroughUpstream(t *testing.
 	}
 	if input[0].Get("id").String() != "msg-1" || input[1].Get("id").String() != "out-1" || input[2].Get("id").String() != "msg-2" {
 		t.Fatalf("unexpected merged upstream input: %s", secondPayload)
+	}
+}
+
+func TestResponsesWebsocketRejectsInitialMediatedPreviousResponseID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &websocketCaptureExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	auth := &coreauth.Auth{ID: "auth-initial-resume", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "initial-resume-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	request := []byte(`{"type":"response.create","model":"initial-resume-model","previous_response_id":"resp_from_another_connection","input":[{"type":"message","id":"msg-2"}]}`)
+	if errWrite := conn.WriteMessage(websocket.TextMessage, request); errWrite != nil {
+		t.Fatalf("write websocket message: %v", errWrite)
+	}
+
+	var completedPayload []byte
+	for i := 0; i < 2; i++ {
+		_, payload, errRead := conn.ReadMessage()
+		if errRead != nil {
+			t.Fatalf("read websocket message %d: %v", i+1, errRead)
+		}
+		if gjson.GetBytes(payload, "type").String() == wsEventTypeCompleted {
+			completedPayload = payload
+			break
+		}
+	}
+	if got := gjson.GetBytes(completedPayload, "response.metadata.error_code").String(); got != "previous_response_not_found" {
+		t.Fatalf("error_code = %q, want previous_response_not_found: %s", got, completedPayload)
+	}
+	if executor.streamCalls != 0 {
+		t.Fatalf("mediated upstream calls = %d, want 0", executor.streamCalls)
 	}
 }
 
@@ -3617,7 +3670,7 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterQuotaError(t *testing.T) {
 	}
 }
 
-func TestResponsesWebsocketRetriesPreviousResponseNotFoundWithTranscriptReplay(t *testing.T) {
+func TestResponsesWebsocketDoesNotSendPreviousResponseIDToMediatedUpstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	executor := &websocketPreviousResponseReplayExecutor{}
@@ -3676,22 +3729,19 @@ func TestResponsesWebsocketRetriesPreviousResponseNotFoundWithTranscriptReplay(t
 	}
 
 	payloads := executor.Payloads()
-	if len(payloads) != 3 {
-		t.Fatalf("upstream payload count = %d, want 3", len(payloads))
+	if len(payloads) != 2 {
+		t.Fatalf("upstream payload count = %d, want 2", len(payloads))
 	}
-	if got := gjson.GetBytes(payloads[1], "previous_response_id").String(); got != "resp_missing" {
-		t.Fatalf("second payload previous_response_id = %q, want resp_missing: %s", got, payloads[1])
+	if gjson.GetBytes(payloads[1], "previous_response_id").Exists() {
+		t.Fatalf("previous_response_id leaked to mediated upstream: %s", payloads[1])
 	}
-	if gjson.GetBytes(payloads[2], "previous_response_id").Exists() {
-		t.Fatalf("replay payload must drop previous_response_id: %s", payloads[2])
-	}
-	replayInput := gjson.GetBytes(payloads[2], "input").Raw
-	if !strings.Contains(replayInput, `"id":"msg-1"`) || !strings.Contains(replayInput, `"id":"msg-2"`) {
-		t.Fatalf("replay input missing expected transcript items: %s", replayInput)
+	input := gjson.GetBytes(payloads[1], "input").Array()
+	if len(input) != 3 || input[0].Get("id").String() != "msg-1" || input[1].Get("id").String() != "out-1" || input[2].Get("id").String() != "msg-2" {
+		t.Fatalf("mediated input missing complete transcript: %s", payloads[1])
 	}
 }
 
-func TestResponsesWebsocketRetriesZhipuMessagesErrorWithTranscriptReplay(t *testing.T) {
+func TestResponsesWebsocketDoesNotSendZhipuPreviousResponseIDToMediatedUpstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	executor := &websocketPreviousResponseReplayExecutor{
@@ -3753,25 +3803,22 @@ func TestResponsesWebsocketRetriesZhipuMessagesErrorWithTranscriptReplay(t *test
 	}
 
 	payloads := executor.Payloads()
-	if len(payloads) != 3 {
-		t.Fatalf("upstream payload count = %d, want 3", len(payloads))
+	if len(payloads) != 2 {
+		t.Fatalf("upstream payload count = %d, want 2", len(payloads))
 	}
-	if got := gjson.GetBytes(payloads[1], "previous_response_id").String(); got != "resp_replay_1" {
-		t.Fatalf("incremental payload previous_response_id = %q, want resp_replay_1: %s", got, payloads[1])
+	if gjson.GetBytes(payloads[1], "previous_response_id").Exists() {
+		t.Fatalf("previous_response_id leaked to Zhipu mediated upstream: %s", payloads[1])
 	}
-	if gjson.GetBytes(payloads[2], "previous_response_id").Exists() {
-		t.Fatalf("replay payload must drop previous_response_id: %s", payloads[2])
-	}
-	replayInput := gjson.GetBytes(payloads[2], "input").Array()
+	replayInput := gjson.GetBytes(payloads[1], "input").Array()
 	if len(replayInput) != 3 {
-		t.Fatalf("replay input len = %d, want 3: %s", len(replayInput), payloads[2])
+		t.Fatalf("mediated input len = %d, want 3: %s", len(replayInput), payloads[1])
 	}
 	if replayInput[0].Get("id").String() != "msg-1" ||
 		replayInput[1].Get("id").String() != "ctc-1" ||
 		replayInput[1].Get("call_id").String() != "call-1" ||
 		replayInput[2].Get("id").String() != "tool-out-1" ||
 		replayInput[2].Get("call_id").String() != "call-1" {
-		t.Fatalf("replay input missing paired tool transcript: %s", payloads[2])
+		t.Fatalf("mediated input missing paired tool transcript: %s", payloads[1])
 	}
 }
 

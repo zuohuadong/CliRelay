@@ -484,10 +484,6 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				} else {
 					allowIncrementalInputWithPreviousResponseID = h.websocketUpstreamSupportsIncrementalInputForModel(requestModelName)
 				}
-			} else if explicitPreviousResponseID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()); strings.HasPrefix(explicitPreviousResponseID, "resp_") && !strings.HasPrefix(explicitPreviousResponseID, "resp_prewarm_") {
-				// Keep the fork's request-scoped replay path for an explicit upstream
-				// response ID, while mediated turns otherwise use transcript replay.
-				allowIncrementalInputWithPreviousResponseID = true
 			}
 			if forceTranscriptReplayNextRequest {
 				allowIncrementalInputWithPreviousResponseID = false
@@ -964,6 +960,15 @@ func normalizeResponsesWebsocketRequestWithIncrementalState(rawJSON []byte, last
 	case wsRequestTypeCreate:
 		// log.Infof("responses websocket: response.create request")
 		if len(lastRequest) == 0 {
+			if strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String()) != "" {
+				return nil, nil, &interfaces.ErrorMessage{
+					StatusCode: http.StatusBadRequest,
+					Error: errors.New(
+						`{"error":{"type":"invalid_request_error","code":"previous_response_not_found",` +
+							`"message":"Previous response is not available on this websocket connection. Resend the full input transcript.","param":"previous_response_id"}}`,
+					),
+				}
+			}
 			return normalizeResponseCreateRequest(rawJSON)
 		}
 		return normalizeResponseSubsequentRequest(rawJSON, lastRequest, lastResponseOutput, lastResponseID, lastResponsePendingToolCallIDs, allowIncrementalInputWithPreviousResponseID, allowCompactionReplayBypass)

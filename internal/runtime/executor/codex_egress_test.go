@@ -1306,3 +1306,48 @@ func TestCodexWebsocketStrictEgressWrapsReadEOF(t *testing.T) {
 	err := exec.mapWebsocketReadError(io.EOF)
 	assertEgressRuntimeError(t, err)
 }
+
+func TestCodexAccountIDFromAuthFallsBackToJWT(t *testing.T) {
+	t.Parallel()
+
+	// Case 1: account_id in metadata — use it directly
+	auth1 := &cliproxyauth.Auth{Metadata: map[string]any{
+		"account_id": "acct-direct",
+		"id_token":   "eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2N0LWZyb20tand0In19.ZmFrZXNpZw",
+	}}
+	if got := codexAccountIDFromAuth(auth1); got != "acct-direct" {
+		t.Fatalf("case 1: got %q, want acct-direct", got)
+	}
+
+	// Case 2: no account_id but id_token has chatgpt_account_id
+	auth2 := &cliproxyauth.Auth{Metadata: map[string]any{
+		"id_token": "eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2N0LWZyb20tand0In19.ZmFrZXNpZw",
+	}}
+	if got := codexAccountIDFromAuth(auth2); got != "acct-from-jwt" {
+		t.Fatalf("case 2: got %q, want acct-from-jwt", got)
+	}
+	// Should also backfill metadata
+	if got := auth2.Metadata["account_id"]; got != "acct-from-jwt" {
+		t.Fatalf("case 2 backfill: got %v, want acct-from-jwt", got)
+	}
+
+	// Case 3: nil auth
+	if got := codexAccountIDFromAuth(nil); got != "" {
+		t.Fatalf("case 3: got %q, want empty", got)
+	}
+
+	// Case 4: no metadata at all
+	auth4 := &cliproxyauth.Auth{}
+	if got := codexAccountIDFromAuth(auth4); got != "" {
+		t.Fatalf("case 4: got %q, want empty", got)
+	}
+
+	// Case 5: empty account_id, no id_token
+	auth5 := &cliproxyauth.Auth{Metadata: map[string]any{
+		"account_id": "",
+	}}
+	if got := codexAccountIDFromAuth(auth5); got != "" {
+		t.Fatalf("case 5: got %q, want empty", got)
+	}
+}
+

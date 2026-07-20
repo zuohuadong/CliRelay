@@ -774,3 +774,32 @@ func TestFileSynthesizerCodexIgnoresPersistedEgressIDAndExposesStableIdentity(t 
 		t.Fatalf("stable_identity = %q, want %q", got, want)
 	}
 }
+
+func TestFileSynthesizerCodexBackfillsAccountIDFromJWT(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	// Auth file with no account_id but has an id_token containing chatgpt_account_id
+	data := []byte(`{"type":"codex","email":"user@example.test","id_token":"eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2N0LWp3dC1iYWNrZmlsbCIsICJjaGF0Z3B0X3BsYW5fdHlwZSI6ICJwbHVzIn19.ZmFrZXNpZw"}`)
+	if err := os.WriteFile(filepath.Join(tempDir, "codex-no-acct.json"), data, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	auths, err := NewFileSynthesizer().Synthesize(&SynthesisContext{Config: &config.Config{}, AuthDir: tempDir, Now: time.Now(), IDGenerator: NewStableIDGenerator()})
+	if err != nil {
+		t.Fatalf("Synthesize() error = %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("auths = %#v", auths)
+	}
+	if got, want := auths[0].Attributes["stable_identity"], "codex:501cfdc3adf6652457ca5e79cc10aecdfe75100580565578e20a6da0e714e1aa"; got != want {
+		t.Fatalf("stable_identity = %q, want %q", got, want)
+	}
+	if got, want := auths[0].Attributes["plan_type"], "plus"; got != want {
+		t.Fatalf("plan_type = %q, want %q", got, want)
+	}
+	// Verify account_id was backfilled in metadata
+	if got, _ := auths[0].Metadata["account_id"].(string); got != "acct-jwt-backfill" {
+		t.Fatalf("metadata account_id = %q, want acct-jwt-backfill", got)
+	}
+}
+

@@ -609,10 +609,7 @@ func (e *CodexExecutor) resolveEgressAuth(ctx context.Context, auth *cliproxyaut
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	accountID := ""
-	if auth.Metadata != nil {
-		accountID, _ = auth.Metadata["account_id"].(string)
-	}
+	accountID := codexAccountIDFromAuth(auth)
 	resolved, err := e.egress.Resolve(ctx, accountID)
 	if err != nil {
 		return nil, egress.RuntimeError(err)
@@ -627,6 +624,27 @@ func (e *CodexExecutor) resolveEgressAuth(ctx context.Context, auth *cliproxyaut
 	}
 	cloned.Attributes["egress_id"] = resolved.Endpoint.ID
 	return cloned, nil
+}
+
+
+// codexAccountIDFromAuth extracts the Codex account_id from auth metadata.
+// It falls back to parsing the id_token JWT when account_id is missing.
+func codexAccountIDFromAuth(auth *cliproxyauth.Auth) string {
+	if auth == nil || auth.Metadata == nil {
+		return ""
+	}
+	if accountID, _ := auth.Metadata["account_id"].(string); strings.TrimSpace(accountID) != "" {
+		return accountID
+	}
+	if idToken, _ := auth.Metadata["id_token"].(string); strings.TrimSpace(idToken) != "" {
+		if claims, err := codexauth.ParseJWTToken(idToken); err == nil && claims != nil {
+			if accountID := claims.GetAccountID(); strings.TrimSpace(accountID) != "" {
+				auth.Metadata["account_id"] = accountID
+				return accountID
+			}
+		}
+	}
+	return ""
 }
 
 func translateCodexRequestPair(from, to sdktranslator.Format, model string, originalPayload, payload []byte, stream bool) ([]byte, []byte) {

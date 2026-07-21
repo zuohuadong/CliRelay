@@ -148,6 +148,34 @@ func TestEgressBindingsIncludesUnboundAndMissingIdentityCodexAuth(t *testing.T) 
 	}
 }
 
+func TestEgressBindingsResolvesAccountIDFromIDTokenJWT(t *testing.T) {
+	t.Parallel()
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	idToken := "eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2N0LWp3dC1iYWNrZmlsbCIsICJjaGF0Z3B0X3BsYW5fdHlwZSI6ICJwbHVzIn19.ZmFrZXNpZw"
+	_, _ = manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-jwt-only.json",
+		Provider: "codex",
+		Metadata: map[string]any{"id_token": idToken},
+	})
+	handler, _ := newEgressManagementHandler(t, manager)
+	recorder := invokeEgressHandler(t, http.MethodGet, "/v0/management/egress/bindings", "", nil, handler.GetEgressBindings)
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, body)
+	}
+	if strings.Contains(body, "missing account_id") {
+		t.Fatalf("panel reported missing account_id despite valid id_token: %s", body)
+	}
+	identity, err := egress.StableIdentity("acct-jwt-backfill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, identity) {
+		t.Fatalf("panel body missing JWT-derived identity %q: %s", identity, body)
+	}
+}
+
 func TestEgressBindingBatchPreviewApplyIsConfirmedAndRevisioned(t *testing.T) {
 	t.Parallel()
 

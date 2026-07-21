@@ -626,25 +626,17 @@ func (e *CodexExecutor) resolveEgressAuth(ctx context.Context, auth *cliproxyaut
 	return cloned, nil
 }
 
-
 // codexAccountIDFromAuth extracts the Codex account_id from auth metadata.
-// It falls back to parsing the id_token JWT when account_id is missing.
+// It falls back to parsing the id_token JWT when account_id is missing and
+// backfills the metadata map in place so downstream readers see it.
 func codexAccountIDFromAuth(auth *cliproxyauth.Auth) string {
-	if auth == nil || auth.Metadata == nil {
+	if auth == nil {
 		return ""
 	}
-	if accountID, _ := auth.Metadata["account_id"].(string); strings.TrimSpace(accountID) != "" {
-		return accountID
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
 	}
-	if idToken, _ := auth.Metadata["id_token"].(string); strings.TrimSpace(idToken) != "" {
-		if claims, err := codexauth.ParseJWTToken(idToken); err == nil && claims != nil {
-			if accountID := claims.GetAccountID(); strings.TrimSpace(accountID) != "" {
-				auth.Metadata["account_id"] = accountID
-				return accountID
-			}
-		}
-	}
-	return ""
+	return codexauth.AccountIDFromMetadata(auth.Metadata)
 }
 
 func translateCodexRequestPair(from, to sdktranslator.Format, model string, originalPayload, payload []byte, stream bool) ([]byte, []byte) {
@@ -2333,11 +2325,7 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	if refreshToken == "" {
 		return auth, nil
 	}
-	boundAccountID := ""
-	if auth.Metadata != nil {
-		boundAccountID, _ = auth.Metadata["account_id"].(string)
-		boundAccountID = strings.TrimSpace(boundAccountID)
-	}
+	boundAccountID := codexAccountIDFromAuth(auth)
 	httpClient, err := e.outboundHTTPClient(ctx, auth, 0, 0, false)
 	if err != nil {
 		return nil, err
@@ -2393,12 +2381,7 @@ func (e *CodexExecutor) ProbeQuotaRecovery(ctx context.Context, auth *cliproxyau
 	if auth == nil {
 		return nil, fmt.Errorf("codex executor: auth is nil")
 	}
-	accountID := ""
-	if auth.Metadata != nil {
-		if v, ok := auth.Metadata["account_id"].(string); ok {
-			accountID = strings.TrimSpace(v)
-		}
-	}
+	accountID := codexAccountIDFromAuth(auth)
 	if accountID == "" {
 		return nil, fmt.Errorf("codex executor: missing account_id")
 	}
@@ -2546,8 +2529,8 @@ func (e *CodexExecutor) codexResetCreditsRequest(ctx context.Context, auth *clip
 	if strings.TrimSpace(token) == "" {
 		return nil, statusErr{code: http.StatusUnauthorized, msg: "codex reset credits require an access token"}
 	}
-	accountID, _ := resolvedAuth.Metadata["account_id"].(string)
-	if strings.TrimSpace(accountID) == "" {
+	accountID := codexAccountIDFromAuth(resolvedAuth)
+	if accountID == "" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "codex reset credits require a ChatGPT account ID"}
 	}
 	req, err := http.NewRequestWithContext(ctx, method, targetURL, bytes.NewReader(payload))
@@ -3007,13 +2990,9 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 			r.Header.Set("Originator", codexOriginator)
 		}
 	}
-	if !isAPIKey {
-		if auth != nil && auth.Metadata != nil {
-			if accountID, ok := auth.Metadata["account_id"].(string); ok {
-				if trimmed := strings.TrimSpace(accountID); trimmed != "" {
-					r.Header.Set("Chatgpt-Account-Id", trimmed)
-				}
-			}
+	if !isAPIKey && auth != nil {
+		if accountID := codexAccountIDFromAuth(auth); accountID != "" {
+			r.Header.Set("Chatgpt-Account-Id", accountID)
 		}
 	}
 	var attrs map[string]string

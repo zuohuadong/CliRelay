@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -92,8 +93,11 @@ func (h *Handler) codexResetAuth(c *gin.Context, name string) (*coreauth.Auth, b
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Codex OAuth auth is required"})
 		return nil, false
 	}
-	accountID, _ := auth.Metadata["account_id"].(string)
-	if strings.TrimSpace(accountID) == "" {
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	accountID := codex.AccountIDFromMetadata(auth.Metadata)
+	if accountID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Codex OAuth auth has no ChatGPT account ID"})
 		return nil, false
 	}

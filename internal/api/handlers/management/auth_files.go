@@ -934,6 +934,10 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
+	// Optional: bind imported codex auths to a channel egress endpoint so they
+	// are ready for strict-egress traffic immediately after import, without a
+	// separate visit to the egress bindings panel.
+	egressID := strings.TrimSpace(c.Query("egress_id"))
 
 	fileHeaders, errMultipart := h.multipartAuthFileHeaders(c)
 	if errMultipart != nil {
@@ -941,7 +945,8 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		return
 	}
 	if len(fileHeaders) == 1 {
-		if _, errUpload := h.storeUploadedAuthFile(ctx, fileHeaders[0]); errUpload != nil {
+		uploadedName, errUpload := h.storeUploadedAuthFile(ctx, fileHeaders[0])
+		if errUpload != nil {
 			if errors.Is(errUpload, errAuthFileMustBeJSON) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "file must be .json"})
 				return
@@ -949,12 +954,26 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": errUpload.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		bindingError := ""
+		if egressID != "" {
+			if errBind := h.bindImportedCodexAuthToEgress(ctx, egressID, uploadedName); errBind != nil {
+				bindingError = errBind.Error()
+			}
+		}
+		resp := gin.H{"status": "ok"}
+		if egressID != "" {
+			resp["bound_egress"] = egressID
+		}
+		if bindingError != "" {
+			resp["binding_error"] = bindingError
+		}
+		c.JSON(http.StatusOK, resp)
 		return
 	}
 	if len(fileHeaders) > 1 {
 		uploaded := make([]string, 0, len(fileHeaders))
 		failed := make([]gin.H, 0)
+		bindingFailed := make([]gin.H, 0)
 		for _, file := range fileHeaders {
 			name, errUpload := h.storeUploadedAuthFile(ctx, file)
 			if errUpload != nil {
@@ -970,6 +989,11 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 				continue
 			}
 			uploaded = append(uploaded, name)
+			if egressID != "" {
+				if errBind := h.bindImportedCodexAuthToEgress(ctx, egressID, name); errBind != nil {
+					bindingFailed = append(bindingFailed, gin.H{"name": name, "error": errBind.Error()})
+				}
+			}
 		}
 		if len(failed) > 0 {
 			c.JSON(http.StatusMultiStatus, gin.H{
@@ -980,7 +1004,14 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 			})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "uploaded": len(uploaded), "files": uploaded})
+		resp := gin.H{"status": "ok", "uploaded": len(uploaded), "files": uploaded}
+		if egressID != "" {
+			resp["bound_egress"] = egressID
+		}
+		if len(bindingFailed) > 0 {
+			resp["binding_failed"] = bindingFailed
+		}
+		c.JSON(http.StatusOK, resp)
 		return
 	}
 	if c.ContentType() == "multipart/form-data" {
@@ -1005,7 +1036,20 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"status": "ok"})
+	bindingError := ""
+	if egressID != "" {
+		if errBind := h.bindImportedCodexAuthToEgress(ctx, egressID, filepath.Base(name)); errBind != nil {
+			bindingError = errBind.Error()
+		}
+	}
+	resp := gin.H{"status": "ok"}
+	if egressID != "" {
+		resp["bound_egress"] = egressID
+	}
+	if bindingError != "" {
+		resp["binding_error"] = bindingError
+	}
+	c.JSON(200, resp)
 }
 
 // Delete auth files: single by name or all
@@ -1149,11 +1193,97 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err != nil {
 		return err
 	}
-	if errWrite := os.WriteFile(dst, data, 0o600); errWrite != nil {
+	// Persist a JWT-derived account_id back into the auth file so egress binding
+	// resolution, reset credits and request headers survive restarts without a
+	// refresh round-trip. Imported/pasted codex auths often lack a top-level
+	// account_id even though they carry a valid id_token.
+	written := data
+	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		if backfilled, changed := backfillCodexAccountIDInData(data); changed {
+			written = backfilled
+		}
+	}
+	if errWrite := os.WriteFile(dst, written, 0o600); errWrite != nil {
 		return fmt.Errorf("failed to write file: %w", errWrite)
 	}
 	if err := h.upsertAuthRecord(ctx, auth); err != nil {
 		return err
+	}
+	return nil
+}
+
+// backfillCodexAccountIDInData parses an auth JSON payload, and when it is a
+// codex auth missing account_id but carrying a valid id_token, injects the
+// JWT-derived account_id and returns the re-marshaled bytes. It returns the
+// original bytes unchanged when no backfill is needed or the payload cannot be
+// parsed.
+func backfillCodexAccountIDInData(data []byte) ([]byte, bool) {
+	var metadata map[string]any
+	if err := json.Unmarshal(data, &metadata); err != nil || metadata == nil {
+		return data, false
+	}
+	provider, _ := metadata["type"].(string)
+	if provider == "" {
+		provider, _ = metadata["provider"].(string)
+	}
+	if !strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		return data, false
+	}
+	if existing, _ := metadata["account_id"].(string); strings.TrimSpace(existing) != "" {
+		return data, false
+	}
+	if codex.AccountIDFromMetadata(metadata) == "" {
+		return data, false
+	}
+	backfilled, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return data, false
+	}
+	return backfilled, true
+}
+
+// bindImportedCodexAuthToEgress binds an imported codex auth file to the given
+// channel egress endpoint. It is a no-op for non-codex auths. It resolves the
+// account_id (with JWT backfill), validates endpoint readiness, and records the
+// binding so strict-egress traffic works immediately after import. Callers may
+// ignore the returned error to treat binding as best-effort on top of a
+// successful import.
+func (h *Handler) bindImportedCodexAuthToEgress(ctx context.Context, egressID, authFileName string) error {
+	egressID = strings.TrimSpace(egressID)
+	if egressID == "" {
+		return nil
+	}
+	service := h.egress()
+	if service == nil {
+		return fmt.Errorf("%w: egress network is unavailable", egress.ErrEgressRequired)
+	}
+	auth := h.findAuthForDelete(authFileName)
+	if auth == nil {
+		return fmt.Errorf("auth %q not found after import", authFileName)
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return nil
+	}
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	accountID := codex.AccountIDFromMetadata(auth.Metadata)
+	if accountID == "" {
+		return fmt.Errorf("codex auth %q has no account_id; refresh or re-login before binding", authFileName)
+	}
+	identity, err := egress.StableIdentity(accountID)
+	if err != nil {
+		return fmt.Errorf("derive codex egress identity: %w", err)
+	}
+	readiness, err := service.EndpointReadiness(ctx, egressID)
+	if err != nil {
+		return fmt.Errorf("egress endpoint %s: %w", egressID, err)
+	}
+	if !readiness.RuntimeReady {
+		return fmt.Errorf("egress endpoint %s is not runtime ready: %s", egressID, strings.Join(readiness.Reasons, ","))
+	}
+	if err := service.PutBinding(ctx, egress.Binding{Identity: identity, EndpointID: egressID, AuthFileID: auth.ID}); err != nil {
+		return fmt.Errorf("bind codex egress endpoint: %w", err)
 	}
 	return nil
 }

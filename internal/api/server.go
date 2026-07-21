@@ -27,6 +27,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/access"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
@@ -821,7 +822,10 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 			headers.Set(name, value)
 		}
 	}
-	if accountID, ok := selected.Metadata["account_id"].(string); ok && strings.TrimSpace(accountID) != "" {
+	if selected.Metadata == nil {
+		selected.Metadata = make(map[string]any)
+	}
+	if accountID := codex.AccountIDFromMetadata(selected.Metadata); accountID != "" {
 		headers.Set("Chatgpt-Account-Id", accountID)
 	}
 

@@ -242,23 +242,17 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, authKind)
 	// For codex auth files, extract plan_type and stable_identity from the JWT id_token.
 	if provider == "codex" {
-		accountID, _ := metadata["account_id"].(string)
-		accountID = strings.TrimSpace(accountID)
 		if idTokenRaw, ok := metadata["id_token"].(string); ok && strings.TrimSpace(idTokenRaw) != "" {
 			if claims, errParse := codex.ParseJWTToken(idTokenRaw); errParse == nil && claims != nil {
 				if pt := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); pt != "" {
 					a.Attributes["plan_type"] = pt
 				}
-				// Backfill account_id from JWT when missing in the auth file metadata.
-				if accountID == "" {
-					if jwtAccountID := strings.TrimSpace(claims.GetAccountID()); jwtAccountID != "" {
-						accountID = jwtAccountID
-						metadata["account_id"] = accountID
-					}
-				}
 			}
 		}
-		if accountID != "" {
+		// Backfill account_id from JWT when missing in the auth file metadata,
+		// so stable_identity is set and downstream readers (egress bindings, reset
+		// credits, request headers) resolve the account without a refresh round-trip.
+		if accountID := codex.AccountIDFromMetadata(metadata); accountID != "" {
 			if identity, errIdentity := egress.StableIdentity(accountID); errIdentity == nil {
 				a.Attributes["stable_identity"] = identity
 			}

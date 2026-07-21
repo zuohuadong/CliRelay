@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 )
 
@@ -355,10 +356,10 @@ func (h *Handler) GetEgressBindings(c *gin.Context) {
 			if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
 				continue
 			}
-			accountID := ""
-			if auth.Metadata != nil {
-				accountID, _ = auth.Metadata["account_id"].(string)
+			if auth.Metadata == nil {
+				auth.Metadata = make(map[string]any)
 			}
+			accountID := codex.AccountIDFromMetadata(auth.Metadata)
 			identity, identityErr := egress.StableIdentity(accountID)
 			item := gin.H{"auth_id": auth.ID, "account_label": auth.Label, "bound": false, "endpoint_id": ""}
 			planType := ""
@@ -581,10 +582,10 @@ func (h *Handler) egressAuthInventory(ctx context.Context, service *egress.Servi
 			continue
 		}
 		inventory.Total++
-		accountID := ""
-		if auth.Metadata != nil {
-			accountID, _ = auth.Metadata["account_id"].(string)
+		if auth.Metadata == nil {
+			auth.Metadata = make(map[string]any)
 		}
+		accountID := codex.AccountIDFromMetadata(auth.Metadata)
 		identity, identityErr := egress.StableIdentity(accountID)
 		if identityErr != nil {
 			inventory.MissingAccountID++

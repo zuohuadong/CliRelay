@@ -100,3 +100,37 @@ func (c *JWTClaims) GetUserEmail() string {
 func (c *JWTClaims) GetAccountID() string {
 	return c.CodexAuthInfo.ChatgptAccountID
 }
+
+// AccountIDFromMetadata resolves the Codex account_id from an auth metadata map.
+// It returns the explicit account_id when present; otherwise it derives it from
+// the id_token JWT claims and backfills the metadata map in place.
+// Use this everywhere account_id is read so imported auths that only carry an
+// id_token (no top-level account_id) are handled consistently.
+func AccountIDFromMetadata(metadata map[string]any) string {
+	if metadata == nil {
+		return ""
+	}
+	if accountID, ok := metadata["account_id"].(string); ok {
+		if trimmed := strings.TrimSpace(accountID); trimmed != "" {
+			return trimmed
+		}
+	}
+	idToken, ok := metadata["id_token"].(string)
+	if !ok {
+		return ""
+	}
+	idToken = strings.TrimSpace(idToken)
+	if idToken == "" {
+		return ""
+	}
+	claims, err := ParseJWTToken(idToken)
+	if err != nil || claims == nil {
+		return ""
+	}
+	accountID := strings.TrimSpace(claims.GetAccountID())
+	if accountID == "" {
+		return ""
+	}
+	metadata["account_id"] = accountID
+	return accountID
+}

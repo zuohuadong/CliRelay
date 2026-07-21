@@ -48,11 +48,11 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	to := sdktranslator.FromString("openai")
 	endpoint := "/chat/completions"
 	imagePassthrough := false
-	compactPassthrough := false
+	syntheticCompaction := false
 	useResponsesEndpoint := auth != nil && auth.Attributes != nil && auth.Attributes["response_endpoint"] == "true"
 	switch opts.Alt {
 	case "responses/compact":
-		compactPassthrough = true
+		syntheticCompaction = true
 	case "images/generations":
 		endpoint = "/images/generations"
 		imagePassthrough = true
@@ -72,8 +72,8 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	var translated []byte
 	if imagePassthrough {
 		translated = e.overrideModel(req.Payload, baseModel)
-	} else if compactPassthrough {
-		translated, err = buildAstronCompactChatPayload(originalPayloadSource, baseModel)
+	} else if syntheticCompaction {
+		translated, err = buildResponsesCompactChatPayload(originalPayloadSource, baseModel)
 		if err != nil {
 			return resp, err
 		}
@@ -177,8 +177,8 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
-	if compactPassthrough {
-		wrapped, errWrap := buildAstronCompactResponse(originalPayloadSource, baseModel, body, httpResp.Header)
+	if syntheticCompaction {
+		wrapped, errWrap := buildResponsesCompactResponse(baseModel, body, httpResp.Header)
 		if errWrap != nil {
 			err = errWrap
 			return resp, err
@@ -205,8 +205,8 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
 	}
-	if astronShouldHandleStreamingCompaction(req.Payload, opts) {
-		return e.executeCompactionTriggerStream(ctx, auth, req, opts, baseModel)
+	if shouldHandleResponsesStreamingCompaction(req.Payload, opts) {
+		return e.executeCompactionTriggerStream(ctx, auth, req, opts)
 	}
 
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
@@ -460,7 +460,7 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }
 
-func (e *AstronCodeExecutor) executeCompactionTriggerStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string) (*cliproxyexecutor.StreamResult, error) {
+func (e *AstronCodeExecutor) executeCompactionTriggerStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	compactOpts := opts
 	compactOpts.Stream = false
 	compactOpts.Alt = "responses/compact"
@@ -469,22 +469,11 @@ func (e *AstronCodeExecutor) executeCompactionTriggerStream(ctx context.Context,
 		return nil, err
 	}
 
-	headers := resp.Headers.Clone()
-	if headers == nil {
-		headers = make(http.Header)
-	}
-	headers.Set("Content-Type", "text/event-stream")
-	chunks := buildAstronCompactionStreamChunks(resp.Payload, baseModel)
-	out := make(chan cliproxyexecutor.StreamChunk, len(chunks))
-	for _, chunk := range chunks {
-		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
-	}
-	close(out)
-	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}, nil
+	return responsesCompactionStreamResult(resp, thinking.ParseSuffix(req.Model).ModelName), nil
 }
 
-func astronShouldHandleStreamingCompaction(payload []byte, opts cliproxyexecutor.Options) bool {
-	if astronInputHasItemType(payload, "compaction_trigger") {
+func shouldHandleResponsesStreamingCompaction(payload []byte, opts cliproxyexecutor.Options) bool {
+	if responsesInputHasItemType(payload, "compaction_trigger") {
 		return true
 	}
 	if opts.Headers != nil {
@@ -496,7 +485,7 @@ func astronShouldHandleStreamingCompaction(payload []byte, opts cliproxyexecutor
 	return false
 }
 
-func astronInputHasItemType(payload []byte, itemType string) bool {
+func responsesInputHasItemType(payload []byte, itemType string) bool {
 	input := gjson.GetBytes(payload, "input")
 	if !input.IsArray() {
 		return false

@@ -372,6 +372,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	}
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	if opts.Alt == "responses/compact" {
+		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
+	}
+	if shouldHandleResponsesStreamingCompaction(req.Payload, opts) {
+		return e.executeCompactionTriggerStream(ctx, auth, req, opts)
+	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
@@ -560,6 +566,17 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		reporter.EnsurePublished(ctx)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+func (e *OpenAICompatExecutor) executeCompactionTriggerStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	compactOpts := opts
+	compactOpts.Stream = false
+	compactOpts.Alt = "responses/compact"
+	resp, err := e.Execute(ctx, auth, req, compactOpts)
+	if err != nil {
+		return nil, err
+	}
+	return responsesCompactionStreamResult(resp, thinking.ParseSuffix(req.Model).ModelName), nil
 }
 
 func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, endpointPath string) (_ *cliproxyexecutor.StreamResult, err error) {

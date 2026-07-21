@@ -51,10 +51,10 @@ func (e *BigModelCodingExecutor) Execute(ctx context.Context, auth *cliproxyauth
 	to := sdktranslator.FromString("openai")
 	endpoint := "/chat/completions"
 	imagePassthrough := false
+	syntheticCompaction := false
 	switch opts.Alt {
 	case "responses/compact":
-		to = sdktranslator.FromString("openai-response")
-		endpoint = "/responses/compact"
+		syntheticCompaction = true
 	case "images/generations":
 		endpoint = "/images/generations"
 		imagePassthrough = true
@@ -69,6 +69,11 @@ func (e *BigModelCodingExecutor) Execute(ctx context.Context, auth *cliproxyauth
 	var translated []byte
 	if imagePassthrough {
 		translated = e.overrideModel(req.Payload, baseModel)
+	} else if syntheticCompaction {
+		translated, err = buildResponsesCompactChatPayload(originalPayloadSource, baseModel)
+		if err != nil {
+			return resp, err
+		}
 	} else {
 		requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 		adaptedPayload, errAdapt := e.applyMultimodalAdapter(ctx, req.Payload, baseModel, from.String(), requestedModel)
@@ -177,6 +182,16 @@ func (e *BigModelCodingExecutor) Execute(ctx context.Context, auth *cliproxyauth
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+	if syntheticCompaction {
+		wrapped, errWrap := buildResponsesCompactResponse(baseModel, body, httpResp.Header)
+		if errWrap != nil {
+			err = errWrap
+			return resp, err
+		}
+		reporter.Publish(ctx, helps.ParseOpenAIUsage(wrapped.Payload))
+		reporter.EnsurePublished(ctx)
+		return wrapped, nil
+	}
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	reporter.EnsurePublished(ctx)
 	if imagePassthrough {
@@ -191,6 +206,12 @@ func (e *BigModelCodingExecutor) Execute(ctx context.Context, auth *cliproxyauth
 
 func (e *BigModelCodingExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	if opts.Alt == "responses/compact" {
+		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
+	}
+	if shouldHandleResponsesStreamingCompaction(req.Payload, opts) {
+		return e.executeCompactionTriggerStream(ctx, auth, req, opts)
+	}
 
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
@@ -370,6 +391,18 @@ func (e *BigModelCodingExecutor) ExecuteStream(ctx context.Context, auth *clipro
 		reporter.EnsurePublished(ctx)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+func (e *BigModelCodingExecutor) executeCompactionTriggerStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	compactOpts := opts
+	compactOpts.Stream = false
+	compactOpts.Alt = "responses/compact"
+	resp, err := e.Execute(ctx, auth, req, compactOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	return responsesCompactionStreamResult(resp, thinking.ParseSuffix(req.Model).ModelName), nil
 }
 
 func (e *BigModelCodingExecutor) injectOfficialMCPTools(payload []byte, model, apiKey string) ([]byte, error) {

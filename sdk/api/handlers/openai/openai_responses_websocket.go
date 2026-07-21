@@ -318,6 +318,10 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	lastResponseOutput := []byte("[]")
 	lastResponseID := ""
 	var lastResponsePendingToolCallIDs []string
+	// passthrough 模式下独立维护累积 transcript，用于 replay 时重建完整上下文。
+	// 不参与 budget 检查，避免 incremental payload 被误判为完整 transcript 触发限额。
+	var passthroughAccumulatedInput []byte
+	var passthroughLastResponseOutput []byte
 	pinnedAuthID := ""
 	// Preserve independent upstream auth affinity when a downstream session switches providers.
 	pinnedAuthByProvider := make(map[string]responsesWebsocketPinnedAuthState)
@@ -484,6 +488,10 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				} else {
 					allowIncrementalInputWithPreviousResponseID = h.websocketUpstreamSupportsIncrementalInputForModel(requestModelName)
 				}
+			} else if explicitPreviousResponseID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()); strings.HasPrefix(explicitPreviousResponseID, "resp_") && !strings.HasPrefix(explicitPreviousResponseID, "resp_prewarm_") {
+				// Keep the fork's request-scoped replay path for an explicit upstream
+				// response ID, while mediated turns otherwise use transcript replay.
+				allowIncrementalInputWithPreviousResponseID = true
 			}
 			if forceTranscriptReplayNextRequest {
 				allowIncrementalInputWithPreviousResponseID = false
@@ -507,12 +515,28 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 
 			var requestJSON []byte
-			var updatedLastRequest []byte
-			var errMsg *interfaces.ErrorMessage
-			if useUpstreamWebsocketPassthrough {
-				requestJSON, errMsg = normalizeResponsesWebsocketPassthroughRequest(payload, requestModelName)
-				updatedLastRequest = bytes.Clone(requestJSON)
+		var updatedLastRequest []byte
+		var errMsg *interfaces.ErrorMessage
+		if useUpstreamWebsocketPassthrough {
+			if forceTranscriptReplayNextRequest && len(passthroughAccumulatedInput) > 0 {
+				// replay 时用累积 transcript 构建 payload，剥离 previous_response_id，
+				// 让上游在丢失 previous_response_id 上下文时仍能拿到完整历史。
+				replayJSON, replayErr := buildPassthroughTranscriptReplayPayload(payload, passthroughAccumulatedInput, requestModelName)
+				if replayErr == nil {
+					requestJSON = replayJSON
+				} else {
+					requestJSON, errMsg = normalizeResponsesWebsocketPassthroughRequest(payload, requestModelName)
+				}
 			} else {
+				requestJSON, errMsg = normalizeResponsesWebsocketPassthroughRequest(payload, requestModelName)
+				// 非 replay 时累积 transcript（合并历史 + 上次 response output + 当前 input），
+				// 供下一轮 replay 使用。
+				if errMsg == nil {
+					passthroughAccumulatedInput = accumulatePassthroughTranscript(passthroughAccumulatedInput, passthroughLastResponseOutput, payload)
+				}
+			}
+			updatedLastRequest = bytes.Clone(requestJSON)
+		} else {
 				requestJSON, updatedLastRequest, errMsg = normalizeResponsesWebsocketRequestWithIncrementalState(
 					payload,
 					lastRequest,
@@ -736,9 +760,12 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				break
 			}
 			if useUpstreamWebsocketPassthrough {
-				resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(previousLastRequest)), int64(len(previousLastResponseOutput)))
-				break
-			}
+			// 累积 transcript 需要上次 response 的 output，此处成功完成一轮，
+			// 把 completedOutput 记录到 passthroughLastResponseOutput 供下一轮累积使用。
+			passthroughLastResponseOutput = completedOutput
+			resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(previousLastRequest)), int64(len(previousLastResponseOutput)))
+			break
+		}
 			lastResponseOutput = completedOutput
 			lastResponseID = strings.TrimSpace(completedResponseID)
 			lastResponsePendingToolCallIDs = append([]string(nil), completedPendingToolCallIDs...)
@@ -960,15 +987,6 @@ func normalizeResponsesWebsocketRequestWithIncrementalState(rawJSON []byte, last
 	case wsRequestTypeCreate:
 		// log.Infof("responses websocket: response.create request")
 		if len(lastRequest) == 0 {
-			if strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String()) != "" {
-				return nil, nil, &interfaces.ErrorMessage{
-					StatusCode: http.StatusBadRequest,
-					Error: errors.New(
-						`{"error":{"type":"invalid_request_error","code":"previous_response_not_found",` +
-							`"message":"Previous response is not available on this websocket connection. Resend the full input transcript.","param":"previous_response_id"}}`,
-					),
-				}
-			}
 			return normalizeResponseCreateRequest(rawJSON)
 		}
 		return normalizeResponseSubsequentRequest(rawJSON, lastRequest, lastResponseOutput, lastResponseID, lastResponsePendingToolCallIDs, allowIncrementalInputWithPreviousResponseID, allowCompactionReplayBypass)
@@ -1678,6 +1696,51 @@ func normalizeResponsesWebsocketPassthroughRequest(rawJSON []byte, modelName str
 	}
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
 	return normalized, nil
+}
+
+// accumulatePassthroughTranscript 把客户端 input 累积到现有 transcript。
+// 首次调用时 accumulatedInput 为空，直接使用 clientInput；
+// 后续调用时合并：accumulatedInput + lastResponseOutput + clientInput，
+// 这样 replay 时即可拿到包含历史 user message、function_call、tool_call_output 的完整上下文。
+func accumulatePassthroughTranscript(accumulatedInput []byte, lastResponseOutput []byte, clientPayload []byte) []byte {
+	clientInput := gjson.GetBytes(clientPayload, "input")
+	if !clientInput.IsArray() {
+		return accumulatedInput
+	}
+	if len(accumulatedInput) == 0 {
+		return []byte(clientInput.Raw)
+	}
+	merged, errMerge := mergeJSONArrayRaw(string(accumulatedInput), normalizeJSONArrayRaw(lastResponseOutput))
+	if errMerge != nil {
+		return accumulatedInput
+	}
+	merged, errMerge = mergeJSONArrayRaw(merged, clientInput.Raw)
+	if errMerge != nil {
+		return accumulatedInput
+	}
+	return []byte(merged)
+}
+
+// buildPassthroughTranscriptReplayPayload 用累积 transcript 构建 replay payload，剥离 previous_response_id。
+// 用于 passthrough 模式下上游报 "No tool call found" 等错误触发 replay 时，
+// 让上游在不依赖 previous_response_id 的情况下仍能拿到完整历史。
+func buildPassthroughTranscriptReplayPayload(clientPayload []byte, accumulatedInput []byte, modelName string) ([]byte, error) {
+	var obj map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(clientPayload, &obj); errUnmarshal != nil {
+		return nil, errUnmarshal
+	}
+	delete(obj, "type")
+	delete(obj, "previous_response_id")
+	obj["input"] = json.RawMessage(accumulatedInput)
+	obj["stream"] = json.RawMessage(`true`)
+	if _, ok := obj["model"]; !ok {
+		modelName = strings.TrimSpace(modelName)
+		if modelName != "" {
+			modelBytes, _ := json.Marshal(modelName)
+			obj["model"] = json.RawMessage(modelBytes)
+		}
+	}
+	return json.Marshal(obj)
 }
 
 func responsesWebsocketResolvedModelName(modelName string) string {

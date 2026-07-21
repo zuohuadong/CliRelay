@@ -918,6 +918,126 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 }
 
+func TestBigModelCodingExecutorStreamsResponsesCompactionTriggerAsSingleCompactionItem(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"stream summary"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}`))
+	}))
+	defer server.Close()
+
+	executor := NewBigModelCodingExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"glm-5.2","stream":true,"input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`)
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "glm-5.2",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAIResponse,
+		OriginalRequest: payload,
+		Stream:          true,
+		Headers:         http.Header{"X-Codex-Turn-Metadata": []string{`{"request_kind":"compaction"}`}},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var streamed bytes.Buffer
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil && streamErr == nil {
+			streamErr = chunk.Err
+			continue
+		}
+		streamed.Write(chunk.Payload)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("path = %q, want /v1/chat/completions; stream_error=%v", gotPath, streamErr)
+	}
+	if streamErr != nil {
+		t.Fatalf("stream chunk error = %v", streamErr)
+	}
+	if got := gjson.GetBytes(gotBody, "messages.0.content").String(); got != responsesCompactSystemPrompt {
+		t.Fatalf("system prompt = %q, want compact prompt; body=%s", got, string(gotBody))
+	}
+	if gjson.GetBytes(gotBody, "stream").Bool() {
+		t.Fatalf("compact upstream request must be non-streaming: %s", string(gotBody))
+	}
+	if gjson.GetBytes(gotBody, "tools").Exists() {
+		t.Fatalf("compact upstream request must not include tools: %s", string(gotBody))
+	}
+
+	completed := lastSSEDataPayloadForType(t, streamed.String(), "response.completed")
+	if got := gjson.GetBytes(completed, "response.output.#").Int(); got != 1 {
+		t.Fatalf("response.output length = %d, want 1; stream=%s", got, streamed.String())
+	}
+	if got := gjson.GetBytes(completed, "response.output.0.type").String(); got != "compaction" {
+		t.Fatalf("response.output.0.type = %q, want compaction; stream=%s", got, streamed.String())
+	}
+	if got := gjson.GetBytes(completed, "response.output.0.encrypted_content").String(); got != "stream summary" {
+		t.Fatalf("encrypted_content = %q, want stream summary; stream=%s", got, streamed.String())
+	}
+}
+
+func TestOpenAICompatExecutorStreamsResponsesCompactionTriggerAsSingleCompactionItem(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response.compaction","model":"custom-coder","output":[{"type":"compaction","encrypted_content":"stream summary"}],"usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"custom-coder","stream":true,"input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`)
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "custom-coder",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAIResponse,
+		OriginalRequest: payload,
+		Stream:          true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var streamed bytes.Buffer
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil && streamErr == nil {
+			streamErr = chunk.Err
+			continue
+		}
+		streamed.Write(chunk.Payload)
+	}
+	if gotPath != "/v1/responses/compact" {
+		t.Fatalf("path = %q, want /v1/responses/compact; stream_error=%v", gotPath, streamErr)
+	}
+	if streamErr != nil {
+		t.Fatalf("stream chunk error = %v", streamErr)
+	}
+
+	completed := lastSSEDataPayloadForType(t, streamed.String(), "response.completed")
+	if got := gjson.GetBytes(completed, "response.output.#").Int(); got != 1 {
+		t.Fatalf("response.output length = %d, want 1; stream=%s", got, streamed.String())
+	}
+	if got := gjson.GetBytes(completed, "response.output.0.type").String(); got != "compaction" {
+		t.Fatalf("response.output.0.type = %q, want compaction; stream=%s", got, streamed.String())
+	}
+}
+
 func TestOpenAICompatExecutorResponseEndpointPreservesResponsesImageGeneration(t *testing.T) {
 	var gotPath string
 	var gotBody []byte
@@ -1256,16 +1376,15 @@ func TestAstronCodeExecutorCompactUsesChatAndWrapsResponse(t *testing.T) {
 	}
 }
 
-func TestBuildAstronCompactResponseUsesSingleStrictCompactionItem(t *testing.T) {
+func TestBuildResponsesCompactResponseUsesSingleStrictCompactionItem(t *testing.T) {
 	chatResponse := []byte(`{"choices":[{"message":{"content":"summary text"}}],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}`)
-	resp, err := buildAstronCompactResponse(
-		[]byte(`{"input":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}]}`),
+	resp, err := buildResponsesCompactResponse(
 		"astron-code-latest",
 		chatResponse,
 		http.Header{"X-Test": []string{"ok"}},
 	)
 	if err != nil {
-		t.Fatalf("buildAstronCompactResponse error: %v", err)
+		t.Fatalf("buildResponsesCompactResponse error: %v", err)
 	}
 	if got := gjson.GetBytes(resp.Payload, "output.#").Int(); got != 1 {
 		t.Fatalf("output length = %d, want one compaction item; body=%s", got, string(resp.Payload))
@@ -1320,7 +1439,7 @@ func TestAstronCodeExecutorStreamsResponsesCompactionTriggerAsSingleCompactionIt
 	if gotPath != "/v2/chat/completions" {
 		t.Fatalf("path = %q, want /v2/chat/completions", gotPath)
 	}
-	if got := gjson.GetBytes(gotBody, "messages.0.content").String(); got != astronCompactSystemPrompt {
+	if got := gjson.GetBytes(gotBody, "messages.0.content").String(); got != responsesCompactSystemPrompt {
 		t.Fatalf("system prompt = %q, want astron compact prompt; body=%s", got, string(gotBody))
 	}
 	if gjson.GetBytes(gotBody, "stream").Bool() {

@@ -11,9 +11,9 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const astronCompactSystemPrompt = "You compact coding-agent conversation history. Produce a concise continuation summary that preserves the user's latest intent, completed work, open issues, exact commands or IDs that matter, and safe next steps. Do not invent facts."
+const responsesCompactSystemPrompt = "You compact coding-agent conversation history. Produce a concise continuation summary that preserves the user's latest intent, completed work, open issues, exact commands or IDs that matter, and safe next steps. Do not invent facts."
 
-func buildAstronCompactChatPayload(rawJSON []byte, baseModel string) ([]byte, error) {
+func buildResponsesCompactChatPayload(rawJSON []byte, baseModel string) ([]byte, error) {
 	transcript := compactTranscriptForPrompt(rawJSON)
 	body := map[string]any{
 		"model":       baseModel,
@@ -21,7 +21,7 @@ func buildAstronCompactChatPayload(rawJSON []byte, baseModel string) ([]byte, er
 		"temperature": 0,
 		"max_tokens":  2048,
 		"messages": []map[string]string{
-			{"role": "system", "content": astronCompactSystemPrompt},
+			{"role": "system", "content": responsesCompactSystemPrompt},
 			{"role": "user", "content": "Compact this conversation transcript for continuation. Return only the summary text.\n\n" + transcript},
 		},
 	}
@@ -38,10 +38,10 @@ func compactTranscriptForPrompt(rawJSON []byte) string {
 	return string(rawJSON)
 }
 
-func buildAstronCompactResponse(_ []byte, model string, chatResponse []byte, upstreamHeaders http.Header) (cliproxyexecutor.Response, error) {
+func buildResponsesCompactResponse(model string, chatResponse []byte, upstreamHeaders http.Header) (cliproxyexecutor.Response, error) {
 	summary := strings.TrimSpace(gjson.GetBytes(chatResponse, "choices.0.message.content").String())
 	if summary == "" {
-		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: "astron compact: upstream chat response did not include summary content"}
+		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: "responses compact: upstream chat response did not include summary content"}
 	}
 
 	idSuffix := time.Now().UnixNano()
@@ -89,7 +89,7 @@ func compactUsageToken(rawJSON []byte, paths ...string) int64 {
 	return 0
 }
 
-func buildAstronCompactionStreamChunks(compactPayload []byte, model string) [][]byte {
+func buildResponsesCompactionStreamChunks(compactPayload []byte, model string) [][]byte {
 	responseID := strings.TrimSpace(gjson.GetBytes(compactPayload, "id").String())
 	if responseID == "" {
 		responseID = fmt.Sprintf("resp_compact_%d", time.Now().UnixNano())
@@ -98,31 +98,32 @@ func buildAstronCompactionStreamChunks(compactPayload []byte, model string) [][]
 	if createdAt == 0 {
 		createdAt = time.Now().Unix()
 	}
-	item := astronCompactionOutputItem(compactPayload, responseID)
-	output := []json.RawMessage{item}
+	compactionItem := responsesCompactionOutputItem(compactPayload, responseID)
+	output := []json.RawMessage{compactionItem}
+	metadata := responsesCompactionStreamMetadata{responseID: responseID, model: model, createdAt: createdAt}
 
-	createdResponse := astronCompactionStreamResponse(compactPayload, responseID, model, createdAt, "in_progress", nil)
-	completedResponse := astronCompactionStreamResponse(compactPayload, responseID, model, createdAt, "completed", output)
+	createdResponse := responsesCompactionStreamResponse(compactPayload, metadata, "in_progress", nil)
+	completedResponse := responsesCompactionStreamResponse(compactPayload, metadata, "completed", output)
 
 	return [][]byte{
-		astronSSEFrame("response.created", map[string]any{
+		responsesSSEFrame("response.created", map[string]any{
 			"type":            "response.created",
 			"sequence_number": 0,
 			"response":        createdResponse,
 		}),
-		astronSSEFrame("response.output_item.added", map[string]any{
+		responsesSSEFrame("response.output_item.added", map[string]any{
 			"type":            "response.output_item.added",
 			"sequence_number": 1,
 			"output_index":    0,
-			"item":            item,
+			"item":            compactionItem,
 		}),
-		astronSSEFrame("response.output_item.done", map[string]any{
+		responsesSSEFrame("response.output_item.done", map[string]any{
 			"type":            "response.output_item.done",
 			"sequence_number": 2,
 			"output_index":    0,
-			"item":            item,
+			"item":            compactionItem,
 		}),
-		astronSSEFrame("response.completed", map[string]any{
+		responsesSSEFrame("response.completed", map[string]any{
 			"type":            "response.completed",
 			"sequence_number": 3,
 			"response":        completedResponse,
@@ -130,18 +131,39 @@ func buildAstronCompactionStreamChunks(compactPayload []byte, model string) [][]
 	}
 }
 
-func astronCompactionStreamResponse(compactPayload []byte, responseID string, model string, createdAt int64, status string, output []json.RawMessage) map[string]any {
+type responsesCompactionStreamMetadata struct {
+	responseID string
+	model      string
+	createdAt  int64
+}
+
+func responsesCompactionStreamResult(resp cliproxyexecutor.Response, model string) *cliproxyexecutor.StreamResult {
+	headers := resp.Headers.Clone()
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	headers.Set("Content-Type", "text/event-stream")
+	chunks := buildResponsesCompactionStreamChunks(resp.Payload, model)
+	out := make(chan cliproxyexecutor.StreamChunk, len(chunks))
+	for _, chunk := range chunks {
+		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+	}
+	close(out)
+	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}
+}
+
+func responsesCompactionStreamResponse(compactPayload []byte, metadata responsesCompactionStreamMetadata, status string, output []json.RawMessage) map[string]any {
 	if output == nil {
 		output = []json.RawMessage{}
 	}
 	responseModel := strings.TrimSpace(gjson.GetBytes(compactPayload, "model").String())
 	if responseModel == "" {
-		responseModel = model
+		responseModel = metadata.model
 	}
 	response := map[string]any{
-		"id":                 responseID,
+		"id":                 metadata.responseID,
 		"object":             "response",
-		"created_at":         createdAt,
+		"created_at":         metadata.createdAt,
 		"status":             status,
 		"model":              responseModel,
 		"background":         false,
@@ -155,8 +177,8 @@ func astronCompactionStreamResponse(compactPayload []byte, responseID string, mo
 	return response
 }
 
-func astronCompactionOutputItem(compactPayload []byte, responseID string) json.RawMessage {
-	item := map[string]any{
+func responsesCompactionOutputItem(compactPayload []byte, responseID string) json.RawMessage {
+	compactionItem := map[string]any{
 		"id":                fmt.Sprintf("cmpct_%d", time.Now().UnixNano()),
 		"type":              "compaction",
 		"encrypted_content": strings.TrimSpace(gjson.GetBytes(compactPayload, "output.0.encrypted_content").String()),
@@ -164,23 +186,20 @@ func astronCompactionOutputItem(compactPayload []byte, responseID string) json.R
 	if outputItem := gjson.GetBytes(compactPayload, "output.0"); outputItem.Exists() && outputItem.Type == gjson.JSON {
 		var parsed map[string]any
 		if err := json.Unmarshal([]byte(outputItem.Raw), &parsed); err == nil && parsed != nil {
-			item = parsed
+			compactionItem = parsed
 		}
 	}
-	if id, ok := item["id"].(string); !ok || strings.TrimSpace(id) == "" {
-		item["id"] = fmt.Sprintf("cmpct_%s", responseID)
+	if id, ok := compactionItem["id"].(string); !ok || strings.TrimSpace(id) == "" {
+		compactionItem["id"] = fmt.Sprintf("cmpct_%s", responseID)
 	}
-	if itemType, ok := item["type"].(string); !ok || strings.TrimSpace(itemType) == "" {
-		item["type"] = "compaction"
+	if itemType, ok := compactionItem["type"].(string); !ok || strings.TrimSpace(itemType) == "" {
+		compactionItem["type"] = "compaction"
 	}
-	raw, err := json.Marshal(item)
-	if err != nil {
-		return json.RawMessage(`{"type":"compaction"}`)
-	}
+	raw, _ := json.Marshal(compactionItem)
 	return json.RawMessage(raw)
 }
 
-func astronSSEFrame(event string, payload any) []byte {
+func responsesSSEFrame(event string, payload any) []byte {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		raw = []byte(`{"type":"error"}`)

@@ -423,3 +423,64 @@ func codexBindingTestRecordWithToken(fileName, accountID, accessToken string) (*
 	storage.SetMetadata(metadata)
 	return &coreauth.Auth{ID: fileName, FileName: fileName, Provider: "codex", Storage: storage, Metadata: metadata}, storage
 }
+
+func TestCodexOAuthEndpointAvailableAllowsSharedWithBindings(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{EgressNetwork: config.EgressNetworkConfig{Enabled: true}}
+	service, err := egress.NewService(cfg, filepath.Join(t.TempDir(), "egress.db"))
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	shared := createReadyEgressEndpoint(t, service, "10.77.0.4", "198.51.100.4")
+	if shared, err = service.UpdateEndpoint(context.Background(), egress.Endpoint{
+		ID: shared.ID, Name: shared.Name, Protocol: shared.Protocol, Host: shared.Host, Port: shared.Port,
+		Enabled: true, SharingMode: egress.EndpointSharingModeShared, ExpectedPublicIP: "",
+	}); err != nil {
+		t.Fatalf("UpdateEndpoint shared: %v", err)
+	}
+
+	// Occupy the shared endpoint with an existing binding (write via the store to
+	// bypass the readiness gate that requires fresh health checks).
+	identity, err := egress.StableIdentity("acct-existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Store().PutBinding(context.Background(), egress.Binding{Identity: identity, EndpointID: shared.ID, AuthFileID: "existing.json"}); err != nil {
+		t.Fatalf("PutBinding: %v", err)
+	}
+
+	// Shared endpoint must remain available for additional OAuth logins.
+	if err := codexOAuthEndpointAvailable(context.Background(), service, shared.ID); err != nil {
+		t.Fatalf("shared endpoint with binding rejected: %v", err)
+	}
+}
+
+func TestCodexOAuthEndpointAvailableRejectsExclusiveWithBindings(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{EgressNetwork: config.EgressNetworkConfig{Enabled: true}}
+	service, err := egress.NewService(cfg, filepath.Join(t.TempDir(), "egress.db"))
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	exclusive := createReadyEgressEndpoint(t, service, "10.77.0.5", "198.51.100.5")
+
+	identity, err := egress.StableIdentity("acct-exclusive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.PutBinding(context.Background(), egress.Binding{Identity: identity, EndpointID: exclusive.ID, AuthFileID: "first.json"}); err != nil {
+		t.Fatalf("PutBinding: %v", err)
+	}
+
+	// Exclusive endpoint already claimed must remain blocked for a new OAuth login.
+	err = codexOAuthEndpointAvailable(context.Background(), service, exclusive.ID)
+	if err == nil || !strings.Contains(err.Error(), "already has 1 binding") {
+		t.Fatalf("expected in-use error, got %v", err)
+	}
+}

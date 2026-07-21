@@ -2675,6 +2675,13 @@ func codexOAuthEndpointAvailable(ctx context.Context, service *egress.Service, e
 	if service == nil {
 		return fmt.Errorf("%w: egress service is unavailable", egress.ErrEgressRequired)
 	}
+	// Shared endpoints are designed to host multiple identities, so an existing
+	// binding is not a conflict there. Only exclusive endpoints must be free
+	// before an OAuth login claims them.
+	if endpoint, err := service.GetEndpoint(ctx, egressID); err == nil &&
+		endpoint.SharingMode == egress.EndpointSharingModeShared {
+		return nil
+	}
 	impact, err := service.EndpointImpact(ctx, egressID, egress.EndpointActionDisable)
 	if err != nil {
 		return err

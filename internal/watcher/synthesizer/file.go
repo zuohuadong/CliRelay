@@ -84,6 +84,13 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	if provider == "gemini" {
 		provider = "gemini-cli"
 	}
+	// Codex CLI native exports wrap tokens under accounts[].credentials instead
+	// of flattening them at the top level. Promote the first account's
+	// credential fields so the rest of the synthesis (account_id/identity
+	// resolution, JWT plan_type, excluded models) works unchanged.
+	if provider == "codex" {
+		flattenCodexBundle(metadata)
+	}
 	if ctx.PluginAuthParser != nil {
 		auths, handled, errParse := parsePluginFileAuths(ctx.PluginAuthParser, pluginapi.AuthParseRequest{
 			Provider: provider,
@@ -354,4 +361,47 @@ func extractExcludedModelsFromMetadata(metadata map[string]any) []string {
 		}
 	}
 	return result
+}
+
+// codexBundleCredentialKeys are the credential fields promoted from a Codex CLI
+// native export (accounts[].credentials) to the top-level metadata so the rest
+// of the synthesis path resolves them the same way as a flat auth file.
+var codexBundleCredentialKeys = []string{
+	"account_id", "id_token", "access_token", "refresh_token", "email",
+	"plan_type", "expired", "last_refresh", "token_type",
+	"chatgpt_account_id", "chatgpt_user_id", "workspace_id", "task_id",
+	"agent_private_key", "agent_runtime_id", "auth_mode",
+}
+
+// flattenCodexBundle detects the Codex CLI native export format (a top-level
+// "version" plus a non-empty "accounts" array whose entries carry a nested
+// "credentials" object) and promotes the first account's credential fields to
+// the top-level metadata map. It is a no-op for the flat auth file format.
+func flattenCodexBundle(metadata map[string]any) {
+	if metadata == nil {
+		return
+	}
+	if _, ok := metadata["version"]; !ok {
+		return
+	}
+	accounts, ok := metadata["accounts"].([]any)
+	if !ok || len(accounts) == 0 {
+		return
+	}
+	first, ok := accounts[0].(map[string]any)
+	if !ok {
+		return
+	}
+	credentials, ok := first["credentials"].(map[string]any)
+	if !ok || len(credentials) == 0 {
+		return
+	}
+	for _, key := range codexBundleCredentialKeys {
+		if _, present := metadata[key]; present {
+			continue
+		}
+		if value, ok := credentials[key]; ok {
+			metadata[key] = value
+		}
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -803,3 +804,85 @@ func TestFileSynthesizerCodexBackfillsAccountIDFromJWT(t *testing.T) {
 	}
 }
 
+func TestFileSynthesizerFlattensCodexCLIBundleExport(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	// Codex CLI native export: tokens live under accounts[0].credentials instead
+	// of at the top level. account_id and id_token must be promoted so identity
+	// resolution and JWT plan_type extraction work.
+	idToken := "eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJiODkyY2VjNC00ZGI0LTQ5ZmQtOTJhMC03ZjhlYjg3MTY0N2IiLCAiY2hhdGdwdF9wbGFuX3R5cGUiOiAiazEyIn19.ZmFrZXNpZw"
+	data := []byte(`{
+		"type": "codex",
+		"version": 1,
+		"disabled": false,
+		"exported_at": "2026-07-20T22:45:57Z",
+		"proxies": [],
+		"accounts": [
+			{
+				"name": "bundle@example.test",
+				"type": "oauth",
+				"platform": "openai",
+				"priority": 1,
+				"concurrency": 10,
+				"rate_multiplier": 1,
+				"auto_pause_on_expired": true,
+				"credentials": {
+					"account_id": "b892cec4-4db4-49fd-92a0-7f8eb871647b",
+					"email": "bundle@example.test",
+					"id_token": "` + idToken + `",
+					"plan_type": "k12",
+					"auth_mode": "agentIdentity",
+					"chatgpt_account_id": "b892cec4-4db4-49fd-92a0-7f8eb871647b"
+				},
+				"extra": {"source": "chatgpt_web_session"}
+			}
+		]
+	}`)
+	if err := os.WriteFile(filepath.Join(tempDir, "codex-bundle.json"), data, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	auths, err := NewFileSynthesizer().Synthesize(&SynthesisContext{Config: &config.Config{}, AuthDir: tempDir, Now: time.Now(), IDGenerator: NewStableIDGenerator()})
+	if err != nil {
+		t.Fatalf("Synthesize() error = %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("auths = %#v", auths)
+	}
+	auth := auths[0]
+	// account_id must be promoted from credentials so egress identity resolves.
+	if got, _ := auth.Metadata["account_id"].(string); got != "b892cec4-4db4-49fd-92a0-7f8eb871647b" {
+		t.Fatalf("metadata account_id = %v, want b892cec4-4db4-49fd-92a0-7f8eb871647b", auth.Metadata["account_id"])
+	}
+	// plan_type from the promoted id_token JWT.
+	if got, want := auth.Attributes["plan_type"], "k12"; got != want {
+		t.Fatalf("plan_type = %q, want %q", got, want)
+	}
+	// stable_identity derived from the promoted account_id.
+	identity, err := egress.StableIdentity("b892cec4-4db4-49fd-92a0-7f8eb871647b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := auth.Attributes["stable_identity"], identity; got != want {
+		t.Fatalf("stable_identity = %q, want %q", got, want)
+	}
+	// email promoted from credentials for the label.
+	if got, _ := auth.Metadata["email"].(string); got != "bundle@example.test" {
+		t.Fatalf("metadata email = %v, want bundle@example.test", auth.Metadata["email"])
+	}
+}
+
+func TestFileSynthesizerLeavesFlatCodexAuthUnchanged(t *testing.T) {
+	t.Parallel()
+
+	// Flat auth files (no "version"/"accounts") must not be treated as bundles.
+	metadata := map[string]any{
+		"type":       "codex",
+		"account_id": "acct-flat",
+		"id_token":   "ignored",
+	}
+	flattenCodexBundle(metadata)
+	if got, _ := metadata["account_id"].(string); got != "acct-flat" {
+		t.Fatalf("flat account_id mutated to %v", metadata["account_id"])
+	}
+}

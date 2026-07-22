@@ -69,6 +69,17 @@ func TestEgressOverviewDisabledBlocksCodexOAuth(t *testing.T) {
 	}
 }
 
+func TestWriteEgressErrorMapsUnboundAccountToNotReady(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+
+	writeEgressError(ctx, egress.ErrEgressUnbound)
+
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"code":"egress_not_ready"`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestEgressOverviewAllowsCodexOAuthRecoveryWithGlobalReadinessBlockers(t *testing.T) {
 	t.Parallel()
 

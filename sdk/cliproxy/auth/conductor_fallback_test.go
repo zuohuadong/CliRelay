@@ -35,6 +35,30 @@ func TestManagerExecute_EgressDisabledFallsBackToNextCredential(t *testing.T) {
 	}
 }
 
+func TestManagerExecute_EgressUnboundFallsBackToNextCredential(t *testing.T) {
+	const model = "gpt-5.3-codex"
+	m := NewManager(nil, nil, nil)
+	executor := &authFallbackExecutor{
+		id: "codex",
+		executeErrors: map[string]error{
+			"aa-bound-auth": egress.RuntimeError(egress.ErrEgressUnbound),
+		},
+	}
+	m.RegisterExecutor(executor)
+	registerFallbackAuths(t, m, model)
+
+	resp, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := string(resp.Payload); got != "bb-other-auth" {
+		t.Fatalf("Execute() payload = %q, want next healthy auth", got)
+	}
+	if calls := executor.ExecuteCalls(); len(calls) != 2 || calls[0] != "aa-bound-auth" || calls[1] != "bb-other-auth" {
+		t.Fatalf("Execute() calls = %v, want failed auth followed by next auth", calls)
+	}
+}
+
 func TestManagerExecute_EgressDisabledDuringPrepareFallsBackToNextCredential(t *testing.T) {
 	const model = "gpt-5.3-codex"
 	m := NewManager(nil, nil, nil)
@@ -135,6 +159,89 @@ func TestManagerExecuteStream_EgressDisabledBeforeFirstChunkFallsBackToNextCrede
 	}
 	if calls := executor.StreamCalls(); len(calls) != 2 || calls[0] != "aa-bound-auth" || calls[1] != "bb-other-auth" {
 		t.Fatalf("ExecuteStream() calls = %v, want failed auth followed by next auth", calls)
+	}
+}
+
+func TestManagerExecuteStream_EgressUnboundFallsBackForHTTPAndWebsocket(t *testing.T) {
+	const model = "gpt-5.3-codex"
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+	}{
+		{name: "http", ctx: context.Background()},
+		{name: "websocket", ctx: cliproxyexecutor.WithDownstreamWebsocket(context.Background())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(nil, nil, nil)
+			executor := &authFallbackExecutor{
+				id: "codex",
+				streamExecuteErrors: map[string]error{
+					"aa-bound-auth": egress.RuntimeError(egress.ErrEgressUnbound),
+				},
+			}
+			m.RegisterExecutor(executor)
+			registerFallbackAuths(t, m, model)
+
+			result, err := m.ExecuteStream(tc.ctx, []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+			if err != nil {
+				t.Fatalf("ExecuteStream() error = %v", err)
+			}
+			chunk, ok := <-result.Chunks
+			if !ok || chunk.Err != nil {
+				t.Fatalf("stream chunk = %#v, want healthy payload", chunk)
+			}
+			if got := string(chunk.Payload); got != "bb-other-auth" {
+				t.Fatalf("stream payload = %q, want next healthy auth", got)
+			}
+			if calls := executor.StreamCalls(); len(calls) != 2 || calls[0] != "aa-bound-auth" || calls[1] != "bb-other-auth" {
+				t.Fatalf("ExecuteStream() calls = %v, want failed auth followed by next auth", calls)
+			}
+		})
+	}
+}
+
+func TestManagerExecuteStream_CredentialLocalEgressErrorReleasesPinnedWebsocketAuth(t *testing.T) {
+	const model = "gpt-5.3-codex"
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "unbound", err: egress.ErrEgressUnbound},
+		{name: "disabled", err: egress.ErrEndpointDisabled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(nil, nil, nil)
+			executor := &authFallbackExecutor{
+				id: "codex",
+				streamExecuteErrors: map[string]error{
+					"aa-bound-auth": egress.RuntimeError(tc.err),
+				},
+			}
+			m.RegisterExecutor(executor)
+			registerFallbackAuths(t, m, model)
+			selected := make([]string, 0, 2)
+			opts := cliproxyexecutor.Options{Metadata: map[string]any{
+				cliproxyexecutor.PinnedAuthMetadataKey: "aa-bound-auth",
+				cliproxyexecutor.SelectedAuthCallbackMetadataKey: func(authID string) {
+					selected = append(selected, authID)
+				},
+			}}
+
+			result, err := m.ExecuteStream(cliproxyexecutor.WithDownstreamWebsocket(context.Background()), []string{"codex"}, cliproxyexecutor.Request{Model: model}, opts)
+			if err != nil {
+				t.Fatalf("ExecuteStream() error = %v", err)
+			}
+			chunk, ok := <-result.Chunks
+			if !ok || chunk.Err != nil || string(chunk.Payload) != "bb-other-auth" {
+				t.Fatalf("stream chunk = %#v, want healthy fallback payload", chunk)
+			}
+			if calls := executor.StreamCalls(); len(calls) != 2 || calls[0] != "aa-bound-auth" || calls[1] != "bb-other-auth" {
+				t.Fatalf("ExecuteStream() calls = %v, want pinned auth followed by fallback auth", calls)
+			}
+			if len(selected) != 2 || selected[0] != "aa-bound-auth" || selected[1] != "bb-other-auth" {
+				t.Fatalf("selected auth callbacks = %v, want both attempts", selected)
+			}
+		})
 	}
 }
 

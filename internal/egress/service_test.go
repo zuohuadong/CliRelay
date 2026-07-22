@@ -129,8 +129,8 @@ func TestServiceResolveFailsClosedWhenDisabledUnboundOrStale(t *testing.T) {
 		t.Fatalf("disabled Resolve() error = %v", err)
 	}
 	enabled := newTestService(t, true)
-	if _, err := enabled.Resolve(ctx, "acct"); !errors.Is(err, ErrEgressRequired) {
-		t.Fatalf("unbound Resolve() error = %v", err)
+	if _, err := enabled.Resolve(ctx, "acct"); !errors.Is(err, ErrEgressUnbound) {
+		t.Fatalf("unbound Resolve() error = %v, want ErrEgressUnbound", err)
 	}
 	endpoint, err := enabled.CreateEndpoint(ctx, Endpoint{Name: "stale", Protocol: ProtocolSOCKS5, Host: "10.77.0.2", Port: 1080, Enabled: true, ExpectedPublicIP: "198.51.100.2"})
 	if err != nil {

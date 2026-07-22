@@ -826,7 +826,7 @@ WHERE b.identity=?`, strings.TrimSpace(identity)).Scan(
 		&out.Endpoint.ID, &out.Endpoint.Name, &out.Endpoint.Protocol, &out.Endpoint.Host, &out.Endpoint.Port, &endpointEnabled, &out.Endpoint.SharingMode, &out.Endpoint.Username, &out.Endpoint.Password, &out.Endpoint.ExpectedPublicIP, &out.Endpoint.PublicIP, &out.Endpoint.LatencyMS, &lastCheckedAt, &out.Endpoint.CheckStatus, &out.Endpoint.CheckError, &endpointCreated, &endpointUpdated,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ResolvedBinding{}, ErrEgressRequired
+		return ResolvedBinding{}, ErrEgressUnbound
 	}
 	if err != nil {
 		return ResolvedBinding{}, err

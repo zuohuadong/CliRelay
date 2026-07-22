@@ -515,28 +515,28 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 
 			var requestJSON []byte
-		var updatedLastRequest []byte
-		var errMsg *interfaces.ErrorMessage
-		if useUpstreamWebsocketPassthrough {
-			if forceTranscriptReplayNextRequest && len(passthroughAccumulatedInput) > 0 {
-				// replay 时用累积 transcript 构建 payload，剥离 previous_response_id，
-				// 让上游在丢失 previous_response_id 上下文时仍能拿到完整历史。
-				replayJSON, replayErr := buildPassthroughTranscriptReplayPayload(payload, passthroughAccumulatedInput, requestModelName)
-				if replayErr == nil {
-					requestJSON = replayJSON
+			var updatedLastRequest []byte
+			var errMsg *interfaces.ErrorMessage
+			if useUpstreamWebsocketPassthrough {
+				if forceTranscriptReplayNextRequest && len(passthroughAccumulatedInput) > 0 {
+					// replay 时用累积 transcript 构建 payload，剥离 previous_response_id，
+					// 让上游在丢失 previous_response_id 上下文时仍能拿到完整历史。
+					replayJSON, replayErr := buildPassthroughTranscriptReplayPayload(payload, passthroughAccumulatedInput, requestModelName)
+					if replayErr == nil {
+						requestJSON = replayJSON
+					} else {
+						requestJSON, errMsg = normalizeResponsesWebsocketPassthroughRequest(payload, requestModelName)
+					}
 				} else {
 					requestJSON, errMsg = normalizeResponsesWebsocketPassthroughRequest(payload, requestModelName)
+					// 非 replay 时累积 transcript（合并历史 + 上次 response output + 当前 input），
+					// 供下一轮 replay 使用。
+					if errMsg == nil {
+						passthroughAccumulatedInput = accumulatePassthroughTranscript(passthroughAccumulatedInput, passthroughLastResponseOutput, payload)
+					}
 				}
+				updatedLastRequest = bytes.Clone(requestJSON)
 			} else {
-				requestJSON, errMsg = normalizeResponsesWebsocketPassthroughRequest(payload, requestModelName)
-				// 非 replay 时累积 transcript（合并历史 + 上次 response output + 当前 input），
-				// 供下一轮 replay 使用。
-				if errMsg == nil {
-					passthroughAccumulatedInput = accumulatePassthroughTranscript(passthroughAccumulatedInput, passthroughLastResponseOutput, payload)
-				}
-			}
-			updatedLastRequest = bytes.Clone(requestJSON)
-		} else {
 				requestJSON, updatedLastRequest, errMsg = normalizeResponsesWebsocketRequestWithIncrementalState(
 					payload,
 					lastRequest,
@@ -657,22 +657,21 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
 			if pinnedAuthID != "" {
 				cliCtx = handlers.WithPinnedAuthID(cliCtx, pinnedAuthID)
-			} else {
-				cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
-					authID = strings.TrimSpace(authID)
-					if authID == "" || h == nil || h.AuthManager == nil {
-						return
-					}
-					lastAttemptedAuthID = authID
-					selectedAuth, ok := sessionAuthByID(authID)
-					if !ok || selectedAuth == nil {
-						return
-					}
-					if websocketUpstreamSupportsIncrementalInput(selectedAuth.Attributes, selectedAuth.Metadata) {
-						rememberPinnedAuth(authID, modelName)
-					}
-				})
 			}
+			cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
+				authID = strings.TrimSpace(authID)
+				if authID == "" || h == nil || h.AuthManager == nil {
+					return
+				}
+				lastAttemptedAuthID = authID
+				selectedAuth, ok := sessionAuthByID(authID)
+				if !ok || selectedAuth == nil {
+					return
+				}
+				if websocketUpstreamSupportsIncrementalInput(selectedAuth.Attributes, selectedAuth.Metadata) {
+					rememberPinnedAuth(authID, modelName)
+				}
+			})
 			dataChan, errChan, errStart := h.awaitResponsesWebsocketStreamStart(
 				c,
 				conn,
@@ -760,12 +759,12 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				break
 			}
 			if useUpstreamWebsocketPassthrough {
-			// 累积 transcript 需要上次 response 的 output，此处成功完成一轮，
-			// 把 completedOutput 记录到 passthroughLastResponseOutput 供下一轮累积使用。
-			passthroughLastResponseOutput = completedOutput
-			resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(previousLastRequest)), int64(len(previousLastResponseOutput)))
-			break
-		}
+				// 累积 transcript 需要上次 response 的 output，此处成功完成一轮，
+				// 把 completedOutput 记录到 passthroughLastResponseOutput 供下一轮累积使用。
+				passthroughLastResponseOutput = completedOutput
+				resizeResponsesWebsocketStateReservation(stateReservation, limits.memoryBudgetBytes, int64(len(previousLastRequest)), int64(len(previousLastResponseOutput)))
+				break
+			}
 			lastResponseOutput = completedOutput
 			lastResponseID = strings.TrimSpace(completedResponseID)
 			lastResponsePendingToolCallIDs = append([]string(nil), completedPendingToolCallIDs...)

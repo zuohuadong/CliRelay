@@ -244,6 +244,8 @@ type Manager struct {
 	// homeRuntimeAuths caches auths returned by Home so websocket sessions can
 	// reuse an established upstream credential without dispatching every turn.
 	homeRuntimeAuths map[string]map[string]*Auth
+	// Responses API continuation IDs are account-scoped, so failover would sever context.
+	responseAffinity *responseAffinityCache
 	// providerOffsets tracks per-model provider rotation state for multi-provider routing.
 	providerOffsets map[string]int
 
@@ -296,6 +298,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook:             hook,
 		auths:            make(map[string]*Auth),
 		homeRuntimeAuths: make(map[string]map[string]*Auth),
+		responseAffinity: newResponseAffinityCache(responseAffinityTTL, responseAffinityMaxEntries),
 		providerOffsets:  make(map[string]int),
 		modelPoolOffsets: make(map[string]int),
 		refreshSemaphore: make(chan struct{}, refreshMaxConcurrency),
@@ -2031,15 +2034,29 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 	}
 }
 
-func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult) *cliproxyexecutor.StreamResult {
+type streamWrapRequest struct {
+	ctx         context.Context
+	affinity    responseAffinityBinding
+	resultModel string
+	headers     http.Header
+	buffered    []cliproxyexecutor.StreamChunk
+	remaining   <-chan cliproxyexecutor.StreamChunk
+	aliasResult OAuthModelAliasResult
+}
+
+func (m *Manager) wrapStreamResult(request streamWrapRequest) *cliproxyexecutor.StreamResult {
+	ctx := request.ctx
+	auth := request.affinity.auth
+	provider := request.affinity.provider
+	resultModel := request.resultModel
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
 		var failed bool
 		forward := true
 		var rewriter *StreamRewriter
-		if aliasResult.ForceMapping && strings.TrimSpace(aliasResult.OriginalAlias) != "" {
-			rewriter = NewStreamRewriter(StreamRewriteOptions{RewriteModel: aliasResult.OriginalAlias})
+		if request.aliasResult.ForceMapping && strings.TrimSpace(request.aliasResult.OriginalAlias) != "" {
+			rewriter = NewStreamRewriter(StreamRewriteOptions{RewriteModel: request.aliasResult.OriginalAlias})
 		}
 		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
 			if chunk.Err != nil && !failed {
@@ -2066,6 +2083,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			if len(chunk.Payload) == 0 {
 				return true
 			}
+			m.rememberResponseAffinity(request.affinity, chunk.Payload)
 			payload := rewriteForceMappedStreamChunk(rewriter, chunk.Payload)
 			if len(payload) == 0 {
 				return true
@@ -2083,15 +2101,15 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				return true
 			}
 		}
-		for _, chunk := range buffered {
+		for _, chunk := range request.buffered {
 			if ok := emit(chunk); !ok {
-				discardStreamChunks(remaining)
+				discardStreamChunks(request.remaining)
 				return
 			}
 		}
-		for chunk := range remaining {
+		for chunk := range request.remaining {
 			if ok := emit(chunk); !ok {
-				discardStreamChunks(remaining)
+				discardStreamChunks(request.remaining)
 				return
 			}
 		}
@@ -2106,7 +2124,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: true})
 		}
 	}()
-	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}
+	return &cliproxyexecutor.StreamResult{Headers: request.headers, Chunks: out}
 }
 
 func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel, executionModel string, execModels []string, pooled bool, aliasResult OAuthModelAliasResult) (*cliproxyexecutor.StreamResult, error) {
@@ -2165,7 +2183,14 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			continue
 		}
 		if cliproxyexecutor.DownstreamWebsocket(ctx) && !shouldProbeDownstreamWebsocketBootstrap(provider) {
-			return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, nil, streamResult.Chunks, aliasResult), nil
+			return m.wrapStreamResult(streamWrapRequest{
+				ctx:         ctx,
+				affinity:    newResponseAffinityBinding(auth.Clone(), provider, execOpts),
+				resultModel: resultModel,
+				headers:     streamResult.Headers,
+				remaining:   streamResult.Chunks,
+				aliasResult: aliasResult,
+			}), nil
 		}
 
 		buffered, closed, bootstrapErr := readStreamBootstrap(ctx, streamResult.Chunks)
@@ -2243,7 +2268,15 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			close(closedCh)
 			remaining = closedCh
 		}
-		return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining, aliasResult), nil
+		return m.wrapStreamResult(streamWrapRequest{
+			ctx:         ctx,
+			affinity:    newResponseAffinityBinding(auth.Clone(), provider, execOpts),
+			resultModel: resultModel,
+			headers:     streamResult.Headers,
+			buffered:    buffered,
+			remaining:   remaining,
+			aliasResult: aliasResult,
+		}), nil
 	}
 	if lastErr == nil {
 		lastErr = &Error{Code: "auth_not_found", Message: "no upstream model available"}
@@ -2634,6 +2667,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	opts = m.applyPreviousResponseAffinity(req, opts)
 
 	_, maxRetryCredentials, maxWait := m.retrySettings()
 
@@ -2708,6 +2742,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	opts = m.applyPreviousResponseAffinity(req, opts)
 
 	_, maxRetryCredentials, maxWait := m.retrySettings()
 
@@ -2873,6 +2908,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
 		if errPick != nil {
+			if responseAffinityActive(opts) {
+				return cliproxyexecutor.Response{}, previousResponseReplayError(req, opts)
+			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, lastErr
 			}
@@ -2904,8 +2942,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
+			if responseAffinityActive(opts) {
+				return cliproxyexecutor.Response{}, previousResponseReplayError(req, opts)
+			}
 			if isTerminalEgressError(errPrepare) {
 				if isCredentialLocalEgressFallbackError(errPrepare) {
+					opts = withoutPinnedAuth(opts)
 					lastErr = errPrepare
 					if homeMode {
 						homeAuthCount++
@@ -2956,7 +2998,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 			}
 			if isTerminalEgressError(errExec) {
+				if responseAffinityActive(opts) {
+					return cliproxyexecutor.Response{}, previousResponseReplayError(req, opts)
+				}
 				if isCredentialLocalEgressFallbackError(errExec) {
+					opts = withoutPinnedAuth(opts)
 					authErr = errExec
 					break
 				}
@@ -2972,10 +3018,14 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
+				if responseAffinityActive(opts) {
+					return cliproxyexecutor.Response{}, previousResponseReplayError(req, opts)
+				}
 				authErr = errExec
 				continue
 			}
 			m.MarkResult(execCtx, result)
+			m.rememberResponseAffinity(newResponseAffinityBinding(auth, provider, execOpts), resp.Payload)
 			rewriteForceMappedResponse(&resp, aliasResult)
 			return resp, nil
 		}
@@ -3165,6 +3215,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
 		if errPick != nil {
+			if responseAffinityActive(opts) {
+				return nil, previousResponseReplayError(req, opts)
+			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return nil, lastErr
 			}
@@ -3194,8 +3247,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
+			if responseAffinityActive(opts) {
+				return nil, previousResponseReplayError(req, opts)
+			}
 			if isTerminalEgressError(errPrepare) {
 				if isCredentialLocalEgressFallbackError(errPrepare) {
+					opts = withoutPinnedAuth(opts)
 					lastErr = errPrepare
 					if homeMode {
 						homeAuthCount++
@@ -3222,9 +3279,15 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
 			}
+			if responseAffinityActive(opts) {
+				return nil, previousResponseReplayError(req, opts)
+			}
 			if shouldStopMixedProviderFallback(provider, routeModel, errStream) && !isCredentialLocalEgressFallbackError(errStream) {
 				logEntryWithRequestID(ctx).Debugf("stopping mixed provider fallback after provider failure provider=%s model=%s error=%s", provider, routeModel, errStream.Error())
 				return nil, errStream
+			}
+			if isCredentialLocalEgressFallbackError(errStream) {
+				opts = withoutPinnedAuth(opts)
 			}
 			lastErr = errStream
 			if homeMode {
@@ -3318,7 +3381,29 @@ func isCredentialLocalEgressFallbackError(err error) bool {
 		return false
 	}
 	var target *internalegress.Error
-	return errors.As(err, &target) && target != nil && strings.EqualFold(strings.TrimSpace(target.Code), "egress_disabled")
+	if !errors.As(err, &target) || target == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(target.Code)) {
+	case "egress_disabled", "egress_unbound":
+		return true
+	default:
+		return false
+	}
+}
+
+func withoutPinnedAuth(opts cliproxyexecutor.Options) cliproxyexecutor.Options {
+	if pinnedAuthIDFromMetadata(opts.Metadata) == "" || responseAffinityActive(opts) {
+		return opts
+	}
+	metadata := make(map[string]any, len(opts.Metadata)-1)
+	for key, value := range opts.Metadata {
+		if key != cliproxyexecutor.PinnedAuthMetadataKey {
+			metadata[key] = value
+		}
+	}
+	opts.Metadata = metadata
+	return opts
 }
 
 func authSelectionModelFromOptions(opts cliproxyexecutor.Options, fallback string) string {
@@ -5915,6 +6000,9 @@ func (m *Manager) pickNextViaHome(ctx context.Context, model string, opts clipro
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if auth, executor, provider, handled, errAffinity := m.responseAffinityHomeAuth(opts, tried); handled {
+		return auth, executor, provider, errAffinity
+	}
 	executionSessionID := homeExecutionSessionIDFromMetadata(opts.Metadata)
 	count := homeAuthCountFromMetadata(opts.Metadata)
 	if cliproxyexecutor.DownstreamWebsocket(ctx) && executionSessionID != "" && count <= 1 {
@@ -6299,6 +6387,9 @@ func (m *Manager) StopAutoRefresh() {
 	// Stop selector if it implements StoppableSelector (e.g., SessionAffinitySelector)
 	if stoppable, ok := m.selector.(StoppableSelector); ok {
 		stoppable.Stop()
+	}
+	if m.responseAffinity != nil {
+		m.responseAffinity.Stop()
 	}
 }
 

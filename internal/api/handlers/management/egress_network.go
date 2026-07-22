@@ -523,7 +523,7 @@ func writeEgressError(c *gin.Context, err error) {
 	status := http.StatusInternalServerError
 	code := egress.ErrorCode(err)
 	switch {
-	case errors.Is(err, egress.ErrEgressRequired), errors.Is(err, egress.ErrEndpointDisabled):
+	case errors.Is(err, egress.ErrEgressRequired), errors.Is(err, egress.ErrEgressUnbound), errors.Is(err, egress.ErrEndpointDisabled):
 		status = http.StatusServiceUnavailable
 		code = "egress_not_ready"
 	case errors.Is(err, egress.ErrEndpointNotFound):

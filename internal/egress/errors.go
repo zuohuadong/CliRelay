@@ -7,6 +7,7 @@ import (
 
 var (
 	ErrEgressRequired       = errors.New("egress_required")
+	ErrEgressUnbound        = errors.New("egress_unbound")
 	ErrEndpointNotFound     = errors.New("egress_not_found")
 	ErrEndpointDisabled     = errors.New("egress_disabled")
 	ErrEndpointInvalid      = errors.New("egress_invalid")
@@ -58,6 +59,8 @@ func ErrorCode(err error) string {
 	switch {
 	case errors.Is(err, ErrEgressRequired):
 		return "egress_required"
+	case errors.Is(err, ErrEgressUnbound):
+		return "egress_unbound"
 	case errors.Is(err, ErrEndpointNotFound):
 		return "egress_not_found"
 	case errors.Is(err, ErrEndpointDisabled):

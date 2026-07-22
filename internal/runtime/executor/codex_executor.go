@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -56,6 +57,52 @@ const (
 // from hitting its own 5-minute idle timeout ("idle timeout waiting for SSE")
 // and surfaces a clear error instead.
 var codexHTTPStreamIdleTimeout = 3 * time.Minute
+
+func startCodexHTTPStreamIdleWatch(ctx context.Context, body io.Closer) (chan struct{}, func(), *atomic.Bool) {
+	idleReset := make(chan struct{}, 1)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	timedOut := new(atomic.Bool)
+	var stopOnce sync.Once
+
+	go func() {
+		defer close(done)
+		timer := time.NewTimer(codexHTTPStreamIdleTimeout)
+		defer timer.Stop()
+		for {
+			select {
+			case <-timer.C:
+				timedOut.Store(true)
+				helps.LogWithRequestID(ctx).Warnf("codex executor: stream idle timeout after %s without upstream data, aborting read", codexHTTPStreamIdleTimeout)
+				_ = body.Close()
+				return
+			case <-idleReset:
+				resetCodexHTTPStreamIdleTimer(timer)
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return idleReset, func() {
+		stopOnce.Do(func() {
+			close(stop)
+			<-done
+		})
+	}, timedOut
+}
+
+func resetCodexHTTPStreamIdleTimer(timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(codexHTTPStreamIdleTimeout)
+}
 
 const codexDefaultResponseHeaderTimeout = time.Duration(config.DefaultCodexResponseHeaderTimeoutSeconds) * time.Second
 
@@ -1537,7 +1584,6 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.SetBytes(body, "stream", true)
-	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
@@ -1848,7 +1894,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
-	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
@@ -1925,15 +1970,17 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			return nil, err
 		}
 	}
+	streamHeaders := httpResp.Header.Clone()
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
+		streamBody := httpResp.Body
 		defer close(out)
 		defer func() {
-			if errClose := httpResp.Body.Close(); errClose != nil {
+			if errClose := streamBody.Close(); errClose != nil {
 				log.Errorf("codex executor: close response body error: %v", errClose)
 			}
 		}()
-		scanner := bufio.NewScanner(httpResp.Body)
+		scanner := bufio.NewScanner(streamBody)
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
@@ -1944,34 +1991,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		// idleTimer 关闭上游连接以中止卡住的 SSE 流。
 		// 上游可能接受连接但不发送任何数据，导致 scanner.Scan() 永久阻塞。
 		// 超时后关闭 body 让 Scan 返回，并发出明确的 idle timeout 错误。
-		idleReset := make(chan struct{}, 1)
-		streamDone := make(chan struct{})
-		var idleTimedOut atomic.Bool
-		go func() {
-			timer := time.NewTimer(codexHTTPStreamIdleTimeout)
-			defer timer.Stop()
-			for {
-				select {
-				case <-timer.C:
-					idleTimedOut.Store(true)
-					helps.LogWithRequestID(ctx).Warnf("codex executor: stream idle timeout after %s without upstream data, aborting read", codexHTTPStreamIdleTimeout)
-					_ = httpResp.Body.Close()
-					return
-				case <-idleReset:
-					if !timer.Stop() {
-						select {
-						case <-timer.C:
-						default:
-						}
-					}
-					timer.Reset(codexHTTPStreamIdleTimeout)
-				case <-streamDone:
-					return
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
+		idleReset, stopIdleWatch, idleTimedOut := startCodexHTTPStreamIdleWatch(ctx, streamBody)
+		defer func() { stopIdleWatch() }()
 
 		for scanner.Scan() {
 			select {
@@ -2006,11 +2027,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 							body = retryBody
 							outputItemsByIndex = make(map[int64][]byte)
 							outputItemsFallback = nil
-							if errClose := httpResp.Body.Close(); errClose != nil {
+							stopIdleWatch()
+							if errClose := streamBody.Close(); errClose != nil {
 								log.Errorf("codex executor: close response body error before invalid signature retry: %v", errClose)
 							}
-							var retryOpenErr error
-							httpResp, identityState, retryOpenErr = e.openCodexResponse(ctx, from, url, auth, req, originalPayloadSource, body, apiKey, true, httpClient)
+							retryResponse, retryIdentityState, retryOpenErr := e.openCodexResponse(ctx, from, url, auth, req, originalPayloadSource, body, apiKey, true, httpClient)
 							if retryOpenErr != nil {
 								helps.RecordAPIResponseError(ctx, e.cfg, retryOpenErr)
 								reporter.PublishFailure(ctx, retryOpenErr)
@@ -2020,9 +2041,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 								}
 								return
 							}
-							if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-								retryData, readErr := io.ReadAll(httpResp.Body)
-								if errClose := httpResp.Body.Close(); errClose != nil {
+							if retryResponse.StatusCode < 200 || retryResponse.StatusCode >= 300 {
+								retryData, readErr := io.ReadAll(retryResponse.Body)
+								if errClose := retryResponse.Body.Close(); errClose != nil {
 									log.Errorf("codex executor: close response body error after invalid signature retry: %v", errClose)
 								}
 								if readErr != nil {
@@ -2034,10 +2055,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 									}
 									return
 								}
-								retryData = applyCodexIdentityConfuseResponsePayload(retryData, identityState)
+								retryData = applyCodexIdentityConfuseResponsePayload(retryData, retryIdentityState)
 								helps.AppendAPIResponseChunk(ctx, e.cfg, retryData)
-								helps.LogWithRequestID(ctx).Debugf("request error after invalid signature retry, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), retryData))
-								retryErr := newCodexStatusErr(httpResp.StatusCode, retryData)
+								helps.LogWithRequestID(ctx).Debugf("request error after invalid signature retry, error status: %d, error message: %s", retryResponse.StatusCode, helps.SummarizeErrorBody(retryResponse.Header.Get("Content-Type"), retryData))
+								retryErr := newCodexStatusErr(retryResponse.StatusCode, retryData)
 								helps.RecordAPIResponseError(ctx, e.cfg, retryErr)
 								reporter.PublishFailure(ctx, retryErr)
 								select {
@@ -2046,8 +2067,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 								}
 								return
 							}
-							scanner = bufio.NewScanner(httpResp.Body)
+							streamBody = retryResponse.Body
+							identityState = retryIdentityState
+							scanner = bufio.NewScanner(streamBody)
 							scanner.Buffer(nil, 52_428_800) // 50MB
+							idleReset, stopIdleWatch, idleTimedOut = startCodexHTTPStreamIdleWatch(ctx, streamBody)
 							continue
 						}
 					}
@@ -2103,7 +2127,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				return
 			}
 		}
-		close(streamDone)
 		if idleTimedOut.Load() {
 			var idleErr error = statusErr{code: http.StatusRequestTimeout, msg: `{"error":{"message":"upstream stream idle timeout","type":"server_error","code":"stream_idle_timeout"}}`}
 			if e.usesStrictEgress(auth) && !emittedPayload {
@@ -2140,7 +2163,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}
 	}()
-	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+	return &cliproxyexecutor.StreamResult{Headers: streamHeaders, Chunks: out}, nil
 }
 
 func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {

@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	internalegress "github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	requestlogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -82,10 +83,11 @@ type websocketAuthCaptureExecutor struct {
 }
 
 type websocketPinnedFailoverExecutor struct {
-	mu       sync.Mutex
-	authIDs  []string
-	calls    map[string]int
-	payloads map[string][][]byte
+	mu               sync.Mutex
+	authIDs          []string
+	calls            map[string]int
+	payloads         map[string][][]byte
+	secondAuthAError error
 }
 
 type websocketPreviousResponseReplayExecutor struct {
@@ -447,7 +449,10 @@ func (e *websocketPinnedFailoverExecutor) ExecuteStream(_ context.Context, auth 
 	e.payloads[authID] = append(e.payloads[authID], bytes.Clone(req.Payload))
 	e.mu.Unlock()
 
-	if authID == "auth-a" && call == 2 {
+	if authID == "auth-a" && (call == 2 || e.secondAuthAError != nil && call > 1) {
+		if e.secondAuthAError != nil {
+			return nil, e.secondAuthAError
+		}
 		chunks := make(chan coreexecutor.StreamChunk, 1)
 		chunks <- coreexecutor.StreamChunk{Err: websocketPinnedFailoverStatusError{
 			status: http.StatusTooManyRequests,
@@ -3627,6 +3632,57 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterQuotaError(t *testing.T) {
 	authBInput := gjson.GetBytes(authBPayload, "input").Raw
 	if !strings.Contains(authBInput, `"id":"msg-1"`) || !strings.Contains(authBInput, `"id":"msg-3"`) {
 		t.Fatalf("auth-b replay input missing expected transcript items: %s", authBInput)
+	}
+}
+
+func TestResponsesWebsocketRepinsAfterEgressUnboundFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	selector := &orderedWebsocketSelector{order: []string{"auth-a", "auth-b"}}
+	executor := &websocketPinnedFailoverExecutor{secondAuthAError: internalegress.RuntimeError(internalegress.ErrEgressUnbound)}
+	manager := coreauth.NewManager(nil, selector, nil)
+	manager.RegisterExecutor(executor)
+	for _, auth := range []*coreauth.Auth{
+		{ID: "auth-a", Provider: executor.Identifier(), Status: coreauth.StatusActive, Attributes: map[string]string{"websockets": "true"}},
+		{ID: "auth-b", Provider: executor.Identifier(), Status: coreauth.StatusActive, Attributes: map[string]string{"websockets": "true"}},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("Register %s: %v", auth.ID, err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "egress-switch-model"}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	}
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	for turn := 1; turn <= 3; turn++ {
+		request := fmt.Sprintf(`{"type":"response.create","model":"egress-switch-model","input":[{"type":"message","id":"msg-%d"}]}`, turn)
+		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(request)); errWrite != nil {
+			t.Fatalf("write websocket message %d: %v", turn, errWrite)
+		}
+		_, payload, errRead := conn.ReadMessage()
+		if errRead != nil {
+			t.Fatalf("read websocket message %d: %v", turn, errRead)
+		}
+		if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+			t.Fatalf("message %d type = %s, want %s: %s", turn, got, wsEventTypeCompleted, payload)
+		}
+	}
+
+	if got := executor.AuthIDs(); len(got) != 4 || got[0] != "auth-a" || got[1] != "auth-a" || got[2] != "auth-b" || got[3] != "auth-b" {
+		t.Fatalf("selected auth IDs = %v, want [auth-a auth-a auth-b auth-b]", got)
 	}
 }
 

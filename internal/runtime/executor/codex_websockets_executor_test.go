@@ -42,13 +42,18 @@ func TestBuildCodexWebsocketRequestBodyPreservesPreviousResponseID(t *testing.T)
 	}
 }
 
-func TestBuildCodexWebsocketRequestBodyShortensOverlongInputItemIDs(t *testing.T) {
+func TestBuildCodexWebsocketRequestBodySanitizesInvalidOrOverlongInputItemIDs(t *testing.T) {
+	longReasoningItemID := "rs_" + strings.Repeat("a", 64)
 	longCallItemID := strings.Repeat("grok-call-item-", 6)
 	longOutputItemID := strings.Repeat("grok-output-item-", 6)
-	body := []byte(`{"model":"gpt-5-codex","input":[{"type":"function_call","id":"` + longCallItemID + `","call_id":"call-1","name":"lookup"},{"type":"function_call_output","id":"` + longOutputItemID + `","call_id":"call-1","output":"ok"},{"type":"message","id":"msg-1"}]}`)
+	invalidMessageItemID := "resp_cht000d06b0@dx19f874c0e97b91a322"
+	body := []byte(`{"model":"gpt-5-codex","input":[{"type":"reasoning","id":"` + longReasoningItemID + `","encrypted_content":"gAAAA-encrypted","summary":[]},{"type":"function_call","id":"` + longCallItemID + `","call_id":"call-1","name":"lookup"},{"type":"function_call_output","id":"` + longOutputItemID + `","call_id":"call-1","output":"ok"},{"type":"message","id":"` + invalidMessageItemID + `"}]}`)
 
 	first := buildCodexWebsocketRequestBody(body)
 	second := buildCodexWebsocketRequestBody(body)
+	if input := gjson.GetBytes(first, "input").Array(); len(input) != 3 {
+		t.Fatalf("input length = %d, want 3: %s", len(input), first)
+	}
 
 	shortCallItemID := gjson.GetBytes(first, "input.0.id").String()
 	shortOutputItemID := gjson.GetBytes(first, "input.1.id").String()
@@ -70,8 +75,8 @@ func TestBuildCodexWebsocketRequestBodyShortensOverlongInputItemIDs(t *testing.T
 	if got := gjson.GetBytes(first, "input.1.call_id").String(); got != "call-1" {
 		t.Fatalf("function call output call_id = %q, want call-1", got)
 	}
-	if got := gjson.GetBytes(first, "input.2.id").String(); got != "msg-1" {
-		t.Fatalf("valid input item ID changed: %q", got)
+	if got := gjson.GetBytes(first, "input.2.id").String(); got == invalidMessageItemID || strings.Contains(got, "@") {
+		t.Fatalf("invalid input item ID was not sanitized: %q", got)
 	}
 }
 

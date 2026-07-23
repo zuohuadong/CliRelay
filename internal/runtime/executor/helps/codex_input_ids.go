@@ -31,7 +31,7 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 			continue
 		}
 		id := itemID.String()
-		if isValidCodexInputItemID(id) {
+		if isValidCodexInputItemIDForType(item.Get("type").String(), id) {
 			occupied[id] = struct{}{}
 		}
 	}
@@ -49,17 +49,19 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 		itemID := item.Get("id")
 		if itemID.Type == gjson.String {
 			id := itemID.String()
-			if !isValidCodexInputItemID(id) {
-				shortened, ok := mapped[id]
+			itemType := item.Get("type").String()
+			if !isValidCodexInputItemIDForType(itemType, id) {
+				mappingKey := itemType + "\x00" + id
+				shortened, ok := mapped[mappingKey]
 				if !ok {
-					shortened = shortenCodexInputItemID(id)
+					shortened = normalizeCodexInputItemID(itemType, id, 0)
 					for attempt := 1; ; attempt++ {
 						if _, exists := occupied[shortened]; !exists {
 							break
 						}
-						shortened = shortenCodexInputItemIDWithAttempt(id, attempt)
+						shortened = normalizeCodexInputItemID(itemType, id, attempt)
 					}
-					mapped[id] = shortened
+					mapped[mappingKey] = shortened
 					occupied[shortened] = struct{}{}
 				}
 
@@ -97,6 +99,20 @@ func shouldDropCodexEncryptedReasoningItem(item gjson.Result) bool {
 
 func shortenCodexInputItemID(id string) string {
 	return shortenCodexInputItemIDWithAttempt(id, 0)
+}
+
+func normalizeCodexInputItemID(itemType, id string, attempt int) string {
+	if itemType == "message" && !strings.HasPrefix(id, "msg") {
+		id = "msg_" + id
+	}
+	return shortenCodexInputItemIDWithAttempt(id, attempt)
+}
+
+func isValidCodexInputItemIDForType(itemType, id string) bool {
+	if !isValidCodexInputItemID(id) {
+		return false
+	}
+	return itemType != "message" || strings.HasPrefix(id, "msg")
 }
 
 func shortenCodexInputItemIDWithAttempt(id string, attempt int) string {

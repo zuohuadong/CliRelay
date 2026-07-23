@@ -49,6 +49,21 @@ func TestSanitizeCodexInputItemIDsDropsInvalidEncryptedReasoningItem(t *testing.
 	}
 }
 
+func TestSanitizeCodexInputItemIDsNormalizesForeignMessagePrefix(t *testing.T) {
+	foreignMessageID := "resp_cht000d342b_dx19f85395e3ab9cb312_742ed7068170aeb7"
+	body := []byte(`{"input":[{"type":"message","id":"` + foreignMessageID + `","role":"user","content":"continue"}]}`)
+
+	first := SanitizeCodexInputItemIDs(body)
+	second := SanitizeCodexInputItemIDs(body)
+	normalizedID := gjson.GetBytes(first, "input.0.id").String()
+	if normalizedID == foreignMessageID || !strings.HasPrefix(normalizedID, "msg") {
+		t.Fatalf("foreign message ID was not normalized: %q", normalizedID)
+	}
+	if got := gjson.GetBytes(second, "input.0.id").String(); got != normalizedID {
+		t.Fatalf("message ID normalization is not deterministic: first=%q second=%q", normalizedID, got)
+	}
+}
+
 func TestSanitizeCodexInputItemIDsKeepsShortEncryptedReasoningAndShortensOtherIDs(t *testing.T) {
 	longReasoningID := "rs_" + strings.Repeat("a", 64)
 	shortReasoningID := "rs_" + strings.Repeat("b", 48)

@@ -46,7 +46,7 @@ func TestBuildCodexWebsocketRequestBodySanitizesInvalidOrOverlongInputItemIDs(t 
 	longReasoningItemID := "rs_" + strings.Repeat("a", 64)
 	longCallItemID := strings.Repeat("grok-call-item-", 6)
 	longOutputItemID := strings.Repeat("grok-output-item-", 6)
-	invalidMessageItemID := "resp_cht000d06b0@dx19f874c0e97b91a322"
+	invalidMessageItemID := "resp_cht000d342b_dx19f85395e3ab9cb312_742ed7068170aeb7"
 	body := []byte(`{"model":"gpt-5-codex","input":[{"type":"reasoning","id":"` + longReasoningItemID + `","encrypted_content":"gAAAA-encrypted","summary":[]},{"type":"function_call","id":"` + longCallItemID + `","call_id":"call-1","name":"lookup"},{"type":"function_call_output","id":"` + longOutputItemID + `","call_id":"call-1","output":"ok"},{"type":"message","id":"` + invalidMessageItemID + `"}]}`)
 
 	first := buildCodexWebsocketRequestBody(body)
@@ -75,7 +75,7 @@ func TestBuildCodexWebsocketRequestBodySanitizesInvalidOrOverlongInputItemIDs(t 
 	if got := gjson.GetBytes(first, "input.1.call_id").String(); got != "call-1" {
 		t.Fatalf("function call output call_id = %q, want call-1", got)
 	}
-	if got := gjson.GetBytes(first, "input.2.id").String(); got == invalidMessageItemID || strings.Contains(got, "@") {
+	if got := gjson.GetBytes(first, "input.2.id").String(); got == invalidMessageItemID || !strings.HasPrefix(got, "msg") {
 		t.Fatalf("invalid input item ID was not sanitized: %q", got)
 	}
 }

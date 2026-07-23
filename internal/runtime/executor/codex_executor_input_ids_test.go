@@ -20,7 +20,7 @@ func TestCodexExecutorExecuteStreamSanitizesInvalidOrOverlongInputItemIDs(t *tes
 	longReasoningItemID := "rs_" + strings.Repeat("a", 64)
 	longCallItemID := strings.Repeat("grok-call-item-", 6)
 	longOutputItemID := strings.Repeat("grok-output-item-", 6)
-	invalidMessageItemID := "resp_cht000d06b0@dx19f874c0e97b91a322"
+	invalidMessageItemID := "resp_cht000d342b_dx19f85395e3ab9cb312_742ed7068170aeb7"
 	encryptedContent := validOpenAIResponsesReasoningEncryptedContentForTest()
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +74,7 @@ func TestCodexExecutorExecuteStreamSanitizesInvalidOrOverlongInputItemIDs(t *tes
 	if got := gjson.GetBytes(gotBody, "input.1.call_id").String(); got != "call-1" {
 		t.Fatalf("function call output call_id = %q, want call-1", got)
 	}
-	if got := gjson.GetBytes(gotBody, "input.2.id").String(); got == invalidMessageItemID || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`).MatchString(got) {
+	if got := gjson.GetBytes(gotBody, "input.2.id").String(); got == invalidMessageItemID || !strings.HasPrefix(got, "msg") || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`).MatchString(got) {
 		t.Fatalf("invalid input item ID was not sanitized: %q", got)
 	}
 }

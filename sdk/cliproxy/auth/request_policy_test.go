@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -292,11 +293,10 @@ func TestRequestPolicyDecision_RequiredToolsDoesNotSkipAstron(t *testing.T) {
 
 func TestManagerExecute_RequestPolicyCompressThenUsesOriginalProvider(t *testing.T) {
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
-	compressed := []byte(`{"model":"gpt-5.3-codex","input":"short"}`)
 	compressor := &requestPolicyTestExecutor{
 		id: "gemini",
 		responseByModel: map[string][]byte{
-			"gemini-3-flash-preview": []byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"model\":\"gpt-5.3-codex\",\"input\":\"short\"}"}]}]}`),
+			"gemini-3-flash-preview": []byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"version\":\"1\",\"summary\":\"The user previously investigated a websocket timeout.\",\"open_loops\":[\"verify the fix\"]}"}]}]}`),
 		},
 	}
 	bigmodel := &requestPolicyTestExecutor{id: "bigmodel-coding"}
@@ -327,9 +327,10 @@ func TestManagerExecute_RequestPolicyCompressThenUsesOriginalProvider(t *testing
 				OverLimit: internalconfig.RequestPolicyOverLimit{
 					Action: "compress",
 					Compression: internalconfig.RequestPolicyCompression{
-						Provider:           "gemini",
-						Model:              "gemini-3-flash-preview",
-						TargetRequestBytes: 80,
+						Provider:            "gemini",
+						Model:               "gemini-3-flash-preview",
+						TargetRequestBytes:  1000,
+						PreserveRecentItems: 1,
 					},
 				},
 			},
@@ -368,7 +369,11 @@ func TestManagerExecute_RequestPolicyCompressThenUsesOriginalProvider(t *testing
 		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
 	}
 
-	original := []byte(`{"model":"gpt-5.3-codex","input":"this payload is intentionally long enough to require compression before GLM"}`)
+	original := []byte(`{"model":"gpt-5.3-codex","tools":[{"type":"function","name":"lookup"}],"input":[` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"` + strings.Repeat("old websocket timeout evidence ", 120) + `"}]},` +
+		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I will investigate it."}]},` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"please continue with the latest request"}]}` +
+		`]}`)
 	resp, err := manager.Execute(context.Background(), []string{"bigmodel-coding"}, cliproxyexecutor.Request{
 		Model:   "gpt-5.3-codex",
 		Payload: original,
@@ -390,8 +395,18 @@ func TestManagerExecute_RequestPolicyCompressThenUsesOriginalProvider(t *testing
 		t.Fatalf("bigmodel models = %v, want [glm-5.1]", models)
 	}
 	payloads := bigmodel.Payloads()
-	if len(payloads) != 1 || string(payloads[0]) != string(compressed) {
-		t.Fatalf("bigmodel payloads = %q, want %q", payloads, compressed)
+	if len(payloads) != 1 {
+		t.Fatalf("bigmodel payload count = %d, want 1", len(payloads))
+	}
+	compressed := string(payloads[0])
+	if !strings.Contains(compressed, "[compacted_context]") || !strings.Contains(compressed, "websocket timeout") || !strings.Contains(compressed, "latest request") {
+		t.Fatalf("compressed payload does not contain capsule and latest request: %s", compressed)
+	}
+	if strings.Contains(compressed, strings.Repeat("old websocket timeout evidence ", 10)) {
+		t.Fatalf("old raw history was not compacted: %s", compressed)
+	}
+	if !strings.Contains(compressed, `"tools":[{"type":"function","name":"lookup"}]`) {
+		t.Fatalf("top-level tools were not preserved: %s", compressed)
 	}
 }
 
@@ -424,9 +439,11 @@ func TestManagerExecute_RequestPolicyCompressionUnavailableSkipsCompression(t *t
 				OverLimit: internalconfig.RequestPolicyOverLimit{
 					Action: "compress",
 					Compression: internalconfig.RequestPolicyCompression{
-						Provider:           "gemini",
-						Model:              "missing-compressor-model",
-						TargetRequestBytes: 80,
+						Provider:            "gemini",
+						Model:               "missing-compressor-model",
+						TargetRequestBytes:  1000,
+						PreserveRecentItems: 1,
+						UnavailableAction:   "skip",
 					},
 				},
 			},
@@ -450,7 +467,10 @@ func TestManagerExecute_RequestPolicyCompressionUnavailableSkipsCompression(t *t
 	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.3-codex", Name: "gpt-5.3-codex"}})
 	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
 
-	original := []byte(`{"model":"gpt-5.3-codex","input":"this payload stays original because compressor auth is unavailable"}`)
+	original := []byte(`{"model":"gpt-5.3-codex","input":[` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"` + strings.Repeat("old history ", 200) + `"}]},` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"latest request"}]}` +
+		`]}`)
 	_, err := manager.Execute(context.Background(), []string{"bigmodel-coding"}, cliproxyexecutor.Request{
 		Model:   "gpt-5.3-codex",
 		Payload: original,

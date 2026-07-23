@@ -267,6 +267,9 @@ type Manager struct {
 	// runtimeConfig stores the latest application config for request-time decisions.
 	// It is initialized in NewManager; never Load() before first Store().
 	runtimeConfig atomic.Value
+	// requestCompression deduplicates concurrent compaction and caches only
+	// structured summaries by history-prefix digest.
+	requestCompression *requestCompressionRuntime
 
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider
@@ -292,17 +295,18 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook = NoopHook{}
 	}
 	manager := &Manager{
-		store:            store,
-		executors:        make(map[string]ProviderExecutor),
-		selector:         selector,
-		hook:             hook,
-		auths:            make(map[string]*Auth),
-		homeRuntimeAuths: make(map[string]map[string]*Auth),
-		responseAffinity: newResponseAffinityCache(responseAffinityTTL, responseAffinityMaxEntries),
-		providerOffsets:  make(map[string]int),
-		modelPoolOffsets: make(map[string]int),
-		refreshSemaphore: make(chan struct{}, refreshMaxConcurrency),
-		quotaProbeAfter:  make(map[string]time.Time),
+		store:              store,
+		executors:          make(map[string]ProviderExecutor),
+		selector:           selector,
+		hook:               hook,
+		auths:              make(map[string]*Auth),
+		homeRuntimeAuths:   make(map[string]map[string]*Auth),
+		responseAffinity:   newResponseAffinityCache(responseAffinityTTL, responseAffinityMaxEntries),
+		requestCompression: newRequestCompressionRuntime(),
+		providerOffsets:    make(map[string]int),
+		modelPoolOffsets:   make(map[string]int),
+		refreshSemaphore:   make(chan struct{}, refreshMaxConcurrency),
+		quotaProbeAfter:    make(map[string]time.Time),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
@@ -533,6 +537,7 @@ func (m *Manager) SetConfig(cfg *internalconfig.Config) {
 		cfg = &internalconfig.Config{}
 	}
 	cfg.SanitizeModelOverrides()
+	cfg.SanitizeRequestPolicies()
 	cfg.SanitizeRouting()
 	m.runtimeConfig.Store(cfg)
 	clearedCooldowns := m.clearDisabledCooldownStates(cfg)
@@ -1516,20 +1521,23 @@ func candidateContextLengthDiagnostics(cfg *internalconfig.Config, auth *Auth, c
 }
 
 func requestFitsConfiguredModelContext(cfg *internalconfig.Config, auth *Auth, opts cliproxyexecutor.Options, upstreamModel string) bool {
-	requestBytes, ok := requestBytesFromMetadata(opts.Metadata)
-	if !ok || requestBytes <= 0 {
+	contextUsage, ok := configuredContextUsage(opts.Metadata)
+	if !ok || contextUsage <= 0 {
 		return true
 	}
 	contextLength, ok := configuredOpenAICompatModelContextLength(cfg, auth, upstreamModel)
 	if !ok || contextLength <= 0 {
 		return true
 	}
-	return requestBytes <= contextLength
+	if contextUsage <= contextLength {
+		return true
+	}
+	return requestCompressionPolicyMatchesAuth(requestCompressionRouteCheck{config: cfg, auth: auth, options: opts, routeModel: requestedModelAliasFromOptions(opts, upstreamModel), upstreamModel: upstreamModel})
 }
 
 func authHasConfiguredContextCapacity(m *Manager, cfg *internalconfig.Config, auth *Auth, opts cliproxyexecutor.Options, routeModel string) bool {
-	requestBytes, ok := requestBytesFromMetadata(opts.Metadata)
-	if !ok || requestBytes <= 0 {
+	contextUsage, ok := configuredContextUsage(opts.Metadata)
+	if !ok || contextUsage <= 0 {
 		return true
 	}
 	candidates := m.executionModelCandidatesForCapacityCheck(auth, routeModel)
@@ -1543,11 +1551,42 @@ func authHasConfiguredContextCapacity(m *Manager, cfg *internalconfig.Config, au
 			return true
 		}
 		hasConfiguredContext = true
-		if requestBytes <= contextLength {
+		if contextUsage <= contextLength || requestCompressionPolicyMatchesAuth(requestCompressionRouteCheck{config: cfg, auth: auth, options: opts, routeModel: routeModel, upstreamModel: upstreamModel}) {
 			return true
 		}
 	}
 	return !hasConfiguredContext
+}
+
+func configuredContextUsage(meta map[string]any) (int64, bool) {
+	if compressionDisabledFromMetadata(meta) {
+		if inputTokens, ok := int64FromMetadata(meta, cliproxyexecutor.EstimatedInputTokensMetadataKey); ok && inputTokens > 0 {
+			return inputTokens, true
+		}
+	}
+	return requestBytesFromMetadata(meta)
+}
+
+type requestCompressionRouteCheck struct {
+	config        *internalconfig.Config
+	auth          *Auth
+	options       cliproxyexecutor.Options
+	routeModel    string
+	upstreamModel string
+}
+
+func requestCompressionPolicyMatchesAuth(check requestCompressionRouteCheck) bool {
+	if check.config == nil || check.auth == nil {
+		return false
+	}
+	provider := strings.ToLower(strings.TrimSpace(check.auth.Provider))
+	if check.auth.Attributes != nil {
+		if providerKey := strings.ToLower(strings.TrimSpace(check.auth.Attributes["provider_key"])); providerKey != "" {
+			provider = providerKey
+		}
+	}
+	policy, _ := requestPolicyCompressionDecision(check.config, check.options, check.routeModel, provider, check.upstreamModel)
+	return policy != nil
 }
 
 func configuredOpenAICompatModelContextLength(cfg *internalconfig.Config, auth *Auth, upstreamModel string) (int64, bool) {
@@ -2143,7 +2182,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		}
 		execOpts := opts
 		var errCompress error
-		execReq, execOpts, errCompress = m.maybeCompressRequest(ctx, provider, routeModel, execModel, execReq, execOpts)
+		execReq, execOpts, errCompress = m.maybeCompressRequest(ctx, requestCompressionAttempt{auth: auth, provider: provider, routeModel: routeModel, upstreamModel: execModel, request: execReq, options: execOpts})
 		if errCompress != nil {
 			return nil, errCompress
 		}
@@ -2972,7 +3011,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			execOpts := opts
 			var errCompress error
-			execReq, execOpts, errCompress = m.maybeCompressRequest(execCtx, provider, routeModel, upstreamModel, execReq, execOpts)
+			execReq, execOpts, errCompress = m.maybeCompressRequest(execCtx, requestCompressionAttempt{auth: auth, provider: provider, routeModel: routeModel, upstreamModel: upstreamModel, request: execReq, options: execOpts})
 			if errCompress != nil {
 				return cliproxyexecutor.Response{}, errCompress
 			}

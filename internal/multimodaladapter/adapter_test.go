@@ -51,9 +51,177 @@ func TestApplyHTTPExtractorOnlyMatchesConcreteRoute(t *testing.T) {
 	}
 }
 
-func TestApplyHTTPExtractorStripsMediaAndInjectsVisualContext(t *testing.T) {
+func TestApplyHTTPExtractorSupportsClaudeBase64AndProtocolInjection(t *testing.T) {
 	var extractorBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&extractorBody); err != nil {
+			t.Fatalf("decode extractor body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"text":"Claude image shows E_CONN_RESET."}`))
+	}))
+	defer server.Close()
+	cfg := config.MultimodalAdaptersConfig{
+		Enabled:       boolPtr(true),
+		DefaultAction: "extract",
+		InjectAs:      "visual_context",
+		Rules: []config.MultimodalAdapterRule{{
+			Extractor: "vision",
+			Match:     config.MultimodalAdapterMatch{Protocols: []string{"claude"}},
+		}},
+		Extractors: []config.MultimodalExtractorConfig{{Name: "vision", Type: "http", Endpoint: server.URL}},
+	}
+	raw := []byte(`{"model":"claude-sonnet","system":"follow the user","messages":[` +
+		`{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"ZmFrZQ=="}},{"type":"text","text":"inspect this"}]}]}`)
+	out, report, err := Apply(context.Background(), raw, Route{Protocol: "claude"}, cfg)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if report.MediaItems != 1 || !report.Applied {
+		t.Fatalf("report = %#v", report)
+	}
+	body := string(out)
+	if strings.Contains(body, "ZmFrZQ==") || !strings.Contains(body, "E_CONN_RESET") {
+		t.Fatalf("Claude media was not replaced: %s", body)
+	}
+	if strings.Contains(body, `"role":"system"`) {
+		t.Fatalf("Claude messages received an invalid system role: %s", body)
+	}
+	if !strings.Contains(string(extractorBody["media"].([]any)[0].(map[string]any)["url"].(string)), "data:image/png") {
+		t.Fatalf("Claude image was not forwarded as a data URL: %#v", extractorBody)
+	}
+}
+
+func TestApplyHTTPExtractorSupportsGeminiInlineDataAndContentsInjection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"text":"Gemini image shows a broken chart."}`))
+	}))
+	defer server.Close()
+	cfg := config.MultimodalAdaptersConfig{
+		Enabled:       boolPtr(true),
+		DefaultAction: "extract",
+		Rules:         []config.MultimodalAdapterRule{{Extractor: "vision", Match: config.MultimodalAdapterMatch{Protocols: []string{"gemini"}}}},
+		Extractors:    []config.MultimodalExtractorConfig{{Name: "vision", Type: "http", Endpoint: server.URL}},
+	}
+	raw := []byte(`{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"image/png","data":"ZmFrZQ=="}},{"text":"inspect"}]}]}`)
+	out, _, err := Apply(context.Background(), raw, Route{Protocol: "gemini"}, cfg)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	body := string(out)
+	if strings.Contains(body, "inlineData") || !strings.Contains(body, "broken chart") || !strings.Contains(body, `"contents"`) {
+		t.Fatalf("Gemini media/injection shape is wrong: %s", body)
+	}
+}
+
+func TestApplyHTTPExtractorReplacesMediaInOriginalPosition(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"text":"visual evidence"}`))
+	}))
+	defer server.Close()
+	cfg := config.MultimodalAdaptersConfig{
+		Enabled:       boolPtr(true),
+		DefaultAction: "extract",
+		InjectAs:      "visual_context",
+		Rules:         []config.MultimodalAdapterRule{{Extractor: "vision"}},
+		Extractors:    []config.MultimodalExtractorConfig{{Name: "vision", Type: "http", Endpoint: server.URL}},
+	}
+	cases := []struct {
+		name     string
+		protocol string
+		raw      string
+		texts    func(map[string]any) []string
+	}{
+		{
+			name:     "responses",
+			protocol: "openai-response",
+			raw:      `{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"before"},{"type":"input_image","image_url":"https://example.com/one.png"},{"type":"input_text","text":"after"}]}]}`,
+			texts: func(root map[string]any) []string {
+				return responseContentTexts(root, "input")
+			},
+		},
+		{
+			name:     "chat",
+			protocol: "chat",
+			raw:      `{"messages":[{"role":"user","content":[{"type":"text","text":"before"},{"type":"image_url","image_url":{"url":"https://example.com/one.png"}},{"type":"text","text":"after"}]}]}`,
+			texts: func(root map[string]any) []string {
+				return responseContentTexts(root, "messages")
+			},
+		},
+		{
+			name:     "claude",
+			protocol: "claude",
+			raw:      `{"messages":[{"role":"user","content":[{"type":"text","text":"before"},{"type":"image","source":{"type":"url","url":"https://example.com/one.png"}},{"type":"text","text":"after"}]}]}`,
+			texts: func(root map[string]any) []string {
+				return responseContentTexts(root, "messages")
+			},
+		},
+		{
+			name:     "gemini",
+			protocol: "gemini",
+			raw:      `{"contents":[{"role":"user","parts":[{"text":"before"},{"inlineData":{"mimeType":"image/png","data":"ZmFrZQ=="}},{"text":"after"}]}]}`,
+			texts: func(root map[string]any) []string {
+				return geminiPartTexts(root)
+			},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			out, _, err := Apply(context.Background(), []byte(testCase.raw), Route{Protocol: testCase.protocol}, cfg)
+			if err != nil {
+				t.Fatalf("Apply() error = %v", err)
+			}
+			var root map[string]any
+			if err := json.Unmarshal(out, &root); err != nil {
+				t.Fatalf("output JSON: %v", err)
+			}
+			texts := testCase.texts(root)
+			if len(texts) != 3 || texts[0] != "before" || texts[2] != "after" || !strings.Contains(texts[1], "visual evidence") {
+				t.Fatalf("media replacement moved or lost its position: %#v", root)
+			}
+		})
+	}
+}
+
+func responseContentTexts(root map[string]any, field string) []string {
+	historyEntries, _ := root[field].([]any)
+	if len(historyEntries) == 0 {
+		return nil
+	}
+	message, _ := historyEntries[0].(map[string]any)
+	contentParts, _ := message["content"].([]any)
+	texts := make([]string, 0, len(contentParts))
+	for _, contentPart := range contentParts {
+		partFields, _ := contentPart.(map[string]any)
+		texts = append(texts, stringField(partFields, "text"))
+	}
+	return texts
+}
+
+func geminiPartTexts(root map[string]any) []string {
+	contentEntries, _ := root["contents"].([]any)
+	if len(contentEntries) == 0 {
+		return nil
+	}
+	content, _ := contentEntries[0].(map[string]any)
+	contentParts, _ := content["parts"].([]any)
+	texts := make([]string, 0, len(contentParts))
+	for _, contentPart := range contentParts {
+		partFields, _ := contentPart.(map[string]any)
+		texts = append(texts, stringField(partFields, "text"))
+	}
+	return texts
+}
+
+func stringField(fields map[string]any, key string) string {
+	value, _ := fields[key].(string)
+	return value
+}
+
+func TestApplyHTTPExtractorStripsMediaAndInjectsVisualContext(t *testing.T) {
+	var extractorBody map[string]any
+	extractorCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		extractorCalls++
 		if err := json.NewDecoder(r.Body).Decode(&extractorBody); err != nil {
 			t.Fatalf("decode extractor body: %v", err)
 		}
@@ -102,6 +270,17 @@ func TestApplyHTTPExtractorStripsMediaAndInjectsVisualContext(t *testing.T) {
 	media, _ := extractorBody["media"].([]any)
 	if len(media) != 1 {
 		t.Fatalf("extractor media = %#v, want one item", extractorBody["media"])
+	}
+	if _, _, err = Apply(context.Background(), raw, Route{
+		RequestedModel:   "gpt-5.3-codex",
+		UpstreamProvider: "bigmodel-coding",
+		UpstreamModel:    "glm-5.1",
+		Protocol:         "openai-response",
+	}, cfg); err != nil {
+		t.Fatalf("cached Apply error = %v", err)
+	}
+	if extractorCalls != 1 {
+		t.Fatalf("extractor calls = %d, want one cached call", extractorCalls)
 	}
 }
 

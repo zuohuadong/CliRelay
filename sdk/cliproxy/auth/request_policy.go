@@ -28,6 +28,8 @@ type requestPolicyLimitError struct {
 	upstreamModel    string
 	requestBytes     int64
 	maxRequestBytes  int64
+	inputTokens      int64
+	maxInputTokens   int64
 	reason           string
 	action           requestPolicyAction
 }
@@ -42,9 +44,12 @@ func (e *requestPolicyLimitError) Error() string {
 	} else if e.maxRequestBytes > 0 {
 		message = fmt.Sprintf("request body is too large for upstream model %s via provider %s: %d bytes exceeds max-request-bytes %d",
 			e.upstreamModel, e.upstreamProvider, e.requestBytes, e.maxRequestBytes)
+	} else if e.maxInputTokens > 0 {
+		message = fmt.Sprintf("request context is too large for upstream model %s via provider %s: %d estimated input tokens exceeds max-input-tokens %d",
+			e.upstreamModel, e.upstreamProvider, e.inputTokens, e.maxInputTokens)
 	}
 	code := "request_policy_blocked"
-	if e.maxRequestBytes > 0 && e.requestBytes > e.maxRequestBytes {
+	if (e.maxRequestBytes > 0 && e.requestBytes > e.maxRequestBytes) || (e.maxInputTokens > 0 && e.inputTokens > e.maxInputTokens) {
 		code = "context_length_exceeded"
 	}
 	payload := map[string]any{
@@ -58,6 +63,8 @@ func (e *requestPolicyLimitError) Error() string {
 			"upstream_model":    e.upstreamModel,
 			"request_bytes":     e.requestBytes,
 			"max_request_bytes": e.maxRequestBytes,
+			"input_tokens":      e.inputTokens,
+			"max_input_tokens":  e.maxInputTokens,
 			"reason":            e.reason,
 			"over_limit_action": string(e.action),
 		},
@@ -70,7 +77,7 @@ func (e *requestPolicyLimitError) Error() string {
 }
 
 func (e *requestPolicyLimitError) StatusCode() int {
-	if e != nil && e.maxRequestBytes > 0 && e.requestBytes > e.maxRequestBytes {
+	if e != nil && ((e.maxRequestBytes > 0 && e.requestBytes > e.maxRequestBytes) || (e.maxInputTokens > 0 && e.inputTokens > e.maxInputTokens)) {
 		return http.StatusRequestEntityTooLarge
 	}
 	return http.StatusRequestEntityTooLarge
@@ -87,6 +94,7 @@ func requestPolicyDecision(cfg *internalconfig.Config, auth *Auth, opts cliproxy
 		return false, nil
 	}
 	requestBytes, _ := requestBytesFromMetadata(opts.Metadata)
+	inputTokens, _ := int64FromMetadata(opts.Metadata, cliproxyexecutor.EstimatedInputTokensMetadataKey)
 	requestedModel = strings.TrimSpace(requestedModel)
 	upstreamProvider = strings.ToLower(strings.TrimSpace(upstreamProvider))
 	upstreamModel = strings.TrimSpace(upstreamModel)
@@ -120,6 +128,8 @@ func requestPolicyDecision(cfg *internalconfig.Config, auth *Auth, opts cliproxy
 			upstreamModel:    upstreamModel,
 			requestBytes:     requestBytes,
 			maxRequestBytes:  policy.Limits.MaxRequestBytes,
+			inputTokens:      inputTokens,
+			maxInputTokens:   policy.Limits.MaxInputTokens,
 			reason:           reason,
 			action:           action,
 		}
@@ -147,9 +157,15 @@ func requestPolicyCompressionDecision(cfg *internalconfig.Config, opts cliproxye
 		if !requestPolicyMatches(policy, requestedModel, upstreamProvider, upstreamModel) {
 			continue
 		}
+		if !requestFeaturesMatch(policy.Match.RequestFeatures, requestFeaturesFromMetadata(opts.Metadata)) {
+			continue
+		}
 		triggered, reason := requestPolicyTriggered(policy, opts.Metadata, requestBytes)
 		if triggered {
 			return &policy, reason
+		}
+		if policy.OverLimit.Compression.AutoContext == nil || *policy.OverLimit.Compression.AutoContext {
+			return &policy, "auto-context"
 		}
 	}
 	return nil, ""
@@ -178,6 +194,13 @@ func requestPolicyTriggered(policy internalconfig.RequestPolicy, meta map[string
 	}
 	if policy.Limits.MinRequestBytes > 0 && requestBytes >= policy.Limits.MinRequestBytes {
 		return true, fmt.Sprintf("request_bytes %d reached min-request-bytes %d", requestBytes, policy.Limits.MinRequestBytes)
+	}
+	inputTokens, _ := int64FromMetadata(meta, cliproxyexecutor.EstimatedInputTokensMetadataKey)
+	if policy.Limits.MaxInputTokens > 0 && inputTokens > policy.Limits.MaxInputTokens {
+		return true, fmt.Sprintf("estimated_input_tokens %d exceeds max-input-tokens %d", inputTokens, policy.Limits.MaxInputTokens)
+	}
+	if policy.Limits.MinInputTokens > 0 && inputTokens >= policy.Limits.MinInputTokens {
+		return true, fmt.Sprintf("estimated_input_tokens %d reached min-input-tokens %d", inputTokens, policy.Limits.MinInputTokens)
 	}
 	if policy.Limits.MinInputItems > 0 {
 		if inputItems, ok := intFromMetadata(meta, cliproxyexecutor.InputItemsMetadataKey); ok && inputItems >= policy.Limits.MinInputItems {

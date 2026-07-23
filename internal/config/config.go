@@ -1180,6 +1180,8 @@ type RequestPolicyMatch struct {
 type RequestPolicyLimits struct {
 	MaxRequestBytes int64 `yaml:"max-request-bytes,omitempty" json:"max-request-bytes,omitempty"`
 	MinRequestBytes int64 `yaml:"min-request-bytes,omitempty" json:"min-request-bytes,omitempty"`
+	MaxInputTokens  int64 `yaml:"max-input-tokens,omitempty" json:"max-input-tokens,omitempty"`
+	MinInputTokens  int64 `yaml:"min-input-tokens,omitempty" json:"min-input-tokens,omitempty"`
 	MinInputItems   int   `yaml:"min-input-items,omitempty" json:"min-input-items,omitempty"`
 	MinToolCalls    int   `yaml:"min-tool-calls,omitempty" json:"min-tool-calls,omitempty"`
 }
@@ -1197,7 +1199,22 @@ type RequestPolicyCompression struct {
 	Provider           string `yaml:"provider,omitempty" json:"provider,omitempty"`
 	Model              string `yaml:"model,omitempty" json:"model,omitempty"`
 	TargetRequestBytes int64  `yaml:"target-request-bytes,omitempty" json:"target-request-bytes,omitempty"`
-	// UnavailableAction is "skip" or "reject". Empty defaults to "skip".
+	TargetInputTokens  int64  `yaml:"target-input-tokens,omitempty" json:"target-input-tokens,omitempty"`
+	// AutoContext derives trigger and target budgets from the selected upstream
+	// model's context metadata. Nil defaults to enabled.
+	AutoContext         *bool   `yaml:"auto-context,omitempty" json:"auto-context,omitempty"`
+	TriggerRatio        float64 `yaml:"trigger-ratio,omitempty" json:"trigger-ratio,omitempty"`
+	TargetRatio         float64 `yaml:"target-ratio,omitempty" json:"target-ratio,omitempty"`
+	ReserveOutputTokens int64   `yaml:"reserve-output-tokens,omitempty" json:"reserve-output-tokens,omitempty"`
+	SafetyMarginPercent int     `yaml:"safety-margin-percent,omitempty" json:"safety-margin-percent,omitempty"`
+	PreserveRecentItems int     `yaml:"preserve-recent-items,omitempty" json:"preserve-recent-items,omitempty"`
+	CacheTTLSeconds     int     `yaml:"cache-ttl-seconds,omitempty" json:"cache-ttl-seconds,omitempty"`
+	CacheMaxEntries     int     `yaml:"cache-max-entries,omitempty" json:"cache-max-entries,omitempty"`
+	// MediaMode is "auto" or "preserve". Auto lets a declared multimodal
+	// compressor summarize old image items while preserving recent media.
+	MediaMode string `yaml:"media-mode,omitempty" json:"media-mode,omitempty"`
+	// UnavailableAction is "skip" or "reject". Empty defaults to "reject" so
+	// an oversized request is not silently forwarded to the same small window.
 	UnavailableAction string `yaml:"unavailable-action,omitempty" json:"unavailable-action,omitempty"`
 	Prompt            string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 }
@@ -1500,19 +1517,46 @@ func (cfg *Config) SanitizeRequestPolicies() {
 		policy.OverLimit.Compression.Model = strings.TrimSpace(policy.OverLimit.Compression.Model)
 		policy.OverLimit.Compression.UnavailableAction = strings.ToLower(strings.TrimSpace(policy.OverLimit.Compression.UnavailableAction))
 		switch policy.OverLimit.Compression.UnavailableAction {
-		case "", "skip", "reject":
+		case "skip", "reject":
+		case "":
+			policy.OverLimit.Compression.UnavailableAction = "reject"
 		default:
-			policy.OverLimit.Compression.UnavailableAction = "skip"
+			policy.OverLimit.Compression.UnavailableAction = "reject"
 		}
 		if policy.OverLimit.Action == "compress" {
-			if policy.OverLimit.Compression.TargetRequestBytes <= 0 {
-				policy.OverLimit.Compression.TargetRequestBytes = 512000
+			compression := &policy.OverLimit.Compression
+			if compression.TriggerRatio <= 0 || compression.TriggerRatio >= 1 {
+				compression.TriggerRatio = 0.82
+			}
+			if compression.TargetRatio <= 0 || compression.TargetRatio >= compression.TriggerRatio {
+				compression.TargetRatio = 0.60
+			}
+			if compression.SafetyMarginPercent <= 0 || compression.SafetyMarginPercent >= 50 {
+				compression.SafetyMarginPercent = 10
+			}
+			if compression.PreserveRecentItems <= 0 {
+				compression.PreserveRecentItems = 8
+			}
+			if compression.CacheTTLSeconds <= 0 {
+				compression.CacheTTLSeconds = 3600
+			}
+			if compression.CacheMaxEntries <= 0 {
+				compression.CacheMaxEntries = 4096
+			}
+			compression.MediaMode = strings.ToLower(strings.TrimSpace(compression.MediaMode))
+			switch compression.MediaMode {
+			case "", "auto":
+				compression.MediaMode = "auto"
+			case "preserve":
+			default:
+				compression.MediaMode = "preserve"
 			}
 			if policy.OverLimit.Compression.Provider == "" || policy.OverLimit.Compression.Model == "" {
 				policy.OverLimit.Action = "skip-channel"
 			}
 		}
-		if policy.Limits.MaxRequestBytes <= 0 && policy.Limits.MinRequestBytes <= 0 && policy.Limits.MinInputItems <= 0 && policy.Limits.MinToolCalls <= 0 && len(policy.Match.RequestFeatures) == 0 {
+		autoContext := policy.OverLimit.Action == "compress" && (policy.OverLimit.Compression.AutoContext == nil || *policy.OverLimit.Compression.AutoContext)
+		if policy.Limits.MaxRequestBytes <= 0 && policy.Limits.MinRequestBytes <= 0 && policy.Limits.MaxInputTokens <= 0 && policy.Limits.MinInputTokens <= 0 && policy.Limits.MinInputItems <= 0 && policy.Limits.MinToolCalls <= 0 && len(policy.Match.RequestFeatures) == 0 && !autoContext {
 			continue
 		}
 		out = append(out, policy)

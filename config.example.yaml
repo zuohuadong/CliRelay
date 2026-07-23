@@ -293,6 +293,56 @@ routing:
   #       - min-input-tokens: 131073
   #         action: passthrough
 
+# Context-window policies are evaluated after a concrete upstream route is known.
+# Compression uses the selected model's context-length/max-completion-tokens metadata,
+# keeps recent/system/open-tool items byte-for-byte, and asks the compressor for a structured
+# memory capsule. Oversized first-use history is reduced in bounded batches. Prefix capsules
+# and visual summaries are cached in memory by SHA-256 so a relay does not recompress the same
+# full history or re-read the same image on every client turn. Raw conversation text and media
+# bytes are not cached.
+# Put more specific multimodal rules before general text rules; the first matching
+# compression policy wins.
+# request-policies:
+#   - name: multimodal-history-for-small-target
+#     match:
+#       requested-models: [gpt-5.3-codex]
+#       upstream-providers: [bigmodel-coding]
+#       upstream-models: [glm-5.1]
+#       request-features: [multimodal]
+#     over-limit:
+#       action: compress
+#       compression:
+#         provider: gemini
+#         model: gemini-3.6-flash-tiered
+#         auto-context: true
+#         trigger-ratio: 0.82
+#         target-ratio: 0.60
+#         safety-margin-percent: 10
+#         preserve-recent-items: 8
+#         media-mode: auto       # old images may be summarized only when model metadata declares image input
+#         cache-ttl-seconds: 3600
+#         cache-max-entries: 4096
+#         unavailable-action: reject
+#   - name: text-history-for-small-target
+#     match:
+#       requested-models: [gpt-5.3-codex]
+#       upstream-providers: [bigmodel-coding]
+#       upstream-models: [glm-5.1]
+#     limits:
+#       max-input-tokens: 110000 # optional explicit override/guard in addition to model metadata
+#     over-limit:
+#       action: compress
+#       compression:
+#         provider: astron-code
+#         model: deepseek-v4-flash
+#         auto-context: true
+#         trigger-ratio: 0.82
+#         target-ratio: 0.60
+#         target-input-tokens: 80000 # optional explicit target
+#         preserve-recent-items: 8
+#         media-mode: preserve   # text-only compressor never receives raw media
+#         unavailable-action: reject
+
 # Codex provider behavior.
 codex:
   # When true, and routing.strategy is fill-first or routing.session-affinity is true,

@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,10 +18,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"golang.org/x/sync/singleflight"
 )
 
 type Route struct {
@@ -77,6 +81,42 @@ type mediaRef struct {
 	URL  string `json:"url"`
 }
 
+type mediaCollection struct {
+	refs        []mediaRef
+	items       int
+	unsupported bool
+}
+
+type mediaCollector struct {
+	collection mediaCollection
+	refs       []mediaRef
+}
+
+type visualExtractionRequest struct {
+	key       string
+	ref       mediaRef
+	route     Route
+	extractor config.MultimodalExtractorConfig
+}
+
+const (
+	visualSummaryCacheTTL        = time.Hour
+	visualSummaryCacheMaxEntries = 4096
+)
+
+type visualSummaryCacheEntry struct {
+	summary   string
+	expiresAt time.Time
+}
+
+type visualSummaryCache struct {
+	mu      sync.Mutex
+	entries map[string]visualSummaryCacheEntry
+	flight  singleflight.Group
+}
+
+var sharedVisualSummaryCache = &visualSummaryCache{entries: make(map[string]visualSummaryCacheEntry)}
+
 type selectedRule struct {
 	action            string
 	unavailableAction string
@@ -85,6 +125,14 @@ type selectedRule struct {
 	maxOutputBytes    int
 	extractor         config.MultimodalExtractorConfig
 	extractorName     string
+}
+
+type visualReplacement struct {
+	protocol  string
+	label     string
+	summaries map[string]string
+	bytesLeft int
+	unlimited bool
 }
 
 const mcpMediaMaxBytes = int64(32 << 20)
@@ -103,14 +151,15 @@ func Apply(ctx context.Context, raw []byte, route Route, cfg config.MultimodalAd
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return raw, report, nil
 	}
-	refs := collectMediaRefs(payload)
-	if len(refs) == 0 {
+	collection := collectMediaRefs(payload)
+	if collection.items == 0 {
 		return raw, report, nil
 	}
+	refs := collection.refs
 	if rule.maxMediaItems > 0 && len(refs) > rule.maxMediaItems {
 		refs = refs[:rule.maxMediaItems]
 	}
-	report.MediaItems = len(refs)
+	report.MediaItems = collection.items
 	report.Extractor = rule.extractorName
 
 	switch rule.action {
@@ -119,19 +168,134 @@ func Apply(ctx context.Context, raw []byte, route Route, cfg config.MultimodalAd
 	case "strip":
 		return stripAndInject(raw, payload, route.Protocol, rule, "Media inputs were removed because the selected upstream model does not support direct multimodal input.", &report)
 	}
+	if collection.unsupported {
+		return unavailable(raw, payload, route.Protocol, rule, "one or more media inputs are not addressable by the configured extractor", &report)
+	}
 
 	if rule.extractor.Name == "" {
 		return unavailable(raw, payload, route.Protocol, rule, "multimodal adapter matched this route but no extractor is configured", &report)
 	}
-	summaries, err := extractVisualContext(ctx, refs, route, rule.extractor)
+	summaries, err := extractVisualContextCached(ctx, refs, route, rule.extractor)
 	if err != nil {
 		return unavailable(raw, payload, route.Protocol, rule, err.Error(), &report)
 	}
+	out, err := replaceMediaWithSummaries(payload, route.Protocol, rule.injectAs, summaries, rule.maxOutputBytes)
+	if err != nil {
+		return nil, report, err
+	}
+	report.Applied = true
+	report.Stripped = true
+	report.Injected = true
+	return out, report, nil
+}
+
+func extractVisualContextCached(ctx context.Context, refs []mediaRef, route Route, extractor config.MultimodalExtractorConfig) (map[string]string, error) {
+	summaries := make(map[string]string, len(refs))
+	for _, ref := range refs {
+		summary, err := extractVisualSummaryCached(ctx, ref, route, extractor)
+		if err != nil {
+			return nil, err
+		}
+		summaries[mediaRefKey(ref)] = summary
+	}
+	return summaries, nil
+}
+
+func extractVisualSummaryCached(ctx context.Context, ref mediaRef, route Route, extractor config.MultimodalExtractorConfig) (string, error) {
+	request := visualExtractionRequest{key: visualSummaryCacheKey(ref, route, extractor), ref: ref, route: route, extractor: extractor}
+	if summary, ok := sharedVisualSummaryCache.get(request.key); ok {
+		return summary, nil
+	}
+	flight := sharedVisualSummaryCache.flight.DoChan(request.key, func() (any, error) {
+		return extractAndCacheVisualSummary(context.WithoutCancel(ctx), request)
+	})
+	return waitVisualSummary(ctx, flight)
+}
+
+func extractAndCacheVisualSummary(ctx context.Context, request visualExtractionRequest) (string, error) {
+	if summary, ok := sharedVisualSummaryCache.get(request.key); ok {
+		return summary, nil
+	}
+	summaries, err := extractVisualContext(ctx, []mediaRef{request.ref}, request.route, request.extractor)
+	if err != nil {
+		return "", err
+	}
 	summary := strings.TrimSpace(strings.Join(summaries, "\n\n"))
 	if summary == "" {
-		return unavailable(raw, payload, route.Protocol, rule, "multimodal adapter returned empty visual context", &report)
+		return "", fmt.Errorf("multimodal adapter returned empty visual context")
 	}
-	return stripAndInject(raw, payload, route.Protocol, rule, limitStringBytes(summary, rule.maxOutputBytes), &report)
+	sharedVisualSummaryCache.set(request.key, summary)
+	return summary, nil
+}
+
+func waitVisualSummary(ctx context.Context, flight <-chan singleflight.Result) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case flightResult := <-flight:
+		if flightResult.Err != nil {
+			return "", flightResult.Err
+		}
+		return flightResult.Val.(string), nil
+	}
+}
+
+func visualSummaryCacheKey(ref mediaRef, route Route, extractor config.MultimodalExtractorConfig) string {
+	payload, _ := json.Marshal(struct {
+		Ref       mediaRef
+		Route     Route
+		Extractor config.MultimodalExtractorConfig
+	}{Ref: ref, Route: route, Extractor: extractor})
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:])
+}
+
+func (c *visualSummaryCache) get(key string) (string, bool) {
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok {
+		return "", false
+	}
+	if !now.Before(entry.expiresAt) {
+		delete(c.entries, key)
+		return "", false
+	}
+	entry.expiresAt = now.Add(visualSummaryCacheTTL)
+	c.entries[key] = entry
+	return entry.summary, true
+}
+
+func (c *visualSummaryCache) set(key, summary string) {
+	if strings.TrimSpace(key) == "" || strings.TrimSpace(summary) == "" {
+		return
+	}
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.entries[key]; !exists && len(c.entries) >= visualSummaryCacheMaxEntries {
+		c.evictOneLocked(now)
+	}
+	c.entries[key] = visualSummaryCacheEntry{summary: summary, expiresAt: now.Add(visualSummaryCacheTTL)}
+}
+
+func (c *visualSummaryCache) evictOneLocked(now time.Time) {
+	oldestKey := ""
+	var oldestExpiry time.Time
+	for key, entry := range c.entries {
+		if !now.Before(entry.expiresAt) {
+			delete(c.entries, key)
+			return
+		}
+		if oldestKey == "" || entry.expiresAt.Before(oldestExpiry) {
+			oldestKey = key
+			oldestExpiry = entry.expiresAt
+		}
+	}
+	if oldestKey != "" {
+		delete(c.entries, oldestKey)
+	}
 }
 
 func enabled(cfg config.MultimodalAdaptersConfig) bool {
@@ -273,51 +437,180 @@ func stripAndInject(raw []byte, payload any, protocol string, rule selectedRule,
 	return out, *report, nil
 }
 
-func collectMediaRefs(value any) []mediaRef {
-	var refs []mediaRef
-	var walk func(any)
-	walk = func(v any) {
-		switch typed := v.(type) {
-		case map[string]any:
-			kind := mediaKindFromMap(typed)
-			if kind == "image" {
-				if ref := mediaURLFromValue(typed["image_url"]); ref != "" {
-					refs = append(refs, mediaRef{Kind: "image", URL: ref})
-				}
-			}
-			if kind == "file" {
-				if ref := mediaURLFromValue(typed["file_url"]); ref != "" {
-					refs = append(refs, mediaRef{Kind: "file", URL: ref})
-				}
-			}
-			if kind == "video" {
-				if ref := mediaURLFromValue(typed["video_url"]); ref != "" {
-					refs = append(refs, mediaRef{Kind: "video", URL: ref})
-				}
-			}
-			for _, child := range typed {
-				walk(child)
-			}
-		case []any:
-			for _, child := range typed {
-				walk(child)
-			}
+func replaceMediaWithSummaries(payload any, protocol, label string, summaries map[string]string, maxBytes int) ([]byte, error) {
+	replacement := visualReplacement{
+		protocol:  effectiveMediaProtocol(payload, protocol),
+		label:     strings.TrimSpace(label),
+		summaries: summaries,
+		bytesLeft: maxBytes,
+		unlimited: maxBytes <= 0,
+	}
+	replaced, _ := replacement.replace(payload)
+	return json.Marshal(replaced)
+}
+
+func effectiveMediaProtocol(payload any, protocol string) string {
+	root, _ := payload.(map[string]any)
+	if root["contents"] != nil {
+		return "gemini"
+	}
+	return strings.ToLower(strings.TrimSpace(protocol))
+}
+
+func (r *visualReplacement) replace(jsonNode any) (any, bool) {
+	switch typed := jsonNode.(type) {
+	case map[string]any:
+		return r.replaceMap(typed)
+	case []any:
+		return r.replaceSlice(typed), true
+	default:
+		return jsonNode, true
+	}
+}
+
+func (r *visualReplacement) replaceMap(fields map[string]any) (any, bool) {
+	if ref, ok := mediaRefFromMap(fields); ok {
+		return r.textBlock(ref)
+	}
+	out := make(map[string]any, len(fields))
+	for _, key := range sortedKeys(fields) {
+		replaced, keep := r.replace(fields[key])
+		if keep {
+			out[key] = replaced
 		}
 	}
-	walk(value)
-	return dedupeRefs(refs)
+	return out, true
+}
+
+func (r *visualReplacement) replaceSlice(jsonNodes []any) []any {
+	out := make([]any, 0, len(jsonNodes))
+	for _, jsonNode := range jsonNodes {
+		replaced, keep := r.replace(jsonNode)
+		if keep {
+			out = append(out, replaced)
+		}
+	}
+	return out
+}
+
+func (r *visualReplacement) textBlock(ref mediaRef) (any, bool) {
+	summary := strings.TrimSpace(r.summaries[mediaRefKey(ref)])
+	if summary == "" || (!r.unlimited && r.bytesLeft <= 0) {
+		return nil, false
+	}
+	if !r.unlimited {
+		summary = boundedVisualSummary(summary, r.bytesLeft)
+		r.bytesLeft -= len(summary)
+	}
+	return mediaTextBlock(r.protocol, r.label, summary), true
+}
+
+func boundedVisualSummary(summary string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	limited := limitStringBytes(summary, maxBytes)
+	if len(limited) <= maxBytes {
+		return limited
+	}
+	return safePrefix(summary, maxBytes)
+}
+
+func mediaTextBlock(protocol, label, summary string) map[string]any {
+	if label == "" {
+		label = "visual_context"
+	}
+	text := "[" + label + "]\n" + summary
+	switch protocol {
+	case "openai-response":
+		return map[string]any{"type": "input_text", "text": text}
+	case "gemini":
+		return map[string]any{"text": text}
+	default:
+		return map[string]any{"type": "text", "text": text}
+	}
+}
+
+func sortedKeys(fields map[string]any) []string {
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func collectMediaRefs(jsonRoot any) mediaCollection {
+	collector := mediaCollector{}
+	collector.collect(jsonRoot)
+	collector.collection.refs = dedupeRefs(collector.refs)
+	return collector.collection
+}
+
+func (c *mediaCollector) collect(jsonNode any) {
+	switch typed := jsonNode.(type) {
+	case map[string]any:
+		c.collectObject(typed)
+	case []any:
+		for _, child := range typed {
+			c.collect(child)
+		}
+	}
+}
+
+func (c *mediaCollector) collectObject(fields map[string]any) {
+	if kind := mediaKindFromMap(fields); kind != "" {
+		c.append(kind, mediaURLForObject(kind, fields))
+		return
+	}
+	for key, child := range fields {
+		if c.collectField(key, child) {
+			continue
+		}
+		c.collect(child)
+	}
+}
+
+func (c *mediaCollector) collectField(key string, mediaValue any) bool {
+	lowerKey := strings.ToLower(strings.TrimSpace(key))
+	kind := mediaKeyKind(lowerKey)
+	if kind == "" && lowerKey != "inline_data" && lowerKey != "inlinedata" {
+		return false
+	}
+	if kind == "" {
+		kind = "image"
+	}
+	c.append(kind, mediaURLForKey(kind, mediaValue, lowerKey))
+	return true
+}
+
+func (c *mediaCollector) append(kind, mediaURL string) {
+	c.collection.items++
+	if strings.TrimSpace(mediaURL) == "" {
+		c.collection.unsupported = true
+		return
+	}
+	c.refs = append(c.refs, mediaRef{Kind: kind, URL: mediaURL})
 }
 
 func mediaKindFromMap(m map[string]any) string {
 	if rawType, ok := m["type"].(string); ok {
 		switch strings.ToLower(strings.TrimSpace(rawType)) {
-		case "input_image", "image":
+		case "input_image", "image", "image_url":
 			return "image"
 		case "input_file", "file":
 			return "file"
 		case "input_video", "video":
 			return "video"
+		case "input_audio", "audio":
+			return "audio"
 		}
+	}
+	if _, ok := m["inline_data"]; ok {
+		return "image"
+	}
+	if _, ok := m["inlineData"]; ok {
+		return "image"
 	}
 	if _, ok := m["image_url"]; ok {
 		return "image"
@@ -328,7 +621,72 @@ func mediaKindFromMap(m map[string]any) string {
 	if _, ok := m["video_url"]; ok {
 		return "video"
 	}
+	if _, ok := m["audio_url"]; ok {
+		return "audio"
+	}
+	if _, ok := m["file_data"]; ok {
+		return "file"
+	}
+	if _, ok := m["fileData"]; ok {
+		return "file"
+	}
 	return ""
+}
+
+func mediaRefFromMap(fields map[string]any) (mediaRef, bool) {
+	kind := mediaKindFromMap(fields)
+	if kind == "" {
+		return mediaRef{}, false
+	}
+	return mediaRef{Kind: kind, URL: mediaURLForObject(kind, fields)}, true
+}
+
+func mediaRefKey(ref mediaRef) string {
+	return ref.Kind + "\x00" + ref.URL
+}
+
+func mediaKeyKind(key string) string {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "image_url":
+		return "image"
+	case "file_url", "file_data", "filedata":
+		return "file"
+	case "video_url":
+		return "video"
+	case "audio_url":
+		return "audio"
+	default:
+		return ""
+	}
+}
+
+func mediaURLForObject(kind string, fields map[string]any) string {
+	for _, key := range []string{"image_url", "file_url", "video_url", "audio_url", "file_data", "fileData", "url", "uri"} {
+		if ref := mediaURLFromValue(fields[key]); ref != "" {
+			return ref
+		}
+	}
+	for _, key := range []string{"source", "inline_data", "inlineData"} {
+		if source, ok := fields[key].(map[string]any); ok {
+			if ref := mediaURLForKey(kind, source, key); ref != "" {
+				return ref
+			}
+		}
+	}
+	return ""
+}
+
+func mediaURLForKey(kind string, mediaValue any, key string) string {
+	if key == "inline_data" || key == "inlinedata" || key == "inlineData" {
+		return inlineDataURL(mediaValue)
+	}
+	if source, ok := mediaValue.(map[string]any); ok {
+		if sourceType, _ := source["type"].(string); strings.EqualFold(strings.TrimSpace(sourceType), "base64") {
+			return inlineDataURL(source)
+		}
+		return mediaURLForObject(kind, source)
+	}
+	return mediaURLFromValue(mediaValue)
 }
 
 func mediaURLFromValue(value any) string {
@@ -343,6 +701,28 @@ func mediaURLFromValue(value any) string {
 		}
 	}
 	return ""
+}
+
+func inlineDataURL(mediaValue any) string {
+	fields, ok := mediaValue.(map[string]any)
+	if !ok {
+		return ""
+	}
+	encoded, _ := fields["data"].(string)
+	mime, _ := fields["mimeType"].(string)
+	if mime == "" {
+		mime, _ = fields["mime_type"].(string)
+	}
+	if mime == "" {
+		mime, _ = fields["media_type"].(string)
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(mime)), "image/") || strings.TrimSpace(encoded) == "" {
+		return ""
+	}
+	if _, err := base64.StdEncoding.DecodeString(encoded); err != nil {
+		return ""
+	}
+	return "data:" + strings.TrimSpace(mime) + ";base64," + encoded
 }
 
 func dedupeRefs(refs []mediaRef) []mediaRef {
@@ -395,7 +775,7 @@ func stripMedia(value any) any {
 
 func isMediaKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "image_url", "file_url", "video_url":
+	case "image_url", "file_url", "video_url", "audio_url", "inline_data", "inlinedata", "file_data", "filedata":
 		return true
 	default:
 		return false
@@ -418,7 +798,7 @@ func injectVisualContext(payload any, protocol, injectAs, contextText string) ([
 	if strings.EqualFold(protocol, "openai-response") {
 		item := map[string]any{
 			"type": "message",
-			"role": "developer",
+			"role": "user",
 			"content": []any{
 				map[string]any{"type": "input_text", "text": "[" + label + "]\n" + text},
 			},
@@ -427,9 +807,21 @@ func injectVisualContext(payload any, protocol, injectAs, contextText string) ([
 		root["input"] = append([]any{item}, items...)
 		return json.Marshal(root)
 	}
-	item := map[string]any{"role": "system", "content": "[" + label + "]\n" + text}
+	if strings.EqualFold(protocol, "gemini") || root["contents"] != nil {
+		contextEntry := map[string]any{"role": "user", "parts": []any{map[string]any{"text": "[" + label + "]\n" + text}}}
+		items, _ := root["contents"].([]any)
+		root["contents"] = append([]any{contextEntry}, items...)
+		return json.Marshal(root)
+	}
+	if strings.EqualFold(protocol, "claude") {
+		contextEntry := map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "[" + label + "]\n" + text}}}
+		items, _ := root["messages"].([]any)
+		root["messages"] = append([]any{contextEntry}, items...)
+		return json.Marshal(root)
+	}
+	contextEntry := map[string]any{"role": "user", "content": "[" + label + "]\n" + text}
 	items, _ := root["messages"].([]any)
-	root["messages"] = append([]any{item}, items...)
+	root["messages"] = append([]any{contextEntry}, items...)
 	return json.Marshal(root)
 }
 

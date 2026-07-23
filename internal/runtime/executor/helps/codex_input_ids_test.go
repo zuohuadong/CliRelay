@@ -64,6 +64,19 @@ func TestSanitizeCodexInputItemIDsNormalizesForeignMessagePrefix(t *testing.T) {
 	}
 }
 
+func TestSanitizeCodexInputItemIDsPreservesMessagePrefixWhenShortened(t *testing.T) {
+	foreignMessageID := strings.Repeat("a", codexInputItemIDLimit)
+	body := []byte(`{"input":[{"type":"message","id":"` + foreignMessageID + `","role":"user","content":"continue"}]}`)
+
+	normalizedID := gjson.GetBytes(SanitizeCodexInputItemIDs(body), "input.0.id").String()
+	if !strings.HasPrefix(normalizedID, "msg_") {
+		t.Fatalf("shortened message ID lost msg_ prefix: %q", normalizedID)
+	}
+	if !isValidCodexInputItemIDForType("message", normalizedID) {
+		t.Fatalf("shortened message ID is invalid: %q", normalizedID)
+	}
+}
+
 func TestSanitizeCodexInputItemIDsKeepsShortEncryptedReasoningAndShortensOtherIDs(t *testing.T) {
 	longReasoningID := "rs_" + strings.Repeat("a", 64)
 	shortReasoningID := "rs_" + strings.Repeat("b", 48)

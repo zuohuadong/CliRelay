@@ -102,10 +102,12 @@ func shortenCodexInputItemID(id string) string {
 }
 
 func normalizeCodexInputItemID(itemType, id string, attempt int) string {
+	requiredPrefix := ""
 	if itemType == "message" && !strings.HasPrefix(id, "msg") {
-		id = "msg_" + id
+		requiredPrefix = "msg_"
+		id = requiredPrefix + id
 	}
-	return shortenCodexInputItemIDWithAttempt(id, attempt)
+	return shortenCodexInputItemIDWithRequiredPrefix(id, requiredPrefix, attempt)
 }
 
 func isValidCodexInputItemIDForType(itemType, id string) bool {
@@ -116,6 +118,10 @@ func isValidCodexInputItemIDForType(itemType, id string) bool {
 }
 
 func shortenCodexInputItemIDWithAttempt(id string, attempt int) string {
+	return shortenCodexInputItemIDWithRequiredPrefix(id, "", attempt)
+}
+
+func shortenCodexInputItemIDWithRequiredPrefix(id, requiredPrefix string, attempt int) string {
 	runes := []rune(id)
 	if attempt == 0 && isValidCodexInputItemID(id) {
 		return id
@@ -129,6 +135,10 @@ func shortenCodexInputItemIDWithAttempt(id string, attempt int) string {
 	suffix := "_" + hex.EncodeToString(sum[:8])
 	prefixLength := codexInputItemIDLimit - len(suffix)
 	prefix := make([]rune, 0, prefixLength)
+	if requiredPrefix != "" {
+		prefix = append(prefix, []rune(requiredPrefix)...)
+		runes = runes[len([]rune(requiredPrefix)):]
+	}
 	for _, r := range runes {
 		if len(prefix) == prefixLength {
 			break

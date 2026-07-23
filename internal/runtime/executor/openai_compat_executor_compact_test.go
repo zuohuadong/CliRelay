@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -1483,7 +1484,7 @@ func TestAstronCodeExecutorResponseEndpointUsesResponsesPath(t *testing.T) {
 		"api_key":           "test",
 		"response_endpoint": "true",
 	}}
-	payload := []byte(`{"model":"deepseek-v4-pro","input":[{"role":"user","content":"hi"}]}`)
+	payload := []byte(`{"model":"deepseek-v4-pro","input":[{"role":"user","content":"hi"},{"type":"message","id":"resp_cht000d028d@dx19f9144def12872503_0","role":"assistant","content":[{"type":"output_text","text":"checking"}]}]}`)
 	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "astron-code-latest",
 		Payload: payload,
@@ -1503,8 +1504,73 @@ func TestAstronCodeExecutorResponseEndpointUsesResponsesPath(t *testing.T) {
 	if gjson.GetBytes(gotBody, "messages").Exists() {
 		t.Fatalf("unexpected chat messages body: %s", string(gotBody))
 	}
+	if got := gjson.GetBytes(gotBody, "input.1.id").String(); !strings.HasPrefix(got, "msg_") || strings.Contains(got, "@") {
+		t.Fatalf("replayed assistant message id = %q, want normalized msg_ ID; body=%s", got, gotBody)
+	}
 	if got := gjson.GetBytes(resp.Payload, "model").String(); got != "astron-code-latest" {
 		t.Fatalf("response model = %q, want astron-code-latest; body=%s", got, string(resp.Payload))
+	}
+}
+
+func TestAstronCodeExecutorResponseEndpointSanitizesReplayItemIDs(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"created_at\":123,\"model\":\"xopglm52\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"TASK_OK\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"created_at\":123,\"status\":\"completed\",\"model\":\"xopglm52\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"TASK_OK\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4}}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewAstronCodeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url":          server.URL + "/v2",
+		"api_key":           "test",
+		"response_endpoint": "true",
+	}}
+	payload := []byte(`{
+		"model":"glm-5.2",
+		"stream":true,
+		"input":[
+			{"type":"message","id":"msg_user_1","role":"user","content":[{"type":"input_text","text":"retain ORCHID-7319"}]},
+			{"type":"reasoning","id":"rs_resp_cht000d028d@dx19f9144def12872503_0","summary":[],"encrypted_content":""},
+			{"type":"message","id":"resp_cht000d028d@dx19f9144def12872503_0","role":"assistant","content":[{"type":"output_text","text":"checking"}]},
+			{"type":"function_call","id":"fc_call_1","call_id":"call_1","name":"probe","arguments":"{}"},
+			{"type":"function_call_output","id":"fco_1","call_id":"call_1","output":"ok"}
+		]
+	}`)
+
+	stream, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "xopglm52",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAIResponse,
+		OriginalRequest: payload,
+		Stream:          true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Err)
+		}
+	}
+
+	if got := gjson.GetBytes(gotBody, "input.0.content.0.text").String(); got != "retain ORCHID-7319" {
+		t.Fatalf("original user task = %q, want retained; body=%s", got, gotBody)
+	}
+	for _, index := range []int{1, 2} {
+		id := gjson.GetBytes(gotBody, fmt.Sprintf("input.%d.id", index)).String()
+		if len(id) == 0 || len(id) > 64 || strings.Contains(id, "@") {
+			t.Fatalf("input.%d.id = %q, want valid Responses item ID; body=%s", index, id, gotBody)
+		}
+	}
+	if got := gjson.GetBytes(gotBody, "input.2.id").String(); !strings.HasPrefix(got, "msg_") {
+		t.Fatalf("replayed assistant message id = %q, want msg_ prefix; body=%s", got, gotBody)
 	}
 }
 

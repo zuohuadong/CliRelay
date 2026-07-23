@@ -105,7 +105,9 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 				translated = updated
 			}
 		}
-		if !useResponsesEndpoint {
+		if useResponsesEndpoint {
+			translated = helps.SanitizeCodexInputItemIDs(translated)
+		} else {
 			translated, err = e.normalizeAstronPayload(translated, baseModel)
 			if err != nil {
 				return resp, err
@@ -254,7 +256,7 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 		translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, target.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 		translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
 		if responsesEndpoint {
-			return translated, nil
+			return helps.SanitizeCodexInputItemIDs(translated), nil
 		}
 		return e.normalizeAstronPayload(translated, baseModel)
 	}

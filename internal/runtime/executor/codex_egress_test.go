@@ -1350,4 +1350,3 @@ func TestCodexAccountIDFromAuthFallsBackToJWT(t *testing.T) {
 		t.Fatalf("case 5: got %q, want empty", got)
 	}
 }
-

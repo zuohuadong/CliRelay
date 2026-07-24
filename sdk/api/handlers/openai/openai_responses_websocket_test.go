@@ -3882,6 +3882,106 @@ func TestResponsesWebsocketReplayPreservesProjectContextAcrossIncrementalTurns(t
 	}
 }
 
+// TestResponsesWebsocketAstronReplaysParallelToolTranscript verifies that an
+// Astron-backed websocket session never relies on upstream previous_response_id
+// state after the provider has been selected. The next turn must carry the
+// complete user/tool transcript so all parallel tool results remain associated
+// with their original calls.
+func TestResponsesWebsocketAstronReplaysParallelToolTranscript(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &websocketPreviousResponseReplayExecutor{
+		provider:    internalconfig.DefaultAstronCodeProviderName,
+		failOnCall:  99,
+		firstOutput: `[{"type":"function_call","id":"fc-1","call_id":"call-1","name":"read_file","arguments":"{\"path\":\"a.go\"}"},{"type":"function_call","id":"fc-2","call_id":"call-2","name":"read_file","arguments":"{\"path\":\"b.go\"}"},{"type":"function_call","id":"fc-3","call_id":"call-3","name":"read_file","arguments":"{\"path\":\"c.go\"}"}]`,
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth := &coreauth.Auth{
+		ID:       "auth-astron-full-replay",
+		Provider: executor.Identifier(),
+		Status:   coreauth.StatusActive,
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	const model = "astron-full-replay-model"
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Fatalf("close websocket: %v", errClose)
+		}
+	}()
+
+	requests := []string{
+		`{"type":"response.create","model":"astron-full-replay-model","input":[{"type":"message","id":"msg-original","role":"user","content":[{"type":"input_text","text":"inspect all three files, then explain the bug"}]}]}`,
+		`{"type":"response.create","previous_response_id":"resp_replay_1","input":[
+			{"type":"function_call_output","id":"tool-out-1","call_id":"call-1","output":"a.go result"},
+			{"type":"function_call_output","id":"tool-out-2","call_id":"call-2","output":"b.go result"},
+			{"type":"function_call_output","id":"tool-out-3","call_id":"call-3","output":"c.go result"}
+		]}`,
+	}
+	for i := range requests {
+		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(requests[i])); errWrite != nil {
+			t.Fatalf("write websocket message %d: %v", i+1, errWrite)
+		}
+		_, payload, errReadMessage := conn.ReadMessage()
+		if errReadMessage != nil {
+			t.Fatalf("read websocket message %d: %v", i+1, errReadMessage)
+		}
+		if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+			t.Fatalf("message %d payload type = %s, want %s: %s", i+1, got, wsEventTypeCompleted, payload)
+		}
+	}
+
+	payloads := executor.Payloads()
+	if len(payloads) != 2 {
+		t.Fatalf("upstream payload count = %d, want 2: %v", len(payloads), payloads)
+	}
+	secondPayload := payloads[1]
+	if gjson.GetBytes(secondPayload, "previous_response_id").Exists() {
+		t.Fatalf("Astron replay payload must drop previous_response_id: %s", secondPayload)
+	}
+
+	replayInput := gjson.GetBytes(secondPayload, "input").Array()
+	if len(replayInput) != 7 {
+		t.Fatalf("Astron replay input len = %d, want 7: %s", len(replayInput), secondPayload)
+	}
+	if replayInput[0].Get("id").String() != "msg-original" {
+		t.Fatalf("Astron replay lost the original user message: %s", secondPayload)
+	}
+	for i := 1; i <= 3; i++ {
+		callID := fmt.Sprintf("call-%d", i)
+		call := replayInput[i]
+		output := replayInput[i+3]
+		if call.Get("type").String() != "function_call" || call.Get("call_id").String() != callID {
+			t.Fatalf("Astron replay tool call %d is missing or reordered: %s", i, secondPayload)
+		}
+		if output.Get("type").String() != "function_call_output" || output.Get("call_id").String() != callID {
+			t.Fatalf("Astron replay tool output %d is missing or mismatched: %s", i, secondPayload)
+		}
+	}
+}
+
 func TestResponsesWebsocketRetriesZhipuMessagesErrorWithTranscriptReplay(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

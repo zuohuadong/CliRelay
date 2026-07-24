@@ -326,6 +326,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	// Preserve independent upstream auth affinity when a downstream session switches providers.
 	pinnedAuthByProvider := make(map[string]responsesWebsocketPinnedAuthState)
 	passthroughModelName := ""
+	lastSuccessfulProvider := ""
 	sessionAuthByIDWithSource := func(authID string) (*coreauth.Auth, bool, bool) {
 		if h == nil || h.AuthManager == nil {
 			return nil, false, false
@@ -488,7 +489,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				} else {
 					allowIncrementalInputWithPreviousResponseID = h.websocketUpstreamSupportsIncrementalInputForModel(requestModelName)
 				}
-			} else if explicitPreviousResponseID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()); strings.HasPrefix(explicitPreviousResponseID, "resp_") && !strings.HasPrefix(explicitPreviousResponseID, "resp_prewarm_") {
+			} else if responsesWebsocketCanUseExplicitPreviousResponseID(payload, lastSuccessfulProvider) {
 				// Keep the fork's request-scoped replay path for an explicit upstream
 				// response ID, while mediated turns otherwise use transcript replay.
 				allowIncrementalInputWithPreviousResponseID = true
@@ -707,6 +708,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			if forwardErrMsg == nil && !useUpstreamWebsocketPassthrough && lastAttemptedAuthID != "" {
 				if selectedAuth, ok := sessionAuthByID(lastAttemptedAuthID); ok && selectedAuth != nil {
+					lastSuccessfulProvider = selectedAuth.Provider
 					if websocketUpstreamSupportsIncrementalInput(selectedAuth.Attributes, selectedAuth.Metadata) {
 						rememberPinnedAuth(lastAttemptedAuthID, modelName)
 					} else if pinnedAuthID != "" {
@@ -1550,6 +1552,18 @@ func websocketUpstreamSupportsIncrementalInput(attributes map[string]string, met
 	default:
 	}
 	return false
+}
+
+func responsesWebsocketProviderRequiresTranscriptReplay(provider string) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), "astron-code")
+}
+
+func responsesWebsocketCanUseExplicitPreviousResponseID(payload []byte, lastSuccessfulProvider string) bool {
+	if responsesWebsocketProviderRequiresTranscriptReplay(lastSuccessfulProvider) {
+		return false
+	}
+	previousResponseID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
+	return strings.HasPrefix(previousResponseID, "resp_") && !strings.HasPrefix(previousResponseID, "resp_prewarm_")
 }
 
 func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsIncrementalInputForModel(modelName string) bool {

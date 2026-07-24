@@ -972,6 +972,10 @@ type OpenAICompatibility struct {
 	// ResponseEndpoint routes requests to /responses (OpenAI Responses API) instead of /chat/completions.
 	ResponseEndpoint bool `yaml:"response-endpoint,omitempty" json:"response-endpoint,omitempty"`
 
+	// ForceChatCompletions keeps Astron on /chat/completions even though its provider default is /responses.
+	// It exists as an explicit opt-out because a false boolean cannot be distinguished from an omitted YAML key.
+	ForceChatCompletions bool `yaml:"force-chat-completions,omitempty" json:"force-chat-completions,omitempty"`
+
 	// BillingMultiplier multiplies model-list prices when writing customer-facing usage cost.
 	BillingMultiplier float64 `yaml:"billing-multiplier,omitempty" json:"billing-multiplier,omitempty"`
 }
@@ -2099,7 +2103,7 @@ func (cfg *Config) SanitizeAstronCode() {
 		}
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.IdentityFingerprint = "codex"
-		e.ResponseEndpoint = true
+		e.ResponseEndpoint = !e.ForceChatCompletions
 		e.Models = ensureAstronCodeModels(e.Models, e.ResponseEndpoint)
 		out = append(out, e)
 	}

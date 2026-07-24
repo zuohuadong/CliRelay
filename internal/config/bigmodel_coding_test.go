@@ -161,6 +161,33 @@ func TestSanitizeAstronCodeDoesNotInjectAliasesForChatEndpoint(t *testing.T) {
 	}
 }
 
+func TestLoadConfigOptionalAstronForceChatCompletionsDisablesResponsesEndpoint(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(path, []byte(`
+astron-code:
+  - base-url: https://maas-coding-api.cn-huabei-1.xf-yun.com/v1
+    force-chat-completions: true
+    response-endpoint: false
+    api-key-entries:
+      - api-key: sk-astron
+    models:
+      - name: xopglm52
+        alias: glm-5.2
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadConfigOptional(path, false)
+	if err != nil {
+		t.Fatalf("LoadConfigOptional() error = %v", err)
+	}
+	if len(cfg.AstronCodeAPIKey) != 1 {
+		t.Fatalf("astron-code len = %d, want 1", len(cfg.AstronCodeAPIKey))
+	}
+	if cfg.AstronCodeAPIKey[0].ResponseEndpoint {
+		t.Fatal("force-chat-completions should keep the Responses endpoint disabled")
+	}
+}
+
 func TestSanitizeAstronCodeRestoresResponseEndpoint(t *testing.T) {
 	cfg := &Config{AstronCodeAPIKey: []OpenAICompatibility{{
 		ResponseEndpoint: false,

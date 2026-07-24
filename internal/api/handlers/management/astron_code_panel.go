@@ -50,18 +50,19 @@ func (h *Handler) PutAstronCodeKeys(c *gin.Context) {
 
 func (h *Handler) PatchAstronCodeKey(c *gin.Context) {
 	type astronCodePatch struct {
-		Prefix              *string                             `json:"prefix"`
-		Priority            *int                                `json:"priority"`
-		Disabled            *bool                               `json:"disabled"`
-		BillingMultiplier   *float64                            `json:"billing-multiplier"`
-		BaseURL             *string                             `json:"base-url"`
-		TestModel           *string                             `json:"test-model"`
-		APIKeyEntries       *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
-		Models              *[]config.OpenAICompatibilityModel  `json:"models"`
-		Headers             *map[string]string                  `json:"headers"`
-		IdentityFingerprint *string                             `json:"identity-fingerprint"`
-		DisableCooling      *bool                               `json:"disable-cooling"`
-		ResponseEndpoint    *bool                               `json:"response-endpoint"`
+		Prefix               *string                             `json:"prefix"`
+		Priority             *int                                `json:"priority"`
+		Disabled             *bool                               `json:"disabled"`
+		BillingMultiplier    *float64                            `json:"billing-multiplier"`
+		BaseURL              *string                             `json:"base-url"`
+		TestModel            *string                             `json:"test-model"`
+		APIKeyEntries        *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
+		Models               *[]config.OpenAICompatibilityModel  `json:"models"`
+		Headers              *map[string]string                  `json:"headers"`
+		IdentityFingerprint  *string                             `json:"identity-fingerprint"`
+		DisableCooling       *bool                               `json:"disable-cooling"`
+		ResponseEndpoint     *bool                               `json:"response-endpoint"`
+		ForceChatCompletions *bool                               `json:"force-chat-completions"`
 	}
 	var body struct {
 		Value *astronCodePatch `json:"value"`
@@ -127,6 +128,9 @@ func (h *Handler) PatchAstronCodeKey(c *gin.Context) {
 	}
 	if body.Value.ResponseEndpoint != nil {
 		entry.ResponseEndpoint = *body.Value.ResponseEndpoint
+	}
+	if body.Value.ForceChatCompletions != nil {
+		entry.ForceChatCompletions = *body.Value.ForceChatCompletions
 	}
 	normalizeAstronCodeEntry(&entry)
 	if targetIndex >= 0 {
@@ -225,20 +229,21 @@ func decodeAstronCodePayload(data []byte) ([]config.OpenAICompatibility, bool) {
 	}
 
 	var wrapped struct {
-		AstronCode       []config.OpenAICompatibility       `json:"astron-code"`
-		AstronCodeLegacy []config.OpenAICompatibility       `json:"astron-code-api-key"`
-		Items            []config.OpenAICompatibility       `json:"items"`
-		APIKeyEntries    []config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
-		APIKey           string                             `json:"api-key"`
-		BaseURL          string                             `json:"base-url"`
-		Models           []config.OpenAICompatibilityModel  `json:"models"`
-		Headers          map[string]string                  `json:"headers"`
-		Disabled         bool                               `json:"disabled"`
-		Priority         int                                `json:"priority"`
-		Prefix           string                             `json:"prefix"`
-		TestModel        string                             `json:"test-model"`
-		DisableCooling   bool                               `json:"disable-cooling"`
-		ResponseEndpoint bool                               `json:"response-endpoint"`
+		AstronCode           []config.OpenAICompatibility       `json:"astron-code"`
+		AstronCodeLegacy     []config.OpenAICompatibility       `json:"astron-code-api-key"`
+		Items                []config.OpenAICompatibility       `json:"items"`
+		APIKeyEntries        []config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
+		APIKey               string                             `json:"api-key"`
+		BaseURL              string                             `json:"base-url"`
+		Models               []config.OpenAICompatibilityModel  `json:"models"`
+		Headers              map[string]string                  `json:"headers"`
+		Disabled             bool                               `json:"disabled"`
+		Priority             int                                `json:"priority"`
+		Prefix               string                             `json:"prefix"`
+		TestModel            string                             `json:"test-model"`
+		DisableCooling       bool                               `json:"disable-cooling"`
+		ResponseEndpoint     bool                               `json:"response-endpoint"`
+		ForceChatCompletions bool                               `json:"force-chat-completions"`
 	}
 	if err := json.Unmarshal(data, &wrapped); err != nil {
 		return nil, false
@@ -265,6 +270,7 @@ func decodeAstronCodePayload(data []byte) ([]config.OpenAICompatibility, bool) {
 		entry.TestModel = strings.TrimSpace(wrapped.TestModel)
 		entry.DisableCooling = wrapped.DisableCooling
 		entry.ResponseEndpoint = wrapped.ResponseEndpoint
+		entry.ForceChatCompletions = wrapped.ForceChatCompletions
 		return []config.OpenAICompatibility{entry}, true
 	}
 }
@@ -298,7 +304,7 @@ func normalizeAstronCodeEntry(entry *config.OpenAICompatibility) {
 	entry.TestModel = strings.TrimSpace(entry.TestModel)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.IdentityFingerprint = "codex"
-	entry.ResponseEndpoint = true
+	entry.ResponseEndpoint = !entry.ForceChatCompletions
 	ensureAstronCodeAlias(entry)
 }
 

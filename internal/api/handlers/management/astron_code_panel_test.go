@@ -78,3 +78,28 @@ func TestPatchAstronCodeKeyRestoresResponseEndpoint(t *testing.T) {
 		t.Fatal("expected response endpoint to be restored")
 	}
 }
+
+func TestPatchAstronCodeKeyForceChatCompletionsDisablesResponseEndpoint(t *testing.T) {
+	cfg := &config.Config{
+		AstronCodeAPIKey: []config.OpenAICompatibility{{
+			Name: astronCodeProviderName,
+			APIKeyEntries: []config.OpenAICompatibilityAPIKey{{
+				APIKey: "sk-astron",
+			}},
+			Models: []config.OpenAICompatibilityModel{{Name: "xopglm52", Alias: "glm-5.2"}},
+		}},
+	}
+	h := newBigModelCodingPanelTestHandler(t, cfg)
+
+	rec := runBigModelCodingPanelRequest(t, h, http.MethodPatch, `{"value":{"force-chat-completions":true}}`, h.PatchAstronCodeKey)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	entry := cfg.AstronCodeAPIKey[0]
+	if !entry.ForceChatCompletions {
+		t.Fatal("expected force-chat-completions to be enabled")
+	}
+	if entry.ResponseEndpoint {
+		t.Fatal("force-chat-completions should disable the response endpoint")
+	}
+}

@@ -303,6 +303,25 @@ routing:
 # Put more specific multimodal rules before general text rules; the first matching
 # compression policy wins.
 # request-policies:
+#   - name: astron-glm-5.2-context-compression
+#     match:
+#       requested-models: [glm-5.2]
+#       upstream-providers: [astron-code]
+#       upstream-models: [xopglm52]
+#     over-limit:
+#       action: compress
+#       compression:
+#         provider: gemini
+#         model: gemini-3.6-flash-tiered
+#         auto-context: true
+#         trigger-ratio: 0.82
+#         target-ratio: 0.60
+#         safety-margin-percent: 10
+#         preserve-recent-items: 8
+#         media-mode: auto
+#         cache-ttl-seconds: 3600
+#         cache-max-entries: 4096
+#         unavailable-action: reject
 #   - name: multimodal-history-for-small-target
 #     match:
 #       requested-models: [gpt-5.3-codex]

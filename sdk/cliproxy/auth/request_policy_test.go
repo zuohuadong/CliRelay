@@ -151,6 +151,54 @@ func TestRequestPolicyLimitError_RequestTooLargeUsesContextLengthExceededAnd413(
 	}
 }
 
+func TestManagerExecute_AstronContextCapacityUsesEstimatedTokens(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	astron := &requestPolicyTestExecutor{id: "astron-code"}
+	manager.RegisterExecutor(astron)
+	manager.SetConfig(&internalconfig.Config{
+		AstronCodeAPIKey: []internalconfig.OpenAICompatibility{{
+			Name: "astron-code",
+			Models: []internalconfig.OpenAICompatibilityModel{{
+				Name: "xopglm52", Alias: "glm-5.2", ContextLength: 500000,
+			}},
+		}},
+	})
+
+	auth := &Auth{
+		ID:       "astron-glm52-context-auth",
+		Provider: "astron-code",
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"api_key":      "astron-key",
+			"base_url":     "https://astron.example/v1",
+			"provider_key": "astron-code",
+			"compat_name":  "astron-code",
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register(auth) error = %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{
+		ID: "xopglm52", Name: "xopglm52", ContextLength: 500000,
+	}})
+	manager.RefreshSchedulerEntry(auth.ID)
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+
+	_, err := manager.Execute(context.Background(), []string{"astron-code"}, cliproxyexecutor.Request{
+		Model:   "glm-5.2",
+		Payload: []byte(`{"model":"glm-5.2","input":"fits by token count"}`),
+	}, cliproxyexecutor.Options{Metadata: map[string]any{
+		cliproxyexecutor.RequestBytesMetadataKey:         int64(587929),
+		cliproxyexecutor.EstimatedInputTokensMetadataKey: int64(147000),
+	}})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if models := astron.Models(); len(models) != 1 || models[0] != "xopglm52" {
+		t.Fatalf("astron models = %v, want [xopglm52]", models)
+	}
+}
+
 func TestManagerExecute_RequestPolicySkipChannelFallsBack(t *testing.T) {
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	bigmodel := &requestPolicyTestExecutor{id: "bigmodel-coding"}
@@ -952,7 +1000,10 @@ func TestManagerExecute_CodexSparkAliasPreferenceAndGuard(t *testing.T) {
 		Model:   "gpt-5.3-codex",
 		Payload: []byte(`{"model":"gpt-5.3-codex","input":"small"}`),
 	}, cliproxyexecutor.Options{
-		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: 120000},
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestBytesMetadataKey:         120000,
+			cliproxyexecutor.EstimatedInputTokensMetadataKey: 120000,
+		},
 	})
 	if err != nil {
 		t.Fatalf("Execute() small error = %v", err)
@@ -974,7 +1025,10 @@ func TestManagerExecute_CodexSparkAliasPreferenceAndGuard(t *testing.T) {
 		Model:   "gpt-5.3-codex",
 		Payload: []byte(`{"model":"gpt-5.3-codex","input":"large"}`),
 	}, cliproxyexecutor.Options{
-		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: 150000},
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestBytesMetadataKey:         150000,
+			cliproxyexecutor.EstimatedInputTokensMetadataKey: 150000,
+		},
 	})
 	if err != nil {
 		t.Fatalf("Execute() large error = %v", err)
@@ -993,7 +1047,10 @@ func TestManagerExecute_CodexSparkAliasPreferenceAndGuard(t *testing.T) {
 		Model:   "gpt-5.3-codex",
 		Payload: []byte(`{"model":"gpt-5.3-codex","input":"oversized"}`),
 	}, cliproxyexecutor.Options{
-		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: 220001},
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestBytesMetadataKey:         220001,
+			cliproxyexecutor.EstimatedInputTokensMetadataKey: 220001,
+		},
 	})
 	if err != nil {
 		t.Fatalf("Execute() oversized error = %v", err)

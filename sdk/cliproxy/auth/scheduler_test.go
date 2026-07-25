@@ -1185,7 +1185,10 @@ func TestManager_PickNextFastPath_ContextLengthExhaustionReportsSpecificError(t 
 	}
 
 	_, _, errPick := manager.pickNext(context.Background(), "openai-compatible-gemini", "tiny-model", cliproxyexecutor.Options{
-		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: int64(10)},
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestBytesMetadataKey:         int64(10),
+			cliproxyexecutor.EstimatedInputTokensMetadataKey: int64(10),
+		},
 	}, map[string]struct{}{})
 	var authErr *Error
 	if !errors.As(errPick, &authErr) {
@@ -1234,7 +1237,10 @@ func TestManager_PickNextMixedFastPath_ContextLengthExhaustionReportsSpecificErr
 	}
 
 	_, _, _, errPick := manager.pickNextMixed(context.Background(), []string{"openai-compatible-gemini"}, "tiny-model", cliproxyexecutor.Options{
-		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: int64(10)},
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestBytesMetadataKey:         int64(10),
+			cliproxyexecutor.EstimatedInputTokensMetadataKey: int64(10),
+		},
 	}, map[string]struct{}{})
 	var authErr *Error
 	if !errors.As(errPick, &authErr) {

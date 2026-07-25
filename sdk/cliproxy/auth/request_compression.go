@@ -170,7 +170,8 @@ func (m *Manager) maybeCompressRequest(ctx context.Context, attempt requestCompr
 
 func (m *Manager) buildCompressionWork(ctx context.Context, attempt requestCompressionAttempt) (requestCompressionWork, bool, error) {
 	configSnapshot, _ := m.runtimeConfig.Load().(*internalconfig.Config)
-	policy, reason := requestPolicyCompressionDecision(configSnapshot, attempt.options, attempt.routeModel, attempt.provider, attempt.upstreamModel)
+	requestedModel := requestedModelAliasFromOptions(attempt.options, attempt.routeModel)
+	policy, reason := requestPolicyCompressionDecision(configSnapshot, attempt.options, requestedModel, attempt.provider, attempt.upstreamModel)
 	if policy == nil {
 		return requestCompressionWork{}, false, nil
 	}

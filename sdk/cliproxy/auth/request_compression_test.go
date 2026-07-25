@@ -107,6 +107,39 @@ func TestRequestCompressionAutoContextUsesModelTokenBudget(t *testing.T) {
 	}
 }
 
+func TestAstronGLM52CompressionPolicyKeepsOversizedCandidate(t *testing.T) {
+	policy := internalconfig.RequestPolicy{
+		Name: "astron-glm-5.2-context-compression",
+		Match: internalconfig.RequestPolicyMatch{
+			RequestedModels:   []string{"glm-5.2"},
+			UpstreamProviders: []string{"astron-code"},
+			UpstreamModels:    []string{"xopglm52"},
+		},
+		OverLimit: internalconfig.RequestPolicyOverLimit{
+			Action: "compress",
+			Compression: internalconfig.RequestPolicyCompression{
+				Provider: "gemini", Model: "cache-flash", PreserveRecentItems: 1,
+			},
+		},
+	}
+	manager, compressor, target := newCompressionTestManager(t, "astron-code", "xopglm52", policy, &registry.ModelInfo{
+		ID: "xopglm52", Name: "xopglm52", ContextLength: 500000,
+	})
+	raw := compressionTestRequest("xopglm52", strings.Repeat("historical context ", 200), "latest")
+	executeCompressionTestRequest(t, manager, "astron-code", "xopglm52", raw, map[string]any{
+		cliproxyexecutor.RequestedModelMetadataKey:       "glm-5.2",
+		cliproxyexecutor.RequestBytesMetadataKey:         int64(587929),
+		cliproxyexecutor.EstimatedInputTokensMetadataKey: int64(500001),
+	})
+	if len(compressor.Payloads()) == 0 {
+		t.Fatal("oversized Astron candidate was discarded before compression")
+	}
+	payloads := target.Payloads()
+	if len(payloads) != 1 || !strings.Contains(string(payloads[0]), "[compacted_context]") {
+		t.Fatalf("Astron target payloads = %q, want one compacted request", payloads)
+	}
+}
+
 func TestRequestCompressionDoesNotTrustUnderreportedTokenMetadata(t *testing.T) {
 	policy := internalconfig.RequestPolicy{
 		Name: "underreported-token-compress",
@@ -148,7 +181,6 @@ func TestCompressorContextCapacityPrefersTokenEstimateOverRequestBytes(t *testin
 	opts := cliproxyexecutor.Options{Metadata: map[string]any{
 		cliproxyexecutor.RequestBytesMetadataKey:         int64(1000),
 		cliproxyexecutor.EstimatedInputTokensMetadataKey: int64(50),
-		requestCompressionDisabledMetadataKey:            true,
 	}}
 	if !requestFitsConfiguredModelContext(cfg, auth, opts, "small-model") {
 		t.Fatal("request bytes incorrectly overrode a valid token estimate")

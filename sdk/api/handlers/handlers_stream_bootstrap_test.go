@@ -887,7 +887,7 @@ func TestExecuteWithAuthManager_RequestBytesPolicyFallsBackFromCodexSparkToAstro
 
 func TestExecuteWithAuthManager_ContextLengthFallsBackFromAstronToBigModel(t *testing.T) {
 	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
-	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("x", 768) + `"}`)
+	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("context ", 800) + `"}`)
 
 	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
 	if errMsg != nil {
@@ -909,7 +909,7 @@ func TestExecuteWithAuthManager_ContextLengthFallsBackFromAstronToBigModel(t *te
 
 func TestExecuteWithAuthManager_ContextLengthExhaustionReportsSpecificError(t *testing.T) {
 	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
-	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("x", 4096) + `"}`)
+	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("context ", 3000) + `"}`)
 
 	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
 	if errMsg == nil {
@@ -963,7 +963,7 @@ func TestExecuteWithAuthManager_GenericOpenAICompatPreExecutionFilterReportsSpec
 		t.Fatalf("manager.Update(custom-auth): %v", err)
 	}
 
-	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("x", 768) + `"}`)
+	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("context ", 800) + `"}`)
 	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
 	if errMsg == nil {
 		t.Fatalf("ExecuteWithAuthManager() body = %q, want error", string(body))
@@ -1022,7 +1022,7 @@ func TestExecuteStreamWithAuthManager_RequestBytesPolicyFallsBackFromCodexSparkT
 
 func TestExecuteStreamWithAuthManager_ContextLengthFallsBackFromAstronToBigModel(t *testing.T) {
 	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
-	rawJSON := []byte(`{"model":"gpt-5.3-codex","stream":true,"input":"` + strings.Repeat("x", 768) + `"}`)
+	rawJSON := []byte(`{"model":"gpt-5.3-codex","stream":true,"input":"` + strings.Repeat("context ", 800) + `"}`)
 
 	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
 	if dataChan == nil || errChan == nil {

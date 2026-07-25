@@ -1521,29 +1521,30 @@ func candidateContextLengthDiagnostics(cfg *internalconfig.Config, auth *Auth, c
 }
 
 func requestFitsConfiguredModelContext(cfg *internalconfig.Config, auth *Auth, opts cliproxyexecutor.Options, upstreamModel string) bool {
-	contextUsage, ok := configuredContextUsage(opts.Metadata)
-	if !ok || contextUsage <= 0 {
+	inputTokens, ok := configuredInputTokens(opts.Metadata)
+	if !ok || inputTokens <= 0 {
 		return true
 	}
 	contextLength, ok := configuredOpenAICompatModelContextLength(cfg, auth, upstreamModel)
 	if !ok || contextLength <= 0 {
 		return true
 	}
-	if contextUsage <= contextLength {
+	if inputTokens <= contextLength {
 		return true
 	}
 	return requestCompressionPolicyMatchesAuth(requestCompressionRouteCheck{config: cfg, auth: auth, options: opts, routeModel: requestedModelAliasFromOptions(opts, upstreamModel), upstreamModel: upstreamModel})
 }
 
 func authHasConfiguredContextCapacity(m *Manager, cfg *internalconfig.Config, auth *Auth, opts cliproxyexecutor.Options, routeModel string) bool {
-	contextUsage, ok := configuredContextUsage(opts.Metadata)
-	if !ok || contextUsage <= 0 {
+	inputTokens, ok := configuredInputTokens(opts.Metadata)
+	if !ok || inputTokens <= 0 {
 		return true
 	}
 	candidates := m.executionModelCandidatesForCapacityCheck(auth, routeModel)
 	if len(candidates) == 0 {
 		return true
 	}
+	requestedModel := requestedModelAliasFromOptions(opts, routeModel)
 	hasConfiguredContext := false
 	for _, upstreamModel := range candidates {
 		contextLength, ok := configuredOpenAICompatModelContextLength(cfg, auth, upstreamModel)
@@ -1551,20 +1552,15 @@ func authHasConfiguredContextCapacity(m *Manager, cfg *internalconfig.Config, au
 			return true
 		}
 		hasConfiguredContext = true
-		if contextUsage <= contextLength || requestCompressionPolicyMatchesAuth(requestCompressionRouteCheck{config: cfg, auth: auth, options: opts, routeModel: routeModel, upstreamModel: upstreamModel}) {
+		if inputTokens <= contextLength || requestCompressionPolicyMatchesAuth(requestCompressionRouteCheck{config: cfg, auth: auth, options: opts, routeModel: requestedModel, upstreamModel: upstreamModel}) {
 			return true
 		}
 	}
 	return !hasConfiguredContext
 }
 
-func configuredContextUsage(meta map[string]any) (int64, bool) {
-	if compressionDisabledFromMetadata(meta) {
-		if inputTokens, ok := int64FromMetadata(meta, cliproxyexecutor.EstimatedInputTokensMetadataKey); ok && inputTokens > 0 {
-			return inputTokens, true
-		}
-	}
-	return requestBytesFromMetadata(meta)
+func configuredInputTokens(meta map[string]any) (int64, bool) {
+	return int64FromMetadata(meta, cliproxyexecutor.EstimatedInputTokensMetadataKey)
 }
 
 type requestCompressionRouteCheck struct {

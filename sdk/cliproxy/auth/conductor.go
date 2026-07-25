@@ -3420,7 +3420,7 @@ func isCredentialLocalEgressFallbackError(err error) bool {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(target.Code)) {
-	case "egress_disabled", "egress_unbound":
+	case "egress_disabled", "egress_unbound", "egress_identity_required":
 		return true
 	default:
 		return false

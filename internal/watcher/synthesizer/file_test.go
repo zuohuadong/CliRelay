@@ -804,17 +804,16 @@ func TestFileSynthesizerCodexBackfillsAccountIDFromJWT(t *testing.T) {
 	}
 }
 
-func TestFileSynthesizerFlattensCodexCLIBundleExport(t *testing.T) {
+func TestFileSynthesizerFlattensVersionlessAgentIdentityBundleExport(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
-	// Codex CLI native export: tokens live under accounts[0].credentials instead
-	// of at the top level. account_id and id_token must be promoted so identity
-	// resolution and JWT plan_type extraction work.
+	// Agent Identity exports can omit the top-level version while keeping OAuth
+	// tokens under accounts[0].credentials. The nested id_token must still be
+	// promoted so identity resolution and JWT plan_type extraction work.
 	idToken := "eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJiODkyY2VjNC00ZGI0LTQ5ZmQtOTJhMC03ZjhlYjg3MTY0N2IiLCAiY2hhdGdwdF9wbGFuX3R5cGUiOiAiazEyIn19.ZmFrZXNpZw"
 	data := []byte(`{
 		"type": "codex",
-		"version": 1,
 		"disabled": false,
 		"exported_at": "2026-07-20T22:45:57Z",
 		"proxies": [],
@@ -828,7 +827,6 @@ func TestFileSynthesizerFlattensCodexCLIBundleExport(t *testing.T) {
 				"rate_multiplier": 1,
 				"auto_pause_on_expired": true,
 				"credentials": {
-					"account_id": "b892cec4-4db4-49fd-92a0-7f8eb871647b",
 					"email": "bundle@example.test",
 					"id_token": "` + idToken + `",
 					"plan_type": "k12",
@@ -850,7 +848,7 @@ func TestFileSynthesizerFlattensCodexCLIBundleExport(t *testing.T) {
 		t.Fatalf("auths = %#v", auths)
 	}
 	auth := auths[0]
-	// account_id must be promoted from credentials so egress identity resolves.
+	// The promoted id_token must derive and backfill account_id for egress identity.
 	if got, _ := auth.Metadata["account_id"].(string); got != "b892cec4-4db4-49fd-92a0-7f8eb871647b" {
 		t.Fatalf("metadata account_id = %v, want b892cec4-4db4-49fd-92a0-7f8eb871647b", auth.Metadata["account_id"])
 	}

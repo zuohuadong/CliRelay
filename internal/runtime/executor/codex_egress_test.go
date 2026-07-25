@@ -866,6 +866,25 @@ func TestCodexStrictEgressBlocksAllHTTPPathsBeforeDirectDial(t *testing.T) {
 	}
 }
 
+func TestCodexStrictEgressMissingAccountIDReturnsCredentialLocalError(t *testing.T) {
+	t.Parallel()
+
+	resolver := &recordingEgressResolver{resolved: egress.ResolvedEndpoint{
+		Endpoint: egress.Endpoint{ID: "must-not-resolve"},
+		ProxyURL: "socks5://127.0.0.1:1080",
+	}}
+	exec := NewCodexExecutorWithEgress(&config.Config{}, resolver)
+
+	_, err := exec.resolveEgressAuth(context.Background(), &cliproxyauth.Auth{Metadata: map[string]any{}})
+	var runtimeErr *egress.Error
+	if !errors.As(err, &runtimeErr) || runtimeErr.Code != "egress_identity_required" {
+		t.Fatalf("resolveEgressAuth() error = %v, want egress_identity_required", err)
+	}
+	if accounts := resolver.Accounts(); len(accounts) != 0 {
+		t.Fatalf("resolver accounts = %v, want no lookup without an account identity", accounts)
+	}
+}
+
 func TestCodexStrictEgressRefreshSkipsHomeAndUsesResolvedProxy(t *testing.T) {
 	t.Parallel()
 

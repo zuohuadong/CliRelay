@@ -364,8 +364,8 @@ func extractExcludedModelsFromMetadata(metadata map[string]any) []string {
 }
 
 // codexBundleCredentialKeys are the credential fields promoted from a Codex CLI
-// native export (accounts[].credentials) to the top-level metadata so the rest
-// of the synthesis path resolves them the same way as a flat auth file.
+// native/Agent Identity export (accounts[].credentials) to top-level metadata
+// so the rest of the synthesis path resolves them like a flat auth file.
 var codexBundleCredentialKeys = []string{
 	"account_id", "id_token", "access_token", "refresh_token", "email",
 	"plan_type", "expired", "last_refresh", "token_type",
@@ -373,15 +373,13 @@ var codexBundleCredentialKeys = []string{
 	"agent_private_key", "agent_runtime_id", "auth_mode",
 }
 
-// flattenCodexBundle detects the Codex CLI native export format (a top-level
-// "version" plus a non-empty "accounts" array whose entries carry a nested
-// "credentials" object) and promotes the first account's credential fields to
-// the top-level metadata map. It is a no-op for the flat auth file format.
+// flattenCodexBundle detects the Codex CLI native/Agent Identity export format
+// from a non-empty accounts[].credentials object and promotes the first
+// account's credential fields to the top-level metadata map. Some exporters do
+// not include a version field, so the nested credential shape is authoritative.
+// Flat auth files have no accounts[].credentials wrapper and remain unchanged.
 func flattenCodexBundle(metadata map[string]any) {
 	if metadata == nil {
-		return
-	}
-	if _, ok := metadata["version"]; !ok {
 		return
 	}
 	accounts, ok := metadata["accounts"].([]any)

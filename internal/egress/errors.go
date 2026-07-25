@@ -11,6 +11,7 @@ var (
 	ErrEndpointNotFound     = errors.New("egress_not_found")
 	ErrEndpointDisabled     = errors.New("egress_disabled")
 	ErrEndpointInvalid      = errors.New("egress_invalid")
+	ErrIdentityRequired     = errors.New("egress_identity_required")
 	ErrIdentityMismatch     = errors.New("egress_identity_mismatch")
 	ErrEndpointInUse        = errors.New("egress_endpoint_in_use")
 	ErrStoreLocked          = errors.New("egress_store_locked")
@@ -67,6 +68,8 @@ func ErrorCode(err error) string {
 		return "egress_disabled"
 	case errors.Is(err, ErrEndpointInvalid):
 		return "egress_invalid"
+	case errors.Is(err, ErrIdentityRequired):
+		return "egress_identity_required"
 	case errors.Is(err, ErrIdentityMismatch):
 		return "egress_identity_mismatch"
 	case errors.Is(err, ErrEndpointInUse):

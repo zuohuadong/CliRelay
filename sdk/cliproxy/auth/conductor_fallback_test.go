@@ -59,6 +59,30 @@ func TestManagerExecute_EgressUnboundFallsBackToNextCredential(t *testing.T) {
 	}
 }
 
+func TestManagerExecute_EgressIdentityRequiredFallsBackToNextCredential(t *testing.T) {
+	const model = "gpt-5.3-codex"
+	m := NewManager(nil, nil, nil)
+	executor := &authFallbackExecutor{
+		id: "codex",
+		executeErrors: map[string]error{
+			"aa-bound-auth": &egress.Error{Code: "egress_identity_required", Message: "codex account_id is required"},
+		},
+	}
+	m.RegisterExecutor(executor)
+	registerFallbackAuths(t, m, model)
+
+	resp, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := string(resp.Payload); got != "bb-other-auth" {
+		t.Fatalf("Execute() payload = %q, want next healthy auth", got)
+	}
+	if calls := executor.ExecuteCalls(); len(calls) != 2 || calls[0] != "aa-bound-auth" || calls[1] != "bb-other-auth" {
+		t.Fatalf("Execute() calls = %v, want missing-identity auth followed by next auth", calls)
+	}
+}
+
 func TestManagerExecute_EgressDisabledDuringPrepareFallsBackToNextCredential(t *testing.T) {
 	const model = "gpt-5.3-codex"
 	m := NewManager(nil, nil, nil)
@@ -208,6 +232,7 @@ func TestManagerExecuteStream_CredentialLocalEgressErrorReleasesPinnedWebsocketA
 	}{
 		{name: "unbound", err: egress.ErrEgressUnbound},
 		{name: "disabled", err: egress.ErrEndpointDisabled},
+		{name: "identity required", err: &egress.Error{Code: "egress_identity_required", Message: "codex account_id is required"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewManager(nil, nil, nil)

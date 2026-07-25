@@ -657,6 +657,9 @@ func (e *CodexExecutor) resolveEgressAuth(ctx context.Context, auth *cliproxyaut
 		ctx = context.Background()
 	}
 	accountID := codexAccountIDFromAuth(auth)
+	if accountID == "" {
+		return nil, egress.RuntimeError(fmt.Errorf("%w: codex account_id is required", egress.ErrIdentityRequired))
+	}
 	resolved, err := e.egress.Resolve(ctx, accountID)
 	if err != nil {
 		return nil, egress.RuntimeError(err)

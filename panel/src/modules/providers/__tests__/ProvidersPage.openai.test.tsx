@@ -342,7 +342,17 @@ describe("ProvidersPage openai tab", () => {
     const modal = screen.getByRole("dialog");
 
     await user.click(within(modal).getByRole("button", { name: /Fetch \/models/i }));
-    await waitFor(() => expect(mocks.apiCallRequest).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      expect(mocks.apiCallRequest).toHaveBeenCalledTimes(1);
+      expect(mocks.apiCallRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: "GET",
+          header: expect.objectContaining({
+            "Content-Type": "application/json",
+          }),
+        }),
+      );
+    });
     expect(await within(modal).findByText(/Found 3 models/i)).toBeInTheDocument();
 
     await user.click(within(modal).getByRole("button", { name: /Select none/i }));

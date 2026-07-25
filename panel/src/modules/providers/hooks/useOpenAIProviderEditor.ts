@@ -344,6 +344,13 @@ export function useOpenAIProviderEditor({
       if (!hasAuthHeader && firstKey) {
         headers.Authorization = `Bearer ${firstKey}`;
       }
+      // iFlytek's /models endpoint rejects requests without an exact JSON content type.
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase() === "content-type") {
+          delete headers[key];
+        }
+      }
+      headers["Content-Type"] = "application/json";
 
       const result: ApiCallResult = await apiCallApi.request({
         method: "GET",

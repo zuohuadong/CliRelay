@@ -1622,7 +1622,7 @@ func (m *Manager) routeModelAvailability(auth *Auth, routeModel string, now time
 	}
 	candidates := m.executionModelCandidatesForCapacityCheck(auth, routeModel)
 	if len(candidates) > 1 {
-		cooldownCount := 0
+		retryWaitCount := 0
 		disabledCount := 0
 		var earliest time.Time
 		for _, candidate := range candidates {
@@ -1632,15 +1632,22 @@ func (m *Manager) routeModelAvailability(auth *Auth, routeModel string, now time
 			}
 			switch reason {
 			case blockReasonCooldown:
-				cooldownCount++
+				retryWaitCount++
 				if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
 					earliest = next
+				}
+			case blockReasonOther:
+				if !next.IsZero() {
+					retryWaitCount++
+					if earliest.IsZero() || next.Before(earliest) {
+						earliest = next
+					}
 				}
 			case blockReasonDisabled:
 				disabledCount++
 			}
 		}
-		if cooldownCount == len(candidates) && !earliest.IsZero() {
+		if retryWaitCount > 0 && !earliest.IsZero() {
 			return false, blockReasonCooldown, earliest
 		}
 		if disabledCount == len(candidates) {
@@ -1692,7 +1699,7 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 	}
 
 	availableByPriority := make(map[int][]*Auth)
-	cooldownCount := 0
+	retryWaitCount := 0
 	var earliest time.Time
 	for _, candidate := range auths {
 		available, reason, next := m.routeModelAvailability(candidate, routeModel, now)
@@ -1701,8 +1708,8 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 			availableByPriority[priority] = append(availableByPriority[priority], candidate)
 			continue
 		}
-		if reason == blockReasonCooldown {
-			cooldownCount++
+		if reason != blockReasonDisabled && !next.IsZero() {
+			retryWaitCount++
 			if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
 				earliest = next
 			}
@@ -1710,7 +1717,7 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 	}
 
 	if len(availableByPriority) == 0 {
-		if cooldownCount == len(auths) && !earliest.IsZero() {
+		if retryWaitCount > 0 && !earliest.IsZero() {
 			providerForError := provider
 			if providerForError == "mixed" {
 				providerForError = ""

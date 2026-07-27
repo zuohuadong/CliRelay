@@ -434,7 +434,7 @@ func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model st
 	if total == 0 {
 		return &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	if retryWaitCount == total && !earliest.IsZero() {
+	if retryWaitCount > 0 && !earliest.IsZero() {
 		resetIn := earliest.Sub(now)
 		if resetIn < 0 {
 			resetIn = 0
@@ -822,7 +822,7 @@ func (m *modelScheduler) unavailableErrorLocked(provider, model string, predicat
 	if total == 0 {
 		return &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	if retryWaitCount == total && !earliest.IsZero() {
+	if retryWaitCount > 0 && !earliest.IsZero() {
 		providerForError := provider
 		if providerForError == "mixed" {
 			providerForError = ""

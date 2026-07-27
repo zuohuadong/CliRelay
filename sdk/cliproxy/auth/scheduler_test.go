@@ -161,6 +161,37 @@ func TestSchedulerPickTransientModelBlockReturnsCooldownError(t *testing.T) {
 	}
 }
 
+func TestSchedulerPickDisabledAuthDoesNotMaskRecoverableCooldown(t *testing.T) {
+	const (
+		provider = "astron-code"
+		model    = "glm-5.2"
+	)
+
+	registerSchedulerModels(t, provider, model, "disabled-auth", "cooling-auth")
+	scheduler := newSchedulerForTest(
+		&RoundRobinSelector{},
+		&Auth{ID: "disabled-auth", Provider: provider, Status: StatusDisabled},
+		&Auth{
+			ID:       "cooling-auth",
+			Provider: provider,
+			ModelStates: map[string]*ModelState{
+				model: {
+					Status:         StatusError,
+					Unavailable:    true,
+					NextRetryAfter: time.Now().Add(time.Minute),
+					Quota:          QuotaState{Exceeded: true},
+				},
+			},
+		},
+	)
+
+	_, errPick := scheduler.pickSingle(context.Background(), provider, model, cliproxyexecutor.Options{}, nil)
+	var cooldownErr *modelCooldownError
+	if !errors.As(errPick, &cooldownErr) {
+		t.Fatalf("pickSingle() error = %v, want model cooldown", errPick)
+	}
+}
+
 func TestSchedulerPick_RoundRobinHighestPriority(t *testing.T) {
 	t.Parallel()
 

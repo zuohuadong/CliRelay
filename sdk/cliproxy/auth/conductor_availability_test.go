@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -102,6 +103,73 @@ func TestManager_AvailableProvidersAndHasProviderAuth_ExcludeDisabled(t *testing
 	}
 	if manager.HasProviderAuth("codex") {
 		t.Errorf("HasProviderAuth(codex) = true, want false (only StatusDisabled auth registered)")
+	}
+}
+
+func TestManagerAvailableAuthsForRouteModelDisabledAuthDoesNotMaskRecoverableCooldown(t *testing.T) {
+	const (
+		provider = "astron-code"
+		model    = "glm-5.2"
+	)
+
+	manager := NewManager(nil, nil, nil)
+	available, err := manager.availableAuthsForRouteModel([]*Auth{
+		{ID: "disabled-auth", Provider: provider, Status: StatusDisabled},
+		{
+			ID:       "cooling-auth",
+			Provider: provider,
+			ModelStates: map[string]*ModelState{
+				model: {
+					Status:         StatusError,
+					Unavailable:    true,
+					NextRetryAfter: time.Now().Add(time.Minute),
+					Quota:          QuotaState{Exceeded: true},
+				},
+			},
+		},
+	}, provider, model, time.Now())
+	if err == nil {
+		t.Fatal("availableAuthsForRouteModel() error = nil, want model cooldown")
+	}
+	if len(available) != 0 {
+		t.Fatalf("available auths = %v, want none", available)
+	}
+	var cooldownErr *modelCooldownError
+	if !errors.As(err, &cooldownErr) {
+		t.Fatalf("availableAuthsForRouteModel() error = %v, want model cooldown", err)
+	}
+}
+
+func TestManagerAvailableAuthsForRouteModelDisabledAuthDoesNotMaskRecoverableTransientBlock(t *testing.T) {
+	const (
+		provider = "astron-code"
+		model    = "glm-5.2"
+	)
+
+	manager := NewManager(nil, nil, nil)
+	available, err := manager.availableAuthsForRouteModel([]*Auth{
+		{ID: "disabled-auth", Provider: provider, Status: StatusDisabled},
+		{
+			ID:       "transient-auth",
+			Provider: provider,
+			ModelStates: map[string]*ModelState{
+				model: {
+					Status:         StatusError,
+					Unavailable:    true,
+					NextRetryAfter: time.Now().Add(time.Minute),
+				},
+			},
+		},
+	}, provider, model, time.Now())
+	if err == nil {
+		t.Fatal("availableAuthsForRouteModel() error = nil, want model cooldown")
+	}
+	if len(available) != 0 {
+		t.Fatalf("available auths = %v, want none", available)
+	}
+	var cooldownErr *modelCooldownError
+	if !errors.As(err, &cooldownErr) {
+		t.Fatalf("availableAuthsForRouteModel() error = %v, want model cooldown", err)
 	}
 }
 

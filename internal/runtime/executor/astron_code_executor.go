@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/multimodaladapter"
@@ -23,6 +25,9 @@ import (
 )
 
 const astronCodeUserInputGuidanceMarker = "Astron interaction guidance:"
+
+const astronCodeRateLimitRetryDelay = time.Second
+const maxAstronCodeRetryAfterSeconds = int64((1<<63 - 1) / int64(time.Second))
 
 type AstronCodeExecutor struct {
 	*OpenAICompatExecutor
@@ -170,7 +175,7 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 		b, _ := io.ReadAll(httpResp.Body)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = newAstronCodeStatusErr(httpResp.StatusCode, b, httpResp.Header)
 		return resp, err
 	}
 	body, err := io.ReadAll(httpResp.Body)
@@ -325,7 +330,7 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("astron code executor: close response body error: %v", errClose)
 			}
-			return nil, statusErr{code: httpResp.StatusCode, msg: string(b)}
+			return nil, newAstronCodeStatusErr(httpResp.StatusCode, b, httpResp.Header)
 		}
 		return httpResp, nil
 	}
@@ -460,6 +465,26 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+func newAstronCodeStatusErr(statusCode int, body []byte, headers http.Header) statusErr {
+	err := statusErr{code: statusCode, msg: string(body)}
+	if statusCode != http.StatusTooManyRequests {
+		return err
+	}
+
+	retryAfter := astronCodeRateLimitRetryDelay
+	if raw := strings.TrimSpace(headers.Get("Retry-After")); raw != "" {
+		if seconds, errParse := strconv.ParseInt(raw, 10, 64); errParse == nil && seconds > 0 && seconds <= maxAstronCodeRetryAfterSeconds {
+			retryAfter = time.Duration(seconds) * time.Second
+		} else if retryAt, errParse := http.ParseTime(raw); errParse == nil {
+			if wait := time.Until(retryAt); wait > 0 {
+				retryAfter = wait
+			}
+		}
+	}
+	err.retryAfter = &retryAfter
+	return err
 }
 
 func (e *AstronCodeExecutor) executeCompactionTriggerStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {

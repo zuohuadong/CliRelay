@@ -1189,7 +1189,7 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 			dst = abs
 		}
 	}
-	auth, err := h.buildAuthFromFileData(dst, data)
+	auths, err := h.buildAuthsFromFileData(dst, data)
 	if err != nil {
 		return err
 	}
@@ -1198,7 +1198,7 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	// refresh round-trip. Imported/pasted codex auths often lack a top-level
 	// account_id even though they carry a valid id_token.
 	written := data
-	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+	if len(auths) > 0 && strings.EqualFold(strings.TrimSpace(auths[0].Provider), "codex") {
 		if backfilled, changed := backfillCodexAccountIDInData(data); changed {
 			written = backfilled
 		}
@@ -1206,8 +1206,10 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if errWrite := os.WriteFile(dst, written, 0o600); errWrite != nil {
 		return fmt.Errorf("failed to write file: %w", errWrite)
 	}
-	if err := h.upsertAuthRecord(ctx, auth); err != nil {
-		return err
+	for _, auth := range auths {
+		if err := h.upsertAuthRecord(ctx, auth); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1464,14 +1466,25 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 	if h.authManager == nil {
 		return nil
 	}
-	auth, err := h.buildAuthFromFileData(path, data)
+	auths, err := h.buildAuthsFromFileData(path, data)
 	if err != nil {
 		return err
 	}
-	return h.upsertAuthRecord(ctx, auth)
+	for _, auth := range auths {
+		if err := h.upsertAuthRecord(ctx, auth); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Auth, error) {
+// buildAuthsFromFileData synthesizes one or more auth records from an auth
+// file payload. A Codex CLI native export (accounts[].credentials) expands into
+// one auth per account; flat auth files yield a single auth. Each synthesized
+// auth keeps the ID assigned by the synthesizer (relative path, or
+// "<relpath>#<ordinal>" for multi-account bundles) so the watcher and the
+// management panel see distinct records instead of one overwriting the other.
+func (h *Handler) buildAuthsFromFileData(path string, data []byte) ([]*coreauth.Auth, error) {
 	if path == "" {
 		return nil, fmt.Errorf("auth path is empty")
 	}
@@ -1495,25 +1508,23 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 		label = email
 	}
 	lastRefresh, hasLastRefresh := extractLastRefreshTimestamp(metadata)
-
 	authID := h.authIDForPath(path)
 	if authID == "" {
 		authID = path
 	}
-	auth := (*coreauth.Auth)(nil)
+	now := time.Now()
+	var generated []*coreauth.Auth
 	if h != nil && h.cfg != nil {
 		sctx := &synthesizer.SynthesisContext{
 			Config:      h.cfg,
 			AuthDir:     h.cfg.AuthDir,
-			Now:         time.Now(),
+			Now:         now,
 			IDGenerator: synthesizer.NewStableIDGenerator(),
 		}
-		if generated := synthesizer.SynthesizeAuthFile(sctx, path, data); len(generated) > 0 && generated[0] != nil {
-			auth = generated[0].Clone()
-		}
+		generated = synthesizer.SynthesizeAuthFile(sctx, path, data)
 	}
-	if auth == nil {
-		auth = &coreauth.Auth{
+	if len(generated) == 0 {
+		generated = []*coreauth.Auth{{
 			ID:       authID,
 			Provider: provider,
 			Label:    label,
@@ -1523,27 +1534,54 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 				"source": path,
 			},
 			Metadata:  metadata,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			CreatedAt: now,
+			UpdatedAt: now,
+		}}
+	}
+	out := make([]*coreauth.Auth, 0, len(generated))
+	for _, g := range generated {
+		if g == nil {
+			continue
 		}
-	}
-	auth.ID = authID
-	auth.FileName = filepath.Base(path)
-	if hasLastRefresh {
-		auth.LastRefreshedAt = lastRefresh
-	}
-	if h != nil && h.authManager != nil {
-		if existing, ok := h.authManager.GetByID(authID); ok {
-			auth.CreatedAt = existing.CreatedAt
-			if !hasLastRefresh {
-				auth.LastRefreshedAt = existing.LastRefreshedAt
+		auth := g.Clone()
+		// Single-auth files keep the path-derived ID (identical to the
+		// synthesizer's base ID). Multi-account bundles keep the synthesizer's
+		// "<baseID>#<ordinal>" ID so each account is a distinct record.
+		if len(generated) == 1 {
+			auth.ID = authID
+		}
+		auth.FileName = filepath.Base(path)
+		if hasLastRefresh {
+			auth.LastRefreshedAt = lastRefresh
+		}
+		if h != nil && h.authManager != nil {
+			if existing, ok := h.authManager.GetByID(auth.ID); ok {
+				auth.CreatedAt = existing.CreatedAt
+				if !hasLastRefresh {
+					auth.LastRefreshedAt = existing.LastRefreshedAt
+				}
+				auth.NextRefreshAfter = existing.NextRefreshAfter
+				auth.Runtime = existing.Runtime
 			}
-			auth.NextRefreshAfter = existing.NextRefreshAfter
-			auth.Runtime = existing.Runtime
 		}
+		coreauth.ApplyCustomHeadersFromMetadata(auth)
+		out = append(out, auth)
 	}
-	coreauth.ApplyCustomHeadersFromMetadata(auth)
-	return auth, nil
+	return out, nil
+}
+
+// buildAuthFromFileData returns the first synthesized auth record for an auth
+// file. It is kept for call sites that only need provider/label metadata (e.g.
+// codex account_id backfill checks). Use buildAuthsFromFileData when registering.
+func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Auth, error) {
+	auths, err := h.buildAuthsFromFileData(path, data)
+	if err != nil {
+		return nil, err
+	}
+	if len(auths) == 0 {
+		return nil, nil
+	}
+	return auths[0], nil
 }
 
 func (h *Handler) upsertAuthRecord(ctx context.Context, auth *coreauth.Auth) error {

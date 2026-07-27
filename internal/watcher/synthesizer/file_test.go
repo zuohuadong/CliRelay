@@ -879,8 +879,122 @@ func TestFileSynthesizerLeavesFlatCodexAuthUnchanged(t *testing.T) {
 		"account_id": "acct-flat",
 		"id_token":   "ignored",
 	}
-	flattenCodexBundle(metadata)
+	if got := expandCodexBundle(metadata); got != nil {
+		t.Fatalf("expandCodexBundle() = %#v, want nil for flat auth", got)
+	}
 	if got, _ := metadata["account_id"].(string); got != "acct-flat" {
 		t.Fatalf("flat account_id mutated to %v", metadata["account_id"])
+	}
+}
+
+func TestFileSynthesizerExpandsMultiAccountAgentIdentityBundle(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	// Agent Identity exports can carry several accounts under accounts[]. Each
+	// must expand into a distinct Auth with its own id_token/account_id/identity
+	// and a distinct ID so the watcher registers both instead of one clobbering
+	// the other.
+	idTokenA := "eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2N0LWFycC0wMDEiLCAiY2hhdGdwdF9wbGFuX3R5cGUiOiAiazEyIn19.ZmFrZXNpZw"
+	idTokenB := "eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2N0LWFycC0wMDIiLCAiY2hhdGdwdF9wbGFuX3R5cGUiOiAiazEyIn19.ZmFrZXNpZw"
+	data := []byte(`{
+		"type": "codex",
+		"disabled": false,
+		"exported_at": "2026-07-26T22:30:34Z",
+		"proxies": [],
+		"accounts": [
+			{
+				"name": "alice@example.test",
+				"type": "oauth",
+				"platform": "openai",
+				"priority": 1,
+				"concurrency": 10,
+				"credentials": {
+					"email": "alice@example.test",
+					"id_token": "` + idTokenA + `",
+					"plan_type": "k12",
+					"auth_mode": "agentIdentity",
+					"chatgpt_account_id": "acct-arp-001"
+				}
+			},
+			{
+				"name": "bob@example.test",
+				"type": "oauth",
+				"platform": "openai",
+				"priority": 2,
+				"concurrency": 5,
+				"credentials": {
+					"email": "bob@example.test",
+					"id_token": "` + idTokenB + `",
+					"plan_type": "k12",
+					"auth_mode": "agentIdentity",
+					"chatgpt_account_id": "acct-arp-002"
+				}
+			}
+		]
+	}`)
+	if err := os.WriteFile(filepath.Join(tempDir, "codex-bundle.json"), data, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	auths, err := NewFileSynthesizer().Synthesize(&SynthesisContext{Config: &config.Config{}, AuthDir: tempDir, Now: time.Now(), IDGenerator: NewStableIDGenerator()})
+	if err != nil {
+		t.Fatalf("Synthesize() error = %v", err)
+	}
+	if len(auths) != 2 {
+		t.Fatalf("auths = %#v, want 2 expanded accounts", auths)
+	}
+	alice := auths[0]
+	bob := auths[1]
+	// Distinct IDs: baseID#0 and baseID#1.
+	if got, want := alice.ID, "codex-bundle.json#0"; got != want {
+		t.Fatalf("alice ID = %q, want %q", got, want)
+	}
+	if got, want := bob.ID, "codex-bundle.json#1"; got != want {
+		t.Fatalf("bob ID = %q, want %q", got, want)
+	}
+	// Per-account credentials promoted independently.
+	if got, _ := alice.Metadata["email"].(string); got != "alice@example.test" {
+		t.Fatalf("alice email = %v, want alice@example.test", got)
+	}
+	if got, _ := bob.Metadata["email"].(string); got != "bob@example.test" {
+		t.Fatalf("bob email = %v, want bob@example.test", got)
+	}
+	if got, _ := alice.Metadata["account_id"].(string); got != "acct-arp-001" {
+		t.Fatalf("alice account_id = %v, want acct-arp-001", got)
+	}
+	if got, _ := bob.Metadata["account_id"].(string); got != "acct-arp-002" {
+		t.Fatalf("bob account_id = %v, want acct-arp-002", got)
+	}
+	// Per-account priority promoted from account-level fields.
+	if got := alice.Attributes["priority"]; got != "1" {
+		t.Fatalf("alice priority = %q, want 1", got)
+	}
+	if got := bob.Attributes["priority"]; got != "2" {
+		t.Fatalf("bob priority = %q, want 2", got)
+	}
+	// Distinct stable identities per account.
+	identA, err := egress.StableIdentity("acct-arp-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identB, err := egress.StableIdentity("acct-arp-002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := alice.Attributes["stable_identity"], identA; got != want {
+		t.Fatalf("alice stable_identity = %q, want %q", got, want)
+	}
+	if got, want := bob.Attributes["stable_identity"], identB; got != want {
+		t.Fatalf("bob stable_identity = %q, want %q", got, want)
+	}
+	if identA == identB {
+		t.Fatalf("stable identities collide: %q", identA)
+	}
+	// Both marked as virtual expanded auths with distinct index seeds.
+	if !coreauth.IsPluginVirtualAuth(alice) || !coreauth.IsPluginVirtualAuth(bob) {
+		t.Fatalf("multi-account auths must be marked virtual: alice=%v bob=%v", coreauth.IsPluginVirtualAuth(alice), coreauth.IsPluginVirtualAuth(bob))
+	}
+	if alice.Attributes[coreauth.AttributeAuthIndexSeed] == bob.Attributes[coreauth.AttributeAuthIndexSeed] {
+		t.Fatalf("index seeds collide: %q", alice.Attributes[coreauth.AttributeAuthIndexSeed])
 	}
 }

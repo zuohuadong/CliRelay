@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/tidwall/gjson"
 )
 
 func TestAstronCodeEndpointURLSwapsV2ToV1ForResponses(t *testing.T) {
@@ -58,6 +60,43 @@ func TestAstronCodeEndpointURLKeepsV2ForChat(t *testing.T) {
 	want := "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2/chat/completions"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeAstronToolMessageHistoryDropsInvalidToolCallArguments(t *testing.T) {
+	payload := []byte(`{"messages":[{"role":"user","content":"start"},{"role":"assistant","tool_calls":[{"id":"call-invalid","type":"function","function":{"name":"exec_command","arguments":"not-json"}},{"id":"call-valid","type":"function","function":{"name":"exec_command","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call-invalid","content":"invalid result"},{"role":"tool","tool_call_id":"call-valid","content":"valid result"},{"role":"user","content":"next"}]}`)
+
+	sanitized := normalizeAstronToolMessageHistory(payload)
+
+	messages := gjson.GetBytes(sanitized, "messages").Array()
+	if len(messages) != 4 {
+		t.Fatalf("messages len = %d, want 4: %s", len(messages), sanitized)
+	}
+	if got := messages[1].Get("tool_calls.0.id").String(); got != "call-valid" {
+		t.Fatalf("kept tool call = %q, want call-valid: %s", got, sanitized)
+	}
+	if got := messages[2].Get("tool_call_id").String(); got != "call-valid" {
+		t.Fatalf("kept tool result = %q, want call-valid: %s", got, sanitized)
+	}
+	if strings.Contains(string(sanitized), "call-invalid") || strings.Contains(string(sanitized), "not-json") {
+		t.Fatalf("invalid tool-call arguments leaked through: %s", sanitized)
+	}
+}
+
+func TestNormalizeAstronToolMessageHistoryKeepsToolCallWithoutArguments(t *testing.T) {
+	payload := []byte(`{"messages":[{"role":"user","content":"start"},{"role":"assistant","tool_calls":[{"id":"call-1","type":"function","function":{"name":"exec_command"}}]},{"role":"tool","tool_call_id":"call-1","content":"result"},{"role":"user","content":"next"}]}`)
+
+	sanitized := normalizeAstronToolMessageHistory(payload)
+
+	messages := gjson.GetBytes(sanitized, "messages").Array()
+	if len(messages) != 4 {
+		t.Fatalf("messages len = %d, want 4: %s", len(messages), sanitized)
+	}
+	if got := messages[1].Get("tool_calls.0.id").String(); got != "call-1" {
+		t.Fatalf("kept tool call = %q, want call-1: %s", got, sanitized)
+	}
+	if got := messages[2].Get("tool_call_id").String(); got != "call-1" {
+		t.Fatalf("kept tool result = %q, want call-1: %s", got, sanitized)
 	}
 }
 

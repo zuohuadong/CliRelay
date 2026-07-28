@@ -1511,6 +1511,40 @@ func TestRepairResponsesWebsocketToolCallsDropsFunctionCallWithEmptyName(t *test
 	}
 }
 
+func TestRepairResponsesWebsocketToolCallsDropsInvalidFunctionArgumentsAndOutput(t *testing.T) {
+	cache := newWebsocketToolOutputCache(time.Minute, 10)
+	sessionKey := "session-1"
+
+	raw := []byte(`{"input":[{"type":"function_call","call_id":"call-invalid","name":"exec_command","arguments":"not-json"},{"type":"function_call_output","call_id":"call-invalid","output":"invalid result"},{"type":"message","id":"msg-1"}]}`)
+	repaired := repairResponsesWebsocketToolCallsWithCache(cache, sessionKey, raw)
+
+	input := gjson.GetBytes(repaired, "input").Array()
+	if len(input) != 1 {
+		t.Fatalf("repaired input len = %d, want 1: %s", len(input), repaired)
+	}
+	if input[0].Get("type").String() != "message" || input[0].Get("id").String() != "msg-1" {
+		t.Fatalf("unexpected remaining item: %s", input[0].Raw)
+	}
+}
+
+func TestRepairResponsesWebsocketToolCallsDropsOutputForCachedInvalidFunctionArguments(t *testing.T) {
+	outputCache := newWebsocketToolOutputCache(time.Minute, 10)
+	callCache := newWebsocketToolOutputCache(time.Minute, 10)
+	sessionKey := "session-1"
+
+	callCache.record(sessionKey, "call-invalid", []byte(`{"type":"function_call","call_id":"call-invalid","name":"exec_command","arguments":"not-json"}`))
+	raw := []byte(`{"input":[{"type":"function_call_output","call_id":"call-invalid","output":"invalid result"},{"type":"message","id":"msg-1"}]}`)
+	repaired := repairResponsesWebsocketToolCallsWithCaches(outputCache, callCache, sessionKey, raw)
+
+	input := gjson.GetBytes(repaired, "input").Array()
+	if len(input) != 1 {
+		t.Fatalf("repaired input len = %d, want 1: %s", len(input), repaired)
+	}
+	if input[0].Get("type").String() != "message" || input[0].Get("id").String() != "msg-1" {
+		t.Fatalf("unexpected remaining item: %s", input[0].Raw)
+	}
+}
+
 func TestSanitizeResponsesInputToolCallNamesDropsEmptyNameAndOutput(t *testing.T) {
 	raw := []byte(`{"input":[{"type":"message","id":"msg-1"},{"type":"function_call","id":"fc-1","call_id":"call-1","name":"","arguments":"{}"},{"type":"function_call_output","id":"out-1","call_id":"call-1","output":"ok"},{"type":"function_call","id":"fc-2","call_id":"call-2","name":"exec_command","arguments":"{}"},{"type":"function_call_output","id":"out-2","call_id":"call-2","output":"done"}]}`)
 
@@ -1525,6 +1559,23 @@ func TestSanitizeResponsesInputToolCallNamesDropsEmptyNameAndOutput(t *testing.T
 	}
 	if strings.Contains(string(sanitized), `"name":""`) || strings.Contains(string(sanitized), `"call_id":"call-1"`) {
 		t.Fatalf("invalid empty-name call leaked through: %s", sanitized)
+	}
+}
+
+func TestSanitizeResponsesInputToolCallNamesDropsInvalidFunctionArgumentsAndOutput(t *testing.T) {
+	raw := []byte(`{"input":[{"type":"message","id":"msg-1"},{"type":"function_call","id":"fc-invalid","call_id":"call-invalid","name":"exec_command","arguments":"not-json"},{"type":"function_call_output","id":"out-invalid","call_id":"call-invalid","output":"invalid result"},{"type":"function_call","id":"fc-valid","call_id":"call-valid","name":"exec_command","arguments":"{}"},{"type":"function_call_output","id":"out-valid","call_id":"call-valid","output":"valid result"},{"type":"custom_tool_call","id":"ctc-freeform","call_id":"call-freeform","name":"shell","arguments":"echo hello"},{"type":"custom_tool_call_output","id":"out-freeform","call_id":"call-freeform","output":"hello"}]}`)
+
+	sanitized := sanitizeResponsesInputToolCallHistory(sanitizeResponsesInputToolCallNames(raw))
+
+	items := gjson.GetBytes(sanitized, "input").Array()
+	if len(items) != 5 {
+		t.Fatalf("sanitized input len = %d, want 5: %s", len(items), sanitized)
+	}
+	if items[1].Get("call_id").String() != "call-valid" || items[2].Get("call_id").String() != "call-valid" || items[3].Get("call_id").String() != "call-freeform" || items[4].Get("call_id").String() != "call-freeform" {
+		t.Fatalf("unexpected sanitized input: %s", sanitized)
+	}
+	if strings.Contains(string(sanitized), "call-invalid") || strings.Contains(string(sanitized), "not-json") {
+		t.Fatalf("invalid function-call arguments leaked through: %s", sanitized)
 	}
 }
 
@@ -1877,6 +1928,33 @@ func TestRecordResponsesWebsocketToolCallsFromPayloadWithCacheSkipsEmptyName(t *
 
 	if _, ok := cache.get(sessionKey, "call-1"); ok {
 		t.Fatalf("expected empty-name tool call to be skipped")
+	}
+}
+
+func TestRecordResponsesWebsocketToolCallsFromPayloadWithCacheSkipsInvalidFunctionArguments(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload []byte
+	}{
+		{
+			name:    "completed",
+			payload: []byte(`{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"function_call","id":"fc-1","call_id":"call-1","name":"tool","arguments":"not-json"}]}}`),
+		},
+		{
+			name:    "output item done",
+			payload: []byte(`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc-1","call_id":"call-1","name":"tool","arguments":"not-json"}}`),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cache := newWebsocketToolOutputCache(time.Minute, 10)
+			recordResponsesWebsocketToolCallsFromPayloadWithCache(cache, "session-1", test.payload)
+
+			if _, ok := cache.get("session-1", "call-1"); ok {
+				t.Fatalf("expected invalid function-call arguments to be skipped")
+			}
+		})
 	}
 }
 

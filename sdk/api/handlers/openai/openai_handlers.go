@@ -239,7 +239,7 @@ func sanitizeChatCompletionsToolMessageHistory(payload []byte) []byte {
 					continue
 				}
 				id := chatCompletionStringField(toolCallMap, "id")
-				if id == "" || availableToolResults[id] <= 0 {
+				if id == "" || !chatCompletionToolCallHasValidJSONArguments(toolCallMap) || availableToolResults[id] <= 0 {
 					changed = true
 					continue
 				}
@@ -303,6 +303,26 @@ func chatCompletionStringField(msg map[string]any, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func chatCompletionToolCallHasValidJSONArguments(toolCall map[string]any) bool {
+	if toolCall == nil {
+		return false
+	}
+	functionValue, hasFunction := toolCall["function"]
+	if !strings.EqualFold(chatCompletionStringField(toolCall, "type"), "function") && !hasFunction {
+		return true
+	}
+	function, ok := functionValue.(map[string]any)
+	if !ok {
+		return false
+	}
+	arguments, exists := function["arguments"]
+	if !exists {
+		return true
+	}
+	argumentsString, ok := arguments.(string)
+	return ok && json.Valid([]byte(argumentsString))
 }
 
 func chatCompletionMessageHasContent(msg map[string]any) bool {

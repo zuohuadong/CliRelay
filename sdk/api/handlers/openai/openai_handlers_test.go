@@ -289,6 +289,43 @@ func TestSanitizeChatCompletionsToolMessageHistoryDropsUnpairedItems(t *testing.
 	}
 }
 
+func TestSanitizeChatCompletionsToolMessageHistoryDropsInvalidToolCallArguments(t *testing.T) {
+	raw := []byte(`{"messages":[{"role":"user","content":"start"},{"role":"assistant","tool_calls":[{"id":"call-invalid","type":"function","function":{"name":"exec_command","arguments":"not-json"}},{"id":"call-valid","type":"function","function":{"name":"exec_command","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call-invalid","content":"invalid result"},{"role":"tool","tool_call_id":"call-valid","content":"valid result"},{"role":"user","content":"next"}]}`)
+
+	sanitized := sanitizeChatCompletionsToolMessageHistory(raw)
+
+	messages := gjson.GetBytes(sanitized, "messages").Array()
+	if len(messages) != 4 {
+		t.Fatalf("messages len = %d, want 4: %s", len(messages), sanitized)
+	}
+	if got := messages[1].Get("tool_calls.0.id").String(); got != "call-valid" {
+		t.Fatalf("kept tool call = %q, want call-valid: %s", got, sanitized)
+	}
+	if got := messages[2].Get("tool_call_id").String(); got != "call-valid" {
+		t.Fatalf("kept tool result = %q, want call-valid: %s", got, sanitized)
+	}
+	if strings.Contains(string(sanitized), "call-invalid") || strings.Contains(string(sanitized), "not-json") {
+		t.Fatalf("invalid tool-call arguments leaked through: %s", sanitized)
+	}
+}
+
+func TestSanitizeChatCompletionsToolMessageHistoryKeepsToolCallWithoutArguments(t *testing.T) {
+	raw := []byte(`{"messages":[{"role":"user","content":"start"},{"role":"assistant","tool_calls":[{"id":"call-1","type":"function","function":{"name":"exec_command"}}]},{"role":"tool","tool_call_id":"call-1","content":"result"},{"role":"user","content":"next"}]}`)
+
+	sanitized := sanitizeChatCompletionsToolMessageHistory(raw)
+
+	messages := gjson.GetBytes(sanitized, "messages").Array()
+	if len(messages) != 4 {
+		t.Fatalf("messages len = %d, want 4: %s", len(messages), sanitized)
+	}
+	if got := messages[1].Get("tool_calls.0.id").String(); got != "call-1" {
+		t.Fatalf("kept tool call = %q, want call-1: %s", got, sanitized)
+	}
+	if got := messages[2].Get("tool_call_id").String(); got != "call-1" {
+		t.Fatalf("kept tool result = %q, want call-1: %s", got, sanitized)
+	}
+}
+
 func TestSanitizeChatCompletionsToolMessageHistoryNormalizesCallID(t *testing.T) {
 	raw := []byte(`{"messages":[{"role":"assistant","tool_calls":[{"id":"call-1","type":"function","function":{"name":"exec_command","arguments":"{}"}}]},{"role":"tool","call_id":"call-1","content":"done"}]}`)
 

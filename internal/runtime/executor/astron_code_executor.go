@@ -756,7 +756,7 @@ func normalizeAstronToolMessageHistory(payload []byte) []byte {
 					continue
 				}
 				id := strings.TrimSpace(fmt.Sprint(tcMap["id"]))
-				if id == "" || availableToolResults[id] <= 0 {
+				if id == "" || !astronToolCallHasValidJSONArguments(tcMap) || availableToolResults[id] <= 0 {
 					changed = true
 					continue
 				}
@@ -824,6 +824,26 @@ func astronMessageHasContent(msg map[string]any) bool {
 	default:
 		return true
 	}
+}
+
+func astronToolCallHasValidJSONArguments(toolCall map[string]any) bool {
+	if toolCall == nil {
+		return false
+	}
+	functionValue, hasFunction := toolCall["function"]
+	if !strings.EqualFold(strings.TrimSpace(fmt.Sprint(toolCall["type"])), "function") && !hasFunction {
+		return true
+	}
+	function, ok := functionValue.(map[string]any)
+	if !ok {
+		return false
+	}
+	arguments, exists := function["arguments"]
+	if !exists {
+		return true
+	}
+	argumentsString, ok := arguments.(string)
+	return ok && json.Valid([]byte(argumentsString))
 }
 
 func (e *AstronCodeExecutor) normalizeAstronToolParallelism(payload []byte) []byte {

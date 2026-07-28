@@ -101,10 +101,12 @@ type Auth struct {
 }
 
 const (
-	AttributeAuthIndexSeed   = "auth_index_seed"
-	AttributePluginVirtual   = "plugin_virtual"
-	AttributeVirtualSource   = "virtual_source"
-	pluginVirtualAttrEnabled = "true"
+	AttributeAuthIndexSeed    = "auth_index_seed"
+	AttributePluginVirtual    = "plugin_virtual"
+	AttributeFileBundleMember = "file_bundle_member"
+	AttributeVirtualSource    = "virtual_source"
+	pluginVirtualAttrEnabled  = "true"
+	fileBundleMemberAttrValue = "true"
 )
 
 // MarkPluginVirtualAuth marks an auth that was expanded from a plugin-owned source file.
@@ -119,6 +121,30 @@ func MarkPluginVirtualAuth(auth *Auth, sourcePath string, ordinal int) {
 	sourcePath = strings.TrimSpace(sourcePath)
 	if sourcePath != "" {
 		auth.Attributes[AttributeVirtualSource] = sourcePath
+	}
+	markExpandedAuthIndex(auth, sourcePath, ordinal)
+}
+
+// MarkFileBundleAuth marks an auth expanded from a multi-account auth file.
+// Bundle members retain distinct runtime indexes, but remain manageable through
+// their source file rather than being treated as plugin-owned virtual auths.
+func MarkFileBundleAuth(auth *Auth, sourcePath string, ordinal int) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	auth.Attributes[AttributeFileBundleMember] = fileBundleMemberAttrValue
+	markExpandedAuthIndex(auth, sourcePath, ordinal)
+}
+
+func markExpandedAuthIndex(auth *Auth, sourcePath string, ordinal int) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
 	}
 	seedID := strings.TrimSpace(auth.ID)
 	if seedID == "" {
@@ -141,6 +167,15 @@ func IsPluginVirtualAuth(auth *Auth) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(auth.Attributes[AttributePluginVirtual]), pluginVirtualAttrEnabled)
+}
+
+// IsFileBundleAuth reports whether an auth is a member expanded from a
+// multi-account source auth file.
+func IsFileBundleAuth(auth *Auth) bool {
+	if auth == nil || len(auth.Attributes) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(auth.Attributes[AttributeFileBundleMember]), fileBundleMemberAttrValue)
 }
 
 const (

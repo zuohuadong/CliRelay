@@ -887,6 +887,37 @@ func TestFileSynthesizerLeavesFlatCodexAuthUnchanged(t *testing.T) {
 	}
 }
 
+func TestExpandCodexBundlePreservesSourceDisabledForAllMembers(t *testing.T) {
+	metadata := map[string]any{
+		"type":     "codex",
+		"disabled": true,
+		"accounts": []any{
+			map[string]any{
+				"disabled": false,
+				"credentials": map[string]any{
+					"email": "first@example.test",
+				},
+			},
+			map[string]any{
+				"disabled": false,
+				"credentials": map[string]any{
+					"email": "second@example.test",
+				},
+			},
+		},
+	}
+
+	expanded := expandCodexBundle(metadata)
+	if len(expanded) != 2 {
+		t.Fatalf("expandCodexBundle() len = %d, want 2", len(expanded))
+	}
+	for index, account := range expanded {
+		if disabled, _ := account["disabled"].(bool); !disabled {
+			t.Fatalf("expanded account %d disabled = %v, want true", index, account["disabled"])
+		}
+	}
+}
+
 func TestFileSynthesizerExpandsMultiAccountAgentIdentityBundle(t *testing.T) {
 	t.Parallel()
 
@@ -990,9 +1021,13 @@ func TestFileSynthesizerExpandsMultiAccountAgentIdentityBundle(t *testing.T) {
 	if identA == identB {
 		t.Fatalf("stable identities collide: %q", identA)
 	}
-	// Both marked as virtual expanded auths with distinct index seeds.
-	if !coreauth.IsPluginVirtualAuth(alice) || !coreauth.IsPluginVirtualAuth(bob) {
-		t.Fatalf("multi-account auths must be marked virtual: alice=%v bob=%v", coreauth.IsPluginVirtualAuth(alice), coreauth.IsPluginVirtualAuth(bob))
+	// Bundle members are independently indexed without being treated as
+	// plugin-owned virtual auths, so management can disable/delete their source.
+	if coreauth.IsPluginVirtualAuth(alice) || coreauth.IsPluginVirtualAuth(bob) {
+		t.Fatalf("multi-account auths must not be plugin virtual: alice=%v bob=%v", coreauth.IsPluginVirtualAuth(alice), coreauth.IsPluginVirtualAuth(bob))
+	}
+	if !coreauth.IsFileBundleAuth(alice) || !coreauth.IsFileBundleAuth(bob) {
+		t.Fatalf("multi-account auths must be marked as bundle members: alice=%v bob=%v", coreauth.IsFileBundleAuth(alice), coreauth.IsFileBundleAuth(bob))
 	}
 	if alice.Attributes[coreauth.AttributeAuthIndexSeed] == bob.Attributes[coreauth.AttributeAuthIndexSeed] {
 		t.Fatalf("index seeds collide: %q", alice.Attributes[coreauth.AttributeAuthIndexSeed])

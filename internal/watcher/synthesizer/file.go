@@ -165,7 +165,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			}
 			if multi {
 				auth.ID = baseID + "#" + strconv.Itoa(index)
-				coreauth.MarkPluginVirtualAuth(auth, fullPath, index)
+				coreauth.MarkFileBundleAuth(auth, fullPath, index)
 			}
 			out = append(out, auth)
 		}
@@ -445,6 +445,12 @@ func expandCodexBundle(metadata map[string]any) []map[string]any {
 		// covers email; cover the rest here.
 		for _, key := range []string{"priority", "name", "disabled", "proxy_url", "prefix", "note"} {
 			if value, ok := account[key]; ok {
+				if key == "disabled" {
+					sourceDisabled, _ := clone[key].(bool)
+					accountDisabled, _ := value.(bool)
+					clone[key] = sourceDisabled || accountDisabled
+					continue
+				}
 				clone[key] = value
 			}
 		}

@@ -209,6 +209,111 @@ func TestDeletePluginVirtualSourceRemovesExpandedRuntimeAuths(t *testing.T) {
 	}
 }
 
+func TestPatchFileBundleMemberStatusUpdatesSourceAndAllMembers(t *testing.T) {
+	authDir := t.TempDir()
+	fileName := "team.json"
+	filePath := filepath.Join(authDir, fileName)
+	if errWrite := os.WriteFile(filePath, []byte(`{"type":"codex","disabled":false,"accounts":[]}`), 0o600); errWrite != nil {
+		t.Fatalf("write bundle source auth file: %v", errWrite)
+	}
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	for index, id := range []string{"team.json#0", "team.json#1"} {
+		auth := fileBundleAuthForTest(authDir, fileName, id, index)
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register bundle auth %s: %v", id, errRegister)
+		}
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/status", strings.NewReader(`{"name":"team.json#1","disabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+
+	h.PatchAuthFileStatus(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	raw, errRead := os.ReadFile(filePath)
+	if errRead != nil {
+		t.Fatalf("read bundle source auth file: %v", errRead)
+	}
+	if !strings.Contains(string(raw), `"disabled":true`) {
+		t.Fatalf("bundle source auth file = %s, want disabled:true", string(raw))
+	}
+	for _, id := range []string{"team.json#0", "team.json#1"} {
+		auth, ok := manager.GetByID(id)
+		if !ok || auth == nil {
+			t.Fatalf("expected bundle auth %s to remain registered", id)
+		}
+		if !auth.Disabled || auth.Status != coreauth.StatusDisabled {
+			t.Fatalf("bundle auth %s disabled/status = %v/%s, want disabled", id, auth.Disabled, auth.Status)
+		}
+	}
+}
+
+func TestDeleteFileBundleMemberRemovesSourceAndAllMembers(t *testing.T) {
+	authDir := t.TempDir()
+	fileName := "team.json"
+	filePath := filepath.Join(authDir, fileName)
+	if errWrite := os.WriteFile(filePath, []byte(`{"type":"codex","accounts":[]}`), 0o600); errWrite != nil {
+		t.Fatalf("write bundle source auth file: %v", errWrite)
+	}
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	for index, id := range []string{"team.json#0", "team.json#1"} {
+		auth := fileBundleAuthForTest(authDir, fileName, id, index)
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register bundle auth %s: %v", id, errRegister)
+		}
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+	h.tokenStore = &memoryAuthStore{}
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodDelete, "/v0/management/auth-files?name="+url.QueryEscape("team.json#1"), nil)
+	ctx.Request = req
+
+	h.DeleteAuthFile(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if _, errStat := os.Stat(filePath); !os.IsNotExist(errStat) {
+		t.Fatalf("expected bundle source auth file to be removed, stat err: %v", errStat)
+	}
+	for _, id := range []string{"team.json#0", "team.json#1"} {
+		if _, ok := manager.GetByID(id); ok {
+			t.Fatalf("expected bundle auth %s to be removed", id)
+		}
+	}
+}
+
+func TestPatchFileBundleMemberFieldsReturnsConflict(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := fileBundleAuthForTest(t.TempDir(), "team.json", "team.json#0", 0)
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register bundle auth: %v", errRegister)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(`{"name":"team.json#0","note":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+
+	h.PatchAuthFileFields(ctx)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}
+
 func pluginVirtualAuthForTest(authDir, fileName, id string) *coreauth.Auth {
 	filePath := filepath.Join(authDir, fileName)
 	auth := &coreauth.Auth{
@@ -223,6 +328,24 @@ func pluginVirtualAuthForTest(authDir, fileName, id string) *coreauth.Auth {
 		},
 	}
 	coreauth.MarkPluginVirtualAuth(auth, filePath, 0)
+	return auth
+}
+
+func fileBundleAuthForTest(authDir, fileName, id string, ordinal int) *coreauth.Auth {
+	filePath := filepath.Join(authDir, fileName)
+	auth := &coreauth.Auth{
+		ID:       id,
+		FileName: id,
+		Provider: "codex",
+		Attributes: map[string]string{
+			"path":   filePath,
+			"source": filePath,
+		},
+		Metadata: map[string]any{
+			"type": "codex",
+		},
+	}
+	coreauth.MarkFileBundleAuth(auth, filePath, ordinal)
 	return auth
 }
 

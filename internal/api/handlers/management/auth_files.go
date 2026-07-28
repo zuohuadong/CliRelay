@@ -68,6 +68,7 @@ var (
 	errAuthFileMustBeJSON  = errors.New("auth file must be .json")
 	errAuthFileNotFound    = errors.New("auth file not found")
 	errPluginVirtualAuth   = errors.New("plugin virtual auth cannot be modified directly; edit or delete the source auth file")
+	errFileBundleAuth      = errors.New("multi-account auth bundle member cannot be modified directly; edit the source auth file")
 	newCodexOAuthService   = func(_ *config.Config, client *http.Client) codexOAuthService {
 		return codex.NewCodexAuthWithHTTPClient(client)
 	}
@@ -1650,7 +1651,19 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": errPluginVirtualAuth.Error()})
 			return
 		}
-		if errPatch := h.patchPluginVirtualSourceStatus(ctx, targetAuth, *req.Disabled); errPatch != nil {
+		if errPatch := h.patchSourceAuthFileStatus(ctx, targetAuth, *req.Disabled); errPatch != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(errPatch, errAuthFileNotFound) || os.IsNotExist(errPatch) {
+				status = http.StatusNotFound
+			}
+			c.JSON(status, gin.H{"error": errPatch.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
+		return
+	}
+	if coreauth.IsFileBundleAuth(targetAuth) {
+		if errPatch := h.patchSourceAuthFileStatus(ctx, targetAuth, *req.Disabled); errPatch != nil {
 			status := http.StatusInternalServerError
 			if errors.Is(errPatch, errAuthFileNotFound) || os.IsNotExist(errPatch) {
 				status = http.StatusNotFound
@@ -1702,9 +1715,10 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
 }
 
-// patchPluginVirtualSourceStatus toggles disabled on a plugin multi-auth source file and all
-// runtime auths expanded from it. Virtual project children cannot be toggled independently.
-func (h *Handler) patchPluginVirtualSourceStatus(ctx context.Context, targetAuth *coreauth.Auth, disabled bool) error {
+// patchSourceAuthFileStatus toggles disabled on the source file and every
+// runtime auth expanded from it, including plugin project auths and members of
+// a multi-account auth bundle.
+func (h *Handler) patchSourceAuthFileStatus(ctx context.Context, targetAuth *coreauth.Auth, disabled bool) error {
 	if h == nil || h.authManager == nil || targetAuth == nil {
 		return fmt.Errorf("core auth manager unavailable")
 	}
@@ -1713,7 +1727,7 @@ func (h *Handler) patchPluginVirtualSourceStatus(ctx context.Context, targetAuth
 		sourcePath = strings.TrimSpace(authAttribute(targetAuth, "path"))
 	}
 	if sourcePath == "" {
-		return errPluginVirtualAuth
+		return fmt.Errorf("source auth path is empty")
 	}
 	if errWrite := setSourceAuthFileDisabled(sourcePath, disabled); errWrite != nil {
 		if os.IsNotExist(errWrite) {
@@ -1841,6 +1855,10 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 	if coreauth.IsPluginVirtualAuth(targetAuth) {
 		c.JSON(http.StatusConflict, gin.H{"error": errPluginVirtualAuth.Error()})
+		return
+	}
+	if coreauth.IsFileBundleAuth(targetAuth) {
+		c.JSON(http.StatusConflict, gin.H{"error": errFileBundleAuth.Error()})
 		return
 	}
 

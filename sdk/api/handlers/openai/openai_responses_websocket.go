@@ -2790,7 +2790,7 @@ func writeResponsesWebsocketError(conn *websocket.Conn, wsTimelineLog websocketT
 		}
 	}
 
-	if handlers.IsOpenAIResponsesContextWindowError(status, errText) {
+	if handlers.IsOpenAIResponsesContextWindowError(status, errText) || isResponsesServiceUnavailableTerminalError(status, errText) {
 		failedPayload := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
 		return failedPayload, writeResponsesWebsocketPayload(conn, wsTimelineLog, failedPayload, time.Now())
 	}

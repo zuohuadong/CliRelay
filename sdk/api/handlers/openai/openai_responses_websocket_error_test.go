@@ -59,6 +59,52 @@ func TestBuildResponsesWebsocketErrorPayloadWritesFailedForContextWindow(t *test
 	}
 }
 
+func TestWriteResponsesWebsocketErrorWritesFailedForOverload(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer func() {
+			_ = conn.Close()
+		}()
+
+		errMsg := &interfaces.ErrorMessage{
+			StatusCode: http.StatusServiceUnavailable,
+			Error:      jsonError(`{"error":{"code":"server_is_overloaded","type":"service_unavailable_error","message":"Our servers are currently overloaded. Please try again later."}}`),
+		}
+		errorPayload, errWrite := writeResponsesWebsocketError(conn, nil, errMsg)
+		if errWrite != nil {
+			t.Fatalf("write websocket error: %v", errWrite)
+		}
+		if len(errorPayload) == 0 {
+			t.Fatalf("expected websocket error payload")
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	if _, failedPayload, errRead := conn.ReadMessage(); errRead != nil {
+		t.Fatalf("read websocket failed payload: %v", errRead)
+	} else if got := gjson.GetBytes(failedPayload, "type").String(); got != "response.failed" {
+		t.Fatalf("payload type = %q, want response.failed; payload=%s", got, failedPayload)
+	} else if got := gjson.GetBytes(failedPayload, "response.status").String(); got != "failed" {
+		t.Fatalf("response.status = %q, want failed; payload=%s", got, failedPayload)
+	} else if got := gjson.GetBytes(failedPayload, "response.error.code").String(); got != "server_is_overloaded" {
+		t.Fatalf("response.error.code = %q, want server_is_overloaded; payload=%s", got, failedPayload)
+	}
+}
+
 func TestWriteResponsesWebsocketErrorSynthesizesCompletedForRateLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

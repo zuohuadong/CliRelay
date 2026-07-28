@@ -158,7 +158,7 @@ func (f *responsesSSEFramer) WriteDone(w io.Writer) {
 
 func (f *responsesSSEFramer) WriteTerminalError(w io.Writer, status int, errText string) {
 	f.Flush(w)
-	if handlers.IsOpenAIResponsesContextWindowError(status, errText) {
+	if handlers.IsOpenAIResponsesContextWindowError(status, errText) || isResponsesServiceUnavailableTerminalError(status, errText) {
 		failedPayload := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
 		writeResponsesSSEChunk(w, responsesSSEFrameWithData([]byte("event: response.failed\n"), failedPayload))
 		return
@@ -379,6 +379,15 @@ func buildResponsesTerminalErrorPayloads(status int, errText string) ([]byte, []
 		}
 	}
 	return itemPayloadJSON, completedPayload
+}
+
+func isResponsesServiceUnavailableTerminalError(status int, errText string) bool {
+	failedPayload := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
+	code := strings.TrimSpace(gjson.GetBytes(failedPayload, "response.error.code").String())
+	errType := strings.TrimSpace(gjson.GetBytes(failedPayload, "response.error.type").String())
+	return status == http.StatusServiceUnavailable ||
+		strings.EqualFold(code, "server_is_overloaded") ||
+		strings.EqualFold(errType, "service_unavailable_error")
 }
 
 func responsesSSEFrameLen(chunk []byte) int {

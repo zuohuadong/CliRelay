@@ -1657,6 +1657,7 @@ func TestNormalizeResponsesToolCallItemIDPreservesValidPrefixes(t *testing.T) {
 		{name: "fc underscore prefix preserved", item: `{"type":"function_call","id":"fc_abc","call_id":"call_abc","name":"t","arguments":"{}"}`, want: "fc_abc"},
 		{name: "fc dash prefix preserved", item: `{"type":"function_call","id":"fc-1","call_id":"call-1","name":"t","arguments":"{}"}`, want: "fc-1"},
 		{name: "call underscore rewritten", item: `{"type":"function_call","id":"call_c24e","call_id":"call_c24e","name":"t","arguments":"{}"}`, want: "fc_c24e"},
+		{name: "codex internal function id rewritten", item: `{"type":"function_call","id":"functions_exec_command_0_7ca4ee899e52361f","call_id":"call_abc","name":"exec_command","arguments":"{}"}`, want: "fc_functions_exec_command_0_7ca4ee899e52361f"},
 		{name: "bare id left alone", item: `{"type":"function_call","id":"abc","call_id":"call_abc","name":"t","arguments":"{}"}`, want: "abc"},
 		{name: "ctc dash id left alone", item: `{"type":"custom_tool_call","id":"ctc-compact","call_id":"call-1","name":"apply_patch","arguments":"{}"}`, want: "ctc-compact"},
 		{name: "empty id left alone", item: `{"type":"function_call","id":"","call_id":"call_x","name":"t","arguments":"{}"}`, want: ""},
@@ -1675,6 +1676,69 @@ func TestNormalizeResponsesToolCallItemIDPreservesValidPrefixes(t *testing.T) {
 				t.Fatalf("id = %q, want %q: %s", got, tc.want, updated)
 			}
 		})
+	}
+}
+
+func TestNormalizeResponsesWebsocketPassthroughRequestNormalizesCodexFunctionCallID(t *testing.T) {
+	raw := []byte(`{"type":"response.create","model":"gpt-5.4","input":[{"type":"function_call","id":"functions_exec_command_0_7ca4ee899e52361f","call_id":"call_abc","name":"exec_command","arguments":"{}"},{"type":"function_call_output","call_id":"call_abc","output":"ok"},{"type":"custom_tool_call","id":"call_custom","call_id":"call_custom","name":"apply_patch","input":"*** Begin Patch"},{"type":"custom_tool_call_output","call_id":"call_custom","output":"done"}]}`)
+
+	normalized, errMsg := normalizeResponsesWebsocketPassthroughRequest(raw, "")
+	if errMsg != nil {
+		t.Fatalf("unexpected passthrough normalization error: %v", errMsg.Error)
+	}
+
+	input := gjson.GetBytes(normalized, "input").Array()
+	if len(input) != 4 {
+		t.Fatalf("input len = %d, want 4: %s", len(input), normalized)
+	}
+	if got := input[0].Get("id").String(); got != "fc_functions_exec_command_0_7ca4ee899e52361f" {
+		t.Fatalf("function_call id = %q, want fc-prefixed ID: %s", got, normalized)
+	}
+	if got := input[0].Get("call_id").String(); got != "call_abc" {
+		t.Fatalf("function_call call_id = %q, want unchanged call_abc: %s", got, normalized)
+	}
+	if got := input[1].Get("call_id").String(); got != "call_abc" {
+		t.Fatalf("function_call_output call_id = %q, want unchanged call_abc: %s", got, normalized)
+	}
+	if got := input[2].Get("id").String(); got != "call_custom" {
+		t.Fatalf("custom_tool_call id = %q, want unchanged call_custom: %s", got, normalized)
+	}
+	if got := input[2].Get("call_id").String(); got != "call_custom" {
+		t.Fatalf("custom_tool_call call_id = %q, want unchanged call_custom: %s", got, normalized)
+	}
+	if got := input[3].Get("call_id").String(); got != "call_custom" {
+		t.Fatalf("custom_tool_call_output call_id = %q, want unchanged call_custom: %s", got, normalized)
+	}
+}
+
+func TestBuildPassthroughTranscriptReplayPayloadNormalizesCodexFunctionCallID(t *testing.T) {
+	clientPayload := []byte(`{"type":"response.create","previous_response_id":"resp_abc","input":[{"type":"message","role":"user","content":"continue"}]}`)
+	accumulatedInput := []byte(`[{"type":"function_call","id":"functions_exec_command_0_7ca4ee899e52361f","call_id":"call_abc","name":"exec_command","arguments":"{}"},{"type":"function_call_output","call_id":"call_abc","output":"ok"},{"type":"custom_tool_call","id":"call_custom","call_id":"call_custom","name":"apply_patch","input":"*** Begin Patch"},{"type":"custom_tool_call_output","call_id":"call_custom","output":"done"}]`)
+
+	replay, err := buildPassthroughTranscriptReplayPayload(clientPayload, accumulatedInput, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("build replay payload: %v", err)
+	}
+	if gjson.GetBytes(replay, "previous_response_id").Exists() {
+		t.Fatalf("replay must omit previous_response_id: %s", replay)
+	}
+	if got := gjson.GetBytes(replay, "input.0.id").String(); got != "fc_functions_exec_command_0_7ca4ee899e52361f" {
+		t.Fatalf("replay function_call id = %q, want fc-prefixed ID: %s", got, replay)
+	}
+	if got := gjson.GetBytes(replay, "input.0.call_id").String(); got != "call_abc" {
+		t.Fatalf("replay function_call call_id = %q, want unchanged call_abc: %s", got, replay)
+	}
+	if got := gjson.GetBytes(replay, "input.1.call_id").String(); got != "call_abc" {
+		t.Fatalf("replay function_call_output call_id = %q, want unchanged call_abc: %s", got, replay)
+	}
+	if got := gjson.GetBytes(replay, "input.2.id").String(); got != "call_custom" {
+		t.Fatalf("replay custom_tool_call id = %q, want unchanged call_custom: %s", got, replay)
+	}
+	if got := gjson.GetBytes(replay, "input.2.call_id").String(); got != "call_custom" {
+		t.Fatalf("replay custom_tool_call call_id = %q, want unchanged call_custom: %s", got, replay)
+	}
+	if got := gjson.GetBytes(replay, "input.3.call_id").String(); got != "call_custom" {
+		t.Fatalf("replay custom_tool_call_output call_id = %q, want unchanged call_custom: %s", got, replay)
 	}
 }
 

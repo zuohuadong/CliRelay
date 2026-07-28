@@ -1708,7 +1708,7 @@ func normalizeResponsesWebsocketPassthroughRequest(rawJSON []byte, modelName str
 		normalized, _ = sjson.SetBytes(normalized, "model", modelName)
 	}
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
-	return normalized, nil
+	return normalizeResponsesInputToolCallIDs(normalized), nil
 }
 
 // accumulatePassthroughTranscript 把客户端 input 累积到现有 transcript。
@@ -1753,7 +1753,11 @@ func buildPassthroughTranscriptReplayPayload(clientPayload []byte, accumulatedIn
 			obj["model"] = json.RawMessage(modelBytes)
 		}
 	}
-	return json.Marshal(obj)
+	payload, errMarshal := json.Marshal(obj)
+	if errMarshal != nil {
+		return nil, errMarshal
+	}
+	return normalizeResponsesInputToolCallIDs(payload), nil
 }
 
 func responsesWebsocketResolvedModelName(modelName string) string {

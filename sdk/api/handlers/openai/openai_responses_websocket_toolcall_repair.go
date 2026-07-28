@@ -337,6 +337,39 @@ func sanitizeResponsesInputToolCallNames(payload []byte) []byte {
 	return updated
 }
 
+func normalizeResponsesInputToolCallIDs(payload []byte) []byte {
+	input := gjson.GetBytes(payload, "input")
+	if !input.Exists() || !input.IsArray() {
+		return payload
+	}
+
+	var items []json.RawMessage
+	if errUnmarshal := json.Unmarshal([]byte(input.Raw), &items); errUnmarshal != nil {
+		return payload
+	}
+
+	changed := false
+	for i, item := range items {
+		if normalized, ok := normalizeResponsesCodexFunctionCallItemID(item); ok {
+			items[i] = normalized
+			changed = true
+		}
+	}
+	if !changed {
+		return payload
+	}
+
+	normalizedInput, errMarshal := json.Marshal(items)
+	if errMarshal != nil {
+		return payload
+	}
+	updated, errSet := sjson.SetRawBytes(payload, "input", normalizedInput)
+	if errSet != nil {
+		return payload
+	}
+	return updated
+}
+
 func sanitizeResponsesInputToolCallHistory(payload []byte) []byte {
 	input := gjson.GetBytes(payload, "input")
 	if !input.Exists() || !input.IsArray() {
@@ -427,13 +460,28 @@ func sanitizeResponsesToolCallNamesArray(rawArray string) (string, error) {
 	return string(out), nil
 }
 
+func normalizeResponsesCodexFunctionCallItemID(item json.RawMessage) (json.RawMessage, bool) {
+	if len(item) == 0 || strings.TrimSpace(gjson.GetBytes(item, "type").String()) != "function_call" {
+		return item, false
+	}
+	id := strings.TrimSpace(gjson.GetBytes(item, "id").String())
+	if !strings.HasPrefix(id, "functions_") {
+		return item, false
+	}
+	updated, errSet := sjson.SetBytes(item, "id", "fc_"+id)
+	if errSet != nil {
+		return item, false
+	}
+	return updated, true
+}
+
 // normalizeResponsesToolCallItemID rewrites the id field of a function_call
 // or custom_tool_call input item so that it begins with the "fc" prefix
-// required by the Responses API. Only ids that mirror the chat-completions
-// "call_<hash>" format are rewritten; other prefixes (e.g. "ctc-") are left
-// untouched because we cannot assume upstream rejects them. Returns the
-// updated item and true when the id was rewritten; returns the original item
-// and false otherwise.
+// required by the Responses API. It also repairs the Codex client's internal
+// "functions_<tool>_<index>_<hash>" function_call ids. Other prefixes (e.g.
+// "ctc-") are left untouched because we cannot assume upstream rejects them.
+// Returns the updated item and true when the id was rewritten; returns the
+// original item and false otherwise.
 func normalizeResponsesToolCallItemID(item json.RawMessage) (json.RawMessage, bool) {
 	if len(item) == 0 {
 		return item, false
@@ -441,6 +489,9 @@ func normalizeResponsesToolCallItemID(item json.RawMessage) (json.RawMessage, bo
 	id := strings.TrimSpace(gjson.GetBytes(item, "id").String())
 	if id == "" || strings.HasPrefix(id, "fc") {
 		return item, false
+	}
+	if normalized, ok := normalizeResponsesCodexFunctionCallItemID(item); ok {
+		return normalized, true
 	}
 	// Only rewrite ids that mirror the chat-completions "call_<hash>" format.
 	if !strings.HasPrefix(id, "call_") {

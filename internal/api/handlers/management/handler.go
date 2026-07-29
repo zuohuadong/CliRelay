@@ -35,6 +35,15 @@ type attemptInfo struct {
 	lastFailureAt time.Time // dedup concurrent failures within a short window
 }
 
+type managementAuthClass string
+
+const (
+	managementAuthClassContextKey = "management.auth.class"
+	managementAuthClassNone       = managementAuthClass("")
+	managementAuthClassAdmin      = managementAuthClass("admin")
+	managementAuthClassShare      = managementAuthClass("share")
+)
+
 // attemptCleanupInterval controls how often stale IP entries are purged
 const attemptCleanupInterval = 1 * time.Hour
 
@@ -85,6 +94,7 @@ type Handler struct {
 	managementAuthFlight          singleflight.Group
 	managementAuthGeneration      uint64
 	channelLatencyLoader          func(context.Context, int) ([]usage.ChannelLatency, error)
+	agentIdentityRegistrar        agentIdentityRegistrarFactory
 }
 
 type configReloadSnapshot struct {
@@ -350,11 +360,12 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 			return
 		}
 
-		allowed, statusCode, errMsg := h.AuthenticateManagementKey(clientIP, localClient, provided)
+		allowed, statusCode, errMsg, credentialClass := h.authenticateManagementKey(clientIP, localClient, provided)
 		if !allowed {
 			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
 			return
 		}
+		c.Set(managementAuthClassContextKey, credentialClass)
 		c.Next()
 	}
 }
@@ -392,12 +403,17 @@ func (h *Handler) handleAPIKeyBillingSelfAccess(c *gin.Context, managementKey st
 // AuthenticateManagementKey verifies the provided management key for the given client.
 // It mirrors the behaviour of Middleware() so non-HTTP callers can reuse the same logic.
 func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string) {
+	allowed, statusCode, message, _ := h.authenticateManagementKey(clientIP, localClient, provided)
+	return allowed, statusCode, message
+}
+
+func (h *Handler) authenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string, managementAuthClass) {
 	const maxFailures = 5
 	const banDuration = 30 * time.Minute
 	const failureDedupWindow = 1 * time.Second
 
 	if h == nil {
-		return false, http.StatusForbidden, "remote management disabled"
+		return false, http.StatusForbidden, "remote management disabled", managementAuthClassNone
 	}
 
 	authSnapshot := h.managementAuthSnapshot()
@@ -406,70 +422,29 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	envSecret := authSnapshot.envSecret
 
 	if !localClient && !allowRemote {
-		return false, http.StatusForbidden, "remote management disabled"
+		return false, http.StatusForbidden, "remote management disabled", managementAuthClassNone
 	}
 
 	if secretHash == "" && envSecret == "" {
-		return false, http.StatusForbidden, "remote management key not set"
+		return false, http.StatusForbidden, "remote management key not set", managementAuthClassNone
 	}
 
 	if provided == "" {
-		return false, http.StatusUnauthorized, "missing management key"
+		return false, http.StatusUnauthorized, "missing management key", managementAuthClassNone
 	}
 
-	keyValid := false
-	if localClient {
-		if lp := authSnapshot.localPassword; lp != "" {
-			if subtle.ConstantTimeCompare([]byte(provided), []byte(lp)) == 1 {
-				keyValid = true
-			}
-		}
-	}
-	if !keyValid && envSecret != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(envSecret)) == 1 {
-		keyValid = true
-	}
-	if !keyValid && envSecret != "" {
-		envHash := sha256.Sum256([]byte(envSecret))
-		envHashHex := hex.EncodeToString(envHash[:])
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(envHashHex)) == 1 {
-			keyValid = true
-		}
-	}
-	if !keyValid {
-		if shareToken := authSnapshot.shareToken; shareToken != "" {
-			if strings.HasPrefix(shareToken, "sha256:") {
-				storedHash := strings.TrimPrefix(shareToken, "sha256:")
-				providedHash := sha256.Sum256([]byte(provided))
-				providedHashHex := hex.EncodeToString(providedHash[:])
-				if subtle.ConstantTimeCompare([]byte(providedHashHex), []byte(storedHash)) == 1 {
-					keyValid = true
-				}
-			} else {
-				if subtle.ConstantTimeCompare([]byte(provided), []byte(shareToken)) == 1 {
-					keyValid = true
-				}
-				if !keyValid {
-					shareHash := sha256.Sum256([]byte(shareToken))
-					shareHashHex := hex.EncodeToString(shareHash[:])
-					if subtle.ConstantTimeCompare([]byte(provided), []byte(shareHashHex)) == 1 {
-						keyValid = true
-					}
-				}
-			}
-		}
-	}
-	if !keyValid && secretHash != "" && h.verifyHashedManagementPassword(authSnapshot.generation, secretHash, provided) {
-		keyValid = true
-	}
+	credentialClass := h.managementCredentialClass(authSnapshot, localClient, provided)
+	keyValid := credentialClass != managementAuthClassNone
 	if keyValid && !h.managementAuthGenerationStillCurrent(authSnapshot.generation) {
 		keyValid = false
+		credentialClass = managementAuthClassNone
 	}
 
 	if keyValid {
 		h.attemptsMu.Lock()
 		delete(h.failedAttempts, clientIP)
 		h.attemptsMu.Unlock()
-		return true, 0, ""
+		return true, 0, "", credentialClass
 	}
 
 	now := time.Now()
@@ -478,7 +453,7 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	if ai != nil && !ai.blockedUntil.IsZero() && now.Before(ai.blockedUntil) {
 		remaining := ai.blockedUntil.Sub(now).Round(time.Second)
 		h.attemptsMu.Unlock()
-		return false, http.StatusForbidden, fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)
+		return false, http.StatusForbidden, fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining), managementAuthClassNone
 	}
 	if ai != nil && !ai.blockedUntil.IsZero() {
 		ai.blockedUntil = time.Time{}
@@ -486,7 +461,7 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	}
 	if ai != nil && !ai.lastFailureAt.IsZero() && now.Sub(ai.lastFailureAt) < failureDedupWindow {
 		h.attemptsMu.Unlock()
-		return false, http.StatusUnauthorized, "invalid management key"
+		return false, http.StatusUnauthorized, "invalid management key", managementAuthClassNone
 	}
 	if ai == nil {
 		ai = &attemptInfo{}
@@ -501,7 +476,70 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	}
 	h.attemptsMu.Unlock()
 
-	return false, http.StatusUnauthorized, "invalid management key"
+	return false, http.StatusUnauthorized, "invalid management key", managementAuthClassNone
+}
+
+func (h *Handler) managementCredentialClass(snapshot managementAuthSnapshot, localClient bool, provided string) managementAuthClass {
+	if localClient && constantTimeStringEqual(provided, snapshot.localPassword) {
+		return managementAuthClassAdmin
+	}
+	if constantTimeStringEqual(provided, snapshot.envSecret) || managementSecretHashEqual(provided, snapshot.envSecret) {
+		return managementAuthClassAdmin
+	}
+	if snapshot.secretHash != "" && h.verifyHashedManagementPassword(snapshot.generation, snapshot.secretHash, provided) {
+		return managementAuthClassAdmin
+	}
+	if managementShareTokenEqual(provided, snapshot.shareToken) {
+		return managementAuthClassShare
+	}
+	return managementAuthClassNone
+}
+
+func constantTimeStringEqual(provided, expected string) bool {
+	return expected != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+}
+
+func managementSecretHashEqual(provided, secret string) bool {
+	if secret == "" {
+		return false
+	}
+	digest := sha256.Sum256([]byte(secret))
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(hex.EncodeToString(digest[:]))) == 1
+}
+
+func managementShareTokenEqual(provided, shareToken string) bool {
+	shareToken = strings.TrimSpace(shareToken)
+	if shareToken == "" {
+		return false
+	}
+	if strings.HasPrefix(shareToken, "sha256:") {
+		digest := sha256.Sum256([]byte(provided))
+		return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(digest[:])), []byte(strings.TrimPrefix(shareToken, "sha256:"))) == 1
+	}
+	return constantTimeStringEqual(provided, shareToken) || managementSecretHashEqual(provided, shareToken)
+}
+
+func managementAuthClassFromContext(c *gin.Context) managementAuthClass {
+	if c == nil {
+		return managementAuthClassNone
+	}
+	credentialClass, _ := c.Get(managementAuthClassContextKey)
+	switch typed := credentialClass.(type) {
+	case managementAuthClass:
+		return typed
+	case string:
+		return managementAuthClass(typed)
+	default:
+		return managementAuthClassNone
+	}
+}
+
+func requireAdminManagementCredential(c *gin.Context) bool {
+	if managementAuthClassFromContext(c) == managementAuthClassAdmin {
+		return true
+	}
+	c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "admin management credential required"})
+	return false
 }
 
 // persist saves the current in-memory config to disk.

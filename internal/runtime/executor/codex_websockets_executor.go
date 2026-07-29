@@ -422,7 +422,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			return e.CodexExecutor.Execute(ctx, auth, req, opts)
 		}
 		if respHS != nil && respHS.StatusCode > 0 {
-			return resp, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
+			return resp, newCodexStatusErrForResponse(respHS, bodyErr)
 		}
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
 		return resp, errDial
@@ -528,6 +528,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		helps.AppendAPIWebsocketResponse(ctx, e.cfg, payload)
 
 		if wsErr, ok := parseCodexWebsocketError(payload); ok {
+			wsErr = withCodexRequestAuthScheme(wsErr, agentIdentityRequestAuthScheme(auth))
 			if sess != nil {
 				e.invalidateUpstreamConn(sess, conn, "upstream_error", wsErr)
 			}
@@ -538,6 +539,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			return resp, wsErr
 		}
 		if streamErr, terminalBody, ok := codexTerminalFailureErr(payload); ok {
+			streamErr.requestAuthScheme = agentIdentityRequestAuthScheme(auth)
 			if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 				return resp, errClearReplay
 			}
@@ -545,6 +547,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}
 
 		if terminalErr, _, ok := codexTerminalStreamErr(payload); ok {
+			terminalErr.requestAuthScheme = agentIdentityRequestAuthScheme(auth)
 			if sess != nil {
 				e.invalidateUpstreamConn(sess, conn, "upstream_error", terminalErr)
 			}
@@ -704,7 +707,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if sess != nil {
 				sess.reqMu.Unlock()
 			}
-			return nil, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
+			return nil, newCodexStatusErrForResponse(respHS, bodyErr)
 		}
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
 		if sess != nil {
@@ -853,6 +856,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			helps.AppendAPIWebsocketResponse(ctx, e.cfg, payload)
 
 			if wsErr, ok := parseCodexWebsocketError(payload); ok {
+				wsErr = withCodexRequestAuthScheme(wsErr, agentIdentityRequestAuthScheme(auth))
 				terminateReason = "upstream_error"
 				terminateErr = wsErr
 				if sess != nil {
@@ -871,6 +875,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return
 			}
 			if streamErr, terminalBody, ok := codexTerminalFailureErr(payload); ok {
+				streamErr.requestAuthScheme = agentIdentityRequestAuthScheme(auth)
 				terminateReason = "upstream_error"
 				terminateErr = streamErr
 				if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
@@ -887,6 +892,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 
 			if terminalErr, _, ok := codexTerminalStreamErr(payload); ok {
+				terminalErr.requestAuthScheme = agentIdentityRequestAuthScheme(auth)
 				terminateReason = "upstream_error"
 				terminateErr = terminalErr
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", terminalErr)
@@ -950,8 +956,11 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 }
 
 func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *cliproxyauth.Auth, wsURL string, headers http.Header) (*websocket.Conn, *http.Response, error) {
+	dialHeaders, err := applyAgentIdentityWebsocketHeaders(headers, auth, wsURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("codex websocket: apply Agent Identity auth: %w", err)
+	}
 	var dialer *websocket.Dialer
-	var err error
 	if e != nil && e.CodexExecutor != nil && e.CodexExecutor.usesStrictEgress(auth) {
 		proxyURL := ""
 		if auth != nil {
@@ -969,7 +978,10 @@ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	conn, resp, err := dialer.DialContext(ctx, wsURL, headers)
+	conn, resp, err := dialer.DialContext(ctx, wsURL, dialHeaders)
+	if resp != nil && resp.Request == nil {
+		resp.Request = &http.Request{Header: dialHeaders.Clone()}
+	}
 	// Gorilla returns a nil response for transport and HTTP CONNECT proxy
 	// failures. A non-nil response is the real upstream WebSocket handshake and
 	// must keep its upstream semantics instead of being mislabeled as egress.
@@ -1466,13 +1478,6 @@ func codexSessionHeaderValue(headers http.Header) string {
 	return ""
 }
 
-func codexAuthUsesAPIKey(auth *cliproxyauth.Auth) bool {
-	if auth == nil || auth.Attributes == nil {
-		return false
-	}
-	return strings.TrimSpace(auth.Attributes["api_key"]) != ""
-}
-
 func ensureHeaderCasePreserved(target http.Header, source http.Header, key, configValue, fallbackValue string) {
 	if target == nil {
 		return
@@ -1643,6 +1648,19 @@ type statusErrWithHeaders struct {
 	headers http.Header
 }
 
+func withCodexRequestAuthScheme(err error, scheme string) error {
+	switch typed := err.(type) {
+	case statusErr:
+		typed.requestAuthScheme = scheme
+		return typed
+	case statusErrWithHeaders:
+		typed.statusErr.requestAuthScheme = scheme
+		return typed
+	default:
+		return err
+	}
+}
+
 func (e statusErrWithHeaders) Headers() http.Header {
 	if e.headers == nil {
 		return nil
@@ -1667,7 +1685,11 @@ func parseCodexWebsocketError(payload []byte) (error, bool) {
 
 	out := buildCodexWebsocketErrorPayload(payload, status)
 	headers := parseCodexWebsocketErrorHeaders(payload)
-	statusError := statusErr{code: status, msg: string(out)}
+	statusError := statusErr{
+		code:      status,
+		msg:       string(out),
+		errorCode: strings.TrimSpace(gjson.GetBytes(out, "error.code").String()),
+	}
 	if retryAfter := parseCodexRetryAfter(status, out, time.Now()); retryAfter != nil {
 		statusError.retryAfter = retryAfter
 	} else if isCodexWebsocketConnectionLimitError(payload) {
@@ -1928,7 +1950,9 @@ func codexWebsocketRouteKey(auth *cliproxyauth.Auth) string {
 		proxyURL = parsed.String()
 	}
 	sum := sha256.Sum256([]byte(proxyURL))
-	return endpointID + ":" + fmt.Sprintf("%x", sum[:])
+	identity := agentIdentityMetadataString(auth, "agent_runtime_id") + ":" + agentIdentityMetadataString(auth, "task_id")
+	identitySum := sha256.Sum256([]byte(identity))
+	return endpointID + ":" + fmt.Sprintf("%x:%x", sum[:], identitySum[:])
 }
 
 func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *cliproxyauth.Auth, sess *codexWebsocketSession, authID string, wsURL string, routeKey string, headers http.Header) (*websocket.Conn, *http.Response, error) {
@@ -2337,6 +2361,13 @@ func (e *CodexAutoExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth
 		return nil, fmt.Errorf("codex auto executor: http executor is nil")
 	}
 	return e.httpExec.Refresh(ctx, auth)
+}
+
+func (e *CodexAutoExecutor) RenewAgentIdentityTask(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if e == nil || e.httpExec == nil {
+		return nil, fmt.Errorf("codex auto executor: http executor is nil")
+	}
+	return e.httpExec.RenewAgentIdentityTask(ctx, auth)
 }
 
 func (e *CodexAutoExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {

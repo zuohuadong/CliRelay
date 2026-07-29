@@ -3,8 +3,9 @@ package auth
 import "strings"
 
 const (
-	AuthKindAPIKey = "apikey"
-	AuthKindOAuth  = "oauth"
+	AuthKindAPIKey        = "apikey"
+	AuthKindOAuth         = "oauth"
+	AuthKindAgentIdentity = "agent_identity"
 
 	AuthSourceConfig      = "config"
 	AuthSourceFile        = "file"
@@ -27,11 +28,11 @@ func (a *Auth) AuthKind() string {
 	if a == nil {
 		return ""
 	}
-	if kind := normalizeAuthKind(authAttribute(a, AttributeAuthKind)); kind != "" {
+	if kind := explicitAuthKind(a); kind != "" {
 		return kind
 	}
-	if kind := normalizeAuthKind(authMetadataString(a, AttributeAuthKind)); kind != "" {
-		return kind
+	if IsStandaloneAgentIdentityAuth(a) {
+		return AuthKindAgentIdentity
 	}
 	if authAttribute(a, AttributeAPIKey) != "" {
 		return AuthKindAPIKey
@@ -79,9 +80,58 @@ func normalizeAuthKind(kind string) string {
 		return AuthKindAPIKey
 	case AuthKindOAuth, "oauth2":
 		return AuthKindOAuth
+	case AuthKindAgentIdentity, "agent-identity":
+		return AuthKindAgentIdentity
 	default:
 		return ""
 	}
+}
+
+// IsStandaloneAgentIdentityAuth reports whether Agent Identity owns the credential lifecycle.
+func IsStandaloneAgentIdentityAuth(auth *Auth) bool {
+	if auth == nil {
+		return false
+	}
+	if explicitAuthKind(auth) == AuthKindAgentIdentity || strings.EqualFold(authMetadataString(auth, "type"), AuthKindAgentIdentity) {
+		return true
+	}
+	if authHasOAuthTokens(auth) || authMetadataString(auth, "agent_identity_state") != "" {
+		return false
+	}
+	return hasAgentIdentitySigningFields(auth)
+}
+
+func explicitAuthKind(auth *Auth) string {
+	if kind := normalizeAuthKind(authAttribute(auth, AttributeAuthKind)); kind != "" {
+		return kind
+	}
+	return normalizeAuthKind(authMetadataString(auth, AttributeAuthKind))
+}
+
+func hasAgentIdentitySigningFields(auth *Auth) bool {
+	runtimeID := authMetadataString(auth, "agent_runtime_id")
+	taskID := authMetadataString(auth, "task_id")
+	privateKey := authMetadataString(auth, "agent_private_key")
+	if privateKey == "" {
+		privateKey = authMetadataString(auth, "private_key_pkcs8_base64")
+	}
+	if privateKey == "" {
+		privateKey = authMetadataString(auth, "private_key")
+	}
+	return runtimeID != "" && taskID != "" && privateKey != ""
+}
+
+func authHasOAuthTokens(auth *Auth) bool {
+	if auth == nil || len(auth.Metadata) == 0 {
+		return false
+	}
+	for _, key := range []string{"access_token", "refresh_token", "id_token"} {
+		if authMetadataString(auth, key) != "" {
+			return true
+		}
+	}
+	token, ok := auth.Metadata["token"].(map[string]any)
+	return ok && len(token) > 0
 }
 
 func normalizeAuthSourceKind(source string) string {

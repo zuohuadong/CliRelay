@@ -905,6 +905,9 @@ func isUnsafeAuthFileName(name string) bool {
 
 // Download single auth file by name
 func (h *Handler) DownloadAuthFile(c *gin.Context) {
+	if !requireAdminManagementCredential(c) {
+		return
+	}
 	name := strings.TrimSpace(c.Query("name"))
 	if isUnsafeAuthFileName(name) {
 		c.JSON(400, gin.H{"error": "invalid name"})

@@ -112,8 +112,12 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	if errCache != nil {
 		return resp, errCache
 	}
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
-	applyModelHeaderOverrides(httpReq.Header, mainModel)
+	if err = applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg); err != nil {
+		return resp, err
+	}
+	if err = applyModelHeaderOverridesForRequest(httpReq, auth, apiKey, mainModel); err != nil {
+		return resp, err
+	}
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)
 
@@ -143,7 +147,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = newCodexStatusErr(httpResp.StatusCode, data)
+		err = newCodexStatusErrForResponse(httpResp, data)
 		return resp, err
 	}
 
@@ -212,8 +216,12 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 	if errCache != nil {
 		return nil, errCache
 	}
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
-	applyModelHeaderOverrides(httpReq.Header, mainModel)
+	if err = applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg); err != nil {
+		return nil, err
+	}
+	if err = applyModelHeaderOverridesForRequest(httpReq, auth, apiKey, mainModel); err != nil {
+		return nil, err
+	}
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)
 
@@ -240,7 +248,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 		data = applyCodexIdentityConfuseResponsePayload(data, identityState)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = newCodexStatusErr(httpResp.StatusCode, data)
+		err = newCodexStatusErrForResponse(httpResp, data)
 		return nil, err
 	}
 
@@ -343,8 +351,12 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 	if errCache != nil {
 		return resp, errCache
 	}
-	applyCodexDirectImageHeaders(httpReq, auth, apiKey, false, e.cfg)
-	applyModelHeaderOverrides(httpReq.Header, model)
+	if err = applyCodexDirectImageHeaders(httpReq, auth, apiKey, false, e.cfg); err != nil {
+		return resp, err
+	}
+	if err = applyModelHeaderOverridesForRequest(httpReq, auth, apiKey, model); err != nil {
+		return resp, err
+	}
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
 	}
@@ -377,7 +389,7 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = newCodexStatusErr(httpResp.StatusCode, data)
+		err = newCodexStatusErrForResponse(httpResp, data)
 		return resp, err
 	}
 
@@ -407,8 +419,12 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 	if errCache != nil {
 		return nil, errCache
 	}
-	applyCodexDirectImageHeaders(httpReq, auth, apiKey, true, e.cfg)
-	applyModelHeaderOverrides(httpReq.Header, model)
+	if err = applyCodexDirectImageHeaders(httpReq, auth, apiKey, true, e.cfg); err != nil {
+		return nil, err
+	}
+	if err = applyModelHeaderOverridesForRequest(httpReq, auth, apiKey, model); err != nil {
+		return nil, err
+	}
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
 	}
@@ -438,7 +454,7 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 		data = applyCodexIdentityConfuseResponsePayload(data, identityState)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = newCodexStatusErr(httpResp.StatusCode, data)
+		err = newCodexStatusErrForResponse(httpResp, data)
 		return nil, err
 	}
 

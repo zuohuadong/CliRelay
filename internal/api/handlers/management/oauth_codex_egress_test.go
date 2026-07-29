@@ -156,10 +156,14 @@ func TestRequestCodexTokenRejectsBindingCreatedBeforeExchange(t *testing.T) {
 }
 
 func newCodexOAuthEgressFlow(t *testing.T) (*Handler, *egress.Service, egress.Endpoint, string) {
+	return newCodexOAuthEgressFlowWithProxy(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+}
+
+func newCodexOAuthEgressFlowWithProxy(t *testing.T, proxyHandler http.Handler) (*Handler, *egress.Service, egress.Endpoint, string) {
 	t.Helper()
 	tempDir := t.TempDir()
 	authDir := filepath.Join(tempDir, "auths")
-	proxyServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	proxyServer := httptest.NewServer(proxyHandler)
 	t.Cleanup(proxyServer.Close)
 	host, portText, err := net.SplitHostPort(strings.TrimPrefix(proxyServer.URL, "http://"))
 	if err != nil {
@@ -184,6 +188,48 @@ func newCodexOAuthEgressFlow(t *testing.T) (*Handler, *egress.Service, egress.En
 	handler := NewHandlerWithoutConfigFilePath(cfg, nil)
 	handler.SetEgressService(service)
 	return handler, service, endpoint, authDir
+}
+
+func TestAgentIdentityRegistrationUsesBoundEgressProxy(t *testing.T) {
+	var proxyHits atomic.Int32
+	proxyHandler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		proxyHits.Add(1)
+		if request.Method != http.MethodConnect || request.Host != "auth.openai.com:443" {
+			t.Errorf("proxy request = %s %s, want CONNECT auth.openai.com:443", request.Method, request.Host)
+		}
+		writer.WriteHeader(http.StatusForbidden)
+	})
+	handler, service, endpoint, _ := newCodexOAuthEgressFlowWithProxy(t, proxyHandler)
+	identity, err := egress.StableIdentity("account-1")
+	if err != nil {
+		t.Fatalf("StableIdentity() error = %v", err)
+	}
+	if err = service.PutBinding(context.Background(), egress.Binding{Identity: identity, EndpointID: endpoint.ID}); err != nil {
+		t.Fatalf("PutBinding() error = %v", err)
+	}
+	registrar, err := handler.agentIdentityRegistrarFor(context.Background(), newAgentIdentityTestAuth(t))
+	if err != nil {
+		t.Fatalf("agentIdentityRegistrarFor() error = %v", err)
+	}
+	keyMaterial, err := codex.GenerateAgentKeyMaterial()
+	if err != nil {
+		t.Fatalf("GenerateAgentKeyMaterial() error = %v", err)
+	}
+	_, err = registrar.RegisterAgent(context.Background(), codex.AgentRegistration{
+		AccessToken: "access-secret",
+		KeyMaterial: keyMaterial,
+		BillOfMaterials: codex.AgentBillOfMaterials{
+			AgentVersion:    "test",
+			AgentHarnessID:  "codex-cli",
+			RunningLocation: "custom-test",
+		},
+	})
+	if err == nil {
+		t.Fatal("RegisterAgent() succeeded through rejecting proxy")
+	}
+	if got := proxyHits.Load(); got == 0 {
+		t.Fatal("bound egress proxy was not used")
+	}
 }
 
 func TestSaveCodexTokenWithBindingDeletesNewFileOnBindingFailure(t *testing.T) {
@@ -236,8 +282,8 @@ func TestSaveCodexTokenWithBindingRestoresExistingFileOnBindingFailure(t *testin
 	if err != nil {
 		t.Fatalf("Stat() error = %v", err)
 	}
-	if info.Mode().Perm() != 0o640 {
-		t.Fatalf("restored mode = %o, want 640", info.Mode().Perm())
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("restored mode = %o, want credential mode 600", info.Mode().Perm())
 	}
 	if _, ok := manager.GetByID(record.ID); ok {
 		t.Fatal("new runtime auth remained after existing-file compensation")

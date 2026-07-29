@@ -34,6 +34,44 @@ func TestAuthKind(t *testing.T) {
 			want: AuthKindOAuth,
 		},
 		{
+			name: "explicit agent identity attribute",
+			auth: &Auth{Attributes: map[string]string{AttributeAuthKind: AuthKindAgentIdentity}},
+			want: AuthKindAgentIdentity,
+		},
+		{
+			name: "managed agent identity keeps oauth lifecycle",
+			auth: &Auth{Metadata: map[string]any{
+				"type": "codex", "refresh_token": "stale-refresh",
+				"agent_runtime_id": "agent-1", "task_id": "task-1",
+				"agent_private_key": "cHJpdmF0ZQ==",
+			}},
+			want: AuthKindOAuth,
+		},
+		{
+			name: "standalone agent identity fields",
+			auth: &Auth{Metadata: map[string]any{
+				"type": "agent_identity", "email": "agent@example.com",
+				"agent_runtime_id": "agent-1", "task_id": "task-1",
+				"agent_private_key": "cHJpdmF0ZQ==",
+			}},
+			want: AuthKindAgentIdentity,
+		},
+		{
+			name: "explicit agent kind ignores stale oauth tokens",
+			auth: &Auth{
+				Attributes: map[string]string{AttributeAuthKind: AuthKindAgentIdentity},
+				Metadata:   map[string]any{"access_token": "token", "refresh_token": "stale-refresh", "id_token": "stale-id"},
+			},
+			want: AuthKindAgentIdentity,
+		},
+		{
+			name: "agent identity type ignores stale oauth tokens",
+			auth: &Auth{Metadata: map[string]any{
+				"type": AuthKindAgentIdentity, "refresh_token": "stale-refresh",
+			}},
+			want: AuthKindAgentIdentity,
+		},
+		{
 			name: "unknown metadata shape",
 			auth: &Auth{Metadata: map[string]any{"type": "test"}},
 			want: "",
@@ -121,5 +159,15 @@ func TestAccountInfoUsesAuthKind(t *testing.T) {
 	kind, value = oauthWithoutEmail.AccountInfo()
 	if kind != "oauth" || value != "" {
 		t.Fatalf("oauth without email AccountInfo() = %q, %q", kind, value)
+	}
+
+	agentAuth := &Auth{Metadata: map[string]any{
+		"auth_kind": AuthKindAgentIdentity, "email": "agent@example.com",
+		"agent_runtime_id": "agent-1", "task_id": "task-1",
+		"agent_private_key": "cHJpdmF0ZQ==",
+	}}
+	kind, value = agentAuth.AccountInfo()
+	if kind != AuthKindAgentIdentity || value != "agent@example.com" {
+		t.Fatalf("agent identity AccountInfo() = %q, %q", kind, value)
 	}
 }

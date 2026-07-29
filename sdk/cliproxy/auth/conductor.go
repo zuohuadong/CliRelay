@@ -58,6 +58,11 @@ type RequestAuthPreparer interface {
 	PrepareRequestAuth(ctx context.Context, auth *Auth) (*Auth, error)
 }
 
+// AgentIdentityTaskRenewer replaces an invalid task without refreshing OAuth tokens.
+type AgentIdentityTaskRenewer interface {
+	RenewAgentIdentityTask(ctx context.Context, auth *Auth) (*Auth, error)
+}
+
 // ExecutionSessionCloser allows executors to release per-session runtime resources.
 type ExecutionSessionCloser interface {
 	CloseExecutionSession(sessionID string)
@@ -281,6 +286,9 @@ type Manager struct {
 	quotaProbeAfter  map[string]time.Time
 
 	requestPrepareLocks sync.Map
+	// mutationLocks serializes durable state transitions per auth ID. Callers that
+	// also need refresh exclusion must acquire refreshLocks before mutationLocks.
+	mutationLocks sync.Map
 	// refreshLocks serializes credential refresh per auth ID so concurrent
 	// 401 recoveries and auto-refresh workers do not race the same refresh_token.
 	refreshLocks sync.Map
@@ -2224,7 +2232,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			lastErr = errStream
 			continue
 		}
-		if cliproxyexecutor.DownstreamWebsocket(ctx) && !shouldProbeDownstreamWebsocketBootstrap(provider) {
+		if cliproxyexecutor.DownstreamWebsocket(ctx) && !shouldProbeDownstreamWebsocketBootstrap(provider) && !authMayUseAgentAssertion(auth) {
 			return m.wrapStreamResult(streamWrapRequest{
 				ctx:         ctx,
 				affinity:    newResponseAffinityBinding(auth.Clone(), provider, execOpts),
@@ -2538,6 +2546,8 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	if auth.ID == "" {
 		auth.ID = uuid.NewString()
 	}
+	mutationLock := m.mutationLockForAuth(auth.ID)
+	mutationLock.mu.Lock()
 	now := time.Now()
 	clearedCooldown := false
 	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
@@ -2556,11 +2566,13 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
+	result := auth.Clone()
+	mutationLock.mu.Unlock()
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
 	if clearedCooldown {
 		m.persistCooldownStates(ctx)
 	}
-	return auth.Clone(), nil
+	return result, nil
 }
 
 // Update replaces an existing auth entry and notifies hooks.
@@ -2568,10 +2580,13 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	if auth == nil || auth.ID == "" {
 		return nil, nil
 	}
+	mutationLock := m.mutationLockForAuth(auth.ID)
+	mutationLock.mu.Lock()
 	m.mu.Lock()
 	existing, ok := m.auths[auth.ID]
 	if !ok || existing == nil {
 		m.mu.Unlock()
+		mutationLock.mu.Unlock()
 		return nil, nil
 	}
 	if !auth.indexAssigned && auth.Index == "" {
@@ -2603,11 +2618,13 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
+	result := auth.Clone()
+	mutationLock.mu.Unlock()
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	if clearedCooldown {
 		m.persistCooldownStates(ctx)
 	}
-	return auth.Clone(), nil
+	return result, nil
 }
 
 // Remove deletes an auth from runtime state without persisting.
@@ -2621,11 +2638,14 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 		return
 	}
 	_ = ctx
+	mutationLock := m.mutationLockForAuth(id)
+	mutationLock.mu.Lock()
 
 	m.mu.Lock()
 	existing := m.auths[id]
 	if existing == nil {
 		m.mu.Unlock()
+		mutationLock.mu.Unlock()
 		return
 	}
 	provider := strings.TrimSpace(existing.Provider)
@@ -2652,6 +2672,7 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	}
 	m.queueRefreshUnschedule(id)
 	m.invalidateSessionAffinity(id)
+	mutationLock.mu.Unlock()
 
 	if provider != "" {
 		if exec, ok := m.Executor(provider); ok && exec != nil {
@@ -6692,6 +6713,32 @@ type authRefreshLock struct {
 	mu sync.Mutex
 }
 
+type authMutationLock struct {
+	mu sync.Mutex
+}
+
+func (m *Manager) mutationLockForAuth(id string) *authMutationLock {
+	lockValue, _ := m.mutationLocks.LoadOrStore(id, &authMutationLock{})
+	lock, _ := lockValue.(*authMutationLock)
+	if lock != nil {
+		return lock
+	}
+	lock = &authMutationLock{}
+	m.mutationLocks.Store(id, lock)
+	return lock
+}
+
+func (m *Manager) refreshLockForAuth(id string) *authRefreshLock {
+	lockValue, _ := m.refreshLocks.LoadOrStore(id, &authRefreshLock{})
+	lock, _ := lockValue.(*authRefreshLock)
+	if lock != nil {
+		return lock
+	}
+	lock = &authRefreshLock{}
+	m.refreshLocks.Store(id, lock)
+	return lock
+}
+
 func authAccessToken(auth *Auth) string {
 	if token := authMetadataString(auth, "access_token"); token != "" {
 		return token
@@ -6730,8 +6777,20 @@ func clearUnauthorizedModelStates(auth *Auth, now time.Time) []string {
 // tryRefreshAfterUnauthorized refreshes OAuth credentials once after a 401 so the
 // current auth can be retried before fallback/suspend.
 func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool) (*Auth, bool, error) {
-	if m == nil || auth == nil || alreadyTried || execErr == nil {
+	if m == nil || auth == nil || execErr == nil {
 		return auth, false, nil
+	}
+	if isInvalidAgentTaskError(execErr) && usesAgentAssertion(execErr) {
+		if alreadyTried {
+			return auth, false, execErr
+		}
+		return m.renewAgentIdentityTaskForRequest(ctx, auth)
+	}
+	if alreadyTried {
+		return auth, false, nil
+	}
+	if isUnauthorizedError(execErr) && usesAgentAssertion(execErr) {
+		return auth, false, execErr
 	}
 	if !isUnauthorizedError(execErr) || !authHasRefreshCredential(auth) {
 		return auth, false, nil
@@ -6746,6 +6805,58 @@ func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, e
 		return auth, false, nil
 	}
 	return refreshed, true, nil
+}
+
+func isInvalidAgentTaskError(err error) bool {
+	var coded interface{ ErrorCode() string }
+	return errors.As(err, &coded) && strings.EqualFold(strings.TrimSpace(coded.ErrorCode()), "invalid_task_id")
+}
+
+func usesAgentAssertion(err error) bool {
+	var requestAuth interface{ RequestAuthScheme() string }
+	return errors.As(err, &requestAuth) && strings.EqualFold(strings.TrimSpace(requestAuth.RequestAuthScheme()), "AgentAssertion")
+}
+
+func authMayUseAgentAssertion(auth *Auth) bool {
+	return auth != nil && (auth.AuthKind() == AuthKindAgentIdentity || strings.EqualFold(authMetadataString(auth, "agent_identity_state"), "ready"))
+}
+
+func (m *Manager) renewAgentIdentityTaskForRequest(ctx context.Context, failed *Auth) (*Auth, bool, error) {
+	executor := m.executorFor(failed.Provider)
+	renewer, ok := executor.(AgentIdentityTaskRenewer)
+	if !ok {
+		return failed, false, errors.New("provider executor cannot renew Agent Identity tasks")
+	}
+	failedTaskID := authMetadataString(failed, "task_id")
+	var renewed *Auth
+	final, err := m.WithMetadataTransactionByIndex(ctx, failed.EnsureIndex(), func(transaction *MetadataTransaction) error {
+		current := transaction.Auth()
+		if currentTaskID := authMetadataString(current, "task_id"); currentTaskID != "" && currentTaskID != failedTaskID {
+			renewed = current
+			return nil
+		}
+		updated, errRenew := renewer.RenewAgentIdentityTask(ctx, current)
+		if errRenew != nil {
+			return errRenew
+		}
+		newTaskID := authMetadataString(updated, "task_id")
+		if newTaskID == "" {
+			return errors.New("Agent Identity task renewal returned an empty task ID")
+		}
+		updates := map[string]any{"task_id": newTaskID}
+		if agentState := authMetadataString(current, "agent_identity_state"); agentState != "" {
+			updates["agent_identity_state"] = "ready"
+		}
+		renewed, errRenew = transaction.Merge(updates)
+		return errRenew
+	})
+	if err != nil {
+		return failed, false, err
+	}
+	if renewed == nil {
+		renewed = final
+	}
+	return renewed, renewed != nil, nil
 }
 
 func (m *Manager) refreshAuth(ctx context.Context, id string) {
@@ -6767,12 +6878,7 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		return nil, errors.New("auth id is empty")
 	}
 
-	lockValue, _ := m.refreshLocks.LoadOrStore(id, &authRefreshLock{})
-	lock, _ := lockValue.(*authRefreshLock)
-	if lock == nil {
-		lock = &authRefreshLock{}
-		m.refreshLocks.Store(id, lock)
-	}
+	lock := m.refreshLockForAuth(id)
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
 

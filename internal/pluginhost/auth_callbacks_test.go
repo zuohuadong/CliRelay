@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,6 +136,74 @@ func TestHostAuthGetCallbackReturnsPhysicalJSONByAuthIndex(t *testing.T) {
 	}
 	if decoded["email"] != "b@example.com" || decoded["api_key"] != "k2" {
 		t.Fatalf("decoded json = %#v, want credential payload", decoded)
+	}
+}
+
+func TestHostAuthGetCallbackRedactsAgentIdentityPrivateKeys(t *testing.T) {
+	authDir := t.TempDir()
+	path := filepath.Join(authDir, "codex-agent.json")
+	raw := []byte(`{"type":"agent_identity","access_token":"token","agent_private_key":"flat-secret","private_key_pkcs8_base64":"compat-secret","private_key":"legacy-secret","agent_identity":{"agent_private_key":"nested-secret","private_key_pkcs8_base64":"nested-compat","private_key":"nested-legacy","agent_runtime_id":"runtime-1"}}`)
+	if errWrite := os.WriteFile(path, raw, 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+	auth := &coreauth.Auth{
+		ID:       "codex-agent.json",
+		Provider: "codex",
+		FileName: "codex-agent.json",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"path":   path,
+			"source": path,
+		},
+	}
+	auth.EnsureIndex()
+	host := New()
+	host.SetAuthManager(coreauth.NewManager(nil, nil, nil))
+	if _, errRegister := host.currentAuthManager().Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	req, errMarshal := json.Marshal(pluginapi.HostAuthGetRequest{AuthIndex: auth.Index})
+	if errMarshal != nil {
+		t.Fatalf("marshal request: %v", errMarshal)
+	}
+	rawResp, errCall := host.callFromPlugin(context.Background(), pluginabi.MethodHostAuthGet, req)
+	if errCall != nil {
+		t.Fatalf("callFromPlugin() error = %v", errCall)
+	}
+	resp, errDecode := decodeRPCEnvelope[rpcHostAuthGetResponse](rawResp)
+	if errDecode != nil {
+		t.Fatalf("decode response: %v", errDecode)
+	}
+	for _, secret := range []string{"flat-secret", "compat-secret", "legacy-secret", "nested-secret", "nested-compat", "nested-legacy"} {
+		if strings.Contains(string(resp.JSON), secret) {
+			t.Fatalf("host.auth.get leaked Agent Identity private key alias: %s", resp.JSON)
+		}
+	}
+	var document map[string]any
+	if errUnmarshal := json.Unmarshal(resp.JSON, &document); errUnmarshal != nil {
+		t.Fatalf("unmarshal redacted auth json: %v", errUnmarshal)
+	}
+	if document["access_token"] != "token" {
+		t.Fatalf("unrelated credential field changed: %#v", document["access_token"])
+	}
+	identity, _ := document["agent_identity"].(map[string]any)
+	if _, exists := document["agent_private_key"]; exists {
+		t.Fatal("flat agent_private_key was not removed")
+	}
+	if _, exists := identity["agent_private_key"]; exists {
+		t.Fatal("nested agent_private_key was not removed")
+	}
+}
+
+func TestRedactAgentIdentityPrivateKeysPreservesUnrelatedProviderKeys(t *testing.T) {
+	raw := []byte(`{"type":"vertex","private_key":"vertex-secret","private_key_pkcs8_base64":"provider-specific"}`)
+	redacted, err := redactAgentIdentityPrivateKeys(raw)
+	if err != nil {
+		t.Fatalf("redactAgentIdentityPrivateKeys() error = %v", err)
+	}
+	if string(redacted) != string(raw) {
+		t.Fatalf("unrelated provider credential changed: %s", redacted)
 	}
 }
 

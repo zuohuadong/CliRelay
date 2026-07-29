@@ -70,6 +70,38 @@ func TestNextRefreshCheckAt_APIKeyUnschedule(t *testing.T) {
 	}
 }
 
+func TestNextRefreshCheckAt_AgentIdentityUnschedule(t *testing.T) {
+	now := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
+	auth := &Auth{
+		ID: "agent-1", Provider: "codex",
+		Metadata: map[string]any{
+			"auth_kind":        AuthKindAgentIdentity,
+			"agent_runtime_id": "agent-1", "task_id": "task-1",
+			"agent_private_key": "cHJpdmF0ZQ==",
+		},
+	}
+	if _, ok := nextRefreshCheckAt(now, auth, 15*time.Minute); ok {
+		t.Fatal("Agent Identity 不应进入 OAuth 自动刷新队列")
+	}
+}
+
+func TestNextRefreshCheckAt_ManagedAgentIdentityKeepsOAuthSchedule(t *testing.T) {
+	now := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
+	next := now.Add(15 * time.Minute)
+	auth := &Auth{
+		ID: "managed-agent", Provider: "codex", NextRefreshAfter: next,
+		Metadata: map[string]any{
+			"type": "codex", "refresh_token": "refresh-token",
+			"agent_identity_state": "ready", "agent_runtime_id": "agent-1", "task_id": "task-1",
+			"agent_private_key": "cHJpdmF0ZQ==",
+		},
+	}
+	got, ok := nextRefreshCheckAt(now, auth, time.Minute)
+	if !ok || !got.Equal(next) {
+		t.Fatalf("nextRefreshCheckAt() = %s, %t; want %s, true", got, ok, next)
+	}
+}
+
 func TestNextRefreshCheckAt_NextRefreshAfterGate(t *testing.T) {
 	now := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
 	nextAfter := now.Add(30 * time.Minute)

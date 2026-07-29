@@ -154,6 +154,38 @@ func TestAuthenticateManagementKeyRejectsInFlightVerificationAfterSecretRotation
 	}
 }
 
+func TestAuthenticateManagementKeyClassifiesShareCredential(t *testing.T) {
+	h := &Handler{
+		cfg: &config.Config{RemoteManagement: config.RemoteManagement{
+			AllowRemote: true,
+			ShareToken:  "share-secret",
+		}},
+		failedAttempts: make(map[string]*attemptInfo),
+		envSecret:      "admin-secret",
+	}
+
+	allowed, _, message, credentialClass := h.authenticateManagementKey("203.0.113.10", false, "share-secret")
+	if !allowed || message != "" || credentialClass != managementAuthClassShare {
+		t.Fatalf("share credential = allowed:%t message:%q class:%q", allowed, message, credentialClass)
+	}
+}
+
+func TestAuthenticateManagementKeyPrefersAdminWhenCredentialsMatch(t *testing.T) {
+	h := &Handler{
+		cfg: &config.Config{RemoteManagement: config.RemoteManagement{
+			AllowRemote: true,
+			ShareToken:  "same-secret",
+		}},
+		failedAttempts: make(map[string]*attemptInfo),
+		envSecret:      "same-secret",
+	}
+
+	allowed, _, message, credentialClass := h.authenticateManagementKey("203.0.113.10", false, "same-secret")
+	if !allowed || message != "" || credentialClass != managementAuthClassAdmin {
+		t.Fatalf("matching credential = allowed:%t message:%q class:%q", allowed, message, credentialClass)
+	}
+}
+
 func TestManagementAuthCacheUsesProcessSecretAndPurgesExpiredEntries(t *testing.T) {
 	now := time.Unix(3_000, 0)
 	left := &Handler{

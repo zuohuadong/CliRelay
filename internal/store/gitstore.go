@@ -19,6 +19,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
@@ -42,6 +43,14 @@ type GitTokenStore struct {
 type resolvedRemoteBranch struct {
 	name plumbing.ReferenceName
 	hash plumbing.Hash
+}
+
+type gitAuthSaveSnapshot struct {
+	headName   plumbing.ReferenceName
+	headHash   plumbing.Hash
+	hasHead    bool
+	fileExists bool
+	fileData   []byte
 }
 
 // NewGitTokenStore creates a token store that saves credentials to disk through the
@@ -290,40 +299,9 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 		return "", fmt.Errorf("auth filestore: create dir failed: %w", err)
 	}
 
-	switch {
-	case auth.Storage != nil:
-		if auth.Metadata == nil {
-			auth.Metadata = make(map[string]any)
-		}
-		auth.Metadata["disabled"] = auth.Disabled
-		if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
-			setter.SetMetadata(auth.Metadata)
-		}
-		if err = auth.Storage.SaveTokenToFile(path); err != nil {
-			return "", err
-		}
-	case auth.Metadata != nil:
-		auth.Metadata["disabled"] = auth.Disabled
-		raw, errMarshal := json.Marshal(auth.Metadata)
-		if errMarshal != nil {
-			return "", fmt.Errorf("auth filestore: marshal metadata failed: %w", errMarshal)
-		}
-		if existing, errRead := os.ReadFile(path); errRead == nil {
-			if jsonEqual(existing, raw) {
-				return path, nil
-			}
-		} else if !os.IsNotExist(errRead) {
-			return "", fmt.Errorf("auth filestore: read existing failed: %w", errRead)
-		}
-		tmp := path + ".tmp"
-		if errWrite := os.WriteFile(tmp, raw, 0o600); errWrite != nil {
-			return "", fmt.Errorf("auth filestore: write temp failed: %w", errWrite)
-		}
-		if errRename := os.Rename(tmp, path); errRename != nil {
-			return "", fmt.Errorf("auth filestore: rename failed: %w", errRename)
-		}
-	default:
-		return "", fmt.Errorf("auth filestore: nothing to persist for %s", auth.ID)
+	rollbackSnapshot, err := s.persistAuthFile(auth, path)
+	if err != nil {
+		return "", err
 	}
 
 	if auth.Attributes == nil {
@@ -345,10 +323,96 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 		messageID = filepath.Base(path)
 	}
 	if errCommit := s.commitAndPushLocked(fmt.Sprintf("Update auth %s", strings.TrimSpace(messageID)), relPath); errCommit != nil {
+		if rollbackSnapshot != nil {
+			if errRollback := s.restoreAuthSave(path, *rollbackSnapshot); errRollback != nil {
+				return "", errors.Join(errCommit, fmt.Errorf("git token store: restore failed Save: %w", errRollback))
+			}
+		}
 		return "", errCommit
 	}
 
 	return path, nil
+}
+
+func (s *GitTokenStore) persistAuthFile(auth *cliproxyauth.Auth, path string) (*gitAuthSaveSnapshot, error) {
+	if auth.Storage != nil {
+		if auth.Metadata == nil {
+			auth.Metadata = make(map[string]any)
+		}
+		auth.Metadata["disabled"] = auth.Disabled
+		if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
+			setter.SetMetadata(auth.Metadata)
+		}
+		return nil, auth.Storage.SaveTokenToFile(path)
+	}
+	if auth.Metadata == nil {
+		return nil, fmt.Errorf("auth filestore: nothing to persist for %s", auth.ID)
+	}
+	raw, err := marshalAuthMetadata(auth)
+	if err != nil {
+		return nil, fmt.Errorf("auth filestore: %w", err)
+	}
+	unchanged, err := tightenAuthMetadataIfMatching(path, raw)
+	if err != nil || unchanged {
+		return nil, err
+	}
+	snapshot, err := s.captureAuthSave(path)
+	if err != nil {
+		return nil, err
+	}
+	if err = misc.WriteCredentialFileAtomic(path, raw); err != nil {
+		return nil, fmt.Errorf("auth filestore: write metadata: %w", err)
+	}
+	return &snapshot, nil
+}
+
+func (s *GitTokenStore) captureAuthSave(path string) (gitAuthSaveSnapshot, error) {
+	snapshot := gitAuthSaveSnapshot{}
+	data, err := os.ReadFile(path)
+	if err == nil {
+		snapshot.fileExists = true
+		snapshot.fileData = data
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return snapshot, fmt.Errorf("git token store: snapshot auth file: %w", err)
+	}
+	repo, err := git.PlainOpen(s.repoDirSnapshot())
+	if err != nil {
+		return snapshot, fmt.Errorf("git token store: snapshot repository: %w", err)
+	}
+	if head, errHead := repo.Head(); errHead == nil {
+		snapshot.headName = head.Name()
+		snapshot.headHash = head.Hash()
+		snapshot.hasHead = true
+	} else if !errors.Is(errHead, plumbing.ErrReferenceNotFound) {
+		return snapshot, fmt.Errorf("git token store: snapshot head: %w", errHead)
+	}
+	return snapshot, nil
+}
+
+func (s *GitTokenStore) restoreAuthSave(path string, snapshot gitAuthSaveSnapshot) error {
+	if snapshot.hasHead {
+		repo, err := git.PlainOpen(s.repoDirSnapshot())
+		if err != nil {
+			return err
+		}
+		if err = repo.Storer.SetReference(plumbing.NewHashReference(snapshot.headName, snapshot.headHash)); err != nil {
+			return err
+		}
+		worktree, err := repo.Worktree()
+		if err != nil {
+			return err
+		}
+		if err = worktree.Reset(&git.ResetOptions{Commit: snapshot.headHash, Mode: git.HardReset}); err != nil {
+			return err
+		}
+	}
+	if !snapshot.fileExists {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return misc.WriteCredentialFileAtomic(path, snapshot.fileData)
 }
 
 // List enumerates all auth JSON files under the configured directory.

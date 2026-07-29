@@ -532,6 +532,82 @@ func TestManagementResponseExposesPluginSupportHeaderForCORS(t *testing.T) {
 	}
 }
 
+func TestAgentIdentityManagementRoutesAreRegisteredAndProtected(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	server := newTestServer(t)
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{
+			name:   "provision",
+			method: http.MethodPost,
+			path:   "/v0/management/auth-files/agent-identity/provision",
+			body:   `{}`,
+		},
+		{
+			name:   "export",
+			method: http.MethodPost,
+			path:   "/v0/management/auth-files/agent-identity/export",
+			body:   `{}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			unauthorizedRequest := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			unauthorizedRequest.Header.Set("Content-Type", "application/json")
+			unauthorizedRecorder := httptest.NewRecorder()
+			server.engine.ServeHTTP(unauthorizedRecorder, unauthorizedRequest)
+			if unauthorizedRecorder.Code != http.StatusUnauthorized {
+				t.Fatalf("unauthorized status = %d, want %d body=%s", unauthorizedRecorder.Code, http.StatusUnauthorized, unauthorizedRecorder.Body.String())
+			}
+
+			authorizedRequest := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			authorizedRequest.Header.Set("Authorization", "Bearer test-management-key")
+			authorizedRequest.Header.Set("Content-Type", "application/json")
+			authorizedRecorder := httptest.NewRecorder()
+			server.engine.ServeHTTP(authorizedRecorder, authorizedRequest)
+			if authorizedRecorder.Code != http.StatusBadRequest {
+				t.Fatalf("authorized status = %d, want %d body=%s", authorizedRecorder.Code, http.StatusBadRequest, authorizedRecorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestShareCredentialCannotExportOrDownloadAuthFiles(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "admin-secret")
+	server := newTestServer(t)
+	server.cfg.RemoteManagement.ShareToken = "share-secret"
+	if err := os.WriteFile(filepath.Join(server.cfg.AuthDir, "codex.json"), []byte(`{"type":"codex","access_token":"secret"}`), 0o600); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	tests := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodPost, path: "/v0/management/auth-files/agent-identity/export", body: `{"auth_index":"missing"}`},
+		{method: http.MethodGet, path: "/v0/management/auth-files/download?name=codex.json"},
+	}
+	for _, test := range tests {
+		request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+		request.Header.Set("Authorization", "Bearer share-secret")
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+
+		server.engine.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("%s %s status = %d, want %d body=%s", test.method, test.path, recorder.Code, http.StatusForbidden, recorder.Body.String())
+		}
+	}
+}
+
 func TestOAuthCallbackRouteSkipsManagementKeyMiddleware(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 

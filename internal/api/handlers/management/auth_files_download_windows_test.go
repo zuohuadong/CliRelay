@@ -42,6 +42,7 @@ func TestDownloadAuthFile_PreventsWindowsSlashTraversal(t *testing.T) {
 		"/v0/management/auth-files/download?name="+url.QueryEscape("../external/"+secretName),
 		nil,
 	)
+	ctx.Set(managementAuthClassContextKey, managementAuthClassAdmin)
 	h.DownloadAuthFile(ctx)
 
 	if rec.Code != http.StatusBadRequest {

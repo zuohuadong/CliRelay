@@ -211,6 +211,10 @@ func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (stri
 	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("postgres store: create auth directory: %w", err)
 	}
+	relID, err := s.relativeAuthID(path)
+	if err != nil {
+		return "", err
+	}
 
 	switch {
 	case auth.Storage != nil:
@@ -225,24 +229,8 @@ func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (stri
 			return "", err
 		}
 	case auth.Metadata != nil:
-		auth.Metadata["disabled"] = auth.Disabled
-		raw, errMarshal := json.Marshal(auth.Metadata)
-		if errMarshal != nil {
-			return "", fmt.Errorf("postgres store: marshal metadata: %w", errMarshal)
-		}
-		if existing, errRead := os.ReadFile(path); errRead == nil {
-			if jsonEqual(existing, raw) {
-				return path, nil
-			}
-		} else if errRead != nil && !errors.Is(errRead, fs.ErrNotExist) {
-			return "", fmt.Errorf("postgres store: read existing metadata: %w", errRead)
-		}
-		tmp := path + ".tmp"
-		if errWrite := os.WriteFile(tmp, raw, 0o600); errWrite != nil {
-			return "", fmt.Errorf("postgres store: write temp auth file: %w", errWrite)
-		}
-		if errRename := os.Rename(tmp, path); errRename != nil {
-			return "", fmt.Errorf("postgres store: rename auth file: %w", errRename)
+		if err = s.saveAuthMetadata(ctx, auth, relID, path); err != nil {
+			return "", err
 		}
 	default:
 		return "", fmt.Errorf("postgres store: nothing to persist for %s", auth.ID)
@@ -258,14 +246,34 @@ func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (stri
 		auth.FileName = auth.ID
 	}
 
-	relID, err := s.relativeAuthID(path)
+	if auth.Storage != nil {
+		err = s.upsertAuthRecord(ctx, relID, path)
+	}
 	if err != nil {
 		return "", err
 	}
-	if err = s.upsertAuthRecord(ctx, relID, path); err != nil {
-		return "", err
-	}
 	return path, nil
+}
+
+func (s *PostgresStore) saveAuthMetadata(ctx context.Context, auth *cliproxyauth.Auth, relID, path string) error {
+	raw, err := marshalAuthMetadata(auth)
+	if err != nil {
+		return fmt.Errorf("postgres store: %w", err)
+	}
+	unchanged, err := tightenAuthMetadataIfMatching(path, raw)
+	if err != nil {
+		return fmt.Errorf("postgres store: %w", err)
+	}
+	if unchanged {
+		return nil
+	}
+	if err = s.persistAuth(ctx, relID, raw); err != nil {
+		return err
+	}
+	if err = misc.WriteCredentialFileAtomic(path, raw); err != nil {
+		return fmt.Errorf("postgres store: replace local auth mirror: %w", err)
+	}
+	return nil
 }
 
 // List enumerates all auth records stored in PostgreSQL.

@@ -67,6 +67,24 @@ func SynthesizeAuthFile(ctx *SynthesisContext, fullPath string, data []byte) []*
 	return synthesizeFileAuths(ctx, fullPath, data)
 }
 
+func resolveFileAuthKind(metadata map[string]any) string {
+	auth := &coreauth.Auth{Metadata: metadata}
+	if coreauth.IsStandaloneAgentIdentityAuth(auth) {
+		return coreauth.AuthKindAgentIdentity
+	}
+	if kind, ok := metadata[coreauth.AttributeAuthKind].(string); ok {
+		switch strings.ToLower(strings.TrimSpace(kind)) {
+		case coreauth.AuthKindAPIKey, "api_key", "api-key":
+			return coreauth.AuthKindAPIKey
+		case coreauth.AuthKindOAuth, "oauth2":
+			return coreauth.AuthKindOAuth
+		case coreauth.AuthKindAgentIdentity, "agent-identity":
+			return coreauth.AuthKindAgentIdentity
+		}
+	}
+	return coreauth.AuthKindOAuth
+}
+
 func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []*coreauth.Auth {
 	if ctx == nil || len(data) == 0 {
 		return nil
@@ -84,6 +102,8 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	provider := strings.ToLower(strings.TrimSpace(t))
 	if provider == "gemini" {
 		provider = "gemini-cli"
+	} else if provider == coreauth.AuthKindAgentIdentity || provider == "agent-identity" {
+		provider = "codex"
 	}
 	// Codex CLI native exports wrap tokens under accounts[].credentials
 	// instead of flattening them at the top level. Expand the bundle into one
@@ -273,7 +293,7 @@ func synthesizeOneCodexAuth(ctx *SynthesisContext, fullPath, baseID, provider st
 	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
-	authKind := "oauth"
+	authKind := resolveFileAuthKind(metadata)
 	if provider == "openai-compatibility" && strings.TrimSpace(a.Attributes["api_key"]) != "" {
 		authKind = "api_key"
 	}

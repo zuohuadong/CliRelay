@@ -1500,9 +1500,11 @@ func openAICompatChatCompletionPayloadHasSemanticOutput(payload []byte) bool {
 }
 
 type statusErr struct {
-	code       int
-	msg        string
-	retryAfter *time.Duration
+	code              int
+	msg               string
+	errorCode         string
+	requestAuthScheme string
+	retryAfter        *time.Duration
 }
 
 func (e statusErr) Error() string {
@@ -1512,4 +1514,6 @@ func (e statusErr) Error() string {
 	return fmt.Sprintf("status %d", e.code)
 }
 func (e statusErr) StatusCode() int            { return e.code }
+func (e statusErr) ErrorCode() string          { return e.errorCode }
+func (e statusErr) RequestAuthScheme() string  { return e.requestAuthScheme }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }

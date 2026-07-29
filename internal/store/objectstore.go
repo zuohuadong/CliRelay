@@ -195,24 +195,8 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 			return "", err
 		}
 	case auth.Metadata != nil:
-		auth.Metadata["disabled"] = auth.Disabled
-		raw, errMarshal := json.Marshal(auth.Metadata)
-		if errMarshal != nil {
-			return "", fmt.Errorf("object store: marshal metadata: %w", errMarshal)
-		}
-		if existing, errRead := os.ReadFile(path); errRead == nil {
-			if jsonEqual(existing, raw) {
-				return path, nil
-			}
-		} else if errRead != nil && !errors.Is(errRead, fs.ErrNotExist) {
-			return "", fmt.Errorf("object store: read existing metadata: %w", errRead)
-		}
-		tmp := path + ".tmp"
-		if errWrite := os.WriteFile(tmp, raw, 0o600); errWrite != nil {
-			return "", fmt.Errorf("object store: write temp auth file: %w", errWrite)
-		}
-		if errRename := os.Rename(tmp, path); errRename != nil {
-			return "", fmt.Errorf("object store: rename auth file: %w", errRename)
+		if err = s.saveAuthMetadata(ctx, auth, path); err != nil {
+			return "", err
 		}
 	default:
 		return "", fmt.Errorf("object store: nothing to persist for %s", auth.ID)
@@ -228,10 +212,34 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 		auth.FileName = auth.ID
 	}
 
-	if err = s.uploadAuth(ctx, path); err != nil {
+	if auth.Storage != nil {
+		err = s.uploadAuth(ctx, path)
+	}
+	if err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+func (s *ObjectTokenStore) saveAuthMetadata(ctx context.Context, auth *cliproxyauth.Auth, path string) error {
+	raw, err := marshalAuthMetadata(auth)
+	if err != nil {
+		return fmt.Errorf("object store: %w", err)
+	}
+	unchanged, err := tightenAuthMetadataIfMatching(path, raw)
+	if err != nil {
+		return fmt.Errorf("object store: %w", err)
+	}
+	if unchanged {
+		return nil
+	}
+	if err = s.uploadAuthData(ctx, path, raw); err != nil {
+		return err
+	}
+	if err = misc.WriteCredentialFileAtomic(path, raw); err != nil {
+		return fmt.Errorf("object store: replace local auth mirror: %w", err)
+	}
+	return nil
 }
 
 // List enumerates auth JSON files from the mirrored workspace.
@@ -463,6 +471,15 @@ func (s *ObjectTokenStore) uploadAuth(ctx context.Context, path string) error {
 	}
 	if len(data) == 0 {
 		return s.deleteAuthObject(ctx, path)
+	}
+	key := objectStoreAuthPrefix + "/" + filepath.ToSlash(rel)
+	return s.putObject(ctx, key, data, "application/json")
+}
+
+func (s *ObjectTokenStore) uploadAuthData(ctx context.Context, path string, data []byte) error {
+	rel, err := filepath.Rel(s.authDir, path)
+	if err != nil {
+		return fmt.Errorf("object store: resolve auth relative path: %w", err)
 	}
 	key := objectStoreAuthPrefix + "/" + filepath.ToSlash(rel)
 	return s.putObject(ctx, key, data, "application/json")

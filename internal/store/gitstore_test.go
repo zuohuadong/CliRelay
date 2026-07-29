@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	gitconfig "github.com/go-git/go-git/v6/config"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type testBranchSpec struct {
@@ -270,6 +272,64 @@ func TestCommitAndPushLockedPushesBeforeRunningGC(t *testing.T) {
 		}
 
 		assertRemoteBranchContents(t, remoteDir, "master", contents)
+	}
+}
+
+func TestGitTokenStoreMetadataPushFailureRestoresLocalCredential(t *testing.T) {
+	root := t.TempDir()
+	remoteDir := setupGitRemoteRepository(t, root, "master", testBranchSpec{name: "master", contents: "remote master branch\n"})
+	baseDir := filepath.Join(root, "workspace", "auths")
+	store := NewGitTokenStore(remoteDir, "", "", "")
+	store.SetBaseDir(baseDir)
+	auth := &cliproxyauth.Auth{
+		ID:       "codex.json",
+		FileName: "codex.json",
+		Provider: "codex",
+		Metadata: map[string]any{"type": "codex", "access_token": "old"},
+	}
+	if _, err := store.Save(context.Background(), auth); err != nil {
+		t.Fatalf("initial Save() error = %v", err)
+	}
+	repo, err := git.PlainOpen(filepath.Join(root, "workspace"))
+	if err != nil {
+		t.Fatalf("open workspace repo: %v", err)
+	}
+	originalHead, err := repo.Head()
+	if err != nil {
+		t.Fatalf("read original head: %v", err)
+	}
+	authServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("WWW-Authenticate", `Basic realm="git"`)
+		http.Error(writer, "auth required", http.StatusUnauthorized)
+	}))
+	t.Cleanup(authServer.Close)
+	cfg, err := repo.Config()
+	if err != nil {
+		t.Fatalf("read repo config: %v", err)
+	}
+	cfg.Remotes["origin"].URLs = []string{authServer.URL}
+	if err = repo.SetConfig(cfg); err != nil {
+		t.Fatalf("replace origin URL: %v", err)
+	}
+	updated := auth.Clone()
+	updated.Metadata["access_token"] = "new"
+
+	if _, err = store.Save(context.Background(), updated); err == nil {
+		t.Fatal("Save() succeeded while git remote rejected the push")
+	}
+	raw, err := os.ReadFile(filepath.Join(baseDir, "codex.json"))
+	if err != nil {
+		t.Fatalf("read restored credential: %v", err)
+	}
+	if !jsonEqual(raw, []byte(`{"type":"codex","access_token":"old","disabled":false}`)) {
+		t.Fatalf("credential was not restored after failed push: %s", raw)
+	}
+	restoredHead, err := repo.Head()
+	if err != nil {
+		t.Fatalf("read restored head: %v", err)
+	}
+	if restoredHead.Hash() != originalHead.Hash() {
+		t.Fatalf("head after failed push = %s, want %s", restoredHead.Hash(), originalHead.Hash())
 	}
 }
 

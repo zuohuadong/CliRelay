@@ -79,6 +79,10 @@ func (h *Host) callHostAuthGet(ctx context.Context, request []byte) ([]byte, err
 	if errGet != nil {
 		return nil, errGet
 	}
+	rawJSON, errGet = redactAgentIdentityPrivateKeys(rawJSON)
+	if errGet != nil {
+		return nil, errGet
+	}
 	name := strings.TrimSpace(auth.FileName)
 	if name == "" {
 		name = strings.TrimSpace(auth.ID)
@@ -90,6 +94,87 @@ func (h *Host) callHostAuthGet(ctx context.Context, request []byte) ([]byte, err
 		Path:      path,
 		JSON:      json.RawMessage(rawJSON),
 	})
+}
+
+func redactAgentIdentityPrivateKeys(rawJSON []byte) ([]byte, error) {
+	var document map[string]any
+	if err := json.Unmarshal(rawJSON, &document); err != nil {
+		return nil, fmt.Errorf("redact Agent Identity private key: %w", err)
+	}
+	removed := false
+	if isAgentIdentityDocument(document) {
+		removed = removeAgentIdentityPrivateKeyAliases(document)
+	}
+	removed = redactNestedAgentIdentityPrivateKeys(document) || removed
+	if !removed {
+		return rawJSON, nil
+	}
+	redacted, err := json.Marshal(document)
+	if err != nil {
+		return nil, fmt.Errorf("marshal redacted auth file: %w", err)
+	}
+	return redacted, nil
+}
+
+func isAgentIdentityDocument(document map[string]any) bool {
+	for _, key := range []string{"type", "auth_kind"} {
+		if authKind, _ := document[key].(string); strings.EqualFold(strings.TrimSpace(authKind), coreauth.AuthKindAgentIdentity) {
+			return true
+		}
+	}
+	if runtimeID, _ := document["agent_runtime_id"].(string); strings.TrimSpace(runtimeID) != "" {
+		return true
+	}
+	_, hasNestedIdentity := document["agent_identity"]
+	return hasNestedIdentity
+}
+
+func removeAgentIdentityPrivateKeyAliases(document map[string]any) bool {
+	removed := false
+	for key := range document {
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "agent_private_key", "private_key_pkcs8_base64", "private_key":
+			delete(document, key)
+			removed = true
+		}
+	}
+	return removed
+}
+
+func redactNestedAgentIdentityPrivateKeys(value any) bool {
+	removed := false
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if strings.EqualFold(strings.TrimSpace(key), "agent_identity") {
+				if identity, ok := child.(map[string]any); ok {
+					removed = removeAgentIdentityPrivateKeys(identity) || removed
+				}
+			}
+			removed = redactNestedAgentIdentityPrivateKeys(child) || removed
+		}
+	case []any:
+		for _, child := range typed {
+			removed = redactNestedAgentIdentityPrivateKeys(child) || removed
+		}
+	}
+	return removed
+}
+
+func removeAgentIdentityPrivateKeys(value any) bool {
+	removed := false
+	switch typed := value.(type) {
+	case map[string]any:
+		removed = removeAgentIdentityPrivateKeyAliases(typed)
+		for _, child := range typed {
+			removed = removeAgentIdentityPrivateKeys(child) || removed
+		}
+	case []any:
+		for _, child := range typed {
+			removed = removeAgentIdentityPrivateKeys(child) || removed
+		}
+	}
+	return removed
 }
 
 func (h *Host) callHostAuthGetRuntime(ctx context.Context, request []byte) ([]byte, error) {

@@ -27,6 +27,7 @@ func TestDownloadAuthFile_ReturnsFile(t *testing.T) {
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files/download?name="+url.QueryEscape(fileName), nil)
+	ctx.Set(managementAuthClassContextKey, managementAuthClassAdmin)
 	h.DownloadAuthFile(ctx)
 
 	if rec.Code != http.StatusOK {
@@ -51,10 +52,29 @@ func TestDownloadAuthFile_RejectsPathSeparators(t *testing.T) {
 		rec := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(rec)
 		ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files/download?name="+url.QueryEscape(name), nil)
+		ctx.Set(managementAuthClassContextKey, managementAuthClassAdmin)
 		h.DownloadAuthFile(ctx)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("expected %d for name %q, got %d with body %s", http.StatusBadRequest, name, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+func TestDownloadAuthFileRejectsShareCredential(t *testing.T) {
+	authDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(authDir, "codex.json"), []byte(`{"type":"codex","access_token":"secret"}`), 0o600); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files/download?name=codex.json", nil)
+	ctx.Set(managementAuthClassContextKey, managementAuthClassShare)
+
+	h.DownloadAuthFile(ctx)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("share download status = %d, want %d body=%s", recorder.Code, http.StatusForbidden, recorder.Body.String())
 	}
 }

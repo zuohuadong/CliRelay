@@ -929,6 +929,30 @@ func TestCodexStrictEgressRefreshSkipsHomeAndUsesResolvedProxy(t *testing.T) {
 	}
 }
 
+func TestCodexAutoExecutorRenewsAgentIdentityTaskThroughResolvedProxy(t *testing.T) {
+	var proxyHits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		proxyHits.Add(1)
+		if request.Method != http.MethodConnect || request.Host != "auth.openai.com:443" {
+			t.Errorf("proxy request = %s %s, want CONNECT auth.openai.com:443", request.Method, request.Host)
+		}
+		writer.WriteHeader(http.StatusForbidden)
+	}))
+	defer proxy.Close()
+
+	exec := NewCodexAutoExecutorWithEgress(
+		&config.Config{},
+		staticEgressResolver{resolved: egress.ResolvedEndpoint{Endpoint: egress.Endpoint{ID: "endpoint-a"}, ProxyURL: proxy.URL}},
+	)
+	auth, _ := agentIdentityStandaloneAuth(t)
+	if _, err := exec.RenewAgentIdentityTask(context.Background(), auth); err == nil {
+		t.Fatal("RenewAgentIdentityTask() succeeded through rejecting proxy")
+	}
+	if got := proxyHits.Load(); got == 0 {
+		t.Fatal("resolved proxy was not used")
+	}
+}
+
 func TestCodexStrictEgressRoutesHttpRequestThroughResolvedProxy(t *testing.T) {
 	t.Parallel()
 

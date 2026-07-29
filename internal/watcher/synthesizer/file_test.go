@@ -10,6 +10,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -18,6 +19,55 @@ func TestNewFileSynthesizer(t *testing.T) {
 	synth := NewFileSynthesizer()
 	if synth == nil {
 		t.Fatal("expected non-nil synthesizer")
+	}
+}
+
+func TestResolveFileAuthKindSeparatesManagedAndStandaloneAgentIdentity(t *testing.T) {
+	agentFields := map[string]any{
+		"agent_runtime_id":  "runtime-1",
+		"agent_private_key": "private-key",
+		"task_id":           "task-1",
+	}
+	standalone := map[string]any{"type": coreauth.AuthKindAgentIdentity}
+	managed := map[string]any{"type": "codex", "refresh_token": "refresh-token"}
+	for key, value := range agentFields {
+		standalone[key] = value
+		managed[key] = value
+	}
+	if got := resolveFileAuthKind(standalone); got != coreauth.AuthKindAgentIdentity {
+		t.Fatalf("standalone auth kind = %q", got)
+	}
+	if got := resolveFileAuthKind(managed); got != coreauth.AuthKindOAuth {
+		t.Fatalf("managed auth kind = %q", got)
+	}
+}
+
+func TestSynthesizeStandaloneAgentIdentitySelectsCodexProvider(t *testing.T) {
+	fullPath := filepath.Join(t.TempDir(), "agent-auth.json")
+	raw := []byte(`{
+		"type":"agent_identity",
+		"refresh_token":"stale-refresh",
+		"agent_runtime_id":"runtime-1",
+		"agent_private_key":"private-key",
+		"task_id":"task-1",
+		"account_id":"account-1"
+	}`)
+	auths := SynthesizeAuthFile(&SynthesisContext{Now: time.Now()}, fullPath, raw)
+	if len(auths) != 1 {
+		t.Fatalf("SynthesizeAuthFile() len = %d, want 1", len(auths))
+	}
+	auth := auths[0]
+	if auth.Provider != "codex" {
+		t.Fatalf("Provider = %q, want codex", auth.Provider)
+	}
+	if auth.AuthKind() != coreauth.AuthKindAgentIdentity {
+		t.Fatalf("AuthKind() = %q, want agent_identity", auth.AuthKind())
+	}
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor.NewCodexExecutor(nil))
+	if _, ok := manager.Executor(auth.Provider); !ok {
+		t.Fatalf("no executor registered for synthesized provider %q", auth.Provider)
 	}
 }
 

@@ -357,7 +357,8 @@ func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time
 		return time.Time{}, false
 	}
 
-	if auth.AuthKind() == AuthKindAPIKey {
+	switch auth.AuthKind() {
+	case AuthKindAPIKey, AuthKindAgentIdentity:
 		return time.Time{}, false
 	}
 

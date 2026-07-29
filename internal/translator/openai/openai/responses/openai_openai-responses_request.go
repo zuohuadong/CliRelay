@@ -119,22 +119,47 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 	if input := root.Get("input"); input.Exists() && input.IsArray() {
 		inputItems := input.Array()
 		outputCallIDs := make(map[string]struct{})
+		preScanPendingCallIDs := make([]string, 0)
+		removePreScanPendingCallID := func(callID string) {
+			for i, pendingID := range preScanPendingCallIDs {
+				if pendingID == callID {
+					preScanPendingCallIDs = append(preScanPendingCallIDs[:i], preScanPendingCallIDs[i+1:]...)
+					return
+				}
+			}
+		}
 		for _, item := range inputItems {
 			itemType := item.Get("type").String()
-			if itemType != "function_call_output" && itemType != "custom_tool_call_output" {
+			callID := ""
+			switch itemType {
+			case "function_call", "custom_tool_call":
+				preScanPendingCallIDs = append(preScanPendingCallIDs, strings.TrimSpace(item.Get("call_id").String()))
 				continue
+			case "function_call_output", "custom_tool_call_output":
+				callID = strings.TrimSpace(item.Get("call_id").String())
+			case "message", "":
+				if strings.EqualFold(strings.TrimSpace(item.Get("role").String()), "tool") {
+					callID = strings.TrimSpace(item.Get("tool_call_id").String())
+					if callID == "" {
+						callID = strings.TrimSpace(item.Get("call_id").String())
+					}
+					if callID == "" && len(preScanPendingCallIDs) == 1 {
+						callID = preScanPendingCallIDs[0]
+					}
+				}
 			}
-			callID := strings.TrimSpace(item.Get("call_id").String())
 			if callID == "" {
 				continue
 			}
 			outputCallIDs[callID] = struct{}{}
+			removePreScanPendingCallID(callID)
 		}
 
 		pendingToolCalls := make([]interface{}, 0)
 		pendingToolCallIDs := make([]string, 0)
 		pendingReasoningContent := ""
 		awaitingToolOutputs := make(map[string]struct{})
+		discardedToolCallIDs := make(map[string]struct{})
 		deferredMessages := make([][]byte, 0)
 
 		takePendingReasoningContent := func() string {
@@ -199,6 +224,42 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			if itemType == "" && item.Get("role").String() != "" {
 				itemType = "message"
 			}
+			messageToolCallID := ""
+			if itemType == "message" && strings.EqualFold(strings.TrimSpace(item.Get("role").String()), "tool") {
+				messageToolCallID = strings.TrimSpace(item.Get("tool_call_id").String())
+				if messageToolCallID == "" {
+					messageToolCallID = strings.TrimSpace(item.Get("call_id").String())
+				}
+				if _, discarded := discardedToolCallIDs[messageToolCallID]; messageToolCallID != "" && discarded {
+					continue
+				}
+				if messageToolCallID == "" && len(awaitingToolOutputs) == 0 && len(pendingToolCalls) == 1 && len(pendingToolCallIDs) == 1 {
+					messageToolCallID = pendingToolCallIDs[0]
+				}
+				if messageToolCallID == "" && len(pendingToolCalls) == 0 && len(awaitingToolOutputs) == 1 {
+					for callID := range awaitingToolOutputs {
+						messageToolCallID = callID
+					}
+				}
+				if messageToolCallID == "" {
+					// An ambiguous result cannot safely link to a parallel call. Drop
+					// the pending calls as well so no orphan reaches the upstream.
+					for _, callID := range pendingToolCallIDs {
+						if callID != "" {
+							discardedToolCallIDs[callID] = struct{}{}
+						}
+					}
+					pendingToolCalls = pendingToolCalls[:0]
+					pendingToolCallIDs = pendingToolCallIDs[:0]
+					continue
+				}
+			}
+			if itemType == "function_call_output" || itemType == "custom_tool_call_output" {
+				callID := strings.TrimSpace(item.Get("call_id").String())
+				if _, discarded := discardedToolCallIDs[callID]; callID != "" && discarded {
+					continue
+				}
+			}
 			if itemType != "function_call" && itemType != "custom_tool_call" {
 				flushPendingToolCalls()
 			}
@@ -215,6 +276,9 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				}
 				message := []byte(`{"role":"","content":[]}`)
 				message, _ = sjson.SetBytes(message, "role", role)
+				if messageToolCallID != "" {
+					message, _ = sjson.SetBytes(message, "tool_call_id", messageToolCallID)
+				}
 
 				if content := item.Get("content"); content.Exists() && content.IsArray() {
 					var messageContent string
@@ -267,7 +331,15 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					}
 				}
 
-				appendRegularMessage(message)
+				if role == "tool" {
+					out, _ = sjson.SetRawBytes(out, "messages.-1", message)
+					delete(awaitingToolOutputs, messageToolCallID)
+					if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
+						flushDeferredMessages()
+					}
+				} else {
+					appendRegularMessage(message)
+				}
 
 			case "reasoning":
 				reasoningContent := collectOpenAIResponsesReasoningContent(item)

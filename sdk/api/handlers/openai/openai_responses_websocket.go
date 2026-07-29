@@ -2967,6 +2967,11 @@ func shouldReplayResponsesWebsocketTranscript(errMsg *interfaces.ErrorMessage) b
 	if strings.Contains(text, "no tool call found for") {
 		return true
 	}
+	// Some OpenAI-compatible providers report the same orphaned tool state as
+	// "tool_call_id ... is not found" instead of naming the output item type.
+	if strings.Contains(text, "tool_call_id") && strings.Contains(text, "is not found") {
+		return true
+	}
 	if !strings.Contains(text, "previous_response_id") {
 		return false
 	}

@@ -62,6 +62,103 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergeConsecutiveFu
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DoesNotEmitEmptyToolCallID(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"message","role":"tool","content":"missing link"},
+			{"type":"message","role":"tool","call_id":"call_1","content":"linked result"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("k3", raw, true)
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 1 {
+		t.Fatalf("messages length = %d, want 1: %s", len(messages), out)
+	}
+	if got := gjson.GetBytes(out, "messages.0.tool_call_id").String(); got != "call_1" {
+		t.Fatalf("messages.0.tool_call_id = %q, want call_1: %s", got, out)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_InfersSinglePendingToolCallID(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{}"},
+			{"type":"message","role":"tool","content":"done"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("k3", raw, true)
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 2 {
+		t.Fatalf("messages length = %d, want 2: %s", len(messages), out)
+	}
+	if got := gjson.GetBytes(out, "messages.0.tool_calls.0.id").String(); got != "call_1" {
+		t.Fatalf("messages.0.tool_calls.0.id = %q, want call_1: %s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.1.tool_call_id").String(); got != "call_1" {
+		t.Fatalf("messages.1.tool_call_id = %q, want inferred call_1: %s", got, out)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_InfersAwaitingToolCallID(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{}"},
+			{"type":"message","role":"user","content":"approval recorded"},
+			{"type":"message","role":"tool","content":"done"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("k3", raw, true)
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 3 {
+		t.Fatalf("messages length = %d, want 3: %s", len(messages), out)
+	}
+	if got := messages[1].Get("tool_call_id").String(); got != "call_1" {
+		t.Fatalf("messages.1.tool_call_id = %q, want inferred call_1: %s", got, out)
+	}
+	if got := messages[2].Get("role").String(); got != "user" {
+		t.Fatalf("messages.2.role = %q, want deferred user: %s", got, out)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DoesNotInferAcrossInvalidParallelCalls(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"function_call","call_id":"","name":"exec_command","arguments":"{}"},
+			{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"},
+			{"type":"message","role":"tool","content":"ambiguous"},
+			{"type":"message","role":"user","content":"continue"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("k3", raw, true)
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 1 || messages[0].Get("role").String() != "user" {
+		t.Fatalf("ambiguous tool history should be dropped: %s", out)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DropsResultsForDiscardedParallelCalls(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"function_call","call_id":"call_a","name":"exec_command","arguments":"{}"},
+			{"type":"function_call","call_id":"call_b","name":"read_file","arguments":"{}"},
+			{"type":"message","role":"tool","content":"ambiguous"},
+			{"type":"message","role":"tool","call_id":"call_b","content":"late chat result"},
+			{"type":"function_call_output","call_id":"call_a","output":"late native result"},
+			{"type":"message","role":"user","content":"continue"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("k3", raw, true)
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 1 || messages[0].Get("role").String() != "user" {
+		t.Fatalf("discarded calls and late results should be dropped together: %s", out)
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_SplitFunctionCallsWhenInterrupted(t *testing.T) {
 	raw := []byte(`{
 		"input": [

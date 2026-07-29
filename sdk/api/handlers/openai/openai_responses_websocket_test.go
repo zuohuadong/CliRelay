@@ -6353,6 +6353,12 @@ func TestShouldReplayResponsesWebsocketTranscriptNoToolCallFound(t *testing.T) {
 			want:    true,
 		},
 		{
+			name:    "empty tool call id triggers replay",
+			message: "tool_call_id  is not found",
+			status:  http.StatusBadRequest,
+			want:    true,
+		},
+		{
 			name:    "unrelated error does not trigger replay",
 			message: "Invalid model: gpt-foo",
 			status:  http.StatusBadRequest,

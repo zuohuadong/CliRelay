@@ -533,7 +533,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 					// 非 replay 时累积 transcript（合并历史 + 上次 response output + 当前 input），
 					// 供下一轮 replay 使用。
 					if errMsg == nil {
-						passthroughAccumulatedInput = accumulatePassthroughTranscript(passthroughAccumulatedInput, passthroughLastResponseOutput, payload)
+						passthroughAccumulatedInput = accumulatePassthroughTranscript(passthroughAccumulatedInput, passthroughLastResponseOutput, requestJSON)
 					}
 				}
 				updatedLastRequest = bytes.Clone(requestJSON)
@@ -1708,6 +1708,7 @@ func normalizeResponsesWebsocketPassthroughRequest(rawJSON []byte, modelName str
 		normalized, _ = sjson.SetBytes(normalized, "model", modelName)
 	}
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
+	normalized = dropResponsesInputToolItemsWithEmptyCallID(normalized)
 	return normalizeResponsesInputToolCallIDs(normalized), nil
 }
 
@@ -1757,6 +1758,7 @@ func buildPassthroughTranscriptReplayPayload(clientPayload []byte, accumulatedIn
 	if errMarshal != nil {
 		return nil, errMarshal
 	}
+	payload = sanitizeResponsesInputToolCallHistory(payload)
 	return normalizeResponsesInputToolCallIDs(payload), nil
 }
 

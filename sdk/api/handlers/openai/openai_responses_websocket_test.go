@@ -1692,6 +1692,44 @@ func TestNormalizeResponsesWebsocketPassthroughRequestNormalizesCodexCustomToolC
 	}
 }
 
+func TestNormalizeResponsesWebsocketPassthroughRequestDropsEmptyToolCallID(t *testing.T) {
+	raw := []byte(`{"type":"response.create","model":"gpt-5.4","previous_response_id":"resp_1","input":[{"type":"function_call","id":"fc-empty","call_id":"","name":"exec_command","arguments":"{}"},{"type":"custom_tool_call","id":"fc-blank","call_id":"  ","name":"apply_patch","input":"broken"},{"type":"function_call_output","call_id":"","output":"broken"},{"type":"custom_tool_call_output","call_id":"  ","output":"also broken"},{"type":"function_call_output","call_id":"call_live","output":"ok"}]}`)
+
+	normalized, errMsg := normalizeResponsesWebsocketPassthroughRequest(raw, "")
+	if errMsg != nil {
+		t.Fatalf("unexpected passthrough normalization error: %v", errMsg.Error)
+	}
+
+	input := gjson.GetBytes(normalized, "input").Array()
+	if len(input) != 1 {
+		t.Fatalf("input len = %d, want 1: %s", len(input), normalized)
+	}
+	if got := input[0].Get("call_id").String(); got != "call_live" {
+		t.Fatalf("remaining call_id = %q, want call_live: %s", got, normalized)
+	}
+}
+
+func TestBuildPassthroughTranscriptReplayPayloadDropsUnpairedToolHistory(t *testing.T) {
+	clientPayload := []byte(`{"type":"response.create","model":"gpt-5.4","previous_response_id":"resp_missing","input":[{"type":"message","role":"user","content":"next"}]}`)
+	accumulatedInput := []byte(`[{"type":"message","role":"user","content":"start"},{"type":"function_call_output","call_id":"","output":"broken"},{"type":"function_call_output","call_id":"call_orphan","output":"orphan"},{"type":"function_call","id":"fc_ok","call_id":"call_ok","name":"exec_command","arguments":"{}"},{"type":"function_call_output","call_id":"call_ok","output":"done"}]`)
+
+	replayed, err := buildPassthroughTranscriptReplayPayload(clientPayload, accumulatedInput, "")
+	if err != nil {
+		t.Fatalf("build replay payload: %v", err)
+	}
+
+	input := gjson.GetBytes(replayed, "input").Array()
+	if len(input) != 3 {
+		t.Fatalf("input len = %d, want 3: %s", len(input), replayed)
+	}
+	if input[0].Get("type").String() != "message" || input[1].Get("call_id").String() != "call_ok" || input[2].Get("call_id").String() != "call_ok" {
+		t.Fatalf("unexpected replay input: %s", replayed)
+	}
+	if gjson.GetBytes(replayed, "previous_response_id").Exists() {
+		t.Fatalf("previous_response_id should be removed: %s", replayed)
+	}
+}
+
 func TestNormalizeResponsesWebsocketPassthroughRequestNormalizesCodexFunctionCallID(t *testing.T) {
 	raw := []byte(`{"type":"response.create","model":"gpt-5.4","input":[{"type":"function_call","id":"functions_exec_command_0_7ca4ee899e52361f","call_id":"call_abc","name":"exec_command","arguments":"{}"},{"type":"function_call_output","call_id":"call_abc","output":"ok"},{"type":"custom_tool_call","id":"call_custom","call_id":"call_custom","name":"apply_patch","input":"*** Begin Patch"},{"type":"custom_tool_call_output","call_id":"call_custom","output":"done"}]}`)
 

@@ -389,6 +389,38 @@ func sanitizeResponsesInputToolCallHistory(payload []byte) []byte {
 	return updated
 }
 
+func dropResponsesInputToolItemsWithEmptyCallID(payload []byte) []byte {
+	input := gjson.GetBytes(payload, "input")
+	if !input.Exists() || !input.IsArray() {
+		return payload
+	}
+
+	items := make([]json.RawMessage, 0, len(input.Array()))
+	changed := false
+	for _, item := range input.Array() {
+		itemType := item.Get("type").String()
+		if (isResponsesToolCallType(itemType) || isResponsesToolCallOutputType(itemType)) &&
+			strings.TrimSpace(item.Get("call_id").String()) == "" {
+			changed = true
+			continue
+		}
+		items = append(items, json.RawMessage(item.Raw))
+	}
+	if !changed {
+		return payload
+	}
+
+	normalizedInput, errMarshal := json.Marshal(items)
+	if errMarshal != nil {
+		return payload
+	}
+	updated, errSet := sjson.SetRawBytes(payload, "input", normalizedInput)
+	if errSet != nil {
+		return payload
+	}
+	return updated
+}
+
 func sanitizeResponsesToolCallNamesArray(rawArray string) (string, error) {
 	rawArray = strings.TrimSpace(rawArray)
 	if rawArray == "" {
@@ -444,6 +476,9 @@ func sanitizeResponsesToolCallNamesArray(rawArray string) (string, error) {
 			}
 		case isResponsesToolCallOutputType(itemType):
 			callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
+			if callID == "" {
+				continue
+			}
 			if _, invalid := invalidCallIDs[callID]; invalid {
 				if _, valid := validCallIDs[callID]; !valid {
 					continue

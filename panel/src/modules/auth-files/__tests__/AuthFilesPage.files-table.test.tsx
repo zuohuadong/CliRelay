@@ -1349,6 +1349,51 @@ describe("AuthFilesPage files table", () => {
     );
   });
 
+  test("does not refresh quota for disabled auth files", async () => {
+    const now = Date.now();
+    const file = {
+      name: "codex-disabled.json",
+      type: "codex",
+      provider: "codex",
+      account_type: "oauth",
+      auth_index: "auth-codex-disabled",
+      chatgpt_account_id: "acct-disabled",
+      size: 1024,
+      modified: now,
+      disabled: true,
+    };
+
+    mocks.list.mockImplementation(async () => ({ files: [file] }));
+    mocks.fetchQuota.mockResolvedValue({
+      items: [{ key: "code_5h", label: "m_quota.code_5h", percent: 88 }],
+    });
+    window.localStorage.setItem(AUTH_FILES_QUOTA_AUTO_REFRESH_KEY, JSON.stringify(0));
+
+    const wrap = (node: ReactNode) => (
+      <ThemeProvider>
+        <ToastProvider>{node}</ToastProvider>
+      </ThemeProvider>
+    );
+    const router = createMemoryRouter(
+      [
+        { path: "/auth-files", element: wrap(<AuthFilesPage />) },
+        { path: "/api-keys", element: wrap(<div>api keys</div>) },
+      ],
+      { initialEntries: ["/api-keys"] },
+    );
+
+    render(<RouterProvider router={router} />);
+
+    expect(await screen.findByText("api keys")).toBeInTheDocument();
+    await act(async () => {
+      await router.navigate("/auth-files");
+    });
+
+    expect(await screen.findByText(file.name)).toBeInTheDocument();
+    await waitFor(() => expect(mocks.getEntityStats).toHaveBeenCalled());
+    expect(mocks.fetchQuota).not.toHaveBeenCalled();
+  });
+
   test("refreshes quota for a newly authorized auth file", async () => {
     const now = Date.now();
     const initialFile = {

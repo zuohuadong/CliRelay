@@ -398,6 +398,7 @@ export function useAuthFilesQuotaState({
   const resolveQuotaTargets = useCallback((targetFiles: AuthFileItem[]) => {
     return targetFiles
       .map((file) => {
+        if (file.disabled === true) return null;
         const provider = resolveQuotaProvider(file);
         return provider ? { file, provider } : null;
       })

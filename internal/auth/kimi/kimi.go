@@ -9,13 +9,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"runtime"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -140,39 +137,18 @@ func getOrCreateDeviceID() string {
 	return uuid.New().String()
 }
 
-// getDeviceModel returns a device model string.
-func getDeviceModel() string {
-	osName := runtime.GOOS
-	arch := runtime.GOARCH
-
-	switch osName {
-	case "darwin":
-		return fmt.Sprintf("macOS %s", arch)
-	case "windows":
-		return fmt.Sprintf("Windows %s", arch)
-	case "linux":
-		return fmt.Sprintf("Linux %s", arch)
-	default:
-		return fmt.Sprintf("%s %s", osName, arch)
-	}
-}
-
-// getHostname returns the machine hostname.
-func getHostname() string {
-	hostname, err := os.Hostname()
-	if err != nil {
-		return "unknown"
-	}
-	return hostname
-}
-
 // commonHeaders returns headers required for Kimi API requests.
 func (c *DeviceFlowClient) commonHeaders() map[string]string {
+	headerDefaults := config.KimiHeaderDefaults{}.WithDefaults()
+	if c != nil && c.cfg != nil {
+		headerDefaults = c.cfg.KimiHeaderDefaults.WithDefaults()
+	}
 	return map[string]string{
-		"X-Msh-Platform":     "CLIProxyAPI",
-		"X-Msh-Version":      buildinfo.Version,
-		"X-Msh-Device-Name":  getHostname(),
-		"X-Msh-Device-Model": getDeviceModel(),
+		"User-Agent":         headerDefaults.UserAgent,
+		"X-Msh-Platform":     headerDefaults.Platform,
+		"X-Msh-Version":      headerDefaults.Version,
+		"X-Msh-Device-Name":  headerDefaults.DeviceName,
+		"X-Msh-Device-Model": headerDefaults.DeviceModel,
 		"X-Msh-Device-Id":    c.deviceID,
 	}
 }

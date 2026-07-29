@@ -537,6 +537,17 @@ nonstream-keepalive-interval: 0
 #   user-agent: "codex_cli_rs/0.114.0 (Mac OS 14.2.0; x86_64) vscode/1.111.0"
 #   beta-features: "multi_agent"
 
+# Kimi OAuth and model-request identity headers. Defaults avoid exposing the
+# relay product name, build version, host name, and host platform.
+# kimi-header-defaults:
+#   user-agent: "codex"
+#   platform: "codex"
+#   version: "1.0.0"
+#   device-name: "codex"
+#   device-model: "codex"
+#
+# The stable credential-specific X-Msh-Device-Id is preserved separately.
+
 # OpenAI compatibility providers
 # Agnes multi-modal provider. Chat and image use OpenAI-compatible endpoints;
 # video creation uses /v1/videos and result polling uses Agnes native /agnesapi?video_id=...

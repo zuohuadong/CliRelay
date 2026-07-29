@@ -181,6 +181,9 @@ type Config struct {
 	// These are used as fallbacks when the client does not send its own headers.
 	ClaudeHeaderDefaults ClaudeHeaderDefaults `yaml:"claude-header-defaults" json:"claude-header-defaults"`
 
+	// KimiHeaderDefaults configures the client identity headers sent to Kimi.
+	KimiHeaderDefaults KimiHeaderDefaults `yaml:"kimi-header-defaults" json:"kimi-header-defaults"`
+
 	// IdentityFingerprint controls provider-specific upstream identity headers.
 	IdentityFingerprint IdentityFingerprintConfig `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
 
@@ -375,6 +378,49 @@ type ClaudeHeaderDefaults struct {
 type CodexHeaderDefaults struct {
 	UserAgent    string `yaml:"user-agent" json:"user-agent"`
 	BetaFeatures string `yaml:"beta-features" json:"beta-features"`
+}
+
+const (
+	DefaultKimiHeaderUserAgent   = "codex"
+	DefaultKimiHeaderPlatform    = "codex"
+	DefaultKimiHeaderVersion     = "1.0.0"
+	DefaultKimiHeaderDeviceName  = "codex"
+	DefaultKimiHeaderDeviceModel = "codex"
+)
+
+// KimiHeaderDefaults configures the identity headers sent to Kimi for OAuth
+// and model requests. DeviceID remains credential-specific and is not overridden.
+type KimiHeaderDefaults struct {
+	UserAgent   string `yaml:"user-agent" json:"user-agent"`
+	Platform    string `yaml:"platform" json:"platform"`
+	Version     string `yaml:"version" json:"version"`
+	DeviceName  string `yaml:"device-name" json:"device-name"`
+	DeviceModel string `yaml:"device-model" json:"device-model"`
+}
+
+// WithDefaults returns a normalized Kimi identity with privacy-preserving defaults.
+func (h KimiHeaderDefaults) WithDefaults() KimiHeaderDefaults {
+	h.UserAgent = strings.TrimSpace(h.UserAgent)
+	h.Platform = strings.TrimSpace(h.Platform)
+	h.Version = strings.TrimSpace(h.Version)
+	h.DeviceName = strings.TrimSpace(h.DeviceName)
+	h.DeviceModel = strings.TrimSpace(h.DeviceModel)
+	if h.UserAgent == "" {
+		h.UserAgent = DefaultKimiHeaderUserAgent
+	}
+	if h.Platform == "" {
+		h.Platform = DefaultKimiHeaderPlatform
+	}
+	if h.Version == "" {
+		h.Version = DefaultKimiHeaderVersion
+	}
+	if h.DeviceName == "" {
+		h.DeviceName = DefaultKimiHeaderDeviceName
+	}
+	if h.DeviceModel == "" {
+		h.DeviceModel = DefaultKimiHeaderDeviceModel
+	}
+	return h
 }
 
 const (
@@ -1413,6 +1459,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize Claude header defaults.
 	cfg.SanitizeClaudeHeaderDefaults()
 
+	// Sanitize Kimi header defaults.
+	cfg.SanitizeKimiHeaderDefaults()
+
 	// Sanitize Claude key headers
 	cfg.SanitizeClaudeKeys()
 
@@ -1880,6 +1929,18 @@ func (cfg *Config) SanitizeClaudeHeaderDefaults() {
 	cfg.ClaudeHeaderDefaults.OS = strings.TrimSpace(cfg.ClaudeHeaderDefaults.OS)
 	cfg.ClaudeHeaderDefaults.Arch = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Arch)
 	cfg.ClaudeHeaderDefaults.Timeout = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Timeout)
+}
+
+// SanitizeKimiHeaderDefaults trims configured Kimi identity header values.
+func (cfg *Config) SanitizeKimiHeaderDefaults() {
+	if cfg == nil {
+		return
+	}
+	cfg.KimiHeaderDefaults.UserAgent = strings.TrimSpace(cfg.KimiHeaderDefaults.UserAgent)
+	cfg.KimiHeaderDefaults.Platform = strings.TrimSpace(cfg.KimiHeaderDefaults.Platform)
+	cfg.KimiHeaderDefaults.Version = strings.TrimSpace(cfg.KimiHeaderDefaults.Version)
+	cfg.KimiHeaderDefaults.DeviceName = strings.TrimSpace(cfg.KimiHeaderDefaults.DeviceName)
+	cfg.KimiHeaderDefaults.DeviceModel = strings.TrimSpace(cfg.KimiHeaderDefaults.DeviceModel)
 }
 
 // SanitizeOAuthModelAlias normalizes and deduplicates global OAuth model name aliases.

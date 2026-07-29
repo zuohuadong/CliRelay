@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 )
@@ -215,10 +215,12 @@ func TestManagerRequestsFullReplayWhenCreatingAuthWasRemoved(t *testing.T) {
 	}
 }
 
-func TestPickNextViaHomeReusesPreviousResponseCreatingAuth(t *testing.T) {
+func TestPickNextViaHomeReacquiresPreviousResponseCreatingAuth(t *testing.T) {
 	manager := NewManager(nil, nil, nil)
 	manager.SetConfig(&internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}})
 	manager.RegisterExecutor(&responseAffinityTestExecutor{id: "codex"})
+	dispatcher := &fixtureHomeDispatcher{payloads: [][]byte{[]byte(`{"model":"gpt-5.6-sol","provider":"codex","auth_index":"home-response-affinity-auth","concurrency":{"accounted":true,"credential_id":"home-response-affinity-auth","model":"gpt-5.6-sol"},"auth":{"id":"home-response-affinity-auth","provider":"codex"}}`)}}
+	manager.PublishHomeDispatch(dispatcher, executionregistry.New(), 1)
 
 	auth := &Auth{ID: "home-response-affinity-auth", Provider: "codex", Status: StatusActive}
 	firstRequest := cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: []byte(`{"input":"first"}`)}
@@ -240,12 +242,6 @@ func TestPickNextViaHomeReusesPreviousResponseCreatingAuth(t *testing.T) {
 	}
 	secondOpts = manager.applyPreviousResponseAffinity(secondRequest, secondOpts)
 
-	previousDispatcher := currentHomeDispatcher
-	currentHomeDispatcher = func() homeAuthDispatcher {
-		return homeAuthTransportErrorDispatcher{err: errors.New("home dispatch must not run for a bound response")}
-	}
-	t.Cleanup(func() { currentHomeDispatcher = previousDispatcher })
-
 	got, executor, provider, errPick := manager.pickNextViaHome(context.Background(), secondRequest.Model, secondOpts, nil)
 	if errPick != nil {
 		t.Fatalf("pickNextViaHome() error = %v", errPick)
@@ -255,6 +251,9 @@ func TestPickNextViaHomeReusesPreviousResponseCreatingAuth(t *testing.T) {
 	}
 	if executor == nil || provider != "codex" {
 		t.Fatalf("pickNextViaHome() executor/provider = %#v/%q, want codex", executor, provider)
+	}
+	if dispatcher.calls != 1 {
+		t.Fatalf("Home dispatch calls = %d, want 1 concurrency permit reacquisition", dispatcher.calls)
 	}
 }
 

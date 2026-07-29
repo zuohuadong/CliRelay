@@ -145,6 +145,15 @@ func TestServiceResolveFailsClosedWhenDisabledUnboundOrStale(t *testing.T) {
 	}
 }
 
+func TestNilServiceResolveFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	var service *Service
+	if _, err := service.Resolve(context.Background(), "acct"); !errors.Is(err, ErrEgressRequired) {
+		t.Fatalf("nil service Resolve() error = %v, want ErrEgressRequired", err)
+	}
+}
+
 func TestServiceCheckEndpointPersistsMismatchAndRejectsOverlappingCheck(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

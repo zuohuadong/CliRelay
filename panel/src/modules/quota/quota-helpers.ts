@@ -15,7 +15,12 @@ export {
   resolveCodexChatgptAccountId,
 } from "@/modules/quota/quota-codex";
 export { type ClaudeUsagePayload } from "@/modules/quota/quota-claude";
-export { buildClaudeItems, parseClaudeUsagePayload } from "@/modules/quota/quota-claude";
+export {
+  buildClaudeItems,
+  parseClaudePlanType,
+  parseClaudeScopedQuotaLabel,
+  parseClaudeUsagePayload,
+} from "@/modules/quota/quota-claude";
 export { type GeminiCliQuotaPayload } from "@/modules/quota/quota-gemini-cli";
 export {
   buildGeminiCliBuckets,
@@ -71,6 +76,7 @@ export const CODEX_REQUEST_HEADERS = {
 };
 
 export const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+export const CLAUDE_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 export const CLAUDE_REQUEST_HEADERS = {
   Accept: "application/json, text/plain, */*",
   Authorization: "Bearer $TOKEN$",

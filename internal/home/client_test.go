@@ -692,3 +692,55 @@ func TestQueryToLowerMap(t *testing.T) {
 		t.Fatalf("queryToLowerMap(nil) = %v, want nil", nilMap)
 	}
 }
+
+type blockingSubscriptionCloser struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingSubscriptionCloser) Close() error {
+	close(c.started)
+	<-c.release
+	return nil
+}
+
+func TestManagedSubscriberLifetimeDoesNotWaitForBlockedSubscriptionClose(t *testing.T) {
+	client := New(config.HomeConfig{Enabled: true})
+	client.SetManagedLifetime(true)
+	closer := &blockingSubscriptionCloser{started: make(chan struct{}), release: make(chan struct{})}
+
+	returned := make(chan struct{})
+	go func() {
+		_ = client.endConfigSubscriberLifetimeWithSubscription(errors.New("heartbeat lost"), closer, "test")
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("managed subscriber waited for blocked subscription close")
+	}
+	select {
+	case <-closer.started:
+	case <-time.After(time.Second):
+		t.Fatal("managed subscriber did not start subscription close")
+	}
+	close(closer.release)
+}
+
+func TestAbortAmbiguousDispatchKeepsReleaseChannelAvailable(t *testing.T) {
+	client := New(config.HomeConfig{Enabled: true, Host: "127.0.0.1", Port: 1})
+	releaseClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	client.mu.Lock()
+	client.release = releaseClient
+	client.mu.Unlock()
+
+	client.AbortAmbiguousDispatch()
+	if !client.dispatchFenced.Load() || client.HeartbeatOK() {
+		t.Fatal("ambiguous dispatch did not fence selection")
+	}
+	got, errClient := client.concurrencyReleaseClient()
+	if errClient != nil || got != releaseClient {
+		t.Fatalf("release client after fence = %p, %v; want %p", got, errClient, releaseClient)
+	}
+	client.Close()
+}

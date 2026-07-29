@@ -57,7 +57,7 @@ func (s *Service) fetchAntigravityModelsForAuth(ctx context.Context, auth *corea
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	client := &http.Client{}

@@ -1,11 +1,39 @@
 package cliproxy
 
 import (
+	"context"
 	"testing"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
+
+func TestEnsureExecutorsForAuth_CodexWithoutEgressRefreshDoesNotPanic(t *testing.T) {
+	service := &Service{
+		cfg:         &config.Config{},
+		coreManager: coreauth.NewManager(nil, nil, nil),
+	}
+	auth := &coreauth.Auth{
+		ID:       "codex-auth-without-egress",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"account_id": "acct-without-egress"},
+	}
+
+	service.ensureExecutorsForAuth(auth)
+	registered, ok := service.coreManager.Executor("codex")
+	if !ok || registered == nil {
+		t.Fatal("expected codex executor after bind")
+	}
+
+	refreshed, err := registered.Refresh(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
+	if refreshed == nil {
+		t.Fatal("Refresh() returned nil auth")
+	}
+}
 
 func TestEnsureExecutorsForAuth_CodexDoesNotReplaceInNormalMode(t *testing.T) {
 	service := &Service{

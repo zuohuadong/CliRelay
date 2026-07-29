@@ -890,8 +890,9 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 
 	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
-		"base_url": server.URL + "/v1",
-		"api_key":  "test",
+		"base_url":          server.URL + "/v1",
+		"api_key":           "test",
+		"response_endpoint": "true",
 	}}
 	payload := []byte(`{"model":"gpt-5.1-codex-max","input":[{"role":"user","content":"hi"}]}`)
 	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
@@ -919,6 +920,46 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatExecutorCompactSynthesizesWithoutResponsesEndpoint(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"k3","choices":[{"index":0,"message":{"role":"assistant","content":"compact summary"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"k3","input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`)
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "k3",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAIResponse,
+		OriginalRequest: payload,
+		Alt:             "responses/compact",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("path = %q, want %q", gotPath, "/v1/chat/completions")
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.#").Int(); got != 1 {
+		t.Fatalf("output length = %d, want 1; payload=%s", got, string(resp.Payload))
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.0.type").String(); got != "compaction" {
+		t.Fatalf("output.0.type = %q, want compaction; payload=%s", got, string(resp.Payload))
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.0.encrypted_content").String(); got != "compact summary" {
+		t.Fatalf("encrypted_content = %q, want compact summary; payload=%s", got, string(resp.Payload))
+	}
+}
+
 func TestOpenAICompatExecutorCompactNormalizesMessageOutput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -928,8 +969,9 @@ func TestOpenAICompatExecutorCompactNormalizesMessageOutput(t *testing.T) {
 
 	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
-		"base_url": server.URL + "/v1",
-		"api_key":  "test",
+		"base_url":          server.URL + "/v1",
+		"api_key":           "test",
+		"response_endpoint": "true",
 	}}
 	payload := []byte(`{"model":"custom-coder","input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`)
 	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
@@ -1033,8 +1075,9 @@ func TestOpenAICompatExecutorStreamsResponsesCompactionTriggerAsSingleCompaction
 
 	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
-		"base_url": server.URL + "/v1",
-		"api_key":  "test",
+		"base_url":          server.URL + "/v1",
+		"api_key":           "test",
+		"response_endpoint": "true",
 	}}
 	payload := []byte(`{"model":"custom-coder","stream":true,"input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`)
 	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{

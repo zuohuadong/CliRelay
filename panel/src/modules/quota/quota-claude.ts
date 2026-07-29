@@ -1,6 +1,7 @@
 import type { QuotaItem } from "@/modules/quota/quota-types";
 import {
   clampPercent,
+  isRecord,
   normalizeNumberValue,
   normalizeStringValue,
   parseResetTimeToMs,
@@ -12,7 +13,24 @@ type ClaudeUsageWindow = {
   resetsAt?: string;
 };
 
+type ClaudeScopedLimit = {
+  kind?: string;
+  group?: string;
+  percent?: number | string;
+  resets_at?: string;
+  resetsAt?: string;
+  scope?: {
+    model?: {
+      id?: string;
+      display_name?: string;
+      displayName?: string;
+    };
+  };
+};
+
 export type ClaudeUsagePayload = {
+  organization?: Record<string, unknown> | null;
+  account?: Record<string, unknown> | null;
   five_hour?: ClaudeUsageWindow | null;
   seven_day?: ClaudeUsageWindow | null;
   seven_day_oauth_apps?: ClaudeUsageWindow | null;
@@ -20,12 +38,54 @@ export type ClaudeUsagePayload = {
   seven_day_sonnet?: ClaudeUsageWindow | null;
   seven_day_cowork?: ClaudeUsageWindow | null;
   iguana_necktie?: ClaudeUsageWindow | null;
+  limits?: ClaudeScopedLimit[] | null;
   extra_usage?: {
     is_enabled?: boolean;
     monthly_limit?: number | string;
     used_credits?: number | string;
     utilization?: number | string | null;
   } | null;
+};
+
+const claudeModelSlug = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const CLAUDE_SCOPED_QUOTA_LABEL_PREFIX = "claude_quota.model_weekly::";
+
+export const parseClaudeScopedQuotaLabel = (label: string): string | null => {
+  const text = String(label ?? "");
+  if (!text.startsWith(CLAUDE_SCOPED_QUOTA_LABEL_PREFIX)) return null;
+  const modelName = text.slice(CLAUDE_SCOPED_QUOTA_LABEL_PREFIX.length).trim();
+  return modelName || null;
+};
+
+export const parseClaudePlanType = (payload: unknown): string => {
+  const parsed = parseClaudeUsagePayload(payload);
+  if (!parsed || !isRecord(parsed)) return "";
+  const organization = isRecord(parsed.organization) ? parsed.organization : null;
+  const account = isRecord(parsed.account) ? parsed.account : null;
+  const organizationType = normalizeStringValue(
+    organization?.organization_type ?? organization?.organizationType,
+  )?.toLowerCase();
+  if (organizationType?.includes("enterprise")) return "enterprise";
+  if (organizationType?.includes("team")) return "team";
+
+  const tier = normalizeStringValue(
+    organization?.rate_limit_tier ?? organization?.rateLimitTier,
+  )?.toLowerCase();
+  for (const candidate of ["max_20x", "max_5x", "max", "pro"] as const) {
+    if (tier?.includes(candidate)) return candidate;
+  }
+  for (const candidate of ["max", "pro", "free"] as const) {
+    if (organizationType?.includes(candidate)) return candidate;
+  }
+  if (account?.has_claude_max === true) return "max";
+  if (account?.has_claude_pro === true) return "pro";
+  return "";
 };
 
 const CLAUDE_USAGE_WINDOW_KEYS = [
@@ -78,6 +138,35 @@ export const buildClaudeItems = (payload: ClaudeUsagePayload): QuotaItem[] => {
       },
     ];
   });
+
+  const seen = new Set(items.map((item) => item.key));
+  for (const limit of payload.limits ?? []) {
+    if (limit.kind !== "weekly_scoped" || limit.group !== "weekly") continue;
+    const percentUsed = normalizeNumberValue(limit.percent);
+    if (percentUsed === null) continue;
+    const model = limit.scope?.model;
+    const modelId = normalizeStringValue(model?.id) ?? "";
+    const displayName = normalizeStringValue(model?.display_name ?? model?.displayName) ?? modelId;
+    const slug = claudeModelSlug(modelId || displayName);
+    if (
+      !slug ||
+      slug === "all-models" ||
+      slug.endsWith("-all-models") ||
+      claudeModelSlug(displayName) === "all-models"
+    )
+      continue;
+    if (seen.has("seven_day_opus") && slug.includes("opus")) continue;
+    if (seen.has("seven_day_sonnet") && slug.includes("sonnet")) continue;
+    const key = `weekly_scoped_${slug}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push({
+      key,
+      label: `${CLAUDE_SCOPED_QUOTA_LABEL_PREFIX}${displayName}`,
+      percent: clampPercent(100 - clampPercent(percentUsed)),
+      resetAtMs: parseResetTimeToMs(limit.resets_at ?? limit.resetsAt),
+    });
+  }
 
   const extra = payload.extra_usage;
   const extraUtilization = normalizeNumberValue(extra?.utilization);

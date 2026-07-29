@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -12,6 +13,27 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
+
+type resultCaptureHook struct {
+	NoopHook
+
+	mu      sync.Mutex
+	results []Result
+}
+
+func (h *resultCaptureHook) OnResult(_ context.Context, result Result) {
+	h.mu.Lock()
+	h.results = append(h.results, result)
+	h.mu.Unlock()
+}
+
+func (h *resultCaptureHook) Results() []Result {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]Result, len(h.results))
+	copy(out, h.results)
+	return out
+}
 
 const requestScopedNotFoundMessage = "Item with id 'rs_0b5f3eb6f51f175c0169ca74e4a85881998539920821603a74' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input."
 
@@ -140,6 +162,21 @@ func TestManager_ShouldRetryAfterError_RespectsAuthRequestRetryOverride(t *testi
 	_, shouldRetry = m.shouldRetryAfterError(&Error{HTTPStatus: 500, Message: "boom"}, 1, []string{"claude"}, model, maxWait)
 	if shouldRetry {
 		t.Fatalf("expected shouldRetry=false on attempt=1 for request_retry=1, got true")
+	}
+}
+
+func TestManager_ShouldRetryAfterError_SkipsWrappedHomeConcurrencyBusy(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	m.SetRetryConfig(1, 30*time.Second, 0)
+	if _, errRegister := m.Register(context.Background(), &Auth{ID: "retry-auth", Provider: "codex"}); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	_, _, maxWait := m.retrySettings()
+	errBusy := fmt.Errorf("outer retry: %w", NewHomeConcurrencyBusyError("busy", 20*time.Second))
+	wait, shouldRetry := m.shouldRetryAfterError(errBusy, 0, []string{"codex"}, "gpt", maxWait)
+	if shouldRetry || wait != 0 {
+		t.Fatalf("wrapped Home busy retry = (%v, %t), want (0, false)", wait, shouldRetry)
 	}
 }
 

@@ -40,9 +40,15 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.ResponsesWebsocketMaxConnections = DefaultResponsesWebsocketMaxConnections
 	cfg.Codex.ResponseHeaderTimeoutSeconds = DefaultCodexResponseHeaderTimeoutSeconds
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)
+	}
+
+	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
+	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
+		return nil, errValidate
 	}
 
 	// Hash remote management key if plaintext is detected (nested), but do NOT persist.

@@ -639,6 +639,9 @@ func (s *Service) Counts(ctx context.Context) (Counts, error) {
 }
 
 func (s *Service) enabled() bool {
+	if s == nil {
+		return false
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.cfg != nil && s.cfg.EgressNetwork.Enabled

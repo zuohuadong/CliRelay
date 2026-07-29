@@ -374,7 +374,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	} else {
 		reporter.Publish(ctx, helps.ParseClaudeUsage(data))
 	}
-	data = restoreClaudeOAuthToolNamesFromResponse(data, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
+	data = restoreClaudeOAuthToolNamesFromBufferedBody(data, stream, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
 	var param any
 	out := sdktranslator.TranslateNonStream(
 		ctx,
@@ -1300,6 +1300,19 @@ func restoreClaudeOAuthToolNamesFromResponse(body []byte, prefix string, prefixD
 		body = stripClaudeToolPrefixFromResponse(body, prefix)
 	}
 	return reverseRemapOAuthToolNames(body, reverseMap)
+}
+
+// restoreClaudeOAuthToolNamesFromBufferedBody restores tool names for either a
+// JSON response or an SSE response that was buffered before translation.
+func restoreClaudeOAuthToolNamesFromBufferedBody(body []byte, stream bool, prefix string, prefixDisabled bool, reverseMap map[string]string) []byte {
+	if !stream {
+		return restoreClaudeOAuthToolNamesFromResponse(body, prefix, prefixDisabled, reverseMap)
+	}
+	lines := bytes.Split(body, []byte("\n"))
+	for i, line := range lines {
+		lines[i] = restoreClaudeOAuthToolNamesFromStreamLine(line, prefix, prefixDisabled, reverseMap)
+	}
+	return bytes.Join(lines, []byte("\n"))
 }
 
 // restoreClaudeOAuthToolNamesFromStreamLine undoes the Claude OAuth tool-name

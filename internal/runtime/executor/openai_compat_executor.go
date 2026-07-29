@@ -128,11 +128,16 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	to := sdktranslator.FromString("openai")
 	endpoint := "/chat/completions"
 	imagePassthrough := false
+	syntheticCompaction := false
 	useResponsesEndpoint := e.useResponsesEndpoint(auth, opts)
 	switch opts.Alt {
 	case "responses/compact":
-		to = sdktranslator.FromString("openai-response")
-		endpoint = "/responses/compact"
+		if e.useResponsesCompactEndpoint(auth, opts) {
+			to = sdktranslator.FromString("openai-response")
+			endpoint = "/responses/compact"
+		} else {
+			syntheticCompaction = true
+		}
 	case "images/generations":
 		endpoint = "/images/generations"
 		imagePassthrough = true
@@ -154,6 +159,11 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	var translated []byte
 	if imagePassthrough {
 		translated = e.overrideModel(req.Payload, baseModel)
+	} else if syntheticCompaction {
+		translated, err = buildResponsesCompactChatPayload(originalPayloadSource, baseModel)
+		if err != nil {
+			return resp, err
+		}
 	} else {
 		originalPayload := originalPayloadSource
 		adaptedPayload, errAdapt := e.applyMultimodalAdapter(ctx, req.Payload, baseModel, from.String(), requestedModel)
@@ -255,6 +265,16 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+	if syntheticCompaction {
+		wrapped, errWrap := buildResponsesCompactResponse(baseModel, body, httpResp.Header)
+		if errWrap != nil {
+			err = errWrap
+			return resp, err
+		}
+		reporter.Publish(ctx, helps.ParseOpenAIUsage(wrapped.Payload))
+		reporter.EnsurePublished(ctx)
+		return wrapped, nil
+	}
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	// Ensure we at least record the request even if upstream doesn't return usage
 	reporter.EnsurePublished(ctx)
@@ -1059,6 +1079,15 @@ func (e *OpenAICompatExecutor) useResponsesEndpoint(auth *cliproxyauth.Auth, opt
 		return true
 	}
 	return sourceFormat == "openai-response" && strings.EqualFold(strings.TrimSpace(compat.IdentityFingerprint), "codex")
+}
+
+func (e *OpenAICompatExecutor) useResponsesCompactEndpoint(auth *cliproxyauth.Auth, opts cliproxyexecutor.Options) bool {
+	if opts.Alt != "responses/compact" {
+		return false
+	}
+	probeOpts := opts
+	probeOpts.Alt = ""
+	return e.useResponsesEndpoint(auth, probeOpts)
 }
 
 // Refresh is a no-op for API-key based compatibility providers.

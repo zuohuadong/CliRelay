@@ -105,6 +105,7 @@ const (
 	AttributePluginVirtual    = "plugin_virtual"
 	AttributeFileBundleMember = "file_bundle_member"
 	AttributeVirtualSource    = "virtual_source"
+	AttributeWeight           = "weight"
 	pluginVirtualAttrEnabled  = "true"
 	fileBundleMemberAttrValue = "true"
 )

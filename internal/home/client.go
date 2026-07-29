@@ -25,20 +25,23 @@ import (
 )
 
 const (
-	redisKeyConfig       = "config"
-	redisChannelConfig   = "config"
-	redisKeyUsage        = "usage"
-	redisKeyRequestLog   = "request-log"
-	redisKeyAppLog       = "app-log"
-	redisKeyPluginStatus = "plugin-status"
-	redisKeyPluginTasks  = "plugin-tasks"
-	redisKeyPluginSync   = "plugin-sync"
+	redisKeyConfig             = "config"
+	redisChannelConfig         = "config"
+	redisKeyUsage              = "usage"
+	redisKeyInFlightSnapshot   = "in-flight-snapshot"
+	redisKeyConcurrencyRelease = "concurrency-release"
+	redisKeyRequestLog         = "request-log"
+	redisKeyAppLog             = "app-log"
+	redisKeyPluginStatus       = "plugin-status"
+	redisKeyPluginTasks        = "plugin-tasks"
+	redisKeyPluginSync         = "plugin-sync"
 
-	homeReconnectInterval          = time.Second
-	homeReconnectFailoverThreshold = 3
-	homeRedisOperationTimeout      = 3 * time.Second
-	homeSubscriptionReceiveTimeout = 3 * time.Second
-	redisChannelCluster            = "cluster"
+	homeReconnectInterval                     = time.Second
+	homeReconnectFailoverThreshold            = 3
+	homeRedisOperationTimeout                 = 3 * time.Second
+	homeSubscriptionReceiveTimeout            = 3 * time.Second
+	credentialConcurrencyNodeHeartbeatTimeout = 20 * time.Second
+	redisChannelCluster                       = "cluster"
 )
 
 const pluginSyncUnsupportedErrorType = "plugin_sync_unsupported"
@@ -51,6 +54,7 @@ var (
 	ErrConfigNotFound        = errors.New("home config not found")
 	ErrModelsNotFound        = errors.New("home models not found")
 	ErrPluginSyncUnsupported = errors.New("home plugin sync is unsupported")
+	ErrDispatchFenced        = errors.New("home auth dispatch is fenced")
 )
 
 type clusterNode struct {
@@ -83,6 +87,10 @@ type KVSetOptions struct {
 	XX bool
 }
 
+type subscriptionCloser interface {
+	Close() error
+}
+
 type Client struct {
 	mu sync.Mutex
 
@@ -90,10 +98,16 @@ type Client struct {
 	seedHost string
 	seedPort int
 
-	cmd *redis.Client
-	sub *redis.Client
+	cmd        *redis.Client
+	cmdOptions *redis.Options
+	sub        *redis.Client
+	release    *redis.Client
+	lifecycle  config.CredentialConcurrencyConfig
+	limiter    atomic.Pointer[config.CredentialConcurrencyConfig]
+	managed    bool
 
 	heartbeatOK       atomic.Bool
+	dispatchFenced    atomic.Bool
 	clusterNodes      []clusterNode
 	reconnectFailures int
 }
@@ -125,14 +139,79 @@ func (c *Client) HeartbeatOK() bool {
 	return c.heartbeatOK.Load()
 }
 
+// AbortAmbiguousDispatch fences this client after Home may have processed a dispatch.
+// The caller must establish a fresh Home lifetime before dispatching again.
+func (c *Client) AbortAmbiguousDispatch() {
+	if c == nil {
+		return
+	}
+	c.dispatchFenced.Store(true)
+	c.heartbeatOK.Store(false)
+	c.mu.Lock()
+	subscriptionClient := c.sub
+	c.sub = nil
+	c.mu.Unlock()
+	if subscriptionClient != nil {
+		closeRedisClients(false, subscriptionClient)
+	}
+}
+
 func (c *Client) Close() {
+	commandClient, subscriptionClient, releaseClient := c.detachClientsForClose()
+	closeRedisClients(true, commandClient, subscriptionClient, releaseClient)
+}
+
+// CloseAsync fences the logical client immediately and releases Redis pools in the background.
+// Managed Home lifetimes use it after draining so a stuck Pub/Sub close cannot delay failover.
+func (c *Client) CloseAsync() {
+	commandClient, subscriptionClient, releaseClient := c.detachClientsForClose()
+	closeRedisClients(false, commandClient, subscriptionClient, releaseClient)
+}
+
+func (c *Client) detachClientsForClose() (*redis.Client, *redis.Client, *redis.Client) {
+	if c == nil {
+		return nil, nil, nil
+	}
+	c.dispatchFenced.Store(true)
+	c.heartbeatOK.Store(false)
+	c.mu.Lock()
+	commandClient := c.cmd
+	subscriptionClient := c.sub
+	releaseClient := c.release
+	c.cmd = nil
+	c.cmdOptions = nil
+	c.sub = nil
+	c.release = nil
+	c.mu.Unlock()
+	return commandClient, subscriptionClient, releaseClient
+}
+
+func closeRedisClients(wait bool, clients ...*redis.Client) {
+	var waitGroup sync.WaitGroup
+	for _, client := range clients {
+		if client == nil {
+			continue
+		}
+		waitGroup.Add(1)
+		go func(redisClient *redis.Client) {
+			defer waitGroup.Done()
+			_ = redisClient.Close()
+		}(client)
+	}
+	if wait {
+		waitGroup.Wait()
+	}
+}
+
+// closeBootstrapPools replaces command/subscription pools without ending the client lifetime.
+func (c *Client) closeBootstrapPools() {
 	if c == nil {
 		return
 	}
 	c.heartbeatOK.Store(false)
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.closeClientsLocked()
+	c.mu.Unlock()
 }
 
 func (c *Client) closeClientsLocked() {
@@ -143,7 +222,27 @@ func (c *Client) closeClientsLocked() {
 		_ = c.sub.Close()
 	}
 	c.cmd = nil
+	c.cmdOptions = nil
 	c.sub = nil
+}
+
+// SetManagedLifetime defers client shutdown to the Service lifetime owner.
+func (c *Client) SetManagedLifetime(managed bool) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.managed = managed
+	c.mu.Unlock()
+}
+
+func (c *Client) managedLifetime() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.managed
 }
 
 func (c *Client) addr() (string, bool) {
@@ -170,11 +269,17 @@ func (c *Client) ensureClients() error {
 	if c == nil {
 		return ErrDisabled
 	}
+	if c.dispatchFenced.Load() {
+		return ErrDispatchFenced
+	}
 	if !c.Enabled() {
 		return ErrDisabled
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.dispatchFenced.Load() {
+		return ErrDispatchFenced
+	}
 
 	addr, ok := c.addrLocked()
 	if !ok {
@@ -203,7 +308,7 @@ func (c *Client) redisOptionsLocked(addr string) (*redis.Options, error) {
 	if errTLS != nil {
 		return nil, errTLS
 	}
-	return &redis.Options{
+	options := &redis.Options{
 		Addr:                  addr,
 		TLSConfig:             tlsConfig,
 		DialTimeout:           homeRedisOperationTimeout,
@@ -212,7 +317,8 @@ func (c *Client) redisOptionsLocked(addr string) (*redis.Options, error) {
 		MaxRetries:            -1,
 		DialerRetries:         1,
 		ContextTimeoutEnabled: true,
-	}, nil
+	}
+	return options, nil
 }
 
 func (c *Client) homeTLSConfigLocked(addr string) (*tls.Config, error) {
@@ -836,40 +942,78 @@ func newAuthDispatchRequest(requestedModel string, sessionID string, headers htt
 		count = 1
 	}
 	return authDispatchRequest{
-		Type:      "auth",
-		Model:     requestedModel,
-		Count:     count,
-		SessionID: strings.TrimSpace(sessionID),
-		Headers:   headersToLowerMap(headers),
+		Type:                "auth",
+		Model:               requestedModel,
+		Count:               count,
+		ConcurrencyProtocol: 1,
+		SessionID:           strings.TrimSpace(sessionID),
+		Headers:             headersToLowerMap(headers),
 	}
 }
 
 func (c *Client) RPopAuth(ctx context.Context, requestedModel string, sessionID string, headers http.Header, count int) ([]byte, error) {
-	cmd, errClient := c.commandClient()
-	if errClient != nil {
-		return nil, errClient
+	if c == nil || c.dispatchFenced.Load() {
+		return nil, ErrDispatchFenced
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if errContext := ctx.Err(); errContext != nil {
+		return nil, errContext
 	}
 	requestedModel = strings.TrimSpace(requestedModel)
 	if requestedModel == "" {
 		return nil, fmt.Errorf("home: requested model is empty")
 	}
 	req := newAuthDispatchRequest(requestedModel, sessionID, headers, count)
-	keyBytes, err := json.Marshal(&req)
-	if err != nil {
-		return nil, err
+	keyBytes, errMarshal := json.Marshal(&req)
+	if errMarshal != nil {
+		return nil, errMarshal
 	}
-
-	raw, err := cmd.RPop(ctx, string(keyBytes)).Bytes()
-	if errors.Is(err, redis.Nil) {
+	if c.dispatchFenced.Load() {
+		return nil, ErrDispatchFenced
+	}
+	cmd, errClient := c.commandClient()
+	if errClient != nil {
+		return nil, errClient
+	}
+	if c.dispatchFenced.Load() {
+		return nil, ErrDispatchFenced
+	}
+	conn := cmd.Conn()
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			log.WithError(errClose).Debug("Home auth dispatch connection close failed")
+		}
+	}()
+	if errProbe := conn.Ping(ctx).Err(); errProbe != nil {
+		return nil, errProbe
+	}
+	if c.dispatchFenced.Load() {
+		return nil, ErrDispatchFenced
+	}
+	raw, errRPop := conn.RPop(ctx, string(keyBytes)).Bytes()
+	if errors.Is(errRPop, redis.Nil) {
 		return nil, ErrAuthNotFound
 	}
-	if err != nil {
-		return nil, err
+	if errRPop != nil {
+		if isAmbiguousIssuedRPopAuthError(errRPop) {
+			return nil, NewAmbiguousDispatchError(errRPop)
+		}
+		return nil, errRPop
 	}
 	if len(raw) == 0 {
 		return nil, ErrEmptyResponse
 	}
 	return raw, nil
+}
+
+func isAmbiguousIssuedRPopAuthError(err error) bool {
+	if err == nil || errors.Is(err, redis.Nil) {
+		return false
+	}
+	var redisErr redis.Error
+	return !errors.As(err, &redisErr)
 }
 
 func (c *Client) GetRefreshAuth(ctx context.Context, authIndex string) ([]byte, error) {
@@ -912,6 +1056,57 @@ func (c *Client) LPushUsage(ctx context.Context, payload []byte) error {
 		return nil
 	}
 	return cmd.LPush(ctx, redisKeyUsage, payload).Err()
+}
+
+// LPushInFlightSnapshot publishes a bounded in-flight observation frame.
+func (c *Client) LPushInFlightSnapshot(ctx context.Context, payload []byte) error {
+	cmd, errClient := c.commandClient()
+	if errClient != nil {
+		return errClient
+	}
+	return cmd.LPush(ctx, redisKeyInFlightSnapshot, payload).Err()
+}
+
+// PushConcurrencyRelease sends one cumulative concurrency release frame through an independent client.
+func (c *Client) PushConcurrencyRelease(ctx context.Context, frame ConcurrencyReleaseFrame) error {
+	if frame.CredentialID == "" || frame.Model == "" || frame.ReleaseSeq <= 0 {
+		return fmt.Errorf("invalid concurrency release frame")
+	}
+	cmd, errClient := c.concurrencyReleaseClient()
+	if errClient != nil {
+		return errClient
+	}
+	payload, errMarshal := json.Marshal(frame)
+	if errMarshal != nil {
+		return fmt.Errorf("marshal concurrency release frame: %w", errMarshal)
+	}
+	return cmd.Do(ctx, "LPUSH", redisKeyConcurrencyRelease, payload).Err()
+}
+
+func (c *Client) concurrencyReleaseClient() (*redis.Client, error) {
+	if c == nil {
+		return nil, ErrDisabled
+	}
+	if !c.Enabled() {
+		return nil, ErrDisabled
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.release != nil {
+		return c.release, nil
+	}
+	addr, ok := c.addrLocked()
+	if !ok {
+		return nil, fmt.Errorf("home: invalid address (host=%q port=%d)", c.homeCfg.Host, c.homeCfg.Port)
+	}
+	options, errOptions := c.redisOptionsLocked(addr)
+	if errOptions != nil {
+		return nil, errOptions
+	}
+	options.Dialer = redis.NewDialer(options)
+	c.release = redis.NewClient(options)
+	return c.release, nil
 }
 
 func (c *Client) RPushRequestLog(ctx context.Context, payload []byte) error {
@@ -1051,6 +1246,68 @@ func pluginSyncUnsupportedMessage(message string) (string, bool) {
 	}
 }
 
+func (c *Client) SetLifecycleConfig(cfg config.CredentialConcurrencyConfig) error {
+	if c == nil {
+		return ErrDisabled
+	}
+	cfg = cfg.WithDefaults()
+	if errValidate := config.ValidateCredentialConcurrency(cfg); errValidate != nil {
+		return fmt.Errorf("validate credential concurrency lifecycle config: %w", errValidate)
+	}
+	c.mu.Lock()
+	c.lifecycle = cfg
+	c.mu.Unlock()
+	c.limiter.Store(&cfg)
+	return nil
+}
+
+// LimiterConfig returns the latest immutable, validated Home limiter configuration.
+func (c *Client) LimiterConfig() config.CredentialConcurrencyConfig {
+	if c == nil {
+		return config.CredentialConcurrencyConfig{}.WithDefaults()
+	}
+	if cfg := c.limiter.Load(); cfg != nil {
+		return *cfg
+	}
+	return config.CredentialConcurrencyConfig{}.WithDefaults()
+}
+
+func (c *Client) subscriptionParameters() ([]string, time.Duration) {
+	if c == nil {
+		return []string{redisChannelConfig}, config.CredentialConcurrencyConfig{}.WithDefaults().CPAHeartbeatTimeout
+	}
+	c.mu.Lock()
+	cfg := c.lifecycle.WithDefaults()
+	c.mu.Unlock()
+
+	args := []string{redisChannelConfig}
+	if cfg.LifecycleConfigRevision > 0 {
+		args = append(args, strconv.FormatInt(cfg.LifecycleConfigRevision, 10))
+	}
+	return args, cfg.CPAHeartbeatTimeout
+}
+
+func (c *Client) rebuildCommandPoolAndProbe(ctx context.Context) error {
+	c.promoteSubscription()
+	return c.Ping(ctx)
+}
+
+func (c *Client) promoteSubscription() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	commandClient := c.cmd
+	c.cmd = nil
+	c.cmdOptions = nil
+	c.mu.Unlock()
+	if commandClient != nil {
+		if errClose := commandClient.Close(); errClose != nil {
+			log.WithError(errClose).Warn("Home bootstrap command client close failed")
+		}
+	}
+}
+
 func (c *Client) handleSubscriptionPayload(ctx context.Context, channel string, payload string, onConfig func([]byte) error) error {
 	payload = strings.TrimSpace(payload)
 	if payload == "" {
@@ -1070,121 +1327,157 @@ func (c *Client) handleSubscriptionPayload(ctx context.Context, channel string, 
 	}
 }
 
-// StartConfigSubscriber connects to home, fetches config once via GET config, then subscribes to
-// the "config" channel to receive runtime config updates.
-//
-// The subscription connection is treated as the home heartbeat. HeartbeatOK is set to true only
-// after the initial GET config succeeds and the SUBSCRIBE connection is established. When the
-// subscription ends unexpectedly, HeartbeatOK becomes false and the loop reconnects.
-func (c *Client) StartConfigSubscriber(ctx context.Context, onConfig func([]byte) error) {
-	if c == nil {
-		return
-	}
-	if !c.Enabled() {
-		return
+// RunConfigSubscriberLifetime runs one GET, SUBSCRIBE, and receive lifetime.
+// Reconnection is owned by the service so each replacement can install a new client lifetime.
+func (c *Client) RunConfigSubscriberLifetime(ctx context.Context, onConfig func([]byte) error, onReady func()) error {
+	if c == nil || !c.Enabled() {
+		return ErrDisabled
 	}
 	if onConfig == nil {
-		return
+		return fmt.Errorf("home config subscriber callback is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	c.closeBootstrapPools()
+	if errEnsure := c.ensureClients(); errEnsure != nil {
+		return c.endConfigSubscriberLifetime(errEnsure)
+	}
+
+	raw, errGet := c.GetConfig(ctx)
+	if errGet != nil {
+		return c.endConfigSubscriberLifetime(errGet)
+	}
+	if errApply := onConfig(raw); errApply != nil {
+		return c.endConfigSubscriberLifetime(errApply)
+	}
+
+	sub, errSubClient := c.subscriptionClient()
+	if errSubClient != nil {
+		return c.endConfigSubscriberLifetime(errSubClient)
+	}
+	args, receiveTimeout := c.subscriptionParameters()
+	pubsub := sub.Subscribe(ctx, args...)
+	if pubsub == nil {
+		return c.endConfigSubscriberLifetime(ErrNotConnected)
+	}
+
+	if errACK := receiveSubscriptionACKs(ctx, pubsub, receiveTimeout, args[:1]); errACK != nil {
+		return c.endConfigSubscriberLifetimeWithSubscription(errACK, pubsub, "failed ACK")
+	}
+
+	if errProbe := c.rebuildCommandPoolAndProbe(ctx); errProbe != nil {
+		return c.endConfigSubscriberLifetimeWithSubscription(errProbe, pubsub, "fresh command probe failure")
+	}
+	c.heartbeatOK.Store(true)
+	if onReady != nil {
+		onReady()
 	}
 
 	for {
-		if ctx != nil {
-			select {
-			case <-ctx.Done():
+		_, receiveTimeout = c.subscriptionParameters()
+		type receiveResult struct {
+			event any
+			err   error
+		}
+		received := make(chan receiveResult, 1)
+		go func() {
+			event, errReceive := pubsub.Receive(ctx)
+			received <- receiveResult{event: event, err: errReceive}
+		}()
+		timer := time.NewTimer(receiveTimeout)
+		var event any
+		var errReceive error
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			errReceive = ctx.Err()
+		case <-timer.C:
+			errReceive = context.DeadlineExceeded
+		case result := <-received:
+			timer.Stop()
+			event, errReceive = result.event, result.err
+		}
+		if errReceive != nil {
+			if errors.Is(errReceive, context.DeadlineExceeded) {
 				c.heartbeatOK.Store(false)
-				return
-			default:
+				go func() { _ = pubsub.Close() }()
+				return errReceive
 			}
+			return c.endConfigSubscriberLifetimeWithSubscription(errReceive, pubsub, "heartbeat loss")
 		}
-
-		c.heartbeatOK.Store(false)
-		c.Close()
-
-		if errEnsure := c.ensureClients(); errEnsure != nil {
-			log.Warn("unable to connect to home control center, retrying in 1 second")
-			c.markReconnectFailure("connect")
-			sleepWithContext(ctx, homeReconnectInterval)
-			continue
-		}
-
-		if errPing := c.Ping(ctx); errPing != nil {
-			log.Warn("unable to connect to home control center, retrying in 1 second")
-			c.markReconnectFailure("ping")
-			sleepWithContext(ctx, homeReconnectInterval)
-			continue
-		}
-
-		raw, errGet := c.GetConfig(ctx)
-		if errGet != nil {
-			log.Warn("unable to fetch config from home control center, retrying in 1 second")
-			c.markReconnectFailure("config fetch")
-			sleepWithContext(ctx, homeReconnectInterval)
-			continue
-		}
-		if errApply := onConfig(raw); errApply != nil {
-			log.Warn("unable to apply config from home control center, retrying in 1 second")
-			sleepWithContext(ctx, homeReconnectInterval)
-			continue
-		}
-
-		sub, errSubClient := c.subscriptionClient()
-		if errSubClient != nil {
-			c.markReconnectFailure("subscribe client")
-			sleepWithContext(ctx, homeReconnectInterval)
-			continue
-		}
-
-		pubsub := sub.Subscribe(ctx, redisChannelConfig)
-		if pubsub == nil {
-			c.markReconnectFailure("subscribe")
-			sleepWithContext(ctx, homeReconnectInterval)
-			continue
-		}
-
-		// Ensure the subscription is established before marking heartbeat OK.
-		if _, errReceive := pubsub.ReceiveTimeout(ctx, homeSubscriptionReceiveTimeout); errReceive != nil {
-			_ = pubsub.Close()
-			c.markReconnectFailure("subscribe")
-			sleepWithContext(ctx, homeReconnectInterval)
-			continue
-		}
-
-		c.resetReconnectFailures()
-		c.heartbeatOK.Store(true)
-
-		for {
-			event, errMsg := pubsub.ReceiveTimeout(ctx, homeSubscriptionReceiveTimeout)
-			if errMsg != nil {
-				_ = pubsub.Close()
-				c.heartbeatOK.Store(false)
-				if isTimeoutError(errMsg) {
-					c.markSubscriptionTimeout()
-				} else {
-					c.markReconnectFailure("subscription")
-				}
-				sleepWithContext(ctx, homeReconnectInterval)
-				break
-			}
-			switch msg := event.(type) {
-			case *redis.Message:
-				if msg == nil {
-					continue
-				}
-				if errApply := c.handleSubscriptionPayload(ctx, msg.Channel, msg.Payload, onConfig); errApply != nil {
-					if strings.EqualFold(strings.TrimSpace(msg.Channel), redisChannelCluster) {
-						log.Warn("failed to apply cluster update from home control center, ignoring")
-					} else {
-						log.Warn("failed to apply config update from home control center, ignoring")
-					}
-				}
-			case *redis.Pong:
-				c.resetReconnectFailures()
-			case *redis.Subscription:
+		switch msg := event.(type) {
+		case *redis.Message:
+			if msg == nil {
 				continue
-			default:
-				log.Debugf("home subscription returned unsupported message type %T", event)
+			}
+			if errApply := c.handleSubscriptionPayload(ctx, msg.Channel, msg.Payload, onConfig); errApply != nil {
+				if strings.EqualFold(strings.TrimSpace(msg.Channel), redisChannelCluster) {
+					log.Warn("failed to apply cluster update from home control center, ignoring")
+				} else {
+					log.Warn("failed to apply config update from home control center, ignoring")
+				}
+			}
+		case *redis.Pong:
+			c.resetReconnectFailures()
+		case *redis.Subscription:
+			continue
+		default:
+			log.Debugf("home subscription returned unsupported message type %T", event)
+		}
+	}
+}
+
+func receiveSubscriptionACKs(ctx context.Context, pubsub *redis.PubSub, receiveTimeout time.Duration, channels []string) error {
+	if pubsub == nil || len(channels) == 0 {
+		return fmt.Errorf("Home subscription ACK is missing")
+	}
+	for index, channel := range channels {
+		event, errReceive := pubsub.ReceiveTimeout(ctx, receiveTimeout)
+		if errReceive != nil {
+			return errReceive
+		}
+		ack, ok := event.(*redis.Subscription)
+		if !ok || ack == nil || ack.Kind != "subscribe" || ack.Channel != channel || ack.Count != index+1 {
+			return fmt.Errorf("invalid Home subscription ACK")
+		}
+	}
+	return nil
+}
+
+func (c *Client) endConfigSubscriberLifetime(err error) error {
+	c.heartbeatOK.Store(false)
+	if !c.managedLifetime() {
+		c.Close()
+	}
+	return err
+}
+
+func (c *Client) endConfigSubscriberLifetimeWithSubscription(err error, subscription subscriptionCloser, reason string) error {
+	c.heartbeatOK.Store(false)
+	if subscription != nil {
+		closeSubscription := func() {
+			if errClose := subscription.Close(); errClose != nil {
+				log.WithError(errClose).Debugf("Home subscription close after %s", reason)
 			}
 		}
+		if c.managedLifetime() {
+			go closeSubscription()
+		} else {
+			closeSubscription()
+		}
+	}
+	if !c.managedLifetime() {
+		c.Close()
+	}
+	return err
+}
+
+// StartConfigSubscriber is retained for callers that do not need the lifetime error.
+func (c *Client) StartConfigSubscriber(ctx context.Context, onConfig func([]byte) error) {
+	if errRun := c.RunConfigSubscriberLifetime(ctx, onConfig, nil); errRun != nil && !errors.Is(errRun, context.Canceled) {
+		log.WithError(errRun).Warn("Home config subscription lifetime ended")
 	}
 }
 

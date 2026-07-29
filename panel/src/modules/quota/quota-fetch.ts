@@ -4,6 +4,7 @@ import {
   ANTIGRAVITY_QUOTA_URLS,
   ANTIGRAVITY_REQUEST_HEADERS,
   CLAUDE_REQUEST_HEADERS,
+  CLAUDE_PROFILE_URL,
   CLAUDE_USAGE_URL,
   CODEX_REQUEST_HEADERS,
   CODEX_USAGE_URL,
@@ -30,6 +31,7 @@ import {
   normalizeStringValue,
   parseAntigravityPayload,
   parseClaudeUsagePayload,
+  parseClaudePlanType,
   parseCodexUsagePayload,
   parseGeminiCliQuotaPayload,
   parseKimiUsagePayload,
@@ -158,7 +160,21 @@ export const fetchQuota = async (
       throw new Error(getApiCallErrorMessage(result));
     const payload = parseClaudeUsagePayload(result.body ?? result.bodyText);
     if (!payload) throw new Error("parse_claude_failed");
-    return { items: buildClaudeItems(payload) };
+    let planType: string | null = null;
+    try {
+      const profile = await apiCallApi.request({
+        authIndex,
+        method: "GET",
+        url: CLAUDE_PROFILE_URL,
+        header: { ...CLAUDE_REQUEST_HEADERS },
+      });
+      if (profile.statusCode >= 200 && profile.statusCode < 300) {
+        planType = parseClaudePlanType(profile.body ?? profile.bodyText) || null;
+      }
+    } catch {
+      // 套餐探测是 best effort；额度结果仍然有效。
+    }
+    return { items: buildClaudeItems(payload), planType };
   }
 
   if (type === "gemini-cli") {

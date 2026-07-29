@@ -276,3 +276,87 @@ func TestPatchAuthFileFields_ArbitraryFieldsPersistToFile(t *testing.T) {
 		t.Fatalf("fgh.ijk = %#v, want true", got)
 	}
 }
+
+func TestPatchAuthFileFields_WeightValidatesAndUpdatesRuntimeAttribute(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	record := &coreauth.Auth{
+		ID:       "weighted.json",
+		FileName: "weighted.json",
+		Provider: "claude",
+		Attributes: map[string]string{
+			"path":   "/tmp/weighted.json",
+			"weight": "1",
+		},
+		Metadata: map[string]any{"type": "claude", "weight": 1},
+	}
+	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+		t.Fatalf("failed to register auth record: %v", errRegister)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(`{"name":"weighted.json","weight":7}`))
+	h.PatchAuthFileFields(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("weight patch status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	updated, ok := manager.GetByID("weighted.json")
+	if !ok || updated == nil {
+		t.Fatalf("expected updated auth record")
+	}
+	if got := updated.Attributes[coreauth.AttributeWeight]; got != "7" {
+		t.Fatalf("runtime weight = %q, want 7", got)
+	}
+
+	rec = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(`{"name":"weighted.json","weight":1000001}`))
+	h.PatchAuthFileFields(ctx)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid weight status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPatchAuthFileFields_XAIOAuthEndpointMode(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	record := &coreauth.Auth{
+		ID:       "xai.json",
+		FileName: "xai.json",
+		Provider: "xai",
+		Attributes: map[string]string{
+			"path":      "/tmp/xai.json",
+			"auth_kind": "oauth",
+			"using_api": "false",
+		},
+		Metadata: map[string]any{"type": "xai", "auth_kind": "oauth", "using_api": false},
+	}
+	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+		t.Fatalf("failed to register auth record: %v", errRegister)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(`{"name":"xai.json","using_api":true}`))
+	h.PatchAuthFileFields(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("using_api patch status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	updated, ok := manager.GetByID("xai.json")
+	if !ok || updated == nil {
+		t.Fatalf("expected updated xAI auth record")
+	}
+	if got, ok := updated.Metadata["using_api"].(bool); !ok || !got {
+		t.Fatalf("metadata.using_api = %#v, want true", updated.Metadata["using_api"])
+	}
+	if got := updated.Attributes["using_api"]; got != "true" {
+		t.Fatalf("attributes.using_api = %q, want true", got)
+	}
+}

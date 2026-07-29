@@ -81,6 +81,8 @@ func NormalizeRoutingStrategy(strategy string) string {
 	switch strings.TrimSpace(strings.ToLower(strategy)) {
 	case "fill-first", "fillfirst", "ff":
 		return "fill-first"
+	case "weighted-round-robin", "weighted_round_robin", "weighted", "wrr":
+		return "weighted-round-robin"
 	default:
 		return "round-robin"
 	}

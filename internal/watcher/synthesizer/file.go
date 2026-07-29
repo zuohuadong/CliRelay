@@ -155,6 +155,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
 				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
+				if errWeight := coreauth.ApplyAuthWeightMetadata(auth); errWeight != nil {
+					auth.Attributes[coreauth.AttributeWeight] = "0"
+				}
 			}
 			return auths
 		}
@@ -292,6 +295,9 @@ func synthesizeOneCodexAuth(ctx *SynthesisContext, fullPath, baseID, provider st
 		}
 	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
+	if errWeight := coreauth.ApplyAuthWeightMetadata(a); errWeight != nil {
+		a.Attributes[coreauth.AttributeWeight] = "0"
+	}
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
 	authKind := resolveFileAuthKind(metadata)
 	if provider == "openai-compatibility" && strings.TrimSpace(a.Attributes["api_key"]) != "" {

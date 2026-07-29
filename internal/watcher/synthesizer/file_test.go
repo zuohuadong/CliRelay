@@ -1083,3 +1083,27 @@ func TestFileSynthesizerExpandsMultiAccountAgentIdentityBundle(t *testing.T) {
 		t.Fatalf("index seeds collide: %q", alice.Attributes[coreauth.AttributeAuthIndexSeed])
 	}
 }
+
+func TestFileSynthesizerPromotesOAuthWeight(t *testing.T) {
+	tempDir := t.TempDir()
+	data := []byte(`{"type":"claude","email":"weighted@example.test","access_token":"token","weight":7}`)
+	if err := os.WriteFile(filepath.Join(tempDir, "claude-weighted.json"), data, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	auths, err := NewFileSynthesizer().Synthesize(&SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     tempDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	})
+	if err != nil {
+		t.Fatalf("Synthesize() error = %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("auths = %d, want 1", len(auths))
+	}
+	if got := auths[0].Attributes[coreauth.AttributeWeight]; got != "7" {
+		t.Fatalf("weight attribute = %q, want 7", got)
+	}
+}

@@ -1,12 +1,57 @@
 import { describe, expect, test } from "vitest";
 import {
   buildAntigravityItems,
+  buildClaudeItems,
   buildCodexItems,
   buildKimiItems,
   formatRelativeResetLabel,
   parseAntigravityPayload,
+  parseClaudeScopedQuotaLabel,
   parseKimiUsagePayload,
 } from "@/modules/quota/quota-helpers";
+
+describe("buildClaudeItems", () => {
+  test("parses model-scoped weekly labels for translated rendering", () => {
+    expect(parseClaudeScopedQuotaLabel("claude_quota.model_weekly::Claude Opus 4.1")).toBe(
+      "Claude Opus 4.1",
+    );
+    expect(parseClaudeScopedQuotaLabel("claude_quota.seven_day")).toBeNull();
+  });
+
+  test("maps weekly scoped model limits without duplicating the all-models window", () => {
+    const items = buildClaudeItems({
+      seven_day: { utilization: 10, resets_at: "2026-08-01T00:00:00Z" },
+      limits: [
+        {
+          kind: "weekly_scoped",
+          group: "weekly",
+          percent: 25,
+          resets_at: "2026-08-02T00:00:00Z",
+          scope: { model: { id: "claude-opus-4-1", display_name: "Claude Opus 4.1" } },
+        },
+        {
+          kind: "weekly_scoped",
+          group: "weekly",
+          percent: 10,
+          scope: { model: { id: "global", display_name: "All models" } },
+        },
+      ],
+    });
+
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "seven_day", percent: 90 }),
+        expect.objectContaining({
+          key: "weekly_scoped_claude-opus-4-1",
+          label: "claude_quota.model_weekly::Claude Opus 4.1",
+          percent: 75,
+          resetAtMs: Date.parse("2026-08-02T00:00:00Z"),
+        }),
+      ]),
+    );
+    expect(items.map((item) => item.key)).not.toContain("weekly_scoped_global");
+  });
+});
 
 describe("formatRelativeResetLabel", () => {
   const nowMs = Date.UTC(2026, 3, 1, 12, 0, 0);

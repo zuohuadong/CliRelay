@@ -512,6 +512,11 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 						}
 					}
 				}
+				if weightValue := gjson.GetBytes(data, coreauth.AttributeWeight); weightValue.Exists() {
+					if weight, errWeight := coreauth.ParseCredentialWeight(weightValue.Value()); errWeight == nil {
+						fileData[coreauth.AttributeWeight] = weight
+					}
+				}
 				if nv := gjson.GetBytes(data, "note"); nv.Exists() && nv.Type == gjson.String {
 					if trimmed := strings.TrimSpace(nv.String()); trimmed != "" {
 						fileData["note"] = trimmed
@@ -528,6 +533,9 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 							fileData["websockets"] = parsed
 						}
 					}
+				}
+				if usingAPI := gjson.GetBytes(data, "using_api"); usingAPI.Exists() {
+					fileData["using_api"] = usingAPI.Bool()
 				}
 			}
 
@@ -674,6 +682,12 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if websockets, ok := authWebsocketsValue(auth); ok {
 		entry["websockets"] = websockets
 	}
+	if weight, errWeight := coreauth.ParseCredentialWeight(authAttribute(auth, coreauth.AttributeWeight)); errWeight == nil {
+		entry[coreauth.AttributeWeight] = weight
+	}
+	if usingAPI, ok := authXAIUsingAPIValue(auth); ok {
+		entry["using_api"] = usingAPI
+	}
 	if codexFastMode, ok := authCodexFastModeValue(auth); ok {
 		entry["codex_fast_mode"] = codexFastMode
 	}
@@ -795,6 +809,49 @@ func authWebsocketsValue(auth *coreauth.Auth) (bool, bool) {
 		}
 	}
 	return false, false
+}
+
+func isXAIOAuthEndpointEditable(auth *coreauth.Auth) bool {
+	if auth == nil {
+		return false
+	}
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	if provider != "xai" && provider != "grok" && provider != "x-ai" {
+		return false
+	}
+	if accountType, _ := auth.AccountInfo(); strings.EqualFold(accountType, "oauth") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(authAttribute(auth, "auth_kind")), "oauth") {
+		return true
+	}
+	if auth.Metadata != nil {
+		if authKind, ok := auth.Metadata["auth_kind"].(string); ok {
+			return strings.EqualFold(strings.TrimSpace(authKind), "oauth")
+		}
+	}
+	return false
+}
+
+func authXAIUsingAPIValue(auth *coreauth.Auth) (bool, bool) {
+	if !isXAIOAuthEndpointEditable(auth) {
+		return false, false
+	}
+	if auth.Attributes != nil {
+		if raw := strings.TrimSpace(auth.Attributes["using_api"]); raw != "" {
+			if parsed, err := strconv.ParseBool(raw); err == nil {
+				return parsed, true
+			}
+		}
+	}
+	if auth.Metadata != nil {
+		if raw, ok := auth.Metadata["using_api"]; ok {
+			if parsed, valid := authFileBoolValue(raw); valid {
+				return parsed, true
+			}
+		}
+	}
+	return false, true
 }
 
 func authProjectID(auth *coreauth.Auth) string {
@@ -1878,6 +1935,22 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid field %s", fieldPath)})
 			return
 		}
+		if fieldPath == coreauth.AttributeWeight {
+			if _, errWeight := coreauth.ParseCredentialWeight(value); errWeight != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": errWeight.Error()})
+				return
+			}
+		}
+		if fieldPath == "using_api" {
+			if !isXAIOAuthEndpointEditable(targetAuth) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "using_api is only supported for xAI OAuth auth files"})
+				return
+			}
+			if _, okBool := authFileBoolValue(value); !okBool {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "using_api must be a boolean"})
+				return
+			}
+		}
 		if targetAuth.Metadata == nil {
 			targetAuth.Metadata = make(map[string]any)
 		}
@@ -2047,11 +2120,17 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["priority"]; ok {
 		syncAuthFilePriorityAttribute(auth)
 	}
+	if _, ok := touchedRoots[coreauth.AttributeWeight]; ok {
+		syncAuthFileWeightAttribute(auth)
+	}
 	if _, ok := touchedRoots["note"]; ok {
 		syncAuthFileNoteAttribute(auth)
 	}
 	if _, ok := touchedRoots["websockets"]; ok {
 		syncAuthFileWebsocketsAttribute(auth)
+	}
+	if _, ok := touchedRoots["using_api"]; ok {
+		syncAuthFileUsingAPIAttribute(auth)
 	}
 	if _, ok := touchedRoots["codex_fast_mode"]; ok {
 		syncAuthFileCodexFastModeAttribute(auth)
@@ -2151,6 +2230,21 @@ func syncAuthFilePriorityAttribute(auth *coreauth.Auth) {
 	auth.Attributes["priority"] = strconv.Itoa(priority)
 }
 
+func syncAuthFileWeightAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	weight, err := coreauth.ParseCredentialWeight(auth.Metadata[coreauth.AttributeWeight])
+	if err != nil {
+		delete(auth.Attributes, coreauth.AttributeWeight)
+		return
+	}
+	auth.Attributes[coreauth.AttributeWeight] = strconv.FormatInt(weight, 10)
+}
+
 func authFileIntValue(value any) (int, bool) {
 	switch typed := value.(type) {
 	case int:
@@ -2204,6 +2298,21 @@ func syncAuthFileWebsocketsAttribute(auth *coreauth.Auth) {
 		return
 	}
 	auth.Attributes["websockets"] = strconv.FormatBool(websockets)
+}
+
+func syncAuthFileUsingAPIAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	usingAPI, ok := authFileBoolValue(auth.Metadata["using_api"])
+	if !ok {
+		delete(auth.Attributes, "using_api")
+		return
+	}
+	auth.Attributes["using_api"] = strconv.FormatBool(usingAPI)
 }
 
 func syncAuthFileCodexFastModeAttribute(auth *coreauth.Auth) {

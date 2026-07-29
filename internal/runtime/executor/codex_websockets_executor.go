@@ -64,16 +64,43 @@ var globalCodexWebsocketSessionStore = &codexWebsocketSessionStore{
 	sessions: make(map[string]*codexWebsocketSession),
 }
 
+type websocketConnectionCloser struct {
+	conn *websocket.Conn
+	once sync.Once
+	err  error
+}
+
+func newWebsocketConnectionCloser(conn *websocket.Conn) *websocketConnectionCloser {
+	if conn == nil {
+		return nil
+	}
+	return &websocketConnectionCloser{conn: conn}
+}
+
+func (c *websocketConnectionCloser) Close() error {
+	if c == nil || c.conn == nil {
+		return nil
+	}
+	c.once.Do(func() {
+		c.err = c.conn.Close()
+	})
+	return c.err
+}
+
 type codexWebsocketSession struct {
 	sessionID string
 
 	reqMu sync.Mutex
 
-	connMu   sync.Mutex
-	conn     *websocket.Conn
-	wsURL    string
-	authID   string
-	routeKey string
+	connMu          sync.Mutex
+	conn            *websocket.Conn
+	connCloser      *websocketConnectionCloser
+	wsURL           string
+	authID          string
+	routeKey        string
+	lifecycleBindMu sync.Mutex
+	lifecycle       cliproxyexecutor.ExecutionLifecycle
+	lifecycleModel  string
 
 	writeMu sync.Mutex
 
@@ -169,6 +196,13 @@ func (s *codexWebsocketSession) activeForConn(conn *websocket.Conn) (chan codexW
 	return s.activeCh, s.activeDone
 }
 
+func clearRetryActiveState(sess *codexWebsocketSession, conn *websocket.Conn, ch chan codexWebsocketRead) bool {
+	if sess == nil {
+		return false
+	}
+	return sess.clearActive(conn, ch)
+}
+
 func (s *codexWebsocketSession) clearActive(conn *websocket.Conn, ch chan codexWebsocketRead) bool {
 	if s == nil {
 		return false
@@ -253,6 +287,100 @@ func (s *codexWebsocketSession) configureConn(conn *websocket.Conn) {
 	})
 }
 
+func (s *codexWebsocketSession) bindExecutionLifecycle(opts cliproxyexecutor.Options, conn *websocket.Conn, closer *websocketConnectionCloser, model string) error {
+	if closer == nil {
+		return fmt.Errorf("codex websockets executor: websocket connection closer is nil")
+	}
+	if s == nil {
+		return cliproxyexecutor.BindExecutionResource(opts, closer)
+	}
+	lifecycle := opts.ExecutionLifecycle
+	if lifecycle == nil || conn == nil {
+		return nil
+	}
+
+	s.lifecycleBindMu.Lock()
+	defer s.lifecycleBindMu.Unlock()
+
+	s.connMu.Lock()
+	if s.conn == conn && s.connCloser == nil {
+		s.connCloser = closer
+	}
+	alreadyBound := s.conn == conn && s.connCloser == closer && s.lifecycle == lifecycle
+	s.connMu.Unlock()
+	if alreadyBound {
+		return nil
+	}
+
+	if errBind := lifecycle.Bind(func() error {
+		return s.closeBoundConnection(conn, closer, lifecycle)
+	}); errBind != nil {
+		return errBind
+	}
+	if retained, ok := lifecycle.(interface{ Retain() }); ok {
+		retained.Retain()
+	}
+
+	s.connMu.Lock()
+	if s.conn != conn || s.connCloser != closer {
+		s.connMu.Unlock()
+		return fmt.Errorf("codex websockets executor: websocket connection closed during lifecycle bind")
+	}
+	previous := s.lifecycle
+	s.lifecycle = lifecycle
+	s.lifecycleModel = strings.TrimSpace(model)
+	s.connMu.Unlock()
+	if previous != nil && previous != lifecycle {
+		previous.End("target_replaced")
+	}
+	return nil
+}
+
+func (s *codexWebsocketSession) closeBoundConnection(conn *websocket.Conn, closer *websocketConnectionCloser, lifecycle cliproxyexecutor.ExecutionLifecycle) error {
+	if s == nil || conn == nil {
+		return nil
+	}
+	s.detachConnection(conn, lifecycle)
+	errClose := closer.Close()
+	go lifecycle.End("connection_closed")
+	return errClose
+}
+
+func (s *codexWebsocketSession) detachConnection(conn *websocket.Conn, lifecycle cliproxyexecutor.ExecutionLifecycle) *websocketConnectionCloser {
+	if s == nil || conn == nil {
+		return nil
+	}
+	s.connMu.Lock()
+	var closer *websocketConnectionCloser
+	matched := s.conn == conn
+	if matched {
+		closer = s.connCloser
+		s.conn = nil
+		s.connCloser = nil
+		if s.readerConn == conn {
+			s.readerConn = nil
+		}
+	}
+	if (lifecycle == nil && matched) || (lifecycle != nil && s.lifecycle == lifecycle) {
+		s.lifecycle = nil
+		s.lifecycleModel = ""
+	}
+	s.connMu.Unlock()
+	return closer
+}
+
+func closeWebsocketAfterBindFailure(sess *codexWebsocketSession, conn *websocket.Conn, closer *websocketConnectionCloser) {
+	if conn == nil || closer == nil {
+		return
+	}
+	if sess != nil {
+		sess.detachConnection(conn, nil)
+	}
+	if errClose := closer.Close(); errClose != nil {
+		log.Errorf("websockets executor: close lifecycle bind failure connection error: %v", errClose)
+	}
+}
+
 func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, wsURL string) bool {
 	if sess == nil {
 		return false
@@ -266,25 +394,30 @@ func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, w
 	return strings.TrimSpace(sess.authID) != strings.TrimSpace(authID) || strings.TrimSpace(sess.wsURL) != strings.TrimSpace(wsURL)
 }
 
-func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string) (*websocket.Conn, string, string) {
+func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string) (*websocket.Conn, *websocketConnectionCloser, string, string, cliproxyexecutor.ExecutionLifecycle) {
 	if sess == nil {
-		return nil, "", ""
+		return nil, nil, "", "", nil
 	}
 
 	sess.connMu.Lock()
 	defer sess.connMu.Unlock()
 	conn := sess.conn
 	if conn == nil || (strings.TrimSpace(sess.authID) == strings.TrimSpace(authID) && strings.TrimSpace(sess.wsURL) == strings.TrimSpace(wsURL)) {
-		return nil, "", ""
+		return nil, nil, "", "", nil
 	}
 
 	previousAuthID := sess.authID
 	previousWSURL := sess.wsURL
+	lifecycle := sess.lifecycle
+	closer := sess.connCloser
+	sess.lifecycle = nil
+	sess.lifecycleModel = ""
 	sess.conn = nil
+	sess.connCloser = nil
 	if sess.readerConn == conn {
 		sess.readerConn = nil
 	}
-	return conn, previousAuthID, previousWSURL
+	return conn, closer, previousAuthID, previousWSURL, lifecycle
 }
 
 func (s *codexWebsocketSession) notifyUpstreamDisconnect(err error) {
@@ -383,14 +516,20 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
-	routeKey := codexWebsocketRouteKey(auth)
-
 	executionSessionID := executionSessionIDFromOptions(opts)
 	var sess *codexWebsocketSession
+	sessionLocked := false
+	unlockSession := func() {
+		if sess != nil && sessionLocked {
+			sess.reqMu.Unlock()
+			sessionLocked = false
+		}
+	}
 	if executionSessionID != "" {
 		sess = e.getOrCreateSession(executionSessionID)
 		sess.reqMu.Lock()
-		defer sess.reqMu.Unlock()
+		sessionLocked = true
+		defer unlockSession()
 	}
 
 	wsReqBody := buildCodexWebsocketRequestBody(upstreamBody)
@@ -407,7 +546,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 	helps.RecordAPIWebsocketRequest(ctx, e.cfg, wsReqLog)
 
-	conn, respHS, errDial := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, routeKey, wsHeaders)
+	conn, closer, respHS, errDial := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
 	if errDial != nil {
 		bodyErr := websocketHandshakeBody(respHS)
 		if respHS != nil {
@@ -418,6 +557,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			return resp, errDial
 		}
 		if respHS != nil && codexWebsocketShouldFallbackToHTTP(respHS.StatusCode) {
+			if opts.ExecutionLifecycle != nil {
+				return resp, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
+			}
 			log.Infof("codex websockets executor: falling back to HTTP transport after websocket upgrade failure (status=%d url=%s)", respHS.StatusCode, wsURL)
 			return e.CodexExecutor.Execute(ctx, auth, req, opts)
 		}
@@ -426,6 +568,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
 		return resp, errDial
+	}
+	if errBind := sess.bindExecutionLifecycle(opts, conn, closer, req.Model); errBind != nil {
+		unlockSession()
+		closeWebsocketAfterBindFailure(sess, conn, closer)
+		return resp, errBind
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
 	reporter.StartResponseTTFT()
@@ -437,7 +584,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				reason = "error"
 			}
 			logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, reason, err)
-			if errClose := conn.Close(); errClose != nil {
+			if errClose := closer.Close(); errClose != nil {
 				log.Errorf("codex websockets executor: close websocket error: %v", errClose)
 			}
 		}()
@@ -458,9 +605,17 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			// Retry once with a fresh websocket connection. This is mainly to handle
 			// upstream closing the socket between sequential requests within the same
 			// execution session.
-			connRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, routeKey, wsHeaders)
+			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
 			if errDialRetry == nil && connRetry != nil {
+				previousConn, previousReadCh := conn, readCh
 				conn = connRetry
+				closer = closerRetry
+				if errBind := sess.bindExecutionLifecycle(opts, conn, closer, req.Model); errBind != nil {
+					clearRetryActiveState(sess, previousConn, previousReadCh)
+					unlockSession()
+					closeWebsocketAfterBindFailure(sess, conn, closer)
+					return resp, errBind
+				}
 				readCh = sess.activate(conn)
 				wsReqBodyRetry := buildCodexWebsocketRequestBody(upstreamBody)
 				helps.RecordAPIWebsocketRequest(ctx, e.cfg, helps.UpstreamRequestLog{
@@ -540,6 +695,10 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}
 		if streamErr, terminalBody, ok := codexTerminalFailureErr(payload); ok {
 			streamErr.requestAuthScheme = agentIdentityRequestAuthScheme(auth)
+			if sess != nil {
+				unlockSession()
+				e.invalidateUpstreamConn(sess, conn, "terminal_failure", streamErr)
+			}
 			if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 				return resp, errClearReplay
 			}
@@ -654,14 +813,19 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	authID = auth.ID
 	authLabel = auth.Label
 	authType, authValue = auth.AccountInfo()
-	routeKey := codexWebsocketRouteKey(auth)
-
 	executionSessionID := executionSessionIDFromOptions(opts)
 	var sess *codexWebsocketSession
 	if executionSessionID != "" {
 		sess = e.getOrCreateSession(executionSessionID)
 		if sess != nil {
 			sess.reqMu.Lock()
+		}
+	}
+	streamSessionLocked := sess != nil
+	unlockStreamSession := func() {
+		if sess != nil && streamSessionLocked {
+			sess.reqMu.Unlock()
+			streamSessionLocked = false
 		}
 	}
 
@@ -679,7 +843,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 	helps.RecordAPIWebsocketRequest(ctx, e.cfg, wsReqLog)
 
-	conn, respHS, errDial := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, routeKey, wsHeaders)
+	conn, closer, respHS, errDial := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
 	var upstreamHeaders http.Header
 	if respHS != nil {
 		upstreamHeaders = respHS.Header.Clone()
@@ -691,29 +855,29 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		}
 		if isCodexEgressRuntimeError(errDial) {
 			helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
-			if sess != nil {
-				sess.reqMu.Unlock()
-			}
+			unlockStreamSession()
 			return nil, errDial
 		}
 		if respHS != nil && codexWebsocketShouldFallbackToHTTP(respHS.StatusCode) {
 			log.Infof("codex websockets executor: falling back to HTTP transport after websocket upgrade failure (status=%d url=%s)", respHS.StatusCode, wsURL)
-			if sess != nil {
-				sess.reqMu.Unlock()
+			unlockStreamSession()
+			if opts.ExecutionLifecycle != nil {
+				return nil, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
 			}
 			return e.CodexExecutor.ExecuteStream(ctx, auth, req, opts)
 		}
 		if respHS != nil && respHS.StatusCode > 0 {
-			if sess != nil {
-				sess.reqMu.Unlock()
-			}
+			unlockStreamSession()
 			return nil, newCodexStatusErrForResponse(respHS, bodyErr)
 		}
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
-		if sess != nil {
-			sess.reqMu.Unlock()
-		}
+		unlockStreamSession()
 		return nil, errDial
+	}
+	if errBind := sess.bindExecutionLifecycle(opts, conn, closer, req.Model); errBind != nil {
+		unlockStreamSession()
+		closeWebsocketAfterBindFailure(sess, conn, closer)
+		return nil, errBind
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
 	reporter.StartResponseTTFT()
@@ -733,15 +897,23 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			e.invalidateUpstreamConn(sess, conn, "send_error", errSend)
 
 			// Retry once with a new websocket connection for the same execution session.
-			connRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, routeKey, wsHeaders)
+			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
 			if errDialRetry != nil || connRetry == nil {
 				closeHTTPResponseBody(respHSRetry, "codex websockets executor: close handshake response body error")
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "dial_retry", errDialRetry)
 				sess.clearActive(conn, readCh)
-				sess.reqMu.Unlock()
+				unlockStreamSession()
 				return nil, errDialRetry
 			}
+			previousConn, previousReadCh := conn, readCh
 			conn = connRetry
+			closer = closerRetry
+			if errBind := sess.bindExecutionLifecycle(opts, conn, closer, req.Model); errBind != nil {
+				clearRetryActiveState(sess, previousConn, previousReadCh)
+				unlockStreamSession()
+				closeWebsocketAfterBindFailure(sess, conn, closer)
+				return nil, errBind
+			}
 			readCh = sess.activate(conn)
 			wsReqBodyRetry := buildCodexWebsocketRequestBody(upstreamBody)
 			helps.RecordAPIWebsocketRequest(ctx, e.cfg, helps.UpstreamRequestLog{
@@ -761,13 +933,13 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
 				e.invalidateUpstreamConn(sess, conn, "send_error", errSendRetry)
 				sess.clearActive(conn, readCh)
-				sess.reqMu.Unlock()
+				unlockStreamSession()
 				return nil, errSendRetry
 			}
 			wsReqBody = wsReqBodyRetry
 		} else {
 			logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, "send_error", errSend)
-			if errClose := conn.Close(); errClose != nil {
+			if errClose := closer.Close(); errClose != nil {
 				log.Errorf("codex websockets executor: close websocket error: %v", errClose)
 			}
 			return nil, errSend
@@ -783,11 +955,11 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		defer func() {
 			if sess != nil {
 				sess.clearActive(conn, readCh)
-				sess.reqMu.Unlock()
+				unlockStreamSession()
 				return
 			}
 			logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, terminateReason, terminateErr)
-			if errClose := conn.Close(); errClose != nil {
+			if errClose := closer.Close(); errClose != nil {
 				log.Errorf("codex websockets executor: close websocket error: %v", errClose)
 			}
 		}()
@@ -878,6 +1050,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				streamErr.requestAuthScheme = agentIdentityRequestAuthScheme(auth)
 				terminateReason = "upstream_error"
 				terminateErr = streamErr
+				if sess != nil {
+					unlockStreamSession()
+					e.invalidateUpstreamConn(sess, conn, "terminal_failure", streamErr)
+				}
 				if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 					terminateErr = errClearReplay
 					helps.RecordAPIWebsocketError(ctx, e.cfg, "replay_clear_error", errClearReplay)
@@ -955,10 +1131,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	return &cliproxyexecutor.StreamResult{Headers: upstreamHeaders, Chunks: out}, nil
 }
 
-func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *cliproxyauth.Auth, wsURL string, headers http.Header) (*websocket.Conn, *http.Response, error) {
+func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *cliproxyauth.Auth, wsURL string, headers http.Header) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
 	dialHeaders, err := applyAgentIdentityWebsocketHeaders(headers, auth, wsURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("codex websocket: apply Agent Identity auth: %w", err)
+		return nil, nil, nil, fmt.Errorf("codex websocket: apply Agent Identity auth: %w", err)
 	}
 	var dialer *websocket.Dialer
 	if e != nil && e.CodexExecutor != nil && e.CodexExecutor.usesStrictEgress(auth) {
@@ -968,7 +1144,7 @@ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *
 		}
 		dialer, err = newStrictProxyWebsocketDialer(proxyURL)
 		if err != nil {
-			return nil, nil, egress.RuntimeError(err)
+			return nil, nil, nil, egress.RuntimeError(err)
 		}
 	} else {
 		dialer = newProxyAwareWebsocketDialer(e.cfg, auth)
@@ -982,6 +1158,7 @@ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *
 	if resp != nil && resp.Request == nil {
 		resp.Request = &http.Request{Header: dialHeaders.Clone()}
 	}
+	closer := newWebsocketConnectionCloser(conn)
 	// Gorilla returns a nil response for transport and HTTP CONNECT proxy
 	// failures. A non-nil response is the real upstream WebSocket handshake and
 	// must keep its upstream semantics instead of being mislabeled as egress.
@@ -993,7 +1170,7 @@ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *
 		// Negotiating permessage-deflate is fine; we just don't compress outbound messages.
 		conn.EnableWriteCompression(false)
 	}
-	return conn, resp, err
+	return conn, closer, resp, err
 }
 
 func newStrictProxyWebsocketDialer(proxyURL string) (*websocket.Dialer, error) {
@@ -1955,30 +2132,44 @@ func codexWebsocketRouteKey(auth *cliproxyauth.Auth) string {
 	return endpointID + ":" + fmt.Sprintf("%x:%x", sum[:], identitySum[:])
 }
 
-func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *cliproxyauth.Auth, sess *codexWebsocketSession, authID string, wsURL string, routeKey string, headers http.Header) (*websocket.Conn, *http.Response, error) {
+func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *cliproxyauth.Auth, sess *codexWebsocketSession, authID string, wsURL string, headers http.Header) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
 	if sess == nil {
 		return e.dialCodexWebsocket(ctx, auth, wsURL, headers)
 	}
 	authID = strings.TrimSpace(authID)
 	wsURL = strings.TrimSpace(wsURL)
-	routeKey = strings.TrimSpace(routeKey)
+	routeKey := strings.TrimSpace(codexWebsocketRouteKey(auth))
 
-	if staleConn, staleAuthID, staleWSURL := detachMismatchedWebsocketSessionConn(sess, authID, wsURL); staleConn != nil {
+	if staleConn, staleCloser, staleAuthID, staleWSURL, staleLifecycle := detachMismatchedWebsocketSessionConn(sess, authID, wsURL); staleConn != nil {
+		sess.cancelActiveForConn(staleConn)
 		logCodexWebsocketDisconnected(sess.sessionID, staleAuthID, staleWSURL, "target_changed", nil)
-		if errClose := staleConn.Close(); errClose != nil {
-			log.Errorf("codex websockets executor: close stale websocket error: %v", errClose)
+		if staleCloser != nil {
+			if errClose := staleCloser.Close(); errClose != nil {
+				log.Errorf("codex websockets executor: close stale websocket error: %v", errClose)
+			}
+		}
+		if staleLifecycle != nil {
+			staleLifecycle.End("target_changed")
 		}
 	}
 
 	sess.connMu.Lock()
 	conn := sess.conn
+	closer := sess.connCloser
 	readerConn := sess.readerConn
 	connectionMatches := conn != nil && sess.authID == authID && sess.wsURL == wsURL && sess.routeKey == routeKey
 	var staleAuthID, staleWSURL string
+	var staleCloser *websocketConnectionCloser
+	var staleLifecycle cliproxyexecutor.ExecutionLifecycle
 	if conn != nil && !connectionMatches {
 		staleAuthID = sess.authID
 		staleWSURL = sess.wsURL
+		staleCloser = sess.connCloser
+		staleLifecycle = sess.lifecycle
 		sess.conn = nil
+		sess.connCloser = nil
+		sess.lifecycle = nil
+		sess.lifecycleModel = ""
 		if sess.readerConn == conn {
 			sess.readerConn = nil
 		}
@@ -1990,10 +2181,16 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	if conn != nil && !connectionMatches {
 		sess.cancelActiveForConn(conn)
 		logCodexWebsocketDisconnected(sess.sessionID, staleAuthID, staleWSURL, "route_changed", nil)
-		if errClose := conn.Close(); errClose != nil {
-			log.Errorf("codex websockets executor: close stale websocket error: %v", errClose)
+		if staleCloser != nil {
+			if errClose := staleCloser.Close(); errClose != nil {
+				log.Errorf("codex websockets executor: close stale websocket error: %v", errClose)
+			}
+		}
+		if staleLifecycle != nil {
+			staleLifecycle.End("route_changed")
 		}
 		conn = nil
+		closer = nil
 		readerConn = nil
 	}
 	if connectionMatches {
@@ -2004,31 +2201,39 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 			sess.configureConn(conn)
 			go e.readUpstreamLoop(sess, conn)
 		}
-		return conn, nil, nil
+		return conn, closer, nil, nil
 	}
 
-	conn, resp, errDial := e.dialCodexWebsocket(ctx, auth, wsURL, headers)
+	conn, closer, resp, errDial := e.dialCodexWebsocket(ctx, auth, wsURL, headers)
 	if errDial != nil {
-		return nil, resp, errDial
+		return nil, closer, resp, errDial
 	}
 
 	sess.connMu.Lock()
 	var replacedConn *websocket.Conn
+	var replacedCloser *websocketConnectionCloser
+	var replacedLifecycle cliproxyexecutor.ExecutionLifecycle
 	var replacedAuthID, replacedWSURL string
 	if sess.conn != nil {
 		if sess.authID == authID && sess.wsURL == wsURL && sess.routeKey == routeKey {
 			previous := sess.conn
+			previousCloser := sess.connCloser
 			sess.connMu.Unlock()
-			if errClose := conn.Close(); errClose != nil {
+			if errClose := closer.Close(); errClose != nil {
 				log.Errorf("codex websockets executor: close websocket error: %v", errClose)
 			}
-			return previous, nil, nil
+			return previous, previousCloser, nil, nil
 		}
 		replacedConn = sess.conn
+		replacedCloser = sess.connCloser
+		replacedLifecycle = sess.lifecycle
 		replacedAuthID = sess.authID
 		replacedWSURL = sess.wsURL
 	}
 	sess.conn = conn
+	sess.connCloser = closer
+	sess.lifecycle = nil
+	sess.lifecycleModel = ""
 	sess.wsURL = wsURL
 	sess.authID = authID
 	sess.routeKey = routeKey
@@ -2037,15 +2242,20 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	if replacedConn != nil {
 		sess.cancelActiveForConn(replacedConn)
 		logCodexWebsocketDisconnected(sess.sessionID, replacedAuthID, replacedWSURL, "route_changed", nil)
-		if errClose := replacedConn.Close(); errClose != nil {
-			log.Errorf("codex websockets executor: close stale websocket error: %v", errClose)
+		if replacedCloser != nil {
+			if errClose := replacedCloser.Close(); errClose != nil {
+				log.Errorf("codex websockets executor: close stale websocket error: %v", errClose)
+			}
+		}
+		if replacedLifecycle != nil {
+			replacedLifecycle.End("route_changed")
 		}
 	}
 
 	sess.configureConn(conn)
 	go e.readUpstreamLoop(sess, conn)
 	logCodexWebsocketConnected(sess.sessionID, authID, wsURL)
-	return conn, resp, nil
+	return conn, closer, resp, nil
 }
 
 func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, conn *websocket.Conn) {
@@ -2109,6 +2319,7 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConn(sess *codexWebsocketSes
 
 	sess.connMu.Lock()
 	current := sess.conn
+	closer := sess.connCloser
 	authID := sess.authID
 	wsURL := sess.wsURL
 	sessionID := sess.sessionID
@@ -2117,6 +2328,10 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConn(sess *codexWebsocketSes
 		return
 	}
 	sess.conn = nil
+	sess.connCloser = nil
+	lifecycle := sess.lifecycle
+	sess.lifecycle = nil
+	sess.lifecycleModel = ""
 	if sess.readerConn == conn {
 		sess.readerConn = nil
 	}
@@ -2128,8 +2343,13 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConn(sess *codexWebsocketSes
 
 	logCodexWebsocketDisconnected(sessionID, authID, wsURL, reason, err)
 	sess.notifyUpstreamDisconnect(err)
-	if errClose := conn.Close(); errClose != nil {
-		log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+	if closer != nil {
+		if errClose := closer.Close(); errClose != nil {
+			log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+		}
+	}
+	if lifecycle != nil {
+		lifecycle.End(reason)
 	}
 }
 
@@ -2142,9 +2362,7 @@ func (e *CodexWebsocketsExecutor) CloseExecutionSession(sessionID string) {
 		return
 	}
 	if sessionID == cliproxyauth.CloseAllExecutionSessionsID {
-		// Executor replacement can happen during hot reload (config/credential changes).
-		// Do not force-close upstream websocket sessions here, otherwise in-flight
-		// downstream websocket requests get interrupted.
+		e.closeAllExecutionSessions("executor_shutdown")
 		return
 	}
 
@@ -2199,9 +2417,14 @@ func closeCodexWebsocketSession(sess *codexWebsocketSession, reason string) {
 
 	sess.connMu.Lock()
 	conn := sess.conn
+	closer := sess.connCloser
+	lifecycle := sess.lifecycle
 	authID := sess.authID
 	wsURL := sess.wsURL
 	sess.conn = nil
+	sess.connCloser = nil
+	sess.lifecycle = nil
+	sess.lifecycleModel = ""
 	if sess.readerConn == conn {
 		sess.readerConn = nil
 	}
@@ -2216,8 +2439,13 @@ func closeCodexWebsocketSession(sess *codexWebsocketSession, reason string) {
 		return
 	}
 	logCodexWebsocketDisconnected(sessionID, authID, wsURL, reason, nil)
-	if errClose := conn.Close(); errClose != nil {
-		log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+	if closer != nil {
+		if errClose := closer.Close(); errClose != nil {
+			log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+		}
+	}
+	if lifecycle != nil {
+		lifecycle.End(reason)
 	}
 }
 

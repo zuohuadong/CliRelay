@@ -15,6 +15,7 @@ import { useLocalStorage } from "@/hooks/useLocalStorage";
 import { fetchQuota, resolveQuotaProvider, type QuotaProvider } from "@/modules/quota/quota-fetch";
 import {
   filterAntigravityQuotaItems,
+  parseClaudeScopedQuotaLabel,
   type QuotaItem,
   type QuotaState,
 } from "@/modules/quota/quota-helpers";
@@ -131,6 +132,10 @@ export function useAuthFilesQuotaState({
       const translateQuotaLabel = (text: string) => {
         if (!text) return text;
         if (text.startsWith("m_quota.")) return t(text);
+        const claudeScopedModel = parseClaudeScopedQuotaLabel(text);
+        if (claudeScopedModel) {
+          return t("claude_quota.model_weekly", { name: claudeScopedModel });
+        }
         const additionalQuota = parseAdditionalQuotaWindowLabel(text);
         if (additionalQuota) {
           return t(`m_quota.additional_${additionalQuota.window}`, {

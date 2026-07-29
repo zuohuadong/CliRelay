@@ -48,6 +48,7 @@ import { resolveQuotaProvider, type QuotaProvider } from "@/modules/quota/quota-
 import {
   clampPercent,
   filterAntigravityQuotaItems,
+  parseClaudeScopedQuotaLabel,
   type QuotaItem,
   type QuotaState,
 } from "@/modules/quota/quota-helpers";
@@ -208,6 +209,10 @@ export function useAuthFilesFilesPresentation({
     (text: string) => {
       if (!text) return text;
       if (text.startsWith("m_quota.")) return t(text);
+      const claudeScopedModel = parseClaudeScopedQuotaLabel(text);
+      if (claudeScopedModel) {
+        return t("claude_quota.model_weekly", { name: claudeScopedModel });
+      }
       if (text.startsWith("claude_quota.")) return t(text);
       if (KNOWN_QUOTA_TEXT_KEYS.has(text)) return t(`m_quota.${text}`);
       const additionalQuota = parseAdditionalQuotaWindowLabel(text);

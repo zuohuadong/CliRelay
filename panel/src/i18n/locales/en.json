@@ -895,6 +895,7 @@
     "seven_day_opus": "7-day Opus",
     "seven_day_sonnet": "7-day Sonnet",
     "seven_day_cowork": "7-day Cowork",
+    "model_weekly": "{{name}} weekly limit",
     "iguana_necktie": "Iguana Necktie",
     "extra_usage_label": "Extra Usage"
   },

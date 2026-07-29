@@ -51,6 +51,8 @@ export interface AuthFileItem extends TagDisplayFields {
   provider?: string;
   label?: string;
   email?: string;
+  weight?: number;
+  using_api?: boolean;
   plan_type?: string;
   planType?: string;
   account_type?: string;

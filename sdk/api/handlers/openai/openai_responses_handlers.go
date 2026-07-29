@@ -785,12 +785,25 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 		c.Header("Connection", "keep-alive")
 		c.Header("Access-Control-Allow-Origin", "*")
 	}
-	setSSEHeaders()
 	framer := &responsesSSEFramer{}
 
-	stopBootstrapHeartbeat := h.startResponsesStreamBootstrapHeartbeat(c, flusher)
+	setSSEHeaders()
+	stopBootstrapHeartbeat := func() {}
+	if h.AuthManager == nil || !h.AuthManager.HomeEnabled() {
+		stopBootstrapHeartbeat = h.startResponsesStreamBootstrapHeartbeat(c, flusher)
+	}
 	dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	stopBootstrapHeartbeat()
+	select {
+	case errMsg, okErr := <-errChan:
+		if okErr && errMsg != nil {
+			c.Header("Content-Type", "application/json")
+			h.WriteErrorResponse(c, errMsg)
+			cliCancel(errMsg.Error)
+			return
+		}
+	default:
+	}
 
 	h.forwardResponsesStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan, framer)
 }
@@ -805,8 +818,6 @@ func (h *OpenAIResponsesAPIHandler) startResponsesStreamBootstrapHeartbeat(c *gi
 		writeResponsesSSEKeepAlive(c)
 		flusher.Flush()
 	}
-	writeHeartbeat()
-
 	interval := responsesStreamKeepAliveInterval(h, c)
 	if interval <= 0 {
 		return func() {}

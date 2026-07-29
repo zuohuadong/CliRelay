@@ -1275,3 +1275,89 @@ func TestSessionAffinitySelector_Concurrent(t *testing.T) {
 	default:
 	}
 }
+
+func TestWeightedRoundRobinSelector_UsesOAuthCredentialWeights(t *testing.T) {
+	selector := &WeightedRoundRobinSelector{}
+	auths := []*Auth{
+		{ID: "auth-a", Attributes: map[string]string{"weight": "3"}},
+		{ID: "auth-b", Attributes: map[string]string{"weight": "1"}},
+		{ID: "auth-disabled-by-weight", Attributes: map[string]string{"weight": "0"}},
+	}
+
+	var picks []string
+	for i := 0; i < 8; i++ {
+		picked, err := selector.Pick(context.Background(), "claude", "claude-sonnet", cliproxyexecutor.Options{}, auths)
+		if err != nil {
+			t.Fatalf("Pick() error = %v", err)
+		}
+		picks = append(picks, picked.ID)
+	}
+
+	counts := map[string]int{}
+	for _, id := range picks {
+		counts[id]++
+	}
+	if got := counts["auth-a"]; got != 6 {
+		t.Fatalf("auth-a picks = %d, want 6; sequence=%v", got, picks)
+	}
+	if got := counts["auth-b"]; got != 2 {
+		t.Fatalf("auth-b picks = %d, want 2; sequence=%v", got, picks)
+	}
+	if got := counts["auth-disabled-by-weight"]; got != 0 {
+		t.Fatalf("zero-weight auth picks = %d, want 0; sequence=%v", got, picks)
+	}
+}
+
+func TestWeightedRoundRobinSelector_DefaultsMissingWeightToOne(t *testing.T) {
+	selector := &WeightedRoundRobinSelector{}
+	auths := []*Auth{{ID: "auth-a"}, {ID: "auth-b"}}
+	first, err := selector.Pick(context.Background(), "codex", "gpt-5", cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatalf("first Pick() error = %v", err)
+	}
+	second, err := selector.Pick(context.Background(), "codex", "gpt-5", cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatalf("second Pick() error = %v", err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("equal default weights did not rotate: %q then %q", first.ID, second.ID)
+	}
+}
+
+func TestWeightedRoundRobinSelector_ResetsSmoothStateWhenWeightsChange(t *testing.T) {
+	selector := &WeightedRoundRobinSelector{}
+	auths := []*Auth{
+		{ID: "auth-a", Attributes: map[string]string{"weight": "100"}},
+		{ID: "auth-b", Attributes: map[string]string{"weight": "1"}},
+	}
+	for i := 0; i < 50; i++ {
+		if _, err := selector.Pick(context.Background(), "claude", "claude-sonnet", cliproxyexecutor.Options{}, auths); err != nil {
+			t.Fatalf("weighted Pick() #%d error = %v", i, err)
+		}
+	}
+	auths[0].Attributes[AttributeWeight] = "1"
+	auths[1].Attributes[AttributeWeight] = "1"
+	first, err := selector.Pick(context.Background(), "claude", "claude-sonnet", cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatalf("first equal-weight Pick() error = %v", err)
+	}
+	second, err := selector.Pick(context.Background(), "claude", "claude-sonnet", cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatalf("second equal-weight Pick() error = %v", err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("weight change kept stale smooth state: %q then %q", first.ID, second.ID)
+	}
+}
+
+func TestParseCredentialWeight_NormalizesNonPositiveToZero(t *testing.T) {
+	for _, value := range []any{0, -1, int64(-99), float64(-2), "-3"} {
+		weight, err := ParseCredentialWeight(value)
+		if err != nil {
+			t.Fatalf("ParseCredentialWeight(%v) error = %v", value, err)
+		}
+		if weight != 0 {
+			t.Fatalf("ParseCredentialWeight(%v) = %d, want 0", value, weight)
+		}
+	}
+}

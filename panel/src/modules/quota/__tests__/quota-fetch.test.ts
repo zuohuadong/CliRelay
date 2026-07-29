@@ -215,6 +215,41 @@ describe("fetchQuota for antigravity", () => {
 });
 
 describe("fetchQuota for claude", () => {
+  test("probes the OAuth profile and returns the Claude plan type", async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        header: {},
+        bodyText: "",
+        body: { five_hour: { utilization: 20 } },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        header: {},
+        bodyText: "",
+        body: {
+          organization: { organization_type: "personal", rate_limit_tier: "max_20x" },
+        },
+      });
+
+    const result = await fetchQuota("claude", {
+      name: "claude-oauth.json",
+      provider: "claude",
+      account_type: "oauth",
+      auth_index: "claude-1",
+    });
+
+    expect(mocks.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        authIndex: "claude-1",
+        method: "GET",
+        url: "https://api.anthropic.com/api/oauth/profile",
+      }),
+    );
+    expect(result.planType).toBe("max_20x");
+  });
+
   test("requests Anthropic OAuth usage endpoint and maps remaining percentages", async () => {
     mocks.request.mockResolvedValueOnce({
       statusCode: 200,

@@ -81,3 +81,11 @@ routing:
 		t.Fatalf("unexpected above-threshold route: %#v", route.Routes[1])
 	}
 }
+
+func TestNormalizeRoutingStrategy_WeightedRoundRobin(t *testing.T) {
+	for _, strategy := range []string{"weighted-round-robin", "weighted_round_robin", "weighted", "wrr"} {
+		if got := NormalizeRoutingStrategy(strategy); got != "weighted-round-robin" {
+			t.Fatalf("NormalizeRoutingStrategy(%q) = %q, want weighted-round-robin", strategy, got)
+		}
+	}
+}

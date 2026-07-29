@@ -24,6 +24,22 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
+func TestCodexStrictEgressTypedNilResolverFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	var service *egress.Service
+	exec := NewCodexExecutorWithEgress(&config.Config{}, service)
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{"account_id": "acct-typed-nil"}}
+
+	updated, err := exec.Refresh(context.Background(), auth)
+	if !errors.Is(err, egress.ErrEgressRequired) {
+		t.Fatalf("Refresh() error = %v, want ErrEgressRequired", err)
+	}
+	if updated != nil {
+		t.Fatalf("Refresh() updated auth = %#v, want nil", updated)
+	}
+}
+
 func TestCodexStrictEgressRefreshRejectsAccountIdentityDriftBeforeTokenMutation(t *testing.T) {
 	t.Parallel()
 
@@ -1024,14 +1040,16 @@ func TestCodexWebsocketSessionRedialsWhenEgressRouteChanges(t *testing.T) {
 	exec := NewCodexWebsocketsExecutor(&config.Config{})
 	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
 	sess := exec.getOrCreateSession("route-switch-session")
+	authRouteA := &cliproxyauth.Auth{Attributes: map[string]string{"egress_id": "route-a"}}
+	authRouteB := &cliproxyauth.Auth{Attributes: map[string]string{"egress_id": "route-b"}}
 
-	connA, _, err := exec.ensureUpstreamConn(context.Background(), nil, sess, "auth-a", wsURL, "route-a", nil)
+	connA, _, _, err := exec.ensureUpstreamConn(context.Background(), authRouteA, sess, "auth-a", wsURL, nil)
 	if err != nil {
 		t.Fatalf("ensure route A: %v", err)
 	}
 	waitForCodexWebsocketAccept(t, accepted)
 
-	connB, _, err := exec.ensureUpstreamConn(context.Background(), nil, sess, "auth-a", wsURL, "route-b", nil)
+	connB, _, _, err := exec.ensureUpstreamConn(context.Background(), authRouteB, sess, "auth-a", wsURL, nil)
 	if err != nil {
 		t.Fatalf("ensure route B: %v", err)
 	}
@@ -1043,8 +1061,8 @@ func TestCodexWebsocketSessionRedialsWhenEgressRouteChanges(t *testing.T) {
 	sess.connMu.Lock()
 	gotRouteKey := sess.routeKey
 	sess.connMu.Unlock()
-	if gotRouteKey != "route-b" {
-		t.Fatalf("session route key = %q, want route-b", gotRouteKey)
+	if wantRouteKey := codexWebsocketRouteKey(authRouteB); gotRouteKey != wantRouteKey {
+		t.Fatalf("session route key = %q, want %q", gotRouteKey, wantRouteKey)
 	}
 	exec.CloseExecutionSession(sess.sessionID)
 }
@@ -1058,14 +1076,15 @@ func TestCodexWebsocketSessionRedialsWhenAuthChanges(t *testing.T) {
 	exec := NewCodexWebsocketsExecutor(&config.Config{})
 	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
 	sess := exec.getOrCreateSession("auth-switch-session")
+	routeAuth := &cliproxyauth.Auth{Attributes: map[string]string{"egress_id": "route-a"}}
 
-	connA, _, err := exec.ensureUpstreamConn(context.Background(), nil, sess, "auth-a", wsURL, "route-a", nil)
+	connA, _, _, err := exec.ensureUpstreamConn(context.Background(), routeAuth, sess, "auth-a", wsURL, nil)
 	if err != nil {
 		t.Fatalf("ensure auth A: %v", err)
 	}
 	waitForCodexWebsocketAccept(t, accepted)
 
-	connB, _, err := exec.ensureUpstreamConn(context.Background(), nil, sess, "auth-b", wsURL, "route-a", nil)
+	connB, _, _, err := exec.ensureUpstreamConn(context.Background(), routeAuth, sess, "auth-b", wsURL, nil)
 	if err != nil {
 		t.Fatalf("ensure auth B: %v", err)
 	}
@@ -1104,7 +1123,8 @@ func TestCodexWebsocketDisabledEgressDoesNotReuseExistingSession(t *testing.T) {
 	seedExec.store = store
 	sess := seedExec.getOrCreateSession("disabled-route-session")
 	wsURL := "ws" + strings.TrimPrefix(upstream.URL, "http")
-	if _, _, err := seedExec.ensureUpstreamConn(context.Background(), nil, sess, "auth-a", wsURL, "route-a", nil); err != nil {
+	seedAuth := &cliproxyauth.Auth{Attributes: map[string]string{"egress_id": "route-a"}}
+	if _, _, _, err := seedExec.ensureUpstreamConn(context.Background(), seedAuth, sess, "auth-a", wsURL, nil); err != nil {
 		t.Fatalf("seed websocket session: %v", err)
 	}
 
@@ -1246,7 +1266,7 @@ func TestCodexWebsocketStrictEgressUsesResolvedProxyNotEnvironment(t *testing.T)
 	if err != nil {
 		t.Fatalf("build websocket URL: %v", err)
 	}
-	conn, _, err := exec.dialCodexWebsocket(context.Background(), auth, wsURL, nil)
+	conn, _, _, err := exec.dialCodexWebsocket(context.Background(), auth, wsURL, nil)
 	if err != nil {
 		select {
 		case proxyFailure := <-proxyErr:
@@ -1273,7 +1293,7 @@ func TestCodexWebsocketStrictEgressWrapsProxyDialFailure(t *testing.T) {
 
 	exec := NewCodexWebsocketsExecutorWithEgress(&config.Config{}, staticEgressResolver{})
 	auth := &cliproxyauth.Auth{ProxyURL: closedProxyURL(t)}
-	_, _, err := exec.dialCodexWebsocket(context.Background(), auth, "wss://upstream.invalid/backend-api/codex/responses", nil)
+	_, _, _, err := exec.dialCodexWebsocket(context.Background(), auth, "wss://upstream.invalid/backend-api/codex/responses", nil)
 	assertEgressRuntimeError(t, err)
 }
 
@@ -1282,7 +1302,7 @@ func TestCodexWebsocketStrictEgressRejectsHTTPSProxy(t *testing.T) {
 
 	exec := NewCodexWebsocketsExecutorWithEgress(&config.Config{}, staticEgressResolver{})
 	auth := &cliproxyauth.Auth{ProxyURL: "https://127.0.0.1:8443"}
-	_, _, err := exec.dialCodexWebsocket(context.Background(), auth, "wss://upstream.invalid/backend-api/codex/responses", nil)
+	_, _, _, err := exec.dialCodexWebsocket(context.Background(), auth, "wss://upstream.invalid/backend-api/codex/responses", nil)
 	if !errors.Is(err, egress.ErrEndpointInvalid) {
 		t.Fatalf("dialCodexWebsocket() error = %v, want ErrEndpointInvalid", err)
 	}
@@ -1295,7 +1315,7 @@ func TestCodexWebsocketStrictEgressWrapsProxyConnectServiceUnavailable(t *testin
 	defer proxy.Close()
 	exec := NewCodexWebsocketsExecutorWithEgress(&config.Config{}, staticEgressResolver{})
 	auth := &cliproxyauth.Auth{ProxyURL: proxy.URL}
-	_, _, err := exec.dialCodexWebsocket(context.Background(), auth, "wss://upstream.invalid/backend-api/codex/responses", nil)
+	_, _, _, err := exec.dialCodexWebsocket(context.Background(), auth, "wss://upstream.invalid/backend-api/codex/responses", nil)
 	assertEgressRuntimeError(t, err)
 }
 
@@ -1315,7 +1335,7 @@ func TestCodexWebsocketStrictEgressPreservesUpstreamHandshakeFailure(t *testing.
 		t.Fatal(err)
 	}
 
-	_, resp, err := exec.dialCodexWebsocket(context.Background(), auth, wsURL, nil)
+	_, _, resp, err := exec.dialCodexWebsocket(context.Background(), auth, wsURL, nil)
 	if err == nil {
 		t.Fatal("dialCodexWebsocket() error = nil, want upstream handshake failure")
 	}

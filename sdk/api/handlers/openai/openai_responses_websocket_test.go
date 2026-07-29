@@ -1663,6 +1663,7 @@ func TestNormalizeResponsesToolCallItemIDPreservesValidPrefixes(t *testing.T) {
 		{name: "empty id left alone", item: `{"type":"function_call","id":"","call_id":"call_x","name":"t","arguments":"{}"}`, want: ""},
 		{name: "custom_tool_call fc underscore preserved", item: `{"type":"custom_tool_call","id":"fc_abc","call_id":"call_abc","name":"shell","arguments":"{}"}`, want: "fc_abc"},
 		{name: "custom_tool_call call underscore rewritten", item: `{"type":"custom_tool_call","id":"call_Fn6VYI71","call_id":"call_Fn6VYI71","name":"shell","arguments":"{}"}`, want: "fc_Fn6VYI71"},
+		{name: "custom_tool_call codex internal id rewritten", item: `{"type":"custom_tool_call","id":"functions_exec_command_0_7ca4ee899e52361f","call_id":"call_Fn6VYI71","name":"exec_command","arguments":"{}"}`, want: "fc_functions_exec_command_0_7ca4ee899e52361f"},
 		{name: "custom_tool_call bare id left alone", item: `{"type":"custom_tool_call","id":"abc","call_id":"call_abc","name":"shell","arguments":"{}"}`, want: "abc"},
 		{name: "custom_tool_call empty id left alone", item: `{"type":"custom_tool_call","id":"","call_id":"call_x","name":"shell","arguments":"{}"}`, want: ""},
 	}
@@ -1676,6 +1677,18 @@ func TestNormalizeResponsesToolCallItemIDPreservesValidPrefixes(t *testing.T) {
 				t.Fatalf("id = %q, want %q: %s", got, tc.want, updated)
 			}
 		})
+	}
+}
+
+func TestNormalizeResponsesWebsocketPassthroughRequestNormalizesCodexCustomToolCallID(t *testing.T) {
+	raw := []byte(`{"type":"response.create","model":"gpt-5.4","input":[{"type":"custom_tool_call","id":"functions_exec_command_0_7ca4ee899e52361f","call_id":"call_abc","name":"exec_command","arguments":"{}"},{"type":"custom_tool_call_output","call_id":"call_abc","output":"ok"}]}`)
+
+	normalized, errMsg := normalizeResponsesWebsocketPassthroughRequest(raw, "")
+	if errMsg != nil {
+		t.Fatalf("unexpected passthrough normalization error: %v", errMsg.Error)
+	}
+	if got := gjson.GetBytes(normalized, "input.0.id").String(); got != "fc_functions_exec_command_0_7ca4ee899e52361f" {
+		t.Fatalf("custom_tool_call id = %q, want fc-prefixed ID: %s", got, normalized)
 	}
 }
 

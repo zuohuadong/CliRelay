@@ -919,6 +919,41 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatExecutorCompactNormalizesMessageOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response.compaction","model":"custom-coder","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"compact summary"}]}],"usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"custom-coder","input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`)
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "custom-coder",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAIResponse,
+		OriginalRequest: payload,
+		Alt:             "responses/compact",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.#").Int(); got != 1 {
+		t.Fatalf("output length = %d, want 1; payload=%s", got, string(resp.Payload))
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.0.type").String(); got != "compaction" {
+		t.Fatalf("output.0.type = %q, want compaction; payload=%s", got, string(resp.Payload))
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.0.encrypted_content").String(); got != "compact summary" {
+		t.Fatalf("encrypted_content = %q, want compact summary; payload=%s", got, string(resp.Payload))
+	}
+}
+
 func TestBigModelCodingExecutorStreamsResponsesCompactionTriggerAsSingleCompactionItem(t *testing.T) {
 	var gotPath string
 	var gotBody []byte
@@ -1036,6 +1071,25 @@ func TestOpenAICompatExecutorStreamsResponsesCompactionTriggerAsSingleCompaction
 	}
 	if got := gjson.GetBytes(completed, "response.output.0.type").String(); got != "compaction" {
 		t.Fatalf("response.output.0.type = %q, want compaction; stream=%s", got, streamed.String())
+	}
+}
+
+func TestResponsesCompactionStreamCoercesMessageToSingleCompaction(t *testing.T) {
+	payload := []byte(`{"id":"resp_1","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"compact summary"}]}]}`)
+
+	var streamed bytes.Buffer
+	for _, chunk := range buildResponsesCompactionStreamChunks(payload, "custom-coder") {
+		streamed.Write(chunk)
+	}
+	completed := lastSSEDataPayloadForType(t, streamed.String(), "response.completed")
+	if got := gjson.GetBytes(completed, "response.output.#").Int(); got != 1 {
+		t.Fatalf("response.output length = %d, want 1; stream=%s", got, streamed.String())
+	}
+	if got := gjson.GetBytes(completed, "response.output.0.type").String(); got != "compaction" {
+		t.Fatalf("response.output.0.type = %q, want compaction; stream=%s", got, streamed.String())
+	}
+	if got := gjson.GetBytes(completed, "response.output.0.encrypted_content").String(); got != "compact summary" {
+		t.Fatalf("encrypted_content = %q, want compact summary; stream=%s", got, streamed.String())
 	}
 }
 

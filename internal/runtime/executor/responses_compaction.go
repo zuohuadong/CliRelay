@@ -9,6 +9,7 @@ import (
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const responsesCompactSystemPrompt = "You compact coding-agent conversation history. Produce a concise continuation summary that preserves the user's latest intent, completed work, open issues, exact commands or IDs that matter, and safe next steps. Do not invent facts."
@@ -178,25 +179,71 @@ func responsesCompactionStreamResponse(compactPayload []byte, metadata responses
 }
 
 func responsesCompactionOutputItem(compactPayload []byte, responseID string) json.RawMessage {
+	encryptedContent := strings.TrimSpace(gjson.GetBytes(compactPayload, "output.0.encrypted_content").String())
+	if encryptedContent == "" {
+		encryptedContent = responsesCompactionMessageText(compactPayload)
+	}
 	compactionItem := map[string]any{
 		"id":                fmt.Sprintf("cmpct_%d", time.Now().UnixNano()),
 		"type":              "compaction",
-		"encrypted_content": strings.TrimSpace(gjson.GetBytes(compactPayload, "output.0.encrypted_content").String()),
+		"encrypted_content": encryptedContent,
 	}
 	if outputItem := gjson.GetBytes(compactPayload, "output.0"); outputItem.Exists() && outputItem.Type == gjson.JSON {
 		var parsed map[string]any
 		if err := json.Unmarshal([]byte(outputItem.Raw), &parsed); err == nil && parsed != nil {
-			compactionItem = parsed
+			if strings.TrimSpace(outputItem.Get("type").String()) == "compaction" {
+				compactionItem = parsed
+			}
 		}
 	}
 	if id, ok := compactionItem["id"].(string); !ok || strings.TrimSpace(id) == "" {
 		compactionItem["id"] = fmt.Sprintf("cmpct_%s", responseID)
 	}
-	if itemType, ok := compactionItem["type"].(string); !ok || strings.TrimSpace(itemType) == "" {
-		compactionItem["type"] = "compaction"
+	compactionItem["type"] = "compaction"
+	if content, ok := compactionItem["encrypted_content"].(string); !ok || strings.TrimSpace(content) == "" {
+		compactionItem["encrypted_content"] = encryptedContent
 	}
 	raw, _ := json.Marshal(compactionItem)
 	return json.RawMessage(raw)
+}
+
+// normalizeResponsesCompactionResponse keeps the compact response wire shape
+// stable when an upstream Responses-compatible endpoint returns its summary
+// as a regular message item instead of a compaction item.
+func normalizeResponsesCompactionResponse(payload []byte) []byte {
+	output := gjson.GetBytes(payload, "output")
+	if !output.Exists() || !output.IsArray() || len(output.Array()) != 1 {
+		return payload
+	}
+	item := output.Get("0")
+	if item.Get("type").String() != "message" {
+		return payload
+	}
+	responseID := strings.TrimSpace(gjson.GetBytes(payload, "id").String())
+	compactionItem := responsesCompactionOutputItem(payload, responseID)
+	updated, err := sjson.SetRawBytes(payload, "output", []byte("["+string(compactionItem)+"]"))
+	if err != nil {
+		return payload
+	}
+	return updated
+}
+
+func responsesCompactionMessageText(compactPayload []byte) string {
+	content := gjson.GetBytes(compactPayload, "output.0.content")
+	if content.Type == gjson.String {
+		return strings.TrimSpace(content.String())
+	}
+	if !content.IsArray() {
+		return ""
+	}
+	parts := make([]string, 0, len(content.Array()))
+	for _, part := range content.Array() {
+		text := strings.TrimSpace(part.Get("text").String())
+		if text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func responsesSSEFrame(event string, payload any) []byte {

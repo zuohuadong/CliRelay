@@ -296,7 +296,7 @@ func TestApplyOAuthModelAlias_PerAuthNoOpShadowsGlobalAlias(t *testing.T) {
 	}
 
 	result := mgr.applyOAuthModelAliasWithResult(auth, "gpt-5.5(high)")
-	if result.UpstreamModel != "gpt-5.5(high)" || result.ForceMapping {
+	if result.UpstreamModel != "gpt-5.5(high)" || !result.Matched || result.ForceMapping {
 		t.Fatalf("applyOAuthModelAliasWithResult() = %+v, want matched per-auth no-op", result)
 	}
 }

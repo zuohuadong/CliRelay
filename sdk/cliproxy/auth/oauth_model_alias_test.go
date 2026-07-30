@@ -277,6 +277,30 @@ func TestApplyOAuthModelAlias_PerAuthOverridesGlobalAlias(t *testing.T) {
 	}
 }
 
+func TestApplyOAuthModelAlias_PerAuthNoOpShadowsGlobalAlias(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(&internalconfig.Config{})
+	mgr.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"codex": {{Name: "gpt-global", Alias: "gpt-5.5(high)"}},
+	})
+
+	auth := &Auth{
+		ID:       "codex-auth-id",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"auth_kind":     "oauth",
+			"model_aliases": `[{"name":"gpt-5.5","alias":"gpt-5.5(high)"}]`,
+		},
+	}
+
+	result := mgr.applyOAuthModelAliasWithResult(auth, "gpt-5.5(high)")
+	if result.UpstreamModel != "gpt-5.5(high)" || !result.Matched || result.ForceMapping {
+		t.Fatalf("applyOAuthModelAliasWithResult() = %+v, want matched per-auth no-op", result)
+	}
+}
+
 func TestApplyOAuthModelAlias_PerAuthAliasSkipsAPIKey(t *testing.T) {
 	t.Parallel()
 

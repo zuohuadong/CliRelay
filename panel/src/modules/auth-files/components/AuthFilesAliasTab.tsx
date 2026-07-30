@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
 import { Button } from "@/modules/ui/Button";
+import { Checkbox } from "@/modules/ui/Checkbox";
 import { EmptyState } from "@/modules/ui/EmptyState";
 import { TextInput } from "@/modules/ui/Input";
 import type { AliasRow } from "@/modules/auth-files/helpers/authFilesPageUtils";
@@ -152,7 +153,7 @@ export function AuthFilesAliasTab({
                       <div className="mt-3 space-y-2">
                         {rows.map((row, idx) => (
                           <div key={row.id} className="grid gap-2 lg:grid-cols-12">
-                            <div className="lg:col-span-5">
+                            <div className="lg:col-span-3">
                               <TextInput
                                 value={row.name}
                                 onChange={(e) => {
@@ -167,7 +168,7 @@ export function AuthFilesAliasTab({
                                 placeholder={t("auth_files.name_placeholder", "name")}
                               />
                             </div>
-                            <div className="lg:col-span-5">
+                            <div className="lg:col-span-3">
                               <TextInput
                                 value={row.alias}
                                 onChange={(e) => {
@@ -182,24 +183,50 @@ export function AuthFilesAliasTab({
                                 placeholder={t("auth_files.alias_placeholder", "alias")}
                               />
                             </div>
-                            <div className="lg:col-span-1 flex items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm transition-colors duration-200 ease-out dark:border-neutral-800 dark:bg-neutral-950/60">
-                              <span className="text-xs text-slate-600 dark:text-white/65">
-                                {t("auth_files.fork")}
-                              </span>
-                              <input
-                                type="checkbox"
-                                checked={Boolean(row.fork)}
+                            <div className="lg:col-span-3">
+                              <TextInput
+                                value={row.displayName ?? ""}
                                 onChange={(e) => {
-                                  const checked = e.currentTarget.checked;
+                                  const value = e.currentTarget.value;
                                   setAliasEditing((prev) => ({
                                     ...prev,
                                     [channel]: (prev[channel] ?? []).map((it, i) =>
-                                      i === idx ? { ...it, fork: checked } : it,
+                                      i === idx ? { ...it, displayName: value } : it,
                                     ),
                                   }));
                                 }}
-                                className="h-4 w-4 rounded border-slate-300 text-slate-900 focus-visible:ring-2 focus-visible:ring-slate-400/35 dark:border-neutral-700 dark:bg-neutral-950 dark:text-white dark:focus-visible:ring-white/15"
+                                placeholder={t("auth_files.display_name_placeholder")}
                               />
+                            </div>
+                            <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm transition-colors duration-200 ease-out lg:col-span-2 dark:border-neutral-800 dark:bg-neutral-950/60">
+                              <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-white/65">
+                                <Checkbox
+                                  checked={Boolean(row.fork)}
+                                  onCheckedChange={(checked) => {
+                                    setAliasEditing((prev) => ({
+                                      ...prev,
+                                      [channel]: (prev[channel] ?? []).map((it, i) =>
+                                        i === idx ? { ...it, fork: checked } : it,
+                                      ),
+                                    }));
+                                  }}
+                                />
+                                {t("auth_files.fork")}
+                              </label>
+                              <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-white/65">
+                                <Checkbox
+                                  checked={Boolean(row.forceMapping)}
+                                  onCheckedChange={(checked) => {
+                                    setAliasEditing((prev) => ({
+                                      ...prev,
+                                      [channel]: (prev[channel] ?? []).map((it, i) =>
+                                        i === idx ? { ...it, forceMapping: checked } : it,
+                                      ),
+                                    }));
+                                  }}
+                                />
+                                {t("auth_files.force_mapping")}
+                              </label>
                             </div>
                             <div className="lg:col-span-1 flex items-center justify-end">
                               <Button

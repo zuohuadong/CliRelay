@@ -262,6 +262,8 @@ export interface OAuthModelAliasEntry {
   name: string;
   alias: string;
   fork?: boolean;
+  displayName?: string;
+  forceMapping?: boolean;
 }
 
 export interface IFlowCookieAuthResponse {

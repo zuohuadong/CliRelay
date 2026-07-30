@@ -184,6 +184,8 @@ export function useAuthFilesOAuthConfig(tab: "files" | "excluded" | "alias") {
           name: row.name.trim(),
           alias: row.alias.trim(),
           ...(row.fork ? { fork: true } : {}),
+          ...(row.displayName?.trim() ? { displayName: row.displayName.trim() } : {}),
+          ...(row.forceMapping ? { forceMapping: true } : {}),
         }))
         .filter((row) => row.name && row.alias);
 

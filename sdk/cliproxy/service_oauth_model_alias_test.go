@@ -125,7 +125,7 @@ func TestApplyOAuthModelAlias_AddsAliasWhenSourceModelMissing(t *testing.T) {
 	cfg := &config.Config{
 		OAuthModelAlias: map[string][]config.OAuthModelAlias{
 			"antigravity": {
-				{Name: "gemini-3.1-pro-high", Alias: "gpt-5.2", Fork: true},
+				{Name: "gemini-3.1-pro-high", Alias: "gpt-5.2", Fork: true, DisplayName: "GPT 5.2"},
 			},
 		},
 	}
@@ -145,6 +145,9 @@ func TestApplyOAuthModelAlias_AddsAliasWhenSourceModelMissing(t *testing.T) {
 	}
 	if out[1].Name != "models/gpt-5.2" {
 		t.Fatalf("expected configured alias name %q, got %q", "models/gpt-5.2", out[1].Name)
+	}
+	if out[1].DisplayName != "GPT 5.2" {
+		t.Fatalf("expected configured alias display name %q, got %q", "GPT 5.2", out[1].DisplayName)
 	}
 }
 

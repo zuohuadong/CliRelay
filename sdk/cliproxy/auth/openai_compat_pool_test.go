@@ -457,6 +457,66 @@ func TestManagerExecuteStream_OpenAICompatAliasRewritesResponseModelByDefault(t 
 	}
 }
 
+func TestManagerExecute_OpenAICompatAliasPoolRewritesAfterSameNameCandidate(t *testing.T) {
+	alias := "public-model"
+	alternate := "alternate-upstream"
+	executor := &openAICompatPoolExecutor{
+		id: openAICompatPoolProviderKey,
+		executePayloads: map[string][]byte{
+			alias:     []byte(`{"model":"public-model"}`),
+			alternate: []byte(`{"model":"alternate-upstream"}`),
+		},
+	}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: alias, Alias: alias},
+		{Name: alternate, Alias: alias},
+	}, executor)
+
+	for i := 0; i < 2; i++ {
+		resp, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
+		if err != nil {
+			t.Fatalf("execute %d: %v", i, err)
+		}
+		if got := gjson.GetBytes(resp.Payload, "model").String(); got != alias {
+			t.Fatalf("response %d model = %q, want %q", i, got, alias)
+		}
+	}
+
+	if got := executor.ExecuteModels(); len(got) != 2 || got[0] != alias || got[1] != alternate {
+		t.Fatalf("execute models = %v, want [%s %s]", got, alias, alternate)
+	}
+}
+
+func TestManagerExecuteStream_OpenAICompatAliasPoolRewritesAfterSameNameCandidate(t *testing.T) {
+	alias := "public-model"
+	alternate := "alternate-upstream"
+	executor := &openAICompatPoolExecutor{
+		id: openAICompatPoolProviderKey,
+		streamPayloads: map[string][]cliproxyexecutor.StreamChunk{
+			alias:     {{Payload: []byte(`{"model":"public-model"}`)}},
+			alternate: {{Payload: []byte(`{"model":"alternate-upstream"}`)}},
+		},
+	}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: alias, Alias: alias},
+		{Name: alternate, Alias: alias},
+	}, executor)
+
+	for i := 0; i < 2; i++ {
+		streamResult, err := m.ExecuteStream(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
+		if err != nil {
+			t.Fatalf("execute stream %d: %v", i, err)
+		}
+		if got := gjson.Get(readOpenAICompatStreamPayload(t, streamResult), "model").String(); got != alias {
+			t.Fatalf("stream response %d model = %q, want %q", i, got, alias)
+		}
+	}
+
+	if got := executor.StreamModels(); len(got) != 2 || got[0] != alias || got[1] != alternate {
+		t.Fatalf("stream models = %v, want [%s %s]", got, alias, alternate)
+	}
+}
+
 func TestManagerExecute_OpenAICompatAliasPoolStopsOnBadRequest(t *testing.T) {
 	alias := "claude-opus-4.66"
 	invalidErr := &Error{HTTPStatus: http.StatusBadRequest, Message: "invalid_request_error: malformed payload"}

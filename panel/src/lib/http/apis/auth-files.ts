@@ -1,6 +1,10 @@
 import { apiClient } from "@/lib/http/client";
 import type { AuthFilesResponse, OAuthModelAliasEntry } from "@/lib/http/types";
-import { normalizeOauthExcludedModels, normalizeOauthModelAlias } from "@/lib/http/apis/helpers";
+import {
+  normalizeOauthExcludedModels,
+  normalizeOauthModelAlias,
+  serializeOauthModelAlias,
+} from "@/lib/http/apis/helpers";
 
 export const authFilesApi = {
   list: (): Promise<AuthFilesResponse> => apiClient.get<AuthFilesResponse>("/auth-files"),
@@ -69,7 +73,7 @@ export const authFilesApi = {
       normalizeOauthModelAlias({ [normalizedChannel]: aliases })[normalizedChannel] ?? [];
     await apiClient.patch("/oauth-model-alias", {
       channel: normalizedChannel,
-      aliases: normalizedAliases,
+      aliases: serializeOauthModelAlias(normalizedAliases),
     });
   },
   deleteOauthModelAlias: async (channel: string) => {

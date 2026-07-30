@@ -4046,12 +4046,16 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 				continue
 			}
 			seen[aliasKey] = struct{}{}
-			out = append(out, &ModelInfo{
+			model := &ModelInfo{
 				ID:      mappedID,
 				Object:  "model",
 				Name:    "models/" + mappedID,
 				Version: mappedID,
-			})
+			}
+			if entry.displayName != "" {
+				model.DisplayName = entry.displayName
+			}
+			out = append(out, model)
 		}
 	}
 	return out

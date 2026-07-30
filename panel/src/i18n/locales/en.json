@@ -715,6 +715,8 @@
     "oauth_excluded": "OAuth Excluded",
     "valid_mappings": "Valid mappings: {{count}}",
     "fork": "fork",
+    "force_mapping": "rewrite response model",
+    "display_name_placeholder": "Display name (optional)",
     "calls_count": "{{count}} calls",
     "success_count": "Success {{count}}",
     "failed_count": "Failed {{count}}",

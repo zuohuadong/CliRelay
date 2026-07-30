@@ -227,7 +227,9 @@ func resolveModelAliasResultFromConfigModels(requestedModel string, models []mod
 			}
 			if strings.EqualFold(original, baseModel) {
 				if !models[i].GetForceMapping() {
-					return OAuthModelAliasResult{}
+					return OAuthModelAliasResult{
+						UpstreamModel: preserveResolvedModelSuffix(original, requestResult),
+					}
 				}
 				return OAuthModelAliasResult{
 					UpstreamModel: preserveResolvedModelSuffix(original, requestResult),
@@ -356,7 +358,9 @@ func resolveUpstreamModelFromAliases(aliases []internalconfig.OAuthModelAlias, r
 			}
 			if strings.EqualFold(original, baseModel) {
 				if !entry.ForceMapping {
-					return OAuthModelAliasResult{}
+					return OAuthModelAliasResult{
+						UpstreamModel: preserveResolvedModelSuffix(original, requestResult),
+					}
 				}
 				return OAuthModelAliasResult{
 					UpstreamModel: preserveResolvedModelSuffix(original, requestResult),
@@ -381,7 +385,7 @@ func resolveUpstreamModelFromAliases(aliases []internalconfig.OAuthModelAlias, r
 func (m *Manager) applyOAuthModelAliasWithResult(auth *Auth, requestedModel string) OAuthModelAliasResult {
 	result := m.resolveOAuthModelAliasWithResult(auth, requestedModel)
 	if result.UpstreamModel == "" {
-		return OAuthModelAliasResult{UpstreamModel: requestedModel}
+		result.UpstreamModel = requestedModel
 	}
 	return result
 }
@@ -429,7 +433,9 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 
 		if strings.EqualFold(targetModel, baseModel) {
 			if !entry.forceMapping {
-				return OAuthModelAliasResult{}
+				return OAuthModelAliasResult{
+					UpstreamModel: preserveResolvedModelSuffix(targetModel, requestResult),
+				}
 			}
 			return OAuthModelAliasResult{
 				UpstreamModel: preserveResolvedModelSuffix(targetModel, requestResult),

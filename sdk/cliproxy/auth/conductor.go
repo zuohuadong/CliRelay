@@ -1705,15 +1705,25 @@ func (m *Manager) resolveAPIKeyModelAliasWithResult(auth *Auth, requestedModel s
 	}
 	result := resolveModelAliasResultFromConfigModels(requestedModel, models)
 	if strings.TrimSpace(result.UpstreamModel) == "" {
-		return OAuthModelAliasResult{UpstreamModel: requestedModel}
+		result.UpstreamModel = requestedModel
 	}
-	if defaultForceMapping && !result.ForceMapping && !strings.EqualFold(strings.TrimSpace(result.UpstreamModel), requestedModel) {
+	if defaultForceMapping && !result.ForceMapping && modelAliasPoolRequiresResponseRewrite(requestedModel, models) {
 		result.ForceMapping = true
 		if strings.TrimSpace(result.OriginalAlias) == "" {
 			result.OriginalAlias = requestedModel
 		}
 	}
 	return result
+}
+
+func modelAliasPoolRequiresResponseRewrite(requestedModel string, models []modelAliasEntry) bool {
+	requestedModel = strings.TrimSpace(requestedModel)
+	for _, candidate := range resolveModelAliasPoolFromConfigModels(requestedModel, models) {
+		if !strings.EqualFold(strings.TrimSpace(candidate), requestedModel) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) prepareExecutionModels(auth *Auth, routeModel string) []string {

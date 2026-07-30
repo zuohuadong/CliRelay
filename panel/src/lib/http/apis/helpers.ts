@@ -341,7 +341,19 @@ export const normalizeOauthModelAlias = (
         const alias = normalizeString(item.alias) ?? "";
         if (!name || !alias) return null;
         const fork = item.fork === true;
-        return fork ? { name, alias, fork } : { name, alias };
+        const displayName =
+          normalizeString(item["display-name"] ?? item.display_name ?? item.displayName) ?? "";
+        const forceMapping =
+          item["force-mapping"] === true ||
+          item.force_mapping === true ||
+          item.forceMapping === true;
+        return {
+          name,
+          alias,
+          ...(fork ? { fork: true } : {}),
+          ...(displayName ? { displayName } : {}),
+          ...(forceMapping ? { forceMapping: true } : {}),
+        };
       })
       .filter(Boolean)
       .filter((entry) => {
@@ -358,6 +370,17 @@ export const normalizeOauthModelAlias = (
 
   return result;
 };
+
+export const serializeOauthModelAlias = (
+  entries: OAuthModelAliasEntry[] | undefined,
+): Record<string, unknown>[] =>
+  (entries ?? []).map((entry) => ({
+    name: entry.name,
+    alias: entry.alias,
+    ...(entry.fork ? { fork: true } : {}),
+    ...(entry.displayName ? { "display-name": entry.displayName } : {}),
+    ...(entry.forceMapping ? { "force-mapping": true } : {}),
+  }));
 
 export const normalizeApiKeyEntries = (raw: unknown): ProviderApiKeyEntry[] | undefined => {
   if (!Array.isArray(raw)) return undefined;

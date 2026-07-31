@@ -489,7 +489,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				} else {
 					allowIncrementalInputWithPreviousResponseID = h.websocketUpstreamSupportsIncrementalInputForModel(requestModelName)
 				}
-			} else if responsesWebsocketCanUseExplicitPreviousResponseID(payload, lastSuccessfulProvider) {
+			} else if h.responsesWebsocketCanUseExplicitPreviousResponseID(payload, lastSuccessfulProvider, requestModelName) {
 				// Keep the fork's request-scoped replay path for an explicit upstream
 				// response ID, while mediated turns otherwise use transcript replay.
 				allowIncrementalInputWithPreviousResponseID = true
@@ -1558,9 +1558,15 @@ func responsesWebsocketProviderRequiresTranscriptReplay(provider string) bool {
 	return strings.EqualFold(strings.TrimSpace(provider), "astron-code")
 }
 
-func responsesWebsocketCanUseExplicitPreviousResponseID(payload []byte, lastSuccessfulProvider string) bool {
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketCanUseExplicitPreviousResponseID(payload []byte, lastSuccessfulProvider, modelName string) bool {
 	if responsesWebsocketProviderRequiresTranscriptReplay(lastSuccessfulProvider) {
 		return false
+	}
+	auths, _ := h.responsesWebsocketAvailableAuthsForModel(modelName)
+	for _, auth := range auths {
+		if auth != nil && responsesWebsocketProviderRequiresTranscriptReplay(auth.Provider) {
+			return false
+		}
 	}
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
 	return strings.HasPrefix(previousResponseID, "resp_") && !strings.HasPrefix(previousResponseID, "resp_prewarm_")
@@ -2978,7 +2984,8 @@ func shouldReplayResponsesWebsocketTranscript(errMsg *interfaces.ErrorMessage) b
 	return strings.Contains(text, "previous_response_not_found") ||
 		strings.Contains(text, "not found") ||
 		strings.Contains(text, "invalid_id_prefix") ||
-		strings.Contains(text, "expected an id that begins with 'resp'")
+		strings.Contains(text, "expected an id that begins with 'resp'") ||
+		strings.Contains(text, "unsupported parameter: previous_response_id")
 }
 
 func responsesWebsocketReplayableLifecycleEvent(eventType string) bool {

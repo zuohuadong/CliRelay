@@ -3953,6 +3953,94 @@ func TestResponsesWebsocketRetriesPreviousResponseNotFoundWithTranscriptReplay(t
 	}
 }
 
+func TestResponsesWebsocketRetriesUnsupportedPreviousResponseIDWithTranscriptReplay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &websocketPreviousResponseReplayExecutor{
+		failOnCall:   2,
+		errorMessage: `{"detail":"Unsupported parameter: previous_response_id"}`,
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth := &coreauth.Auth{ID: "auth-unsupported-previous-response", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	const model = "unsupported-previous-response-model"
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	requests := []string{
+		`{"type":"response.create","model":"unsupported-previous-response-model","input":[{"type":"message","id":"msg-before","role":"user","content":"first turn"}]}`,
+		`{"type":"response.create","previous_response_id":"resp_replay_1","input":[{"type":"message","id":"msg-after","role":"user","content":"continue"}]}`,
+	}
+	for i := range requests {
+		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(requests[i])); errWrite != nil {
+			t.Fatalf("write websocket message %d: %v", i+1, errWrite)
+		}
+		_, payload, errReadMessage := conn.ReadMessage()
+		if errReadMessage != nil {
+			t.Fatalf("read websocket message %d: %v", i+1, errReadMessage)
+		}
+		if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+			t.Fatalf("message %d payload type = %s, want %s: %s", i+1, got, wsEventTypeCompleted, payload)
+		}
+	}
+
+	payloads := executor.Payloads()
+	if len(payloads) != 3 {
+		t.Fatalf("upstream payload count = %d, want 3 (initial, rejected incremental, replay): %v", len(payloads), payloads)
+	}
+	if got := gjson.GetBytes(payloads[1], "previous_response_id").String(); got != "resp_replay_1" {
+		t.Fatalf("rejected incremental payload previous_response_id = %q, want resp_replay_1: %s", got, payloads[1])
+	}
+	if gjson.GetBytes(payloads[2], "previous_response_id").Exists() {
+		t.Fatalf("replay payload must drop previous_response_id: %s", payloads[2])
+	}
+	replayInput := gjson.GetBytes(payloads[2], "input").Raw
+	if !strings.Contains(replayInput, `"id":"msg-before"`) || !strings.Contains(replayInput, `"id":"msg-after"`) {
+		t.Fatalf("replay input missing complete transcript: %s", replayInput)
+	}
+}
+
+func TestResponsesWebsocketAvoidsIncrementalPreviousResponseIDForAstronCandidate(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{ID: "auth-astron-incremental-guard", Provider: internalconfig.DefaultAstronCodeProviderName, Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	const model = "astron-incremental-guard-model"
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	h := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager))
+	payload := []byte(`{"type":"response.create","previous_response_id":"resp_compatible","input":[{"type":"message","role":"user","content":"continue"}]}`)
+	if h.responsesWebsocketCanUseExplicitPreviousResponseID(payload, "test-provider", model) {
+		t.Fatalf("Astron candidate must force transcript replay instead of forwarding previous_response_id")
+	}
+}
+
 // TestResponsesWebsocketReplayPreservesProjectContextAcrossIncrementalTurns 复现客户反馈：
 // 在 codex passthrough 模式下客户端用 previous_response_id 发送增量 input。
 // 若某一轮上游报 "No tool call found" 触发 transcript replay，replay 必须重发完整 transcript

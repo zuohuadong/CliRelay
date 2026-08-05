@@ -103,8 +103,9 @@ func shortenCodexInputItemID(id string) string {
 
 func normalizeCodexInputItemID(itemType, id string, attempt int) string {
 	requiredPrefix := ""
-	if itemType == "message" && !strings.HasPrefix(id, "msg") {
-		requiredPrefix = "msg_"
+	itemPrefix := codexInputItemIDPrefix(itemType)
+	if itemPrefix != "" && !strings.HasPrefix(id, itemPrefix) {
+		requiredPrefix = itemPrefix + "_"
 		id = requiredPrefix + id
 	}
 	return shortenCodexInputItemIDWithRequiredPrefix(id, requiredPrefix, attempt)
@@ -114,7 +115,19 @@ func isValidCodexInputItemIDForType(itemType, id string) bool {
 	if !isValidCodexInputItemID(id) {
 		return false
 	}
-	return itemType != "message" || strings.HasPrefix(id, "msg")
+	requiredPrefix := codexInputItemIDPrefix(itemType)
+	return requiredPrefix == "" || strings.HasPrefix(id, requiredPrefix)
+}
+
+func codexInputItemIDPrefix(itemType string) string {
+	switch itemType {
+	case "message":
+		return "msg"
+	case "function_call":
+		return "fc"
+	default:
+		return ""
+	}
 }
 
 func shortenCodexInputItemIDWithAttempt(id string, attempt int) string {

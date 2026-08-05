@@ -45,10 +45,10 @@ func TestBuildCodexWebsocketRequestBodyPreservesPreviousResponseID(t *testing.T)
 
 func TestBuildCodexWebsocketRequestBodySanitizesInvalidOrOverlongInputItemIDs(t *testing.T) {
 	longReasoningItemID := "rs_" + strings.Repeat("a", 64)
-	longCallItemID := strings.Repeat("grok-call-item-", 6)
+	foreignFunctionCallID := "functions_exec_command_3_7d49d8c996eac04a"
 	longOutputItemID := strings.Repeat("grok-output-item-", 6)
 	invalidMessageItemID := "resp_cht000d342b_dx19f85395e3ab9cb312_742ed7068170aeb7"
-	body := []byte(`{"model":"gpt-5-codex","input":[{"type":"reasoning","id":"` + longReasoningItemID + `","encrypted_content":"gAAAA-encrypted","summary":[]},{"type":"function_call","id":"` + longCallItemID + `","call_id":"call-1","name":"lookup"},{"type":"function_call_output","id":"` + longOutputItemID + `","call_id":"call-1","output":"ok"},{"type":"message","id":"` + invalidMessageItemID + `"}]}`)
+	body := []byte(`{"model":"gpt-5-codex","input":[{"type":"reasoning","id":"` + longReasoningItemID + `","encrypted_content":"gAAAA-encrypted","summary":[]},{"type":"function_call","id":"` + foreignFunctionCallID + `","call_id":"call-1","name":"lookup"},{"type":"function_call_output","id":"` + longOutputItemID + `","call_id":"call-1","output":"ok"},{"type":"message","id":"` + invalidMessageItemID + `"}]}`)
 
 	first := buildCodexWebsocketRequestBody(body)
 	second := buildCodexWebsocketRequestBody(body)
@@ -58,8 +58,8 @@ func TestBuildCodexWebsocketRequestBodySanitizesInvalidOrOverlongInputItemIDs(t 
 
 	shortCallItemID := gjson.GetBytes(first, "input.0.id").String()
 	shortOutputItemID := gjson.GetBytes(first, "input.1.id").String()
-	if len([]rune(shortCallItemID)) > 64 || shortCallItemID == longCallItemID {
-		t.Fatalf("input.0.id was not shortened to at most 64 characters: %q", shortCallItemID)
+	if len([]rune(shortCallItemID)) > 64 || shortCallItemID == foreignFunctionCallID || !strings.HasPrefix(shortCallItemID, "fc_") {
+		t.Fatalf("input.0.id was not sanitized with an fc_ prefix: %q", shortCallItemID)
 	}
 	if len([]rune(shortOutputItemID)) > 64 || shortOutputItemID == longOutputItemID {
 		t.Fatalf("input.1.id was not shortened to at most 64 characters: %q", shortOutputItemID)

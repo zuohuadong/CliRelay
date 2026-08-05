@@ -77,6 +77,30 @@ func TestSanitizeCodexInputItemIDsPreservesMessagePrefixWhenShortened(t *testing
 	}
 }
 
+func TestSanitizeCodexInputItemIDsNormalizesForeignFunctionCallPrefix(t *testing.T) {
+	foreignFunctionCallID := "functions_exec_command_3_7d49d8c996eac04a"
+	body := []byte(`{"input":[` +
+		`{"type":"function_call","id":"` + foreignFunctionCallID + `","call_id":"call-1","name":"exec_command","arguments":"{}"},` +
+		`{"type":"function_call","id":"fc_existing","call_id":"call-2","name":"exec_command","arguments":"{}"}` +
+		`]}`)
+
+	first := SanitizeCodexInputItemIDs(body)
+	second := SanitizeCodexInputItemIDs(body)
+	normalizedID := gjson.GetBytes(first, "input.0.id").String()
+	if normalizedID == foreignFunctionCallID || !strings.HasPrefix(normalizedID, "fc_") {
+		t.Fatalf("foreign function call ID was not normalized: %q", normalizedID)
+	}
+	if got := gjson.GetBytes(second, "input.0.id").String(); got != normalizedID {
+		t.Fatalf("function call ID normalization is not deterministic: first=%q second=%q", normalizedID, got)
+	}
+	if got := gjson.GetBytes(first, "input.0.call_id").String(); got != "call-1" {
+		t.Fatalf("function call_id = %q, want call-1", got)
+	}
+	if got := gjson.GetBytes(first, "input.1.id").String(); got != "fc_existing" {
+		t.Fatalf("valid function call ID changed: %q", got)
+	}
+}
+
 func TestSanitizeCodexInputItemIDsKeepsShortEncryptedReasoningAndShortensOtherIDs(t *testing.T) {
 	longReasoningID := "rs_" + strings.Repeat("a", 64)
 	shortReasoningID := "rs_" + strings.Repeat("b", 48)

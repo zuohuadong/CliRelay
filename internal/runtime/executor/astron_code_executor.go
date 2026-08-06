@@ -58,6 +58,7 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	switch opts.Alt {
 	case "responses/compact":
 		syntheticCompaction = true
+		useResponsesEndpoint = false
 	case "images/generations":
 		endpoint = "/images/generations"
 		imagePassthrough = true

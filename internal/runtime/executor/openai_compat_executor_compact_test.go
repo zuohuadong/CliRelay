@@ -1429,8 +1429,9 @@ func TestAstronCodeExecutorCompactUsesChatAndWrapsResponse(t *testing.T) {
 
 	executor := NewAstronCodeExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
-		"base_url": server.URL + "/v2",
-		"api_key":  "test",
+		"base_url":          server.URL + "/v2",
+		"api_key":           "test",
+		"response_endpoint": "true",
 	}}
 	payload := []byte(`{"model":"gpt-5.3-codex","input":[{"role":"user","content":"hi"}],"tools":[{"type":"mcp","server_label":"web-reader"}],"tool_choice":"required"}`)
 	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
@@ -1517,8 +1518,9 @@ func TestAstronCodeExecutorStreamsResponsesCompactionTriggerAsSingleCompactionIt
 
 	executor := NewAstronCodeExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
-		"base_url": server.URL + "/v2",
-		"api_key":  "test",
+		"base_url":          server.URL + "/v2",
+		"api_key":           "test",
+		"response_endpoint": "true",
 	}}
 	payload := []byte(`{"model":"deepseek-v4-pro","stream":true,"input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`)
 	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{

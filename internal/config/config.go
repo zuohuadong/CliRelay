@@ -430,8 +430,8 @@ func (h KimiHeaderDefaults) WithDefaults() KimiHeaderDefaults {
 }
 
 const (
-	DefaultCodexFingerprintUserAgent     = "codex-tui/0.145.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.145.0)"
-	DefaultCodexFingerprintVersion       = "0.145.0"
+	DefaultCodexFingerprintUserAgent     = "codex-tui/0.146.1 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.146.1)"
+	DefaultCodexFingerprintVersion       = "0.146.1"
 	DefaultCodexFingerprintOriginator    = "codex-tui"
 	DefaultCodexFingerprintWebsocketBeta = "responses_websockets=2026-02-06"
 	DefaultCodexFingerprintSessionMode   = "per-request"

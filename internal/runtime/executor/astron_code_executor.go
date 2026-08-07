@@ -982,19 +982,30 @@ func ensureAstronToolCallIDs(line []byte, seq *astronToolCallIDSeq) []byte {
 			}
 			hasNonEmptyName := false
 			hasArguments := false
+			toolIndex := astronJSONIndex(tcMap["index"], toolOffset)
 			// 上游可能返回 function.name 为空的 tool_call，直接丢弃避免客户端报错。
-			// 流式传输中，参数增量帧通常没有 "name" 字段，因此只处理显式空 name。
+			// 但 astron glm-5.2 的参数增量帧也携带显式空 name（id 亦为空）且带 arguments：
+			// 当该索引已登记真实工具调用时，这是参数增量帧，应规整为标准增量帧
+			// （去掉空 name/id）保留下来，否则客户端永远收不到 arguments。
 			if fnMap, ok := tcMap["function"].(map[string]any); ok {
+				hasArguments = astronJSONString(fnMap["arguments"]) != ""
 				if nameVal, nameExists := fnMap["name"]; nameExists {
 					if astronJSONString(nameVal) == "" {
-						modified = true
-						continue
+						if hasArguments && seq.existingID(choiceIndex, toolIndex) != "" {
+							delete(fnMap, "name")
+							if astronJSONString(tcMap["id"]) == "" {
+								delete(tcMap, "id")
+							}
+							modified = true
+						} else {
+							modified = true
+							continue
+						}
+					} else {
+						hasNonEmptyName = true
 					}
-					hasNonEmptyName = true
 				}
-				hasArguments = astronJSONString(fnMap["arguments"]) != ""
 			}
-			toolIndex := astronJSONIndex(tcMap["index"], toolOffset)
 			if id := astronJSONString(tcMap["id"]); id == "" {
 				if hasNonEmptyName || seq.existingID(choiceIndex, toolIndex) == "" && !hasArguments {
 					tcMap["id"] = seq.idFor(choiceIndex, toolIndex, "")

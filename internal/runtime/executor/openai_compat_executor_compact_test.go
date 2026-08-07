@@ -431,6 +431,40 @@ func TestAstronCodeExecutorDoesNotRepeatStreamingToolCallIDOnArgumentDeltas(t *t
 	}
 }
 
+// astron glm-5.2 的参数增量帧携带显式空 name/id（实测生产上游帧格式），
+// 这类帧必须规整为标准参数增量保留下来，否则客户端永远收不到 arguments。
+func TestAstronCodeExecutorKeepsArgumentDeltasWithExplicitEmptyName(t *testing.T) {
+	seq := &astronToolCallIDSeq{}
+	first := ensureAstronToolCallIDs([]byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_50ba21e4ab084028b23b498f","type":"function","function":{"name":"RunCommand"}}]}}]}`), seq)
+	firstID := gjson.Get(strings.TrimSpace(strings.TrimPrefix(string(first), "data:")), "choices.0.delta.tool_calls.0.id").String()
+	if firstID == "" {
+		t.Fatalf("first frame id is empty: %s", first)
+	}
+
+	second := ensureAstronToolCallIDs([]byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"name":"","arguments":"{\"command\": \"ls"}}]}}]}`), seq)
+	secondJSON := strings.TrimSpace(strings.TrimPrefix(string(second), "data:"))
+	tc := gjson.Get(secondJSON, "choices.0.delta.tool_calls.0")
+	if !tc.Exists() {
+		t.Fatalf("argument delta frame was dropped: %s", second)
+	}
+	if got := tc.Get("function.arguments").String(); got != `{"command": "ls` {
+		t.Fatalf("arguments = %q, want partial fragment preserved: %s", got, second)
+	}
+	if tc.Get("function.name").Exists() {
+		t.Fatalf("explicit empty name should be stripped from argument delta: %s", second)
+	}
+	if tc.Get("id").Exists() {
+		t.Fatalf("explicit empty id should be stripped from argument delta: %s", second)
+	}
+
+	// 孤儿空 name 帧（该索引没有已登记的工具调用）仍然必须丢弃。
+	orphan := ensureAstronToolCallIDs([]byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":3,"id":"","type":"function","function":{"name":"","arguments":"{}"}}]}}]}`), seq)
+	orphanCount := len(gjson.Get(strings.TrimSpace(strings.TrimPrefix(string(orphan), "data:")), "choices.0.delta.tool_calls").Array())
+	if orphanCount != 0 {
+		t.Fatalf("orphan empty-name tool_call should be dropped, got %d: %s", orphanCount, orphan)
+	}
+}
+
 func TestAstronCodeExecutorGeneratesDistinctNonStreamToolCallIDs(t *testing.T) {
 	body := ensureAstronNonStreamToolCallIDs([]byte(`{"choices":[{"index":0,"message":{"tool_calls":[{"type":"function","function":{"name":"read","arguments":"{}"}},{"type":"function","function":{"name":"glob","arguments":"{}"}}]}}]}`))
 

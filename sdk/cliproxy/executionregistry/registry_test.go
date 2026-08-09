@@ -91,6 +91,42 @@ func TestDrainWaitsForPendingDispatch(t *testing.T) {
 	}
 }
 
+func TestWaitPendingDoesNotDrainActiveScope(t *testing.T) {
+	registry := New()
+	activePending, errBegin := registry.BeginDispatch()
+	if errBegin != nil {
+		t.Fatal(errBegin)
+	}
+	scope, errInstall := registry.Install(activePending, ScopeSpec{})
+	if errInstall != nil {
+		t.Fatal(errInstall)
+	}
+	defer scope.End("test cleanup")
+	pending, errBegin := registry.BeginDispatch()
+	if errBegin != nil {
+		t.Fatal(errBegin)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- registry.WaitPending(ctx) }()
+	select {
+	case errWait := <-done:
+		t.Fatalf("WaitPending() returned before pending dispatch ended: %v", errWait)
+	case <-time.After(20 * time.Millisecond):
+	}
+	pending.End()
+	if errWait := <-done; errWait != nil {
+		t.Fatalf("WaitPending() error = %v", errWait)
+	}
+	nextPending, errNext := registry.BeginDispatch()
+	if errNext != nil {
+		t.Fatalf("WaitPending() stopped registry acceptance: %v", errNext)
+	}
+	nextPending.End()
+}
+
 func TestDrainReturnsWhenBlockingResourceCloseExceedsContext(t *testing.T) {
 	registry := New()
 	pending, errBegin := registry.BeginDispatch()
@@ -342,47 +378,6 @@ func TestDrainRejectsLateInstall(t *testing.T) {
 	}
 	if _, errInstall := registry.Install(pending, ScopeSpec{}); !errors.Is(errInstall, ErrRegistryNotAccepting) {
 		t.Fatalf("Install() error = %v, want ErrRegistryNotAccepting", errInstall)
-	}
-	if errDrain := <-done; errDrain != nil {
-		t.Fatalf("Drain() error = %v", errDrain)
-	}
-}
-
-func TestDrainReleasesLateAccountedInstall(t *testing.T) {
-	registry := New()
-	pending, errBegin := registry.BeginDispatch()
-	if errBegin != nil {
-		t.Fatal(errBegin)
-	}
-	released := make(chan ReleaseGroup, 1)
-	registry.SetReleaseSink(func(group ReleaseGroup, _ int64) {
-		released <- group
-	})
-
-	done := make(chan error, 1)
-	go func() { done <- registry.Drain(context.Background()) }()
-	deadline := time.After(time.Second)
-	for State(registry.state.Load()) == StateAccepting {
-		select {
-		case <-deadline:
-			t.Fatal("registry did not begin draining")
-		default:
-			time.Sleep(time.Millisecond)
-		}
-	}
-
-	_, errInstall := registry.Install(pending, ScopeSpec{Accounted: true, CredentialID: "credential-a", Model: "model-a"})
-	if !errors.Is(errInstall, ErrRegistryNotAccepting) {
-		t.Fatalf("Install() error = %v, want ErrRegistryNotAccepting", errInstall)
-	}
-	select {
-	case group := <-released:
-		want := ReleaseGroup{CredentialID: "credential-a", Model: "model-a"}
-		if group != want {
-			t.Fatalf("release group = %#v, want %#v", group, want)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("late accounted dispatch was not released")
 	}
 	if errDrain := <-done; errDrain != nil {
 		t.Fatalf("Drain() error = %v", errDrain)

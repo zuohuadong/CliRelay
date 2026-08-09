@@ -3,6 +3,7 @@ package synthesizer
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	log "github.com/sirupsen/logrus"
 )
 
 // FileSynthesizer generates Auth entries from OAuth JSON files.
@@ -52,7 +54,11 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		if errRead != nil || len(data) == 0 {
 			continue
 		}
-		auths := synthesizeFileAuths(ctx, full, data)
+		auths, errSynthesize := synthesizeFileAuths(ctx, full, data)
+		if errSynthesize != nil {
+			log.WithError(errSynthesize).Warnf("skipping auth file %s", name)
+			continue
+		}
 		if len(auths) == 0 {
 			continue
 		}
@@ -63,7 +69,7 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 
 // SynthesizeAuthFile generates Auth entries for one auth JSON file payload.
 // It shares exactly the same mapping behavior as FileSynthesizer.Synthesize.
-func SynthesizeAuthFile(ctx *SynthesisContext, fullPath string, data []byte) []*coreauth.Auth {
+func SynthesizeAuthFile(ctx *SynthesisContext, fullPath string, data []byte) ([]*coreauth.Auth, error) {
 	return synthesizeFileAuths(ctx, fullPath, data)
 }
 
@@ -85,15 +91,18 @@ func resolveFileAuthKind(metadata map[string]any) string {
 	return coreauth.AuthKindOAuth
 }
 
-func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []*coreauth.Auth {
+func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([]*coreauth.Auth, error) {
 	if ctx == nil || len(data) == 0 {
-		return nil
+		return nil, nil
 	}
 	now := ctx.Now
 	cfg := ctx.Config
 	var metadata map[string]any
 	if errUnmarshal := json.Unmarshal(data, &metadata); errUnmarshal != nil {
-		return nil
+		return nil, nil
+	}
+	if errWeight := coreauth.ValidateAuthWeight(&coreauth.Auth{Metadata: metadata}); errWeight != nil {
+		return nil, fmt.Errorf("invalid weight in %s: %w", filepath.Base(fullPath), errWeight)
 	}
 	t, _ := metadata["type"].(string)
 	if strings.TrimSpace(t) == "" {
@@ -105,11 +114,6 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	} else if provider == coreauth.AuthKindAgentIdentity || provider == "agent-identity" {
 		provider = "codex"
 	}
-	// Codex CLI native exports wrap tokens under accounts[].credentials
-	// instead of flattening them at the top level. Expand the bundle into one
-	// metadata map per account so the rest of the synthesis (account_id/identity
-	// resolution, JWT plan_type, excluded models) runs for each account.
-	// expandCodexBundle returns nil for flat auth files (no accounts wrapper).
 	var codexAccounts []map[string]any
 	if provider == "codex" {
 		codexAccounts = expandCodexBundle(metadata)
@@ -124,7 +128,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 		if errParse == nil && handled {
 			auths = compactPluginAuths(auths)
 			if len(auths) == 0 {
-				return nil
+				return nil, nil
 			}
 			perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 			perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
@@ -152,18 +156,18 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 					}
 					auth.Metadata["disabled"] = true
 				}
+				if errWeight := coreauth.ApplyAuthWeightMetadata(auth, metadata); errWeight != nil {
+					return nil, fmt.Errorf("invalid plugin auth weight in %s: %w", filepath.Base(fullPath), errWeight)
+				}
 				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
 				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
-				if errWeight := coreauth.ApplyAuthWeightMetadata(auth); errWeight != nil {
-					auth.Attributes[coreauth.AttributeWeight] = "0"
-				}
 			}
-			return auths
+			return auths, nil
 		}
 	}
 	if provider == "" || provider == "gemini-cli" {
-		return nil
+		return nil, nil
 	}
 	// Use relative path under authDir as ID to stay consistent with the file-based token store.
 	baseID := fullPath
@@ -175,14 +179,14 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	if runtime.GOOS == "windows" {
 		baseID = strings.ToLower(baseID)
 	}
-	// When a Codex CLI native export expands into multiple accounts, synthesize
-	// one auth per account. Flat auth files (codexAccounts == nil) keep the
-	// original single-metadata path so behavior is unchanged.
 	if codexAccounts != nil {
 		out := make([]*coreauth.Auth, 0, len(codexAccounts))
 		multi := len(codexAccounts) > 1
-		for index, acct := range codexAccounts {
-			auth := synthesizeOneCodexAuth(ctx, fullPath, baseID, provider, acct, now)
+		for index, account := range codexAccounts {
+			auth, errAuth := synthesizeOneFileAuth(ctx, fullPath, baseID, provider, account, now)
+			if errAuth != nil {
+				return nil, errAuth
+			}
 			if auth == nil {
 				continue
 			}
@@ -192,22 +196,18 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			}
 			out = append(out, auth)
 		}
-		return out
+		return out, nil
 	}
-	auth := synthesizeOneCodexAuth(ctx, fullPath, baseID, provider, metadata, now)
-	if auth == nil {
-		return nil
+	auth, errAuth := synthesizeOneFileAuth(ctx, fullPath, baseID, provider, metadata, now)
+	if errAuth != nil || auth == nil {
+		return nil, errAuth
 	}
-	return []*coreauth.Auth{auth}
+	return []*coreauth.Auth{auth}, nil
 }
 
-// synthesizeOneCodexAuth builds a single Auth from one metadata map. It is the
-// shared implementation for both flat auth files and expanded bundle accounts so
-// per-account fields (email, priority, id_token, excluded models) resolve
-// against the correct account.
-func synthesizeOneCodexAuth(ctx *SynthesisContext, fullPath, baseID, provider string, metadata map[string]any, now time.Time) *coreauth.Auth {
+func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider string, metadata map[string]any, now time.Time) (*coreauth.Auth, error) {
 	if metadata == nil {
-		return nil
+		return nil, nil
 	}
 	cfg := ctx.Config
 	label := provider
@@ -231,6 +231,7 @@ func synthesizeOneCodexAuth(ctx *SynthesisContext, fullPath, baseID, provider st
 	if p, ok := metadata["proxy_url"].(string); ok {
 		proxyURL = p
 	}
+
 	prefix := ""
 	if rawPrefix, ok := metadata["prefix"].(string); ok {
 		trimmed := strings.TrimSpace(rawPrefix)
@@ -239,11 +240,13 @@ func synthesizeOneCodexAuth(ctx *SynthesisContext, fullPath, baseID, provider st
 			prefix = trimmed
 		}
 	}
+
 	disabled, _ := metadata["disabled"].(bool)
 	status := coreauth.StatusActive
 	if disabled {
 		status = coreauth.StatusDisabled
 	}
+
 	perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 	perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
 	a := &coreauth.Auth{
@@ -287,6 +290,9 @@ func synthesizeOneCodexAuth(ctx *SynthesisContext, fullPath, baseID, provider st
 			}
 		}
 	}
+	if errWeight := coreauth.ApplyAuthWeightMetadata(a, metadata); errWeight != nil {
+		return nil, fmt.Errorf("invalid auth weight in %s: %w", filepath.Base(fullPath), errWeight)
+	}
 	if rawNote, ok := metadata["note"]; ok {
 		if note, isStr := rawNote.(string); isStr {
 			if trimmed := strings.TrimSpace(note); trimmed != "" {
@@ -295,9 +301,6 @@ func synthesizeOneCodexAuth(ctx *SynthesisContext, fullPath, baseID, provider st
 		}
 	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
-	if errWeight := coreauth.ApplyAuthWeightMetadata(a); errWeight != nil {
-		a.Attributes[coreauth.AttributeWeight] = "0"
-	}
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
 	authKind := resolveFileAuthKind(metadata)
 	if provider == "openai-compatibility" && strings.TrimSpace(a.Attributes["api_key"]) != "" {
@@ -318,7 +321,7 @@ func synthesizeOneCodexAuth(ctx *SynthesisContext, fullPath, baseID, provider st
 			}
 		}
 	}
-	return a
+	return a, nil
 }
 
 func parsePluginFileAuths(parser PluginAuthParser, req pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
@@ -342,6 +345,9 @@ func compactPluginAuths(auths []*coreauth.Auth) []*coreauth.Auth {
 	out := auths[:0]
 	for _, auth := range auths {
 		if auth == nil {
+			continue
+		}
+		if errWeight := coreauth.ValidateAuthWeight(auth); errWeight != nil {
 			continue
 		}
 		out = append(out, auth)
@@ -416,9 +422,6 @@ func extractExcludedModelsFromMetadata(metadata map[string]any) []string {
 	return result
 }
 
-// codexBundleCredentialKeys are the credential fields promoted from a Codex CLI
-// native/Agent Identity export (accounts[].credentials) to top-level metadata
-// so the rest of the synthesis path resolves them like a flat auth file.
 var codexBundleCredentialKeys = []string{
 	"account_id", "id_token", "access_token", "refresh_token", "email",
 	"plan_type", "expired", "last_refresh", "token_type",
@@ -426,17 +429,6 @@ var codexBundleCredentialKeys = []string{
 	"agent_private_key", "agent_runtime_id", "auth_mode",
 }
 
-// expandCodexBundle detects the Codex CLI native/Agent Identity export format
-// from a non-empty accounts[].credentials array and returns one metadata map
-// per account with that account's credential fields promoted to the top level.
-// The returned maps share the top-level metadata as a base and overlay each
-// account's credentials (and per-account fields like priority/name/email) so the
-// rest of the synthesis (account_id/identity resolution, JWT plan_type, excluded
-// models) runs for every account.
-//
-// Returns nil for flat auth files (no accounts[].credentials wrapper) so the
-// caller keeps the original single-metadata path unchanged. Some exporters omit
-// the top-level version field, so the nested credential shape is authoritative.
 func expandCodexBundle(metadata map[string]any) []map[string]any {
 	if metadata == nil {
 		return nil
@@ -455,22 +447,17 @@ func expandCodexBundle(metadata map[string]any) []map[string]any {
 		if !ok || len(credentials) == 0 {
 			continue
 		}
-		// Clone the top-level metadata so each account gets its own map, then
-		// promote this account's credential fields (overriding top-level copies).
 		clone := make(map[string]any, len(metadata)+len(credentials)+4)
 		for key, value := range metadata {
 			clone[key] = value
 		}
 		for _, key := range codexBundleCredentialKeys {
-			if value, ok := credentials[key]; ok {
+			if value, exists := credentials[key]; exists {
 				clone[key] = value
 			}
 		}
-		// Promote per-account scalar fields that the synthesizer reads at the
-		// top level (priority/name/email/disabled). credentials.email already
-		// covers email; cover the rest here.
 		for _, key := range []string{"priority", "name", "disabled", "proxy_url", "prefix", "note"} {
-			if value, ok := account[key]; ok {
+			if value, exists := account[key]; exists {
 				if key == "disabled" {
 					sourceDisabled, _ := clone[key].(bool)
 					accountDisabled, _ := value.(bool)
@@ -480,8 +467,6 @@ func expandCodexBundle(metadata map[string]any) []map[string]any {
 				clone[key] = value
 			}
 		}
-		// Keep the raw accounts slice available for downstream readers, but the
-		// promoted credential fields are authoritative for this account.
 		out = append(out, clone)
 	}
 	if len(out) == 0 {

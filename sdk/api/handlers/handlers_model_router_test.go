@@ -93,6 +93,20 @@ type handlerDirectExecutorRouteHost struct {
 	stream       func(context.Context, string, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error)
 }
 
+type handlerSkipAwareDirectExecutorRouteHost struct {
+	handlerDirectExecutorRouteHost
+	routeSkip string
+}
+
+func (h *handlerSkipAwareDirectExecutorRouteHost) RouteModelExcept(ctx context.Context, req pluginapi.ModelRouteRequest, skipPluginID string) (pluginapi.ModelRouteResponse, bool) {
+	h.routeSkip = skipPluginID
+	return pluginapi.ModelRouteResponse{}, false
+}
+
+func (h *handlerSkipAwareDirectExecutorRouteHost) HasModelRoutersExcept(string) bool {
+	return h != nil && h.hasRouters
+}
+
 func (h *handlerDirectExecutorRouteHost) ExecutePluginExecutor(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
 	h.lastPluginID = pluginID
 	h.lastRequest = req
@@ -375,107 +389,6 @@ func TestApplyModelRouterSkipsHostsWithoutRouters(t *testing.T) {
 	}
 }
 
-func TestApplyModelRouterSkipsCodexImageGenerationChatByDefault(t *testing.T) {
-	host := &handlerRouterOnlyTestHost{hasRouters: true}
-	host.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
-		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "openai-compatible-custom-coding", TargetModel: "custom-gpt-5-5"}, true
-	}
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
-	handler.SetModelRouterHost(host)
-
-	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"draw","tools":[{"type":"image_generation"}]}`), false, modelExecutionOptions{})
-	if got.ExecutorPluginID != "" || got.Provider != "" || got.Model != "" {
-		t.Fatalf("applyModelRouter() = %#v, want no routing decision", got)
-	}
-	if !host.called {
-		t.Fatal("RouteModel was not called before filtering unsupported image_generation provider")
-	}
-}
-
-func TestApplyModelRouterAllowsCodexIdentityProviderForImageGeneration(t *testing.T) {
-	host := &handlerRouterOnlyTestHost{hasRouters: true}
-	host.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
-		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "openai-compatible-custom-coding", TargetModel: "custom-gpt-5-5"}, true
-	}
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.SetConfig(&internalconfig.Config{
-		OpenAICompatibility: []internalconfig.OpenAICompatibility{{
-			Name:                "custom-coding",
-			IdentityFingerprint: "codex",
-			Models:              []internalconfig.OpenAICompatibilityModel{{Name: "custom-gpt-5-5", Alias: "gpt-5.5"}},
-		}},
-	})
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
-	handler.SetModelRouterHost(host)
-
-	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"draw","tools":[{"type":"image_generation"}]}`), false, modelExecutionOptions{})
-	if got.Provider != "openai-compatible-custom-coding" || got.Model != "custom-gpt-5-5" {
-		t.Fatalf("applyModelRouter() = %#v, want codex-identity provider route", got)
-	}
-	if !host.called {
-		t.Fatal("RouteModel was not called")
-	}
-}
-
-func TestApplyModelRouterAllowsResponsesProviderForImageGeneration(t *testing.T) {
-	host := &handlerRouterOnlyTestHost{hasRouters: true}
-	host.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
-		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "openai-compatible-custom-coding", TargetModel: "custom-gpt-5-5"}, true
-	}
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.SetConfig(&internalconfig.Config{
-		OpenAICompatibility: []internalconfig.OpenAICompatibility{{
-			Name:             "custom-coding",
-			ResponseEndpoint: true,
-			Models:           []internalconfig.OpenAICompatibilityModel{{Name: "custom-gpt-5-5", Alias: "gpt-5.5"}},
-		}},
-	})
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
-	handler.SetModelRouterHost(host)
-
-	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"draw","tools":[{"type":"image_generation"}]}`), false, modelExecutionOptions{})
-	if got.Provider != "openai-compatible-custom-coding" || got.Model != "custom-gpt-5-5" {
-		t.Fatalf("applyModelRouter() = %#v, want responses-capable provider route", got)
-	}
-	if !host.called {
-		t.Fatal("RouteModel was not called")
-	}
-}
-
-func TestApplyModelRouterAllowsCodexTextChatByDefault(t *testing.T) {
-	host := &handlerRouterOnlyTestHost{hasRouters: true}
-	host.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
-		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "openai-compatible-custom-coding", TargetModel: "custom-gpt-5-5"}, true
-	}
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
-	handler.SetModelRouterHost(host)
-
-	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"hi"}`), false, modelExecutionOptions{})
-	if got.Provider != "openai-compatible-custom-coding" || got.Model != "custom-gpt-5-5" {
-		t.Fatalf("applyModelRouter() = %#v, want provider route", got)
-	}
-	if !host.called {
-		t.Fatal("RouteModel was not called for ordinary text chat")
-	}
-}
-
-func TestApplyModelRouterAllowsCodexImageGenerationPassthrough(t *testing.T) {
-	host := &handlerRouterOnlyTestHost{hasRouters: true}
-	host.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
-		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "openai-compatible-custom-coding", TargetModel: "custom-gpt-5-5"}, true
-	}
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{DisableImageGeneration: internalconfig.DisableImageGenerationPassthrough}, nil)
-	handler.SetModelRouterHost(host)
-
-	got := handler.applyModelRouter(context.Background(), "openai-response", "gpt-5.5", []byte(`{"model":"gpt-5.5","input":"draw","tools":[{"type":"image_generation"}]}`), false, modelExecutionOptions{})
-	if got.Provider != "openai-compatible-custom-coding" || got.Model != "custom-gpt-5-5" {
-		t.Fatalf("applyModelRouter() = %#v, want passthrough provider route", got)
-	}
-	if !host.called {
-		t.Fatal("RouteModel was not called when passthrough is configured")
-	}
-}
-
 // routeModelOnlyHost implements PluginModelRouterHost without HasModelRouters (conservative default).
 type routeModelOnlyHost struct {
 	called bool
@@ -562,6 +475,74 @@ func TestHandlerModelRouterRoutesStreamBeforeRequestDetails(t *testing.T) {
 	}
 	if host.lastOptions.Metadata[coreexecutor.RequestedModelMetadataKey] != originalModel {
 		t.Fatalf("requested model metadata = %#v, want original model", host.lastOptions.Metadata[coreexecutor.RequestedModelMetadataKey])
+	}
+}
+
+func TestPrepareStreamModelRouteReusesDecisionDuringExecution(t *testing.T) {
+	const model = "prepared-router-model"
+	const targetPluginID = "prepared-stream-plugin"
+	routeCalls := 0
+	host := &handlerDirectExecutorRouteHost{}
+	host.hasRouters = true
+	host.route = func(context.Context, pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		routeCalls++
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetExecutor, Target: targetPluginID}, true
+	}
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	handler.SetModelRouterHost(host)
+	body := []byte(`{"model":"prepared-router-model","stream":true}`)
+	ctx, routedToPlugin := handler.PrepareStreamModelRoute(context.Background(), "openai", model, body)
+	if !routedToPlugin {
+		t.Fatal("PrepareStreamModelRoute() did not detect plugin executor route")
+	}
+
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(ctx, "openai", model, body, "")
+	for range dataChan {
+	}
+	if errMsg := <-errChan; errMsg != nil {
+		t.Fatalf("ExecuteStreamWithAuthManager() error = %+v", errMsg)
+	}
+	if routeCalls != 1 {
+		t.Fatalf("model router calls = %d, want 1", routeCalls)
+	}
+	if host.lastPluginID != targetPluginID {
+		t.Fatalf("plugin id = %q, want %q", host.lastPluginID, targetPluginID)
+	}
+}
+
+func TestExecuteModelStreamDoesNotReusePreparedRouteWhenRouterPluginSkipped(t *testing.T) {
+	const originalModel = "prepared-router-model"
+	const mappedModel = "mapped-upstream-model"
+	const originPluginID = "origin-plugin"
+	host := &handlerSkipAwareDirectExecutorRouteHost{}
+	host.hasRouters = true
+	host.route = func(context.Context, pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetExecutor, Target: originPluginID}, true
+	}
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	handler.SetModelRouterHost(host)
+	body := []byte(`{"model":"prepared-router-model","stream":true}`)
+	ctx, routedToPlugin := handler.PrepareStreamModelRoute(context.Background(), "openai-response", originalModel, body)
+	if !routedToPlugin {
+		t.Fatal("PrepareStreamModelRoute() did not detect plugin executor route")
+	}
+
+	_, errMsg := handler.ExecuteModelStream(ctx, ModelExecutionRequest{
+		EntryProtocol:      "openai-response",
+		ExitProtocol:       "openai-response",
+		Model:              mappedModel,
+		Stream:             true,
+		Body:               []byte(`{"model":"mapped-upstream-model","stream":true}`),
+		SkipRouterPluginID: originPluginID,
+	})
+	if host.routeSkip != originPluginID {
+		t.Fatalf("router skip id = %q, want %q", host.routeSkip, originPluginID)
+	}
+	if host.lastPluginID == originPluginID {
+		t.Fatalf("plugin executor %q was re-entered despite SkipRouterPluginID", host.lastPluginID)
+	}
+	if errMsg == nil {
+		t.Fatal("ExecuteModelStream() error = nil, want normal provider resolution failure with empty auth manager")
 	}
 }
 

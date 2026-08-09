@@ -220,7 +220,12 @@ func (m *Manager) rememberResponseAffinity(binding responseAffinityBinding, payl
 }
 
 func responseAffinityScope(opts cliproxyexecutor.Options) string {
-	sessionID := ExtractSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	metadata := opts.Metadata
+	if _, ok := metadata[cliproxyexecutor.DerivedSessionIDMetadataKey]; ok {
+		metadata = cloneMetadata(metadata)
+		delete(metadata, cliproxyexecutor.DerivedSessionIDMetadataKey)
+	}
+	sessionID := ExtractSessionID(opts.Headers, opts.OriginalRequest, metadata)
 	if sessionID == "" || strings.HasPrefix(sessionID, "msg:") {
 		return ""
 	}

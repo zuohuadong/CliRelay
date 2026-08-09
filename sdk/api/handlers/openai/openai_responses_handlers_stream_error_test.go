@@ -13,116 +13,115 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
-func TestForwardResponsesStreamTerminalErrorSynthesizesAssistantMessageAndCompleted(t *testing.T) {
+// TestForwardResponsesStreamExposesOnlyClientErrors pins the SSE side: only
+// request-shape failures reach the client. Credential, quota and transport
+// failures end the stream silently so the client retries on its own.
+func TestForwardResponsesStreamExposesOnlyClientErrors(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
-	h := NewOpenAIResponsesAPIHandler(base)
 
-	recorder := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		t.Fatalf("expected gin writer to implement http.Flusher")
+	tests := []struct {
+		name        string
+		status      int
+		message     string
+		wantExposed bool
+	}{
+		{
+			name:        "bad request",
+			status:      http.StatusBadRequest,
+			message:     `{"error":{"type":"invalid_request","code":"cyber_policy","message":"blocked"}}`,
+			wantExposed: true,
+		},
+		{
+			// Observed in production: the same cyber_policy rejection arrives with 502
+			// when it is surfaced through the websocket disconnect channel.
+			name:        "cyber policy behind bad gateway status",
+			status:      http.StatusBadGateway,
+			message:     `{"error":{"type":"invalid_request","code":"cyber_policy","message":"This content was flagged for possible cybersecurity risk.","param":null}}`,
+			wantExposed: true,
+		},
+		{
+			name:        "context length exceeded behind bad gateway status",
+			status:      http.StatusBadGateway,
+			message:     `{"error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window."}}`,
+			wantExposed: true,
+		},
+		{name: "conflict", status: http.StatusConflict, message: "conflict", wantExposed: true},
+		{name: "message too big", status: http.StatusRequestEntityTooLarge, message: "too large", wantExposed: true},
+		{name: "unprocessable entity", status: http.StatusUnprocessableEntity, message: "invalid input", wantExposed: true},
+		{name: "authentication", status: http.StatusUnauthorized, message: "invalid credential"},
+		{name: "payment required", status: http.StatusPaymentRequired, message: "insufficient credits"},
+		{name: "quota error", status: http.StatusTooManyRequests, message: "usage limit reached"},
+		{name: "request timeout", status: http.StatusRequestTimeout, message: "upstream timeout"},
+		{name: "transport error", status: http.StatusInternalServerError, message: "unexpected EOF"},
+		{name: "upstream websocket drop", status: http.StatusInternalServerError,
+			message: `{"error":{"message":"websocket: close 1006 (abnormal closure): unexpected EOF","type":"server_error","code":"internal_server_error"}}`},
 	}
 
-	data := make(chan []byte)
-	errs := make(chan *interfaces.ErrorMessage, 1)
-	errs <- &interfaces.ErrorMessage{StatusCode: http.StatusInternalServerError, Error: errors.New("unexpected EOF")}
-	close(errs)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+			h := NewOpenAIResponsesAPIHandler(base)
 
-	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
-	body := recorder.Body.String()
-	if !strings.Contains(body, "event: response.output_item.done") {
-		t.Fatalf("expected output_item.done event, got: %q", body)
-	}
-	if !strings.Contains(body, "event: response.completed") {
-		t.Fatalf("expected response.completed event, got: %q", body)
-	}
-	if !strings.Contains(body, `"type":"response.completed"`) {
-		t.Fatalf("expected response.completed payload, got: %q", body)
-	}
-	if !strings.Contains(body, `"type":"message"`) {
-		t.Fatalf("expected assistant message payload, got: %q", body)
-	}
-	if !strings.Contains(body, `Upstream request failed`) {
-		t.Fatalf("expected fallback error text, got: %q", body)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+			flusher, ok := c.Writer.(http.Flusher)
+			if !ok {
+				t.Fatal("expected gin writer to implement http.Flusher")
+			}
+
+			data := make(chan []byte)
+			errs := make(chan *interfaces.ErrorMessage, 1)
+			errs <- &interfaces.ErrorMessage{StatusCode: tc.status, Error: errors.New(tc.message)}
+			close(errs)
+
+			h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
+			body := recorder.Body.String()
+			exposed := strings.Contains(body, `"type":"error"`)
+			if exposed != tc.wantExposed {
+				t.Fatalf("error exposed = %t, want %t: %q", exposed, tc.wantExposed, body)
+			}
+			if exposed && strings.Contains(body, `"error":{`) {
+				t.Fatalf("expected streaming error chunk, got HTTP error body: %q", body)
+			}
+		})
 	}
 }
 
-func TestForwardResponsesStreamOverloadedErrorWritesFailed(t *testing.T) {
+func TestForwardResponsesStreamUsesResponseFailedForCodex(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+
 	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 	h := NewOpenAIResponsesAPIHandler(base)
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("User-Agent", "Codex Desktop/26.803.41515")
 
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
-		t.Fatalf("expected gin writer to implement http.Flusher")
+		t.Fatal("expected gin writer to implement http.Flusher")
 	}
 
 	data := make(chan []byte)
 	errs := make(chan *interfaces.ErrorMessage, 1)
 	errs <- &interfaces.ErrorMessage{
-		StatusCode: http.StatusServiceUnavailable,
-		Error:      errors.New(`{"error":{"code":"server_is_overloaded","type":"service_unavailable_error","message":"Our servers are currently overloaded. Please try again later."}}`),
+		StatusCode: http.StatusBadRequest,
+		Error:      errors.New(`{"error":{"type":"invalid_request","code":"cyber_policy","message":"blocked"}}`),
 	}
 	close(errs)
 
 	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
 	body := recorder.Body.String()
 	if !strings.Contains(body, "event: response.failed") {
-		t.Fatalf("expected response.failed event, got: %q", body)
+		t.Fatalf("missing response.failed event: %q", body)
 	}
-	if !strings.Contains(body, `"type":"response.failed"`) {
-		t.Fatalf("expected response.failed payload, got: %q", body)
+	if strings.Contains(body, "event: error") {
+		t.Fatalf("unexpected legacy error event for Codex: %q", body)
 	}
-	if !strings.Contains(body, `"code":"server_is_overloaded"`) {
-		t.Fatalf("expected server_is_overloaded code, got: %q", body)
-	}
-	if strings.Contains(body, "event: response.completed") || strings.Contains(body, "event: response.output_item.done") {
-		t.Fatalf("overload must not synthesize completed output, got: %q", body)
-	}
-}
-
-func TestForwardResponsesStreamTerminalContextErrorWritesFailed(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
-	h := NewOpenAIResponsesAPIHandler(base)
-
-	recorder := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		t.Fatalf("expected gin writer to implement http.Flusher")
-	}
-
-	data := make(chan []byte)
-	errs := make(chan *interfaces.ErrorMessage, 1)
-	errs <- &interfaces.ErrorMessage{
-		StatusCode: http.StatusRequestEntityTooLarge,
-		Error:      errors.New(`{"error":{"message":"request policy glm-5.1-large-request-guard blocked upstream model glm-5.1 via provider bigmodel-coding: request_bytes 706275 exceeds max-request-bytes 600000","type":"invalid_request_error","code":"context_length_exceeded"}}`),
-	}
-	close(errs)
-
-	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
-	body := recorder.Body.String()
-	if !strings.Contains(body, "event: response.failed") {
-		t.Fatalf("expected response.failed event, got: %q", body)
-	}
-	if !strings.Contains(body, `"type":"response.failed"`) {
-		t.Fatalf("expected response.failed payload, got: %q", body)
-	}
-	if strings.Contains(body, "event: response.output_item.done") || strings.Contains(body, "event: response.completed") {
-		t.Fatalf("context window terminal error must not synthesize completed output, got: %q", body)
-	}
-	if !strings.Contains(body, `context_length_exceeded`) {
-		t.Fatalf("expected context_length_exceeded marker in failed payload, got: %q", body)
+	if !strings.Contains(body, `"type":"invalid_request"`) || !strings.Contains(body, `"code":"cyber_policy"`) {
+		t.Fatalf("missing nested Codex error detail: %q", body)
 	}
 }

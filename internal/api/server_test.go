@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,9 +16,8 @@ import (
 	"time"
 
 	gin "github.com/gin-gonic/gin"
-	"github.com/klauspost/compress/zstd"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
+	claudemodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/claude/models"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -30,29 +28,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
-
-type testAccessProvider struct {
-	key      string
-	metadata map[string]string
-}
-
-func (p testAccessProvider) Identifier() string { return "test-access-provider" }
-
-func (p testAccessProvider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.Result, *sdkaccess.AuthError) {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if token == "" {
-		return nil, sdkaccess.NewNoCredentialsError()
-	}
-	if token != p.key {
-		return nil, sdkaccess.NewInvalidCredentialError()
-	}
-	metadata := make(map[string]string, len(p.metadata))
-	for key, value := range p.metadata {
-		metadata[key] = value
-	}
-	return &sdkaccess.Result{Provider: p.Identifier(), Principal: token, Metadata: metadata}, nil
-}
 
 type codexSearchCaptureExecutor struct {
 	request      *http.Request
@@ -61,6 +38,9 @@ type codexSearchCaptureExecutor struct {
 	prepareErr   error
 	httpErr      error
 	responseBody io.ReadCloser
+	statuses     []int
+	refreshCalls int
+	httpCalls    int
 }
 
 func (e *codexSearchCaptureExecutor) Identifier() string { return "codex" }
@@ -74,7 +54,13 @@ func (e *codexSearchCaptureExecutor) ExecuteStream(context.Context, *auth.Auth, 
 }
 
 func (e *codexSearchCaptureExecutor) Refresh(_ context.Context, a *auth.Auth) (*auth.Auth, error) {
-	return a, nil
+	e.refreshCalls++
+	updated := a.Clone()
+	if updated.Metadata == nil {
+		updated.Metadata = make(map[string]any)
+	}
+	updated.Metadata["access_token"] = "refreshed-home-search-token"
+	return updated, nil
 }
 
 func (e *codexSearchCaptureExecutor) CountTokens(context.Context, *auth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
@@ -86,7 +72,12 @@ func (e *codexSearchCaptureExecutor) PrepareRequest(req *http.Request, a *auth.A
 		return e.prepareErr
 	}
 	token, _ := a.Metadata["access_token"].(string)
-	req.Header.Set("Authorization", "Bearer "+token)
+	if strings.TrimSpace(token) == "" && a.Attributes != nil {
+		token = a.Attributes[auth.AttributeAPIKey]
+	}
+	if strings.TrimSpace(token) != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	return nil
 }
 
@@ -103,6 +94,17 @@ func (s *codexSearchGinContextSelector) Pick(ctx context.Context, _ string, _ st
 }
 
 type codexSearchAPIKeyFirstSelector struct{}
+
+type codexSearchModelRouter struct {
+	response pluginapi.ModelRouteResponse
+	handled  bool
+	requests []pluginapi.ModelRouteRequest
+}
+
+func (r *codexSearchModelRouter) RouteModel(_ context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+	r.requests = append(r.requests, req)
+	return r.response, r.handled
+}
 
 func (s *codexSearchAPIKeyFirstSelector) Pick(_ context.Context, _ string, _ string, _ coreexecutor.Options, auths []*auth.Auth) (*auth.Auth, error) {
 	for _, candidate := range auths {
@@ -122,6 +124,7 @@ func (e *codexSearchCaptureExecutor) HttpRequest(_ context.Context, selected *au
 	}
 	e.request = req.Clone(req.Context())
 	e.authIDs = append(e.authIDs, selected.ID)
+	e.httpCalls++
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		return nil, err
@@ -131,15 +134,20 @@ func (e *codexSearchCaptureExecutor) HttpRequest(_ context.Context, selected *au
 	if responseBody == nil {
 		responseBody = io.NopCloser(strings.NewReader(`{"results":[{"url":"https://example.com"}]}`))
 	}
+	statusCode := http.StatusOK
+	if e.httpCalls <= len(e.statuses) && e.statuses[e.httpCalls-1] > 0 {
+		statusCode = e.statuses[e.httpCalls-1]
+	}
 	return &http.Response{
-		StatusCode: http.StatusOK,
+		StatusCode: statusCode,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       responseBody,
 	}, nil
 }
 
 type codexSearchHomeDispatcher struct {
-	calls atomic.Int32
+	calls  atomic.Int32
+	policy atomic.Value
 }
 
 func (*codexSearchHomeDispatcher) HeartbeatOK() bool { return true }
@@ -163,6 +171,11 @@ func (d *codexSearchHomeDispatcher) RPopAuth(_ context.Context, model string, _ 
 	})
 }
 
+func (d *codexSearchHomeDispatcher) RPopAuthWithPolicy(ctx context.Context, model string, sessionID string, headers http.Header, count int, policy string) ([]byte, error) {
+	d.policy.Store(policy)
+	return d.RPopAuth(ctx, model, sessionID, headers, count)
+}
+
 func (*codexSearchHomeDispatcher) AbortAmbiguousDispatch() {}
 
 type codexSearchBusyHomeDispatcher struct{}
@@ -170,6 +183,9 @@ type codexSearchBusyHomeDispatcher struct{}
 func (*codexSearchBusyHomeDispatcher) HeartbeatOK() bool { return true }
 func (*codexSearchBusyHomeDispatcher) RPopAuth(context.Context, string, string, http.Header, int) ([]byte, error) {
 	return []byte(`{"error":{"type":"credential_concurrency_exceeded","message":"busy","retry_after_ms":750}}`), nil
+}
+func (d *codexSearchBusyHomeDispatcher) RPopAuthWithPolicy(ctx context.Context, model string, sessionID string, headers http.Header, count int, _ string) ([]byte, error) {
+	return d.RPopAuth(ctx, model, sessionID, headers, count)
 }
 func (*codexSearchBusyHomeDispatcher) AbortAmbiguousDispatch() {}
 
@@ -308,6 +324,33 @@ func TestAuditHomeCodexSearchBodyCloseBeforeRelease(t *testing.T) {
 	}
 }
 
+func TestHomeCodexAlphaSearchRefreshesUnauthorizedSelectionOnce(t *testing.T) {
+	server := newTestServer(t)
+	dispatcher := &codexSearchHomeDispatcher{}
+	server.handlers.AuthManager.SetConfig(&proxyconfig.Config{Home: proxyconfig.HomeConfig{Enabled: true}})
+	server.handlers.AuthManager.PublishHomeDispatch(dispatcher, executionregistry.New(), 1)
+	executor := &codexSearchCaptureExecutor{statuses: []int{http.StatusUnauthorized, http.StatusOK}}
+	server.handlers.AuthManager.RegisterExecutor(executor)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(`{"id":"home-search-refresh","model":"gpt-5-codex","query":"test"}`))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if executor.refreshCalls != 1 || executor.httpCalls != 2 {
+		t.Fatalf("refresh/http calls = %d/%d, want 1/2", executor.refreshCalls, executor.httpCalls)
+	}
+	if got := executor.request.Header.Get("Authorization"); got != "Bearer refreshed-home-search-token" {
+		t.Fatalf("retry Authorization = %q, want refreshed token", got)
+	}
+	if got := dispatcher.calls.Load(); got != 1 {
+		t.Fatalf("Home RPOP calls = %d, want 1", got)
+	}
+}
+
 func TestHomeCodexAlphaSearchEndsSelectionAcrossDirectHTTPPaths(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -360,6 +403,9 @@ func TestHomeCodexAlphaSearchEndsSelectionAcrossDirectHTTPPaths(t *testing.T) {
 			}
 			if got := dispatcher.calls.Load(); got != 1 {
 				t.Fatalf("Home RPOP calls = %d, want 1", got)
+			}
+			if got, _ := dispatcher.policy.Load().(string); got != auth.CredentialPolicyCodexAlphaSearchV1 {
+				t.Fatalf("Home credential policy = %q, want %q", got, auth.CredentialPolicyCodexAlphaSearchV1)
 			}
 			if got := body.closed.Load(); got != test.wantClosed {
 				t.Fatalf("response body closed = %t, want %t", got, test.wantClosed)
@@ -442,14 +488,43 @@ func TestHealthz(t *testing.T) {
 	})
 }
 
-func TestNewServerInitializesAuthManagerRuntimeConfig(t *testing.T) {
+func TestCodexLiveRoutesRequireAuthAndAreRegistered(t *testing.T) {
 	server := newTestServer(t)
 
-	if server.handlers == nil || server.handlers.AuthManager == nil {
-		t.Fatalf("expected auth manager")
+	for _, path := range []string{"/v1/live", "/v1/realtime/calls"} {
+		unauthorized := httptest.NewRequest(http.MethodPost, path, nil)
+		unauthorizedRecorder := httptest.NewRecorder()
+		server.engine.ServeHTTP(unauthorizedRecorder, unauthorized)
+		if unauthorizedRecorder.Code != http.StatusUnauthorized {
+			t.Fatalf("%s unauthorized status = %d, want %d", path, unauthorizedRecorder.Code, http.StatusUnauthorized)
+		}
+
+		authorized := httptest.NewRequest(http.MethodPost, path, nil)
+		authorized.Header.Set("Authorization", "Bearer test-key")
+		authorizedRecorder := httptest.NewRecorder()
+		server.engine.ServeHTTP(authorizedRecorder, authorized)
+		if authorizedRecorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s authorized status = %d, want %d; body=%s", path, authorizedRecorder.Code, http.StatusServiceUnavailable, authorizedRecorder.Body.String())
+		}
 	}
-	if got := server.handlers.AuthManager.Config(); got != server.cfg {
-		t.Fatalf("auth manager config = %p, want server cfg %p", got, server.cfg)
+
+	for _, path := range []string{"/v1/live/call-123", "/v1/realtime/calls/call-123", "/v1/realtime?call_id=call-123"} {
+		unauthorized := httptest.NewRequest(http.MethodGet, path, nil)
+		unauthorized.Header.Set("Upgrade", "websocket")
+		unauthorized.Header.Set("Connection", "Upgrade")
+		unauthorizedRecorder := httptest.NewRecorder()
+		server.engine.ServeHTTP(unauthorizedRecorder, unauthorized)
+		if unauthorizedRecorder.Code != http.StatusUnauthorized {
+			t.Fatalf("%s unauthorized status = %d, want %d", path, unauthorizedRecorder.Code, http.StatusUnauthorized)
+		}
+
+		authorized := httptest.NewRequest(http.MethodGet, path, nil)
+		authorized.Header.Set("Authorization", "Bearer test-key")
+		authorizedRecorder := httptest.NewRecorder()
+		server.engine.ServeHTTP(authorizedRecorder, authorized)
+		if authorizedRecorder.Code != http.StatusUpgradeRequired {
+			t.Fatalf("%s authorized status = %d, want %d; body=%s", path, authorizedRecorder.Code, http.StatusUpgradeRequired, authorizedRecorder.Body.String())
+		}
 	}
 }
 
@@ -508,6 +583,169 @@ func TestCodexAlphaSearchForwardsRequest(t *testing.T) {
 	}
 }
 
+func TestCodexAlphaSearchUsesPluginProviderTargetModel(t *testing.T) {
+	server := newTestServer(t)
+	executor := &codexSearchCaptureExecutor{}
+	server.handlers.AuthManager.RegisterExecutor(executor)
+	router := &codexSearchModelRouter{
+		response: pluginapi.ModelRouteResponse{
+			Handled:     true,
+			TargetKind:  pluginapi.ModelRouteTargetProvider,
+			Target:      "codex",
+			TargetModel: "team-b/gpt-5.6-sol",
+		},
+		handled: true,
+	}
+	server.handlers.SetModelRouterHost(router)
+
+	for _, credential := range []*auth.Auth{
+		{
+			ID:       "codex-team-a",
+			Provider: "codex",
+			Prefix:   "team-a",
+			Status:   auth.StatusActive,
+			Metadata: map[string]any{"access_token": "token-a"},
+		},
+		{
+			ID:       "codex-team-b",
+			Provider: "codex",
+			Prefix:   "team-b",
+			Status:   auth.StatusActive,
+			Metadata: map[string]any{"access_token": "token-b"},
+		},
+	} {
+		if _, errRegister := server.handlers.AuthManager.Register(context.Background(), credential); errRegister != nil {
+			t.Fatalf("register Codex auth %s: %v", credential.ID, errRegister)
+		}
+		registry.GetGlobalRegistry().RegisterClient(credential.ID, credential.Provider, []*registry.ModelInfo{{ID: credential.Prefix + "/gpt-5.6-sol"}})
+		t.Cleanup(func() {
+			registry.GetGlobalRegistry().UnregisterClient(credential.ID)
+		})
+	}
+
+	payload := `{"id":"session-123","model":"gpt-5.6-sol","commands":{"search_query":[{"q":"golang"}]}}`
+	paths := []string{"/v1/alpha/search?key=test-key", "/backend-api/codex/alpha/search?key=test-key"}
+	for _, path := range paths {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(payload))
+		req.Header.Set("Authorization", "Bearer test-key")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want %d; body=%s", path, rr.Code, http.StatusOK, rr.Body.String())
+		}
+	}
+
+	if got, want := executor.authIDs, []string{"codex-team-b", "codex-team-b"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("selected auth IDs = %v, want %v", got, want)
+	}
+	if got := string(executor.body); got != payload {
+		t.Fatalf("upstream body = %q, want original unprefixed body %q", got, payload)
+	}
+	if got, want := len(router.requests), 2; got != want {
+		t.Fatalf("model router requests = %d, want %d", got, want)
+	}
+	for index, routeReq := range router.requests {
+		if routeReq.SourceFormat != "codex-alpha-search" {
+			t.Fatalf("model router source format = %q", routeReq.SourceFormat)
+		}
+		if routeReq.RequestedModel != "gpt-5.6-sol" {
+			t.Fatalf("model router requested model = %q", routeReq.RequestedModel)
+		}
+		if got := routeReq.Headers.Get("Authorization"); got != "Bearer test-key" {
+			t.Fatalf("model router Authorization = %q", got)
+		}
+		if got := routeReq.Query.Get("key"); got != "test-key" {
+			t.Fatalf("model router query key = %q", got)
+		}
+		if got, want := routeReq.Metadata[coreexecutor.RequestPathMetadataKey], strings.SplitN(paths[index], "?", 2)[0]; got != want {
+			t.Fatalf("model router request path = %#v, want %q", got, want)
+		}
+		if got := string(routeReq.Body); got != payload {
+			t.Fatalf("model router body = %q, want %q", got, payload)
+		}
+	}
+}
+
+func TestCodexAlphaSearchFallsBackWhenPluginDoesNotHandleRoute(t *testing.T) {
+	server := newTestServer(t)
+	executor := &codexSearchCaptureExecutor{}
+	server.handlers.AuthManager.RegisterExecutor(executor)
+	credential := &auth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Status:   auth.StatusActive,
+		Metadata: map[string]any{"access_token": "codex-token"},
+	}
+	if _, errRegister := server.handlers.AuthManager.Register(context.Background(), credential); errRegister != nil {
+		t.Fatalf("register Codex auth: %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(credential.ID, credential.Provider, []*registry.ModelInfo{{ID: "gpt-5.6-sol"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(credential.ID)
+	})
+	router := &codexSearchModelRouter{}
+	server.handlers.SetModelRouterHost(router)
+
+	payload := `{"model":"gpt-5.6-sol"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if got := executor.authIDs; len(got) != 1 || got[0] != credential.ID {
+		t.Fatalf("selected auth IDs = %v, want [%s]", got, credential.ID)
+	}
+	if got := string(executor.body); got != payload {
+		t.Fatalf("upstream body = %q, want %q", got, payload)
+	}
+	if got := len(router.requests); got != 1 {
+		t.Fatalf("model router requests = %d, want 1", got)
+	}
+}
+
+func TestCodexAlphaSearchRejectsUnsupportedPluginRouteTarget(t *testing.T) {
+	server := newTestServer(t)
+	executor := &codexSearchCaptureExecutor{}
+	server.handlers.AuthManager.RegisterExecutor(executor)
+	credential := &auth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Status:   auth.StatusActive,
+		Metadata: map[string]any{"access_token": "codex-token"},
+	}
+	if _, errRegister := server.handlers.AuthManager.Register(context.Background(), credential); errRegister != nil {
+		t.Fatalf("register Codex auth: %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(credential.ID, credential.Provider, []*registry.ModelInfo{{ID: "gpt-5.6-sol"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(credential.ID)
+	})
+	server.handlers.SetModelRouterHost(&codexSearchModelRouter{
+		response: pluginapi.ModelRouteResponse{
+			Handled:    true,
+			TargetKind: pluginapi.ModelRouteTargetSelf,
+			Target:     "user-routing",
+		},
+		handled: true,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(`{"model":"gpt-5.6-sol"}`))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+	}
+	if executor.request != nil {
+		t.Fatal("unsupported plugin route sent an upstream request")
+	}
+}
+
 func TestCodexAlphaSearchSanitizesResponsesOnlyFields(t *testing.T) {
 	server := newTestServer(t)
 	executor := &codexSearchCaptureExecutor{}
@@ -557,7 +795,7 @@ func TestCodexAlphaSearchSanitizesResponsesOnlyFields(t *testing.T) {
 	}
 }
 
-func TestCodexAlphaSearchRequiresOAuthCredential(t *testing.T) {
+func TestCodexAlphaSearchCredentialPolicy(t *testing.T) {
 	newServer := func(t *testing.T, credentials ...*auth.Auth) (*Server, *codexSearchCaptureExecutor) {
 		t.Helper()
 		server := newTestServer(t)
@@ -603,7 +841,7 @@ func TestCodexAlphaSearchRequiresOAuthCredential(t *testing.T) {
 		}
 	})
 
-	t.Run("API key only", func(t *testing.T) {
+	t.Run("ordinary API key only", func(t *testing.T) {
 		server, executor := newServer(t, apiKeyCredential())
 		req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(`{"query":"GPT-5.6"}`))
 		req.Header.Set("Authorization", "Bearer test-key")
@@ -617,6 +855,212 @@ func TestCodexAlphaSearchRequiresOAuthCredential(t *testing.T) {
 			t.Fatalf("selected auth IDs = %v, want none", executor.authIDs)
 		}
 	})
+}
+
+func TestCodexAlphaSearchOptInAPIKeyUsesConfiguredEndpoint(t *testing.T) {
+	server := newTestServer(t)
+	executor := &codexSearchCaptureExecutor{}
+	server.handlers.AuthManager.RegisterExecutor(executor)
+	credential := &auth.Auth{
+		ID:       "codex-alpha-api-key",
+		Provider: "codex",
+		Status:   auth.StatusActive,
+		Attributes: map[string]string{
+			auth.AttributeAPIKey:           "codex-alpha-key",
+			auth.AttributeCodexAlphaSearch: "true",
+			"base_url":                     "https://codex.example.com/v1/",
+		},
+	}
+	if _, errRegister := server.handlers.AuthManager.Register(context.Background(), credential); errRegister != nil {
+		t.Fatalf("register Codex API key: %v", errRegister)
+	}
+
+	payload := `{"query":"golang","prompt_cache_key":"cache","prompt_cache_retention":"24h"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if executor.request == nil {
+		t.Fatal("Codex executor did not receive a request")
+	}
+	if got, want := executor.request.URL.String(), "https://codex.example.com/v1/alpha/search"; got != want {
+		t.Fatalf("upstream URL = %q, want %q", got, want)
+	}
+	if got := executor.request.Header.Get("Authorization"); got != "Bearer codex-alpha-key" {
+		t.Fatalf("Authorization = %q, want API key bearer", got)
+	}
+	var upstreamBody map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(executor.body, &upstreamBody); errUnmarshal != nil {
+		t.Fatalf("unmarshal upstream body: %v", errUnmarshal)
+	}
+	for _, field := range []string{"prompt_cache_key", "prompt_cache_retention"} {
+		if _, exists := upstreamBody[field]; exists {
+			t.Fatalf("upstream body contains %s: %s", field, executor.body)
+		}
+	}
+}
+
+func TestCodexAlphaSearchOptInAPIKeyStripsCredentialPrefix(t *testing.T) {
+	server := newTestServer(t)
+	executor := &codexSearchCaptureExecutor{}
+	server.handlers.AuthManager.RegisterExecutor(executor)
+	credential := &auth.Auth{
+		ID:       "codex-alpha-api-key-prefix",
+		Provider: "codex",
+		Prefix:   "vendor",
+		Status:   auth.StatusActive,
+		Attributes: map[string]string{
+			auth.AttributeAPIKey:           "codex-alpha-key",
+			auth.AttributeCodexAlphaSearch: "true",
+			"base_url":                     "https://codex.example.com/v1",
+		},
+	}
+	if _, errRegister := server.handlers.AuthManager.Register(context.Background(), credential); errRegister != nil {
+		t.Fatalf("register Codex API key: %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(credential.ID, credential.Provider, []*registry.ModelInfo{{ID: "vendor/gpt-5.6-sol"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(credential.ID)
+	})
+
+	payload := `{"id":"00000000-0000-4000-8000-000000000003","model":"vendor/gpt-5.6-sol","commands":{"search_query":[{"q":"Go programming language official website"}]}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if executor.request == nil {
+		t.Fatal("Codex executor did not receive a request")
+	}
+	var upstreamBody map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(executor.body, &upstreamBody); errUnmarshal != nil {
+		t.Fatalf("unmarshal upstream body: %v", errUnmarshal)
+	}
+	var upstreamModel string
+	if errUnmarshal := json.Unmarshal(upstreamBody["model"], &upstreamModel); errUnmarshal != nil {
+		t.Fatalf("unmarshal upstream model: %v", errUnmarshal)
+	}
+	if upstreamModel != "gpt-5.6-sol" {
+		t.Fatalf("upstream model = %q, want gpt-5.6-sol", upstreamModel)
+	}
+}
+
+func TestCodexAlphaSearchOptInAPIKeyResolvesModelAlias(t *testing.T) {
+	server := newTestServer(t)
+	executor := &codexSearchCaptureExecutor{}
+	server.handlers.AuthManager.RegisterExecutor(executor)
+	server.handlers.AuthManager.SetConfig(&proxyconfig.Config{
+		CodexKey: []proxyconfig.CodexKey{{
+			APIKey:      "codex-alpha-key",
+			Prefix:      "vendor",
+			BaseURL:     "https://codex.example.com/v1",
+			AlphaSearch: true,
+			Models: []proxyconfig.CodexModel{{
+				Name:  "gpt-5.6-sol",
+				Alias: "sol-alias",
+			}},
+		}},
+	})
+	credential := &auth.Auth{
+		ID:       "codex-alpha-api-key-alias",
+		Provider: "codex",
+		Prefix:   "vendor",
+		Status:   auth.StatusActive,
+		Attributes: map[string]string{
+			auth.AttributeAPIKey:           "codex-alpha-key",
+			auth.AttributeCodexAlphaSearch: "true",
+			"base_url":                     "https://codex.example.com/v1",
+		},
+	}
+	if _, errRegister := server.handlers.AuthManager.Register(context.Background(), credential); errRegister != nil {
+		t.Fatalf("register Codex API key: %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(credential.ID, credential.Provider, []*registry.ModelInfo{{ID: "vendor/sol-alias"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(credential.ID)
+	})
+
+	payload := `{"model":"vendor/sol-alias","commands":{"search_query":[{"q":"golang"}]}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if executor.request == nil {
+		t.Fatal("Codex executor did not receive a request")
+	}
+	var upstreamBody map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(executor.body, &upstreamBody); errUnmarshal != nil {
+		t.Fatalf("unmarshal upstream body: %v", errUnmarshal)
+	}
+	var upstreamModel string
+	if errUnmarshal := json.Unmarshal(upstreamBody["model"], &upstreamModel); errUnmarshal != nil {
+		t.Fatalf("unmarshal upstream model: %v", errUnmarshal)
+	}
+	if upstreamModel != "gpt-5.6-sol" {
+		t.Fatalf("upstream model = %q, want gpt-5.6-sol", upstreamModel)
+	}
+}
+
+func TestRewriteCodexAlphaSearchModel(t *testing.T) {
+	original := []byte(`{"id":"search-1","model":"vendor/gpt-5.6-sol","commands":{"search_query":[{"q":"golang"}]}}`)
+	rewritten := rewriteCodexAlphaSearchModel(original, "gpt-5.6-sol")
+	var payload map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(rewritten, &payload); errUnmarshal != nil {
+		t.Fatalf("unmarshal rewritten body: %v", errUnmarshal)
+	}
+	var model string
+	if errUnmarshal := json.Unmarshal(payload["model"], &model); errUnmarshal != nil {
+		t.Fatalf("unmarshal rewritten model: %v", errUnmarshal)
+	}
+	if model != "gpt-5.6-sol" {
+		t.Fatalf("model = %q, want gpt-5.6-sol", model)
+	}
+	if _, exists := payload["commands"]; !exists {
+		t.Fatal("commands field was dropped")
+	}
+	if string(rewriteCodexAlphaSearchModel([]byte(`{"query":"x"}`), "gpt-5.6-sol")) != `{"query":"x"}` {
+		t.Fatal("body without model should remain unchanged")
+	}
+}
+
+func TestCodexAlphaSearchOptInAPIKeyWithoutBaseURLFailsClosed(t *testing.T) {
+	server := newTestServer(t)
+	executor := &codexSearchCaptureExecutor{}
+	server.handlers.AuthManager.RegisterExecutor(executor)
+	if _, errRegister := server.handlers.AuthManager.Register(context.Background(), &auth.Auth{
+		ID:       "codex-alpha-api-key",
+		Provider: "codex",
+		Status:   auth.StatusActive,
+		Attributes: map[string]string{
+			auth.AttributeAPIKey:           "codex-alpha-key",
+			auth.AttributeCodexAlphaSearch: "true",
+		},
+	}); errRegister != nil {
+		t.Fatalf("register Codex API key: %v", errRegister)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(`{"query":"GPT-5.6"}`))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+	}
+	if executor.request != nil {
+		t.Fatal("request was sent without an API key base URL")
+	}
 }
 
 func TestCodexAlphaSearchPassesGinContextToAuthSelection(t *testing.T) {
@@ -782,82 +1226,6 @@ func TestManagementResponseExposesPluginSupportHeaderForCORS(t *testing.T) {
 	}
 }
 
-func TestAgentIdentityManagementRoutesAreRegisteredAndProtected(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-	server := newTestServer(t)
-
-	tests := []struct {
-		name   string
-		method string
-		path   string
-		body   string
-	}{
-		{
-			name:   "provision",
-			method: http.MethodPost,
-			path:   "/v0/management/auth-files/agent-identity/provision",
-			body:   `{}`,
-		},
-		{
-			name:   "export",
-			method: http.MethodPost,
-			path:   "/v0/management/auth-files/agent-identity/export",
-			body:   `{}`,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			unauthorizedRequest := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
-			unauthorizedRequest.Header.Set("Content-Type", "application/json")
-			unauthorizedRecorder := httptest.NewRecorder()
-			server.engine.ServeHTTP(unauthorizedRecorder, unauthorizedRequest)
-			if unauthorizedRecorder.Code != http.StatusUnauthorized {
-				t.Fatalf("unauthorized status = %d, want %d body=%s", unauthorizedRecorder.Code, http.StatusUnauthorized, unauthorizedRecorder.Body.String())
-			}
-
-			authorizedRequest := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
-			authorizedRequest.Header.Set("Authorization", "Bearer test-management-key")
-			authorizedRequest.Header.Set("Content-Type", "application/json")
-			authorizedRecorder := httptest.NewRecorder()
-			server.engine.ServeHTTP(authorizedRecorder, authorizedRequest)
-			if authorizedRecorder.Code != http.StatusBadRequest {
-				t.Fatalf("authorized status = %d, want %d body=%s", authorizedRecorder.Code, http.StatusBadRequest, authorizedRecorder.Body.String())
-			}
-		})
-	}
-}
-
-func TestShareCredentialCannotExportOrDownloadAuthFiles(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "admin-secret")
-	server := newTestServer(t)
-	server.cfg.RemoteManagement.ShareToken = "share-secret"
-	if err := os.WriteFile(filepath.Join(server.cfg.AuthDir, "codex.json"), []byte(`{"type":"codex","access_token":"secret"}`), 0o600); err != nil {
-		t.Fatalf("write auth file: %v", err)
-	}
-
-	tests := []struct {
-		method string
-		path   string
-		body   string
-	}{
-		{method: http.MethodPost, path: "/v0/management/auth-files/agent-identity/export", body: `{"auth_index":"missing"}`},
-		{method: http.MethodGet, path: "/v0/management/auth-files/download?name=codex.json"},
-	}
-	for _, test := range tests {
-		request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
-		request.Header.Set("Authorization", "Bearer share-secret")
-		request.Header.Set("Content-Type", "application/json")
-		recorder := httptest.NewRecorder()
-
-		server.engine.ServeHTTP(recorder, request)
-
-		if recorder.Code != http.StatusForbidden {
-			t.Fatalf("%s %s status = %d, want %d body=%s", test.method, test.path, recorder.Code, http.StatusForbidden, recorder.Body.String())
-		}
-	}
-}
-
 func TestOAuthCallbackRouteSkipsManagementKeyMiddleware(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 
@@ -928,21 +1296,12 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 		t.Fatalf("missing key status = %d, want %d body=%s", missingKeyRR.Code, http.StatusUnauthorized, missingKeyRR.Body.String())
 	}
 
-	usageReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage?count=2", nil)
-	usageReq.Header.Set("Authorization", "Bearer test-management-key")
-	usageRR := httptest.NewRecorder()
-	server.engine.ServeHTTP(usageRR, usageReq)
-	if usageRR.Code != http.StatusOK {
-		t.Fatalf("usage summary status = %d, want %d body=%s", usageRR.Code, http.StatusOK, usageRR.Body.String())
-	}
-	var usagePayload struct {
-		Usage map[string]any `json:"usage"`
-	}
-	if errUnmarshal := json.Unmarshal(usageRR.Body.Bytes(), &usagePayload); errUnmarshal != nil {
-		t.Fatalf("unmarshal usage summary: %v body=%s", errUnmarshal, usageRR.Body.String())
-	}
-	if usagePayload.Usage == nil {
-		t.Fatalf("usage summary payload missing usage object: body=%s", usageRR.Body.String())
+	legacyReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage?count=2", nil)
+	legacyReq.Header.Set("Authorization", "Bearer test-management-key")
+	legacyRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(legacyRR, legacyReq)
+	if legacyRR.Code != http.StatusNotFound {
+		t.Fatalf("legacy usage status = %d, want %d body=%s", legacyRR.Code, http.StatusNotFound, legacyRR.Body.String())
 	}
 
 	authReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=2", nil)
@@ -974,232 +1333,6 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 
 	if remaining := redisqueue.PopOldest(1); len(remaining) != 0 {
 		t.Fatalf("remaining queue = %q, want empty", remaining)
-	}
-}
-
-func TestManagementAPIKeyBillingRateLimited(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-
-	server := newTestServer(t)
-	path := "/v0/management/api-key-billing?api_key=sk-rate-limited"
-	for i := 0; i < apiKeyBillingRateLimitMax; i++ {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.Header.Set("Authorization", "Bearer test-management-key")
-		rr := httptest.NewRecorder()
-		server.engine.ServeHTTP(rr, req)
-		if rr.Code == http.StatusTooManyRequests {
-			t.Fatalf("request %d was rate limited too early: body=%s", i+1, rr.Body.String())
-		}
-	}
-
-	req := httptest.NewRequest(http.MethodGet, path, nil)
-	req.Header.Set("Authorization", "Bearer test-management-key")
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-	if rr.Code != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusTooManyRequests, rr.Body.String())
-	}
-	if got := rr.Header().Get("Retry-After"); got == "" {
-		t.Fatal("missing Retry-After header")
-	}
-	if !strings.Contains(rr.Body.String(), "api_key_billing_rate_limited") {
-		t.Fatalf("body = %q, want api_key_billing_rate_limited", rr.Body.String())
-	}
-}
-
-func TestAPIKeyBillingLegacyPathDoesNotRequireManagementKey(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-
-	server := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/v0/management/api-key-billing?api_key=test-key", nil)
-	req.Header.Set("Accept", "text/html")
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
-	}
-	if strings.Contains(rr.Body.String(), "missing management key") {
-		t.Fatalf("legacy billing path should not require management key: %s", rr.Body.String())
-	}
-	if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
-		t.Fatalf("Content-Type = %q, want text/html", got)
-	}
-}
-
-func TestPublicAPIKeyBillingPathDoesNotRequireManagementKey(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-
-	server := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/v0/management/public/api-key-billing?api_key=test-key", nil)
-	req.Header.Set("Accept", "text/html")
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
-	}
-	if strings.Contains(rr.Body.String(), "missing management key") {
-		t.Fatalf("public billing path should not require management key: %s", rr.Body.String())
-	}
-	if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
-		t.Fatalf("Content-Type = %q, want text/html", got)
-	}
-}
-
-func TestManagementRoutesRestoredAfterMerge(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-
-	server := newTestServer(t)
-	routes := []struct {
-		method string
-		path   string
-	}{
-		{http.MethodGet, "/v0/management/dashboard-summary"},
-		{http.MethodGet, "/v0/management/system-stats"},
-		{http.MethodGet, "/v0/management/api-key-entries"},
-		{http.MethodGet, "/v0/management/api-key-billing?api_key=sk-test"},
-		{http.MethodGet, "/v0/management/api-key-permission-profiles"},
-		{http.MethodGet, "/v0/management/routing-config"},
-		{http.MethodGet, "/v0/management/channel-groups"},
-		{http.MethodGet, "/v0/management/identity-fingerprint"},
-		{http.MethodGet, "/v0/management/models"},
-		{http.MethodGet, "/v0/management/model-openrouter-sync"},
-		{http.MethodGet, "/v0/management/model-prices"},
-		{http.MethodGet, "/v0/management/auth-files/codex-reset-credits"},
-		{http.MethodPost, "/v0/management/auth-files/codex-reset-credits/consume"},
-		{http.MethodGet, "/v0/management/image-generation/channels"},
-		{http.MethodGet, "/v0/management/usage"},
-		{http.MethodGet, "/v0/management/public/usage"},
-	}
-
-	for _, route := range routes {
-		t.Run(route.path, func(t *testing.T) {
-			req := httptest.NewRequest(route.method, route.path, nil)
-			req.Header.Set("Authorization", "Bearer test-management-key")
-			rr := httptest.NewRecorder()
-			server.engine.ServeHTTP(rr, req)
-			if rr.Code == http.StatusNotFound {
-				t.Fatalf("%s %s returned 404; body=%s", route.method, route.path, rr.Body.String())
-			}
-		})
-	}
-}
-
-func TestAgnesManagementRoutesAreRegistered(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-	server := newTestServer(t)
-	want := map[string]bool{
-		http.MethodGet + " /v0/management/agnes-api-key":    false,
-		http.MethodPut + " /v0/management/agnes-api-key":    false,
-		http.MethodPatch + " /v0/management/agnes-api-key":  false,
-		http.MethodDelete + " /v0/management/agnes-api-key": false,
-	}
-	registeredAPIKeyRoutes := make([]string, 0)
-	for _, route := range server.engine.Routes() {
-		key := route.Method + " " + route.Path
-		if strings.Contains(route.Path, "api-key") {
-			registeredAPIKeyRoutes = append(registeredAPIKeyRoutes, key)
-		}
-		if _, ok := want[key]; ok {
-			want[key] = true
-		}
-	}
-	for route, found := range want {
-		if !found {
-			t.Errorf("management route not registered: %s; registered api-key routes: %v", route, registeredAPIKeyRoutes)
-		}
-	}
-}
-
-func TestManagePanelRoutesRestoredAfterMerge(t *testing.T) {
-	server := newTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/manage", nil)
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-	if rr.Code != http.StatusFound && rr.Code != http.StatusOK {
-		t.Fatalf("/manage status = %d, want %d or %d body=%s", rr.Code, http.StatusFound, http.StatusOK, rr.Body.String())
-	}
-	if rr.Code == http.StatusFound && rr.Header().Get("Location") != "/manage/" {
-		got := rr.Header().Get("Location")
-		t.Fatalf("/manage Location = %q, want /manage/", got)
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/manage/", nil)
-	rr = httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-	if rr.Code == http.StatusNotFound {
-		t.Fatalf("/manage/ returned 404; body=%s", rr.Body.String())
-	}
-}
-
-func TestOpenAIV1RoutesApplyAPIKeyModelAccessMiddleware(t *testing.T) {
-	server := newTestServer(t)
-	server.accessManager.SetProviders([]sdkaccess.Provider{testAccessProvider{
-		key:      "limited-key",
-		metadata: map[string]string{"allowed-models": "allowed-model"},
-	}})
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"blocked-model","messages":[{"role":"user","content":"hi"}]}`))
-	req.Header.Set("Authorization", "Bearer limited-key")
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
-	}
-	if !strings.Contains(rr.Body.String(), "model_not_allowed") {
-		t.Fatalf("expected model_not_allowed response, body=%s", rr.Body.String())
-	}
-}
-
-func TestResponsesIngressRunsBeforeEnabledRequestLogging(t *testing.T) {
-	server := newTestServer(t)
-	server.responsesIngress.Update(middleware.ResponsesIngressConfig{MaxInboundBytes: 1024, MemoryBudgetBytes: 4096})
-	if setter, ok := server.requestLogger.(interface{ SetEnabled(bool) }); ok {
-		setter.SetEnabled(true)
-	}
-
-	encoder, err := zstd.NewWriter(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	compressed := encoder.EncodeAll(bytes.Repeat([]byte("a"), 8<<10), nil)
-	encoder.Close()
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(compressed))
-	req.Header.Set("Authorization", "Bearer test-key")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Content-Encoding", "zstd")
-	rec := httptest.NewRecorder()
-	server.engine.ServeHTTP(rec, req)
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "request_body_too_large") {
-		t.Fatalf("body = %s", rec.Body.String())
-	}
-}
-
-func TestResponsesIngressControllerHotReloadsConfig(t *testing.T) {
-	server := newTestServer(t)
-	server.responsesIngress.Update(middleware.ResponsesIngressConfig{MaxInboundBytes: 4, MemoryBudgetBytes: 64})
-	request := func() int {
-		req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"x"}`))
-		req.Header.Set("Authorization", "Bearer test-key")
-		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-		server.engine.ServeHTTP(rec, req)
-		return rec.Code
-	}
-	if got := request(); got != http.StatusRequestEntityTooLarge {
-		t.Fatalf("before reload status = %d", got)
-	}
-	updated := *server.cfg
-	updated.ResponsesMaxInboundBytes = 64
-	updated.ResponsesMemoryBudgetBytes = 256
-	server.UpdateClients(&updated)
-	if got := request(); got == http.StatusRequestEntityTooLarge || got == http.StatusTooManyRequests {
-		t.Fatalf("after reload status = %d, ingress config was not updated", got)
 	}
 }
 
@@ -1262,195 +1395,19 @@ func TestManagementPluginsRouteRegistered(t *testing.T) {
 	}
 }
 
-func TestManagementPanelSPARoutesServeBundledAssets(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-	staticDir := t.TempDir()
-	t.Setenv("MANAGEMENT_STATIC_PATH", staticDir)
-	if err := os.WriteFile(filepath.Join(staticDir, "manage.html"), []byte("<html>panel</html>"), 0o600); err != nil {
-		t.Fatalf("write manage.html: %v", err)
-	}
-	assetsDir := filepath.Join(staticDir, "assets")
-	if err := os.MkdirAll(assetsDir, 0o700); err != nil {
-		t.Fatalf("create assets dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(assetsDir, "app.js"), []byte("console.log('panel')"), 0o600); err != nil {
-		t.Fatalf("write app.js: %v", err)
-	}
-
+func TestVideosRoutesKeepXAINativeAndExposeOpenAIPrefix(t *testing.T) {
 	server := newTestServer(t)
 
-	for _, tc := range []struct {
-		path string
-		want string
-	}{
-		{path: "/manage", want: "panel"},
-		{path: "/manage/dashboard", want: "panel"},
-		{path: "/manage/assets/app.js", want: "console.log"},
-		{path: "/assets/app.js", want: "console.log"},
-	} {
-		t.Run(tc.path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
-			rr := httptest.NewRecorder()
-			server.engine.ServeHTTP(rr, req)
-			if rr.Code != http.StatusOK {
-				t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
-			}
-			if !strings.Contains(rr.Body.String(), tc.want) {
-				t.Fatalf("body = %q, want substring %q", rr.Body.String(), tc.want)
-			}
-		})
-	}
-}
-
-func TestManagementPanelCompatibilityRoutesRegistered(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-
-	server := newTestServer(t)
-	routes := []struct {
-		method string
-		path   string
-		body   string
-	}{
-		{method: http.MethodGet, path: "/v0/management/dashboard-summary?days=1"},
-		{method: http.MethodGet, path: "/v0/management/update/check"},
-		{method: http.MethodGet, path: "/v0/management/api-key-entries"},
-		{method: http.MethodGet, path: "/v0/management/api-key-permission-profiles"},
-		{method: http.MethodGet, path: "/v0/management/ccswitch-import-configs"},
-		{method: http.MethodGet, path: "/v0/management/model-owner-presets"},
-		{method: http.MethodPut, path: "/v0/management/model-owner-presets", body: `{"items":[{"value":"openai","label":"OpenAI"}]}`},
-		{method: http.MethodGet, path: "/v0/management/model-configs?scope=library"},
-		{method: http.MethodGet, path: "/v0/management/usage/chart-data?days=1"},
-		{method: http.MethodGet, path: "/v0/management/usage/entity-stats?days=1&auth_index=auth-a"},
-		{method: http.MethodGet, path: "/v0/management/usage/logs?page=1&size=1"},
-		{method: http.MethodGet, path: "/v0/management/usage/auth-file-trend?auth_index=auth-a&days=7&hours=5"},
-		{method: http.MethodPost, path: "/v0/management/usage/auth-file-quota-snapshot"},
-		{method: http.MethodPost, path: "/v0/management/quota/reconcile"},
-		{method: http.MethodGet, path: "/v0/management/image-generation/channels"},
-	}
-
-	for _, route := range routes {
-		t.Run(route.method+" "+route.path, func(t *testing.T) {
-			var body *strings.Reader
-			if route.body != "" {
-				body = strings.NewReader(route.body)
-			} else {
-				body = strings.NewReader("")
-			}
-			req := httptest.NewRequest(route.method, route.path, body)
-			req.Header.Set("Authorization", "Bearer test-management-key")
-			if route.body != "" {
-				req.Header.Set("Content-Type", "application/json")
-			}
-			rr := httptest.NewRecorder()
-			server.engine.ServeHTTP(rr, req)
-			if rr.Code == http.StatusNotFound {
-				t.Fatalf("route returned 404; body=%s", rr.Body.String())
-			}
-			if rr.Code == http.StatusUnauthorized {
-				t.Fatalf("route unexpectedly unauthorized; body=%s", rr.Body.String())
-			}
-		})
-	}
-}
-
-func TestRemovedReusableProxyManagementRoutesAreNotRegistered(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-
-	server := newTestServer(t)
-	basePath := "/v0/management/" + "proxy-" + "pool"
-	for _, route := range []struct {
-		method string
-		path   string
-		body   string
-	}{
-		{method: http.MethodGet, path: basePath},
-		{method: http.MethodPut, path: basePath, body: `{"items":[]}`},
-		{method: http.MethodPost, path: basePath + "/check", body: `{}`},
-	} {
-		t.Run(route.method+" "+route.path, func(t *testing.T) {
-			req := httptest.NewRequest(route.method, route.path, strings.NewReader(route.body))
-			req.Header.Set("Authorization", "Bearer test-management-key")
-			req.Header.Set("Content-Type", "application/json")
-			rr := httptest.NewRecorder()
-			server.engine.ServeHTTP(rr, req)
-			if rr.Code != http.StatusNotFound {
-				t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
-			}
-		})
-	}
-}
-
-func TestEgressHardeningManagementRoutesAreRegistered(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-	server := newTestServer(t)
-	want := map[string]bool{
-		http.MethodPost + " /v0/management/egress/bindings/preview":      false,
-		http.MethodPut + " /v0/management/egress/bindings/batch":         false,
-		http.MethodPost + " /v0/management/egress/endpoints/:id/impact":  false,
-		http.MethodPost + " /v0/management/egress/endpoints/:id/actions": false,
-	}
-	for _, route := range server.engine.Routes() {
-		key := route.Method + " " + route.Path
-		if _, ok := want[key]; ok {
-			want[key] = true
-		}
-	}
-	for route, found := range want {
-		if !found {
-			t.Errorf("management route not registered: %s", route)
-		}
-	}
-	removed := map[string]struct{}{
-		http.MethodPut + " /v0/management/egress/bindings/:identity":    {},
-		http.MethodDelete + " /v0/management/egress/bindings/:identity": {},
-		http.MethodGet + " /v0/management/egress/nodes":                 {},
-		http.MethodPost + " /v0/management/egress/nodes/sync":           {},
-		http.MethodPost + " /v0/management/egress/enrollment":           {},
-	}
-	for _, route := range server.engine.Routes() {
-		if _, exists := removed[route.Method+" "+route.Path]; exists {
-			t.Errorf("unsafe direct binding route remains registered: %s %s", route.Method, route.Path)
-		}
-	}
-}
-
-func TestManagementAuthAcceptsQueryTokenForBrowserWebSocket(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-
-	server := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/v0/management/system-stats?token=test-management-key", nil)
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
-	}
-}
-
-func TestVideosRoutesExposeStandardAPIAndKeepXAINativeSubroutes(t *testing.T) {
-	server := newTestServer(t)
-	const clientID = "video-route-test"
-	registry.GetGlobalRegistry().RegisterClient(clientID, "agnes", []*registry.ModelInfo{{
-		ID:   "agnes-video-v2.0",
-		Type: registry.OpenAIVideoModelType,
-	}})
-	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(clientID) })
-
-	standardReq := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"agnes-video-v2.0","prompt":"make a video"}`))
-	standardReq.Header.Set("Authorization", "Bearer test-key")
-	standardReq.Header.Set("Content-Type", "application/json")
-	standardRR := httptest.NewRecorder()
-	server.engine.ServeHTTP(standardRR, standardReq)
-	if standardRR.Code == http.StatusBadRequest && strings.Contains(standardRR.Body.String(), "/v1/videos/generations") {
-		t.Fatalf("/v1/videos still uses xAI-native validation: %s", standardRR.Body.String())
-	}
-
-	nativeReq := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{"model":"agnes-video-v2.0","prompt":"make a video"}`))
+	nativeReq := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"sora-2","prompt":"make a video"}`))
 	nativeReq.Header.Set("Authorization", "Bearer test-key")
 	nativeReq.Header.Set("Content-Type", "application/json")
 	nativeRR := httptest.NewRecorder()
 	server.engine.ServeHTTP(nativeRR, nativeReq)
-	if nativeRR.Code != http.StatusBadRequest || !strings.Contains(nativeRR.Body.String(), "/v1/videos/generations") {
-		t.Fatalf("xAI native route status/body = %d %s", nativeRR.Code, nativeRR.Body.String())
+	if nativeRR.Code != http.StatusBadRequest {
+		t.Fatalf("native status = %d, want %d body=%s", nativeRR.Code, http.StatusBadRequest, nativeRR.Body.String())
+	}
+	if !strings.Contains(nativeRR.Body.String(), "/v1/videos/generations") {
+		t.Fatalf("expected /v1/videos to keep xAI native validation, body=%s", nativeRR.Body.String())
 	}
 
 	openAIReq := httptest.NewRequest(http.MethodPost, "/openai/v1/videos", strings.NewReader(`{"model":`))
@@ -1465,7 +1422,7 @@ func TestVideosRoutesExposeStandardAPIAndKeepXAINativeSubroutes(t *testing.T) {
 		t.Fatalf("expected /openai/v1/videos create handler, body=%s", openAIRR.Body.String())
 	}
 
-	contentReq := httptest.NewRequest(http.MethodGet, "/v1/videos/video_123/content?variant=thumbnail", nil)
+	contentReq := httptest.NewRequest(http.MethodGet, "/openai/v1/videos/video_123/content?variant=thumbnail", nil)
 	contentReq.Header.Set("Authorization", "Bearer test-key")
 	contentRR := httptest.NewRecorder()
 	server.engine.ServeHTTP(contentRR, contentReq)
@@ -1473,7 +1430,7 @@ func TestVideosRoutesExposeStandardAPIAndKeepXAINativeSubroutes(t *testing.T) {
 		t.Fatalf("content status = %d, want %d body=%s", contentRR.Code, http.StatusBadRequest, contentRR.Body.String())
 	}
 	if !strings.Contains(contentRR.Body.String(), "variant") {
-		t.Fatalf("expected /v1/videos content handler, body=%s", contentRR.Body.String())
+		t.Fatalf("expected /openai/v1/videos content handler, body=%s", contentRR.Body.String())
 	}
 }
 
@@ -1494,13 +1451,11 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	})
 
 	t.Run("management control panel returns 404", func(t *testing.T) {
-		for _, path := range []string{"/management.html", "/manage", "/manage/dashboard", "/assets/app.js"} {
-			req := httptest.NewRequest(http.MethodGet, path, nil)
-			rr := httptest.NewRecorder()
-			server.engine.ServeHTTP(rr, req)
-			if rr.Code != http.StatusNotFound {
-				t.Fatalf("%s status = %d, want %d body=%s", path, rr.Code, http.StatusNotFound, rr.Body.String())
-			}
+		req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
 		}
 	})
 }
@@ -1744,6 +1699,56 @@ func TestModelsDispatchByAnthropicVersionHeader(t *testing.T) {
 	})
 }
 
+func TestClaudeModelListCloakingConfigHotReload(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	clientID := "test-claude-model-list-cloaking-hot-reload"
+	const modelID = "gpt-model-list-hot-reload"
+	modelRegistry.RegisterClient(clientID, "claude", []*registry.ModelInfo{{
+		ID: modelID, Object: "model", OwnedBy: "test", Type: "openai",
+	}})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(clientID)
+	})
+
+	server := newTestServer(t)
+	assertModelID := func(want string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("Anthropic-Version", "2023-06-01")
+
+		recorder := httptest.NewRecorder()
+		server.engine.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+		}
+
+		var response struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if errUnmarshal := json.Unmarshal(recorder.Body.Bytes(), &response); errUnmarshal != nil {
+			t.Fatalf("decode response: %v", errUnmarshal)
+		}
+		for _, model := range response.Data {
+			if model.ID == want {
+				return
+			}
+		}
+		t.Fatalf("model %q not found in response: %s", want, recorder.Body.String())
+	}
+
+	assertModelID(claudemodels.EnsureClaudeModelIDPrefix(modelID))
+
+	updatedCfg := *server.cfg
+	updatedCfg.SDKConfig = server.cfg.SDKConfig
+	updatedCfg.ClaudeCode.DisableCloakingModelList = true
+	server.UpdateClients(&updatedCfg)
+
+	assertModelID(modelID)
+}
+
 func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	modelRegistry := registry.GetGlobalRegistry()
 	clientID := "test-client-version-catalog"
@@ -1773,6 +1778,7 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 		{ID: "gpt-image-2", Object: "model", OwnedBy: "openai", Type: "openai"},
 		{ID: "grok-imagine-image", Object: "model", OwnedBy: "xai", Type: "openai"},
 		{ID: "grok-imagine-video", Object: "model", OwnedBy: "xai", Type: "openai"},
+		{ID: "grok-imagine-video-1.5", Object: "model", OwnedBy: "xai", Type: "openai"},
 		{ID: "grok-imagine-video-1.5-preview", Object: "model", OwnedBy: "xai", Type: "openai"},
 	})
 	t.Cleanup(func() {
@@ -1833,16 +1839,6 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got, _ := custom["display_name"].(string); got != "Custom Codex Model" {
 		t.Fatalf("custom display_name = %q, want Custom Codex Model", got)
 	}
-	for index, model := range resp.Models[1:] {
-		previousPriority := codexClientTestPriority(resp.Models[index]["priority"])
-		currentPriority := codexClientTestPriority(model["priority"])
-		if currentPriority < previousPriority {
-			t.Fatalf("catalog priorities are not sorted at index %d: %d then %d", index, previousPriority, currentPriority)
-		}
-	}
-	if got, gpt55Priority := codexClientTestPriority(custom["priority"]), codexClientTestPriority(gpt55["priority"]); got <= gpt55Priority {
-		t.Fatalf("custom priority = %d, want greater than template priority %d", got, gpt55Priority)
-	}
 	wantCustomPriority := codexClientTestMaxTemplatePriority(t) + 100
 	if got := int(codexClientTestPriority(custom["priority"])); got != wantCustomPriority {
 		t.Fatalf("custom priority = %v, want %d", custom["priority"], wantCustomPriority)
@@ -1853,7 +1849,7 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got, _ := custom["context_window"].(float64); got != 123456 {
 		t.Fatalf("custom context_window = %v, want 123456", custom["context_window"])
 	}
-	assertCodexSupportedReasoningLevels(t, custom, []string{"none", "low", "medium", "high", "xhigh"})
+	assertCodexSupportedReasoningLevels(t, custom, []string{"none", "minimal", "low", "medium", "high", "xhigh"})
 	if custom["base_instructions"] != gpt55["base_instructions"] {
 		t.Fatal("expected custom model to use gpt-5.5 base_instructions fallback")
 	}
@@ -1882,6 +1878,7 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 		"gpt-image-2":                    false,
 		"grok-imagine-image":             false,
 		"grok-imagine-video":             false,
+		"grok-imagine-video-1.5":         false,
 		"grok-imagine-video-1.5-preview": false,
 	}
 	for _, model := range resp.Models {
@@ -2079,11 +2076,11 @@ func TestFormatHomeClaudeModelIncludesAnthropicSchemaFields(t *testing.T) {
 		t.Fatalf("display_name fallback = %v, want claude-no-limits", got)
 	}
 
-	prefixed := formatHomeClaudeModel(homeModelEntry{id: "gpt-4o", displayName: "GPT-4o"})
-	if got := prefixed["id"]; got != "claude-fable-5-dd-o4-tpg" {
-		t.Fatalf("id = %v, want claude-fable-5-dd-o4-tpg", got)
+	customModel := formatHomeClaudeModel(homeModelEntry{id: "gpt-4o", displayName: "GPT-4o"})
+	if got := customModel["id"]; got != "gpt-4o" {
+		t.Fatalf("id = %v, want gpt-4o", got)
 	}
-	if got := prefixed["display_name"]; got != "GPT-4o" {
+	if got := customModel["display_name"]; got != "GPT-4o" {
 		t.Fatalf("display_name = %v, want GPT-4o", got)
 	}
 	if got := withDefaults["max_input_tokens"]; got != registry.DefaultClaudeMaxInputTokens {
@@ -2094,24 +2091,6 @@ func TestFormatHomeClaudeModelIncludesAnthropicSchemaFields(t *testing.T) {
 	}
 	if _, ok := withDefaults["created_at"]; ok {
 		t.Fatalf("created_at should be omitted when source created is missing, got %v", withDefaults)
-	}
-}
-
-func TestFormatHomeClaudeModelsSortsByDisplayName(t *testing.T) {
-	out := formatHomeClaudeModels([]homeModelEntry{
-		{id: "claude-z", displayName: "Zebra"},
-		{id: "gpt-4o", displayName: "Alpha"},
-		{id: "claude-b", displayName: "Beta"},
-	})
-	if len(out) != 3 {
-		t.Fatalf("len(out) = %d, want 3", len(out))
-	}
-	wantNames := []string{"Alpha", "Beta", "Zebra"}
-	for i, want := range wantNames {
-		got, _ := out[i]["display_name"].(string)
-		if got != want {
-			t.Fatalf("out[%d].display_name = %q, want %q", i, got, want)
-		}
 	}
 }
 

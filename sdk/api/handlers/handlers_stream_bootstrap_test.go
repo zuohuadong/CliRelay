@@ -2,134 +2,31 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	internalegress "github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 type failOnceStreamExecutor struct {
 	mu    sync.Mutex
 	calls int
-}
-
-type terminalEgressStreamExecutor struct {
-	mu      sync.Mutex
-	calls   int
-	asChunk bool
-	err     error
-}
-
-type transientTransportStreamExecutor struct {
-	mu      sync.Mutex
-	calls   int
-	asChunk bool
-	err     error
-}
-
-func (e *transientTransportStreamExecutor) Identifier() string { return "codex" }
-
-func (e *transientTransportStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, errors.New("not implemented")
-}
-
-func (e *transientTransportStreamExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
-	e.mu.Lock()
-	e.calls++
-	call := e.calls
-	e.mu.Unlock()
-
-	if call == 1 {
-		if !e.asChunk {
-			return nil, e.err
-		}
-		chunks := make(chan coreexecutor.StreamChunk, 1)
-		chunks <- coreexecutor.StreamChunk{Err: e.err}
-		close(chunks)
-		return &coreexecutor.StreamResult{Chunks: chunks}, nil
-	}
-
-	chunks := make(chan coreexecutor.StreamChunk, 1)
-	chunks <- coreexecutor.StreamChunk{Payload: []byte("ok")}
-	close(chunks)
-	return &coreexecutor.StreamResult{Chunks: chunks}, nil
-}
-
-func (e *transientTransportStreamExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
-	return auth, nil
-}
-
-func (e *transientTransportStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, errors.New("not implemented")
-}
-
-func (e *transientTransportStreamExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (e *transientTransportStreamExecutor) Calls() int {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.calls
-}
-
-func (e *terminalEgressStreamExecutor) Identifier() string { return "codex" }
-
-func (e *terminalEgressStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, e.runtimeError()
-}
-
-func (e *terminalEgressStreamExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
-	e.mu.Lock()
-	e.calls++
-	e.mu.Unlock()
-	err := e.runtimeError()
-	if !e.asChunk {
-		return nil, err
-	}
-	chunks := make(chan coreexecutor.StreamChunk, 1)
-	chunks <- coreexecutor.StreamChunk{Err: err}
-	close(chunks)
-	return &coreexecutor.StreamResult{Chunks: chunks}, nil
-}
-
-func (e *terminalEgressStreamExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
-	return auth, nil
-}
-
-func (e *terminalEgressStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, e.runtimeError()
-}
-
-func (e *terminalEgressStreamExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
-	return nil, e.runtimeError()
-}
-
-func (e *terminalEgressStreamExecutor) runtimeError() error {
-	if e.err != nil {
-		return internalegress.RuntimeError(e.err)
-	}
-	return internalegress.RuntimeError(internalegress.ErrEndpointDisabled)
-}
-
-func (e *terminalEgressStreamExecutor) Calls() int {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.calls
 }
 
 func (e *failOnceStreamExecutor) Identifier() string { return "codex" }
@@ -191,61 +88,54 @@ func (e *failOnceStreamExecutor) Calls() int {
 	return e.calls
 }
 
-type failOnceInitialStreamExecutor struct {
-	mu    sync.Mutex
-	calls int
+type blockingRetryStreamExecutor struct {
+	mu           sync.Mutex
+	calls        int
+	retryStarted chan struct{}
+	allowRetry   chan struct{}
 }
 
-func (e *failOnceInitialStreamExecutor) Identifier() string { return "codex" }
+func (e *blockingRetryStreamExecutor) Identifier() string { return "codex" }
 
-func (e *failOnceInitialStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+func (e *blockingRetryStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
 	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "Execute not implemented"}
 }
 
-func (e *failOnceInitialStreamExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+func (e *blockingRetryStreamExecutor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
 	e.mu.Lock()
 	e.calls++
 	call := e.calls
 	e.mu.Unlock()
 
 	if call == 1 {
-		return nil, &coreauth.Error{
-			Code:       "upstream_unavailable",
-			Message:    "upstream unavailable",
-			Retryable:  false,
-			HTTPStatus: http.StatusInternalServerError,
-		}
+		chunks := make(chan coreexecutor.StreamChunk, 1)
+		chunks <- coreexecutor.StreamChunk{Err: &coreauth.Error{Code: "unauthorized", Message: "unauthorized", HTTPStatus: http.StatusUnauthorized}}
+		close(chunks)
+		return &coreexecutor.StreamResult{Headers: http.Header{"X-Upstream-Attempt": {"1"}}, Chunks: chunks}, nil
 	}
 
-	ch := make(chan coreexecutor.StreamChunk, 1)
-	ch <- coreexecutor.StreamChunk{Payload: []byte("ok")}
-	close(ch)
-	return &coreexecutor.StreamResult{
-		Headers: http.Header{"X-Upstream-Attempt": {"2"}},
-		Chunks:  ch,
-	}, nil
+	close(e.retryStarted)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-e.allowRetry:
+	}
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	chunks <- coreexecutor.StreamChunk{Payload: []byte("ok")}
+	close(chunks)
+	return &coreexecutor.StreamResult{Headers: http.Header{"X-Upstream-Attempt": {"2"}}, Chunks: chunks}, nil
 }
 
-func (e *failOnceInitialStreamExecutor) Refresh(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+func (e *blockingRetryStreamExecutor) Refresh(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
 	return auth, nil
 }
 
-func (e *failOnceInitialStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+func (e *blockingRetryStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
 	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
 }
 
-func (e *failOnceInitialStreamExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
-	return nil, &coreauth.Error{
-		Code:       "not_implemented",
-		Message:    "HttpRequest not implemented",
-		HTTPStatus: http.StatusNotImplemented,
-	}
-}
-
-func (e *failOnceInitialStreamExecutor) Calls() int {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.calls
+func (e *blockingRetryStreamExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
+	return nil, &coreauth.Error{Code: "not_implemented", Message: "HttpRequest not implemented", HTTPStatus: http.StatusNotImplemented}
 }
 
 type payloadThenErrorStreamExecutor struct {
@@ -304,13 +194,6 @@ type authAwareStreamExecutor struct {
 	mu      sync.Mutex
 	calls   int
 	authIDs []string
-}
-
-type routePolicyExecutor struct {
-	id string
-
-	mu     sync.Mutex
-	models []string
 }
 
 type invalidJSONStreamExecutor struct{}
@@ -446,613 +329,6 @@ func (e *authAwareStreamExecutor) AuthIDs() []string {
 	return out
 }
 
-func (e *routePolicyExecutor) Identifier() string { return e.id }
-
-func (e *routePolicyExecutor) Execute(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
-	e.mu.Lock()
-	e.models = append(e.models, req.Model)
-	e.mu.Unlock()
-	return coreexecutor.Response{Payload: []byte(e.id + ":" + req.Model)}, nil
-}
-
-func (e *routePolicyExecutor) ExecuteStream(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
-	e.mu.Lock()
-	e.models = append(e.models, req.Model)
-	e.mu.Unlock()
-	ch := make(chan coreexecutor.StreamChunk, 1)
-	ch <- coreexecutor.StreamChunk{Payload: []byte(e.id + ":" + req.Model)}
-	close(ch)
-	return &coreexecutor.StreamResult{Chunks: ch}, nil
-}
-
-func (e *routePolicyExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
-	return auth, nil
-}
-
-func (e *routePolicyExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
-}
-
-func (e *routePolicyExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
-	return nil, &coreauth.Error{
-		Code:       "not_implemented",
-		Message:    "HttpRequest not implemented",
-		HTTPStatus: http.StatusNotImplemented,
-	}
-}
-
-func (e *routePolicyExecutor) Models() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	out := make([]string, len(e.models))
-	copy(out, e.models)
-	return out
-}
-
-func newContextRoutingPolicyHandler(t *testing.T) (*BaseAPIHandler, *routePolicyExecutor, *routePolicyExecutor, *routePolicyExecutor) {
-	handler, _, codex, astron, bigmodel := newContextRoutingPolicyHandlerWithManager(t)
-	return handler, codex, astron, bigmodel
-}
-
-func newContextRoutingPolicyHandlerWithManager(t *testing.T) (*BaseAPIHandler, *coreauth.Manager, *routePolicyExecutor, *routePolicyExecutor, *routePolicyExecutor) {
-	t.Helper()
-
-	manager := coreauth.NewManager(nil, nil, nil)
-	codex := &routePolicyExecutor{id: "codex"}
-	astron := &routePolicyExecutor{id: "astron-code"}
-	bigmodel := &routePolicyExecutor{id: "bigmodel-coding"}
-	manager.RegisterExecutor(codex)
-	manager.RegisterExecutor(astron)
-	manager.RegisterExecutor(bigmodel)
-
-	cfg := &internalconfig.Config{
-		AstronCodeAPIKey: []internalconfig.OpenAICompatibility{
-			{
-				Name: "astron-code",
-				Models: []internalconfig.OpenAICompatibilityModel{
-					{Name: "astron-code-latest", Alias: "gpt-5.3-codex", ContextLength: 512},
-				},
-			},
-		},
-		BigModelCodingAPIKey: []internalconfig.OpenAICompatibility{
-			{
-				Name: "bigmodel-coding",
-				Models: []internalconfig.OpenAICompatibilityModel{
-					{Name: "glm-5.1", Alias: "gpt-5.3-codex", ContextLength: 512},
-					{Name: "glm-5.2", Alias: "gpt-5.3-codex", ContextLength: 2048},
-				},
-			},
-		},
-		OAuthModelAlias: map[string][]internalconfig.OAuthModelAlias{
-			"codex": {
-				{Name: "gpt-5.3-codex-spark", Alias: "gpt-5.3-codex", Fork: true},
-			},
-		},
-		ProviderPreferences: []internalconfig.ProviderPreference{
-			{
-				Name: "prefer-codex-spark",
-				Match: internalconfig.ProviderPreferenceMatch{
-					RequestedModels:   []string{"gpt-5.3-codex"},
-					UpstreamProviders: []string{"codex"},
-					UpstreamModels:    []string{"gpt-5.3-codex-spark"},
-				},
-				Priority: 500,
-			},
-			{
-				Name: "prefer-astron",
-				Match: internalconfig.ProviderPreferenceMatch{
-					RequestedModels:   []string{"gpt-5.3-codex"},
-					UpstreamProviders: []string{"astron-code"},
-					UpstreamModels:    []string{"astron-code-latest"},
-				},
-				Priority: 300,
-			},
-			{
-				Name: "prefer-bigmodel",
-				Match: internalconfig.ProviderPreferenceMatch{
-					RequestedModels:   []string{"gpt-5.3-codex"},
-					UpstreamProviders: []string{"bigmodel-coding"},
-				},
-				Priority: 100,
-			},
-		},
-		RequestPolicies: []internalconfig.RequestPolicy{
-			{
-				Name: "codex-spark-small-window-guard",
-				Match: internalconfig.RequestPolicyMatch{
-					RequestedModels:   []string{"gpt-5.3-codex"},
-					UpstreamProviders: []string{"codex"},
-					UpstreamModels:    []string{"gpt-5.3-codex-spark"},
-				},
-				Limits:    internalconfig.RequestPolicyLimits{MaxRequestBytes: 128},
-				OverLimit: internalconfig.RequestPolicyOverLimit{Action: "skip-channel"},
-			},
-		},
-	}
-	manager.SetConfig(cfg)
-	manager.SetOAuthModelAlias(cfg.OAuthModelAlias)
-
-	auths := []*coreauth.Auth{
-		{
-			ID:       "codex-auth",
-			Provider: "codex",
-			Status:   coreauth.StatusActive,
-			Attributes: map[string]string{
-				"auth_kind": "oauth",
-			},
-		},
-		{
-			ID:       "astron-auth",
-			Provider: "astron-code",
-			Status:   coreauth.StatusActive,
-			Attributes: map[string]string{
-				"api_key":      "test-astron-key",
-				"auth_kind":    "api_key",
-				"provider_key": "astron-code",
-				"compat_name":  "astron-code",
-			},
-		},
-		{
-			ID:       "bigmodel-auth",
-			Provider: "bigmodel-coding",
-			Status:   coreauth.StatusActive,
-			Attributes: map[string]string{
-				"api_key":      "test-bigmodel-key",
-				"auth_kind":    "api_key",
-				"provider_key": "bigmodel-coding",
-				"compat_name":  "bigmodel-coding",
-			},
-		},
-	}
-	for _, auth := range auths {
-		if _, err := manager.Register(context.Background(), auth); err != nil {
-			t.Fatalf("manager.Register(%s): %v", auth.ID, err)
-		}
-		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.3-codex"}})
-		t.Cleanup(func(id string) func() {
-			return func() { registry.GetGlobalRegistry().UnregisterClient(id) }
-		}(auth.ID))
-	}
-
-	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager), manager, codex, astron, bigmodel
-}
-
-func newGenericOpenAICompatRoutingPolicyHandler(t *testing.T) (*BaseAPIHandler, *coreauth.Manager, *routePolicyExecutor) {
-	t.Helper()
-
-	const (
-		compatName = "custom-coding"
-		provider   = "openai-compatible-custom-coding"
-	)
-	manager := coreauth.NewManager(nil, nil, nil)
-	executor := &routePolicyExecutor{id: provider}
-	manager.RegisterExecutor(executor)
-	cfg := &internalconfig.Config{
-		OpenAICompatibility: []internalconfig.OpenAICompatibility{
-			{
-				Name:    compatName,
-				BaseURL: "https://example.invalid/v1",
-				Models: []internalconfig.OpenAICompatibilityModel{
-					{Name: "custom-small", Alias: "gpt-5.3-codex", ContextLength: 512},
-					{Name: "custom-large", Alias: "gpt-5.3-codex", ContextLength: 2048},
-				},
-			},
-		},
-	}
-	manager.SetConfig(cfg)
-
-	auth := &coreauth.Auth{
-		ID:       "custom-auth",
-		Provider: provider,
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"api_key":      "test-custom-key",
-			"auth_kind":    "api_key",
-			"provider_key": provider,
-			"compat_name":  compatName,
-		},
-	}
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatalf("manager.Register(%s): %v", auth.ID, err)
-	}
-	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.3-codex"}})
-	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
-
-	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager), manager, executor
-}
-
-func newCodexImageGenerationRoutingPolicyHandler(t *testing.T, disableImageGeneration internalconfig.DisableImageGenerationMode, includeCodexAuth bool) (*BaseAPIHandler, *routePolicyExecutor, *routePolicyExecutor) {
-	t.Helper()
-
-	const compatProvider = "openai-compatible-custom-coding"
-	manager := coreauth.NewManager(nil, nil, nil)
-	codex := &routePolicyExecutor{id: "codex"}
-	compat := &routePolicyExecutor{id: compatProvider}
-	manager.RegisterExecutor(codex)
-	manager.RegisterExecutor(compat)
-
-	cfg := &internalconfig.Config{
-		SDKConfig: internalconfig.SDKConfig{DisableImageGeneration: disableImageGeneration},
-		OpenAICompatibility: []internalconfig.OpenAICompatibility{
-			{
-				Name:    "custom-coding",
-				BaseURL: "https://example.invalid/v1",
-				Models:  []internalconfig.OpenAICompatibilityModel{{Name: "custom-gpt-5-5", Alias: "gpt-5.5"}},
-			},
-		},
-	}
-	manager.SetConfig(cfg)
-
-	auths := make([]*coreauth.Auth, 0, 2)
-	if includeCodexAuth {
-		auths = append(auths, &coreauth.Auth{
-			ID:       "codex-auth",
-			Provider: "codex",
-			Status:   coreauth.StatusActive,
-			Attributes: map[string]string{
-				"auth_kind": "oauth",
-			},
-		})
-	}
-	auths = append(auths, &coreauth.Auth{
-		ID:       "compat-auth",
-		Provider: compatProvider,
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"api_key":      "test-compat-key",
-			"auth_kind":    "api_key",
-			"provider_key": compatProvider,
-			"compat_name":  "custom-coding",
-		},
-	})
-	for _, auth := range auths {
-		if _, err := manager.Register(context.Background(), auth); err != nil {
-			t.Fatalf("manager.Register(%s): %v", auth.ID, err)
-		}
-		modelID := "gpt-5.5"
-		if auth.Provider == compatProvider {
-			modelID = "custom-gpt-5-5"
-		}
-		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: modelID}})
-		t.Cleanup(func(id string) func() {
-			return func() { registry.GetGlobalRegistry().UnregisterClient(id) }
-		}(auth.ID))
-	}
-
-	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{DisableImageGeneration: disableImageGeneration}, manager), codex, compat
-}
-
-func TestExecuteWithAuthManager_CodexImageGenerationDefaultKeepsCodexProvider(t *testing.T) {
-	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, true)
-	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"tools":[{"type":"image_generation"}],"stream":false}`)
-
-	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
-	if errMsg != nil {
-		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
-	}
-	if got := string(body); got != "codex:gpt-5.5" {
-		t.Fatalf("response = %q, want codex provider", got)
-	}
-	if models := codex.Models(); len(models) != 1 || models[0] != "gpt-5.5" {
-		t.Fatalf("codex models = %v, want [gpt-5.5]", models)
-	}
-	if models := compat.Models(); len(models) != 0 {
-		t.Fatalf("openai-compatible alias should not be used for default Codex image_generation chat, got %v", models)
-	}
-}
-
-func TestExecuteWithAuthManager_CodexImageGenerationDefaultFiltersDirectOpenAICompatProvider(t *testing.T) {
-	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, true)
-	registry.GetGlobalRegistry().RegisterClient("compat-auth", "openai-compatible-custom-coding", []*registry.ModelInfo{{ID: "gpt-5.5"}})
-	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"tools":[{"type":"image_generation"}],"stream":false}`)
-
-	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
-	if errMsg != nil {
-		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
-	}
-	if got := string(body); got != "codex:gpt-5.5" {
-		t.Fatalf("response = %q, want codex provider", got)
-	}
-	if models := codex.Models(); len(models) != 1 || models[0] != "gpt-5.5" {
-		t.Fatalf("codex models = %v, want [gpt-5.5]", models)
-	}
-	if models := compat.Models(); len(models) != 0 {
-		t.Fatalf("direct openai-compatible provider should be filtered for default Codex image_generation chat, got %v", models)
-	}
-}
-
-func TestExecuteWithAuthManager_CodexImageGenerationAllowsCodexIdentityOpenAICompatProvider(t *testing.T) {
-	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, false)
-	cfg := handler.AuthManager.Config()
-	if cfg == nil || len(cfg.OpenAICompatibility) != 1 {
-		t.Fatalf("missing openai compatibility config")
-	}
-	cfg.OpenAICompatibility[0].IdentityFingerprint = "codex"
-	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"tools":[{"type":"image_generation"}],"stream":false}`)
-
-	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
-	if errMsg != nil {
-		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
-	}
-	if got := string(body); got != "openai-compatible-custom-coding:custom-gpt-5-5" {
-		t.Fatalf("response = %q, want codex-identity openai-compatible alias provider", got)
-	}
-	if models := codex.Models(); len(models) != 0 {
-		t.Fatalf("codex should not be forced when codex-identity upstream can handle image_generation, got %v", models)
-	}
-	if models := compat.Models(); len(models) != 1 || models[0] != "custom-gpt-5-5" {
-		t.Fatalf("openai-compatible models = %v, want [custom-gpt-5-5]", models)
-	}
-}
-
-func TestExecuteWithAuthManager_CodexImageGenerationAllowsResponsesOpenAICompatProvider(t *testing.T) {
-	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, false)
-	cfg := handler.AuthManager.Config()
-	if cfg == nil || len(cfg.OpenAICompatibility) != 1 {
-		t.Fatalf("missing openai compatibility config")
-	}
-	cfg.OpenAICompatibility[0].ResponseEndpoint = true
-	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"tools":[{"type":"image_generation"}],"stream":false}`)
-
-	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
-	if errMsg != nil {
-		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
-	}
-	if got := string(body); got != "openai-compatible-custom-coding:custom-gpt-5-5" {
-		t.Fatalf("response = %q, want responses-capable openai-compatible alias provider", got)
-	}
-	if models := codex.Models(); len(models) != 0 {
-		t.Fatalf("codex should not be forced when responses upstream can handle image_generation, got %v", models)
-	}
-	if models := compat.Models(); len(models) != 1 || models[0] != "custom-gpt-5-5" {
-		t.Fatalf("openai-compatible models = %v, want [custom-gpt-5-5]", models)
-	}
-}
-
-func TestGetRequestDetails_CodexImageGenerationDefaultFiltersDirectOpenAICompatProvider(t *testing.T) {
-	handler, _, _ := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, true)
-	registry.GetGlobalRegistry().RegisterClient("compat-auth", "openai-compatible-custom-coding", []*registry.ModelInfo{{ID: "gpt-5.5"}})
-
-	providers, normalizedModel, errMsg := handler.getRequestDetailsForRequest("gpt-5.5", false, []byte(`{"model":"gpt-5.5","tools":[{"type":"image_generation"}]}`))
-	if errMsg != nil {
-		t.Fatalf("getRequestDetailsWithOptions() error = %+v", errMsg)
-	}
-	if normalizedModel != "gpt-5.5" {
-		t.Fatalf("normalizedModel = %q, want gpt-5.5", normalizedModel)
-	}
-	if len(providers) != 1 || providers[0] != "codex" {
-		t.Fatalf("providers = %v, want [codex]", providers)
-	}
-}
-
-func TestExecuteWithAuthManager_CodexTextRequestAllowsOpenAICompatProvider(t *testing.T) {
-	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationOff, false)
-	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"hi"}],"stream":false}`)
-
-	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
-	if errMsg != nil {
-		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
-	}
-	if got := string(body); got != "openai-compatible-custom-coding:custom-gpt-5-5" {
-		t.Fatalf("response = %q, want openai-compatible alias provider", got)
-	}
-	if models := codex.Models(); len(models) != 0 {
-		t.Fatalf("codex should not be used for ordinary text requests, got %v", models)
-	}
-	if models := compat.Models(); len(models) != 1 || models[0] != "custom-gpt-5-5" {
-		t.Fatalf("openai-compatible models = %v, want [custom-gpt-5-5]", models)
-	}
-}
-
-func TestExecuteWithAuthManager_CodexImageGenerationPassthroughAllowsOpenAICompatProvider(t *testing.T) {
-	handler, codex, compat := newCodexImageGenerationRoutingPolicyHandler(t, internalconfig.DisableImageGenerationPassthrough, false)
-	rawJSON := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"画一张图"}],"tools":[{"type":"image_generation"}],"stream":false}`)
-
-	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.5", rawJSON, "")
-	if errMsg != nil {
-		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
-	}
-	if got := string(body); got != "openai-compatible-custom-coding:custom-gpt-5-5" {
-		t.Fatalf("response = %q, want openai-compatible alias provider", got)
-	}
-	if models := codex.Models(); len(models) != 0 {
-		t.Fatalf("codex should not be used when passthrough allows alias routing, got %v", models)
-	}
-	if models := compat.Models(); len(models) != 1 || models[0] != "custom-gpt-5-5" {
-		t.Fatalf("openai-compatible models = %v, want [custom-gpt-5-5]", models)
-	}
-}
-
-func TestExecuteWithAuthManager_RequestBytesPolicyFallsBackFromCodexSparkToAstron(t *testing.T) {
-	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
-	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("x", 256) + `"}`)
-
-	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
-	if errMsg != nil {
-		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
-	}
-	if got := string(body); got != "astron-code:astron-code-latest" {
-		t.Fatalf("response = %q, want astron fallback", got)
-	}
-	if models := codex.Models(); len(models) != 0 {
-		t.Fatalf("codex should be skipped by request policy, got calls for %v", models)
-	}
-	if models := astron.Models(); len(models) != 1 || models[0] != "astron-code-latest" {
-		t.Fatalf("astron models = %v, want [astron-code-latest]", models)
-	}
-	if models := bigmodel.Models(); len(models) != 0 {
-		t.Fatalf("bigmodel should not be used while astron fits, got calls for %v", models)
-	}
-}
-
-func TestExecuteWithAuthManager_ContextLengthFallsBackFromAstronToBigModel(t *testing.T) {
-	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
-	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("context ", 800) + `"}`)
-
-	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
-	if errMsg != nil {
-		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
-	}
-	if got := string(body); got != "bigmodel-coding:glm-5.2" {
-		t.Fatalf("response = %q, want bigmodel glm-5.2 fallback", got)
-	}
-	if models := codex.Models(); len(models) != 0 {
-		t.Fatalf("codex should be skipped by request policy, got calls for %v", models)
-	}
-	if models := astron.Models(); len(models) != 0 {
-		t.Fatalf("astron should be skipped when context-length is exceeded, got calls for %v", models)
-	}
-	if models := bigmodel.Models(); len(models) != 1 || models[0] != "glm-5.2" {
-		t.Fatalf("bigmodel models = %v, want [glm-5.2]", models)
-	}
-}
-
-func TestExecuteWithAuthManager_ContextLengthExhaustionReportsSpecificError(t *testing.T) {
-	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
-	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("context ", 3000) + `"}`)
-
-	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
-	if errMsg == nil {
-		t.Fatalf("ExecuteWithAuthManager() body = %q, want error", string(body))
-	}
-	var authErr *coreauth.Error
-	if !errors.As(errMsg.Error, &authErr) {
-		t.Fatalf("error = %T %v, want core auth error", errMsg.Error, errMsg.Error)
-	}
-	if authErr.Code != "upstream_model_unavailable" {
-		t.Fatalf("error code = %q, want upstream_model_unavailable: %+v", authErr.Code, errMsg)
-	}
-	msg := errMsg.Error.Error()
-	if !strings.Contains(msg, "no executable upstream model available") ||
-		!strings.Contains(msg, "provider=") ||
-		!strings.Contains(msg, "model=gpt-5.3-codex") ||
-		!strings.Contains(msg, "request_bytes=") ||
-		!strings.Contains(msg, "candidates=") ||
-		!strings.Contains(msg, "candidate_context_lengths=") {
-		t.Fatalf("error message = %q, want sanitized provider/model/request/context context", msg)
-	}
-	if !strings.Contains(msg, "astron-code-latest:512") &&
-		!strings.Contains(msg, "glm-5.2:2048") {
-		t.Fatalf("error message = %q, want concrete context-length diagnostics", msg)
-	}
-	if models := codex.Models(); len(models) != 0 {
-		t.Fatalf("codex should be skipped by request policy, got calls for %v", models)
-	}
-	if models := astron.Models(); len(models) != 0 {
-		t.Fatalf("astron should be skipped when context-length is exceeded, got calls for %v", models)
-	}
-	if models := bigmodel.Models(); len(models) != 0 {
-		t.Fatalf("bigmodel should not be called when all configured upstream models are too small, got calls for %v", models)
-	}
-}
-
-func TestExecuteWithAuthManager_GenericOpenAICompatPreExecutionFilterReportsSpecificError(t *testing.T) {
-	handler, manager, executor := newGenericOpenAICompatRoutingPolicyHandler(t)
-	auth, ok := manager.GetByID("custom-auth")
-	if !ok {
-		t.Fatalf("custom-auth not registered")
-	}
-	auth.ModelStates = map[string]*coreauth.ModelState{
-		"custom-large": {
-			Status:         coreauth.StatusActive,
-			Unavailable:    true,
-			NextRetryAfter: time.Now().Add(30 * time.Minute),
-		},
-	}
-	if _, err := manager.Update(context.Background(), auth); err != nil {
-		t.Fatalf("manager.Update(custom-auth): %v", err)
-	}
-
-	rawJSON := []byte(`{"model":"gpt-5.3-codex","input":"` + strings.Repeat("context ", 800) + `"}`)
-	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
-	if errMsg == nil {
-		t.Fatalf("ExecuteWithAuthManager() body = %q, want error", string(body))
-	}
-	var authErr *coreauth.Error
-	if !errors.As(errMsg.Error, &authErr) {
-		t.Fatalf("error = %T %v, want core auth error", errMsg.Error, errMsg.Error)
-	}
-	if authErr.Code != "upstream_model_unavailable" {
-		t.Fatalf("error code = %q, want upstream_model_unavailable: %+v", authErr.Code, errMsg)
-	}
-	msg := errMsg.Error.Error()
-	if !strings.Contains(msg, "no executable upstream model available") {
-		t.Fatalf("error message = %q, want executable upstream model detail", msg)
-	}
-	if !strings.Contains(msg, "provider=openai-compatible-custom-coding") || !strings.Contains(msg, "model=gpt-5.3-codex") {
-		t.Fatalf("error message = %q, want sanitized provider/model detail", msg)
-	}
-	if models := executor.Models(); len(models) != 0 {
-		t.Fatalf("generic openai-compatible executor should not be called when all upstream models are filtered, got calls for %v", models)
-	}
-}
-
-func TestExecuteStreamWithAuthManager_RequestBytesPolicyFallsBackFromCodexSparkToAstron(t *testing.T) {
-	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
-	rawJSON := []byte(`{"model":"gpt-5.3-codex","stream":true,"input":"` + strings.Repeat("x", 256) + `"}`)
-
-	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
-	if dataChan == nil || errChan == nil {
-		t.Fatalf("expected non-nil channels")
-	}
-
-	var got []byte
-	for chunk := range dataChan {
-		got = append(got, chunk...)
-	}
-	for msg := range errChan {
-		if msg != nil {
-			t.Fatalf("unexpected stream error: %+v", msg)
-		}
-	}
-
-	if string(got) != "astron-code:astron-code-latest" {
-		t.Fatalf("stream response = %q, want astron fallback", string(got))
-	}
-	if models := codex.Models(); len(models) != 0 {
-		t.Fatalf("codex should be skipped by request policy, got calls for %v", models)
-	}
-	if models := astron.Models(); len(models) != 1 || models[0] != "astron-code-latest" {
-		t.Fatalf("astron models = %v, want [astron-code-latest]", models)
-	}
-	if models := bigmodel.Models(); len(models) != 0 {
-		t.Fatalf("bigmodel should not be used while astron fits, got calls for %v", models)
-	}
-}
-
-func TestExecuteStreamWithAuthManager_ContextLengthFallsBackFromAstronToBigModel(t *testing.T) {
-	handler, codex, astron, bigmodel := newContextRoutingPolicyHandler(t)
-	rawJSON := []byte(`{"model":"gpt-5.3-codex","stream":true,"input":"` + strings.Repeat("context ", 800) + `"}`)
-
-	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai-response", "gpt-5.3-codex", rawJSON, "")
-	if dataChan == nil || errChan == nil {
-		t.Fatalf("expected non-nil channels")
-	}
-
-	var got []byte
-	for chunk := range dataChan {
-		got = append(got, chunk...)
-	}
-	for msg := range errChan {
-		if msg != nil {
-			t.Fatalf("unexpected stream error: %+v", msg)
-		}
-	}
-
-	if string(got) != "bigmodel-coding:glm-5.2" {
-		t.Fatalf("stream response = %q, want bigmodel glm-5.2 fallback", string(got))
-	}
-	if models := codex.Models(); len(models) != 0 {
-		t.Fatalf("codex should be skipped by request policy, got calls for %v", models)
-	}
-	if models := astron.Models(); len(models) != 0 {
-		t.Fatalf("astron should be skipped when context-length is exceeded, got calls for %v", models)
-	}
-	if models := bigmodel.Models(); len(models) != 1 || models[0] != "glm-5.2" {
-		t.Fatalf("bigmodel models = %v, want [glm-5.2]", models)
-	}
-}
-
 func TestExecuteStreamWithAuthManager_RetriesBeforeFirstByte(t *testing.T) {
 	executor := &failOnceStreamExecutor{}
 	manager := coreauth.NewManager(nil, nil, nil)
@@ -1119,122 +395,21 @@ func TestExecuteStreamWithAuthManager_RetriesBeforeFirstByte(t *testing.T) {
 	}
 }
 
-func TestExecuteStreamWithAuthManager_DoesNotReplayTerminalEgressFailure(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		asChunk bool
-		err     error
-	}{
-		{name: "initial required error", err: internalegress.ErrEgressRequired},
-		{name: "bootstrap disabled error", asChunk: true, err: internalegress.ErrEndpointDisabled},
-		{name: "bootstrap invalid error", asChunk: true, err: internalegress.ErrEndpointInvalid},
-		{name: "bootstrap identity mismatch", asChunk: true, err: internalegress.ErrIdentityMismatch},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			executor := &terminalEgressStreamExecutor{asChunk: tc.asChunk, err: tc.err}
-			manager := coreauth.NewManager(nil, nil, nil)
-			manager.RegisterExecutor(executor)
-			auth := &coreauth.Auth{ID: "egress-auth", Provider: "codex", Status: coreauth.StatusActive}
-			if _, err := manager.Register(context.Background(), auth); err != nil {
-				t.Fatal(err)
-			}
-			registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-egress-model"}})
-			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
-
-			handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 1}}, manager)
-			dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-egress-model", []byte(`{"model":"test-egress-model"}`), "")
-			if dataChan != nil {
-				for range dataChan {
-				}
-			}
-			var gotErr error
-			for msg := range errChan {
-				if msg != nil {
-					gotErr = msg.Error
-				}
-			}
-			var runtimeErr *internalegress.Error
-			if !errors.As(gotErr, &runtimeErr) {
-				t.Fatalf("error = %v, want terminal egress error", gotErr)
-			}
-			if calls := executor.Calls(); calls != 1 {
-				t.Fatalf("ExecuteStream calls = %d, want no replay", calls)
-			}
-		})
+func TestExecuteStreamWithAuthManager_ResolvesBootstrapRetryHeadersBeforeReturn(t *testing.T) {
+	executor := &blockingRetryStreamExecutor{
+		retryStarted: make(chan struct{}),
+		allowRetry:   make(chan struct{}),
 	}
-}
-
-func TestExecuteStreamWithAuthManager_RetriesTransientZeroOutputTransportFailure(t *testing.T) {
-	strictEgressReadErr := internalegress.RuntimeError(fmt.Errorf(
-		"%w: strict egress proxy response read failed: stream error: stream ID 1; INTERNAL_ERROR; received from peer",
-		internalegress.ErrEndpointDisabled,
-	))
-
-	for _, tc := range []struct {
-		name    string
-		asChunk bool
-		err     error
-	}{
-		{name: "strict egress HTTP2 response read", asChunk: true, err: strictEgressReadErr},
-		{name: "response body decode", err: errors.New("stream disconnected before completion: Transport error: network error: error decoding response body")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			executor := &transientTransportStreamExecutor{asChunk: tc.asChunk, err: tc.err}
-			manager := coreauth.NewManager(nil, nil, nil)
-			manager.RegisterExecutor(executor)
-			auth := &coreauth.Auth{ID: "transport-auth", Provider: "codex", Status: coreauth.StatusActive}
-			if _, err := manager.Register(context.Background(), auth); err != nil {
-				t.Fatal(err)
-			}
-			registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-transport-model"}})
-			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
-
-			handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 1}}, manager)
-			dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-transport-model", []byte(`{"model":"test-transport-model"}`), "")
-			var got []byte
-			for chunk := range dataChan {
-				got = append(got, chunk...)
-			}
-			for msg := range errChan {
-				if msg != nil {
-					t.Fatalf("unexpected error after replay: %v", msg.Error)
-				}
-			}
-			if string(got) != "ok" {
-				t.Fatalf("payload = %q, want ok", got)
-			}
-			if calls := executor.Calls(); calls != 2 {
-				t.Fatalf("ExecuteStream calls = %d, want 2", calls)
-			}
-		})
-	}
-}
-
-func TestExecuteStreamWithAuthManager_RetriesInitialExecuteStreamFailureBeforeFirstByte(t *testing.T) {
-	executor := &failOnceInitialStreamExecutor{}
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(executor)
-
-	auth1 := &coreauth.Auth{
-		ID:       "auth1",
-		Provider: "codex",
-		Status:   coreauth.StatusActive,
-		Metadata: map[string]any{"email": "test1@example.com"},
-	}
+	auth1 := &coreauth.Auth{ID: "auth1", Provider: "codex", Status: coreauth.StatusActive, Metadata: map[string]any{"email": "test1@example.com"}}
 	if _, err := manager.Register(context.Background(), auth1); err != nil {
 		t.Fatalf("manager.Register(auth1): %v", err)
 	}
-
-	auth2 := &coreauth.Auth{
-		ID:       "auth2",
-		Provider: "codex",
-		Status:   coreauth.StatusActive,
-		Metadata: map[string]any{"email": "test2@example.com"},
-	}
+	auth2 := &coreauth.Auth{ID: "auth2", Provider: "codex", Status: coreauth.StatusActive, Metadata: map[string]any{"email": "test2@example.com"}}
 	if _, err := manager.Register(context.Background(), auth2); err != nil {
 		t.Fatalf("manager.Register(auth2): %v", err)
 	}
-
 	registry.GetGlobalRegistry().RegisterClient(auth1.ID, auth1.Provider, []*registry.ModelInfo{{ID: "test-model"}})
 	registry.GetGlobalRegistry().RegisterClient(auth2.ID, auth2.Provider, []*registry.ModelInfo{{ID: "test-model"}})
 	t.Cleanup(func() {
@@ -1242,36 +417,303 @@ func TestExecuteStreamWithAuthManager_RetriesInitialExecuteStreamFailureBeforeFi
 		registry.GetGlobalRegistry().UnregisterClient(auth2.ID)
 	})
 
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
-		PassthroughHeaders: true,
-		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 1,
-		},
-	}, manager)
-	dataChan, upstreamHeaders, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
-	if dataChan == nil || errChan == nil {
-		t.Fatalf("expected non-nil channels")
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{PassthroughHeaders: true, Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 1}}, manager)
+	type streamResult struct {
+		dataChan        <-chan []byte
+		upstreamHeaders http.Header
+		errChan         <-chan *interfaces.ErrorMessage
 	}
+	resultChan := make(chan streamResult, 1)
+	go func() {
+		dataChan, upstreamHeaders, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
+		resultChan <- streamResult{dataChan: dataChan, upstreamHeaders: upstreamHeaders, errChan: errChan}
+	}()
 
+	select {
+	case result := <-resultChan:
+		t.Fatalf("ExecuteStreamWithAuthManager returned before bootstrap retry completed: %#v", result.upstreamHeaders)
+	case <-executor.retryStarted:
+	}
+	select {
+	case result := <-resultChan:
+		t.Fatalf("ExecuteStreamWithAuthManager returned while bootstrap retry was blocked: %#v", result.upstreamHeaders)
+	default:
+	}
+	close(executor.allowRetry)
+
+	result := <-resultChan
+	if result.upstreamHeaders.Get("X-Upstream-Attempt") != "2" {
+		t.Fatalf("upstream headers = %#v, want retry attempt headers", result.upstreamHeaders)
+	}
+	for range result.dataChan {
+	}
+	for msg := range result.errChan {
+		if msg != nil {
+			t.Fatalf("unexpected stream error: %+v", msg)
+		}
+	}
+}
+
+type bootstrapStreamExecutor struct {
+	mu     sync.Mutex
+	calls  int
+	stream func(context.Context, int) (*coreexecutor.StreamResult, error)
+}
+
+func (*bootstrapStreamExecutor) Identifier() string { return "bootstrap-test" }
+
+func (e *bootstrapStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "Execute not implemented"}
+}
+
+func (e *bootstrapStreamExecutor) ExecuteStream(ctx context.Context, _ *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.mu.Lock()
+	e.calls++
+	call := e.calls
+	e.mu.Unlock()
+	return e.stream(ctx, call)
+}
+
+func (e *bootstrapStreamExecutor) Refresh(context.Context, *coreauth.Auth) (*coreauth.Auth, error) {
+	return nil, nil
+}
+
+func (e *bootstrapStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
+}
+
+func (e *bootstrapStreamExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, &coreauth.Error{Code: "not_implemented", Message: "HttpRequest not implemented", HTTPStatus: http.StatusNotImplemented}
+}
+
+func (e *bootstrapStreamExecutor) Calls() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
+}
+
+func registerBootstrapExecutor(t *testing.T, executor *bootstrapStreamExecutor) (*BaseAPIHandler, *coreauth.Manager) {
+	t.Helper()
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	auth := &coreauth.Auth{ID: "bootstrap-auth", Provider: executor.Identifier(), Status: coreauth.StatusActive, Metadata: map[string]any{"email": "bootstrap@example.com"}}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("manager.Register(): %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "bootstrap-model"}})
+	authRetry := &coreauth.Auth{ID: "bootstrap-auth-retry", Provider: executor.Identifier(), Status: coreauth.StatusActive, Metadata: map[string]any{"email": "bootstrap-retry@example.com"}}
+	if _, errRegister := manager.Register(context.Background(), authRetry); errRegister != nil {
+		t.Fatalf("manager.Register(retry): %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(authRetry.ID, authRetry.Provider, []*registry.ModelInfo{{ID: "bootstrap-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+		registry.GetGlobalRegistry().UnregisterClient(authRetry.ID)
+	})
+	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 1}}, manager), manager
+}
+
+func TestExecuteStreamWithAuthManager_RetriesAfterDroppedBootstrapPayload(t *testing.T) {
+	executor := &bootstrapStreamExecutor{stream: func(_ context.Context, call int) (*coreexecutor.StreamResult, error) {
+		chunks := make(chan coreexecutor.StreamChunk, 2)
+		if call == 1 {
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("drop")}
+			chunks <- coreexecutor.StreamChunk{Err: &coreauth.Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"}}
+		} else {
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("ok")}
+		}
+		close(chunks)
+		return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+	var intercepted []string
+	handler.SetPluginHost(&handlerInterceptorTestHost{interceptStreamChunk: func(_ context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+		if req.ChunkIndex >= 0 {
+			intercepted = append(intercepted, string(req.Body))
+		}
+		return pluginapi.StreamChunkInterceptResponse{Body: cloneBytes(req.Body), DropChunk: string(req.Body) == "drop"}
+	}})
+
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "bootstrap-model", []byte(`{"model":"bootstrap-model"}`), "")
 	var got []byte
 	for chunk := range dataChan {
 		got = append(got, chunk...)
 	}
 	for msg := range errChan {
 		if msg != nil {
-			t.Fatalf("unexpected error: %+v", msg)
+			t.Fatalf("unexpected stream error: %+v", msg)
 		}
 	}
-
 	if string(got) != "ok" {
-		t.Fatalf("expected payload ok, got %q", string(got))
+		t.Fatalf("stream payload = %q, want ok", got)
 	}
 	if executor.Calls() != 2 {
-		t.Fatalf("expected 2 stream attempts, got %d", executor.Calls())
+		t.Fatalf("stream attempts = %d, want 2", executor.Calls())
 	}
-	upstreamAttemptHeader := upstreamHeaders.Get("X-Upstream-Attempt")
-	if upstreamAttemptHeader != "2" {
-		t.Fatalf("expected upstream header from retry attempt, got %q", upstreamAttemptHeader)
+	if strings.Join(intercepted, ",") != "drop,ok" {
+		t.Fatalf("intercepted payloads = %v, want [drop ok] without double interception", intercepted)
+	}
+}
+
+func TestExecuteStreamWithAuthManager_CancelDuringSynchronousBootstrap(t *testing.T) {
+	started := make(chan struct{})
+	executor := &bootstrapStreamExecutor{stream: func(_ context.Context, _ int) (*coreexecutor.StreamResult, error) {
+		close(started)
+		return &coreexecutor.StreamResult{Chunks: make(chan coreexecutor.StreamChunk)}, nil
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type result struct {
+		data <-chan []byte
+		errs <-chan *interfaces.ErrorMessage
+	}
+	results := make(chan result, 1)
+	go func() {
+		dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(ctx, "openai", "bootstrap-model", []byte(`{"model":"bootstrap-model"}`), "")
+		results <- result{data: dataChan, errs: errChan}
+	}()
+	<-started
+	cancel()
+	select {
+	case got := <-results:
+		if got.data != nil {
+			if _, ok := <-got.data; ok {
+				t.Fatal("data channel remains open after bootstrap cancellation")
+			}
+		}
+		if got.errs != nil {
+			for range got.errs {
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("bootstrap cancellation did not return")
+	}
+}
+
+func TestExecuteStreamWithAuthManager_EmptyClosedStream(t *testing.T) {
+	executor := &bootstrapStreamExecutor{stream: func(_ context.Context, _ int) (*coreexecutor.StreamResult, error) {
+		chunks := make(chan coreexecutor.StreamChunk)
+		close(chunks)
+		return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "bootstrap-model", []byte(`{"model":"bootstrap-model"}`), "")
+	if _, ok := <-dataChan; ok {
+		t.Fatal("empty stream produced data")
+	}
+	var streamErr *interfaces.ErrorMessage
+	for msg := range errChan {
+		if msg != nil {
+			streamErr = msg
+		}
+	}
+	if streamErr == nil || streamErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("empty stream error = %+v, want terminal internal-server error", streamErr)
+	}
+}
+
+type handlerReleaseNotification struct {
+	group    executionregistry.ReleaseGroup
+	sequence int64
+}
+
+type handlerReleaseSink struct {
+	mu            sync.Mutex
+	notifications []handlerReleaseNotification
+	notified      chan struct{}
+}
+
+func newHandlerReleaseSink() *handlerReleaseSink {
+	return &handlerReleaseSink{notified: make(chan struct{}, 1)}
+}
+
+func (s *handlerReleaseSink) MarkDirty(group executionregistry.ReleaseGroup, sequence int64) {
+	s.mu.Lock()
+	s.notifications = append(s.notifications, handlerReleaseNotification{group: group, sequence: sequence})
+	s.mu.Unlock()
+	select {
+	case s.notified <- struct{}{}:
+	default:
+	}
+}
+
+func (s *handlerReleaseSink) Notifications() []handlerReleaseNotification {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]handlerReleaseNotification(nil), s.notifications...)
+}
+
+type handlerAccountedHomeDispatcher struct {
+	calls atomic.Int32
+}
+
+func (*handlerAccountedHomeDispatcher) HeartbeatOK() bool { return true }
+func (d *handlerAccountedHomeDispatcher) RPopAuth(_ context.Context, model string, _ string, _ http.Header, _ int) ([]byte, error) {
+	d.calls.Add(1)
+	return json.Marshal(map[string]any{
+		"concurrency": map[string]any{"accounted": true, "credential_id": "handler-cred", "model": model},
+		"model":       model,
+		"auth_index":  "handler-cred",
+		"auth":        map[string]any{"id": "handler-cred", "provider": "bootstrap-test", "status": coreauth.StatusActive},
+	})
+}
+func (*handlerAccountedHomeDispatcher) AbortAmbiguousDispatch() {}
+
+func TestExecuteStreamWithAuthManager_HomeBootstrapFailureDoesNotRedispatch(t *testing.T) {
+	executor := &bootstrapStreamExecutor{stream: func(_ context.Context, _ int) (*coreexecutor.StreamResult, error) {
+		chunks := make(chan coreexecutor.StreamChunk, 2)
+		chunks <- coreexecutor.StreamChunk{Payload: []byte("drop")}
+		chunks <- coreexecutor.StreamChunk{Err: &coreauth.Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"}}
+		close(chunks)
+		return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	}}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}})
+	manager.RegisterExecutor(executor)
+	registry := executionregistry.New()
+	releaseSink := newHandlerReleaseSink()
+	registry.SetReleaseSink(releaseSink.MarkDirty)
+	dispatcher := &handlerAccountedHomeDispatcher{}
+	manager.PublishHomeDispatch(dispatcher, registry, 1)
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 1}}, manager)
+	handler.SetPluginHost(&handlerInterceptorTestHost{interceptStreamChunk: func(_ context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+		return pluginapi.StreamChunkInterceptResponse{Body: cloneBytes(req.Body), DropChunk: string(req.Body) == "drop"}
+	}})
+
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "home-model", []byte(`{"model":"home-model"}`), "")
+	for range dataChan {
+		t.Fatal("Home bootstrap failure produced data")
+	}
+	var streamErr *interfaces.ErrorMessage
+	for msg := range errChan {
+		if msg != nil {
+			streamErr = msg
+		}
+	}
+	if streamErr == nil || streamErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("stream error = %+v, want unauthorized terminal error", streamErr)
+	}
+	if got := dispatcher.calls.Load(); got != 1 {
+		t.Fatalf("Home RPOP calls = %d, want 1", got)
+	}
+	select {
+	case <-releaseSink.notified:
+	case <-time.After(time.Second):
+		t.Fatal("accounted Home selection was not released")
+	}
+	wantRelease := handlerReleaseNotification{
+		group:    executionregistry.ReleaseGroup{CredentialID: "handler-cred", Model: "home-model"},
+		sequence: 1,
+	}
+	if got := releaseSink.Notifications(); len(got) != 1 || got[0] != wantRelease {
+		t.Fatalf("release notifications = %#v, want [%#v]", got, wantRelease)
+	}
+	if errDrain := registry.Drain(context.Background()); errDrain != nil {
+		t.Fatalf("registry.Drain(): %v", errDrain)
+	}
+	if got := releaseSink.Notifications(); len(got) != 1 || got[0] != wantRelease {
+		t.Fatalf("release notifications after drain = %#v, want [%#v]", got, wantRelease)
 	}
 }
 
@@ -1405,7 +847,7 @@ func TestExecuteStreamWithAuthManager_DoesNotRetryAfterFirstByte(t *testing.T) {
 	}
 }
 
-func TestExecuteStreamWithAuthManager_EnrichesBootstrapRetryAuthNotFoundError(t *testing.T) {
+func TestExecuteStreamWithAuthManager_EnrichesBootstrapRetryAuthUnavailableError(t *testing.T) {
 	executor := &failOnceStreamExecutor{}
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(executor)
@@ -1460,8 +902,8 @@ func TestExecuteStreamWithAuthManager_EnrichesBootstrapRetryAuthNotFoundError(t 
 	if !errors.As(gotErr.Error, &authErr) || authErr == nil {
 		t.Fatalf("expected coreauth.Error, got %T", gotErr.Error)
 	}
-	if authErr.Code != "auth_not_found" {
-		t.Fatalf("code = %q, want %q", authErr.Code, "auth_not_found")
+	if authErr.Code != "auth_unavailable" {
+		t.Fatalf("code = %q, want %q", authErr.Code, "auth_unavailable")
 	}
 	if !strings.Contains(authErr.Message, "providers=codex") {
 		t.Fatalf("message missing provider context: %q", authErr.Message)

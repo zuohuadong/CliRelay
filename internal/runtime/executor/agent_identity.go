@@ -156,10 +156,6 @@ func codexAuthHasAgentIdentity(auth *cliproxyauth.Auth) bool {
 		agentIdentityMetadataString(auth, "agent_identity_state", "agent_runtime_id") != ""
 }
 
-func codexAuthUsesAPIKey(auth *cliproxyauth.Auth) bool {
-	return auth != nil && auth.Attributes != nil && strings.TrimSpace(auth.Attributes[cliproxyauth.AttributeAPIKey]) != ""
-}
-
 func applyAgentIdentityRequestHeaders(req *http.Request, auth *cliproxyauth.Auth) error {
 	if !requestSupportsAgentAssertion(req) {
 		if cliproxyauth.IsStandaloneAgentIdentityAuth(auth) {

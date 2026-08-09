@@ -7,6 +7,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -63,7 +64,7 @@ func sanitizeOpenAIResponsesReasoningItems(ctx context.Context, provider string,
 // sanitizeOpenAIResponsesReasoningEncryptedContent 保留上游的字段级清理语义。
 // Codex 运行路径会先用上面的严格策略删除不可重放项，再由这里清除孤立 ID。
 func sanitizeOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provider string, body []byte) []byte {
-	inputResult := gjson.GetBytes(body, "input")
+	inputResult := util.GetGJSONBytesNoCopy(body, "input")
 	if !inputResult.Exists() || !inputResult.IsArray() {
 		return body
 	}

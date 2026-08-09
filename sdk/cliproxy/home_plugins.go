@@ -264,7 +264,7 @@ func homePluginSyncKey(cfg *config.Config) string {
 		return ""
 	}
 	hash := sha256.New()
-	_, _ = fmt.Fprintf(hash, "enabled=%t\ndir=%s\nsync-revision=%d\n", cfg.Plugins.Enabled, strings.TrimSpace(cfg.Plugins.Dir), cfg.Plugins.SyncRevision)
+	_, _ = fmt.Fprintf(hash, "enabled=%t\ndir=%s\nsync-revision=%d\nauth-revision=%d\n", cfg.Plugins.Enabled, strings.TrimSpace(cfg.Plugins.Dir), cfg.Plugins.SyncRevision, cfg.Plugins.AuthRevision)
 	ids := make([]string, 0, len(cfg.Plugins.Configs))
 	for id := range cfg.Plugins.Configs {
 		ids = append(ids, id)

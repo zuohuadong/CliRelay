@@ -2,13 +2,15 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/tidwall/gjson"
+
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
@@ -121,6 +123,43 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 	}
 }
 
+// TestGetRequestDetails_UnknownModelErrorResistsJSONInjection pins the unroutable
+// model error body against client-controlled model names. The name is echoed into
+// the body, so formatting it into a JSON literal would let a caller corrupt the
+// payload or overwrite the error code that clients branch on.
+func TestGetRequestDetails_UnknownModelErrorResistsJSONInjection(t *testing.T) {
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+
+	for _, model := range []string{
+		"unroutable-model",
+		`foo"bar`,
+		`x","code":"insufficient_quota","x":"`,
+		`x"}}`,
+		`foo\bar`,
+		"foo\nbar",
+	} {
+		t.Run(model, func(t *testing.T) {
+			_, _, errMsg := handler.getRequestDetails(model)
+			if errMsg == nil || errMsg.Error == nil {
+				t.Fatal("expected an error for an unroutable model")
+			}
+			if errMsg.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", errMsg.StatusCode, http.StatusBadRequest)
+			}
+			body := errMsg.Error.Error()
+			if !json.Valid([]byte(body)) {
+				t.Fatalf("error body is not valid JSON: %s", body)
+			}
+			if got := gjson.Get(body, "error.code").String(); got != "model_not_found" {
+				t.Fatalf("error code = %q, want model_not_found; the caller controlled the body: %s", got, body)
+			}
+			if got, want := gjson.Get(body, "error.message").String(), "unknown provider for model "+model; got != want {
+				t.Fatalf("error message = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestGetRequestDetails_ImageModelReturns503(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
 
@@ -201,71 +240,6 @@ func TestIsOpenAIImageOnlyModel(t *testing.T) {
 				t.Fatalf("isOpenAIImageOnlyModel(%q) = %v, want %v", tt.model, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestGetRequestDetails_AppendsConfiguredOpenAICompatAliasProviders(t *testing.T) {
-	modelRegistry := registry.GetGlobalRegistry()
-	modelRegistry.RegisterClient("test-request-details-codex", "codex", []*registry.ModelInfo{{ID: "gpt-5.3-codex"}})
-	modelRegistry.RegisterClient("test-request-details-bigmodel", "bigmodel-coding", []*registry.ModelInfo{{ID: "gpt-5.3-codex"}})
-	t.Cleanup(func() {
-		modelRegistry.UnregisterClient("test-request-details-codex")
-		modelRegistry.UnregisterClient("test-request-details-bigmodel")
-	})
-
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.SetConfig(&internalconfig.Config{
-		AstronCodeAPIKey: []internalconfig.OpenAICompatibility{{
-			Models: []internalconfig.OpenAICompatibilityModel{{Name: "astron-code-latest", Alias: "gpt-5.3-codex"}},
-		}},
-		BigModelCodingAPIKey: []internalconfig.OpenAICompatibility{{
-			Models: []internalconfig.OpenAICompatibilityModel{{Name: "glm-5.2", Alias: "gpt-5.3-codex"}},
-		}},
-		OpenAICompatibility: []internalconfig.OpenAICompatibility{{
-			Name:   "custom-coding",
-			Models: []internalconfig.OpenAICompatibilityModel{{Name: "custom-upstream", Alias: "gpt-5.3-codex"}},
-		}},
-	})
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
-
-	providers, model, errMsg := handler.getRequestDetails("gpt-5.3-codex")
-	if errMsg != nil {
-		t.Fatalf("getRequestDetails() error = %v", errMsg)
-	}
-	if model != "gpt-5.3-codex" {
-		t.Fatalf("model = %q, want gpt-5.3-codex", model)
-	}
-	want := []string{"bigmodel-coding", "codex", "astron-code", "openai-compatible-custom-coding"}
-	if !reflect.DeepEqual(providers, want) {
-		t.Fatalf("providers = %v, want %v", providers, want)
-	}
-
-	providers, _, errMsg = handler.getRequestDetails("gpt-5.3-codex(high)")
-	if errMsg != nil {
-		t.Fatalf("getRequestDetails() suffixed error = %v", errMsg)
-	}
-	if !reflect.DeepEqual(providers, want) {
-		t.Fatalf("suffixed providers = %v, want %v", providers, want)
-	}
-}
-
-func TestGetRequestDetails_UsesConfiguredOAuthAliasProvider(t *testing.T) {
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.SetConfig(&internalconfig.Config{
-		OAuthModelAlias: map[string][]internalconfig.OAuthModelAlias{
-			"antigravity": {{Name: "gemini-3.1-pro-high", Alias: "gpt-5.2"}},
-		},
-	})
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
-	providers, model, errMsg := handler.getRequestDetails("gpt-5.2")
-	if errMsg != nil {
-		t.Fatalf("getRequestDetails() error = %v", errMsg)
-	}
-	if model != "gpt-5.2" {
-		t.Fatalf("model = %q, want gpt-5.2", model)
-	}
-	if !reflect.DeepEqual(providers, []string{"antigravity"}) {
-		t.Fatalf("providers = %v, want [antigravity]", providers)
 	}
 }
 

@@ -154,6 +154,30 @@ func (r *Registry) BeginDispatch() (*PendingDispatch, error) {
 	return pending, nil
 }
 
+// WaitPending waits until every dispatch with an unresolved Home response has ended or been installed.
+func (r *Registry) WaitPending(ctx context.Context) error {
+	if r == nil {
+		return ErrRegistryClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	r.mu.Lock()
+	for len(r.pending) != 0 {
+		changed := r.changed
+		r.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+		r.mu.Lock()
+	}
+	r.mu.Unlock()
+	return nil
+}
+
 // End releases a dispatch token that was not installed.
 func (p *PendingDispatch) End() {
 	if p == nil || p.registry == nil {
@@ -177,23 +201,18 @@ func (r *Registry) Install(pending *PendingDispatch, spec ScopeSpec) (*Scope, er
 	}
 
 	pending.mu.Lock()
+	defer pending.mu.Unlock()
 	r.mu.Lock()
-	if _, exists := r.pending[pending.id]; !exists {
-		r.mu.Unlock()
-		pending.mu.Unlock()
-		return nil, ErrInvalidPendingDispatch
-	}
+	defer r.mu.Unlock()
+
 	if State(r.state.Load()) != StateAccepting {
 		pending.once.Do(func() {})
 		delete(r.pending, pending.id)
-		releaseSink, releaseGroup, releaseSequence := r.markReleasedSpecLocked(spec)
 		r.signalLocked()
-		r.mu.Unlock()
-		pending.mu.Unlock()
-		if releaseSink != nil && releaseSequence > 0 {
-			releaseSink(releaseGroup, releaseSequence)
-		}
 		return nil, ErrRegistryNotAccepting
+	}
+	if _, exists := r.pending[pending.id]; !exists {
+		return nil, ErrInvalidPendingDispatch
 	}
 
 	pending.once.Do(func() {})
@@ -201,8 +220,6 @@ func (r *Registry) Install(pending *PendingDispatch, spec ScopeSpec) (*Scope, er
 	scope := &Scope{id: pending.id, registry: r, spec: spec, active: true}
 	r.scopes[scope.id] = scope
 	r.signalLocked()
-	r.mu.Unlock()
-	pending.mu.Unlock()
 	return scope, nil
 }
 
@@ -315,17 +332,10 @@ func (s *Scope) EndWithRelease(_ string) *ReleaseTicket {
 }
 
 func (r *Registry) markReleasedLocked(scope *Scope) (ReleaseSink, ReleaseGroup, int64) {
-	if scope == nil {
+	if scope == nil || !scope.spec.Accounted {
 		return nil, ReleaseGroup{}, 0
 	}
-	return r.markReleasedSpecLocked(scope.spec)
-}
-
-func (r *Registry) markReleasedSpecLocked(spec ScopeSpec) (ReleaseSink, ReleaseGroup, int64) {
-	if !spec.Accounted || spec.CredentialID == "" || spec.Model == "" {
-		return nil, ReleaseGroup{}, 0
-	}
-	group := ReleaseGroup{CredentialID: spec.CredentialID, Model: spec.Model}
+	group := ReleaseGroup{CredentialID: scope.spec.CredentialID, Model: scope.spec.Model}
 	r.releaseSequences[group]++
 	return r.releaseSink, group, r.releaseSequences[group]
 }

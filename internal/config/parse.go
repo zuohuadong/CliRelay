@@ -16,6 +16,10 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("config payload is empty")
 	}
 
+	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
+		return nil, errValidate
+	}
+
 	var cfg Config
 	// Keep defaults aligned with LoadConfigOptional.
 	cfg.Host = "" // Default empty: binds to all interfaces (IPv4 + IPv6)
@@ -31,14 +35,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.WebsocketAuth = true
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
-	cfg.ResponsesMaxInboundBytes = DefaultResponsesMaxInboundBytes
-	cfg.ResponsesMemoryBudgetBytes = DefaultResponsesMemoryBudgetBytes
-	cfg.ResponsesWebsocketMaxSessionBytes = DefaultResponsesWebsocketMaxSessionBytes
-	cfg.ResponsesWebsocketMaxTurnOutputBytes = DefaultResponsesWebsocketMaxTurnOutputBytes
-	cfg.ResponsesWebsocketToolCacheBytes = DefaultResponsesWebsocketToolCacheBytes
-	cfg.ResponsesWebsocketMemoryBudgetBytes = DefaultResponsesWebsocketMemoryBudgetBytes
-	cfg.ResponsesWebsocketMaxConnections = DefaultResponsesWebsocketMaxConnections
+	applyResponsesMemoryDefaults(&cfg)
 	cfg.Codex.ResponseHeaderTimeoutSeconds = DefaultCodexResponseHeaderTimeoutSeconds
+	cfg.AmpCode.RestrictManagementToLocalhost = false
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 
@@ -48,6 +47,12 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
+	if errValidate := cfg.Codex.LiveMediaRelay.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
+	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {
 		return nil, errValidate
 	}
 
@@ -113,6 +118,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeCodexHeaderDefaults()
 	cfg.SanitizeClaudeHeaderDefaults()
 	cfg.SanitizeClaudeKeys()
+	cfg.SanitizeKimiHeaderDefaults()
 	cfg.SanitizeBedrockKeys()
 	cfg.SanitizeOpenCodeGoKeys()
 	cfg.SanitizeIdentityFingerprint()
@@ -120,6 +126,8 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeEgressNetwork()
 	cfg.MigrateBigModelCodingFromOpenAICompatibility()
 	cfg.SanitizeBigModelCoding()
+	cfg.MigrateAstronCodeFromOpenAICompatibility()
+	cfg.SanitizeAstronCode()
 	cfg.MigrateAgnesFromOpenAICompatibility()
 	cfg.SanitizeAgnes()
 	cfg.SanitizeOpenAICompatibility()

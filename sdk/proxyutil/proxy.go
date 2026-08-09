@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -165,17 +166,19 @@ func (d *httpConnectDialer) Dial(network, addr string) (net.Conn, error) {
 }
 
 func (d *httpConnectDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	contextDialer, ok := d.dialer.(proxy.ContextDialer)
 	if !ok {
-		return nil, fmt.Errorf("HTTP proxy base dialer does not support context cancellation")
+		return nil, errors.New("HTTP proxy base dialer does not support context cancellation")
 	}
 	proxyConn, errDial := contextDialer.DialContext(ctx, network, proxyDialAddr(d.proxyURL))
 	if errDial != nil {
 		return nil, fmt.Errorf("dial HTTP proxy failed: %w", errDial)
 	}
-	stopCancel := context.AfterFunc(ctx, func() { _ = proxyConn.Close() })
-
 	conn := proxyConn
+	stopCancel := context.AfterFunc(ctx, func() { _ = proxyConn.Close() })
 	if d.proxyURL.Scheme == "https" {
 		tlsConn := tls.Client(conn, &tls.Config{ServerName: d.proxyURL.Hostname()})
 		if errHandshake := tlsConn.HandshakeContext(ctx); errHandshake != nil {
@@ -184,6 +187,7 @@ func (d *httpConnectDialer) DialContext(ctx context.Context, network, addr strin
 				_ = conn.Close()
 				return nil, errCtx
 			}
+
 			if errClose := conn.Close(); errClose != nil {
 				return nil, fmt.Errorf("HTTPS proxy TLS handshake failed: %w; close failed: %v", errHandshake, errClose)
 			}
@@ -192,12 +196,12 @@ func (d *httpConnectDialer) DialContext(ctx context.Context, network, addr strin
 		conn = tlsConn
 	}
 
-	req := &http.Request{
+	req := (&http.Request{
 		Method: http.MethodConnect,
 		URL:    &url.URL{Host: addr},
 		Host:   addr,
 		Header: make(http.Header),
-	}
+	}).WithContext(ctx)
 	if d.proxyURL.User != nil {
 		req.Header.Set("Proxy-Authorization", proxyAuthorization(d.proxyURL.User))
 	}
@@ -237,6 +241,12 @@ func (d *httpConnectDialer) DialContext(ctx context.Context, network, addr strin
 		return nil, fmt.Errorf("proxy CONNECT returned status %s", resp.Status)
 	}
 
+	if errContext := ctx.Err(); errContext != nil {
+		if errClose := conn.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+			return nil, fmt.Errorf("HTTP proxy context ended: %w; close failed: %v", errContext, errClose)
+		}
+		return nil, errContext
+	}
 	if reader.Buffered() > 0 {
 		conn = &bufferedConn{Conn: conn, reader: reader}
 	}

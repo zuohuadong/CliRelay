@@ -503,11 +503,14 @@ func TestProvisionAgentIdentityPersistsFlatCredentialToFile(t *testing.T) {
 			t.Fatalf("credential mode = %o, want 600", got)
 		}
 	}
-	watcherAuths := synthesizer.SynthesizeAuthFile(&synthesizer.SynthesisContext{
+	watcherAuths, errSynthesize := synthesizer.SynthesizeAuthFile(&synthesizer.SynthesisContext{
 		Config:  &config.Config{},
 		AuthDir: authDir,
 		Now:     time.Now(),
 	}, filePath, data)
+	if errSynthesize != nil {
+		t.Fatalf("SynthesizeAuthFile() error = %v", errSynthesize)
+	}
 	if len(watcherAuths) != 1 {
 		t.Fatalf("watcher synthesized %d auths, want 1", len(watcherAuths))
 	}

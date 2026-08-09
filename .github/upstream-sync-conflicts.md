@@ -1,0 +1,97 @@
+# Upstream Sync Conflict Report
+
+The automated merge from `router-for-me/CLIProxyAPI:main` could not be completed.
+This branch was recreated from clean base `df5277a09e02966aab0be9da64e4e489c3dc8d41`; it contains no partial upstream merge.
+
+## Conflicted Files
+- `.gitignore`
+- `config.example.yaml`
+- `docker-compose.yml`
+- `go.mod`
+- `go.sum`
+- `internal/api/handlers/management/auth_files.go`
+- `internal/api/handlers/management/auth_files_patch_fields_test.go`
+- `internal/api/handlers/management/config_auth_index.go`
+- `internal/api/handlers/management/config_lists.go`
+- `internal/api/server.go`
+- `internal/api/server_test.go`
+- `internal/config/config.go`
+- `internal/config/credential_concurrency_fixture_test.go`
+- `internal/config/parse.go`
+- `internal/config/sdk_config.go`
+- `internal/home/client.go`
+- `internal/home/client_test.go`
+- `internal/home/concurrency_release.go`
+- `internal/home/concurrency_release_test.go`
+- `internal/home/requests.go`
+- `internal/logging/request_logger.go`
+- `internal/runtime/executor/antigravity_executor.go`
+- `internal/runtime/executor/antigravity_reasoning_replay.go`
+- `internal/runtime/executor/claude_executor.go`
+- `internal/runtime/executor/claude_executor_test.go`
+- `internal/runtime/executor/codex_executor.go`
+- `internal/runtime/executor/codex_executor_input_ids_test.go`
+- `internal/runtime/executor/codex_websockets_executor.go`
+- `internal/runtime/executor/codex_websockets_executor_test.go`
+- `internal/runtime/executor/helps/codex_input_ids.go`
+- `internal/runtime/executor/helps/codex_input_ids_test.go`
+- `internal/runtime/executor/helps/utls_client_test.go`
+- `internal/runtime/executor/openai_compat_executor.go`
+- `internal/runtime/executor/openai_compat_executor_compact_test.go`
+- `internal/runtime/executor/xai_executor.go`
+- `internal/runtime/executor/xai_websockets_executor.go`
+- `internal/store/gitstore.go`
+- `internal/store/gitstore_test.go`
+- `internal/translator/codex/openai/chat-completions/codex_openai_request.go`
+- `internal/translator/codex/openai/chat-completions/codex_openai_response.go`
+- `internal/translator/codex/openai/chat-completions/codex_openai_response_test.go`
+- `internal/translator/codex/openai/responses/codex_openai-responses_request.go`
+- `internal/translator/codex/openai/responses/codex_openai-responses_response_test.go`
+- `internal/translator/gemini/openai/responses/gemini_openai-responses_request.go`
+- `internal/translator/openai/openai/responses/openai_openai-responses_request.go`
+- `internal/translator/openai/openai/responses/openai_openai-responses_request_test.go`
+- `internal/translator/openai/openai/responses/openai_openai-responses_response.go`
+- `internal/watcher/diff/config_diff.go`
+- `internal/watcher/diff/model_hash.go`
+- `internal/watcher/diff/model_hash_test.go`
+- `internal/watcher/synthesizer/config.go`
+- `internal/watcher/synthesizer/file.go`
+- `sdk/api/handlers/claude/code_handlers.go`
+- `sdk/api/handlers/handlers.go`
+- `sdk/api/handlers/handlers_error_response_test.go`
+- `sdk/api/handlers/handlers_model_router_test.go`
+- `sdk/api/handlers/handlers_request_details_test.go`
+- `sdk/api/handlers/handlers_stream_bootstrap_test.go`
+- `sdk/api/handlers/openai/codex_client_models.go`
+- `sdk/api/handlers/openai/openai_responses_handlers.go`
+- `sdk/api/handlers/openai/openai_responses_handlers_stream_error_test.go`
+- `sdk/api/handlers/openai/openai_responses_websocket.go`
+- `sdk/api/handlers/openai/openai_responses_websocket_test.go`
+- `sdk/api/handlers/openai/openai_responses_websocket_toolcall_repair.go`
+- `sdk/api/handlers/openai/openai_videos_handlers.go`
+- `sdk/api/handlers/openai/openai_videos_handlers_test.go`
+- `sdk/auth/filestore.go`
+- `sdk/cliproxy/auth/antigravity_credits_test.go`
+- `sdk/cliproxy/auth/conductor.go`
+- `sdk/cliproxy/auth/conductor_overrides_test.go`
+- `sdk/cliproxy/auth/cooldown_state_test.go`
+- `sdk/cliproxy/auth/home_concurrency.go`
+- `sdk/cliproxy/auth/home_concurrency_test.go`
+- `sdk/cliproxy/auth/home_execution_paths_test.go`
+- `sdk/cliproxy/auth/home_selection.go`
+- `sdk/cliproxy/auth/home_selection_test.go`
+- `sdk/cliproxy/auth/scheduler.go`
+- `sdk/cliproxy/auth/scheduler_test.go`
+- `sdk/cliproxy/auth/selector_test.go`
+- `sdk/cliproxy/auth/weight.go`
+- `sdk/cliproxy/builder.go`
+- `sdk/cliproxy/executionregistry/registry.go`
+- `sdk/cliproxy/executionregistry/registry_test.go`
+- `sdk/cliproxy/home_plugins.go`
+- `sdk/cliproxy/service.go`
+- `sdk/cliproxy/service_codex_executor_binding_test.go`
+- `sdk/cliproxy/service_executionregistry_test.go`
+- `sdk/proxyutil/proxy.go`
+- `sdk/proxyutil/proxy_test.go`
+
+Resolve these files manually in a follow-up sync branch, then rerun the safety guard.

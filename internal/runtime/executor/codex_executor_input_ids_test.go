@@ -17,7 +17,7 @@ import (
 
 func TestCodexExecutorExecuteStreamSanitizesOverlongInputItemIDs(t *testing.T) {
 	longReasoningItemID := "rs_" + strings.Repeat("a", 64)
-	longCallItemID := strings.Repeat("grok-call-item-", 6)
+	foreignFunctionCallID := "functions_exec_command_3_7d49d8c996eac04a"
 	longOutputItemID := strings.Repeat("grok-output-item-", 6)
 	encryptedContent := validOpenAIResponsesReasoningEncryptedContentForTest()
 	var gotBody []byte
@@ -38,7 +38,7 @@ func TestCodexExecutorExecuteStreamSanitizesOverlongInputItemIDs(t *testing.T) {
 		Model: "gpt-5.4",
 		Payload: []byte(`{"model":"gpt-5.4","stream":true,"input":[` +
 			`{"type":"reasoning","id":"` + longReasoningItemID + `","encrypted_content":"` + encryptedContent + `","summary":[]},` +
-			`{"type":"function_call","id":"` + longCallItemID + `","call_id":"call-1","name":"lookup","arguments":"{}"},` +
+			`{"type":"function_call","id":"` + foreignFunctionCallID + `","call_id":"call-1","name":"lookup","arguments":"{}"},` +
 			`{"type":"function_call_output","id":"` + longOutputItemID + `","call_id":"call-1","output":"ok"},` +
 			`{"type":"message","id":"item_74ec40c883248ebb4885ec84","role":"user","content":"continue"}]}`),
 	}, cliproxyexecutor.Options{
@@ -62,13 +62,16 @@ func TestCodexExecutorExecuteStreamSanitizesOverlongInputItemIDs(t *testing.T) {
 		path       string
 		originalID string
 	}{
-		{path: "input.0.id", originalID: longCallItemID},
+		{path: "input.0.id", originalID: foreignFunctionCallID},
 		{path: "input.1.id", originalID: longOutputItemID},
 	} {
 		actual := gjson.GetBytes(gotBody, testCase.path).String()
 		if len([]rune(actual)) > 64 || actual == testCase.originalID {
-			t.Fatalf("input.%d.id was not shortened to at most 64 characters: %q", index, actual)
+			t.Fatalf("input.%d.id was not sanitized to at most 64 characters: %q", index, actual)
 		}
+	}
+	if got := gjson.GetBytes(gotBody, "input.0.id").String(); !strings.HasPrefix(got, "fc_") {
+		t.Fatalf("function call ID = %q, want fc_ prefix", got)
 	}
 	if got := gjson.GetBytes(gotBody, "input.0.call_id").String(); got != "call-1" {
 		t.Fatalf("function call_id = %q, want call-1", got)

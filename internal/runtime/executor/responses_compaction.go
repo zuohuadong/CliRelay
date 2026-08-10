@@ -17,10 +17,9 @@ const responsesCompactSystemPrompt = "You compact coding-agent conversation hist
 func buildResponsesCompactChatPayload(rawJSON []byte, baseModel string) ([]byte, error) {
 	transcript := compactTranscriptForPrompt(rawJSON)
 	body := map[string]any{
-		"model":       baseModel,
-		"stream":      false,
-		"temperature": 0,
-		"max_tokens":  2048,
+		"model":      baseModel,
+		"stream":     false,
+		"max_tokens": 2048,
 		"messages": []map[string]string{
 			{"role": "system", "content": responsesCompactSystemPrompt},
 			{"role": "user", "content": "Compact this conversation transcript for continuation. Return only the summary text.\n\n" + transcript},

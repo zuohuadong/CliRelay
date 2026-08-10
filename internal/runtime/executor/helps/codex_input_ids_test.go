@@ -10,6 +10,79 @@ import (
 
 var benchmarkSanitizeCodexInputItemIDsOutput []byte
 
+func TestSanitizeCodexInputItemIDsDropsInvalidEncryptedReasoningItem(t *testing.T) {
+	invalidReasoningID := "resp_cht000d06b0@dx19f874c0e97b91a322"
+	body := []byte(`{"input":[` +
+		`{"type":"message","id":"msg-1","role":"user","content":"before"},` +
+		`{"type":"reasoning","id":"` + invalidReasoningID + `","encrypted_content":"gAAAA-encrypted","summary":[]},` +
+		`{"type":"message","id":"msg-2","role":"user","content":"after"}` +
+		`]}`)
+
+	got := SanitizeCodexInputItemIDs(body)
+	input := gjson.GetBytes(got, "input").Array()
+	if len(input) != 2 {
+		t.Fatalf("input length = %d, want 2: %s", len(input), got)
+	}
+	if gotID := input[0].Get("id").String(); gotID != "msg-1" {
+		t.Fatalf("input.0.id = %q, want msg-1", gotID)
+	}
+	if gotID := input[1].Get("id").String(); gotID != "msg-2" {
+		t.Fatalf("input.1.id = %q, want msg-2", gotID)
+	}
+}
+
+func TestSanitizeCodexInputItemIDsNormalizesForeignMessagePrefix(t *testing.T) {
+	foreignMessageID := "resp_cht000d342b_dx19f85395e3ab9cb312_742ed7068170aeb7"
+	body := []byte(`{"input":[{"type":"message","id":"` + foreignMessageID + `","role":"user","content":"continue"}]}`)
+
+	first := SanitizeCodexInputItemIDs(body)
+	second := SanitizeCodexInputItemIDs(body)
+	normalizedID := gjson.GetBytes(first, "input.0.id").String()
+	if normalizedID == foreignMessageID || !strings.HasPrefix(normalizedID, "msg") {
+		t.Fatalf("foreign message ID was not normalized: %q", normalizedID)
+	}
+	if got := gjson.GetBytes(second, "input.0.id").String(); got != normalizedID {
+		t.Fatalf("message ID normalization is not deterministic: first=%q second=%q", normalizedID, got)
+	}
+}
+
+func TestSanitizeCodexInputItemIDsPreservesMessagePrefixWhenShortened(t *testing.T) {
+	foreignMessageID := strings.Repeat("a", codexInputItemIDLimit)
+	body := []byte(`{"input":[{"type":"message","id":"` + foreignMessageID + `","role":"user","content":"continue"}]}`)
+
+	normalizedID := gjson.GetBytes(SanitizeCodexInputItemIDs(body), "input.0.id").String()
+	if !strings.HasPrefix(normalizedID, "msg_") {
+		t.Fatalf("shortened message ID lost msg_ prefix: %q", normalizedID)
+	}
+	if !isValidCodexInputItemIDForType("message", normalizedID) {
+		t.Fatalf("shortened message ID is invalid: %q", normalizedID)
+	}
+}
+
+func TestSanitizeCodexInputItemIDsNormalizesForeignFunctionCallPrefix(t *testing.T) {
+	foreignFunctionCallID := "functions_exec_command_3_7d49d8c996eac04a"
+	body := []byte(`{"input":[` +
+		`{"type":"function_call","id":"` + foreignFunctionCallID + `","call_id":"call-1","name":"exec_command","arguments":"{}"},` +
+		`{"type":"function_call","id":"fc_existing","call_id":"call-2","name":"exec_command","arguments":"{}"}` +
+		`]}`)
+
+	first := SanitizeCodexInputItemIDs(body)
+	second := SanitizeCodexInputItemIDs(body)
+	normalizedID := gjson.GetBytes(first, "input.0.id").String()
+	if normalizedID == foreignFunctionCallID || !strings.HasPrefix(normalizedID, "fc_") {
+		t.Fatalf("foreign function call ID was not normalized: %q", normalizedID)
+	}
+	if got := gjson.GetBytes(second, "input.0.id").String(); got != normalizedID {
+		t.Fatalf("function call ID normalization is not deterministic: first=%q second=%q", normalizedID, got)
+	}
+	if got := gjson.GetBytes(first, "input.0.call_id").String(); got != "call-1" {
+		t.Fatalf("function call_id = %q, want call-1", got)
+	}
+	if got := gjson.GetBytes(first, "input.1.id").String(); got != "fc_existing" {
+		t.Fatalf("valid function call ID changed: %q", got)
+	}
+}
+
 func TestSanitizeCodexInputItemIDsBoundaries(t *testing.T) {
 	id64 := strings.Repeat("a", 64)
 	id65 := strings.Repeat("b", 65)

@@ -58,6 +58,7 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	switch opts.Alt {
 	case "responses/compact":
 		syntheticCompaction = true
+		useResponsesEndpoint = false
 	case "images/generations":
 		endpoint = "/images/generations"
 		imagePassthrough = true
@@ -97,6 +98,9 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 		if err != nil {
 			return resp, err
 		}
+		// Reasoning 模型（如 GPT-5 系列）只接受 temperature=1 且不支持 top_p/top_k，
+		// 客户端透传的采样参数会导致上游报错 "invalid temperature: only 1 is allowed"。
+		translated = thinking.NormalizeSamplingForReasoning(translated, req.Model, e.Identifier())
 		if shouldNormalizeKimiCompatPayload(baseModel) {
 			translated, err = normalizeKimiToolMessageLinks(translated)
 			if err != nil {
@@ -251,6 +255,9 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 		if errApply != nil {
 			return nil, errApply
 		}
+		// Reasoning 模型（如 GPT-5 系列）只接受 temperature=1 且不支持 top_p/top_k，
+		// 客户端透传的采样参数会导致上游报错 "invalid temperature: only 1 is allowed"。
+		translated = thinking.NormalizeSamplingForReasoning(translated, req.Model, e.Identifier())
 		if shouldNormalizeKimiCompatPayload(baseModel) {
 			var errNormalize error
 			translated, errNormalize = normalizeKimiToolMessageLinks(translated)

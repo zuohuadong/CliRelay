@@ -1132,6 +1132,73 @@ func TestOpenAICompatExecutorCompactSynthesizesWithoutResponsesEndpoint(t *testi
 	}
 }
 
+func TestAstronCodeExecutorCompactIgnoresResponsesEndpoint(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"astron-code-latest","choices":[{"index":0,"message":{"role":"assistant","content":"compact summary"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}`))
+	}))
+	defer server.Close()
+
+	executor := NewAstronCodeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url":          server.URL + "/v2",
+		"api_key":           "test",
+		"response_endpoint": "true",
+	}}
+	payload := []byte(`{"model":"astron-code-latest","input":[{"type":"message","role":"user","content":"hello"}]}`)
+	resp, errExecute := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{Model: "astron-code-latest", Payload: payload}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse, OriginalRequest: payload, Alt: "responses/compact",
+	})
+	if errExecute != nil {
+		t.Fatalf("Execute error: %v", errExecute)
+	}
+	if gotPath != "/v2/chat/completions" {
+		t.Fatalf("path = %q, want /v2/chat/completions", gotPath)
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.0.encrypted_content").String(); got != "compact summary" {
+		t.Fatalf("encrypted_content = %q, want compact summary; payload=%s", got, resp.Payload)
+	}
+}
+
+func TestAstronCodeExecutorStreamingCompactionIgnoresResponsesEndpoint(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"astron-code-latest","choices":[{"index":0,"message":{"role":"assistant","content":"stream summary"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}`))
+	}))
+	defer server.Close()
+
+	executor := NewAstronCodeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url":          server.URL + "/v2",
+		"api_key":           "test",
+		"response_endpoint": "true",
+	}}
+	payload := []byte(`{"model":"astron-code-latest","input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}],"stream":true}`)
+	result, errExecute := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{Model: "astron-code-latest", Payload: payload}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse, OriginalRequest: payload, Stream: true,
+	})
+	if errExecute != nil {
+		t.Fatalf("ExecuteStream error: %v", errExecute)
+	}
+	var streamed strings.Builder
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Err)
+		}
+		streamed.Write(chunk.Payload)
+	}
+	if gotPath != "/v2/chat/completions" {
+		t.Fatalf("path = %q, want /v2/chat/completions", gotPath)
+	}
+	if !strings.Contains(streamed.String(), "stream summary") {
+		t.Fatalf("unexpected compaction stream: %s", streamed.String())
+	}
+}
+
 func TestOpenAICompatExecutorStreamsResponsesCompactionTrigger(t *testing.T) {
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

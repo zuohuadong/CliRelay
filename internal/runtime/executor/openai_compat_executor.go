@@ -147,6 +147,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		if err != nil {
 			return resp, err
 		}
+		// Reasoning 模型（如 GPT-5 系列）只接受 temperature=1 且不支持 top_p/top_k，
+		// 客户端透传的采样参数会导致上游报错 "invalid temperature: only 1 is allowed"。
+		translated = thinking.NormalizeSamplingForReasoning(translated, req.Model, e.Identifier())
 		if shouldNormalizeKimiCompatPayload(baseModel) {
 			translated, err = normalizeKimiToolMessageLinks(translated)
 			if err != nil {
@@ -399,6 +402,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if err != nil {
 		return nil, err
 	}
+	// Reasoning 模型（如 GPT-5 系列）只接受 temperature=1 且不支持 top_p/top_k，
+	// 客户端透传的采样参数会导致上游报错 "invalid temperature: only 1 is allowed"。
+	translated = thinking.NormalizeSamplingForReasoning(translated, req.Model, e.Identifier())
 	if shouldNormalizeKimiCompatPayload(baseModel) {
 		translated, err = normalizeKimiToolMessageLinks(translated)
 		if err != nil {

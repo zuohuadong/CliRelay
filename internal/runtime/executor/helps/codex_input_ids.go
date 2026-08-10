@@ -12,11 +12,12 @@ import (
 )
 
 const (
-	codexInputItemIDLimit           = 64
-	codexMessageItemIDPrefix        = "msg"
-	codexReasoningItemIDPrefix      = "rs"
-	codexFunctionCallItemIDPrefix   = "fc"
-	codexCustomToolCallItemIDPrefix = "ctc"
+	codexInputItemIDLimit                 = 64
+	codexMessageItemIDPrefix              = "msg"
+	codexReasoningItemIDPrefix            = "rs"
+	codexFunctionCallItemIDPrefix         = "fc"
+	codexCustomToolCallItemIDPrefix       = "ctc"
+	codexCustomToolCallOutputItemIDPrefix = "ctco"
 )
 
 // SanitizeCodexInputItemIDs normalizes supported input item IDs for Codex, removes encrypted
@@ -137,6 +138,8 @@ func codexInputItemIDPrefix(itemType string) string {
 		return codexFunctionCallItemIDPrefix
 	case "custom_tool_call":
 		return codexCustomToolCallItemIDPrefix
+	case "custom_tool_call_output":
+		return codexCustomToolCallOutputItemIDPrefix
 	default:
 		return ""
 	}

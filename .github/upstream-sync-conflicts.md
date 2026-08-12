@@ -1,7 +1,7 @@
 # Upstream Sync Conflict Report
 
 The automated merge from `router-for-me/CLIProxyAPI:main` could not be completed.
-This branch was recreated from clean base `df5277a09e02966aab0be9da64e4e489c3dc8d41`; it contains no partial upstream merge.
+This branch was recreated from clean base `b831ec1e48cc704c6cab6f7b2d20ddd342da687b`; it contains no partial upstream merge.
 
 ## Conflicted Files
 - `.gitignore`
@@ -9,6 +9,7 @@ This branch was recreated from clean base `df5277a09e02966aab0be9da64e4e489c3dc8
 - `docker-compose.yml`
 - `go.mod`
 - `go.sum`
+- `internal/api/handlers/management/api_tools_test.go`
 - `internal/api/handlers/management/auth_files.go`
 - `internal/api/handlers/management/auth_files_patch_fields_test.go`
 - `internal/api/handlers/management/config_auth_index.go`
@@ -35,6 +36,7 @@ This branch was recreated from clean base `df5277a09e02966aab0be9da64e4e489c3dc8
 - `internal/runtime/executor/codex_websockets_executor_test.go`
 - `internal/runtime/executor/helps/codex_input_ids.go`
 - `internal/runtime/executor/helps/codex_input_ids_test.go`
+- `internal/runtime/executor/helps/utls_client.go`
 - `internal/runtime/executor/helps/utls_client_test.go`
 - `internal/runtime/executor/openai_compat_executor.go`
 - `internal/runtime/executor/openai_compat_executor_compact_test.go`
@@ -51,6 +53,7 @@ This branch was recreated from clean base `df5277a09e02966aab0be9da64e4e489c3dc8
 - `internal/translator/openai/openai/responses/openai_openai-responses_request.go`
 - `internal/translator/openai/openai/responses/openai_openai-responses_request_test.go`
 - `internal/translator/openai/openai/responses/openai_openai-responses_response.go`
+- `internal/translator/openai/openai/responses/openai_openai-responses_response_test.go`
 - `internal/watcher/diff/config_diff.go`
 - `internal/watcher/diff/model_hash.go`
 - `internal/watcher/diff/model_hash_test.go`
@@ -65,6 +68,7 @@ This branch was recreated from clean base `df5277a09e02966aab0be9da64e4e489c3dc8
 - `sdk/api/handlers/openai/codex_client_models.go`
 - `sdk/api/handlers/openai/openai_responses_handlers.go`
 - `sdk/api/handlers/openai/openai_responses_handlers_stream_error_test.go`
+- `sdk/api/handlers/openai/openai_responses_handlers_stream_test.go`
 - `sdk/api/handlers/openai/openai_responses_websocket.go`
 - `sdk/api/handlers/openai/openai_responses_websocket_test.go`
 - `sdk/api/handlers/openai/openai_responses_websocket_toolcall_repair.go`

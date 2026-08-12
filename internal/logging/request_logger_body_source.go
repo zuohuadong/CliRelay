@@ -166,8 +166,9 @@ func (s *FileBodySource) Paths() []string {
 	return out
 }
 
-// WriteTo merges all ordered parts into w.
-func (s *FileBodySource) WriteTo(w io.Writer) error {
+// MergeInto merges all ordered parts into w.
+// 方法名避开 io.WriterTo 的签名约定（go vet 要求 WriteTo 返回 (int64, error)）。
+func (s *FileBodySource) MergeInto(w io.Writer) error {
 	if s == nil || w == nil {
 		return nil
 	}
@@ -207,7 +208,7 @@ func (s *FileBodySource) WriteTo(w io.Writer) error {
 // Bytes merges all ordered parts into memory.
 func (s *FileBodySource) Bytes() ([]byte, error) {
 	var buf bytes.Buffer
-	if errWrite := s.WriteTo(&buf); errWrite != nil {
+	if errWrite := s.MergeInto(&buf); errWrite != nil {
 		return nil, errWrite
 	}
 	return buf.Bytes(), nil

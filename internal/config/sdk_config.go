@@ -65,13 +65,11 @@ type SDKConfig struct {
 	// log metadata. Nil keeps the historical behavior of retaining bodies.
 	RequestLogBody *bool `yaml:"request-log-body,omitempty" json:"request-log-body,omitempty"`
 
-
-		// CodexOptimizeMultiAgentV2 mirrors the provider-wide runtime setting for API handlers.
+	// CodexOptimizeMultiAgentV2 mirrors the provider-wide runtime setting for API handlers.
 	CodexOptimizeMultiAgentV2 bool `yaml:"-" json:"-"`
 
 	// ClaudeCode configures Claude Code compatibility behavior.
 	ClaudeCode ClaudeCodeConfig `yaml:"claude-code" json:"claude-code"`
-
 
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`

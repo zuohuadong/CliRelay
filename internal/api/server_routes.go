@@ -53,6 +53,9 @@ func (s *Server) setupRoutes() {
 	s.engine.HEAD("/healthz", healthzHandler)
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	// /manage 是管理面板的短路径入口，重定向到 /management.html 并保留查询参数，
+	// 以复用面板自身的服务逻辑与相对资源路径。
+	s.engine.GET("/manage", s.redirectManageToControlPanel)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	openaiHandlers.SetVideoService(s.videoService)
 	s.openaiHandler = openaiHandlers

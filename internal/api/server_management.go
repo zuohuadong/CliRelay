@@ -284,6 +284,15 @@ func (s *Server) pluginResourceNoRoute(c *gin.Context) {
 	c.AbortWithStatus(http.StatusNotFound)
 }
 
+// redirectManageToControlPanel 将 /manage 短路径重定向到 /management.html，并保留查询参数。
+func (s *Server) redirectManageToControlPanel(c *gin.Context) {
+	target := "/management.html"
+	if rawQuery := c.Request.URL.RawQuery; rawQuery != "" {
+		target += "?" + rawQuery
+	}
+	c.Redirect(http.StatusTemporaryRedirect, target)
+}
+
 func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	cfg := s.cfg
 	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {

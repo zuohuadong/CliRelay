@@ -1538,6 +1538,56 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	})
 }
 
+func TestManagePathRedirectsToControlPanel(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	staticDir := t.TempDir()
+	t.Setenv("MANAGEMENT_STATIC_PATH", staticDir)
+	if err := os.WriteFile(filepath.Join(staticDir, "management.html"), []byte("<html>management app</html>"), 0o600); err != nil {
+		t.Fatalf("failed to write management asset: %v", err)
+	}
+
+	server := newTestServer(t)
+
+	t.Run("manage redirects to management html", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/manage", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusTemporaryRedirect {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusTemporaryRedirect, rr.Body.String())
+		}
+		if got := rr.Header().Get("Location"); got != "/management.html" {
+			t.Fatalf("Location = %q, want /management.html", got)
+		}
+	})
+
+	t.Run("manage keeps query when redirecting", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/manage?safe-mode=configure", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusTemporaryRedirect {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusTemporaryRedirect, rr.Body.String())
+		}
+		if got := rr.Header().Get("Location"); got != "/management.html?safe-mode=configure" {
+			t.Fatalf("Location = %q, want /management.html?safe-mode=configure", got)
+		}
+	})
+
+	t.Run("redirect target serves control panel", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/manage", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		followReq := httptest.NewRequest(http.MethodGet, rr.Header().Get("Location"), nil)
+		followRR := httptest.NewRecorder()
+		server.engine.ServeHTTP(followRR, followReq)
+		if followRR.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d body=%s", followRR.Code, http.StatusOK, followRR.Body.String())
+		}
+		if !strings.Contains(followRR.Body.String(), "management app") {
+			t.Fatalf("management panel body missing: %s", followRR.Body.String())
+		}
+	})
+}
+
 func TestExampleAPIKeySafeModeShowsWarningAndKeepsManagement(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 	staticDir := t.TempDir()

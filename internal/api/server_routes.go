@@ -53,9 +53,16 @@ func (s *Server) setupRoutes() {
 	s.engine.HEAD("/healthz", healthzHandler)
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
-	// /manage 是管理面板的短路径入口，重定向到 /management.html 并保留查询参数，
-	// 以复用面板自身的服务逻辑与相对资源路径。
-	s.engine.GET("/manage", s.redirectManageToControlPanel)
+	// /manage 是管理面板 SPA 的挂载点：面板资源以绝对路径 /manage/assets/* 引用，
+	// 由 serveManagementControlPanelAsset 统一服务并带 SPA 回退。
+	s.engine.GET("/manage", func(c *gin.Context) {
+		target := "/manage/"
+		if rawQuery := c.Request.URL.RawQuery; rawQuery != "" {
+			target += "?" + rawQuery
+		}
+		c.Redirect(http.StatusFound, target)
+	})
+	s.engine.GET("/manage/*filepath", s.serveManagementControlPanelAsset)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	openaiHandlers.SetVideoService(s.videoService)
 	s.openaiHandler = openaiHandlers

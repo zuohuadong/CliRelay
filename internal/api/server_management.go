@@ -284,41 +284,87 @@ func (s *Server) pluginResourceNoRoute(c *gin.Context) {
 	c.AbortWithStatus(http.StatusNotFound)
 }
 
-// redirectManageToControlPanel 将 /manage 短路径重定向到 /management.html，并保留查询参数。
-func (s *Server) redirectManageToControlPanel(c *gin.Context) {
-	target := "/management.html"
-	if rawQuery := c.Request.URL.RawQuery; rawQuery != "" {
-		target += "?" + rawQuery
-	}
-	c.Redirect(http.StatusTemporaryRedirect, target)
-}
-
-func (s *Server) serveManagementControlPanel(c *gin.Context) {
+// ensureManagementControlPanel 确保管理面板入口资产存在，必要时同步下载。
+// 返回 false 表示请求已被中止。
+func (s *Server) ensureManagementControlPanel(c *gin.Context) bool {
 	cfg := s.cfg
 	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
 		c.AbortWithStatus(http.StatusNotFound)
+		return false
+	}
+	filePath := managementasset.FilePath(s.configFilePath)
+	if strings.TrimSpace(filePath) == "" {
+		c.AbortWithStatus(http.StatusNotFound)
+		return false
+	}
+
+	if _, err := os.Stat(filePath); err != nil {
+		if os.IsNotExist(err) {
+			// Synchronously ensure the panel asset is available with a detached context.
+			// Control panel bootstrap should not be canceled by client disconnects.
+			if !managementasset.EnsureLatestManagementHTML(context.Background(), managementasset.StaticDir(s.configFilePath), cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository) {
+				c.AbortWithStatus(http.StatusNotFound)
+				return false
+			}
+		} else {
+			log.WithError(err).Error("failed to stat management control panel asset")
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return false
+		}
+	}
+
+	return true
+}
+
+func (s *Server) serveManagementControlPanel(c *gin.Context) {
+	if !s.ensureManagementControlPanel(c) {
 		return
 	}
+
 	filePath := managementasset.FilePath(s.configFilePath)
 	if strings.TrimSpace(filePath) == "" {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
 
-	if _, err := os.Stat(filePath); err != nil {
-		if os.IsNotExist(err) {
-			// Synchronously ensure management.html is available with a detached context.
-			// Control panel bootstrap should not be canceled by client disconnects.
-			if !managementasset.EnsureLatestManagementHTML(context.Background(), managementasset.StaticDir(s.configFilePath), cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository) {
-				c.AbortWithStatus(http.StatusNotFound)
-				return
-			}
-		} else {
-			log.WithError(err).Error("failed to stat management control panel asset")
-			c.AbortWithStatus(http.StatusInternalServerError)
-			return
-		}
+	c.File(filePath)
+}
+
+// serveManagementControlPanelAsset 服务 /manage/ 挂载点下的面板静态资源。
+// assets/ 下的未命中资源直接 404（带哈希文件名，不缓存错误），其余未命中
+// 路径回退到面板入口以支持 SPA 前端路由。
+func (s *Server) serveManagementControlPanelAsset(c *gin.Context) {
+	if !s.ensureManagementControlPanel(c) {
+		return
 	}
 
-	c.File(filePath)
+	requestedPath := strings.TrimPrefix(c.Param("filepath"), "/")
+	if requestedPath == "" {
+		c.File(managementasset.FilePath(s.configFilePath))
+		return
+	}
+
+	filePath, ok := managementasset.AssetPath(s.configFilePath, requestedPath)
+	if !ok {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	info, err := os.Stat(filePath)
+	if err == nil && !info.IsDir() {
+		c.File(filePath)
+		return
+	}
+	if err != nil && !os.IsNotExist(err) {
+		log.WithError(err).Error("failed to stat management control panel asset")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	if strings.HasPrefix(requestedPath, "assets/") {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	c.File(managementasset.FilePath(s.configFilePath))
 }

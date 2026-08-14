@@ -1538,25 +1538,34 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	})
 }
 
-func TestManagePathRedirectsToControlPanel(t *testing.T) {
+func TestManagePathServesControlPanelAssets(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 	staticDir := t.TempDir()
 	t.Setenv("MANAGEMENT_STATIC_PATH", staticDir)
-	if err := os.WriteFile(filepath.Join(staticDir, "management.html"), []byte("<html>management app</html>"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(staticDir, "manage.html"), []byte("<html>management app</html>"), 0o600); err != nil {
 		t.Fatalf("failed to write management asset: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(staticDir, "assets"), 0o755); err != nil {
+		t.Fatalf("failed to create assets dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(staticDir, "assets", "app-abc123.js"), []byte("console.log('app')"), 0o644); err != nil {
+		t.Fatalf("failed to write panel asset: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(staticDir, "panel-meta.json"), []byte(`{"version":"test"}`), 0o644); err != nil {
+		t.Fatalf("failed to write panel meta: %v", err)
 	}
 
 	server := newTestServer(t)
 
-	t.Run("manage redirects to management html", func(t *testing.T) {
+	t.Run("manage redirects to trailing slash", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/manage", nil)
 		rr := httptest.NewRecorder()
 		server.engine.ServeHTTP(rr, req)
-		if rr.Code != http.StatusTemporaryRedirect {
-			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusTemporaryRedirect, rr.Body.String())
+		if rr.Code != http.StatusFound {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusFound, rr.Body.String())
 		}
-		if got := rr.Header().Get("Location"); got != "/management.html" {
-			t.Fatalf("Location = %q, want /management.html", got)
+		if got := rr.Header().Get("Location"); got != "/manage/" {
+			t.Fatalf("Location = %q, want /manage/", got)
 		}
 	})
 
@@ -1564,26 +1573,65 @@ func TestManagePathRedirectsToControlPanel(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/manage?safe-mode=configure", nil)
 		rr := httptest.NewRecorder()
 		server.engine.ServeHTTP(rr, req)
-		if rr.Code != http.StatusTemporaryRedirect {
-			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusTemporaryRedirect, rr.Body.String())
-		}
-		if got := rr.Header().Get("Location"); got != "/management.html?safe-mode=configure" {
-			t.Fatalf("Location = %q, want /management.html?safe-mode=configure", got)
+		if got := rr.Header().Get("Location"); got != "/manage/?safe-mode=configure" {
+			t.Fatalf("Location = %q, want /manage/?safe-mode=configure", got)
 		}
 	})
 
-	t.Run("redirect target serves control panel", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/manage", nil)
+	t.Run("manage trailing slash serves panel entry", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/manage/", nil)
 		rr := httptest.NewRecorder()
 		server.engine.ServeHTTP(rr, req)
-		followReq := httptest.NewRequest(http.MethodGet, rr.Header().Get("Location"), nil)
-		followRR := httptest.NewRecorder()
-		server.engine.ServeHTTP(followRR, followReq)
-		if followRR.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d body=%s", followRR.Code, http.StatusOK, followRR.Body.String())
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
 		}
-		if !strings.Contains(followRR.Body.String(), "management app") {
-			t.Fatalf("management panel body missing: %s", followRR.Body.String())
+		if !strings.Contains(rr.Body.String(), "management app") {
+			t.Fatalf("management panel body missing: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("manage serves hashed asset files", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/manage/assets/app-abc123.js", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "console.log('app')") {
+			t.Fatalf("asset body missing: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("manage serves panel meta", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/manage/panel-meta.json", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), `"version":"test"`) {
+			t.Fatalf("panel meta body missing: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("missing asset returns 404", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/manage/assets/missing.js", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+		}
+	})
+
+	t.Run("unknown route falls back to panel entry", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/manage/settings/general", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "management app") {
+			t.Fatalf("spa fallback body missing: %s", rr.Body.String())
 		}
 	})
 }

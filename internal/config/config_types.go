@@ -370,6 +370,10 @@ type ClaudeKey struct {
 	// BillingMultiplier multiplies model-list prices when writing customer-facing usage cost.
 	BillingMultiplier float64 `yaml:"billing-multiplier,omitempty" json:"billing-multiplier,omitempty"`
 
+	// RequestRetry optionally overrides the global request-retry for this credential.
+	// Nil or a negative value means "use the global request-retry". 0 disables retries.
+	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+
 	// Cloak configures request cloaking for non-Claude-Code clients.
 	Cloak *CloakConfig `yaml:"cloak,omitempty" json:"cloak,omitempty"`
 
@@ -467,6 +471,10 @@ type CodexKey struct {
 
 	// BillingMultiplier multiplies model-list prices when writing customer-facing usage cost.
 	BillingMultiplier float64 `yaml:"billing-multiplier,omitempty" json:"billing-multiplier,omitempty"`
+
+	// RequestRetry optionally overrides the global request-retry for this credential.
+	// Nil or a negative value means "use the global request-retry". 0 disables retries.
+	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
 }
 
 func (k CodexKey) GetAPIKey() string { return k.APIKey }
@@ -559,6 +567,10 @@ type GeminiKey struct {
 
 	// BillingMultiplier multiplies model-list prices when writing customer-facing usage cost.
 	BillingMultiplier float64 `yaml:"billing-multiplier,omitempty" json:"billing-multiplier,omitempty"`
+
+	// RequestRetry optionally overrides the global request-retry for this credential.
+	// Nil or a negative value means "use the global request-retry". 0 disables retries.
+	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
 }
 
 func (k GeminiKey) GetAPIKey() string { return k.APIKey }

@@ -187,6 +187,7 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 		ProxyURL       *string            `json:"proxy-url"`
 		Headers        *map[string]string `json:"headers"`
 		ExcludedModels *[]string          `json:"excluded-models"`
+		RequestRetry   *int               `json:"request-retry"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -253,6 +254,9 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.RequestRetry != nil {
+		entry.RequestRetry = body.Value.RequestRetry
 	}
 	h.cfg.GeminiKey[targetIndex] = entry
 	h.cfg.SanitizeGeminiKeys()
@@ -360,6 +364,7 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 		ProxyURL       *string            `json:"proxy-url"`
 		Headers        *map[string]string `json:"headers"`
 		ExcludedModels *[]string          `json:"excluded-models"`
+		RequestRetry   *int               `json:"request-retry"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -427,6 +432,9 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.RequestRetry != nil {
+		entry.RequestRetry = body.Value.RequestRetry
 	}
 	h.cfg.InteractionsKey[targetIndex] = entry
 	h.cfg.SanitizeInteractionsKeys()
@@ -536,6 +544,7 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 		Headers                 *map[string]string    `json:"headers"`
 		ExcludedModels          *[]string             `json:"excluded-models"`
 		RebuildMidSystemMessage *bool                 `json:"rebuild-mid-system-message"`
+		RequestRetry            *int                  `json:"request-retry"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -599,6 +608,9 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	}
 	if body.Value.RebuildMidSystemMessage != nil {
 		entry.RebuildMidSystemMessage = *body.Value.RebuildMidSystemMessage
+	}
+	if body.Value.RequestRetry != nil {
+		entry.RequestRetry = body.Value.RequestRetry
 	}
 	normalizeClaudeKey(&entry)
 	h.cfg.ClaudeKey[targetIndex] = entry
@@ -747,6 +759,7 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		Headers               *map[string]string                  `json:"headers"`
 		IdentityFingerprint   *string                             `json:"identity-fingerprint"`
 		SupportPromptCacheKey *bool                               `json:"support-prompt-cache-key"`
+		RequestRetry          *int                                `json:"request-retry"`
 	}
 	var body struct {
 		Name  *string            `json:"name"`
@@ -828,6 +841,9 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	}
 	if body.Value.DisableCooling != nil {
 		entry.DisableCooling = *body.Value.DisableCooling
+	}
+	if body.Value.RequestRetry != nil {
+		entry.RequestRetry = body.Value.RequestRetry
 	}
 	if body.Value.BaseURL != nil {
 		trimmed := strings.TrimSpace(*body.Value.BaseURL)
@@ -944,6 +960,7 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 		Headers        *map[string]string          `json:"headers"`
 		Models         *[]config.VertexCompatModel `json:"models"`
 		ExcludedModels *[]string                   `json:"excluded-models"`
+		RequestRetry   *int                        `json:"request-retry"`
 	}
 	var body struct {
 		Index *int               `json:"index"`
@@ -1020,6 +1037,9 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.RequestRetry != nil {
+		entry.RequestRetry = body.Value.RequestRetry
 	}
 	normalizeVertexCompatKey(&entry)
 	h.cfg.VertexCompatAPIKey[targetIndex] = entry
@@ -1313,6 +1333,7 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 		Models         *[]config.CodexModel `json:"models"`
 		Headers        *map[string]string   `json:"headers"`
 		ExcludedModels *[]string            `json:"excluded-models"`
+		RequestRetry   *int                 `json:"request-retry"`
 	}
 	var body struct {
 		Index *int           `json:"index"`
@@ -1383,6 +1404,9 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.RequestRetry != nil {
+		entry.RequestRetry = body.Value.RequestRetry
 	}
 	normalizeCodexKey(&entry)
 	h.cfg.CodexKey[targetIndex] = entry
@@ -1497,6 +1521,7 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 		Headers        *map[string]string `json:"headers"`
 		ExcludedModels *[]string          `json:"excluded-models"`
 		DisableCooling *bool              `json:"disable-cooling"`
+		RequestRetry   *int               `json:"request-retry"`
 	}
 	var body struct {
 		Index *int         `json:"index"`
@@ -1573,6 +1598,9 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 	}
 	if body.Value.DisableCooling != nil {
 		entry.DisableCooling = *body.Value.DisableCooling
+	}
+	if body.Value.RequestRetry != nil {
+		entry.RequestRetry = body.Value.RequestRetry
 	}
 	normalizeCodexKey(&entry)
 	h.cfg.XAIKey[targetIndex] = entry

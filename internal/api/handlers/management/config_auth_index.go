@@ -73,6 +73,7 @@ type openAICompatibilityWithAuthIndex struct {
 	SupportPromptCacheKey bool                                     `json:"support-prompt-cache-key,omitempty"`
 	DisableCooling        bool                                     `json:"disable-cooling,omitempty"`
 	ResponseEndpoint      bool                                     `json:"response-endpoint,omitempty"`
+	RequestRetry          *int                                     `json:"request-retry,omitempty"`
 	AuthIndex             string                                   `json:"auth-index,omitempty"`
 	Success               int64                                    `json:"success"`
 	Failed                int64                                    `json:"failed"`
@@ -369,6 +370,7 @@ func (h *Handler) openAICompatibilityEntriesWithAuthIndex(entriesFn func() []con
 			SupportPromptCacheKey: entry.SupportPromptCacheKey,
 			DisableCooling:        entry.DisableCooling,
 			ResponseEndpoint:      entry.ResponseEndpoint,
+			RequestRetry:          entry.RequestRetry,
 			AuthIndex:             "",
 		}
 		if len(entry.APIKeyEntries) == 0 {

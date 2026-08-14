@@ -170,6 +170,20 @@ func TestOAuthModelAliasChannel_APIKeyOnlyProviderUnsupported(t *testing.T) {
 	}
 }
 
+func TestDefaultOAuthModelAliasGemini37FlashTiered(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range []string{"antigravity", "gemini-cli"} {
+		t.Run(provider, func(t *testing.T) {
+			mgr := NewManager(nil, nil, nil)
+			auth := createAuthForChannel(provider)
+			if got := mgr.resolveOAuthUpstreamModel(auth, "gemini-3.7-flash-tiered(high)"); got != "gemini-3.7-flash-high(high)" {
+				t.Fatalf("default OAuth mapping = %q, want %q", got, "gemini-3.7-flash-high(high)")
+			}
+		})
+	}
+}
+
 func TestOAuthModelAliasChannel_Kimi(t *testing.T) {
 	t.Parallel()
 

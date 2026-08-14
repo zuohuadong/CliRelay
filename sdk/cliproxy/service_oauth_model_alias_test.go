@@ -151,6 +151,18 @@ func TestApplyOAuthModelAlias_AddsAliasWhenSourceModelMissing(t *testing.T) {
 	}
 }
 
+func TestApplyOAuthModelAlias_DefaultsGemini37FlashTiered(t *testing.T) {
+	for _, provider := range []string{"antigravity", "gemini-cli"} {
+		t.Run(provider, func(t *testing.T) {
+			models := []*ModelInfo{{ID: "gemini-3.7-flash-high", Name: "gemini-3.7-flash-high"}}
+			out := applyOAuthModelAlias(nil, provider, "oauth", models)
+			if len(out) != 1 || out[0].ID != "gemini-3.7-flash-tiered" {
+				t.Fatalf("default alias models = %#v, want tiered alias", out)
+			}
+		})
+	}
+}
+
 func TestApplyOAuthModelAlias_PluginProvider(t *testing.T) {
 	cfg := &config.Config{
 		OAuthModelAlias: map[string][]config.OAuthModelAlias{

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -248,6 +249,67 @@ func TestIsCodexResponsesSSEClient(t *testing.T) {
 	}
 }
 
+func TestResponsesSSEFramerWaitsForEventFieldAfterData(t *testing.T) {
+	var output bytes.Buffer
+	framer := &responsesSSEFramer{}
+
+	framer.WriteChunk(&output, []byte(`data: {"response":{"id":"resp-1","status":"completed"}}`))
+	if output.Len() != 0 {
+		t.Fatalf("framer emitted data before a following event field arrived: %q", output.String())
+	}
+
+	framer.WriteChunk(&output, []byte("event: response.completed"))
+	if framer.terminalEvent != "response.completed" {
+		t.Fatalf("terminal event = %q, want response.completed", framer.terminalEvent)
+	}
+	got := output.String()
+	if !strings.Contains(got, "data: ") || !strings.Contains(got, "event: response.completed") {
+		t.Fatalf("framer did not preserve data-before-event fields in one frame: %q", got)
+	}
+}
+
+func TestResponsesSSEFramerFlushesMultilineDataWithoutDelimiter(t *testing.T) {
+	var output bytes.Buffer
+	framer := &responsesSSEFramer{}
+	chunk := []byte("event: response.completed\n" +
+		"data: {\"type\":\"response.completed\",\n" +
+		"data: \"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}")
+	framer.WriteChunk(&output, chunk)
+	framer.Flush(&output)
+
+	if framer.terminalEvent != "response.completed" || !strings.Contains(output.String(), "response.completed") {
+		t.Fatalf("multiline data-only terminal frame was dropped: terminal=%q output=%q", framer.terminalEvent, output.String())
+	}
+}
+
+func TestResponsesSSEFramerUsesPayloadErrorOverCompletedEvent(t *testing.T) {
+	var output bytes.Buffer
+	framer := &responsesSSEFramer{failureEvent: "response.failed"}
+	framer.WriteChunk(&output, []byte("data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\nevent: response.completed\n\n"))
+
+	if framer.terminalEvent != "response.failed" || strings.Contains(output.String(), "event: response.completed") {
+		t.Fatalf("payload error was overridden by completed event: terminal=%q output=%q", framer.terminalEvent, output.String())
+	}
+	if strings.Count(output.String(), "event: response.failed") != 1 {
+		t.Fatalf("payload error output = %q, want one response.failed", output.String())
+	}
+}
+
+func TestResponsesSSEFramerUsesErrorEventOverPayloadType(t *testing.T) {
+	var output bytes.Buffer
+	framer := &responsesSSEFramer{}
+	framer.WriteChunk(&output, []byte("event: error\ndata: {\"type\":\"provider.error\",\"message\":\"failed\"}\n\n"))
+	if framer.terminalEvent != "error" {
+		t.Fatalf("terminal event = %q, want error", framer.terminalEvent)
+	}
+
+	framer = &responsesSSEFramer{}
+	framer.WriteChunk(&output, []byte("data: {\"response\":{\"error\":{\"message\":\"failed\"}}}\n\n"))
+	if framer.terminalEvent != "error" {
+		t.Fatalf("nested response error terminal event = %q, want error", framer.terminalEvent)
+	}
+}
+
 func TestForwardResponsesStreamSeparatesDataOnlySSEChunks(t *testing.T) {
 	h, recorder, c, flusher := newResponsesStreamTestHandler(t)
 
@@ -338,7 +400,7 @@ func TestForwardResponsesStreamRepairsMixedIndexedAndUnindexedDoneItems(t *testi
 	}
 }
 
-func TestForwardResponsesStreamSynthesizesCompletedOnCleanEOF(t *testing.T) {
+func TestForwardResponsesStreamRejectsCleanEOFWithoutTerminalEvent(t *testing.T) {
 	h, recorder, c, flusher := newResponsesStreamTestHandler(t)
 
 	data := make(chan []byte, 1)
@@ -351,17 +413,11 @@ func TestForwardResponsesStreamSynthesizesCompletedOnCleanEOF(t *testing.T) {
 
 	parts := strings.Split(strings.TrimSpace(recorder.Body.String()), "\n\n")
 	if len(parts) != 2 {
-		t.Fatalf("expected output item plus synthesized completed, got %d. Body: %q", len(parts), recorder.Body.String())
+		t.Fatalf("expected output item plus terminal error, got %d. Body: %q", len(parts), recorder.Body.String())
 	}
 	payload := strings.TrimPrefix(parts[1], "data: ")
-	if got := gjson.Get(payload, "type").String(); got != "response.completed" {
-		t.Fatalf("synthesized event type = %q, want response.completed: %s", got, payload)
-	}
-	if got := gjson.Get(payload, "response.output.0.id").String(); got != "fc-1" {
-		t.Fatalf("synthesized completed output id = %q, want fc-1: %s", got, payload)
-	}
-	if got := gjson.Get(payload, "response.id").String(); got != "" {
-		t.Fatalf("synthesized completed must not create reusable response id, got %q: %s", got, payload)
+	if got := gjson.Get(payload, "type").String(); got != "error" {
+		t.Fatalf("terminal event type = %q, want error: %s", got, payload)
 	}
 }
 
@@ -412,16 +468,13 @@ func TestForwardResponsesStreamReassemblesSplitSSEEventChunks(t *testing.T) {
 
 	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
 
-	parts := strings.Split(strings.TrimSpace(recorder.Body.String()), "\n\n")
-	if len(parts) != 2 {
-		t.Fatalf("expected created plus synthesized completed events, got %d. Body: %q", len(parts), recorder.Body.String())
+	got := recorder.Body.String()
+	wantPrefix := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n"
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("unexpected split-event framing.\nGot:        %q\nWant prefix: %q", got, wantPrefix)
 	}
-	wantFirst := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}"
-	if parts[0] != wantFirst {
-		t.Fatalf("unexpected split-event framing.\nGot:  %q\nWant: %q", parts[0], wantFirst)
-	}
-	if got := gjson.Get(strings.TrimPrefix(parts[1], "data: "), "type").String(); got != "response.completed" {
-		t.Fatalf("second event type = %q, want response.completed. Body: %q", got, recorder.Body.String())
+	if !strings.Contains(got, "event: error") {
+		t.Fatalf("unterminated framing test stream did not end with an error: %q", got)
 	}
 }
 
@@ -437,15 +490,12 @@ func TestForwardResponsesStreamPreservesValidFullSSEEventChunks(t *testing.T) {
 
 	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
 
-	parts := strings.Split(strings.TrimSpace(recorder.Body.String()), "\n\n")
-	if len(parts) != 2 {
-		t.Fatalf("expected original event plus synthesized completed, got %d. Body: %q", len(parts), recorder.Body.String())
+	got := recorder.Body.String()
+	if !strings.HasPrefix(got, string(chunk)) {
+		t.Fatalf("unexpected full-event framing.\nGot:        %q\nWant prefix: %q", got, string(chunk))
 	}
-	if parts[0] != strings.TrimSpace(string(chunk)) {
-		t.Fatalf("unexpected full-event framing.\nGot:  %q\nWant: %q", parts[0], strings.TrimSpace(string(chunk)))
-	}
-	if got := gjson.Get(strings.TrimPrefix(parts[1], "data: "), "type").String(); got != "response.completed" {
-		t.Fatalf("second event type = %q, want response.completed. Body: %q", got, recorder.Body.String())
+	if !strings.Contains(got, "event: error") {
+		t.Fatalf("unterminated framing test stream did not end with an error: %q", got)
 	}
 }
 
@@ -461,16 +511,13 @@ func TestForwardResponsesStreamBuffersSplitDataPayloadChunks(t *testing.T) {
 
 	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
 
-	parts := strings.Split(strings.TrimSpace(recorder.Body.String()), "\n\n")
-	if len(parts) != 2 {
-		t.Fatalf("expected created plus synthesized completed events, got %d. Body: %q", len(parts), recorder.Body.String())
+	got := recorder.Body.String()
+	wantPrefix := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n"
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("unexpected split-data framing.\nGot:        %q\nWant prefix: %q", got, wantPrefix)
 	}
-	wantFirst := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}"
-	if parts[0] != wantFirst {
-		t.Fatalf("unexpected split-data framing.\nGot:  %q\nWant: %q", parts[0], wantFirst)
-	}
-	if got := gjson.Get(strings.TrimPrefix(parts[1], "data: "), "type").String(); got != "response.completed" {
-		t.Fatalf("second event type = %q, want response.completed. Body: %q", got, recorder.Body.String())
+	if !strings.Contains(got, "event: error") {
+		t.Fatalf("unterminated framing test stream did not end with an error: %q", got)
 	}
 }
 
@@ -494,11 +541,11 @@ func TestForwardResponsesStreamDropsIncompleteTrailingDataChunkOnFlush(t *testin
 
 	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
 
-	parts := strings.Split(strings.TrimSpace(recorder.Body.String()), "\n\n")
-	if len(parts) != 1 {
-		t.Fatalf("expected only synthesized completed event after incomplete trailing data is dropped, got %d. Body: %q", len(parts), recorder.Body.String())
+	got := recorder.Body.String()
+	if strings.Contains(got, `data: {"type":"response.created"`) {
+		t.Fatalf("incomplete trailing data was not dropped on flush: %q", got)
 	}
-	if got := gjson.Get(strings.TrimPrefix(parts[0], "data: "), "type").String(); got != "response.completed" {
-		t.Fatalf("event type = %q, want response.completed. Body: %q", got, recorder.Body.String())
+	if !strings.Contains(got, "event: error") {
+		t.Fatalf("unterminated framing test stream did not end with an error: %q", got)
 	}
 }

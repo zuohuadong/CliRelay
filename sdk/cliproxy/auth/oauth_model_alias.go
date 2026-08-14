@@ -274,7 +274,10 @@ func (m *Manager) resolveOAuthModelAliasWithResult(auth *Auth, requestedModel st
 	if result := resolveUpstreamModelFromAliases(OAuthModelAliasesFromAttributes(authAttributes(auth)), requestedModel); result.Matched {
 		return result
 	}
-	return resolveUpstreamModelFromAliasTable(m, auth, requestedModel, channel)
+	if result := resolveUpstreamModelFromAliasTable(m, auth, requestedModel, channel); result.Matched {
+		return result
+	}
+	return resolveUpstreamModelFromAliases(OAuthModelAliasDefaults(channel), requestedModel)
 }
 
 func authAttributes(auth *Auth) map[string]string {
@@ -508,6 +511,21 @@ func OAuthModelAliasChannel(provider, authKind string) string {
 		return provider
 	default:
 		return provider
+	}
+}
+
+// OAuthModelAliasDefaults returns compatibility aliases that are safe for the
+// corresponding OAuth-backed channel. The source model still has to be present
+// in that channel's catalog before the alias is advertised.
+func OAuthModelAliasDefaults(channel string) []internalconfig.OAuthModelAlias {
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case "antigravity", "gemini-cli":
+		return []internalconfig.OAuthModelAlias{{
+			Name:  "gemini-3.7-flash-high",
+			Alias: "gemini-3.7-flash-tiered",
+		}}
+	default:
+		return nil
 	}
 }
 

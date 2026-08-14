@@ -1223,6 +1223,14 @@ func applyOAuthModelAliasForAuth(cfg *config.Config, provider, authKind string, 
 		return models
 	}
 	aliases := oauthModelAliasesForAuth(cfg, channel, attributes)
+	for _, defaultAlias := range coreauth.OAuthModelAliasDefaults(channel) {
+		for _, model := range models {
+			if model != nil && strings.EqualFold(strings.TrimSpace(model.ID), strings.TrimSpace(defaultAlias.Name)) {
+				aliases = append(aliases, defaultAlias)
+				break
+			}
+		}
+	}
 	if len(aliases) == 0 {
 		return models
 	}
@@ -1231,12 +1239,12 @@ func applyOAuthModelAliasForAuth(cfg *config.Config, provider, authKind string, 
 
 func oauthModelAliasesForAuth(cfg *config.Config, channel string, attributes map[string]string) []config.OAuthModelAlias {
 	perAuthAliases := coreauth.OAuthModelAliasesFromAttributes(attributes)
-	if cfg == nil || len(cfg.OAuthModelAlias) == 0 {
-		return perAuthAliases
+	var globalAliases []config.OAuthModelAlias
+	if cfg != nil {
+		globalAliases = cfg.OAuthModelAlias[channel]
 	}
-	globalAliases := cfg.OAuthModelAlias[channel]
-	if len(perAuthAliases) == 0 {
-		return globalAliases
+	if len(perAuthAliases) == 0 && len(globalAliases) == 0 {
+		return nil
 	}
 	if len(globalAliases) == 0 {
 		return perAuthAliases

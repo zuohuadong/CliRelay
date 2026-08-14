@@ -2,7 +2,9 @@ package helps
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -21,12 +23,38 @@ import (
 )
 
 // utlsRoundTripper implements http.RoundTripper using a Chrome fingerprint for
-// providers that require a browser-like TLS and HTTP/2 transport.
+// providers that require a browser-like TLS and HTTP/2 transport. Each request
+// gets a dedicated connection that is closed with the response body.
 type utlsRoundTripper struct {
 	mu          sync.Mutex
 	connections map[string][]http2ClientConn
 	pending     map[string]chan struct{}
 	dialer      proxy.Dialer
+}
+
+type closeConnectionBody struct {
+	io.ReadCloser
+	closeConnection func() error
+	once            sync.Once
+	err             error
+}
+
+func (b *closeConnectionBody) Close() error {
+	if b == nil {
+		return nil
+	}
+	b.once.Do(func() {
+		var errConnection error
+		if b.closeConnection != nil {
+			errConnection = b.closeConnection()
+		}
+		var errBody error
+		if b.ReadCloser != nil {
+			errBody = b.ReadCloser.Close()
+		}
+		b.err = errors.Join(errBody, errConnection)
+	})
+	return b.err
 }
 
 type http2ClientConn interface {
@@ -101,6 +129,12 @@ func (t *utlsRoundTripper) getOrCreateConnection(ctx context.Context, host, addr
 		}
 
 		t.mu.Lock()
+		if t.connections == nil {
+			t.connections = make(map[string][]http2ClientConn)
+		}
+		if t.pending == nil {
+			t.pending = make(map[string]chan struct{})
+		}
 		connections := t.connections[host]
 		kept := connections[:0]
 		var selected http2ClientConn
@@ -183,7 +217,9 @@ func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr stri
 	tlsConn := tls.UClient(conn, tlsConfig, tls.HelloChrome_Auto)
 
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		conn.Close()
+		if ctx.Err() == nil {
+			_ = conn.Close()
+		}
 		return nil, err
 	}
 
@@ -258,7 +294,19 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 		retireHTTP2Connection(h2Conn)
 		return nil, err
 	}
-
+	if resp == nil {
+		if errClose := h2Conn.Close(); errClose != nil {
+			log.Debugf("utls: close connection after empty response: %v", errClose)
+		}
+		return nil, fmt.Errorf("utls: upstream returned an empty response")
+	}
+	if resp.Body == nil {
+		resp.Body = http.NoBody
+	}
+	resp.Body = &closeConnectionBody{
+		ReadCloser:      resp.Body,
+		closeConnection: h2Conn.Close,
+	}
 	return resp, nil
 }
 

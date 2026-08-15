@@ -240,6 +240,61 @@ func TestServiceSetConfigReloadsProbeURLs(t *testing.T) {
 	}
 }
 
+// 回归测试：Start() 启动的健康检查循环必须在无需手动 CheckEndpoint 的情况下
+// 自动刷新 last_checked_at。该启动调用曾在生命周期接线中丢失，导致端点
+// 在健康 TTL 过后被判定 endpoint_health_stale_or_unhealthy 而拒绝服务。
+func TestServiceStartRunsEndpointCheckLoopAutomatically(t *testing.T) {
+	t.Parallel()
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ip":"198.51.100.44"}`))
+	}))
+	defer proxyServer.Close()
+	host, port := splitTestServer(t, proxyServer.URL)
+
+	cfg := &config.Config{EgressNetwork: config.EgressNetworkConfig{
+		Enabled: true, EndpointCheckInterval: "1h", EndpointHealthTTL: "2h",
+	}}
+	service, err := NewService(cfg, filepath.Join(t.TempDir(), "egress.db"))
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	// 直接注入探测 URL 覆盖值，绕过 sanitize 对 http:// 探测地址的过滤。
+	service.probeURLs = []string{"http://probe.invalid/ip"}
+
+	endpoint, err := service.CreateEndpoint(context.Background(), Endpoint{
+		Name: "Loop check", Protocol: ProtocolHTTP, Host: host, Port: port,
+		Enabled: true, ExpectedPublicIP: "198.51.100.44",
+	})
+	if err != nil {
+		t.Fatalf("CreateEndpoint() error = %v", err)
+	}
+	if !endpoint.LastCheckedAt.IsZero() {
+		t.Fatal("new endpoint unexpectedly pre-checked")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err = service.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		checked, errGet := service.GetEndpoint(ctx, endpoint.ID)
+		if errGet != nil {
+			t.Fatalf("GetEndpoint() error = %v", errGet)
+		}
+		if !checked.LastCheckedAt.IsZero() && checked.CheckStatus == EndpointStatusHealthy {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	checked, _ := service.GetEndpoint(ctx, endpoint.ID)
+	t.Fatalf("check loop did not refresh endpoint health automatically: %#v", checked)
+}
+
 func newTestService(t *testing.T, enabled bool) *Service {
 	t.Helper()
 	cfg := &config.Config{EgressNetwork: config.EgressNetworkConfig{

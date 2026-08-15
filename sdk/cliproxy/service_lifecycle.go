@@ -64,6 +64,15 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 	}()
 
+	// 启动出口端点健康检查循环；该调用曾在上游同步冲突中丢失，
+	// 导致 last_checked_at 仅靠面板手动触发刷新，TTL 过后端点全部
+	// 被判定 endpoint_health_stale_or_unhealthy 而拒绝服务。
+	if s.egressService != nil {
+		if err := s.egressService.Start(ctx); err != nil {
+			return fmt.Errorf("cliproxy: start egress lifecycle: %w", err)
+		}
+	}
+
 	if !homeEnabled {
 		if errEnsureAuthDir := s.ensureAuthDir(); errEnsureAuthDir != nil {
 			return errEnsureAuthDir

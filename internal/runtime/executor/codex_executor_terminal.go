@@ -16,17 +16,41 @@ const codexIncompleteStreamMessage = "stream error: stream disconnected before c
 
 type codexIncompleteStreamError struct {
 	statusErr
+	// emittedPayload reports whether any stream payload already reached the
+	// downstream client before the disconnect. Retrying after partial output
+	// would duplicate content, so only pre-payload disconnects stay retryable.
+	emittedPayload bool
 }
 
 func newCodexIncompleteStreamError() codexIncompleteStreamError {
-	return codexIncompleteStreamError{statusErr: statusErr{
-		code: http.StatusRequestTimeout,
-		msg:  codexIncompleteStreamMessage,
-	}}
+	return newCodexIncompleteStreamErrorEmitted(false)
 }
 
-func (codexIncompleteStreamError) IsRequestScoped() bool {
-	return true
+func newCodexIncompleteStreamErrorEmitted(emittedPayload bool) codexIncompleteStreamError {
+	return codexIncompleteStreamError{
+		statusErr:      statusErr{code: http.StatusRequestTimeout, msg: codexIncompleteStreamMessage},
+		emittedPayload: emittedPayload,
+	}
+}
+
+// codexStreamEventIndicatesProgress reports whether an upstream SSE event type
+// carries substantive output progress. Pure lifecycle events (created,
+// in_progress, ping) do not count: a disconnect before any progress event can
+// be retried on another credential without duplicating client-visible content.
+func codexStreamEventIndicatesProgress(eventType string) bool {
+	switch eventType {
+	case "", "response.created", "response.in_progress", "ping":
+		return false
+	default:
+		return true
+	}
+}
+
+// IsRequestScoped 仅在已向下游客户端输出部分流式内容时返回 true：
+// 此时重试会导致内容重复，必须停止凭证回退直接返回错误。
+// 尚未输出任何内容时属于上游断流，允许 conductor 轮换凭证重试。
+func (e codexIncompleteStreamError) IsRequestScoped() bool {
+	return e.emittedPayload
 }
 
 // Streamed Codex responses may emit response.output_item.done events while leaving

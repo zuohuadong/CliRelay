@@ -180,7 +180,7 @@ func TestCodexExecutorExecuteExplicitTerminalFailureIsNotRequestScoped(t *testin
 	assertNotRequestScopedTestError(t, err)
 }
 
-func TestCodexExecutorExecuteMissingCompletionIsRequestScoped(t *testing.T) {
+func TestCodexExecutorExecuteMissingCompletionIsNotRequestScoped(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.5\"}}\n\n"))
@@ -206,10 +206,11 @@ func TestCodexExecutorExecuteMissingCompletionIsRequestScoped(t *testing.T) {
 	if got := statusCodeFromTestError(t, err); got != http.StatusRequestTimeout {
 		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusRequestTimeout, err)
 	}
-	assertRequestScopedTestError(t, err)
+	// 非流式断流时客户端尚未收到任何内容，轮换凭证重试是安全的。
+	assertNotRequestScopedTestError(t, err)
 }
 
-func TestCodexExecutorExecuteStreamMissingCompletionIsRequestScoped(t *testing.T) {
+func TestCodexExecutorExecuteStreamMissingCompletionIsNotRequestScoped(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.5\"}}\n\n"))
@@ -245,6 +246,48 @@ func TestCodexExecutorExecuteStreamMissingCompletionIsRequestScoped(t *testing.T
 	if got := statusCodeFromTestError(t, streamErr); got != http.StatusRequestTimeout {
 		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusRequestTimeout, streamErr)
 	}
+	// 尚未向下游输出任何 payload 的断流可以安全轮换凭证重试。
+	assertNotRequestScopedTestError(t, streamErr)
+}
+
+func TestCodexExecutorExecuteStreamIncompleteAfterProgressIsRequestScoped(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.5\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("expected incomplete stream error, got nil")
+	}
+	if got := statusCodeFromTestError(t, streamErr); got != http.StatusRequestTimeout {
+		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusRequestTimeout, streamErr)
+	}
+	// 实质输出事件已经下发，重试会重复内容，必须停止凭证回退。
 	assertRequestScopedTestError(t, streamErr)
 }
 
@@ -338,7 +381,7 @@ func TestCodexAutoExecutorHTTPFallbackForwardsSequentialCutoffReasoningSummaryDe
 	}
 }
 
-func TestCodexExecutorTransportFailureBeforeTerminalIsRequestScoped(t *testing.T) {
+func TestCodexExecutorTransportFailureBeforeTerminalIsNotRequestScoped(t *testing.T) {
 	tests := []struct {
 		name   string
 		stream bool
@@ -387,7 +430,8 @@ func TestCodexExecutorTransportFailureBeforeTerminalIsRequestScoped(t *testing.T
 			if got := statusCodeFromTestError(t, terminalErr); got != http.StatusRequestTimeout {
 				t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusRequestTimeout, terminalErr)
 			}
-			assertRequestScopedTestError(t, terminalErr)
+			// created 之后立即断流，客户端尚未收到任何实质输出，可安全轮换凭证重试。
+			assertNotRequestScopedTestError(t, terminalErr)
 		})
 	}
 }

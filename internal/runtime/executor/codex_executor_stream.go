@@ -139,6 +139,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
 		emittedPayload := false
+		// sawProgressOutput marks whether the upstream stream delivered any
+		// substantive output event. Lifecycle-only streams (created/in_progress)
+		// never reached the response body, so a disconnect there can be retried
+		// on another credential without duplicating client-visible content.
+		sawProgressOutput := false
 		retriedInvalidSignature := false
 		idleReset, stopIdleWatch, idleTimedOut := startCodexHTTPStreamIdleWatch(ctx, streamBody)
 		defer func() { stopIdleWatch() }()
@@ -160,6 +165,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				data = helps.RestoreCodexMultiAgentV2Response(data, optimizeMultiAgentV2)
 				translatedLine = append([]byte("data: "), data...)
 				eventType := gjson.GetBytes(data, "type").String()
+				if codexStreamEventIndicatesProgress(eventType) {
+					sawProgressOutput = true
+				}
 				if streamErr, terminalBody, ok := codexTerminalFailureErr(data); ok {
 					streamErr.requestAuthScheme = streamAuthScheme
 					if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
@@ -292,7 +300,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if e.usesStrictEgress(auth) {
 				streamErr = e.wrapStrictEgressTransportErrorForAuth(auth, errScan, "stream read")
 			} else {
-				streamErr = newCodexIncompleteStreamError()
+				streamErr = newCodexIncompleteStreamErrorEmitted(sawProgressOutput)
 			}
 			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 			reporter.PublishFailure(ctx, streamErr)
@@ -302,7 +310,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 			return
 		}
-		streamErr := newCodexIncompleteStreamError()
+		streamErr := newCodexIncompleteStreamErrorEmitted(sawProgressOutput)
 		helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 		reporter.PublishFailure(ctx, streamErr)
 		select {

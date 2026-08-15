@@ -308,11 +308,23 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 	}
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, authKind)
 	if provider == "codex" {
+		// 套餐类型优先从 id_token 解析；部分凭证文件只保存 access_token，
+		// 其 JWT 同样携带 chatgpt_plan_type，作为回退来源。
+		planTokens := make([]string, 0, 2)
 		if idTokenRaw, ok := metadata["id_token"].(string); ok && strings.TrimSpace(idTokenRaw) != "" {
-			if claims, errParse := codex.ParseJWTToken(idTokenRaw); errParse == nil && claims != nil {
-				if pt := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); pt != "" {
-					a.Attributes["plan_type"] = pt
-				}
+			planTokens = append(planTokens, idTokenRaw)
+		}
+		if accessTokenRaw, ok := metadata["access_token"].(string); ok && strings.TrimSpace(accessTokenRaw) != "" {
+			planTokens = append(planTokens, accessTokenRaw)
+		}
+		for _, token := range planTokens {
+			claims, errParse := codex.ParseJWTToken(token)
+			if errParse != nil || claims == nil {
+				continue
+			}
+			if pt := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); pt != "" {
+				a.Attributes["plan_type"] = pt
+				break
 			}
 		}
 		if accountID := codex.AccountIDFromMetadata(metadata); accountID != "" {

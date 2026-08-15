@@ -947,6 +947,29 @@ func TestFileSynthesizerCodexBackfillsAccountIDFromJWT(t *testing.T) {
 	}
 }
 
+func TestFileSynthesizerCodexFallsBackToAccessTokenForPlanType(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	// 部分凭证文件只保存 access_token（无 id_token），其 JWT 同样携带
+	// chatgpt_plan_type，套餐类型应从 access_token 回退解析。
+	accessToken := "eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2N0LWFjY2Vzcy10b2tlbiIsICJjaGF0Z3B0X3BsYW5fdHlwZSI6ICJwcm8ifX0.ZmFrZXNpZw"
+	data := []byte(`{"type":"codex","email":"user@example.test","account_id":"acct-access-token","access_token":"` + accessToken + `"}`)
+	if err := os.WriteFile(filepath.Join(tempDir, "codex-access-token.json"), data, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	auths, err := NewFileSynthesizer().Synthesize(&SynthesisContext{Config: &config.Config{}, AuthDir: tempDir, Now: time.Now(), IDGenerator: NewStableIDGenerator()})
+	if err != nil {
+		t.Fatalf("Synthesize() error = %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("auths = %#v", auths)
+	}
+	if got, want := auths[0].Attributes["plan_type"], "pro"; got != want {
+		t.Fatalf("plan_type = %q, want %q", got, want)
+	}
+}
+
 func TestFileSynthesizerFlattensVersionlessAgentIdentityBundleExport(t *testing.T) {
 	t.Parallel()
 

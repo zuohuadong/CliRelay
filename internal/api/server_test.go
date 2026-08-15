@@ -1337,6 +1337,29 @@ func TestEgressManagementRoutesRegistered(t *testing.T) {
 	})
 }
 
+func TestManagementPanelDataRoutesRegistered(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	for _, endpoint := range []string{
+		"/v0/management/dashboard-summary?days=7",
+		"/v0/management/usage/entity-stats?days=30",
+		"/v0/management/model-configs?scope=library",
+		"/v0/management/model-owner-presets",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, endpoint, nil)
+			req.Header.Set("Authorization", "Bearer test-management-key")
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestOAuthCallbackRouteSkipsManagementKeyMiddleware(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 

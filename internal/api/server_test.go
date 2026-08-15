@@ -1304,6 +1304,39 @@ func TestManagementResponseExposesPluginSupportHeaderForCORS(t *testing.T) {
 	}
 }
 
+func TestEgressManagementRoutesRegistered(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+
+	t.Run("egress overview responds with auth", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/egress/overview", nil)
+		req.Header.Set("Authorization", "Bearer test-management-key")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		// 未启用 egress-network 时处理器返回 503；关键是路由已注册而非 404。
+		if rr.Code == http.StatusNotFound {
+			t.Fatalf("egress overview route not registered: %s", rr.Body.String())
+		}
+		if rr.Code != http.StatusServiceUnavailable && rr.Code != http.StatusOK {
+			t.Fatalf("unexpected status = %d body=%s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("egress endpoints respond with auth", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/egress/endpoints", nil)
+		req.Header.Set("Authorization", "Bearer test-management-key")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code == http.StatusNotFound {
+			t.Fatalf("egress endpoints route not registered: %s", rr.Body.String())
+		}
+		if rr.Code != http.StatusServiceUnavailable && rr.Code != http.StatusOK {
+			t.Fatalf("unexpected status = %d body=%s", rr.Code, rr.Body.String())
+		}
+	})
+}
+
 func TestOAuthCallbackRouteSkipsManagementKeyMiddleware(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 

@@ -67,6 +67,19 @@ func (s *Server) registerManagementRoutes() {
 
 		mgmt.POST("/api-call", s.mgmt.APICall)
 
+		// Codex 出口网络管理路由（处理器位于 egress_network.go）。
+		mgmt.GET("/egress/overview", s.mgmt.GetEgressOverview)
+		mgmt.GET("/egress/endpoints", s.mgmt.GetEgressEndpoints)
+		mgmt.POST("/egress/endpoints", s.mgmt.PostEgressEndpoint)
+		mgmt.PATCH("/egress/endpoints/:id", s.mgmt.PatchEgressEndpoint)
+		mgmt.DELETE("/egress/endpoints/:id", s.mgmt.DeleteEgressEndpoint)
+		mgmt.POST("/egress/endpoints/:id/check", s.mgmt.PostEgressEndpointCheck)
+		mgmt.POST("/egress/endpoints/:id/impact", s.mgmt.PostEgressEndpointImpact)
+		mgmt.POST("/egress/endpoints/:id/actions", s.mgmt.PostEgressEndpointAction)
+		mgmt.GET("/egress/bindings", s.mgmt.GetEgressBindings)
+		mgmt.POST("/egress/bindings/preview", s.mgmt.PostEgressBindingPreview)
+		mgmt.PUT("/egress/bindings/batch", s.mgmt.PutEgressBindingBatch)
+
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)
 		mgmt.PUT("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)
 		mgmt.PATCH("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)

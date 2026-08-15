@@ -1373,6 +1373,7 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 		if _, matched := matchedSources[sourceKey]; matched {
 			continue
 		}
+		var staticInfo *registry.ModelInfo
 		for _, entry := range entries {
 			mappedID := strings.TrimSpace(entry.alias)
 			if mappedID == "" {
@@ -1383,7 +1384,25 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 				continue
 			}
 			seen[aliasKey] = struct{}{}
+			// 源模型不在当前账号目录时（如 alias 配置先于目录更新），仍按
+			// 源模型 ID 从静态目录补全显示名与元数据，避免别名模型裸露。
+			if staticInfo == nil {
+				staticInfo = registry.LookupStaticModelInfo(sourceKey)
+			}
 			model := &ModelInfo{ID: mappedID, Object: "model", Name: "models/" + mappedID, Version: mappedID}
+			if staticInfo != nil {
+				model.DisplayName = staticInfo.DisplayName
+				model.Description = staticInfo.Description
+				model.OwnedBy = staticInfo.OwnedBy
+				model.Type = staticInfo.Type
+				model.Thinking = staticInfo.Thinking
+				if staticInfo.ContextLength > 0 {
+					model.ContextLength = staticInfo.ContextLength
+				}
+				if staticInfo.MaxCompletionTokens > 0 {
+					model.MaxCompletionTokens = staticInfo.MaxCompletionTokens
+				}
+			}
 			if entry.displayName != "" {
 				model.DisplayName = entry.displayName
 			}

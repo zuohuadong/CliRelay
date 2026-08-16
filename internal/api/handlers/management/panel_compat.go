@@ -456,6 +456,17 @@ func (h *Handler) PutBedrockKeys(c *gin.Context) {
 func (h *Handler) DeleteBedrockKey(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if index := strings.TrimSpace(c.Query("index")); index != "" {
+		idx, err := strconv.Atoi(index)
+		if err != nil || idx < 0 || idx >= len(h.cfg.BedrockKey) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid index"})
+			return
+		}
+		h.cfg.BedrockKey = append(h.cfg.BedrockKey[:idx], h.cfg.BedrockKey[idx+1:]...)
+		h.cfg.SanitizeBedrockKeys()
+		h.persistLocked(c)
+		return
+	}
 	h.cfg.BedrockKey = nil
 	h.persistLocked(c)
 }

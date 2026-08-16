@@ -203,6 +203,26 @@ func TestPutAPIKeyEntriesRejectsUnresolvedMaskedKeys(t *testing.T) {
 	}
 }
 
+func TestDeleteBedrockKeyByIndexPreservesOtherKeys(t *testing.T) {
+	cfg := &config.Config{BedrockKey: []config.BedrockKey{
+		{Name: "first", AuthMode: config.BedrockAuthModeAPIKey, APIKey: "bedrock-first"},
+		{Name: "second", AuthMode: config.BedrockAuthModeAPIKey, APIKey: "bedrock-second"},
+	}}
+	h := newBigModelCodingPanelTestHandler(t, cfg)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodDelete, "/v0/management/bedrock-api-key?index=1", nil)
+
+	h.DeleteBedrockKey(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(cfg.BedrockKey) != 1 || cfg.BedrockKey[0].APIKey != "bedrock-first" {
+		t.Fatalf("bedrock keys = %#v, want only first key", cfg.BedrockKey)
+	}
+}
+
 func runAPIKeyEntriesRequest(t *testing.T, h *Handler, method, body string, fn func(*gin.Context)) *httptest.ResponseRecorder {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

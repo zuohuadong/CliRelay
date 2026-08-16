@@ -219,8 +219,7 @@ func (h *Handler) DeleteAgnesKey(c *gin.Context) {
 		return
 	}
 
-	h.cfg.AgnesAPIKey = nil
-	h.persistLocked(c)
+	c.JSON(http.StatusBadRequest, gin.H{"error": "missing api-key, name, or index"})
 }
 
 func (h *Handler) agnesWithAuthIndex() []openAICompatibilityWithAuthIndex {

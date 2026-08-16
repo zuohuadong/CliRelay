@@ -95,7 +95,12 @@ func TestPatchAndDeleteAgnesKey(t *testing.T) {
 		t.Fatalf("unexpected Agnes config after patch: %#v", cfg.AgnesAPIKey)
 	}
 
-	deleteRec := runBigModelCodingPanelRequest(t, h, http.MethodDelete, "", h.DeleteAgnesKey)
+	missingSelectorRec := runBigModelCodingPanelRequest(t, h, http.MethodDelete, "", h.DeleteAgnesKey)
+	if missingSelectorRec.Code != http.StatusBadRequest {
+		t.Fatalf("missing selector status = %d, want %d body=%s", missingSelectorRec.Code, http.StatusBadRequest, missingSelectorRec.Body.String())
+	}
+
+	deleteRec := runBigModelCodingPanelRequestAtPath(t, h, http.MethodDelete, "/v0/management/agnes-api-key?index=0", "", h.DeleteAgnesKey)
 	if deleteRec.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, want %d body=%s", deleteRec.Code, http.StatusOK, deleteRec.Body.String())
 	}

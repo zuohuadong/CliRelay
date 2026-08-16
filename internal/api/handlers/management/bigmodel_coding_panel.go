@@ -192,8 +192,7 @@ func (h *Handler) DeleteBigModelCodingKey(c *gin.Context) {
 		return
 	}
 
-	h.cfg.BigModelCodingAPIKey = nil
-	h.persistLocked(c)
+	c.JSON(http.StatusBadRequest, gin.H{"error": "missing api-key, name, or index"})
 }
 
 func (h *Handler) bigModelCodingWithAuthIndex() []openAICompatibilityWithAuthIndex {

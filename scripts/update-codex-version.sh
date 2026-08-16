@@ -20,7 +20,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 current_version() {
     sed -n 's/.*DefaultCodexFingerprintVersion[^"]*"\([^"]*\)".*/\1/p' \
-        "$REPO_ROOT/internal/config/config.go"
+        "$REPO_ROOT/internal/config/local_types.go"
 }
 
 latest_npm_version() {
@@ -68,28 +68,24 @@ NEW_UA="codex-tui/${NEW_VERSION} (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-
 
 # ── Update source files ─────────────────────────────────────────────────────
 
-# 1. internal/config/config.go — default fingerprint constants
+# 1. internal/config/local_types.go — default fingerprint constants
 replace_literal \
-    "$REPO_ROOT/internal/config/config.go" \
+    "$REPO_ROOT/internal/config/local_types.go" \
     "$OLD_UA" \
     "$NEW_UA"
 replace_literal \
-    "$REPO_ROOT/internal/config/config.go" \
+    "$REPO_ROOT/internal/config/local_types.go" \
     "DefaultCodexFingerprintVersion       = \"${CUR_VERSION}\"" \
     "DefaultCodexFingerprintVersion       = \"${NEW_VERSION}\""
 
-# 2. internal/runtime/executor/codex_executor.go — fallback User-Agent constant
+# 2. internal/runtime/executor/codex_executor_request.go — fallback User-Agent constant
 replace_literal \
-    "$REPO_ROOT/internal/runtime/executor/codex_executor.go" \
+    "$REPO_ROOT/internal/runtime/executor/codex_executor_request.go" \
     "$OLD_UA" \
     "$NEW_UA"
 
 # 3. Test files — update all version and User-Agent references
-for f in \
-    "$REPO_ROOT/internal/config/identity_fingerprint_test.go" \
-    "$REPO_ROOT/internal/api/handlers/management/identity_fingerprint_test.go" \
-    "$REPO_ROOT/internal/api/mcp_proxy_test.go" \
-    "$REPO_ROOT/internal/runtime/executor/openai_compat_executor_compact_test.go"; do
+for f in "$REPO_ROOT/internal/config/identity_fingerprint_test.go"; do
     [ -f "$f" ] || continue
     replace_literal "$f" "$OLD_UA" "$NEW_UA"
     # Bare version references in assertions and failure messages.
@@ -98,9 +94,10 @@ done
 
 # ── Format & verify ─────────────────────────────────────────────────────────
 
-gofmt -w "$REPO_ROOT/internal/config/" \
-       "$REPO_ROOT/internal/runtime/executor/" \
-       "$REPO_ROOT/internal/api/"
+gofmt -w \
+    "$REPO_ROOT/internal/config/local_types.go" \
+    "$REPO_ROOT/internal/runtime/executor/codex_executor_request.go" \
+    "$REPO_ROOT/internal/config/identity_fingerprint_test.go"
 
 echo "Running compile check..."
 cd "$REPO_ROOT"

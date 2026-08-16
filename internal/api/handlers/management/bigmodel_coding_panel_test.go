@@ -73,6 +73,32 @@ func TestPatchBigModelCodingKeyPreservesTargetedDefaults(t *testing.T) {
 	assertNoAutoInjectedDefaultAlias(t, entry.Models)
 }
 
+func TestDeleteBigModelCodingKeyRequiresSelector(t *testing.T) {
+	cfg := &config.Config{BigModelCodingAPIKey: []config.OpenAICompatibility{{
+		Name:                config.DefaultBigModelCodingProviderName,
+		BaseURL:             config.DefaultBigModelCodingBaseURL,
+		APIKeyEntries:       []config.OpenAICompatibilityAPIKey{{APIKey: "sk-bigmodel"}},
+		IdentityFingerprint: "codex",
+	}}}
+	h := newBigModelCodingPanelTestHandler(t, cfg)
+
+	missingSelectorRec := runBigModelCodingPanelRequest(t, h, http.MethodDelete, "", h.DeleteBigModelCodingKey)
+	if missingSelectorRec.Code != http.StatusBadRequest {
+		t.Fatalf("missing selector status = %d, want %d body=%s", missingSelectorRec.Code, http.StatusBadRequest, missingSelectorRec.Body.String())
+	}
+	if len(cfg.BigModelCodingAPIKey) != 1 {
+		t.Fatalf("missing selector changed config: %#v", cfg.BigModelCodingAPIKey)
+	}
+
+	deleteRec := runBigModelCodingPanelRequestAtPath(t, h, http.MethodDelete, "/v0/management/bigmodel-coding-api-key?index=0", "", h.DeleteBigModelCodingKey)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, want %d body=%s", deleteRec.Code, http.StatusOK, deleteRec.Body.String())
+	}
+	if len(cfg.BigModelCodingAPIKey) != 0 {
+		t.Fatalf("bigmodel coding keys = %#v, want empty", cfg.BigModelCodingAPIKey)
+	}
+}
+
 func TestGetBigModelCodingKeysFiltersOpenAICompatEntries(t *testing.T) {
 	cfg := &config.Config{
 		BigModelCodingAPIKey: []config.OpenAICompatibility{
@@ -127,11 +153,15 @@ func newBigModelCodingPanelTestHandler(t *testing.T, cfg *config.Config) *Handle
 }
 
 func runBigModelCodingPanelRequest(t *testing.T, h *Handler, method, body string, fn func(*gin.Context)) *httptest.ResponseRecorder {
+	return runBigModelCodingPanelRequestAtPath(t, h, method, "/v0/management/bigmodel-coding-api-key", body, fn)
+}
+
+func runBigModelCodingPanelRequestAtPath(t *testing.T, h *Handler, method, path, body string, fn func(*gin.Context)) *httptest.ResponseRecorder {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
-	ctx.Request = httptest.NewRequest(method, "/v0/management/bigmodel-coding-api-key", strings.NewReader(body))
+	ctx.Request = httptest.NewRequest(method, path, strings.NewReader(body))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	fn(ctx)
 	return rec

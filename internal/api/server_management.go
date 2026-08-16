@@ -69,6 +69,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
 
+		mgmt.GET("/identity-fingerprint", s.mgmt.GetIdentityFingerprint)
+		mgmt.PUT("/identity-fingerprint", s.mgmt.PutIdentityFingerprint)
+		mgmt.PATCH("/identity-fingerprint", s.mgmt.PatchIdentityFingerprint)
+
 		mgmt.POST("/api-call", s.mgmt.APICall)
 
 		// Codex 出口网络管理路由（处理器位于 egress_network.go）。
@@ -105,6 +109,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 		mgmt.GET("/usage/entity-stats", s.mgmt.GetUsageEntityStats)
+		mgmt.GET("/model-path-availability", s.mgmt.GetModelPathAvailability)
 		mgmt.GET("/usage/logs", s.mgmt.GetUsageLogs)
 		mgmt.DELETE("/usage/logs", s.mgmt.DeleteUsageLogs)
 		mgmt.GET("/usage/logs/:id/content", s.mgmt.GetUsageLogContent)
@@ -167,6 +172,16 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/ampcode/model-mappings", s.mgmt.DeleteAmpCodeModelMappings)
 		mgmt.PUT("/ampcode/force-model-mappings", s.mgmt.PutAmpCodeForceModelMappings)
 
+		mgmt.GET("/agnes-api-key", s.mgmt.GetAgnesKeys)
+		mgmt.PUT("/agnes-api-key", s.mgmt.PutAgnesKeys)
+		mgmt.PATCH("/agnes-api-key", s.mgmt.PatchAgnesKey)
+		mgmt.DELETE("/agnes-api-key", s.mgmt.DeleteAgnesKey)
+
+		mgmt.GET("/bigmodel-coding-api-key", s.mgmt.GetBigModelCodingKeys)
+		mgmt.PUT("/bigmodel-coding-api-key", s.mgmt.PutBigModelCodingKeys)
+		mgmt.PATCH("/bigmodel-coding-api-key", s.mgmt.PatchBigModelCodingKey)
+		mgmt.DELETE("/bigmodel-coding-api-key", s.mgmt.DeleteBigModelCodingKey)
+
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)
 		mgmt.PATCH("/claude-api-key", s.mgmt.PatchClaudeKey)
@@ -180,6 +195,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/bedrock-api-key", s.mgmt.GetBedrockKeys)
 		mgmt.PUT("/bedrock-api-key", s.mgmt.PutBedrockKeys)
 		mgmt.DELETE("/bedrock-api-key", s.mgmt.DeleteBedrockKey)
+
+		mgmt.GET("/opencode-go-api-key", s.mgmt.GetOpenCodeGoKeys)
+		mgmt.PUT("/opencode-go-api-key", s.mgmt.PutOpenCodeGoKeys)
+		mgmt.DELETE("/opencode-go-api-key", s.mgmt.DeleteOpenCodeGoKey)
 
 		mgmt.GET("/codex-api-key", s.mgmt.GetCodexKeys)
 		mgmt.PUT("/codex-api-key", s.mgmt.PutCodexKeys)
@@ -215,6 +234,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
 		mgmt.GET("/model-configs", s.mgmt.GetModelConfigs)
 		mgmt.GET("/model-owner-presets", s.mgmt.GetModelOwnerPresets)
+		mgmt.GET("/model-prices", s.mgmt.GetModelPrices)
+		mgmt.PUT("/model-prices/:model", s.mgmt.PutModelPrice)
+		mgmt.DELETE("/model-prices/:model", s.mgmt.DeleteModelPrice)
+		mgmt.POST("/model-prices/refresh", s.mgmt.RefreshModelPrices)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
 		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)

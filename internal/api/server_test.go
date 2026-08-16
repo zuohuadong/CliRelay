@@ -488,6 +488,18 @@ func TestHealthz(t *testing.T) {
 	})
 }
 
+func TestFavicon(t *testing.T) {
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+	rr := httptest.NewRecorder()
+
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+}
+
 func TestCodexLiveRoutesRequireAuthAndAreRegistered(t *testing.T) {
 	server := newTestServer(t)
 
@@ -1341,22 +1353,54 @@ func TestManagementPanelDataRoutesRegistered(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 
 	server := newTestServer(t)
-	for _, endpoint := range []string{
-		"/v0/management/dashboard-summary?days=7",
-		"/v0/management/usage/entity-stats?days=30",
-		"/v0/management/model-configs?scope=library",
-		"/v0/management/model-owner-presets",
+	for _, test := range []struct {
+		method   string
+		endpoint string
+		body     string
+		wantCode int
+	}{
+		{method: http.MethodGet, endpoint: "/v0/management/dashboard-summary?days=7", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/usage/entity-stats?days=30", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/model-configs?scope=library", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/model-owner-presets", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/update/check", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/update/current", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/update/progress", wantCode: http.StatusOK},
+		{method: http.MethodPost, endpoint: "/v0/management/update/apply", wantCode: http.StatusNotImplemented},
+		{method: http.MethodPost, endpoint: "/v0/management/quota/reconcile", body: `{"authIndex":"missing-auth"}`, wantCode: http.StatusOK},
+		{method: http.MethodPost, endpoint: "/v0/management/usage/auth-file-quota-snapshot", body: `{"auth_index":"missing-auth","quotas":{"five_hour":25}}`, wantCode: http.StatusOK},
 	} {
-		t.Run(endpoint, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, endpoint, nil)
+		t.Run(test.method+" "+test.endpoint, func(t *testing.T) {
+			req := httptest.NewRequest(test.method, test.endpoint, strings.NewReader(test.body))
+			if test.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
 			req.Header.Set("Authorization", "Bearer test-management-key")
 			rr := httptest.NewRecorder()
 			server.engine.ServeHTTP(rr, req)
 
-			if rr.Code != http.StatusOK {
-				t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+			if rr.Code != test.wantCode {
+				t.Fatalf("status = %d, want %d; body=%s", rr.Code, test.wantCode, rr.Body.String())
 			}
 		})
+	}
+}
+
+func TestSystemStatsManagementRoutesRegistered(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	routes := make(map[string]struct{})
+	for _, route := range server.engine.Routes() {
+		routes[route.Method+" "+route.Path] = struct{}{}
+	}
+	for _, route := range []string{
+		"GET /v0/management/system-stats",
+		"GET /v0/management/system-stats/ws",
+	} {
+		if _, ok := routes[route]; !ok {
+			t.Fatalf("management route %s is not registered", route)
+		}
 	}
 }
 

@@ -12,7 +12,39 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
+
+type reconcileQuotaTestExecutor struct {
+	probedAuthID string
+}
+
+func (e *reconcileQuotaTestExecutor) Identifier() string { return "quota-test" }
+
+func (*reconcileQuotaTestExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, nil
+}
+
+func (*reconcileQuotaTestExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	return nil, nil
+}
+
+func (*reconcileQuotaTestExecutor) Refresh(context.Context, *coreauth.Auth) (*coreauth.Auth, error) {
+	return nil, nil
+}
+
+func (*reconcileQuotaTestExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, nil
+}
+
+func (*reconcileQuotaTestExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
+}
+
+func (e *reconcileQuotaTestExecutor) ProbeQuotaRecovery(_ context.Context, auth *coreauth.Auth) (*coreauth.QuotaProbeResult, error) {
+	e.probedAuthID = auth.ID
+	return &coreauth.QuotaProbeResult{}, nil
+}
 
 func TestResetQuota_UsesAuthIndex(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
@@ -130,5 +162,33 @@ func TestResetQuota_DoesNotAcceptAuthIDOrFileName(t *testing.T) {
 				t.Fatalf("status = %d, want %d with body %s", rec.Code, tt.wantCode, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestReconcileQuota_UsesAuthIndex(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	executor := &reconcileQuotaTestExecutor{}
+	manager.RegisterExecutor(executor)
+	auth := &coreauth.Auth{
+		ID:       "reconcile-auth-id",
+		Provider: "quota-test",
+	}
+	authIndex := auth.EnsureIndex()
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/quota/reconcile", strings.NewReader(`{"authIndex":"`+authIndex+`"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.ReconcileQuota(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if executor.probedAuthID != auth.ID {
+		t.Fatalf("probed auth id = %q, want %q", executor.probedAuthID, auth.ID)
 	}
 }

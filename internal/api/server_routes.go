@@ -51,6 +51,9 @@ func (s *Server) setupRoutes() {
 	}
 	s.engine.GET("/healthz", healthzHandler)
 	s.engine.HEAD("/healthz", healthzHandler)
+	s.engine.GET("/favicon.ico", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
 	// /manage 是管理面板 SPA 的挂载点：面板资源以绝对路径 /manage/assets/* 引用，

@@ -2046,6 +2046,9 @@ func (h *Handler) ReconcileQuota(c *gin.Context) {
 	}
 	changed := false
 	if h.authManager != nil {
+		if auth := h.authByIndex(authID); auth != nil {
+			authID = auth.ID
+		}
 		var err error
 		changed, err = h.authManager.ReconcileQuota(c.Request.Context(), authID)
 		if err != nil {

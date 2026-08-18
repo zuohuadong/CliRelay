@@ -191,13 +191,22 @@ func (s *sqliteSink) HandleUsage(ctx context.Context, record coreusage.Record) {
 	}
 	apiKeyName := LookupAPIKeyNameWithDB(db, record.APIKey)
 
+	firstTokenMs := record.TTFT.Milliseconds()
+	if firstTokenMs < 0 {
+		firstTokenMs = 0
+	}
+	outputContent := ""
+	if failed != 0 && strings.TrimSpace(record.Fail.Body) != "" {
+		outputContent = strings.TrimSpace(record.Fail.Body)
+	}
+
 	insertCtx := context.WithoutCancel(ctx)
 	_, errInsert := db.ExecContext(insertCtx, `
 INSERT INTO request_logs (
   timestamp, api_key, model, source, channel_name, auth_index, failed,
   latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens,
   cached_tokens, total_tokens, input_content, output_content, cost, api_key_name
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, '', '', ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
 `, timestamp.UTC().Format(time.RFC3339Nano),
 		strings.TrimSpace(record.APIKey),
 		modelName,
@@ -206,11 +215,13 @@ INSERT INTO request_logs (
 		strings.TrimSpace(record.AuthIndex),
 		failed,
 		record.Latency.Milliseconds(),
+		firstTokenMs,
 		detail.InputTokens,
 		detail.OutputTokens,
 		detail.ReasoningTokens,
 		detail.CachedTokens,
 		totalTokens,
+		outputContent,
 		requestCost,
 		apiKeyName,
 	)

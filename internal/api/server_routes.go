@@ -66,6 +66,20 @@ func (s *Server) setupRoutes() {
 		c.Redirect(http.StatusFound, target)
 	})
 	s.engine.GET("/manage/*filepath", s.serveManagementControlPanelAsset)
+	s.engine.GET("/v0/management/api-key-billing", s.apiKeyBillingRateLimitMiddleware(), s.mgmt.GetPublicAPIKeyBilling)
+	publicManagement := s.engine.Group("/v0/management/public")
+	publicManagement.GET("/api-key-billing", s.apiKeyBillingRateLimitMiddleware(), s.mgmt.GetPublicAPIKeyBilling)
+	publicUsage := publicManagement.Group("/usage")
+	{
+		publicUsage.GET("", s.mgmt.GetPublicUsageSummary)
+		publicUsage.POST("", s.mgmt.GetPublicUsageSummary)
+		publicUsage.GET("/logs", s.mgmt.GetPublicUsageLogs)
+		publicUsage.POST("/logs", s.mgmt.GetPublicUsageLogs)
+		publicUsage.GET("/chart-data", s.mgmt.GetPublicUsageChartData)
+		publicUsage.POST("/chart-data", s.mgmt.GetPublicUsageChartData)
+		publicUsage.GET("/logs/:id/content", s.mgmt.GetPublicUsageLogContent)
+		publicUsage.POST("/logs/:id/content", s.mgmt.GetPublicUsageLogContent)
+	}
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	openaiHandlers.SetVideoService(s.videoService)
 	s.openaiHandler = openaiHandlers

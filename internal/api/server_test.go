@@ -1388,6 +1388,21 @@ func TestManagementPanelDataRoutesRegistered(t *testing.T) {
 		{method: http.MethodPost, endpoint: "/v0/management/update/apply", wantCode: http.StatusNotImplemented},
 		{method: http.MethodPost, endpoint: "/v0/management/quota/reconcile", body: `{"authIndex":"missing-auth"}`, wantCode: http.StatusOK},
 		{method: http.MethodPost, endpoint: "/v0/management/usage/auth-file-quota-snapshot", body: `{"auth_index":"missing-auth","quotas":{"five_hour":25}}`, wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/usage/auth-file-trend?auth_index=auth-a&days=7&hours=5", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/usage/auth-file-group-trend?days=7", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/usage/chart-data?days=7", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/usage", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/api-key-permission-profiles", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/routing-config", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/ccswitch-import-configs", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/iflow-api-key", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/models", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/models/configured-availability", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/auto-update/enabled", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/auto-update/channel", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/image-generation/channels", wantCode: http.StatusOK},
+		{method: http.MethodGet, endpoint: "/v0/management/auth-files/codex-reset-credits", wantCode: http.StatusBadRequest},
+		{method: http.MethodGet, endpoint: "/v0/management/auth-files/page", wantCode: http.StatusOK},
 	} {
 		t.Run(test.method+" "+test.endpoint, func(t *testing.T) {
 			req := httptest.NewRequest(test.method, test.endpoint, strings.NewReader(test.body))
@@ -1493,12 +1508,12 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 		t.Fatalf("missing key status = %d, want %d body=%s", missingKeyRR.Code, http.StatusUnauthorized, missingKeyRR.Body.String())
 	}
 
-	legacyReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage?count=2", nil)
-	legacyReq.Header.Set("Authorization", "Bearer test-management-key")
-	legacyRR := httptest.NewRecorder()
-	server.engine.ServeHTTP(legacyRR, legacyReq)
-	if legacyRR.Code != http.StatusNotFound {
-		t.Fatalf("legacy usage status = %d, want %d body=%s", legacyRR.Code, http.StatusNotFound, legacyRR.Body.String())
+	summaryReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage?count=2", nil)
+	summaryReq.Header.Set("Authorization", "Bearer test-management-key")
+	summaryRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(summaryRR, summaryReq)
+	if summaryRR.Code != http.StatusOK {
+		t.Fatalf("usage summary status = %d, want %d body=%s", summaryRR.Code, http.StatusOK, summaryRR.Body.String())
 	}
 
 	authReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=2", nil)

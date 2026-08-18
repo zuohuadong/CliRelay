@@ -34,6 +34,7 @@ func TestSQLiteSinkWritesRequestLog(t *testing.T) {
 		Source:      "user@example.com",
 		RequestedAt: time.Date(2026, 5, 26, 1, 2, 3, 4, time.UTC),
 		Latency:     1500 * time.Millisecond,
+		TTFT:        300 * time.Millisecond,
 		Detail: coreusage.Detail{
 			InputTokens:     10,
 			OutputTokens:    20,
@@ -61,6 +62,7 @@ func TestSQLiteSinkWritesRequestLog(t *testing.T) {
 		AuthIndex       string
 		Failed          int
 		LatencyMs       int64
+		FirstTokenMs    int64
 		InputTokens     int64
 		OutputTokens    int64
 		ReasoningTokens int64
@@ -68,7 +70,7 @@ func TestSQLiteSinkWritesRequestLog(t *testing.T) {
 		TotalTokens     int64
 	}
 	errScan := db.QueryRow(`
-SELECT timestamp, api_key, model, source, channel_name, auth_index, failed,
+SELECT timestamp, api_key, model, source, channel_name, auth_index, failed, first_token_ms,
        latency_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens
 FROM request_logs
 `).Scan(
@@ -79,6 +81,7 @@ FROM request_logs
 		&got.ChannelName,
 		&got.AuthIndex,
 		&got.Failed,
+		&got.FirstTokenMs,
 		&got.LatencyMs,
 		&got.InputTokens,
 		&got.OutputTokens,
@@ -101,6 +104,9 @@ FROM request_logs
 	}
 	if got.Failed != 0 || got.LatencyMs != 1500 {
 		t.Fatalf("unexpected outcome fields: %+v", got)
+	}
+	if got.FirstTokenMs != 300 {
+		t.Fatalf("first_token_ms = %d, want 300", got.FirstTokenMs)
 	}
 	if got.InputTokens != 10 || got.OutputTokens != 20 || got.ReasoningTokens != 3 || got.CachedTokens != 4 || got.TotalTokens != 33 {
 		t.Fatalf("unexpected token fields: %+v", got)
@@ -156,5 +162,56 @@ func TestSQLiteSinkIgnoresCanceledContextNoise(t *testing.T) {
 		if entry.Level <= log.WarnLevel && strings.Contains(entry.Message, "usage sqlite sink: insert request log") {
 			t.Fatalf("unexpected warning for canceled context: %s", entry.Message)
 		}
+	}
+}
+
+func TestSQLiteSinkWritesFailedRequestOutputContent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data", "usage.db")
+	sink := &sqliteSink{}
+	sink.SetPath(dbPath)
+
+	prevUsageEnabled := redisqueue.UsageStatisticsEnabled()
+	redisqueue.SetUsageStatisticsEnabled(true)
+	t.Cleanup(func() {
+		redisqueue.SetUsageStatisticsEnabled(prevUsageEnabled)
+	})
+
+	failureJSON := `{"error":{"message":"Rate limit exceeded","type":"requests","code":"rate_limit_exceeded"}}`
+	sink.HandleUsage(context.Background(), coreusage.Record{
+		Provider:    "openai",
+		Model:       "gpt-5.4",
+		APIKey:      "sk-user-test",
+		RequestedAt: time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC),
+		Latency:     200 * time.Millisecond,
+		Failed:      true,
+		Fail: coreusage.Failure{
+			StatusCode: 429,
+			Body:       failureJSON,
+		},
+	})
+
+	db, errOpen := sql.Open("sqlite", dbPath)
+	if errOpen != nil {
+		t.Fatalf("open usage db: %v", errOpen)
+	}
+	defer func() {
+		if errClose := db.Close(); errClose != nil {
+			t.Fatalf("close usage db: %v", errClose)
+		}
+	}()
+
+	var failed int
+	var outputContent string
+	errScan := db.QueryRow(`
+SELECT failed, output_content
+FROM request_logs
+ORDER BY id DESC LIMIT 1
+`).Scan(&failed, &outputContent)
+	if errScan != nil {
+		t.Fatalf("scan failed request log: %v", errScan)
+	}
+
+	if failed != 1 || outputContent != failureJSON {
+		t.Fatalf("failed = %d, output_content = %q, want failed = 1 and JSON body", failed, outputContent)
 	}
 }

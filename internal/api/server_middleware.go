@@ -2,7 +2,9 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
@@ -228,6 +230,68 @@ func realtimeAuthMiddleware(manager *sdkaccess.Manager, handler *codexlive.Handl
 		c.Set("accessProvider", provider)
 		c.Set(codexlive.ClientSecretSessionContextKey, authorization.Session)
 		c.Set(codexlive.ClientSecretPrincipalContextKey, authorization.Principal)
+		c.Next()
+	}
+}
+
+const (
+	apiKeyBillingRateLimitMax    = 30
+	apiKeyBillingRateLimitWindow = time.Minute
+)
+
+type routeRateLimitBucket struct {
+	windowStart time.Time
+	count       int
+}
+
+func (s *Server) apiKeyBillingRateLimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil {
+			c.Next()
+			return
+		}
+		now := time.Now()
+		client := c.ClientIP()
+		if client == "" {
+			client = "unknown"
+		}
+		key := "api-key-billing|" + client
+
+		s.apiKeyBillingRateMu.Lock()
+		if s.apiKeyBillingRateBuckets == nil {
+			s.apiKeyBillingRateBuckets = make(map[string]routeRateLimitBucket)
+		}
+		for bucketKey, bucket := range s.apiKeyBillingRateBuckets {
+			if now.Sub(bucket.windowStart) >= apiKeyBillingRateLimitWindow {
+				delete(s.apiKeyBillingRateBuckets, bucketKey)
+			}
+		}
+		bucket := s.apiKeyBillingRateBuckets[key]
+		if bucket.windowStart.IsZero() || now.Sub(bucket.windowStart) >= apiKeyBillingRateLimitWindow {
+			bucket = routeRateLimitBucket{windowStart: now}
+		}
+		bucket.count++
+		s.apiKeyBillingRateBuckets[key] = bucket
+		resetAt := bucket.windowStart.Add(apiKeyBillingRateLimitWindow)
+		limited := bucket.count > apiKeyBillingRateLimitMax
+		s.apiKeyBillingRateMu.Unlock()
+
+		if limited {
+			retryAfter := int(time.Until(resetAt).Seconds())
+			if retryAfter < 1 {
+				retryAfter = 1
+			}
+			c.Header("Retry-After", strconv.Itoa(retryAfter))
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"error": map[string]any{
+					"message": "too many api key billing queries",
+					"type":    "rate_limit_exceeded",
+					"code":    "api_key_billing_rate_limited",
+				},
+			})
+			return
+		}
+
 		c.Next()
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -2644,7 +2645,30 @@ func buildUsageLogsPayload(db *sql.DB, filters usageFilters, public bool) gin.H 
 	return payload
 }
 
+var (
+	usageLogFiltersMu    sync.RWMutex
+	usageLogFiltersCache = make(map[bool]usageLogFiltersCacheEntry)
+)
+
+type usageLogFiltersCacheEntry struct {
+	expiresAt time.Time
+	filters   gin.H
+}
+
 func usageLogFilters(db *sql.DB, public bool) gin.H {
+	usageLogFiltersMu.RLock()
+	if entry, ok := usageLogFiltersCache[public]; ok && time.Now().Before(entry.expiresAt) {
+		usageLogFiltersMu.RUnlock()
+		return entry.filters
+	}
+	usageLogFiltersMu.RUnlock()
+
+	usageLogFiltersMu.Lock()
+	defer usageLogFiltersMu.Unlock()
+	if entry, ok := usageLogFiltersCache[public]; ok && time.Now().Before(entry.expiresAt) {
+		return entry.filters
+	}
+
 	cols := requestLogColumns(db)
 	models := []string{}
 	if cols["model"] {
@@ -2652,6 +2676,10 @@ func usageLogFilters(db *sql.DB, public bool) gin.H {
 	}
 	filters := gin.H{"models": models}
 	if public {
+		usageLogFiltersCache[public] = usageLogFiltersCacheEntry{
+			expiresAt: time.Now().Add(60 * time.Second),
+			filters:   filters,
+		}
 		return filters
 	}
 	apiKeys := []string{}
@@ -2679,6 +2707,10 @@ func usageLogFilters(db *sql.DB, public bool) gin.H {
 		channels = distinctStringValues(db, "request_logs", "channel_name", "channel_name != ''", nil)
 	}
 	filters["channels"] = channels
+	usageLogFiltersCache[public] = usageLogFiltersCacheEntry{
+		expiresAt: time.Now().Add(60 * time.Second),
+		filters:   filters,
+	}
 	return filters
 }
 

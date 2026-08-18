@@ -447,7 +447,7 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 							helps.LogWithRequestID(ctx).Debugf("astron code stream ended with non-SSE payload after data: %s", helps.SummarizeErrorBody("application/json", trimmedLine))
 							return emitDone()
 						}
-						streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
+						streamErr := newAstronCodeStatusErr(http.StatusBadGateway, trimmedLine, resp.Header)
 						return sendStreamError(streamErr)
 					}
 					continue
@@ -476,7 +476,17 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 
 func newAstronCodeStatusErr(statusCode int, body []byte, headers http.Header) statusErr {
 	err := statusErr{code: statusCode, msg: string(body)}
-	if statusCode != http.StatusTooManyRequests {
+	isOverloadedOrRateLimited := statusCode == http.StatusTooManyRequests
+	if !isOverloadedOrRateLimited && len(body) > 0 {
+		code := gjson.GetBytes(body, "error.code").Int()
+		msg := strings.ToLower(gjson.GetBytes(body, "error.message").String())
+		if code == 10110 || code == 11200 || code == 11201 || code == 11202 || code == 11203 ||
+			strings.Contains(msg, "overloaded") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "slow down") {
+			isOverloadedOrRateLimited = true
+			err.code = http.StatusTooManyRequests
+		}
+	}
+	if !isOverloadedOrRateLimited {
 		return err
 	}
 

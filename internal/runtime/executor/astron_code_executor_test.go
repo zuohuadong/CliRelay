@@ -193,3 +193,15 @@ func TestAstronCodeExecutorExecuteStream429WithoutRetryAfterUsesShortRetry(t *te
 		t.Fatalf("RetryAfter() = %v, want %v", got, time.Second)
 	}
 }
+
+func TestAstronCodeExecutorIdentifiesCode10110EngineOverloadedAs429(t *testing.T) {
+	var err error = newAstronCodeStatusErr(http.StatusBadGateway, []byte(`{"error":{"code":10110,"message":"the engine is overloaded"}}`), nil)
+	status, ok := err.(interface{ StatusCode() int })
+	if !ok || status.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("StatusCode() = %v, want 429", err)
+	}
+	retryable, ok := err.(interface{ RetryAfter() *time.Duration })
+	if !ok || retryable.RetryAfter() == nil {
+		t.Fatalf("RetryAfter() = nil, want retry delay; error=%v", err)
+	}
+}

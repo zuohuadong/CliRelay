@@ -114,14 +114,13 @@ func openAICompatStreamPayloadHasSemanticOutput(payload []byte) bool {
 		"response.output_text.done",
 		"response.function_call_arguments.delta",
 		"response.function_call_arguments.done",
+		"response.custom_tool_call_input.done",
 		"response.reasoning_summary_part.added",
 		"response.reasoning_summary_part.done",
 		"response.reasoning_summary_text.delta",
-		"response.reasoning_summary_text.done":
+		"response.reasoning_summary_text.done",
+		"response.completed":
 		return true
-	case "response.completed":
-		output := gjson.GetBytes(payload, "response.output")
-		return output.IsArray() && len(output.Array()) > 0
 	}
 	return openAICompatChatCompletionPayloadHasSemanticOutput(payload)
 }
@@ -138,13 +137,22 @@ func openAICompatChatCompletionPayloadHasSemanticOutput(payload []byte) bool {
 			return false
 		}
 		message := choice.Get("message")
-		if strings.TrimSpace(message.Get("content").String()) != "" {
+		if strings.TrimSpace(message.Get("content").String()) != "" ||
+			strings.TrimSpace(message.Get("reasoning_content").String()) != "" ||
+			strings.TrimSpace(message.Get("reasoning").String()) != "" ||
+			strings.TrimSpace(message.Get("thought").String()) != "" ||
+			strings.TrimSpace(message.Get("thinking").String()) != "" ||
+			strings.TrimSpace(message.Get("reasoning_text").String()) != "" {
 			semantic = true
 			return false
 		}
 		delta := choice.Get("delta")
 		if strings.TrimSpace(delta.Get("content").String()) != "" ||
-			strings.TrimSpace(delta.Get("reasoning_content").String()) != "" {
+			strings.TrimSpace(delta.Get("reasoning_content").String()) != "" ||
+			strings.TrimSpace(delta.Get("reasoning").String()) != "" ||
+			strings.TrimSpace(delta.Get("thought").String()) != "" ||
+			strings.TrimSpace(delta.Get("thinking").String()) != "" ||
+			strings.TrimSpace(delta.Get("reasoning_text").String()) != "" {
 			semantic = true
 			return false
 		}
@@ -168,6 +176,10 @@ func openAICompatChatCompletionPayloadHasSemanticOutput(payload []byte) bool {
 			if semantic {
 				return false
 			}
+		}
+		if finishReason := choice.Get("finish_reason"); finishReason.Exists() && finishReason.String() != "" {
+			semantic = true
+			return false
 		}
 		return true
 	})

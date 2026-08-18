@@ -1470,3 +1470,94 @@ func TestOpenAICompatExecutorStreamsResponsesCompactionTrigger(t *testing.T) {
 		t.Fatalf("unexpected compaction stream: %s", streamed.String())
 	}
 }
+
+func TestOpenAICompatExecutorResponsesStreamDeepSeekV4Flash_ReasoningOnlyCompletes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_ds1","object":"chat.completion.chunk","created":1773896263,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"analyzing code"},"finish_reason":null}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_ds1","object":"chat.completion.chunk","created":1773896263,"model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: [DONE]` + "\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"base_url": server.URL + "/v1", "api_key": "test"}}
+	request := []byte(`{"model":"deepseek-v4-flash","input":"hi","stream":true}`)
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "deepseek-v4-flash",
+		Payload: request,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAIResponse,
+		ResponseFormat:  sdktranslator.FormatOpenAIResponse,
+		OriginalRequest: request,
+		Stream:          true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var streamed strings.Builder
+	var streamErr error
+	for chunk := range result.Chunks {
+		streamed.Write(chunk.Payload)
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	if streamErr != nil {
+		t.Fatalf("unexpected stream error: %v", streamErr)
+	}
+	if !strings.Contains(streamed.String(), "response.reasoning_summary_text.delta") {
+		t.Fatalf("stream did not include reasoning delta: %s", streamed.String())
+	}
+	if !strings.Contains(streamed.String(), "response.completed") {
+		t.Fatalf("stream did not complete with response.completed: %s", streamed.String())
+	}
+}
+
+func TestOpenAICompatExecutorResponsesStreamDeepSeekV4Flash_ThoughtFieldCompletes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_ds2","object":"chat.completion","created":1773896263,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"role":"assistant","thought":"thinking step"},"finish_reason":null}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_ds2","object":"chat.completion","created":1773896263,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: [DONE]` + "\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"base_url": server.URL + "/v1", "api_key": "test"}}
+	request := []byte(`{"model":"deepseek-v4-flash","input":"hi","stream":true}`)
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "deepseek-v4-flash",
+		Payload: request,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAIResponse,
+		ResponseFormat:  sdktranslator.FormatOpenAIResponse,
+		OriginalRequest: request,
+		Stream:          true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var streamed strings.Builder
+	var streamErr error
+	for chunk := range result.Chunks {
+		streamed.Write(chunk.Payload)
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	if streamErr != nil {
+		t.Fatalf("unexpected stream error: %v", streamErr)
+	}
+	if !strings.Contains(streamed.String(), "response.reasoning_summary_text.delta") {
+		t.Fatalf("stream did not include reasoning delta: %s", streamed.String())
+	}
+	if !strings.Contains(streamed.String(), "response.output_text.delta") {
+		t.Fatalf("stream did not include output text delta: %s", streamed.String())
+	}
+	if !strings.Contains(streamed.String(), "response.completed") {
+		t.Fatalf("stream did not complete with response.completed: %s", streamed.String())
+	}
+}

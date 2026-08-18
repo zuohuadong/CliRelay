@@ -2,6 +2,7 @@ package responses
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -1284,7 +1285,7 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_Restores
 	}
 }
 
-func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_DoesNotCompleteReasoningOnlyStream(t *testing.T) {
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_CompletesReasoningOnlyStream(t *testing.T) {
 	request := []byte(`{"model":"deepseek-v4-flash"}`)
 	chunks := []string{
 		`data: {"id":"resp_reasoning_only","object":"chat.completion.chunk","created":1773896263,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"still thinking"},"finish_reason":null}]}`,
@@ -1293,18 +1294,127 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_DoesNotCompleteRe
 
 	var param any
 	reasoningSeen := false
+	completedSeen := false
 	for _, line := range chunks {
 		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "deepseek-v4-flash", request, request, []byte(line), &param) {
-			event, _ := parseOpenAIResponsesSSEEvent(t, chunk)
+			event, data := parseOpenAIResponsesSSEEvent(t, chunk)
 			if event == "response.reasoning_summary_text.delta" {
 				reasoningSeen = true
 			}
 			if event == "response.completed" {
-				t.Fatalf("reasoning-only stream was finalized as response.completed: %s", chunk)
+				completedSeen = true
+				output := data.Get("response.output")
+				if !output.IsArray() || len(output.Array()) != 1 {
+					t.Fatalf("expected 1 output item in response.completed, got: %s", data.Raw)
+				}
+				item := output.Array()[0]
+				if item.Get("type").String() != "reasoning" {
+					t.Fatalf("expected output item type reasoning, got: %s", item.Get("type").String())
+				}
+				if item.Get("summary.0.text").String() != "still thinking" {
+					t.Fatalf("expected reasoning text 'still thinking', got: %s", item.Get("summary.0.text").String())
+				}
 			}
 		}
 	}
 	if !reasoningSeen {
 		t.Fatal("test stream did not exercise reasoning output")
+	}
+	if !completedSeen {
+		t.Fatal("reasoning-only stream was not finalized as response.completed")
+	}
+}
+
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_CompletesEmptyStream(t *testing.T) {
+	request := []byte(`{"model":"deepseek-v4-flash"}`)
+	chunks := []string{
+		`data: {"id":"resp_empty","object":"chat.completion.chunk","created":1773896263,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}
+
+	var param any
+	completedSeen := false
+	for _, line := range chunks {
+		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "deepseek-v4-flash", request, request, []byte(line), &param) {
+			event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+			if event == "response.completed" {
+				completedSeen = true
+				if status := data.Get("response.status").String(); status != "completed" {
+					t.Fatalf("expected status completed, got: %s", status)
+				}
+			}
+		}
+	}
+	if !completedSeen {
+		t.Fatal("empty stream was not finalized as response.completed")
+	}
+}
+
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_SupportsThoughtAndThinkingFields(t *testing.T) {
+	for _, field := range []string{"thought", "thinking", "reasoning_text"} {
+		t.Run(field, func(t *testing.T) {
+			request := []byte(`{"model":"deepseek-v4-flash"}`)
+			chunkJSON := fmt.Sprintf(`data: {"id":"resp_thought","object":"chat.completion","created":1773896263,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"role":"assistant",%q:"deep thinking"},"finish_reason":null}]}`, field)
+			chunks := []string{
+				chunkJSON,
+				`data: [DONE]`,
+			}
+
+			var param any
+			reasoningSeen := false
+			completedSeen := false
+			for _, line := range chunks {
+				for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "deepseek-v4-flash", request, request, []byte(line), &param) {
+					event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+					if event == "response.reasoning_summary_text.delta" {
+						reasoningSeen = true
+						if text := data.Get("delta").String(); text != "deep thinking" {
+							t.Fatalf("expected delta 'deep thinking', got: %s", text)
+						}
+					}
+					if event == "response.completed" {
+						completedSeen = true
+						output := data.Get("response.output")
+						if !output.IsArray() || len(output.Array()) != 1 {
+							t.Fatalf("expected 1 output item in response.completed, got: %s", data.Raw)
+						}
+						item := output.Array()[0]
+						if item.Get("type").String() != "reasoning" {
+							t.Fatalf("expected output item type reasoning, got: %s", item.Get("type").String())
+						}
+					}
+				}
+			}
+			if !reasoningSeen {
+				t.Fatalf("test stream did not exercise reasoning output for field %s", field)
+			}
+			if !completedSeen {
+				t.Fatalf("stream was not finalized as response.completed for field %s", field)
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_CompletesOnDirectDone(t *testing.T) {
+	request := []byte(`{"model":"deepseek-v4-flash"}`)
+	chunks := []string{
+		`data: [DONE]`,
+	}
+
+	var param any
+	completedSeen := false
+	for _, line := range chunks {
+		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "deepseek-v4-flash", request, request, []byte(line), &param) {
+			event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+			if event == "response.completed" {
+				completedSeen = true
+				if status := data.Get("response.status").String(); status != "completed" {
+					t.Fatalf("expected status completed, got: %s", status)
+				}
+			}
+		}
+	}
+	if !completedSeen {
+		t.Fatal("direct [DONE] stream was not finalized as response.completed")
 	}
 }

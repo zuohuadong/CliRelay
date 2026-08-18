@@ -245,17 +245,25 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 	}
 	requestForNamespace := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
 	isDone := bytes.Equal(rawJSON, []byte("[DONE]"))
-	if isDone && (!st.Started || st.CompletedEmitted) {
+	if isDone && st.CompletedEmitted {
 		return [][]byte{}
 	}
 
 	root := gjson.ParseBytes(rawJSON)
 	if !isDone {
 		obj := root.Get("object")
-		if obj.Exists() && obj.String() != "" && obj.String() != "chat.completion.chunk" {
+		if obj.Exists() && obj.String() != "" && !strings.HasPrefix(obj.String(), "chat.completion") && obj.String() != "text_completion" {
 			return [][]byte{}
 		}
 		if !root.Get("choices").Exists() || !root.Get("choices").IsArray() {
+			if !st.Started {
+				if id := root.Get("id").String(); id != "" {
+					st.ResponseID = id
+				}
+				if created := root.Get("created").Int(); created > 0 {
+					st.Created = created
+				}
+			}
 			return [][]byte{}
 		}
 	}
@@ -360,8 +368,18 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 	}
 
 	if !st.Started {
-		st.ResponseID = root.Get("id").String()
-		st.Created = root.Get("created").Int()
+		if st.ResponseID == "" {
+			st.ResponseID = root.Get("id").String()
+		}
+		if st.ResponseID == "" {
+			st.ResponseID = fmt.Sprintf("resp_%d", time.Now().UnixNano())
+		}
+		if st.Created == 0 {
+			st.Created = root.Get("created").Int()
+		}
+		if st.Created == 0 {
+			st.Created = time.Now().Unix()
+		}
 		// reset aggregation state for a new streaming response
 		st.MsgTextBuf = make(map[int]*strings.Builder)
 		st.ReasoningBuf.Reset()
@@ -556,10 +574,58 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 	}
 
 	if isDone {
-		finalizeOpenItems()
-		if len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0 {
-			return out
+		if !st.Started {
+			if st.ResponseID == "" {
+				st.ResponseID = fmt.Sprintf("resp_%d", time.Now().UnixNano())
+			}
+			if st.Created == 0 {
+				st.Created = time.Now().Unix()
+			}
+			st.MsgTextBuf = make(map[int]*strings.Builder)
+			st.ReasoningBuf.Reset()
+			st.ReasoningID = ""
+			st.ReasoningIndex = 0
+			st.FuncArgsBuf = make(map[string]*strings.Builder)
+			st.FuncNames = make(map[string]string)
+			st.FuncCallIDs = make(map[string]string)
+			st.FuncOutputIx = make(map[string]int)
+			st.FuncArgsSent = make(map[string]int)
+			st.MsgOutputIx = make(map[int]int)
+			st.NextOutputIx = 0
+			st.MsgItemAdded = make(map[int]bool)
+			st.MsgContentAdded = make(map[int]bool)
+			st.MsgItemDone = make(map[int]bool)
+			st.FuncItemAdded = make(map[string]bool)
+			st.FuncItemCustom = make(map[string]bool)
+			st.FuncArgsDone = make(map[string]bool)
+			st.FuncItemDone = make(map[string]bool)
+			st.CustomToolNames = responsesCustomToolNames(requestForNamespace)
+			st.Reasonings = make([]oaiToResponsesStateReasoning, 0)
+
+			created := []byte(`{"type":"response.created","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"in_progress","background":false,"error":null,"output":[]}}`)
+			created, _ = sjson.SetBytes(created, "sequence_number", nextSeq())
+			created, _ = sjson.SetBytes(created, "response.id", st.ResponseID)
+			created, _ = sjson.SetBytes(created, "response.created_at", st.Created)
+			requestModelName := translatorcommon.RequestModelName(originalRequestRawJSON, requestRawJSON)
+			if requestModelName == "" {
+				requestModelName = modelName
+			}
+			if requestModelName != "" {
+				created, _ = sjson.SetBytes(created, "response.model", requestModelName)
+			}
+			out = append(out, emitRespEvent("response.created", created))
+
+			inprog := []byte(`{"type":"response.in_progress","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"in_progress","output":[]}}`)
+			inprog, _ = sjson.SetBytes(inprog, "sequence_number", nextSeq())
+			inprog, _ = sjson.SetBytes(inprog, "response.id", st.ResponseID)
+			inprog, _ = sjson.SetBytes(inprog, "response.created_at", st.Created)
+			if requestModelName != "" {
+				inprog, _ = sjson.SetBytes(inprog, "response.model", requestModelName)
+			}
+			out = append(out, emitRespEvent("response.in_progress", inprog))
+			st.Started = true
 		}
+		finalizeOpenItems()
 		st.CompletedEmitted = true
 		out = append(out, buildResponsesCompletedEvent(st, requestForNamespace, nextSeq))
 		return out
@@ -617,6 +683,15 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 				rc := delta.Get("reasoning_content")
 				if !rc.Exists() || rc.String() == "" {
 					rc = delta.Get("reasoning")
+				}
+				if !rc.Exists() || rc.String() == "" {
+					rc = delta.Get("thought")
+				}
+				if !rc.Exists() || rc.String() == "" {
+					rc = delta.Get("thinking")
+				}
+				if !rc.Exists() || rc.String() == "" {
+					rc = delta.Get("reasoning_text")
 				}
 				if rc.Exists() && rc.String() != "" {
 					// On first appearance, add reasoning item and part
@@ -794,6 +869,18 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 	outputsWrapper := []byte(`{"arr":[]}`)
 	// Detect and capture reasoning content if present
 	rcText := gjson.GetBytes(rawJSON, "choices.0.message.reasoning_content").String()
+	if rcText == "" {
+		rcText = gjson.GetBytes(rawJSON, "choices.0.message.reasoning").String()
+	}
+	if rcText == "" {
+		rcText = gjson.GetBytes(rawJSON, "choices.0.message.thought").String()
+	}
+	if rcText == "" {
+		rcText = gjson.GetBytes(rawJSON, "choices.0.message.thinking").String()
+	}
+	if rcText == "" {
+		rcText = gjson.GetBytes(rawJSON, "choices.0.message.reasoning_text").String()
+	}
 	includeReasoning := rcText != ""
 	if !includeReasoning && len(requestRawJSON) > 0 {
 		includeReasoning = gjson.GetBytes(requestRawJSON, "reasoning").Exists()

@@ -16,6 +16,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecutor.Request, rawJSON []byte) ([]byte, http.Header) {
@@ -60,6 +61,7 @@ func applyCodexPromptCacheHeadersWithContext(ctx context.Context, from sdktransl
 		setHeaderCasePreserved(headers, "session_id", cache.ID)
 		headers.Set("Conversation_id", cache.ID)
 	}
+	rawJSON, _ = sjson.DeleteBytes(rawJSON, "prompt_cache_retention")
 
 	return rawJSON, headers, nil
 }

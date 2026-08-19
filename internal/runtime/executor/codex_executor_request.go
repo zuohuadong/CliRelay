@@ -191,6 +191,7 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	}
 	rawJSON = applyCodexFastModeServiceTier(auth, rawJSON)
 	rawJSON = helps.SanitizeCodexInputItemIDs(rawJSON)
+	rawJSON, _ = sjson.DeleteBytes(rawJSON, "prompt_cache_retention")
 	var identityState codexIdentityConfuseState
 	rawJSON, identityState = applyCodexIdentityConfuseBody(e.cfg, auth, userPayload, rawJSON)
 	if identityState.promptCacheKey != "" {

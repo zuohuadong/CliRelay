@@ -50,6 +50,7 @@ func normalizeResponseCreateRequest(rawJSON []byte) ([]byte, []byte, *interfaces
 	if errDelete != nil {
 		normalized = bytes.Clone(rawJSON)
 	}
+	normalized, _ = sjson.DeleteBytes(normalized, "prompt_cache_retention")
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
 	if !gjson.GetBytes(normalized, "input").Exists() {
 		normalized, _ = sjson.SetRawBytes(normalized, "input", []byte("[]"))
@@ -533,6 +534,7 @@ func normalizeResponsesWebsocketPassthroughRequest(rawJSON []byte, modelName str
 	}
 
 	normalized := bytes.Clone(rawJSON)
+	normalized, _ = sjson.DeleteBytes(normalized, "prompt_cache_retention")
 	if strings.TrimSpace(gjson.GetBytes(normalized, "model").String()) == "" {
 		modelName = strings.TrimSpace(modelName)
 		if modelName == "" {

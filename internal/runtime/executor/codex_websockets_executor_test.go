@@ -2069,3 +2069,64 @@ func TestCodexWebsocketLifecycleBindFailureReleasesSessionRequestLock(t *testing
 		t.Fatal("lifecycle bind failure left the session request lock held")
 	}
 }
+
+func TestBuildCodexWebsocketRequestBodyStripsPromptCacheRetention(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-sol","prompt_cache_retention":"24h","input":[{"type":"message","id":"msg-1"}]}`)
+
+	wsReqBody := buildCodexWebsocketRequestBody(body)
+
+	if got := gjson.GetBytes(wsReqBody, "prompt_cache_retention").Exists(); got {
+		t.Fatalf("prompt_cache_retention should be stripped from websocket request body, got: %s", string(wsReqBody))
+	}
+}
+
+func TestCodexWebsocketsExecutorExecuteStreamStripsPromptCacheRetention(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+	var upstreamPayload []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			t.Errorf("Upgrade failed: %v", errUpgrade)
+			return
+		}
+		defer conn.Close()
+
+		_, msg, errRead := conn.ReadMessage()
+		if errRead != nil {
+			return
+		}
+		upstreamPayload = msg
+
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"text","text":"hello"}]}}`))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp_1"}}`))
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+	auth := &cliproxyauth.Auth{ID: "auth-ws-test", Provider: "codex", Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5.6-sol",
+		Payload: []byte(`{"model":"gpt-5.6-sol","prompt_cache_retention":"24h","input":[{"type":"message","role":"user","content":"hello"}]}`),
+	}
+	opts := cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FromString("openai-response"),
+		ResponseFormat: sdktranslator.FromString("openai-response"),
+		OriginalRequest: []byte(`{"model":"gpt-5.6-sol","prompt_cache_retention":"24h","input":[{"type":"message","role":"user","content":"hello"}]}`),
+	}
+
+	result, err := exec.ExecuteStream(context.Background(), auth, req, opts)
+	if err != nil {
+		t.Fatalf("ExecuteStream() failed: %v", err)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("chunk error: %v", chunk.Err)
+		}
+	}
+
+	if gjson.GetBytes(upstreamPayload, "prompt_cache_retention").Exists() {
+		t.Fatalf("prompt_cache_retention was not stripped from upstream websocket payload: %s", string(upstreamPayload))
+	}
+}

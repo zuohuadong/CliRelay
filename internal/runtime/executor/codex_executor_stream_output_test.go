@@ -1075,3 +1075,42 @@ func (b *delayedCodexResponseBody) Read(p []byte) (int, error) {
 }
 
 func (b *delayedCodexResponseBody) Close() error { return nil }
+
+func TestCodexExecutorExecuteStreamStripsPromptCacheRetention(t *testing.T) {
+	var upstreamPayload []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamPayload = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+	auth := &cliproxyauth.Auth{ID: "auth-http-test", Provider: "codex", Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5.6-sol",
+		Payload: []byte(`{"model":"gpt-5.6-sol","prompt_cache_retention":"24h","input":[{"type":"message","role":"user","content":"hello"}]}`),
+	}
+	opts := cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		ResponseFormat:  sdktranslator.FromString("openai-response"),
+		OriginalRequest: []byte(`{"model":"gpt-5.6-sol","prompt_cache_retention":"24h","input":[{"type":"message","role":"user","content":"hello"}]}`),
+	}
+
+	result, err := executor.ExecuteStream(context.Background(), auth, req, opts)
+	if err != nil {
+		t.Fatalf("ExecuteStream() failed: %v", err)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("chunk error: %v", chunk.Err)
+		}
+	}
+
+	if gjson.GetBytes(upstreamPayload, "prompt_cache_retention").Exists() {
+		t.Fatalf("prompt_cache_retention was not stripped from upstream HTTP payload: %s", string(upstreamPayload))
+	}
+}

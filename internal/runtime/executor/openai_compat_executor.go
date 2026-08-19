@@ -179,6 +179,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		}
 		translated = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "openai compat executor", translated)
 	}
+	translated, _ = sjson.DeleteBytes(translated, "prompt_cache_retention")
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
@@ -433,6 +434,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if !useResponsesEndpoint {
 		translated = helps.SetBoolIfDifferent(translated, "stream_options.include_usage", true)
 	}
+	translated, _ = sjson.DeleteBytes(translated, "prompt_cache_retention")
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 
 	endpoint := "/chat/completions"
@@ -877,6 +879,7 @@ func prepareOpenAICompatImagesPayload(payload []byte, model string, contentType 
 		} else {
 			payload, _ = sjson.DeleteBytes(payload, "stream")
 		}
+		payload, _ = sjson.DeleteBytes(payload, "prompt_cache_retention")
 		return payload, "application/json", nil
 	}
 

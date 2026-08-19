@@ -107,6 +107,7 @@ func (e *OpenCodeGoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 		}
 		contentType = multipartType
 	}
+	requestBody, _ = sjson.DeleteBytes(requestBody, "prompt_cache_retention")
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(requestBody))
 	if err != nil {
 		return resp, err
@@ -214,6 +215,7 @@ func (e *OpenCodeGoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
+	translated, _ = sjson.DeleteBytes(translated, "prompt_cache_retention")
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))

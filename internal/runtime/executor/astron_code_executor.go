@@ -127,6 +127,7 @@ func (e *AstronCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	url := astronCodeEndpointURL(baseURL, endpoint, useResponsesEndpoint)
 	requestBody := translated
 	contentType := "application/json"
+	requestBody, _ = sjson.DeleteBytes(requestBody, "prompt_cache_retention")
 	if opts.Alt == "images/edits" && imageEditPayloadHasUploads(translated) {
 		var multipartType string
 		requestBody, multipartType, err = buildImageEditsMultipartBody(translated)
@@ -301,6 +302,7 @@ func (e *AstronCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 
 	openStreamResponse := func(requestURL string, body []byte) (*http.Response, error) {
+		body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 		httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(body))
 		if errReq != nil {
 			return nil, errReq

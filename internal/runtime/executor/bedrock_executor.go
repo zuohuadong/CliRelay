@@ -129,6 +129,7 @@ func (e *BedrockExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, 
 	if err != nil {
 		return resp, err
 	}
+	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 
 	httpResp, err := e.doBedrockRequest(ctx, auth, mappedModel, false, body)
 	if err != nil {
@@ -197,6 +198,7 @@ func (e *BedrockExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 	if err != nil {
 		return nil, err
 	}
+	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 
 	httpResp, err := e.doBedrockRequest(ctx, auth, mappedModel, true, body)
 	if err != nil {

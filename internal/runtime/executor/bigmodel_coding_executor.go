@@ -120,6 +120,7 @@ func (e *BigModelCodingExecutor) Execute(ctx context.Context, auth *cliproxyauth
 			return resp, err
 		}
 	}
+	translated, _ = sjson.DeleteBytes(translated, "prompt_cache_retention")
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	requestBody := translated
@@ -269,6 +270,7 @@ func (e *BigModelCodingExecutor) ExecuteStream(ctx context.Context, auth *clipro
 	if err != nil {
 		return nil, err
 	}
+	translated, _ = sjson.DeleteBytes(translated, "prompt_cache_retention")
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))

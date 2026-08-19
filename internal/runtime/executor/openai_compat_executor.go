@@ -970,6 +970,8 @@ func rewriteOpenAICompatImagesMultipartPayload(payload []byte, model string, bou
 }
 
 func (e *OpenAICompatExecutor) applyPromptCacheKey(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, baseModel string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, translated []byte) ([]byte, error) {
+	translated, _ = sjson.DeleteBytes(translated, "prompt_cache_retention")
+
 	compat := e.resolveCompatConfig(auth)
 	if compat == nil || !compat.SupportPromptCacheKey {
 		return translated, nil

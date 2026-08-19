@@ -423,6 +423,40 @@ func TestOpenAICompatExecutorPromptCacheKeyIgnoresConfigIndexForNonConfigAuth(t 
 	}
 }
 
+func TestOpenAICompatExecutorStripsPromptCacheRetention(t *testing.T) {
+	t.Parallel()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:                  "compat",
+			SupportPromptCacheKey: true,
+		}},
+	})
+	auth := &cliproxyauth.Auth{
+		Provider: "openai-compatibility",
+		Attributes: map[string]string{
+			"compat_name":  "compat",
+			"provider_key": "compat",
+		},
+	}
+
+	translated, errApply := executor.applyPromptCacheKey(
+		context.Background(),
+		auth,
+		sdktranslator.FromString("openai"),
+		"gpt-5.6",
+		cliproxyexecutor.Request{Model: "gpt-5.6", Payload: []byte(`{"model":"gpt-5.6","prompt_cache_retention":"24h"}`)},
+		cliproxyexecutor.Options{},
+		[]byte(`{"model":"gpt-5.6","prompt_cache_retention":"24h"}`),
+	)
+	if errApply != nil {
+		t.Fatalf("applyPromptCacheKey error: %v", errApply)
+	}
+	if gjson.GetBytes(translated, "prompt_cache_retention").Exists() {
+		t.Fatalf("prompt_cache_retention should be stripped, got: %s", string(translated))
+	}
+}
+
 func TestOpenAICompatExecutorPromptCacheKeyExecute(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

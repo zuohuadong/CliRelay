@@ -437,6 +437,21 @@ func TestTruncationRemovedForCodexCompatibility(t *testing.T) {
 	}
 }
 
+func TestPromptCacheRetentionRemovedForCodexCompatibility(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gpt-5.2",
+		"prompt_cache_retention": "24h",
+		"input": [{"role":"user","content":"hello"}]
+	}`)
+
+	output := ConvertOpenAIResponsesRequestToCodex("gpt-5.2", inputJSON, false)
+	outputStr := string(output)
+
+	if gjson.Get(outputStr, "prompt_cache_retention").Exists() {
+		t.Fatalf("prompt_cache_retention should be removed for Codex compatibility")
+	}
+}
+
 func BenchmarkConvertSystemRoleToDeveloperLargeInput(b *testing.B) {
 	cases := []struct {
 		name      string

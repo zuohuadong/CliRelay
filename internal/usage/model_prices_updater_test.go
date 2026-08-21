@@ -215,31 +215,81 @@ func TestSeedOfficialModelPricesRefreshesUnpricedRows(t *testing.T) {
 	}
 }
 
+func TestSeedOfficialModelPricesRefreshesPreviousBuiltInPrices(t *testing.T) {
+	db := newTestPricesDB(t)
+	modelPricesSeedingMu.Lock()
+	modelPricesSeededDone = false
+	modelPricesSeedingMu.Unlock()
+
+	if err := SetModelPrice(ModelPriceRow{Model: "claude-fable-5", Mode: "token", InputPricePerM: 5, OutputPricePerM: 25, CachedPricePerM: 0.5}); err != nil {
+		t.Fatalf("SetModelPrice claude-fable-5: %v", err)
+	}
+	if err := SetModelPrice(ModelPriceRow{Model: "grok-4.6", Mode: "token", InputPricePerM: 99, OutputPricePerM: 99, CachedPricePerM: 99}); err != nil {
+		t.Fatalf("SetModelPrice grok-4.6: %v", err)
+	}
+	if err := SetModelPrice(ModelPriceRow{Model: "grok-4.3", Mode: "locked", InputPricePerM: 3, OutputPricePerM: 15, CachedPricePerM: 0.3}); err != nil {
+		t.Fatalf("SetModelPrice grok-4.3: %v", err)
+	}
+
+	SeedOfficialModelPrices(db)
+
+	fable := GetModelPrice("claude-fable-5")
+	if fable == nil || fable.InputPricePerM != 10 || fable.OutputPricePerM != 50 || fable.CachedPricePerM != 1 {
+		t.Fatalf("claude-fable-5 price = %#v", fable)
+	}
+	custom := GetModelPrice("grok-4.6")
+	if custom == nil || custom.InputPricePerM != 99 {
+		t.Fatalf("custom price overwritten: %#v", custom)
+	}
+	locked := GetModelPrice("grok-4.3")
+	if locked == nil || locked.Mode != "locked" || locked.InputPricePerM != 3 {
+		t.Fatalf("locked price overwritten: %#v", locked)
+	}
+}
+
 func TestOfficialModelPricesCoverVisibleUnpricedModels(t *testing.T) {
 	want := map[string]ModelPriceRow{
-		"agnes-1.5-flash":            {Mode: "token", InputPricePerM: 0.005, OutputPricePerM: 0.015, CachedPricePerM: 0.0005},
-		"agnes-2.0-flash":            {Mode: "token", InputPricePerM: 0.005, OutputPricePerM: 0.015, CachedPricePerM: 0.0005},
-		"agnes-image-2.0-flash":      {Mode: "token", InputPricePerM: 0.01, OutputPricePerM: 0.03, CachedPricePerM: 0.001},
-		"agnes-image-2.1-flash":      {Mode: "token", InputPricePerM: 0.01, OutputPricePerM: 0.03, CachedPricePerM: 0.001},
-		"agnes-video-v2.0":           {Mode: "token", InputPricePerM: 0.02, OutputPricePerM: 0.06, CachedPricePerM: 0.002},
-		"codex-auto-review":          {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
-		"deepseek-v4-flash":          {Mode: "token", InputPricePerM: 0.14, OutputPricePerM: 0.28, CachedPricePerM: 0.0028},
-		"deepseek-v4-pro":            {Mode: "token", InputPricePerM: 0.435, OutputPricePerM: 0.87, CachedPricePerM: 0.003625},
-		"gemini-3.1-pro":             {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
-		"gemini-3.1-pro-high":        {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
-		"gemini-3.5-flash-extra-low": {Mode: "token", InputPricePerM: 0.15, OutputPricePerM: 0.6, CachedPricePerM: 0.0375},
-		"gpt-5.6-luna":               {Mode: "token", InputPricePerM: 0.25, OutputPricePerM: 2, CachedPricePerM: 0.025},
-		"gpt-5.6-sol":                {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
-		"gpt-5.6-terra":              {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
-		"gpt-image-1.5":              {Mode: "call", PricePerCall: 0.04},
-		"gpt-image-2-vip":            {Mode: "call", PricePerCall: 0.04},
-		"glm-4.7-flash":              {Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
-		"glm-5.2":                    {Mode: "token", InputPricePerM: 1.4, OutputPricePerM: 4.4, CachedPricePerM: 0.26},
-		"kimi-k2.6":                  {Mode: "token", InputPricePerM: 0.95, OutputPricePerM: 4, CachedPricePerM: 0.16},
-		"spark-x2-flash":             {Mode: "call", PricePerCall: 0.02},
-		"xopdeepseekv4pro":           {Mode: "token", InputPricePerM: 0.435, OutputPricePerM: 0.87, CachedPricePerM: 0.003625},
-		"xopglm52":                   {Mode: "token", InputPricePerM: 1.4, OutputPricePerM: 4.4, CachedPricePerM: 0.26},
-		"xopkimik26":                 {Mode: "token", InputPricePerM: 0.95, OutputPricePerM: 4, CachedPricePerM: 0.16},
+		"agnes-1.5-flash":               {Mode: "token", InputPricePerM: 0.005, OutputPricePerM: 0.015, CachedPricePerM: 0.0005},
+		"agnes-2.0-flash":               {Mode: "token", InputPricePerM: 0.005, OutputPricePerM: 0.015, CachedPricePerM: 0.0005},
+		"agnes-image-2.0-flash":         {Mode: "token", InputPricePerM: 0.01, OutputPricePerM: 0.03, CachedPricePerM: 0.001},
+		"agnes-image-2.1-flash":         {Mode: "token", InputPricePerM: 0.01, OutputPricePerM: 0.03, CachedPricePerM: 0.001},
+		"agnes-video-v2.0":              {Mode: "token", InputPricePerM: 0.02, OutputPricePerM: 0.06, CachedPricePerM: 0.002},
+		"codex-auto-review":             {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
+		"claude-fable-5":                {Mode: "token", InputPricePerM: 10, OutputPricePerM: 50, CachedPricePerM: 1},
+		"claude-haiku-4-5":              {Mode: "token", InputPricePerM: 1, OutputPricePerM: 5, CachedPricePerM: 0.1},
+		"claude-opus-5":                 {Mode: "token", InputPricePerM: 5, OutputPricePerM: 25, CachedPricePerM: 0.5},
+		"claude-sonnet-5":               {Mode: "token", InputPricePerM: 2, OutputPricePerM: 10, CachedPricePerM: 0.2},
+		"deepseek-v4-flash":             {Mode: "token", InputPricePerM: 0.14, OutputPricePerM: 0.28, CachedPricePerM: 0.0028},
+		"deepseek-v4-pro":               {Mode: "token", InputPricePerM: 0.435, OutputPricePerM: 0.87, CachedPricePerM: 0.003625},
+		"gemini-3.1-pro":                {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
+		"gemini-3.1-pro-high":           {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.3125},
+		"gemini-3.5-flash":              {Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 9, CachedPricePerM: 0.15},
+		"gemini-3.5-flash-extra-low":    {Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 9, CachedPricePerM: 0.15},
+		"gemini-3.5-flash-lite":         {Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 2.5, CachedPricePerM: 0.03},
+		"gemini-3.6-flash":              {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
+		"gemini-3.7-flash-high":         {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
+		"gemini-3-pro-image":            {Mode: "call", PricePerCall: 0.134},
+		"gpt-5.6-luna":                  {Mode: "token", InputPricePerM: 0.25, OutputPricePerM: 2, CachedPricePerM: 0.025},
+		"gpt-5.6-sol":                   {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
+		"gpt-5.6-terra":                 {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
+		"gpt-image-1.5":                 {Mode: "call", PricePerCall: 0.04},
+		"gpt-image-2-vip":               {Mode: "call", PricePerCall: 0.04},
+		"glm-4.7-flash":                 {Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+		"glm-5.2":                       {Mode: "token", InputPricePerM: 1.4, OutputPricePerM: 4.4, CachedPricePerM: 0.26},
+		"grok-4.5":                      {Mode: "token", InputPricePerM: 2, OutputPricePerM: 6, CachedPricePerM: 0.3},
+		"grok-4.6":                      {Mode: "token", InputPricePerM: 2, OutputPricePerM: 6, CachedPricePerM: 0.5},
+		"imagen-4.0-fast-generate-001":  {Mode: "call", PricePerCall: 0.02},
+		"imagen-4.0-generate-001":       {Mode: "call", PricePerCall: 0.04},
+		"imagen-4.0-ultra-generate-001": {Mode: "call", PricePerCall: 0.06},
+		"kimi-k2.7-code":                {Mode: "token", InputPricePerM: 0.95, OutputPricePerM: 4, CachedPricePerM: 0.19},
+		"kimi-k2.7-code-highspeed":      {Mode: "token", InputPricePerM: 1.9, OutputPricePerM: 8, CachedPricePerM: 0.38},
+		"kimi-k3":                       {Mode: "token", InputPricePerM: 3, OutputPricePerM: 15, CachedPricePerM: 0.3},
+		"kimi-k3-256k":                  {Mode: "token", InputPricePerM: 3, OutputPricePerM: 15, CachedPricePerM: 0.3},
+		"kimi-k2.6":                     {Mode: "token", InputPricePerM: 0.95, OutputPricePerM: 4, CachedPricePerM: 0.16},
+		"spark-x2-flash":                {Mode: "call", PricePerCall: 0.02},
+		"xopdeepseekv4pro":              {Mode: "token", InputPricePerM: 0.435, OutputPricePerM: 0.87, CachedPricePerM: 0.003625},
+		"xopglm52":                      {Mode: "token", InputPricePerM: 1.4, OutputPricePerM: 4.4, CachedPricePerM: 0.26},
+		"xopkimik26":                    {Mode: "token", InputPricePerM: 0.95, OutputPricePerM: 4, CachedPricePerM: 0.16},
 	}
 
 	got := make(map[string]ModelPriceRow, len(officialModelPrices))

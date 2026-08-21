@@ -106,6 +106,7 @@ describe("ImageGenerationPage", () => {
       phase: string;
       result: {
         created: number;
+        output_format?: string;
         data: Array<{ b64_json: string; revised_prompt: string }>;
       };
     }>();
@@ -215,6 +216,7 @@ describe("ImageGenerationPage", () => {
         phase: "completed",
         result: {
           created: 1,
+          output_format: "webp",
           data: [
             {
               b64_json: "aGVsbG8=",
@@ -233,7 +235,7 @@ describe("ImageGenerationPage", () => {
     const image = await within(dialog).findByRole("img", {
       name: /gpt-image-2 预览/i,
     });
-    expect(image).toHaveAttribute("src", "data:image/png;base64,aGVsbG8=");
+    expect(image).toHaveAttribute("src", "data:image/webp;base64,aGVsbG8=");
     expect(within(dialog).getByTestId("image-generation-counter")).toHaveTextContent("1/2");
     expect(within(dialog).getByText("00:10")).toBeInTheDocument();
     expect(within(dialog).getByTestId("image-generation-carousel-track")).toHaveStyle({
@@ -244,7 +246,7 @@ describe("ImageGenerationPage", () => {
     const activeImageAfterNext = within(dialog).getByRole("img", {
       name: /gpt-image-2 预览/i,
     });
-    expect(activeImageAfterNext).toHaveAttribute("src", "data:image/png;base64,d29ybGQ=");
+    expect(activeImageAfterNext).toHaveAttribute("src", "data:image/webp;base64,d29ybGQ=");
     expect(within(dialog).getByTestId("image-generation-counter")).toHaveTextContent("2/2");
     expect(within(dialog).getByTestId("image-generation-carousel-track")).toHaveStyle({
       transform: "translateX(-100%)",
@@ -279,7 +281,7 @@ describe("ImageGenerationPage", () => {
       phase: "completed",
       result: {
         created: 1,
-        data: [{ b64_json: "aGVsbG8=", revised_prompt: "改成蓝色图标" }],
+        data: [{ b64_json: "/9j/abc", revised_prompt: "改成蓝色图标" }],
       },
     });
 
@@ -312,6 +314,10 @@ describe("ImageGenerationPage", () => {
       n: 1,
       images: [imageFile],
     });
+    expect(await within(dialog).findByRole("img", { name: /gpt-image-2 预览/i })).toHaveAttribute(
+      "src",
+      "data:image/jpeg;base64,/9j/abc",
+    );
   });
 
   test("greys the preview area and shows the error message inside the modal when generation fails", async () => {

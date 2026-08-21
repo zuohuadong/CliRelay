@@ -34,11 +34,13 @@ export interface ImageGenerationChannelsResponse {
 export interface ImageGenerationResultItem {
   b64_json?: string;
   revised_prompt?: string;
+  output_format?: string;
 }
 
 export interface ImageGenerationTestResponse {
   created?: number;
   data?: ImageGenerationResultItem[];
+  output_format?: string;
 }
 
 export type ImageGenerationTestTaskStatus =

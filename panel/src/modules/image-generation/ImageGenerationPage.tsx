@@ -36,6 +36,14 @@ const QUALITY_OPTIONS = ["low", "medium", "high"] as const;
 const COUNT_OPTIONS = [1, 2, 3, 4] as const;
 const MAX_UPLOAD_IMAGES = 5;
 const IMAGE_EDITS_ENABLED = true;
+const IMAGE_FORMAT_MIME_TYPES: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  avif: "image/avif",
+  png: "image/png",
+};
 
 type ImageMode = "generations" | "edits";
 type SpecRow = {
@@ -455,6 +463,19 @@ function formatGenerationElapsed(ms: number | null): string | null {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+function imageMimeType(outputFormat: string | undefined, base64Payload: string): string {
+  const formatMimeType = IMAGE_FORMAT_MIME_TYPES[outputFormat?.trim().toLowerCase() ?? ""];
+  if (formatMimeType) return formatMimeType;
+
+  // Older providers omit output_format. Detect common image signatures so the
+  // browser does not try to decode a JPEG/WebP payload as PNG.
+  if (base64Payload.startsWith("/9j/")) return "image/jpeg";
+  if (base64Payload.startsWith("UklGR")) return "image/webp";
+  if (base64Payload.startsWith("R0lGOD")) return "image/gif";
+  if (base64Payload.startsWith("iVBORw0KGgo")) return "image/png";
+  return "image/png";
+}
+
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
@@ -676,8 +697,9 @@ function ImageGenerationTestModal({ open, onClose }: { open: boolean; onClose: (
             .map<GeneratedImage | null>((item) => {
               const b64Json = item.b64_json?.trim() ?? "";
               if (!b64Json) return null;
+              const mimeType = imageMimeType(item.output_format ?? response.output_format, b64Json);
               return {
-                src: `data:image/png;base64,${b64Json}`,
+                src: `data:${mimeType};base64,${b64Json}`,
                 revisedPrompt: item.revised_prompt?.trim() || undefined,
               };
             })

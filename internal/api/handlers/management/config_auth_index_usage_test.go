@@ -32,7 +32,7 @@ func TestConfigListEndpointsIncludeUsageStats(t *testing.T) {
 		t.Fatalf("register openai-compat auth: %v", err)
 	}
 
-	codexID, _ := idGen.Next("codex:apikey", "codex-key", "https://codex.example.com")
+	codexID, _ := idGen.Next("codex:apikey", "codex-key", "https://codex.example.com", "", "", "")
 	if _, err := manager.Register(context.Background(), &coreauth.Auth{
 		ID:       codexID,
 		Provider: "codex",

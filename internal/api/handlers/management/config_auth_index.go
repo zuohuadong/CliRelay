@@ -71,9 +71,10 @@ type openAICompatibilityWithAuthIndex struct {
 	Headers               map[string]string                        `json:"headers,omitempty"`
 	IdentityFingerprint   string                                   `json:"identity-fingerprint,omitempty"`
 	SupportPromptCacheKey bool                                     `json:"support-prompt-cache-key,omitempty"`
-	DisableCooling        bool                                     `json:"disable-cooling,omitempty"`
+	DisableCooling        *bool                                    `json:"disable-cooling,omitempty"`
 	ResponseEndpoint      bool                                     `json:"response-endpoint,omitempty"`
 	RequestRetry          *int                                     `json:"request-retry,omitempty"`
+	RequestScopedErrors   []config.RequestScopedErrorRule          `json:"request-scoped-errors,omitempty"`
 	AuthIndex             string                                   `json:"auth-index,omitempty"`
 	Success               int64                                    `json:"success"`
 	Failed                int64                                    `json:"failed"`
@@ -145,9 +146,13 @@ func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 	out := make([]geminiKeyWithAuthIndex, len(h.cfg.GeminiKey))
 	for i := range h.cfg.GeminiKey {
 		entry := h.cfg.GeminiKey[i]
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		prefix := strings.TrimSpace(entry.Prefix)
 		usage := authUsageSnapshot{}
-		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("gemini:apikey", key, entry.BaseURL)
+		if key != "" || base != "" {
+			id, _ := idGen.Next("gemini:apikey", key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers))
 			usage = liveUsageByID[id]
 		}
 		out[i] = geminiKeyWithAuthIndex{
@@ -177,9 +182,13 @@ func (h *Handler) interactionsKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 	out := make([]geminiKeyWithAuthIndex, len(h.cfg.InteractionsKey))
 	for i := range h.cfg.InteractionsKey {
 		entry := h.cfg.InteractionsKey[i]
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		prefix := strings.TrimSpace(entry.Prefix)
 		usage := authUsageSnapshot{}
-		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("gemini-interactions:apikey", key, entry.BaseURL)
+		if key != "" || base != "" {
+			id, _ := idGen.Next("gemini-interactions:apikey", key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers))
 			usage = liveUsageByID[id]
 		}
 		out[i] = geminiKeyWithAuthIndex{
@@ -209,9 +218,13 @@ func (h *Handler) claudeKeysWithAuthIndex() []claudeKeyWithAuthIndex {
 	out := make([]claudeKeyWithAuthIndex, len(h.cfg.ClaudeKey))
 	for i := range h.cfg.ClaudeKey {
 		entry := h.cfg.ClaudeKey[i]
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		prefix := strings.TrimSpace(entry.Prefix)
 		usage := authUsageSnapshot{}
-		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("claude:apikey", key, entry.BaseURL)
+		if key != "" || base != "" {
+			id, _ := idGen.Next("claude:apikey", key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers))
 			usage = liveUsageByID[id]
 		}
 		out[i] = claudeKeyWithAuthIndex{
@@ -241,9 +254,13 @@ func (h *Handler) codexKeysWithAuthIndex() []codexKeyWithAuthIndex {
 	out := make([]codexKeyWithAuthIndex, len(h.cfg.CodexKey))
 	for i := range h.cfg.CodexKey {
 		entry := h.cfg.CodexKey[i]
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		prefix := strings.TrimSpace(entry.Prefix)
 		usage := authUsageSnapshot{}
-		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("codex:apikey", key, entry.BaseURL)
+		if key != "" || base != "" {
+			id, _ := idGen.Next("codex:apikey", key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers))
 			usage = liveUsageByID[id]
 		}
 		out[i] = codexKeyWithAuthIndex{
@@ -273,9 +290,13 @@ func (h *Handler) xaiKeysWithAuthIndex() []xaiKeyWithAuthIndex {
 	out := make([]xaiKeyWithAuthIndex, len(h.cfg.XAIKey))
 	for i := range h.cfg.XAIKey {
 		entry := h.cfg.XAIKey[i]
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		prefix := strings.TrimSpace(entry.Prefix)
 		usage := authUsageSnapshot{}
-		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("xai:apikey", key, entry.BaseURL)
+		if key != "" || base != "" {
+			id, _ := idGen.Next("xai:apikey", key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers))
 			usage = liveUsageByID[id]
 		}
 		out[i] = xaiKeyWithAuthIndex{
@@ -371,6 +392,7 @@ func (h *Handler) openAICompatibilityEntriesWithAuthIndex(entriesFn func() []con
 			DisableCooling:        entry.DisableCooling,
 			ResponseEndpoint:      entry.ResponseEndpoint,
 			RequestRetry:          entry.RequestRetry,
+			RequestScopedErrors:   entry.RequestScopedErrors,
 			AuthIndex:             "",
 		}
 		if len(entry.APIKeyEntries) == 0 {

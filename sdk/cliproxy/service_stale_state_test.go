@@ -245,6 +245,7 @@ func hasServiceModelID(models []*registry.ModelInfo, want string) bool {
 func TestForceHomeRuntimeConfigEnablesUsageStatistics(t *testing.T) {
 	cfg := &config.Config{
 		UsageStatisticsEnabled: false,
+		DisableCooling:         false,
 		SaveCooldownStatus:     true,
 	}
 
@@ -252,6 +253,9 @@ func TestForceHomeRuntimeConfigEnablesUsageStatistics(t *testing.T) {
 
 	if !cfg.UsageStatisticsEnabled {
 		t.Fatal("expected home runtime config to force usage statistics enabled")
+	}
+	if !cfg.DisableCooling {
+		t.Fatal("expected home runtime config to force cooling disabled")
 	}
 	if cfg.SaveCooldownStatus {
 		t.Fatal("expected home runtime config to force cooldown status persistence disabled")

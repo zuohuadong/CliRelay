@@ -203,8 +203,8 @@ func (s *ConfigSynthesizer) synthesizeBigModelCoding(ctx *SynthesisContext) []*c
 			}
 			metadata := map[string]any{}
 			metadata["models"] = append([]config.OpenAICompatibilityModel(nil), compat.Models...)
-			if disableCooling {
-				metadata["disable_cooling"] = true
+			if disableCooling != nil {
+				metadata["disable_cooling"] = *disableCooling
 			}
 			addOpenAICompatibilityRetryMetadata(compat, metadata)
 			if compat.Priority != 0 {
@@ -247,8 +247,8 @@ func (s *ConfigSynthesizer) synthesizeBigModelCoding(ctx *SynthesisContext) []*c
 			}
 			metadata := map[string]any{}
 			metadata["models"] = append([]config.OpenAICompatibilityModel(nil), compat.Models...)
-			if disableCooling {
-				metadata["disable_cooling"] = true
+			if disableCooling != nil {
+				metadata["disable_cooling"] = *disableCooling
 			}
 			addOpenAICompatibilityRetryMetadata(compat, metadata)
 			if compat.Priority != 0 {
@@ -316,8 +316,8 @@ func (s *ConfigSynthesizer) synthesizeAstronCode(ctx *SynthesisContext) []*corea
 			}
 			metadata := map[string]any{}
 			metadata["models"] = append([]config.OpenAICompatibilityModel(nil), compat.Models...)
-			if disableCooling {
-				metadata["disable_cooling"] = true
+			if disableCooling != nil {
+				metadata["disable_cooling"] = *disableCooling
 			}
 			addOpenAICompatibilityRetryMetadata(compat, metadata)
 			if compat.Priority != 0 {
@@ -363,8 +363,8 @@ func (s *ConfigSynthesizer) synthesizeAstronCode(ctx *SynthesisContext) []*corea
 			}
 			metadata := map[string]any{}
 			metadata["models"] = append([]config.OpenAICompatibilityModel(nil), compat.Models...)
-			if disableCooling {
-				metadata["disable_cooling"] = true
+			if disableCooling != nil {
+				metadata["disable_cooling"] = *disableCooling
 			}
 			addOpenAICompatibilityRetryMetadata(compat, metadata)
 			if compat.Priority != 0 {
@@ -433,8 +433,8 @@ func (s *ConfigSynthesizer) synthesizeAgnes(ctx *SynthesisContext) []*coreauth.A
 				"provider_key": providerName,
 			}
 			metadata := map[string]any{}
-			if disableCooling {
-				metadata["disable_cooling"] = true
+			if disableCooling != nil {
+				metadata["disable_cooling"] = *disableCooling
 			}
 			addOpenAICompatibilityRetryMetadata(compat, metadata)
 			if compat.Priority != 0 {
@@ -545,23 +545,26 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 	for i := range entries {
 		entry := entries[i]
 		key := strings.TrimSpace(entry.APIKey)
-		if key == "" {
+		base := strings.TrimSpace(entry.BaseURL)
+		if key == "" && base == "" {
 			continue
 		}
 		prefix := strings.TrimSpace(entry.Prefix)
-		base := strings.TrimSpace(entry.BaseURL)
 		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		id, token := idGen.Next(idKind, key, base)
+		id, token := idGen.Next(idKind, key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers))
 		attrs := map[string]string{
 			"source":       fmt.Sprintf("config:%s[%s]", sourceName, token),
-			"api_key":      key,
 			"config_index": strconv.Itoa(i),
 		}
+		if key != "" {
+			attrs["api_key"] = key
+		}
 		metadata := map[string]any{}
-		if entry.DisableCooling {
-			metadata["disable_cooling"] = true
+		if entry.DisableCooling != nil {
+			metadata["disable_cooling"] = *entry.DisableCooling
 		}
 		addRequestRetryToMetadata(entry.RequestRetry, metadata)
+		addRequestScopedErrorsToMetadata(entry.RequestScopedErrors, metadata)
 		if entry.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(entry.Priority)
 		}
@@ -604,22 +607,26 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 	for i := range cfg.ClaudeKey {
 		ck := cfg.ClaudeKey[i]
 		key := strings.TrimSpace(ck.APIKey)
-		if key == "" {
+		base := strings.TrimSpace(ck.BaseURL)
+		if key == "" && base == "" {
 			continue
 		}
 		prefix := strings.TrimSpace(ck.Prefix)
-		base := strings.TrimSpace(ck.BaseURL)
-		id, token := idGen.Next("claude:apikey", key, base)
+		proxyURL := strings.TrimSpace(ck.ProxyURL)
+		id, token := idGen.Next("claude:apikey", key, base, proxyURL, prefix, config.FormatSortedHeaders(ck.Headers))
 		attrs := map[string]string{
 			"source":       fmt.Sprintf("config:claude[%s]", token),
-			"api_key":      key,
 			"config_index": strconv.Itoa(i),
 		}
+		if key != "" {
+			attrs["api_key"] = key
+		}
 		metadata := map[string]any{}
-		if ck.DisableCooling {
-			metadata["disable_cooling"] = true
+		if ck.DisableCooling != nil {
+			metadata["disable_cooling"] = *ck.DisableCooling
 		}
 		addRequestRetryToMetadata(ck.RequestRetry, metadata)
+		addRequestScopedErrorsToMetadata(ck.RequestScopedErrors, metadata)
 		if ck.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(ck.Priority)
 		}
@@ -630,11 +637,13 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		if ck.RebuildMidSystemMessage {
 			attrs["rebuild_mid_system_message"] = "true"
 		}
+		if profile := strings.ToLower(strings.TrimSpace(ck.FingerprintProfile)); profile != "" {
+			attrs["fingerprint_profile"] = profile
+		}
 		if hash := diff.ComputeClaudeModelsHash(ck.Models); hash != "" {
 			attrs["models_hash"] = hash
 		}
 		addConfigHeadersToAttrs(ck.Headers, attrs)
-		proxyURL := strings.TrimSpace(ck.ProxyURL)
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "claude",
@@ -675,22 +684,26 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 	for i := range entries {
 		entry := entries[i]
 		key := strings.TrimSpace(entry.APIKey)
-		if key == "" {
+		baseURL := strings.TrimSpace(entry.BaseURL)
+		if key == "" && baseURL == "" {
 			continue
 		}
 		prefix := strings.TrimSpace(entry.Prefix)
-		baseURL := strings.TrimSpace(entry.BaseURL)
-		id, token := idGen.Next(provider+":apikey", key, baseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		id, token := idGen.Next(provider+":apikey", key, baseURL, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers))
 		attrs := map[string]string{
 			"source":       fmt.Sprintf("config:%s[%s]", provider, token),
-			"api_key":      key,
 			"config_index": strconv.Itoa(i),
 		}
+		if key != "" {
+			attrs["api_key"] = key
+		}
 		metadata := map[string]any{}
-		if entry.DisableCooling {
-			metadata["disable_cooling"] = true
+		if entry.DisableCooling != nil {
+			metadata["disable_cooling"] = *entry.DisableCooling
 		}
 		addRequestRetryToMetadata(entry.RequestRetry, metadata)
+		addRequestScopedErrorsToMetadata(entry.RequestScopedErrors, metadata)
 		if entry.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(entry.Priority)
 		}
@@ -769,10 +782,12 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"config_index": strconv.Itoa(i),
 			}
 			metadata := map[string]any{}
-			if disableCooling {
-				metadata["disable_cooling"] = true
+			if disableCooling != nil {
+				metadata["disable_cooling"] = *disableCooling
 			}
 			addOpenAICompatibilityRetryMetadata(compat, metadata)
+			addRequestRetryToMetadata(compat.RequestRetry, metadata)
+			addRequestScopedErrorsToMetadata(compat.RequestScopedErrors, metadata)
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
@@ -815,10 +830,12 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"config_index": strconv.Itoa(i),
 			}
 			metadata := map[string]any{}
-			if disableCooling {
-				metadata["disable_cooling"] = true
+			if disableCooling != nil {
+				metadata["disable_cooling"] = *disableCooling
 			}
 			addOpenAICompatibilityRetryMetadata(compat, metadata)
+			addRequestRetryToMetadata(compat.RequestRetry, metadata)
+			addRequestScopedErrorsToMetadata(compat.RequestScopedErrors, metadata)
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
@@ -881,6 +898,9 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		}
 		addConfigHeadersToAttrs(compat.Headers, attrs)
 		metadata := map[string]any{}
+		if compat.DisableCooling != nil {
+			metadata["disable_cooling"] = *compat.DisableCooling
+		}
 		addRequestRetryToMetadata(compat.RequestRetry, metadata)
 		a := &coreauth.Auth{
 			ID:         id,

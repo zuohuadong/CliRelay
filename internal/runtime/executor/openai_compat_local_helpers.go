@@ -420,12 +420,12 @@ func escapeMultipartQuote(s string) string {
 	return strings.ReplaceAll(s, `"`, `\"`)
 }
 
-func (e *OpenAICompatExecutor) applyCustomHeadersAndIdentityFingerprint(req *http.Request, auth *cliproxyauth.Auth, websocket bool) {
+func (e *OpenAICompatExecutor) applyCustomHeadersAndIdentityFingerprint(req *http.Request, auth *cliproxyauth.Auth, websocket bool, clientHeaders ...http.Header) {
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	util.ApplyCustomHeadersFromAttrs(req, attrs)
+	util.ApplyCustomHeadersFromAttrs(req, attrs, clientHeaders...)
 	e.applyIdentityFingerprint(req, auth, websocket)
 }
 

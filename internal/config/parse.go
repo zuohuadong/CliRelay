@@ -138,6 +138,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeProviderPreferences()
 	cfg.SanitizeContextRetrieval()
 	cfg.SanitizeMultimodalAdapters()
+	cfg.SanitizeOAuthRequestScopedErrors()
 	cfg.SanitizePayloadRules()
 	cfg.SanitizeRouting()
 	cfg.SanitizeAPIKeyEntries()

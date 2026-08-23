@@ -122,7 +122,7 @@ func (h *Handler) PatchBigModelCodingKey(c *gin.Context) {
 		entry.IdentityFingerprint = strings.TrimSpace(*body.Value.IdentityFingerprint)
 	}
 	if body.Value.DisableCooling != nil {
-		entry.DisableCooling = *body.Value.DisableCooling
+		entry.DisableCooling = cloneOptionalBool(body.Value.DisableCooling)
 	}
 	normalizeBigModelCodingEntry(&entry)
 	if targetIndex >= 0 {
@@ -232,7 +232,7 @@ func decodeBigModelCodingPayload(data []byte) ([]config.OpenAICompatibility, boo
 		Priority             int                                `json:"priority"`
 		Prefix               string                             `json:"prefix"`
 		TestModel            string                             `json:"test-model"`
-		DisableCooling       bool                               `json:"disable-cooling"`
+		DisableCooling       *bool                              `json:"disable-cooling"`
 	}
 	if err := json.Unmarshal(data, &wrapped); err != nil {
 		return nil, false
@@ -257,7 +257,7 @@ func decodeBigModelCodingPayload(data []byte) ([]config.OpenAICompatibility, boo
 		entry.Priority = wrapped.Priority
 		entry.Prefix = strings.TrimSpace(wrapped.Prefix)
 		entry.TestModel = strings.TrimSpace(wrapped.TestModel)
-		entry.DisableCooling = wrapped.DisableCooling
+		entry.DisableCooling = cloneOptionalBool(wrapped.DisableCooling)
 		return []config.OpenAICompatibility{entry}, true
 	}
 }

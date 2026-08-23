@@ -553,6 +553,10 @@ func TestCodexExecutorExecuteStreamSurfacesTerminalStreamError(t *testing.T) {
 func TestCodexExecutorExecuteStreamRejectsEmptyCompletedResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.4-mini-2026-03-17"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.in_progress\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.in_progress","response":{"id":"resp_1"}}` + "\n\n"))
 		_, _ = w.Write([]byte("event: response.completed\n"))
 		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","created_at":1775555723,"status":"completed","model":"gpt-5.4-mini-2026-03-17","output":[],"usage":{"input_tokens":8,"output_tokens":0,"total_tokens":8}}}` + "\n\n"))
 	}))
@@ -584,8 +588,11 @@ func TestCodexExecutorExecuteStreamRejectsEmptyCompletedResponse(t *testing.T) {
 		}
 		got.Write(chunk.Payload)
 	}
-	if got.String() != "" {
-		t.Fatalf("expected no payload before empty response error, got %q", got.String())
+	if !strings.Contains(got.String(), "response.created") || !strings.Contains(got.String(), "response.in_progress") {
+		t.Fatalf("expected lifecycle payloads before empty response error, got %q", got.String())
+	}
+	if strings.Contains(got.String(), `"type":"response.completed"`) {
+		t.Fatalf("empty response.completed must not be forwarded as success, got %q", got.String())
 	}
 	if streamErr == nil {
 		t.Fatal("expected empty completed response error")
@@ -739,6 +746,13 @@ func TestCodexTerminalFailureErrClassifiesStatus(t *testing.T) {
 		{
 			name:       "unknown upstream failure",
 			event:      `{"type":"response.failed","response":{"error":{"type":"upstream_error","code":"unknown","message":"Upstream failed."}}}`,
+			wantStatus: http.StatusBadGateway,
+		},
+		// Overload rejections keep falling through to 502 here. The 503 restoration is scoped to
+		// the opt-in bootstrap buffering path so this shared mapping stays unchanged.
+		{
+			name:       "overload stays a bad gateway without buffering",
+			event:      `{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}`,
 			wantStatus: http.StatusBadGateway,
 		},
 	}

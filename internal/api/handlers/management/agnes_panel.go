@@ -147,7 +147,7 @@ func (h *Handler) PatchAgnesKey(c *gin.Context) {
 		entry.IdentityFingerprint = strings.TrimSpace(*body.Value.IdentityFingerprint)
 	}
 	if body.Value.DisableCooling != nil {
-		entry.DisableCooling = *body.Value.DisableCooling
+		entry.DisableCooling = cloneOptionalBool(body.Value.DisableCooling)
 	}
 	if body.Value.ResponseEndpoint != nil {
 		entry.ResponseEndpoint = *body.Value.ResponseEndpoint
@@ -257,7 +257,7 @@ func decodeAgnesPayload(data []byte) ([]config.OpenAICompatibility, bool) {
 		Priority         int                                `json:"priority"`
 		Prefix           string                             `json:"prefix"`
 		TestModel        string                             `json:"test-model"`
-		DisableCooling   bool                               `json:"disable-cooling"`
+		DisableCooling   *bool                              `json:"disable-cooling"`
 		ResponseEndpoint bool                               `json:"response-endpoint"`
 	}
 	if err := json.Unmarshal(data, &wrapped); err != nil {
@@ -283,7 +283,7 @@ func decodeAgnesPayload(data []byte) ([]config.OpenAICompatibility, bool) {
 		entry.Priority = wrapped.Priority
 		entry.Prefix = strings.TrimSpace(wrapped.Prefix)
 		entry.TestModel = strings.TrimSpace(wrapped.TestModel)
-		entry.DisableCooling = wrapped.DisableCooling
+		entry.DisableCooling = cloneOptionalBool(wrapped.DisableCooling)
 		entry.ResponseEndpoint = wrapped.ResponseEndpoint
 		return []config.OpenAICompatibility{entry}, true
 	}

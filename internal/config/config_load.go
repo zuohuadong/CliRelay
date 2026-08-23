@@ -216,6 +216,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.SanitizeOAuthModelAlias()
 	cfg.SanitizeModelOverrides()
 
+	// Normalize global OAuth request-scoped error rules.
+	cfg.SanitizeOAuthRequestScopedErrors()
+
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizeRequestPolicies()
 	cfg.SanitizeProviderPreferences()

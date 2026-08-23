@@ -138,7 +138,11 @@ func requestSupportsAgentAssertion(req *http.Request) bool {
 }
 
 func sealCodexAuthenticationHeaders(req *http.Request, auth *cliproxyauth.Auth, token string) error {
-	req.Header.Set("Authorization", "Bearer "+token)
+	if strings.TrimSpace(token) != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		req.Header.Del("Authorization")
+	}
 	req.Header.Del("ChatGPT-Account-ID")
 	if codexAuthHasAgentIdentity(auth) {
 		req.Header.Del("X-OpenAI-Fedramp")

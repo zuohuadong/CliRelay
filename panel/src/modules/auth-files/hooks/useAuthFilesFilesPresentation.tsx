@@ -230,6 +230,9 @@ export function useAuthFilesFilesPresentation({
     (planType: string) => {
       const normalized = planType.trim().toLowerCase();
       if (!normalized) return "";
+      if (normalized === "prolite" || normalized === "pro") {
+        return t(`codex_quota.plan_${normalized}`);
+      }
       if (normalized === "plus" || normalized === "team" || normalized === "free") {
         return t(`codex_quota.plan_${normalized}`);
       }

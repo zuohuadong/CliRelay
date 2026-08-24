@@ -923,7 +923,9 @@
     "plan_label": "Plan",
     "plan_plus": "Plus",
     "plan_team": "Team",
-    "plan_free": "Free"
+    "plan_free": "Free",
+    "plan_prolite": "Pro 5x",
+    "plan_pro": "Pro 20x"
   },
   "gemini_cli_quota": {
     "title": "Gemini CLI Quota",

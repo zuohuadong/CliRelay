@@ -200,20 +200,41 @@ CREATE INDEX IF NOT EXISTS idx_egress_bindings_endpoint ON egress_bindings(endpo
 }
 
 func StableIdentity(accountID string) (string, error) {
+	return StableIdentityForProvider("codex", accountID)
+}
+
+// StableIdentityForProvider returns the opaque binding identity used by the
+// management API and runtime resolver for one provider credential. The
+// credential material is hashed so it never appears in the egress database or
+// panel payloads.
+func StableIdentityForProvider(provider, accountID string) (string, error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
 	accountID = strings.TrimSpace(accountID)
+	if provider != "codex" && provider != "antigravity" {
+		return "", fmt.Errorf("%w: unsupported egress provider %q", ErrIdentityRequired, provider)
+	}
 	if accountID == "" {
-		return "", fmt.Errorf("%w: codex account_id is required", ErrEgressRequired)
+		return "", fmt.Errorf("%w: %s account identity is required", ErrEgressRequired, provider)
 	}
 	digest := sha256.Sum256([]byte(accountID))
-	return "codex:" + hex.EncodeToString(digest[:]), nil
+	return provider + ":" + hex.EncodeToString(digest[:]), nil
 }
 
 func IsStableIdentity(identity string) bool {
 	identity = strings.TrimSpace(identity)
-	if len(identity) != len("codex:")+sha256.Size*2 || !strings.HasPrefix(identity, "codex:") {
+	prefix := ""
+	switch {
+	case strings.HasPrefix(identity, "codex:"):
+		prefix = "codex:"
+	case strings.HasPrefix(identity, "antigravity:"):
+		prefix = "antigravity:"
+	default:
 		return false
 	}
-	digest := strings.TrimPrefix(identity, "codex:")
+	if len(identity) != len(prefix)+sha256.Size*2 {
+		return false
+	}
+	digest := strings.TrimPrefix(identity, prefix)
 	if digest != strings.ToLower(digest) {
 		return false
 	}
@@ -269,7 +290,7 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint) (Endpoint
 	endpoint.SharingMode = mode
 	if current.SharingMode == EndpointSharingModeShared && endpoint.SharingMode == EndpointSharingModeExclusive {
 		var bindings int
-		if err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM egress_bindings WHERE endpoint_id=?`, endpoint.ID).Scan(&bindings); err != nil {
+		if err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM egress_bindings WHERE endpoint_id=? AND identity LIKE 'codex:%'`, endpoint.ID).Scan(&bindings); err != nil {
 			return Endpoint{}, fmt.Errorf("count endpoint bindings: %w", err)
 		}
 		if bindings > 1 {
@@ -723,7 +744,7 @@ func validateBindingAssignmentsTx(ctx context.Context, tx *sql.Tx, assignments [
 	}
 	for _, assignment := range assignments {
 		if !IsStableIdentity(assignment.Identity) {
-			conflicts = append(conflicts, BindingConflict{Identity: assignment.Identity, EndpointID: assignment.EndpointID, Code: "invalid_assignment", Message: "identity must be codex:<sha256(account_id)>"})
+			conflicts = append(conflicts, BindingConflict{Identity: assignment.Identity, EndpointID: assignment.EndpointID, Code: "invalid_assignment", Message: "identity must be codex:<sha256(account_id)> or antigravity:<sha256(auth_id)>"})
 			continue
 		}
 		if _, duplicate := seenIdentity[assignment.Identity]; duplicate {
@@ -764,7 +785,9 @@ func validateBindingAssignmentsTx(ctx context.Context, tx *sql.Tx, assignments [
 	sort.Strings(identities)
 	for _, identity := range identities {
 		endpointID := final[identity]
-		if endpointModes[endpointID] == EndpointSharingModeShared {
+		// Antigravity selections are intentionally shared regardless of the Codex
+		// allocation mode. Exclusive cardinality remains a Codex-only policy.
+		if !strings.HasPrefix(identity, "codex:") || endpointModes[endpointID] == EndpointSharingModeShared {
 			continue
 		}
 		if owner, exists := owners[endpointID]; exists && owner != identity {

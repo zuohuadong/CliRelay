@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type egressEndpointRequest struct {
@@ -353,15 +354,15 @@ func (h *Handler) GetEgressBindings(c *gin.Context) {
 	manager := h.authManagerSnapshot()
 	if manager != nil {
 		for _, auth := range manager.List() {
-			if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+			if auth == nil {
 				continue
 			}
-			if auth.Metadata == nil {
-				auth.Metadata = make(map[string]any)
+			provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+			if provider != "codex" && provider != "antigravity" {
+				continue
 			}
-			accountID := codex.AccountIDFromMetadata(auth.Metadata)
-			identity, identityErr := egress.StableIdentity(accountID)
-			item := gin.H{"auth_id": auth.ID, "account_label": auth.Label, "bound": false, "endpoint_id": ""}
+			identity, identityErr := egressIdentityForAuth(auth)
+			item := gin.H{"provider": provider, "auth_id": auth.ID, "account_label": auth.Label, "bound": false, "endpoint_id": ""}
 			planType := ""
 			if auth.Attributes != nil {
 				planType = strings.TrimSpace(auth.Attributes["plan_type"])
@@ -384,7 +385,11 @@ func (h *Handler) GetEgressBindings(c *gin.Context) {
 			}
 			if identityErr != nil {
 				item["identity"] = ""
-				item["error"] = "missing account_id; refresh or re-login before migration"
+				if provider == "codex" {
+					item["error"] = "missing account_id; refresh or re-login before migration"
+				} else {
+					item["error"] = "missing auth identity"
+				}
 				items = append(items, item)
 				continue
 			}
@@ -406,7 +411,8 @@ func (h *Handler) GetEgressBindings(c *gin.Context) {
 		if seen[binding.Identity] {
 			continue
 		}
-		items = append(items, gin.H{"identity": binding.Identity, "endpoint_id": binding.EndpointID, "endpoint_name": endpointNames[binding.EndpointID], "auth_id": binding.AuthFileID, "account_label": "", "bound": true, "updated_at": binding.UpdatedAt})
+		provider := strings.TrimSpace(strings.SplitN(binding.Identity, ":", 2)[0])
+		items = append(items, gin.H{"provider": provider, "identity": binding.Identity, "endpoint_id": binding.EndpointID, "endpoint_name": endpointNames[binding.EndpointID], "auth_id": binding.AuthFileID, "account_label": "", "bound": true, "updated_at": binding.UpdatedAt})
 	}
 	sort.Slice(items, func(i, j int) bool { return fmt.Sprint(items[i]["auth_id"]) < fmt.Sprint(items[j]["auth_id"]) })
 	c.JSON(http.StatusOK, gin.H{"items": items})
@@ -425,7 +431,8 @@ func (h *Handler) PostEgressBindingPreview(c *gin.Context) {
 		writeInvalidEgressRequest(c, err)
 		return
 	}
-	if !validateStableCodexAssignments(c, request.Assignments) {
+	h.populateEgressAuthFileIDs(request.Assignments)
+	if !validateStableEgressAssignments(c, request.Assignments) {
 		return
 	}
 	preview, err := service.PreviewBindingBatch(c.Request.Context(), request.Assignments)
@@ -447,7 +454,8 @@ func (h *Handler) PutEgressBindingBatch(c *gin.Context) {
 		writeInvalidEgressRequest(c, err)
 		return
 	}
-	if !validateStableCodexAssignments(c, request.Assignments) {
+	h.populateEgressAuthFileIDs(request.Assignments)
+	if !validateStableEgressAssignments(c, request.Assignments) {
 		return
 	}
 	if !request.Confirmed {
@@ -550,17 +558,50 @@ func writeInvalidEgressRequest(c *gin.Context, err error) {
 	c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_request", "message": err.Error()}})
 }
 
-func validateStableCodexAssignments(c *gin.Context, assignments []egress.BindingAssignment) bool {
+func validateStableEgressAssignments(c *gin.Context, assignments []egress.BindingAssignment) bool {
 	for _, assignment := range assignments {
 		identity := strings.TrimSpace(assignment.Identity)
 		if !egress.IsStableIdentity(identity) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
-				"code": "invalid_identity", "message": "identity must be codex:<sha256(account_id)>",
+				"code": "invalid_identity", "message": "identity must be a supported provider digest",
 			}})
 			return false
 		}
 	}
 	return true
+}
+
+func egressIdentityForAuth(auth *coreauth.Auth) (string, error) {
+	if auth == nil {
+		return "", fmt.Errorf("%w: auth is required", egress.ErrIdentityRequired)
+	}
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	if provider == "codex" {
+		if auth.Metadata == nil {
+			auth.Metadata = make(map[string]any)
+		}
+		return egress.StableIdentity(codex.AccountIDFromMetadata(auth.Metadata))
+	}
+	return egress.StableIdentityForProvider(provider, auth.ID)
+}
+
+func (h *Handler) populateEgressAuthFileIDs(assignments []egress.BindingAssignment) {
+	manager := h.authManagerSnapshot()
+	if manager == nil || len(assignments) == 0 {
+		return
+	}
+	byIdentity := make(map[string]string)
+	for _, auth := range manager.List() {
+		identity, err := egressIdentityForAuth(auth)
+		if err == nil {
+			byIdentity[identity] = auth.ID
+		}
+	}
+	for i := range assignments {
+		if assignments[i].AuthFileID == "" {
+			assignments[i].AuthFileID = byIdentity[strings.TrimSpace(assignments[i].Identity)]
+		}
+	}
 }
 
 func (h *Handler) egressAuthInventory(ctx context.Context, service *egress.Service) (egressAuthInventory, error) {

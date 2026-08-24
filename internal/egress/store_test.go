@@ -157,6 +157,45 @@ func TestStoreAllowsMultipleBindingsForSharedEndpoint(t *testing.T) {
 	}
 }
 
+func TestStoreAllowsAntigravityToShareExclusiveCodexEndpoint(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "egress.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	endpoint, err := store.CreateEndpoint(ctx, Endpoint{
+		Name: "Codex fixed", Protocol: ProtocolSOCKS5, Host: "10.77.0.2", Port: 1080,
+		Enabled: true, SharingMode: EndpointSharingModeExclusive, ExpectedPublicIP: "198.51.100.2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexIdentity, _ := StableIdentity("codex-account")
+	antigravityA, _ := StableIdentityForProvider("antigravity", "antigravity-a.json")
+	antigravityB, _ := StableIdentityForProvider("antigravity", "antigravity-b.json")
+
+	assignments := []BindingAssignment{
+		{Identity: codexIdentity, EndpointID: endpoint.ID},
+		{Identity: antigravityA, EndpointID: endpoint.ID},
+		{Identity: antigravityB, EndpointID: endpoint.ID},
+	}
+	preview, err := store.PreviewBindingBatch(ctx, assignments)
+	if err != nil || !preview.Valid {
+		t.Fatalf("preview = %#v, %v", preview, err)
+	}
+	if _, err = store.ApplyBindingBatch(ctx, preview.Revision, assignments); err != nil {
+		t.Fatalf("ApplyBindingBatch() error = %v", err)
+	}
+	bindings, err := store.ListBindings(ctx)
+	if err != nil || len(bindings) != 3 {
+		t.Fatalf("bindings = %#v, %v", bindings, err)
+	}
+}
+
 func TestStoreRejectsSharedEndpointDowngradeWithMultipleBindings(t *testing.T) {
 	t.Parallel()
 

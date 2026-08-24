@@ -79,6 +79,7 @@ export interface EgressEndpoint {
 
 export interface EgressBinding {
   identity: string;
+  provider?: "codex" | "antigravity" | string;
   authId: string;
   accountLabel: string;
   planType?: string;
@@ -105,6 +106,7 @@ export interface EgressEndpointInput {
 export interface EgressBindingAssignment {
   identity: string;
   endpointId: string;
+  authFileId?: string;
 }
 
 export interface EgressBindingPreview {
@@ -228,7 +230,9 @@ export const normalizeEgressOverview = (value: unknown): EgressOverview => {
     scope,
     policy: {
       bindingMode: (() => {
-        const bindingMode = normalizeString(policy.binding_mode ?? policy.bindingMode).toLowerCase();
+        const bindingMode = normalizeString(
+          policy.binding_mode ?? policy.bindingMode,
+        ).toLowerCase();
         if (bindingMode === "shared" || bindingMode === "per_endpoint") return bindingMode;
         return "exclusive";
       })(),
@@ -341,6 +345,7 @@ export const normalizeEgressBinding = (raw: UnknownRecord): EgressBinding | null
   if (!identity && !authId && !accountLabel) return null;
   return {
     identity,
+    provider: normalizeString(raw.provider) || identity.split(":", 1)[0] || "codex",
     authId,
     accountLabel: accountLabel || authId || identity,
     ...(normalizeOptionalString(raw.plan_type ?? raw.planType)
@@ -380,13 +385,20 @@ const normalizeAssignment = (value: unknown): EgressBindingAssignment | null => 
   const raw = asRecord(value);
   const identity = normalizeString(raw.identity);
   if (!identity) return null;
-  return { identity, endpointId: normalizeString(raw.endpoint_id ?? raw.endpointId) };
+  return {
+    identity,
+    endpointId: normalizeString(raw.endpoint_id ?? raw.endpointId),
+    ...(normalizeOptionalString(raw.auth_file_id ?? raw.authFileId)
+      ? { authFileId: normalizeOptionalString(raw.auth_file_id ?? raw.authFileId) }
+      : {}),
+  };
 };
 
 const serializeAssignments = (assignments: EgressBindingAssignment[]) =>
   assignments.map((assignment) => ({
     identity: assignment.identity.trim(),
     endpoint_id: assignment.endpointId.trim(),
+    ...(assignment.authFileId?.trim() ? { auth_file_id: assignment.authFileId.trim() } : {}),
   }));
 
 const normalizeBindingPreview = (value: unknown): EgressBindingPreview => {

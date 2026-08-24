@@ -85,13 +85,14 @@ function StatusBadge({
   tone,
   children,
 }: {
-  tone: "green" | "amber" | "rose" | "slate";
+  tone: "green" | "amber" | "rose" | "sky" | "slate";
   children: string;
 }) {
   const classes = {
     green: "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300",
     amber: "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-200",
     rose: "bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300",
+    sky: "bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300",
     slate: "bg-slate-100 text-slate-600 dark:bg-neutral-900 dark:text-slate-300",
   }[tone];
   return (
@@ -298,7 +299,7 @@ export function EgressPage() {
     return bindings.filter((binding) => {
       const matchesSearch =
         !search ||
-        [binding.accountLabel, binding.authId, binding.identity]
+        [binding.provider, binding.accountLabel, binding.authId, binding.identity]
           .join(" ")
           .toLowerCase()
           .includes(search);
@@ -307,7 +308,9 @@ export function EgressPage() {
         bindingFilter === "all" ||
         (bindingFilter === "unbound" && !binding.bound) ||
         (bindingFilter === "issues" &&
-          Boolean(binding.error || !binding.identity || (binding.bound && !boundEndpoint?.runtimeReady)));
+          Boolean(
+            binding.error || !binding.identity || (binding.bound && !boundEndpoint?.runtimeReady),
+          ));
       return matchesSearch && matchesFilter;
     });
   }, [bindingFilter, bindingSearch, bindings, endpoints]);
@@ -373,7 +376,9 @@ export function EgressPage() {
               {endpoint.protocol}://{endpoint.host}:{endpoint.port}
             </p>
             <p className="mt-1 text-[11px] text-slate-500">
-              {endpoint.hasCredentials ? t("egress.endpoints.credentials_configured") : t("egress.endpoints.no_credentials")}
+              {endpoint.hasCredentials
+                ? t("egress.endpoints.credentials_configured")
+                : t("egress.endpoints.no_credentials")}
             </p>
           </div>
         ),
@@ -386,14 +391,14 @@ export function EgressPage() {
           <div className="space-y-1">
             <StatusBadge
               tone={
-                endpoint.runtimeReady
-                  ? "green"
-                  : endpoint.status === "unhealthy"
-                    ? "rose"
-                    : "slate"
+                endpoint.runtimeReady ? "green" : endpoint.status === "unhealthy" ? "rose" : "slate"
               }
             >
-              {t(endpoint.runtimeReady ? "egress.endpoints.runtime_ready" : `egress.endpoints.${endpoint.status}`)}
+              {t(
+                endpoint.runtimeReady
+                  ? "egress.endpoints.runtime_ready"
+                  : `egress.endpoints.${endpoint.status}`,
+              )}
             </StatusBadge>
             {typeof endpoint.latencyMs === "number" ? (
               <p className="text-[11px] text-slate-500">{endpoint.latencyMs} ms</p>
@@ -420,11 +425,15 @@ export function EgressPage() {
         render: (endpoint) => (
           <div className="space-y-1 font-mono text-[11px]">
             <p>
-              <span className="font-sans text-slate-500">{t("egress.endpoints.expected_short")}:</span>{" "}
+              <span className="font-sans text-slate-500">
+                {t("egress.endpoints.expected_short")}:
+              </span>{" "}
               {endpoint.expectedPublicIp || "--"}
             </p>
             <p>
-              <span className="font-sans text-slate-500">{t("egress.endpoints.observed_short")}:</span>{" "}
+              <span className="font-sans text-slate-500">
+                {t("egress.endpoints.observed_short")}:
+              </span>{" "}
               {endpoint.publicIp || t("egress.endpoints.not_checked")}
             </p>
           </div>
@@ -436,7 +445,11 @@ export function EgressPage() {
         width: "w-24",
         render: (endpoint) => (
           <StatusBadge tone={endpoint.enabled ? "green" : "amber"}>
-            {t(endpoint.enabled ? "egress.endpoints.enabled_short" : "egress.endpoints.disabled_short")}
+            {t(
+              endpoint.enabled
+                ? "egress.endpoints.enabled_short"
+                : "egress.endpoints.disabled_short",
+            )}
           </StatusBadge>
         ),
       },
@@ -494,7 +507,12 @@ export function EgressPage() {
         render: (binding) => (
           <div>
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              <p className="min-w-0 truncate font-semibold text-slate-950 dark:text-white">{binding.accountLabel}</p>
+              <p className="min-w-0 truncate font-semibold text-slate-950 dark:text-white">
+                {binding.accountLabel}
+              </p>
+              <StatusBadge tone={binding.provider === "antigravity" ? "sky" : "slate"}>
+                {binding.provider === "antigravity" ? "Antigravity" : "Codex"}
+              </StatusBadge>
               {binding.planType ? (
                 <StatusBadge tone="amber">{`${t("codex_quota.plan_label")}: ${binding.planType.toUpperCase()}`}</StatusBadge>
               ) : null}
@@ -548,7 +566,9 @@ export function EgressPage() {
             size="xs"
             variant="ghost"
             aria-label={t("egress.bindings.unbind_label", { account: binding.accountLabel })}
-            disabled={!binding.identity || !(pendingAssignments[binding.identity] ?? binding.endpointId)}
+            disabled={
+              !binding.identity || !(pendingAssignments[binding.identity] ?? binding.endpointId)
+            }
             onClick={() => stageBinding(binding, "")}
           >
             <Unplug size={14} />
@@ -599,7 +619,9 @@ export function EgressPage() {
           </Tabs>
           <div className="flex flex-wrap items-center gap-2 text-xs sm:justify-end">
             <StatusBadge tone={overview.enabled ? "green" : "amber"}>{runtimeLabel}</StatusBadge>
-            <StatusBadge tone={readinessTone}>{t(`egress.readiness.${overview.readiness.verdict}`)}</StatusBadge>
+            <StatusBadge tone={readinessTone}>
+              {t(`egress.readiness.${overview.readiness.verdict}`)}
+            </StatusBadge>
           </div>
         </div>
       </Card>
@@ -618,7 +640,9 @@ export function EgressPage() {
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-semibold">{t("egress.overview.fixed_title")}</p>
-                <StatusBadge tone={readinessTone}>{t(`egress.readiness.${overview.readiness.verdict}`)}</StatusBadge>
+                <StatusBadge tone={readinessTone}>
+                  {t(`egress.readiness.${overview.readiness.verdict}`)}
+                </StatusBadge>
               </div>
               <p className="mt-1 text-xs leading-5 opacity-85 sm:text-sm">
                 {t("egress.overview.fixed_description")}
@@ -654,12 +678,17 @@ export function EgressPage() {
             ].map(([key, value]) => (
               <Card key={String(key)} padding="compact">
                 <p className="text-xs font-medium text-slate-500">{t(`egress.metrics.${key}`)}</p>
-                <p className="mt-2 text-2xl font-semibold text-slate-950 dark:text-white">{value}</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-950 dark:text-white">
+                  {value}
+                </p>
               </Card>
             ))}
           </div>
 
-          <Card title={t("egress.overview.inventory_title")} description={t("egress.overview.inventory_description")}>
+          <Card
+            title={t("egress.overview.inventory_title")}
+            description={t("egress.overview.inventory_description")}
+          >
             <dl className="grid gap-x-6 gap-y-4 text-sm sm:grid-cols-3">
               <div>
                 <dt className="text-xs text-slate-500">{t("egress.metrics.endpoints")}</dt>
@@ -669,11 +698,15 @@ export function EgressPage() {
               </div>
               <div>
                 <dt className="text-xs text-slate-500">{t("egress.metrics.bindings")}</dt>
-                <dd className="mt-1 font-semibold text-slate-950 dark:text-white">{overview.counts.bindings}</dd>
+                <dd className="mt-1 font-semibold text-slate-950 dark:text-white">
+                  {overview.counts.bindings}
+                </dd>
               </div>
               <div>
                 <dt className="text-xs text-slate-500">{t("egress.metrics.missing_account_id")}</dt>
-                <dd className="mt-1 font-semibold text-slate-950 dark:text-white">{overview.counts.missingAccountId}</dd>
+                <dd className="mt-1 font-semibold text-slate-950 dark:text-white">
+                  {overview.counts.missingAccountId}
+                </dd>
               </div>
             </dl>
           </Card>
@@ -700,39 +733,74 @@ export function EgressPage() {
           >
             <div className="space-y-3 p-3 md:hidden">
               {endpoints.map((endpoint) => (
-                <div key={endpoint.id} className="min-w-0 rounded-xl border border-slate-200 p-3 dark:border-neutral-800">
+                <div
+                  key={endpoint.id}
+                  className="min-w-0 rounded-xl border border-slate-200 p-3 dark:border-neutral-800"
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="truncate font-semibold text-slate-950 dark:text-white">{endpoint.name}</p>
+                      <p className="truncate font-semibold text-slate-950 dark:text-white">
+                        {endpoint.name}
+                      </p>
                       <p className="mt-1 break-all font-mono text-xs text-slate-500">
                         {endpoint.protocol}://{endpoint.host}:{endpoint.port}
                       </p>
                     </div>
-                    <StatusBadge tone={endpoint.runtimeReady ? "green" : endpoint.status === "unhealthy" ? "rose" : "slate"}>
-                      {t(endpoint.runtimeReady ? "egress.endpoints.runtime_ready" : `egress.endpoints.${endpoint.status}`)}
+                    <StatusBadge
+                      tone={
+                        endpoint.runtimeReady
+                          ? "green"
+                          : endpoint.status === "unhealthy"
+                            ? "rose"
+                            : "slate"
+                      }
+                    >
+                      {t(
+                        endpoint.runtimeReady
+                          ? "egress.endpoints.runtime_ready"
+                          : `egress.endpoints.${endpoint.status}`,
+                      )}
                     </StatusBadge>
                   </div>
                   <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
                     <div className="min-w-0">
                       <dt className="text-slate-500">{t("egress.endpoints.expected_short")}</dt>
-                      <dd className="mt-1 break-all font-mono text-slate-900 dark:text-white">{endpoint.expectedPublicIp || "--"}</dd>
+                      <dd className="mt-1 break-all font-mono text-slate-900 dark:text-white">
+                        {endpoint.expectedPublicIp || "--"}
+                      </dd>
                     </div>
                     <div className="min-w-0">
                       <dt className="text-slate-500">{t("egress.endpoints.observed_short")}</dt>
-                      <dd className="mt-1 break-all font-mono text-slate-900 dark:text-white">{endpoint.publicIp || t("egress.endpoints.not_checked")}</dd>
+                      <dd className="mt-1 break-all font-mono text-slate-900 dark:text-white">
+                        {endpoint.publicIp || t("egress.endpoints.not_checked")}
+                      </dd>
                     </div>
                     <div>
                       <dt className="text-slate-500">{t("egress.endpoints.latency")}</dt>
-                      <dd className="mt-1 text-slate-900 dark:text-white">{typeof endpoint.latencyMs === "number" ? `${endpoint.latencyMs} ms` : "--"}</dd>
+                      <dd className="mt-1 text-slate-900 dark:text-white">
+                        {typeof endpoint.latencyMs === "number" ? `${endpoint.latencyMs} ms` : "--"}
+                      </dd>
                     </div>
                     <div>
                       <dt className="text-slate-500">{t("egress.endpoints.credentials")}</dt>
-                      <dd className="mt-1 text-slate-900 dark:text-white">{endpoint.hasCredentials ? t("egress.endpoints.credentials_configured") : "--"}</dd>
+                      <dd className="mt-1 text-slate-900 dark:text-white">
+                        {endpoint.hasCredentials
+                          ? t("egress.endpoints.credentials_configured")
+                          : "--"}
+                      </dd>
                     </div>
                   </dl>
-                  {endpoint.error ? <p className="mt-3 break-words text-xs text-rose-600 dark:text-rose-300">{endpoint.error}</p> : null}
+                  {endpoint.error ? (
+                    <p className="mt-3 break-words text-xs text-rose-600 dark:text-rose-300">
+                      {endpoint.error}
+                    </p>
+                  ) : null}
                   <div className="mt-3 flex justify-end gap-1">
-                    <Button size="xs" aria-label={t("egress.endpoints.check_label", { name: endpoint.name })} onClick={() => void checkEndpoint(endpoint)}>
+                    <Button
+                      size="xs"
+                      aria-label={t("egress.endpoints.check_label", { name: endpoint.name })}
+                      onClick={() => void checkEndpoint(endpoint)}
+                    >
                       <CheckCircle2 size={14} />
                     </Button>
                     <Button
@@ -745,14 +813,21 @@ export function EgressPage() {
                     >
                       <Pencil size={14} />
                     </Button>
-                    <Button size="xs" variant="ghost" aria-label={t("egress.endpoints.delete_label", { name: endpoint.name })} onClick={() => void requestEndpointAction(endpoint, "delete")}>
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      aria-label={t("egress.endpoints.delete_label", { name: endpoint.name })}
+                      onClick={() => void requestEndpointAction(endpoint, "delete")}
+                    >
                       <Trash2 size={14} />
                     </Button>
                   </div>
                 </div>
               ))}
               {!loading && endpoints.length === 0 ? (
-                <p className="py-6 text-center text-sm text-slate-500">{t("egress.endpoints.empty")}</p>
+                <p className="py-6 text-center text-sm text-slate-500">
+                  {t("egress.endpoints.empty")}
+                </p>
               ) : null}
             </div>
             <div className="hidden md:block">
@@ -775,7 +850,11 @@ export function EgressPage() {
         </TabsContent>
 
         <TabsContent value="bindings">
-          <Card title={t("egress.bindings.title")} description={t("egress.bindings.description")} padding="none">
+          <Card
+            title={t("egress.bindings.title")}
+            description={t("egress.bindings.description")}
+            padding="none"
+          >
             <div className="flex flex-col gap-3 border-b border-slate-200 p-3 dark:border-neutral-800 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row">
                 <TextInput
@@ -787,10 +866,18 @@ export function EgressPage() {
                   startAdornment={<Search size={14} className="text-slate-400" />}
                   className="min-w-0 sm:max-w-sm"
                 />
-                <div className="flex flex-wrap items-center gap-1" aria-label={t("egress.bindings.filter_label")}>
+                <div
+                  className="flex flex-wrap items-center gap-1"
+                  aria-label={t("egress.bindings.filter_label")}
+                >
                   <Filter size={14} className="mr-1 text-slate-400" />
                   {(["all", "unbound", "issues"] as const).map((filter) => (
-                    <Button key={filter} size="xs" variant={bindingFilter === filter ? "primary" : "secondary"} onClick={() => setBindingFilter(filter)}>
+                    <Button
+                      key={filter}
+                      size="xs"
+                      variant={bindingFilter === filter ? "primary" : "secondary"}
+                      onClick={() => setBindingFilter(filter)}
+                    >
                       {t(`egress.bindings.filters.${filter}`)}
                     </Button>
                   ))}
@@ -800,23 +887,38 @@ export function EgressPage() {
                 <span className="text-xs font-semibold text-slate-600 dark:text-white/65">
                   {t("egress.bindings.pending", { count: bindingAssignments.length })}
                 </span>
-                <Button size="sm" variant="primary" disabled={bindingAssignments.length === 0 || previewingBindings} onClick={() => void previewBindingChanges()}>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={bindingAssignments.length === 0 || previewingBindings}
+                  onClick={() => void previewBindingChanges()}
+                >
                   {t("egress.bindings.preview", { count: bindingAssignments.length })}
                 </Button>
               </div>
             </div>
             <div className="space-y-3 p-3 md:hidden">
               {filteredBindings.map((binding) => (
-                <div key={binding.identity || binding.authId} className="min-w-0 rounded-xl border border-slate-200 p-3 dark:border-neutral-800">
+                <div
+                  key={binding.identity || binding.authId}
+                  className="min-w-0 rounded-xl border border-slate-200 p-3 dark:border-neutral-800"
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                        <p className="min-w-0 truncate font-semibold text-slate-950 dark:text-white">{binding.accountLabel}</p>
+                        <p className="min-w-0 truncate font-semibold text-slate-950 dark:text-white">
+                          {binding.accountLabel}
+                        </p>
+                        <StatusBadge tone={binding.provider === "antigravity" ? "sky" : "slate"}>
+                          {binding.provider === "antigravity" ? "Antigravity" : "Codex"}
+                        </StatusBadge>
                         {binding.planType ? (
                           <StatusBadge tone="amber">{`${t("codex_quota.plan_label")}: ${binding.planType.toUpperCase()}`}</StatusBadge>
                         ) : null}
                       </div>
-                      <p className="mt-1 truncate font-mono text-[11px] text-slate-500">{binding.identity || binding.authId}</p>
+                      <p className="mt-1 truncate font-mono text-[11px] text-slate-500">
+                        {binding.identity || binding.authId}
+                      </p>
                     </div>
                     {(pendingAssignments[binding.identity] ?? binding.endpointId) ? (
                       <StatusBadge tone="green">{t("egress.bound")}</StatusBadge>
@@ -824,12 +926,16 @@ export function EgressPage() {
                       <StatusBadge tone="amber">{t("egress.bindings.unbound")}</StatusBadge>
                     )}
                   </div>
-                  {binding.error ? <p className="mt-2 text-xs text-rose-600 dark:text-rose-300">{binding.error}</p> : null}
+                  {binding.error ? (
+                    <p className="mt-2 text-xs text-rose-600 dark:text-rose-300">{binding.error}</p>
+                  ) : null}
                   <div className="mt-3 flex min-w-0 items-center gap-2">
                     <EndpointSelect
                       value={pendingAssignments[binding.identity] ?? binding.endpointId}
                       endpoints={endpoints}
-                      ariaLabel={t("egress.bindings.endpoint_for", { account: binding.accountLabel })}
+                      ariaLabel={t("egress.bindings.endpoint_for", {
+                        account: binding.accountLabel,
+                      })}
                       disabled={!binding.identity}
                       allowEmpty
                       onChange={(value) => stageBinding(binding, value)}
@@ -837,8 +943,13 @@ export function EgressPage() {
                     <Button
                       size="xs"
                       variant="ghost"
-                      aria-label={t("egress.bindings.unbind_label", { account: binding.accountLabel })}
-                      disabled={!binding.identity || !(pendingAssignments[binding.identity] ?? binding.endpointId)}
+                      aria-label={t("egress.bindings.unbind_label", {
+                        account: binding.accountLabel,
+                      })}
+                      disabled={
+                        !binding.identity ||
+                        !(pendingAssignments[binding.identity] ?? binding.endpointId)
+                      }
                       onClick={() => stageBinding(binding, "")}
                     >
                       <Unplug size={14} />
@@ -847,7 +958,9 @@ export function EgressPage() {
                 </div>
               ))}
               {!loading && filteredBindings.length === 0 ? (
-                <p className="py-6 text-center text-sm text-slate-500">{t("egress.bindings.empty")}</p>
+                <p className="py-6 text-center text-sm text-slate-500">
+                  {t("egress.bindings.empty")}
+                </p>
               ) : null}
             </div>
             <div className="hidden md:block">
@@ -882,7 +995,11 @@ export function EgressPage() {
       />
       <ConfirmModal
         open={pendingEndpointAction !== null}
-        title={t(pendingEndpointAction?.action === "disable" ? "egress.endpoints.disable_title" : "egress.endpoints.delete_title")}
+        title={t(
+          pendingEndpointAction?.action === "disable"
+            ? "egress.endpoints.disable_title"
+            : "egress.endpoints.delete_title",
+        )}
         description={t("egress.endpoints.impact_description", {
           name: pendingEndpointAction?.endpoint.name ?? "",
           count: pendingEndpointAction?.impact.affectedBindings ?? 0,

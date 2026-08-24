@@ -136,6 +136,9 @@ export function AuthFileDetailModal({
   const isCodexDetail = detailFile
     ? normalizeProviderKey(resolveFileType(detailFile)) === "codex"
     : false;
+  const isAntigravityDetail = detailFile
+    ? normalizeProviderKey(resolveFileType(detailFile)) === "antigravity"
+    : false;
   const usesSharedProxy = isCodexDetail && prefixProxyEditor.egressMode === "shared_proxy";
   const egressModeOptions = useMemo<SelectOption[]>(
     () => [
@@ -596,26 +599,32 @@ export function AuthFileDetailModal({
                           </p>
                         </div>
 
-                        {isCodexDetail ? (
+                        {isCodexDetail || isAntigravityDetail ? (
                           <div className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-neutral-800">
-                            <div>
-                              <p className="text-xs font-semibold text-slate-700 dark:text-white/75">
-                                {t("auth_files.egress_mode_label")}
-                              </p>
-                            </div>
-                            <Select
-                              value={prefixProxyEditor.egressMode}
-                              onChange={(value) => {
-                                setPrefixProxyEditor((prev) => ({
-                                  ...prev,
-                                  egressMode:
-                                    value === "shared_proxy" ? "shared_proxy" : "fixed_endpoint",
-                                }));
-                              }}
-                              options={egressModeOptions}
-                              aria-label={t("auth_files.egress_mode_label")}
-                              disabled={prefixProxyEditor.saving}
-                            />
+                            {isCodexDetail ? (
+                              <>
+                                <div>
+                                  <p className="text-xs font-semibold text-slate-700 dark:text-white/75">
+                                    {t("auth_files.egress_mode_label")}
+                                  </p>
+                                </div>
+                                <Select
+                                  value={prefixProxyEditor.egressMode}
+                                  onChange={(value) => {
+                                    setPrefixProxyEditor((prev) => ({
+                                      ...prev,
+                                      egressMode:
+                                        value === "shared_proxy"
+                                          ? "shared_proxy"
+                                          : "fixed_endpoint",
+                                    }));
+                                  }}
+                                  options={egressModeOptions}
+                                  aria-label={t("auth_files.egress_mode_label")}
+                                  disabled={prefixProxyEditor.saving}
+                                />
+                              </>
+                            ) : null}
                             {usesSharedProxy ? (
                               <div className="grid gap-2 rounded-lg bg-slate-50 p-3 dark:bg-neutral-900">
                                 <p className="text-xs text-slate-500 dark:text-white/55">

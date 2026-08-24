@@ -585,7 +585,8 @@ export function useAuthFilesFilesPresentation({
 
   const renderEgressStatus = useCallback(
     (file: AuthFileItem, options: { showLabel?: boolean } = {}): ReactNode | null => {
-      if (resolveFileType(file) !== "codex") return null;
+      const provider = resolveFileType(file);
+      if (provider !== "codex" && provider !== "antigravity") return null;
 
       const label = t("auth_files.egress_endpoint_label");
       const latencyLabel = t("egress.endpoints.latency");

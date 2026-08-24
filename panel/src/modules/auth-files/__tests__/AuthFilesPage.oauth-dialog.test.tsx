@@ -175,7 +175,7 @@ describe("AuthFilesPage OAuth login dialog", () => {
 
     const cards = await screen.findByTestId("auth-files-cards");
     const summary = await within(cards).findByLabelText(
-      "Fixed egress endpoint: HK Egress · SOCKS5 · Healthy · Runtime ready · Latency 88 ms",
+      "Proxy egress endpoint: HK Egress · SOCKS5 · Healthy · Runtime ready · Latency 88 ms",
     );
     expect(summary).toHaveTextContent("HK Egress");
     expect(summary).toHaveTextContent("SOCKS5");
@@ -223,11 +223,11 @@ describe("AuthFilesPage OAuth login dialog", () => {
     );
 
     expect(
-      await screen.findByRole("columnheader", { name: "Fixed egress endpoint" }),
+      await screen.findByRole("columnheader", { name: "Proxy egress endpoint" }),
     ).toBeInTheDocument();
     expect(
       await screen.findByLabelText(
-        "Fixed egress endpoint: HK Egress · SOCKS5 · Healthy · Runtime ready · Latency 88 ms",
+        "Proxy egress endpoint: HK Egress · SOCKS5 · Healthy · Runtime ready · Latency 88 ms",
       ),
     ).toBeInTheDocument();
   });
@@ -284,7 +284,7 @@ describe("AuthFilesPage OAuth login dialog", () => {
     );
 
     const summary = await screen.findByLabelText(
-      "Fixed egress endpoint: HK Egress · SOCKS5 · Healthy · Current · unavailable · Latency 88 ms",
+      "Proxy egress endpoint: HK Egress · SOCKS5 · Healthy · Current · unavailable · Latency 88 ms",
     );
     expect(summary).toHaveTextContent("Healthy");
     expect(summary).toHaveTextContent("Current · unavailable");

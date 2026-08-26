@@ -230,6 +230,9 @@ export function useAuthFilesFilesPresentation({
     (planType: string) => {
       const normalized = planType.trim().toLowerCase();
       if (!normalized) return "";
+      if (normalized === "prolite" || normalized === "pro") {
+        return t(`codex_quota.plan_${normalized}`);
+      }
       if (normalized === "plus" || normalized === "team" || normalized === "free") {
         return t(`codex_quota.plan_${normalized}`);
       }
@@ -585,7 +588,8 @@ export function useAuthFilesFilesPresentation({
 
   const renderEgressStatus = useCallback(
     (file: AuthFileItem, options: { showLabel?: boolean } = {}): ReactNode | null => {
-      if (resolveFileType(file) !== "codex") return null;
+      const provider = resolveFileType(file);
+      if (provider !== "codex" && provider !== "antigravity") return null;
 
       const label = t("auth_files.egress_endpoint_label");
       const latencyLabel = t("egress.endpoints.latency");

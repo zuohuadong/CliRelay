@@ -17,6 +17,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	internalsignature "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	antigravityclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/antigravity/claude"
@@ -49,7 +50,8 @@ const (
 
 // AntigravityExecutor proxies requests to the antigravity upstream.
 type AntigravityExecutor struct {
-	cfg *config.Config
+	cfg    *config.Config
+	egress egress.ProviderResolver
 }
 
 // NewAntigravityExecutor creates a new Antigravity executor instance.
@@ -61,6 +63,47 @@ type AntigravityExecutor struct {
 //   - *AntigravityExecutor: A new Antigravity executor instance
 func NewAntigravityExecutor(cfg *config.Config) *AntigravityExecutor {
 	return &AntigravityExecutor{cfg: cfg}
+}
+
+// NewAntigravityExecutorWithEgress creates an Antigravity executor that can
+// optionally override each credential's proxy from the shared egress endpoint
+// inventory. An unbound credential keeps the existing auth/global proxy
+// behavior.
+func NewAntigravityExecutorWithEgress(cfg *config.Config, resolver egress.ProviderResolver) *AntigravityExecutor {
+	return &AntigravityExecutor{cfg: cfg, egress: resolver}
+}
+
+func (e *AntigravityExecutor) resolveEgressAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if e == nil || e.egress == nil || auth == nil || strings.TrimSpace(auth.ID) == "" {
+		return auth, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resolved, bound, err := e.egress.ResolveProviderSelection(ctx, antigravityAuthType, auth.ID)
+	if !bound && err == nil {
+		return auth, nil
+	}
+	if err != nil {
+		return nil, egress.RuntimeError(err)
+	}
+	if strings.TrimSpace(resolved.ProxyURL) == "" {
+		return nil, egress.RuntimeError(fmt.Errorf("%w: resolved Antigravity endpoint has no proxy URL", egress.ErrEndpointInvalid))
+	}
+	cloned := auth.Clone()
+	cloned.ProxyURL = strings.TrimSpace(resolved.ProxyURL)
+	return cloned, nil
+}
+
+func restoreAntigravityPersistedProxy(updated, original *cliproxyauth.Auth) *cliproxyauth.Auth {
+	if updated == nil || original == nil {
+		return updated
+	}
+	updated.ProxyURL = original.ProxyURL
+	if updated.Attributes != nil {
+		delete(updated.Attributes, "egress_id")
+	}
+	return updated
 }
 
 func (e *AntigravityExecutor) obfuscateSensitiveWords(payload []byte) []byte {
@@ -743,6 +786,11 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, err
 	}
+	routedAuth, errRoute := e.resolveEgressAuth(ctx, auth)
+	if errRoute != nil {
+		return nil, errRoute
+	}
+	auth = routedAuth
 
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
 	return httpClient.Do(httpReq)

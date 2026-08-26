@@ -303,7 +303,11 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		}
 		return
 	case "antigravity":
-		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(cfg))
+		if s.egressService == nil {
+			s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(cfg))
+		} else {
+			s.coreManager.RegisterExecutor(executor.NewAntigravityExecutorWithEgress(cfg, s.egressService))
+		}
 	case "claude":
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(cfg))
 	case "kimi":

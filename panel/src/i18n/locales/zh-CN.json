@@ -569,17 +569,17 @@
     "egress_mode_fixed": "固定端点",
     "egress_mode_shared_proxy": "共享代理",
     "egress_shared_proxy_hint": "此账号使用自身 proxy_url；留空时使用全局代理。固定端点绑定会保留，但不会参与请求。",
-    "egress_endpoint_label": "固定出口端点",
-    "egress_endpoint_hint": "为此 Codex 账号选择一个显式端点。变更会先预览再原子应用，密码不会回显。",
-    "egress_identity_missing": "此认证文件尚无稳定的 Codex 绑定身份，请选择出口端点重新授权。",
+    "egress_endpoint_label": "代理出口端点",
+    "egress_endpoint_hint": "为此账号选择一个显式代理端点。变更会先预览再原子应用，密码不会回显。Antigravity 账号可共享同一端点。",
+    "egress_identity_missing": "此认证文件尚无可用的代理绑定身份。Codex 账号请重新授权，Antigravity 账号请刷新认证文件。",
     "manage_egress_bindings": "前往出口绑定管理",
     "egress_preview_change": "预览出口变更",
     "egress_preview_failed": "出口绑定预览失败",
-    "egress_apply_title": "应用固定出口变更",
+    "egress_apply_title": "应用代理出口变更",
     "egress_apply_description": "确定将此账号绑定到 {{endpoint}} 吗？{{issues}}",
     "egress_apply_confirm": "应用绑定",
-    "egress_saved": "固定出口绑定已更新",
-    "egress_save_failed": "固定出口绑定更新失败",
+    "egress_saved": "代理出口绑定已更新",
+    "egress_save_failed": "代理出口绑定更新失败",
     "prefix_placeholder": "例如 team-a",
     "proxy_url_placeholder": "例如 http://127.0.0.1:7890",
     "priority_label": "优先级（priority）",
@@ -931,7 +931,9 @@
     "plan_label": "套餐",
     "plan_plus": "Plus",
     "plan_team": "Team",
-    "plan_free": "Free"
+    "plan_free": "Free",
+    "plan_prolite": "Pro 5x",
+    "plan_pro": "Pro 20x"
   },
   "gemini_cli_quota": {
     "title": "Gemini CLI 额度",
@@ -1918,8 +1920,8 @@
     "sidebar_account_role": "超级管理员"
   },
   "egress": {
-    "title": "Codex 出口",
-    "description": "Codex OAuth 账号可使用独占固定端点或共享动态端点，并通过预览确认后原子应用绑定变更。",
+    "title": "代理出口",
+    "description": "统一管理 Codex 与 Antigravity 使用的代理端点。Codex 保留固定出口策略，Antigravity 只需选择或切换端点。",
     "runtime": {
       "enabled": "运行态已启用",
       "disabled": "运行态未启用"

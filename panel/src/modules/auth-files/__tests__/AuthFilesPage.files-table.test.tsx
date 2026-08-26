@@ -2211,7 +2211,7 @@ describe("AuthFilesPage files table", () => {
     const card = title.closest("section");
     expect(card).not.toBeNull();
     expect(within(card as HTMLElement).queryByText(/^codex$/i)).not.toBeInTheDocument();
-    expect(within(card as HTMLElement).getByText("Plan Pro")).toBeInTheDocument();
+    expect(within(card as HTMLElement).getByText("Plan Pro 20x")).toBeInTheDocument();
     expect(within(card as HTMLElement).getByText("0 calls")).toBeInTheDocument();
   });
 
@@ -2220,17 +2220,17 @@ describe("AuthFilesPage files table", () => {
     mocks.list.mockImplementation(async () => ({
       files: [
         {
-          name: "codex-pro.json",
-          label: "A_GptPro",
+          name: "codex-prolite.json",
+          label: "A_GptProLite",
           account_type: "oauth",
           type: "codex",
-          plan_type: "pro",
+          plan_type: "prolite",
           size: 1024,
           modified: Date.now(),
           disabled: false,
-          default_tags: ["codex", "pro"],
+          default_tags: ["codex", "prolite"],
           custom_tags: [],
-          hidden_default_tags: ["codex", "pro"],
+          hidden_default_tags: ["codex", "prolite"],
           display_tags: [],
         },
       ],
@@ -2248,11 +2248,11 @@ describe("AuthFilesPage files table", () => {
       </MemoryRouter>,
     );
 
-    const title = await screen.findByText("A_GptPro");
+    const title = await screen.findByText("A_GptProLite");
     const row = title.closest("tr");
     expect(row).not.toBeNull();
     expect(within(row as HTMLElement).queryByText(/^codex$/i)).not.toBeInTheDocument();
-    expect(within(row as HTMLElement).getByText("Plan Pro")).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText("Plan Pro 5x")).toBeInTheDocument();
   });
 
   test("saves auth-file tag visibility and custom tags from the tags modal", async () => {

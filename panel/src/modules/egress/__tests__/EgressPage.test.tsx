@@ -171,7 +171,7 @@ describe("EgressPage", () => {
   test("renders only overview, endpoint, and fixed-binding tabs", async () => {
     renderPage();
 
-    expect(await screen.findByText("Codex egress")).toBeInTheDocument();
+    expect(await screen.findByText("Proxy egress")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Overview" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Egress endpoints" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Account bindings" })).toBeInTheDocument();

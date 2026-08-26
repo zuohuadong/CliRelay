@@ -612,7 +612,15 @@ export function AuthFilesPage() {
           binding.authId === detailFile.name || binding.authId.endsWith(`/${detailFile.name}`),
       ) ?? null)
     : null;
+  const detailUsesSharedEgress = detailFile
+    ? normalizeProviderKey(resolveFileType(detailFile)) === "antigravity"
+    : false;
   const detailEgressEndpoints = useMemo(() => {
+    if (detailUsesSharedEgress) {
+      return egressEndpoints.filter(
+        (endpoint) => endpoint.id === detailEgressBinding?.endpointId || endpoint.runtimeReady,
+      );
+    }
     const occupiedEndpointIds = new Set(
       egressBindings
         .filter(
@@ -632,13 +640,16 @@ export function AuthFilesPage() {
   }, [
     detailEgressBinding?.endpointId,
     detailEgressBinding?.identity,
+    detailUsesSharedEgress,
     egressBindings,
     egressEndpoints,
   ]);
   const oauthEgressEndpoints = useMemo(() => {
     const occupiedEndpointIds = new Set(
       egressBindings
-        .filter((binding) => binding.bound && binding.endpointId)
+        .filter(
+          (binding) => binding.provider !== "antigravity" && binding.bound && binding.endpointId,
+        )
         .map((binding) => binding.endpointId),
     );
     return egressEndpoints.filter(

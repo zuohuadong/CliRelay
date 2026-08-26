@@ -23,6 +23,10 @@ type Resolver interface {
 	Resolve(ctx context.Context, accountID string) (ResolvedEndpoint, error)
 }
 
+type ProviderResolver interface {
+	ResolveProviderSelection(ctx context.Context, provider, accountID string) (ResolvedEndpoint, bool, error)
+}
+
 type ResolvedEndpoint struct {
 	Endpoint Endpoint
 	ProxyURL string
@@ -194,10 +198,18 @@ func (s *Service) maintenanceInterval() time.Duration {
 }
 
 func (s *Service) Resolve(ctx context.Context, accountID string) (ResolvedEndpoint, error) {
+	return s.ResolveProvider(ctx, "codex", accountID)
+}
+
+// ResolveProvider resolves the current endpoint binding for a provider
+// credential. Codex keeps its historical strict behavior through Resolve;
+// Antigravity callers may treat ErrEgressUnbound as "use the configured
+// provider/global proxy" when no selection has been made yet.
+func (s *Service) ResolveProvider(ctx context.Context, provider, accountID string) (ResolvedEndpoint, error) {
 	if !s.enabled() {
 		return ResolvedEndpoint{}, fmt.Errorf("%w: egress network is not enabled", ErrEgressRequired)
 	}
-	identity, err := StableIdentity(accountID)
+	identity, err := StableIdentityForProvider(provider, accountID)
 	if err != nil {
 		return ResolvedEndpoint{}, err
 	}
@@ -206,6 +218,30 @@ func (s *Service) Resolve(ctx context.Context, accountID string) (ResolvedEndpoi
 		return ResolvedEndpoint{}, err
 	}
 	return s.resolveEndpoint(ctx, resolved.Endpoint)
+}
+
+// ResolveProviderSelection resolves an optional provider binding. The boolean
+// reports whether a binding exists, allowing providers such as Antigravity to
+// retain their existing auth/global proxy behavior only while unbound. Once an
+// operator selects an endpoint, runtime or health failures are returned instead
+// of silently falling back to another network path.
+func (s *Service) ResolveProviderSelection(ctx context.Context, provider, accountID string) (ResolvedEndpoint, bool, error) {
+	identity, err := StableIdentityForProvider(provider, accountID)
+	if err != nil {
+		return ResolvedEndpoint{}, false, err
+	}
+	resolved, err := s.store.ResolveIdentity(ctx, identity)
+	if errors.Is(err, ErrEgressUnbound) {
+		return ResolvedEndpoint{}, false, nil
+	}
+	if err != nil {
+		return ResolvedEndpoint{}, false, err
+	}
+	if !s.enabled() {
+		return ResolvedEndpoint{}, true, fmt.Errorf("%w: egress network is not enabled", ErrEgressRequired)
+	}
+	endpoint, err := s.resolveEndpoint(ctx, resolved.Endpoint)
+	return endpoint, true, err
 }
 
 func (s *Service) ResolveEndpoint(ctx context.Context, endpointID string) (ResolvedEndpoint, error) {

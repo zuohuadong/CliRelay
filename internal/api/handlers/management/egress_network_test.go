@@ -159,6 +159,42 @@ func TestEgressBindingsIncludesUnboundAndMissingIdentityCodexAuth(t *testing.T) 
 	}
 }
 
+func TestEgressBindingsIncludesAntigravityWithStableAuthIdentity(t *testing.T) {
+	t.Parallel()
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	_, _ = manager.Register(context.Background(), &coreauth.Auth{
+		ID: "antigravity-user.json", Provider: "antigravity", Label: "user@example.com",
+	})
+	handler, service := newEgressManagementHandler(t, manager)
+	endpoint := createReadyEgressEndpoint(t, service, "10.77.0.2", "198.51.100.2")
+	identity, _ := egress.StableIdentityForProvider("antigravity", "antigravity-user.json")
+	preview := invokeEgressHandler(t, http.MethodPost, "/v0/management/egress/bindings/preview", "", gin.H{
+		"assignments": []gin.H{{"identity": identity, "endpoint_id": endpoint.ID}},
+	}, handler.PostEgressBindingPreview)
+	var plan egress.BindingBatchPreview
+	if preview.Code != http.StatusOK || json.Unmarshal(preview.Body.Bytes(), &plan) != nil || !plan.Valid {
+		t.Fatalf("preview status=%d body=%s", preview.Code, preview.Body.String())
+	}
+	applied := invokeEgressHandler(t, http.MethodPut, "/v0/management/egress/bindings/batch", "", gin.H{
+		"revision": plan.Revision, "confirmed": true,
+		"assignments": []gin.H{{"identity": identity, "endpoint_id": endpoint.ID}},
+	}, handler.PutEgressBindingBatch)
+	if applied.Code != http.StatusOK {
+		t.Fatalf("apply status=%d body=%s", applied.Code, applied.Body.String())
+	}
+
+	recorder := invokeEgressHandler(t, http.MethodGet, "/v0/management/egress/bindings", "", nil, handler.GetEgressBindings)
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK || !strings.Contains(body, `"provider":"antigravity"`) || !strings.Contains(body, `"auth_id":"antigravity-user.json"`) || !strings.Contains(body, `"bound":true`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, body)
+	}
+	bindings, err := service.ListBindings(context.Background())
+	if err != nil || len(bindings) != 1 || bindings[0].AuthFileID != "antigravity-user.json" {
+		t.Fatalf("bindings=%#v err=%v", bindings, err)
+	}
+}
+
 func TestEgressBindingsResolvesAccountIDFromIDTokenJWT(t *testing.T) {
 	t.Parallel()
 

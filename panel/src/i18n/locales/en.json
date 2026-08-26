@@ -561,17 +561,17 @@
     "egress_mode_fixed": "Fixed endpoint",
     "egress_mode_shared_proxy": "Shared proxy",
     "egress_shared_proxy_hint": "This account uses its proxy_url, or the global proxy when empty. Its fixed endpoint binding is retained but not used.",
-    "egress_endpoint_label": "Fixed egress endpoint",
-    "egress_endpoint_hint": "Select one explicit endpoint for this Codex account. Changes are previewed and applied atomically; passwords are never displayed.",
-    "egress_identity_missing": "This auth file has no stable Codex binding identity yet. Re-authorize it with an egress endpoint.",
+    "egress_endpoint_label": "Proxy egress endpoint",
+    "egress_endpoint_hint": "Select one explicit proxy endpoint for this account. Changes are previewed and applied atomically; passwords are never displayed. Antigravity accounts may share the same endpoint.",
+    "egress_identity_missing": "This auth file has no usable proxy binding identity. Re-authorize Codex accounts or refresh the Antigravity auth file.",
     "manage_egress_bindings": "Manage in Egress Bindings",
     "egress_preview_change": "Preview egress change",
     "egress_preview_failed": "Failed to preview the egress binding",
-    "egress_apply_title": "Apply fixed egress change",
+    "egress_apply_title": "Apply proxy egress change",
     "egress_apply_description": "Bind this account to {{endpoint}}? {{issues}}",
     "egress_apply_confirm": "Apply binding",
-    "egress_saved": "Fixed egress binding updated",
-    "egress_save_failed": "Failed to update the fixed egress binding",
+    "egress_saved": "Proxy egress binding updated",
+    "egress_save_failed": "Failed to update the proxy egress binding",
     "prefix_placeholder": "e.g. team-a",
     "proxy_url_placeholder": "e.g. http://127.0.0.1:7890",
     "priority_label": "Priority (priority)",
@@ -923,7 +923,9 @@
     "plan_label": "Plan",
     "plan_plus": "Plus",
     "plan_team": "Team",
-    "plan_free": "Free"
+    "plan_free": "Free",
+    "plan_prolite": "Pro 5x",
+    "plan_pro": "Pro 20x"
   },
   "gemini_cli_quota": {
     "title": "Gemini CLI Quota",
@@ -1903,8 +1905,8 @@
     "sidebar_account_role": "Super Admin"
   },
   "egress": {
-    "title": "Codex egress",
-    "description": "Use exclusive fixed endpoints or shared dynamic endpoints for Codex OAuth accounts, then manage reviewed atomic binding changes.",
+    "title": "Proxy egress",
+    "description": "Manage proxy endpoints used by Codex and Antigravity. Codex keeps its fixed-egress policy, while Antigravity only selects or switches endpoints.",
     "runtime": {
       "enabled": "Runtime enabled",
       "disabled": "Runtime disabled"

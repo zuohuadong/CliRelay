@@ -305,7 +305,7 @@ describe("AuthFileDetailModal", () => {
     expect(grid.className).not.toContain("divide-y");
     expect(within(grid).getByPlaceholderText("e.g. team-a")).toHaveValue("team-a");
     expect(
-      within(grid).getByRole("combobox", { name: "Fixed egress endpoint" }),
+      within(grid).getByRole("combobox", { name: "Proxy egress endpoint" }),
     ).toBeInTheDocument();
     expect(
       within(grid).queryByPlaceholderText("e.g. http://127.0.0.1:7890"),
@@ -332,7 +332,7 @@ describe("AuthFileDetailModal", () => {
       "http://127.0.0.1:7890",
     );
     expect(
-      within(grid).queryByRole("combobox", { name: "Fixed egress endpoint" }),
+      within(grid).queryByRole("combobox", { name: "Proxy egress endpoint" }),
     ).not.toBeInTheDocument();
   });
 
@@ -364,7 +364,7 @@ describe("AuthFileDetailModal", () => {
       applyEgressBinding,
     });
 
-    await user.click(screen.getByRole("combobox", { name: "Fixed egress endpoint" }));
+    await user.click(screen.getByRole("combobox", { name: "Proxy egress endpoint" }));
     await user.click(
       await screen.findByRole("option", { name: /Secondary egress.*203\.0\.113\.9/i }),
     );
@@ -376,7 +376,7 @@ describe("AuthFileDetailModal", () => {
       }),
     );
 
-    const confirm = await screen.findByRole("dialog", { name: "Apply fixed egress change" });
+    const confirm = await screen.findByRole("dialog", { name: "Apply proxy egress change" });
     await user.click(within(confirm).getByRole("button", { name: "Apply binding" }));
     await waitFor(() =>
       expect(applyEgressBinding).toHaveBeenCalledWith(
@@ -385,12 +385,88 @@ describe("AuthFileDetailModal", () => {
       ),
     );
 
-    await user.click(screen.getByRole("combobox", { name: "Fixed egress endpoint" }));
+    await user.click(screen.getByRole("combobox", { name: "Proxy egress endpoint" }));
     await user.click(await screen.findByRole("option", { name: "No endpoint" }));
     await user.click(screen.getByRole("button", { name: "Preview egress change" }));
     await waitFor(() =>
       expect(previewEgressBinding).toHaveBeenLastCalledWith({
         identity: "codex:abc",
+        endpointId: "",
+      }),
+    );
+  });
+
+  test("lets Antigravity select, switch, and unbind a proxy endpoint without Codex modes", async () => {
+    const user = userEvent.setup();
+    const previewEgressBinding = vi.fn(async (assignment) => ({
+      expectedRevision: "rev-3",
+      assignments: [assignment],
+      changeCount: 1,
+      affectedAccounts: ["Antigravity Primary"],
+      blockers: [],
+      warnings: [],
+      valid: true,
+    }));
+    const applyEgressBinding = vi.fn(async () => undefined);
+    renderDetailModal({
+      detailTab: "fields",
+      detailFile: {
+        name: "antigravity.json",
+        label: "Antigravity Primary",
+        type: "antigravity",
+        provider: "antigravity",
+        size: 256,
+        account_type: "oauth",
+      },
+      prefixProxyEditor: {
+        ...basePrefixProxyEditor,
+        fileName: "antigravity.json",
+        json: { type: "antigravity", id: "antigravity-account" },
+        prefix: "",
+        proxyUrl: "",
+      },
+      egressBinding: {
+        identity: "antigravity:abc",
+        provider: "antigravity",
+        authId: "antigravity.json",
+        accountLabel: "Antigravity Primary",
+        endpointId: "primary",
+        endpointName: "Primary egress",
+        bound: true,
+      },
+      previewEgressBinding,
+      applyEgressBinding,
+    });
+
+    expect(screen.queryByRole("combobox", { name: "Egress mode" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: "Proxy egress endpoint" }));
+    await user.click(
+      await screen.findByRole("option", { name: /Secondary egress.*203\.0\.113\.9/i }),
+    );
+    await user.click(screen.getByRole("button", { name: "Preview egress change" }));
+    await waitFor(() =>
+      expect(previewEgressBinding).toHaveBeenCalledWith({
+        identity: "antigravity:abc",
+        endpointId: "secondary",
+      }),
+    );
+
+    const confirm = await screen.findByRole("dialog", { name: "Apply proxy egress change" });
+    await user.click(within(confirm).getByRole("button", { name: "Apply binding" }));
+    await waitFor(() =>
+      expect(applyEgressBinding).toHaveBeenCalledWith(
+        [{ identity: "antigravity:abc", endpointId: "secondary" }],
+        "rev-3",
+      ),
+    );
+
+    await user.click(screen.getByRole("combobox", { name: "Proxy egress endpoint" }));
+    await user.click(await screen.findByRole("option", { name: "No endpoint" }));
+    await user.click(screen.getByRole("button", { name: "Preview egress change" }));
+    await waitFor(() =>
+      expect(previewEgressBinding).toHaveBeenLastCalledWith({
+        identity: "antigravity:abc",
         endpointId: "",
       }),
     );

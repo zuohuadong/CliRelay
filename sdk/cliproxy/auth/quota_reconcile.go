@@ -228,7 +228,7 @@ func applyQuotaProbeResult(auth *Auth, result *QuotaProbeResult, now time.Time) 
 		}
 
 		updateAggregatedAvailability(auth, now)
-		if auth.Unavailable != beforeUnavailable || !auth.NextRetryAfter.Equal(beforeNextRetry) || auth.Quota != beforeQuota {
+		if auth.Unavailable != beforeUnavailable || !auth.NextRetryAfter.Equal(beforeNextRetry) || !cooldownQuotaEqual(auth.Quota, beforeQuota) {
 			changed = true
 		}
 		if !hasModelError(auth, now) {
@@ -335,13 +335,13 @@ func clearQuotaModelState(state *ModelState, now time.Time) bool {
 	if state == nil {
 		return false
 	}
-	changed := state.Unavailable || state.Status != StatusActive || state.StatusMessage != "" || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{})
+	changed := state.Unavailable || state.Status != StatusActive || state.StatusMessage != "" || !state.NextRetryAfter.IsZero() || state.LastError != nil || !cooldownQuotaEqual(state.Quota, QuotaState{})
 	state.Unavailable = false
 	state.Status = StatusActive
 	state.StatusMessage = ""
 	state.NextRetryAfter = time.Time{}
 	state.LastError = nil
-	state.Quota = QuotaState{}
+	applyCooldownFields(&state.Quota, QuotaState{})
 	state.UpdatedAt = now
 	return changed
 }
@@ -364,13 +364,13 @@ func clearQuotaAuthState(auth *Auth, now time.Time) bool {
 	if auth == nil {
 		return false
 	}
-	changed := auth.Unavailable || auth.Status != StatusActive || auth.StatusMessage != "" || !auth.NextRetryAfter.IsZero() || auth.LastError != nil || auth.Quota != (QuotaState{})
+	changed := auth.Unavailable || auth.Status != StatusActive || auth.StatusMessage != "" || !auth.NextRetryAfter.IsZero() || auth.LastError != nil || !cooldownQuotaEqual(auth.Quota, QuotaState{})
 	auth.Unavailable = false
 	auth.Status = StatusActive
 	auth.StatusMessage = ""
 	auth.NextRetryAfter = time.Time{}
 	auth.LastError = nil
-	auth.Quota = QuotaState{}
+	applyCooldownFields(&auth.Quota, QuotaState{})
 	auth.UpdatedAt = now
 	return changed
 }

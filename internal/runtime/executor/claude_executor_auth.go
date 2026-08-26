@@ -142,7 +142,7 @@ func (e *ClaudeExecutor) fetchClaudeOAuthProfile(ctx context.Context, auth *clip
 	}
 	profileCtx, cancelProfile := context.WithTimeout(ctx, claudeAccountProfileTimeout)
 	defer cancelProfile()
-	service := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL)
+	service := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, helps.ResolveAuthProxyURL(e.cfg, auth))
 	return service.FetchOAuthProfile(profileCtx, apiKey)
 }
 
@@ -161,7 +161,7 @@ func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
 	if refreshToken == "" {
 		return auth, nil
 	}
-	svc := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL)
+	svc := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, helps.ResolveAuthProxyURL(e.cfg, auth))
 	td, err := svc.RefreshTokensWithRetry(ctx, refreshToken, 3)
 	if err != nil {
 		return nil, err

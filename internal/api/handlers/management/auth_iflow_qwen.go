@@ -23,7 +23,11 @@ func (h *Handler) RequestQwenToken(c *gin.Context) {
 	ctx = PopulateAuthContext(ctx, c)
 
 	state := fmt.Sprintf("qwn-%d", time.Now().UnixNano())
-	qwenAuth := qwen.NewQwenAuth(h.cfg)
+	proxyURL, proxyID, persistProxy, okProxy := resolveOAuthProxy(c, h.cfg)
+	if !okProxy {
+		return
+	}
+	qwenAuth := qwen.NewQwenAuthWithProxy(h.cfg, proxyURL)
 
 	deviceFlow, err := qwenAuth.InitiateDeviceFlow(ctx)
 	if err != nil {
@@ -77,6 +81,7 @@ func (h *Handler) RequestQwenToken(c *gin.Context) {
 				"api_key": tokenStorage.AccessToken,
 			},
 		}
+		applyOAuthProxy(record, record.Metadata, proxyURL, proxyID, persistProxy)
 		if _, errSave := h.saveTokenRecord(ctx, record); errSave != nil {
 			log.Errorf("failed to save qwen authentication tokens: %v", errSave)
 			SetOAuthSessionError(state, "Failed to save authentication tokens")
@@ -113,7 +118,11 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 	ctx = PopulateAuthContext(ctx, c)
 
 	state := fmt.Sprintf("ifl-%d", time.Now().UnixNano())
-	authSvc := iflowauth.NewIFlowAuth(h.cfg)
+	proxyURL, proxyID, persistProxy, okProxy := resolveOAuthProxy(c, h.cfg)
+	if !okProxy {
+		return
+	}
+	authSvc := iflowauth.NewIFlowAuthWithProxyURL(h.cfg, proxyURL)
 	authURL, redirectURI := authSvc.AuthorizationURL(state, iflowauth.CallbackPort)
 
 	RegisterOAuthSession(state, "iflow")
@@ -213,6 +222,7 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 			},
 			Attributes: map[string]string{"api_key": tokenStorage.APIKey},
 		}
+		applyOAuthProxy(record, record.Metadata, proxyURL, proxyID, persistProxy)
 		if _, errSave := h.saveTokenRecord(ctx, record); errSave != nil {
 			SetOAuthSessionError(state, "Failed to save authentication tokens")
 			log.Errorf("failed to save iflow authentication tokens: %v", errSave)
@@ -257,7 +267,11 @@ func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
 		return
 	}
 
-	authSvc := iflowauth.NewIFlowAuth(h.cfg)
+	proxyURL, proxyID, persistProxy, okProxy := resolveOAuthProxy(c, h.cfg)
+	if !okProxy {
+		return
+	}
+	authSvc := iflowauth.NewIFlowAuthWithProxyURL(h.cfg, proxyURL)
 	tokenData, errAuth := authSvc.AuthenticateWithCookie(ctx, cookieValue)
 	if errAuth != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": errAuth.Error()})
@@ -295,6 +309,7 @@ func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
 		},
 		Attributes: map[string]string{"api_key": tokenStorage.APIKey},
 	}
+	applyOAuthProxy(record, record.Metadata, proxyURL, proxyID, persistProxy)
 
 	savedPath, errSave := h.saveTokenRecord(ctx, record)
 	if errSave != nil {

@@ -37,14 +37,24 @@ type AntigravityAuth struct {
 
 // NewAntigravityAuth creates a new Antigravity auth service.
 func NewAntigravityAuth(cfg *config.Config, httpClient *http.Client) *AntigravityAuth {
-	if cfg == nil {
-		cfg = &config.Config{}
-	}
 	if httpClient != nil {
 		return &AntigravityAuth{httpClient: httpClient}
 	}
+	return NewAntigravityAuthWithProxyURL(cfg, "")
+}
+
+// NewAntigravityAuthWithProxyURL creates a new Antigravity auth service pinned to one egress proxy.
+// An empty proxyURL keeps the configured default.
+func NewAntigravityAuthWithProxyURL(cfg *config.Config, proxyURL string) *AntigravityAuth {
+	var sdkCfg config.SDKConfig
+	if cfg != nil {
+		sdkCfg = cfg.SDKConfig
+	}
+	if trimmed := strings.TrimSpace(proxyURL); trimmed != "" {
+		sdkCfg.ProxyURL = trimmed
+	}
 	return &AntigravityAuth{
-		httpClient: util.SetProxy(&cfg.SDKConfig, &http.Client{}),
+		httpClient: util.SetProxy(&sdkCfg, &http.Client{}),
 	}
 }
 

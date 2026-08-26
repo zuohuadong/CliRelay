@@ -12,6 +12,7 @@ import (
 
 	qwenauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/qwen"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -488,7 +489,7 @@ func (e *QwenExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		return auth, nil
 	}
 
-	svc := qwenauth.NewQwenAuth(e.cfg)
+	svc := qwenauth.NewQwenAuthWithProxy(e.cfg, helps.ResolveAuthProxyURL(e.cfg, auth))
 	td, err := svc.RefreshTokens(ctx, refreshToken)
 	if err != nil {
 		return nil, err

@@ -40,3 +40,11 @@ func TestNewDeviceFlowClientWithDeviceIDAndProxyURL_OverrideProxyTakesPrecedence
 		t.Fatalf("proxy URL = %v, want http://override.example.com:8081", proxyURL)
 	}
 }
+
+func TestNewKimiAuthWithProxyURL(t *testing.T) {
+	cfg := &config.Config{SDKConfig: config.SDKConfig{ProxyURL: "http://global.example.com:8080"}}
+	auth := NewKimiAuthWithProxyURL(cfg, "http://override.example.com:8081")
+	if auth == nil || auth.deviceClient == nil {
+		t.Fatal("expected non-nil auth with deviceClient")
+	}
+}

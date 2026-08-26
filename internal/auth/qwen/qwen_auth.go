@@ -86,13 +86,26 @@ const defaultOAuthUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWe
 
 // NewQwenAuth creates a new QwenAuth instance with a proxy-configured HTTP client.
 func NewQwenAuth(cfg *config.Config) *QwenAuth {
+	return NewQwenAuthWithProxy(cfg, "")
+}
+
+// NewQwenAuthWithProxy creates a new QwenAuth instance pinned to one egress proxy.
+// An empty proxyURL keeps the configured default.
+func NewQwenAuthWithProxy(cfg *config.Config, proxyURL string) *QwenAuth {
 	var sdkCfg *config.SDKConfig
 	userAgent := defaultOAuthUserAgent
 	if cfg != nil {
-		sdkCfg = &cfg.SDKConfig
+		copied := cfg.SDKConfig
+		sdkCfg = &copied
 		if strings.TrimSpace(cfg.OAuthUserAgent) != "" {
 			userAgent = strings.TrimSpace(cfg.OAuthUserAgent)
 		}
+	}
+	if trimmed := strings.TrimSpace(proxyURL); trimmed != "" {
+		if sdkCfg == nil {
+			sdkCfg = &config.SDKConfig{}
+		}
+		sdkCfg.ProxyURL = trimmed
 	}
 	return &QwenAuth{
 		httpClient: util.SetProxy(sdkCfg, util.NewHTTPClient(util.DefaultHTTPClientTimeout)),

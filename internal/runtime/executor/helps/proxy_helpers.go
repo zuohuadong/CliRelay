@@ -13,8 +13,40 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// ResolveAuthProxyURL returns the proxy URL a credential should use for outbound traffic
+// and background token refreshes. It checks auth.ProxyURL, auth.Metadata["proxy_url"],
+// auth.ProxyID / auth.Metadata["proxy_id"] (when containing a URL/scheme), and falls back to cfg.ProxyURL.
+func ResolveAuthProxyURL(cfg *config.Config, auth *cliproxyauth.Auth) string {
+	if auth != nil {
+		if proxyURL := strings.TrimSpace(auth.ProxyURL); proxyURL != "" {
+			return proxyURL
+		}
+		if auth.Metadata != nil {
+			if proxyURL, ok := auth.Metadata["proxy_url"].(string); ok && strings.TrimSpace(proxyURL) != "" {
+				return strings.TrimSpace(proxyURL)
+			}
+		}
+		if proxyID := strings.TrimSpace(auth.ProxyID); proxyID != "" {
+			if strings.Contains(proxyID, "://") {
+				return proxyID
+			}
+		}
+		if auth.Metadata != nil {
+			if proxyID, ok := auth.Metadata["proxy_id"].(string); ok && strings.TrimSpace(proxyID) != "" {
+				if strings.Contains(proxyID, "://") {
+					return strings.TrimSpace(proxyID)
+				}
+			}
+		}
+	}
+	if cfg != nil {
+		return strings.TrimSpace(cfg.ProxyURL)
+	}
+	return ""
+}
+
 // NewProxyAwareHTTPClient creates an HTTP client with proper proxy configuration priority:
-// 1. Use auth.ProxyURL if configured (highest priority)
+// 1. Use credential-scoped proxy if configured (highest priority)
 // 2. Use cfg.ProxyURL if auth proxy is not configured
 // 3. Use RoundTripper from context if neither are configured
 //
@@ -32,16 +64,8 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		httpClient.Timeout = timeout
 	}
 
-	// Priority 1: Use auth.ProxyURL if configured
-	var proxyURL string
-	if auth != nil {
-		proxyURL = strings.TrimSpace(auth.ProxyURL)
-	}
-
-	// Priority 2: Use cfg.ProxyURL if auth proxy is not configured
-	if proxyURL == "" && cfg != nil {
-		proxyURL = strings.TrimSpace(cfg.ProxyURL)
-	}
+	// Priority 1 & 2: Use credential-scoped proxy or fallback to cfg.ProxyURL
+	proxyURL := ResolveAuthProxyURL(cfg, auth)
 
 	// If we have a proxy URL configured, set up the transport
 	if proxyURL != "" {

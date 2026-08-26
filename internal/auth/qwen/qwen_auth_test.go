@@ -122,3 +122,27 @@ func TestPollForTokenUsesConfiguredHTTPClientAndUserAgent(t *testing.T) {
 		t.Fatalf("User-Agent = %q, want %q", gotUserAgent, "CustomAgent/1.0")
 	}
 }
+
+func TestNewQwenAuthWithProxyOverridesGlobalProxyWithoutMutatingConfig(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.SDKConfig.ProxyURL = "http://global.example:7890"
+
+	svc := NewQwenAuthWithProxy(cfg, "http://pinned.example:1080")
+	if got := cfg.SDKConfig.ProxyURL; got != "http://global.example:7890" {
+		t.Fatalf("shared config proxy = %q, want it unchanged", got)
+	}
+	transport, ok := svc.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", svc.httpClient.Transport)
+	}
+	if transport.Proxy == nil {
+		t.Fatal("transport has no proxy resolver")
+	}
+}
+
+func TestNewQwenAuthWithProxyHandlesNilConfig(t *testing.T) {
+	svc := NewQwenAuthWithProxy(nil, "http://pinned.example:1080")
+	if svc == nil || svc.httpClient == nil {
+		t.Fatal("nil config must still yield a usable client")
+	}
+}

@@ -19,12 +19,14 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -32,6 +34,64 @@ type codexOAuthService interface {
 	GenerateAuthURL(state string, pkceCodes *codex.PKCECodes) (string, error)
 	ExchangeCodeForTokens(ctx context.Context, code string, pkceCodes *codex.PKCECodes) (*codex.CodexAuthBundle, error)
 	CreateTokenStorage(bundle *codex.CodexAuthBundle) *codex.CodexTokenStorage
+}
+
+func oauthProxyURLFromRequest(c *gin.Context, cfg *config.Config) (proxyURL, proxyID string, persist bool, err error) {
+	if c == nil {
+		if cfg != nil {
+			return strings.TrimSpace(cfg.ProxyURL), "", false, nil
+		}
+		return "", "", false, nil
+	}
+	for _, param := range []string{"proxy_id", "proxy-id"} {
+		if val := strings.TrimSpace(c.Query(param)); val != "" {
+			proxyID = val
+			break
+		}
+	}
+	for _, param := range []string{"proxy_url", "proxy-url", "proxy"} {
+		if val := strings.TrimSpace(c.Query(param)); val != "" {
+			proxyURL = val
+			persist = true
+			break
+		}
+	}
+	if proxyURL == "" && proxyID != "" && strings.Contains(proxyID, "://") {
+		proxyURL = proxyID
+		persist = true
+	}
+	if proxyURL == "" && proxyID != "" {
+		return "", proxyID, false, fmt.Errorf("proxy_id requires a matching proxy_url")
+	}
+	if persist {
+		if _, err = proxyutil.Parse(proxyURL); err != nil {
+			return "", proxyID, false, fmt.Errorf("invalid proxy_url: %w", err)
+		}
+	}
+	if proxyURL == "" && cfg != nil {
+		proxyURL = strings.TrimSpace(cfg.ProxyURL)
+	}
+	return proxyURL, proxyID, persist, nil
+}
+
+func resolveOAuthProxy(c *gin.Context, cfg *config.Config) (proxyURL, proxyID string, persist, ok bool) {
+	proxyURL, proxyID, persist, err := oauthProxyURLFromRequest(c, cfg)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return "", "", false, false
+	}
+	return proxyURL, proxyID, persist, true
+}
+
+func applyOAuthProxy(record *coreauth.Auth, metadata map[string]any, proxyURL, proxyID string, persist bool) {
+	if persist && proxyURL != "" {
+		metadata["proxy_url"] = proxyURL
+		record.ProxyURL = proxyURL
+	}
+	if persist && proxyID != "" {
+		metadata["proxy_id"] = proxyID
+		record.ProxyID = proxyID
+	}
 }
 
 func (h *Handler) RequestAnthropicToken(c *gin.Context) {
@@ -56,8 +116,12 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		return
 	}
 
-	// Initialize Claude auth service
-	anthropicAuth := claude.NewClaudeAuth(h.cfg)
+	proxyURL, proxyID, persistProxy, okProxy := resolveOAuthProxy(c, h.cfg)
+	if !okProxy {
+		return
+	}
+	// Initialize Claude auth service with proxy support
+	anthropicAuth := claude.NewClaudeAuthWithProxyURL(h.cfg, proxyURL)
 
 	// Generate authorization URL (then override redirect_uri to reuse server port)
 	authURL, state, err := anthropicAuth.GenerateAuthURL(state, pkceCodes)
@@ -173,6 +237,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 			Storage:  tokenStorage,
 			Metadata: metadata,
 		}
+		applyOAuthProxy(record, metadata, proxyURL, proxyID, persistProxy)
 		if errGuard := guardOAuthSessionPendingForSave(state, "anthropic"); errGuard != nil {
 			return
 		}
@@ -385,7 +450,11 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 
 	fmt.Println("Initializing Antigravity authentication...")
 
-	authSvc := antigravity.NewAntigravityAuth(h.cfg, nil)
+	proxyURL, proxyID, persistProxy, okProxy := resolveOAuthProxy(c, h.cfg)
+	if !okProxy {
+		return
+	}
+	authSvc := antigravity.NewAntigravityAuthWithProxyURL(h.cfg, proxyURL)
 
 	state, errState := misc.GenerateRandomState()
 	if errState != nil {
@@ -525,6 +594,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			Label:    label,
 			Metadata: metadata,
 		}
+		applyOAuthProxy(record, metadata, proxyURL, proxyID, persistProxy)
 		if errGuard := guardOAuthSessionPendingForSave(state, "antigravity"); errGuard != nil {
 			return
 		}
@@ -553,7 +623,11 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 	fmt.Println("Initializing xAI authentication...")
 
 	state := fmt.Sprintf("xai-%d", time.Now().UnixNano())
-	authSvc := xaiauth.NewXAIAuth(h.cfg)
+	proxyURL, proxyID, persistProxy, okProxy := resolveOAuthProxy(c, h.cfg)
+	if !okProxy {
+		return
+	}
+	authSvc := xaiauth.NewXAIAuthWithProxyURL(h.cfg, proxyURL)
 
 	deviceFlow, errStartDeviceFlow := authSvc.StartDeviceFlow(ctx)
 	if errStartDeviceFlow != nil {
@@ -632,6 +706,7 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 				"base_url":  tokenStorage.BaseURL,
 			},
 		}
+		applyOAuthProxy(record, metadata, proxyURL, proxyID, persistProxy)
 		if errGuard := guardOAuthSessionPendingForSave(state, "xai"); errGuard != nil {
 			return
 		}
@@ -666,8 +741,12 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 	fmt.Println("Initializing Kimi authentication...")
 
 	state := fmt.Sprintf("kmi-%d", time.Now().UnixNano())
+	proxyURL, proxyID, persistProxy, okProxy := resolveOAuthProxy(c, h.cfg)
+	if !okProxy {
+		return
+	}
 	// Initialize Kimi auth service
-	kimiAuth := kimi.NewKimiAuth(h.cfg)
+	kimiAuth := kimi.NewKimiAuthWithProxyURL(h.cfg, proxyURL)
 
 	// Generate authorization URL
 	deviceFlow, errStartDeviceFlow := kimiAuth.StartDeviceFlow(ctx)
@@ -730,6 +809,7 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 			Storage:  tokenStorage,
 			Metadata: metadata,
 		}
+		applyOAuthProxy(record, metadata, proxyURL, proxyID, persistProxy)
 		if errGuard := guardOAuthSessionPendingForSave(state, "kimi"); errGuard != nil {
 			return
 		}

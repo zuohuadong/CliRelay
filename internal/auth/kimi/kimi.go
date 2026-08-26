@@ -48,8 +48,13 @@ type KimiAuth struct {
 
 // NewKimiAuth creates a new KimiAuth service instance.
 func NewKimiAuth(cfg *config.Config) *KimiAuth {
+	return NewKimiAuthWithProxyURL(cfg, "")
+}
+
+// NewKimiAuthWithProxyURL creates a new KimiAuth service instance with an explicit proxy override.
+func NewKimiAuthWithProxyURL(cfg *config.Config, proxyURL string) *KimiAuth {
 	return &KimiAuth{
-		deviceClient: NewDeviceFlowClient(cfg),
+		deviceClient: NewDeviceFlowClientWithDeviceIDAndProxyURL(cfg, "", proxyURL),
 		cfg:          cfg,
 	}
 }

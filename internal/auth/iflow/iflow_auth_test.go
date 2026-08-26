@@ -79,3 +79,17 @@ func TestRefreshAPIKeyRejectsOversizedCompressedResponse(t *testing.T) {
 		t.Fatalf("RefreshAPIKey error = %v, want response body exceeds", err)
 	}
 }
+
+func TestNewIFlowAuthWithProxyURL(t *testing.T) {
+	auth := NewIFlowAuthWithProxyURL(nil, "http://127.0.0.1:8080")
+	if auth == nil || auth.httpClient == nil {
+		t.Fatal("expected non-nil auth with httpClient")
+	}
+	transport, ok := auth.httpClient.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		t.Fatalf("expected *http.Transport, got %T", auth.httpClient.Transport)
+	}
+	if transport.Proxy == nil {
+		t.Fatal("expected proxy resolver on transport")
+	}
+}

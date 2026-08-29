@@ -402,13 +402,10 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("auth filestore: create dir failed: %w", err)
 	}
+	cliproxyauth.SyncPersistedDisabled(auth)
 
 	switch {
 	case auth.Storage != nil:
-		if auth.Metadata == nil {
-			auth.Metadata = make(map[string]any)
-		}
-		auth.Metadata["disabled"] = auth.Disabled
 		if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
 			setter.SetMetadata(auth.Metadata)
 		}
@@ -686,10 +683,7 @@ func (s *GitTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, 
 		auth.Attributes["email"] = email
 	}
 	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
-	if disabled, ok := metadata["disabled"].(bool); ok && disabled {
-		auth.Disabled = true
-		auth.Status = cliproxyauth.StatusDisabled
-	}
+	cliproxyauth.RestorePersistedDisabled(auth)
 	return auth, nil
 }
 

@@ -240,13 +240,10 @@ func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (stri
 	if err != nil {
 		return "", err
 	}
+	cliproxyauth.SyncPersistedDisabled(auth)
 
 	switch {
 	case auth.Storage != nil:
-		if auth.Metadata == nil {
-			auth.Metadata = make(map[string]any)
-		}
-		auth.Metadata["disabled"] = auth.Disabled
 		if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
 			setter.SetMetadata(auth.Metadata)
 		}
@@ -361,10 +358,7 @@ func (s *PostgresStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) 
 			NextRefreshAfter: time.Time{},
 		}
 		cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
-		if disabled, ok := metadata["disabled"].(bool); ok && disabled {
-			auth.Disabled = true
-			auth.Status = cliproxyauth.StatusDisabled
-		}
+		cliproxyauth.RestorePersistedDisabled(auth)
 		auths = append(auths, auth)
 	}
 	if err = rows.Err(); err != nil {

@@ -133,7 +133,6 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			}
 			perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 			perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
-			disabled, _ := metadata["disabled"].(bool)
 			for index, auth := range auths {
 				if auth == nil {
 					continue
@@ -150,14 +149,13 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				auth.Attributes[coreauth.AttributePath] = fullPath
 				auth.Attributes[coreauth.AttributeSource] = fullPath
 				auth.Attributes[coreauth.AttributeSourceBackend] = coreauth.AuthSourceFile
-				if disabled {
-					auth.Disabled = true
-					auth.Status = coreauth.StatusDisabled
+				if _, ok := metadata["disabled"]; ok {
 					if auth.Metadata == nil {
 						auth.Metadata = make(map[string]any)
 					}
-					auth.Metadata["disabled"] = true
+					auth.Metadata["disabled"] = metadata["disabled"]
 				}
+				coreauth.RestorePersistedDisabled(auth)
 				if errWeight := coreauth.ApplyAuthWeightMetadata(auth, metadata); errWeight != nil {
 					return nil, fmt.Errorf("invalid plugin auth weight in %s: %w", filepath.Base(fullPath), errWeight)
 				}
@@ -244,12 +242,6 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 		}
 	}
 
-	disabled, _ := metadata["disabled"].(bool)
-	status := coreauth.StatusActive
-	if disabled {
-		status = coreauth.StatusDisabled
-	}
-
 	perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 	perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
 	a := &coreauth.Auth{
@@ -257,8 +249,7 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 		Provider: provider,
 		Label:    label,
 		Prefix:   prefix,
-		Status:   status,
-		Disabled: disabled,
+		Status:   coreauth.StatusActive,
 		Attributes: map[string]string{
 			coreauth.AttributeSource:        fullPath,
 			coreauth.AttributePath:          fullPath,
@@ -269,6 +260,7 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	coreauth.RestorePersistedDisabled(a)
 	if provider == "openai-compatibility" {
 		if compatName != "" {
 			a.Attributes["compat_name"] = compatName

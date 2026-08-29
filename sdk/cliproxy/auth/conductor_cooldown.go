@@ -832,6 +832,23 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								shouldSuspendModel = true
 							}
 						case 429:
+							if isTransientRateLimitError(result.Error) {
+								cooldown := time.Minute
+								if result.RetryAfter != nil && *result.RetryAfter > 0 {
+									cooldown = *result.RetryAfter
+								}
+								if disableCooling {
+									cooldown = 0
+								}
+								if cooldown > 0 {
+									state.NextRetryAfter = now.Add(cooldown)
+								} else {
+									state.NextRetryAfter = time.Time{}
+								}
+								applyCooldownFields(&state.Quota, QuotaState{})
+								clearModelQuota = true
+								break
+							}
 							var next time.Time
 							backoffLevel := state.Quota.BackoffLevel
 							if !disableCooling {
@@ -1961,6 +1978,23 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.NextRetryAfter = now.Add(12 * time.Hour)
 		}
 	case 429:
+		if isTransientRateLimitError(resultErr) {
+			auth.StatusMessage = "rate limited"
+			applyCooldownFields(&auth.Quota, QuotaState{})
+			cooldown := time.Minute
+			if retryAfter != nil && *retryAfter > 0 {
+				cooldown = *retryAfter
+			}
+			if disableCooling {
+				cooldown = 0
+			}
+			if cooldown > 0 {
+				auth.NextRetryAfter = now.Add(cooldown)
+			} else {
+				auth.NextRetryAfter = time.Time{}
+			}
+			break
+		}
 		auth.StatusMessage = "quota exhausted"
 		auth.Quota.Exceeded = true
 		auth.Quota.Reason = "quota"
@@ -2027,4 +2061,28 @@ func nextQuotaCooldown(prevLevel int, disableCooling bool) (time.Duration, int) 
 		return quotaBackoffMax, prevLevel
 	}
 	return cooldown, prevLevel + 1
+}
+
+// isTransientRateLimitError reports whether a 429 describes short-term
+// throttling rather than an exhausted allowance.
+func isTransientRateLimitError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	body := strings.ToLower(err.Message)
+	if body == "" {
+		return false
+	}
+	for _, explicit := range []string{
+		"quota_exhausted", "quotaresetdelay", "quota reset",
+		"quota limit", "daily quota", "usage balance exhausted", "balance exhausted",
+	} {
+		if strings.Contains(body, explicit) {
+			return false
+		}
+	}
+	return strings.Contains(body, "resource has been exhausted") ||
+		strings.Contains(body, "resource_exhausted") ||
+		strings.Contains(body, "rate limit exceeded") ||
+		strings.Contains(body, "too many requests")
 }

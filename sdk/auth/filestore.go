@@ -104,6 +104,8 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		return "", fmt.Errorf("auth filestore: create dir failed: %w", err)
 	}
 
+	cliproxyauth.SyncPersistedDisabled(auth)
+
 	// metadataSetter is a private interface for TokenStorage implementations that support metadata injection.
 	type metadataSetter interface {
 		SetMetadata(map[string]any)
@@ -111,10 +113,6 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 
 	switch {
 	case auth.Storage != nil:
-		if auth.Metadata == nil {
-			auth.Metadata = make(map[string]any)
-		}
-		auth.Metadata["disabled"] = auth.Disabled
 		if setter, ok := auth.Storage.(metadataSetter); ok {
 			setter.SetMetadata(auth.Metadata)
 		}
@@ -313,18 +311,12 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 		return nil, fmt.Errorf("stat file: %w", errStat)
 	}
 	id := s.idFor(path, baseDir)
-	disabled, _ := metadata["disabled"].(bool)
-	status := cliproxyauth.StatusActive
-	if disabled {
-		status = cliproxyauth.StatusDisabled
-	}
 	auth := &cliproxyauth.Auth{
 		ID:       id,
 		Provider: provider,
 		FileName: id,
 		Label:    s.labelFor(metadata),
-		Status:   status,
-		Disabled: disabled,
+		Status:   cliproxyauth.StatusActive,
 		Attributes: map[string]string{
 			cliproxyauth.AttributePath:          path,
 			cliproxyauth.AttributeSource:        path,
@@ -340,6 +332,7 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 		auth.Attributes["email"] = email
 	}
 	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
+	cliproxyauth.RestorePersistedDisabled(auth)
 	return []*cliproxyauth.Auth{auth}, nil
 }
 

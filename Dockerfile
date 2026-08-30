@@ -17,7 +17,7 @@ FROM alpine:3.23 AS tzdata-provider
 
 RUN apk add --no-cache tzdata
 
-FROM golang:1.26-bookworm AS builder
+FROM golang:1.27-bookworm AS builder
 
 WORKDIR /app
 

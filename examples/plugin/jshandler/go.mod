@@ -1,6 +1,6 @@
 module github.com/router-for-me/CLIProxyAPIPlugins/jshandler
 
-go 1.26.0
+go 1.27.0
 
 require (
 	github.com/dop251/goja v0.0.0-20260607120635-348e6bea910d

@@ -21,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	requestlogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -2539,6 +2540,25 @@ func TestForwardResponsesWebsocketRestoresAndForwardsCompletedOutput(t *testing.
 
 	if errServer := <-serverErrCh; errServer != nil {
 		t.Fatalf("server error: %v", errServer)
+	}
+}
+
+func TestShouldForceExposeResponsesStreamErrorOnlyAfterStrictEgressPayload(t *testing.T) {
+	errMsg := &interfaces.ErrorMessage{
+		StatusCode: http.StatusServiceUnavailable,
+		Error:      &egress.Error{Code: "egress_disabled", Message: "strict egress stream read failed"},
+	}
+	if !shouldForceExposeResponsesStreamError(errMsg, true) {
+		t.Fatal("strict egress failure after emitted payload should be exposed")
+	}
+	if shouldForceExposeResponsesStreamError(errMsg, false) {
+		t.Fatal("strict egress failure before emitted payload should remain retryable")
+	}
+	if shouldForceExposeResponsesStreamError(&interfaces.ErrorMessage{
+		StatusCode: http.StatusRequestTimeout,
+		Error:      fmt.Errorf("stream closed before response.completed"),
+	}, true) {
+		t.Fatal("synthetic disconnect should not be force-exposed")
 	}
 }
 

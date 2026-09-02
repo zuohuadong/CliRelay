@@ -55,6 +55,9 @@ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *
 	conn, resp, err := dialer.DialContext(ctx, wsURL, dialHeaders)
 	if resp != nil && resp.Request == nil {
 		resp.Request = &http.Request{Header: dialHeaders.Clone()}
+ 	}
+	if err != nil {
+		cliproxyexecutor.MarkUpstreamAttempt(ctx)
 	}
 	closer := newWebsocketConnectionCloser(conn)
 	if e != nil && e.CodexExecutor != nil && e.CodexExecutor.usesStrictEgress(auth) && err != nil && resp == nil {

@@ -76,7 +76,8 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	allModels = h.BaseAPIHandler.FilterModelsByAccess(c, allModels)
 
 	if _, ok := c.Request.URL.Query()["client_version"]; ok {
-		c.JSON(http.StatusOK, h.codexClientModelsResponse(allModels))
+		clientVersion := c.Query("client_version")
+		c.JSON(http.StatusOK, h.codexClientModelsResponseForModels(allModels, clientVersion))
 		return
 	}
 

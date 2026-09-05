@@ -21,6 +21,12 @@ type EgressNetworkConfig struct {
 	EndpointCheckInterval string   `yaml:"endpoint-check-interval" json:"endpoint-check-interval"`
 	EndpointHealthTTL     string   `yaml:"endpoint-health-ttl" json:"endpoint-health-ttl"`
 	ProbeURLs             []string `yaml:"probe-urls" json:"probe-urls"`
+	// UpstreamProbeURLs are optional reachability probes for upstream origins
+	// (e.g. https://chatgpt.com/backend-api/models). Unlike probe-urls they do
+	// not return the public IP; they only need to prove the endpoint can reach
+	// the origin without being blocked by edge nodes (403/404/5xx). Empty by
+	// default, which keeps legacy IP-only health checks unchanged.
+	UpstreamProbeURLs []string `yaml:"upstream-probe-urls" json:"upstream-probe-urls"`
 }
 
 func (cfg *Config) SanitizeEgressNetwork() {
@@ -32,9 +38,20 @@ func (cfg *Config) SanitizeEgressNetwork() {
 	cfg.EgressNetwork.EndpointCheckInterval = checkText
 	cfg.EgressNetwork.EndpointHealthTTL = healthText
 	cfg.EgressNetwork.ProbeURLs = sanitizeEgressProbeURLs(cfg.EgressNetwork.ProbeURLs)
+	cfg.EgressNetwork.UpstreamProbeURLs = sanitizeHTTPSProbeURLs(cfg.EgressNetwork.UpstreamProbeURLs)
 }
 
 func sanitizeEgressProbeURLs(values []string) []string {
+	out := sanitizeHTTPSProbeURLs(values)
+	if len(out) == 0 {
+		return append([]string(nil), DefaultEgressProbeURLs...)
+	}
+	return out
+}
+
+// sanitizeHTTPSProbeURLs normalizes https probe URLs without applying any
+// default fallback, so empty input stays empty (feature disabled).
+func sanitizeHTTPSProbeURLs(values []string) []string {
 	out := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
@@ -50,9 +67,6 @@ func sanitizeEgressProbeURLs(values []string) []string {
 		}
 		seen[value] = struct{}{}
 		out = append(out, value)
-	}
-	if len(out) == 0 {
-		return append([]string(nil), DefaultEgressProbeURLs...)
 	}
 	return out
 }

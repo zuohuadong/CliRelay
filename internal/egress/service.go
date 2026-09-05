@@ -442,6 +442,13 @@ func (s *Service) CheckEndpoint(ctx context.Context, endpointID string) (Endpoin
 			checkError = "observed public IP is already used by another endpoint"
 		}
 	}
+	// Origin reachability probes catch "public IP healthy but upstream blocked"
+	// cases (e.g. Cloudflare answering 403/404 for this endpoint's IP) that
+	// plain IP echo probes cannot detect.
+	if upstreamFailures := s.checkUpstreamProbes(ctx, client); len(upstreamFailures) > 0 {
+		status = EndpointStatusUnhealthy
+		checkError = "upstream probe failed: " + strings.Join(upstreamFailures, "; ")
+	}
 	updated, updateErr := s.store.UpdateEndpointCheckIfRouteUnchanged(ctx, resolved.Endpoint, publicIP, status, checkError, latency, checkedAt)
 	if updateErr != nil {
 		return Endpoint{}, updateErr
@@ -474,6 +481,61 @@ func (s *Service) endpointProbeURLs() []string {
 		return overrides
 	}
 	return configured
+}
+
+// upstreamProbeURLs returns optional origin reachability probes. Unlike IP
+// probes they only need to prove the endpoint can reach the upstream origin
+// without being blocked by edge nodes (e.g. Cloudflare answering 403/404).
+func (s *Service) upstreamProbeURLs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cfg == nil {
+		return nil
+	}
+	return append([]string(nil), s.cfg.EgressNetwork.UpstreamProbeURLs...)
+}
+
+// checkUpstreamProbes runs origin reachability probes through the endpoint
+// transport and returns per-URL failures. Empty result means healthy (or the
+// feature is disabled).
+func (s *Service) checkUpstreamProbes(ctx context.Context, client *http.Client) []string {
+	upstreamURLs := s.upstreamProbeURLs()
+	if len(upstreamURLs) == 0 {
+		return nil
+	}
+	failures := make([]string, 0)
+	for _, probeURL := range upstreamURLs {
+		if ctx.Err() != nil {
+			return failures
+		}
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
+		if reqErr != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", probeURL, reqErr))
+			continue
+		}
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", probeURL, doErr))
+			continue
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		_ = resp.Body.Close()
+		if upstreamProbeStatusIsFailure(resp.StatusCode) {
+			failures = append(failures, fmt.Sprintf("%s: status %d", probeURL, resp.StatusCode))
+		}
+	}
+	return failures
+}
+
+// upstreamProbeStatusIsFailure reports whether an upstream probe status means
+// the endpoint is blocked before reaching the origin. Edge nodes (e.g.
+// Cloudflare) answer 403 with challenge pages or 404 on blocked API paths, and
+// 5xx indicates origin/edge outages. Client errors such as 401 prove the
+// request reached the origin, so the endpoint stays healthy.
+func upstreamProbeStatusIsFailure(statusCode int) bool {
+	return statusCode == http.StatusForbidden ||
+		statusCode == http.StatusNotFound ||
+		statusCode >= http.StatusInternalServerError
 }
 
 func (s *Service) beginEndpointCheck(endpointID string) bool {

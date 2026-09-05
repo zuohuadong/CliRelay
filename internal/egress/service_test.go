@@ -47,6 +47,76 @@ func TestServiceCheckEndpointUsesStrictProxyAndPersistsPublicIP(t *testing.T) {
 	}
 }
 
+func TestServiceCheckEndpointUpstreamProbeMarksBlockedExit(t *testing.T) {
+	t.Parallel()
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.String() {
+		case "http://probe.invalid/ip":
+			_, _ = w.Write([]byte(`{"ip":"198.51.100.44"}`))
+		case "http://upstream.invalid/health":
+			// Edge node answers 403 while blocking this exit IP.
+			http.Error(w, "blocked", http.StatusForbidden)
+		default:
+			http.Error(w, "unexpected probe target", http.StatusBadRequest)
+		}
+	}))
+	defer proxyServer.Close()
+	host, port := splitTestServer(t, proxyServer.URL)
+
+	service := newTestService(t, true)
+	service.probeURLs = []string{"http://probe.invalid/ip"}
+	service.cfg.EgressNetwork.UpstreamProbeURLs = []string{"http://upstream.invalid/health"}
+	endpoint, err := service.CreateEndpoint(context.Background(), Endpoint{
+		Name: "Blocked exit", Protocol: ProtocolHTTP, Host: host, Port: port, Enabled: true, ExpectedPublicIP: "198.51.100.44",
+	})
+	if err != nil {
+		t.Fatalf("CreateEndpoint() error = %v", err)
+	}
+	checked, err := service.CheckEndpoint(context.Background(), endpoint.ID)
+	if err == nil {
+		t.Fatal("CheckEndpoint() should fail when the upstream probe is blocked")
+	}
+	if checked.CheckStatus != EndpointStatusUnhealthy || !strings.Contains(checked.CheckError, "upstream probe failed") {
+		t.Fatalf("checked endpoint = %#v, err = %v", checked, err)
+	}
+}
+
+func TestServiceCheckEndpointUpstreamProbe401StaysHealthy(t *testing.T) {
+	t.Parallel()
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.String() {
+		case "http://probe.invalid/ip":
+			_, _ = w.Write([]byte(`{"ip":"198.51.100.44"}`))
+		case "http://upstream.invalid/health":
+			// 401 proves the request reached the origin without an edge block.
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		default:
+			http.Error(w, "unexpected probe target", http.StatusBadRequest)
+		}
+	}))
+	defer proxyServer.Close()
+	host, port := splitTestServer(t, proxyServer.URL)
+
+	service := newTestService(t, true)
+	service.probeURLs = []string{"http://probe.invalid/ip"}
+	service.cfg.EgressNetwork.UpstreamProbeURLs = []string{"http://upstream.invalid/health"}
+	endpoint, err := service.CreateEndpoint(context.Background(), Endpoint{
+		Name: "Reachable exit", Protocol: ProtocolHTTP, Host: host, Port: port, Enabled: true, ExpectedPublicIP: "198.51.100.44",
+	})
+	if err != nil {
+		t.Fatalf("CreateEndpoint() error = %v", err)
+	}
+	checked, err := service.CheckEndpoint(context.Background(), endpoint.ID)
+	if err != nil {
+		t.Fatalf("CheckEndpoint() error = %v", err)
+	}
+	if checked.CheckStatus != EndpointStatusHealthy {
+		t.Fatalf("checked endpoint = %#v, want healthy", checked)
+	}
+}
+
 func TestServiceCheckSharedEndpointAcceptsObservedIPChanges(t *testing.T) {
 	t.Parallel()
 

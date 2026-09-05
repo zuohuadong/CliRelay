@@ -16,7 +16,7 @@ func TestEgressNetworkConfigHasOnlySimpleControlPlaneFields(t *testing.T) {
 		fields = append(fields, typeOfConfig.Field(i).Tag.Get("yaml"))
 	}
 	sort.Strings(fields)
-	want := []string{"enabled", "endpoint-check-interval", "endpoint-health-ttl", "probe-urls"}
+	want := []string{"enabled", "endpoint-check-interval", "endpoint-health-ttl", "probe-urls", "upstream-probe-urls"}
 	sort.Strings(want)
 	if !reflect.DeepEqual(fields, want) {
 		t.Fatalf("EgressNetworkConfig yaml fields = %#v, want %#v", fields, want)
@@ -75,5 +75,28 @@ func TestSanitizeEgressNetworkDefaultsAndFiltersProbeURLs(t *testing.T) {
 	cfg.SanitizeEgressNetwork()
 	if len(cfg.EgressNetwork.ProbeURLs) < 2 {
 		t.Fatalf("default probe URLs = %#v", cfg.EgressNetwork.ProbeURLs)
+	}
+}
+
+func TestSanitizeEgressNetworkUpstreamProbeURLs(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{EgressNetwork: EgressNetworkConfig{UpstreamProbeURLs: []string{
+		"https://chatgpt.com/backend-api/models",
+		" https://chatgpt.com/backend-api/models ",
+		"http://insecure.example/health",
+		"not-a-url",
+	}}}
+	cfg.SanitizeEgressNetwork()
+	if got := cfg.EgressNetwork.UpstreamProbeURLs; len(got) != 1 || got[0] != "https://chatgpt.com/backend-api/models" {
+		t.Fatalf("upstream probe URLs = %#v", got)
+	}
+
+	// Empty upstream probes stay empty (feature disabled) instead of falling
+	// back to the default IP echo probe URLs.
+	cfg.EgressNetwork.UpstreamProbeURLs = nil
+	cfg.SanitizeEgressNetwork()
+	if len(cfg.EgressNetwork.UpstreamProbeURLs) != 0 {
+		t.Fatalf("empty upstream probe URLs should stay empty, got %#v", cfg.EgressNetwork.UpstreamProbeURLs)
 	}
 }

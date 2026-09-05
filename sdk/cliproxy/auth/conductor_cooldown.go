@@ -840,6 +840,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						case 404:
 							if disableCooling {
 								state.NextRetryAfter = time.Time{}
+							} else if isImplicitUpstreamNotFoundResultError(result.Error) {
+								// Cloudflare/边缘节点拦截返回的 404 无结构化模型未找到体，
+								// 按临时上游错误短冷却，避免模型状态被误判 12 小时不可用。
+								state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
+								state.Unavailable = !state.NextRetryAfter.IsZero()
 							} else {
 								next := now.Add(12 * time.Hour)
 								state.NextRetryAfter = next
@@ -850,16 +855,27 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								if result.RetryAfter != nil && *result.RetryAfter > 0 {
 									cooldown = *result.RetryAfter
 								}
+								// 亚秒级 RetryAfter 同样遵守最小冷却下限，避免多凭证轮换下的瞬时重试风暴。
+								if !disableCooling && cooldown > 0 && cooldown < minQuotaCooldownFloor {
+									cooldown = minQuotaCooldownFloor
+								}
 								if disableCooling {
 									cooldown = 0
 								}
 								if cooldown > 0 {
-									state.NextRetryAfter = now.Add(cooldown)
+									next := now.Add(cooldown)
+									state.NextRetryAfter = next
+									// 记录瞬时限流冷却窗口，保持配额状态与实际不可用时间一致。
+									applyCooldownFields(&state.Quota, QuotaState{
+										Exceeded:      true,
+										Reason:        "transient rate limit",
+										NextRecoverAt: next,
+									})
 								} else {
 									state.NextRetryAfter = time.Time{}
+									applyCooldownFields(&state.Quota, QuotaState{})
+									clearModelQuota = true
 								}
-								applyCooldownFields(&state.Quota, QuotaState{})
-								clearModelQuota = true
 								break
 							}
 							var next time.Time
@@ -1695,6 +1711,66 @@ func isCloudflareChallengeResultError(err *Error) bool {
 	return isCloudflareChallengeErrorMessage(err.Message)
 }
 
+// isImplicitUpstreamNotFoundResultError reports whether a 404 response carries no
+// structured API not-found payload. Upstream edge nodes (e.g. Cloudflare) answer
+// 404 with HTML or gateway-style bodies while blocking routes; treating those as
+// "model does not exist" would cool credentials for 12 hours and eventually drain
+// the whole pool (auth_unavailable). Only structured JSON error bodies with an
+// explicit not-found identifier keep the long model-not-found cooldown; implicit
+// 404s fall back to the transient cooldown ladder so credentials recover quickly.
+func isImplicitUpstreamNotFoundResultError(err *Error) bool {
+	if err == nil || statusCodeFromResult(err) != http.StatusNotFound {
+		return false
+	}
+	if isModelNotFoundIdentifier(err.Code) || isNotFoundErrorIdentifier(err.Code) {
+		return false
+	}
+	message := strings.TrimSpace(err.Message)
+	if message == "" {
+		return true
+	}
+	var payload any
+	if json.Unmarshal([]byte(message), &payload) != nil {
+		// HTML / plain-text 404 pages come from edge nodes, not the API itself.
+		return true
+	}
+	return !containsStructuredNotFoundIdentifier(payload)
+}
+
+// containsStructuredNotFoundIdentifier reports whether a decoded JSON error body
+// mentions a not-found style identifier in code/type/status fields.
+func containsStructuredNotFoundIdentifier(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			if text, isString := item.(string); isString {
+				switch strings.ToLower(strings.TrimSpace(key)) {
+				case "code", "type", "status":
+					if isModelNotFoundIdentifier(text) || isNotFoundErrorIdentifier(text) {
+						return true
+					}
+				}
+			}
+			switch item.(type) {
+			case map[string]any, []any:
+				if containsStructuredNotFoundIdentifier(item) {
+					return true
+				}
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			switch item.(type) {
+			case map[string]any, []any:
+				if containsStructuredNotFoundIdentifier(item) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func nextCloudflareCooldown(backoffLevel int, disableCooling bool, now time.Time) (time.Time, int) {
 	var next time.Time
 	if !disableCooling {
@@ -2069,24 +2145,41 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.StatusMessage = "not_found"
 		if disableCooling {
 			auth.NextRetryAfter = time.Time{}
+		} else if isImplicitUpstreamNotFoundResultError(resultErr) {
+			// Cloudflare/边缘节点拦截返回的 404 无结构化模型未找到体，
+			// 按临时上游错误短冷却，避免整个凭据被误判 12 小时不可用。
+			auth.StatusMessage = "implicit upstream 404"
+			auth.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
+			auth.Unavailable = !auth.NextRetryAfter.IsZero()
 		} else {
 			auth.NextRetryAfter = now.Add(12 * time.Hour)
 		}
 	case 429:
 		if isTransientRateLimitError(resultErr) {
 			auth.StatusMessage = "rate limited"
-			applyCooldownFields(&auth.Quota, QuotaState{})
 			cooldown := time.Minute
 			if retryAfter != nil && *retryAfter > 0 {
 				cooldown = *retryAfter
+			}
+			// 亚秒级 RetryAfter 同样遵守最小冷却下限，避免多凭证轮换下的瞬时重试风暴。
+			if !disableCooling && cooldown > 0 && cooldown < minQuotaCooldownFloor {
+				cooldown = minQuotaCooldownFloor
 			}
 			if disableCooling {
 				cooldown = 0
 			}
 			if cooldown > 0 {
-				auth.NextRetryAfter = now.Add(cooldown)
+				next := now.Add(cooldown)
+				auth.NextRetryAfter = next
+				// 记录瞬时限流冷却窗口，保持配额状态与实际不可用时间一致。
+				applyCooldownFields(&auth.Quota, QuotaState{
+					Exceeded:      true,
+					Reason:        "transient rate limit",
+					NextRecoverAt: next,
+				})
 			} else {
 				auth.NextRetryAfter = time.Time{}
+				applyCooldownFields(&auth.Quota, QuotaState{})
 			}
 			break
 		}

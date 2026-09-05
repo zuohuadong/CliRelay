@@ -316,8 +316,10 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 	if original, ok := OriginalResponsesHeaders(c); ok {
 		sourceHeaders = original
 	}
-	for key, values := range sourceHeaders {
-		headers[key] = values
+	if sourceHeaders != nil {
+		for key, values := range sourceHeaders {
+			headers[key] = values
+		}
 	}
 
 	// Capture request body

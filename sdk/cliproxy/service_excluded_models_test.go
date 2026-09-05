@@ -389,7 +389,7 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 			webSearchModel = model
 		case "gemini-3.1-pro-high":
 			highModel = model
-		case "gemini-3-flash-agent":
+		case "gemini-pro-agent":
 			agentModel = model
 		case "gpt-oss-120b-medium":
 			staticOnlyModel = model
@@ -417,10 +417,10 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 		t.Fatal("expected fetched gemini-3.1-pro-high to support web search")
 	}
 	if agentModel == nil {
-		t.Fatal("expected gemini-3-flash-agent to be registered")
+		t.Fatal("expected gemini-pro-agent to be registered")
 	}
 	if agentModel.SupportsWebSearch {
-		t.Fatal("gemini-3-flash-agent should not support web search")
+		t.Fatal("gemini-pro-agent should not support web search")
 	}
 	if staticOnlyModel == nil {
 		t.Fatal("expected static-only Antigravity model to remain registered")

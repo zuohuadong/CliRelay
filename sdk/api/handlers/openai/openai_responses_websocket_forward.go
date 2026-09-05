@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	log "github.com/sirupsen/logrus"
@@ -42,6 +44,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	}
 	toolCacheTurn := opts.toolCacheTurn
 	completed := false
+	emittedPayload := false
 	completedOutput := []byte("[]")
 	completedResponseID := ""
 	outputItemsByIndex := make(map[int64][]byte)
@@ -101,7 +104,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, websocket.ErrCloseSent
 			}
 
-			errorPayload, wrote, errTerminate := writeResponsesWebsocketTerminalError(writer, wsTimelineLog, errMsg, nil)
+			errorPayload, wrote, errTerminate := writeResponsesWebsocketTerminalErrorForced(writer, wsTimelineLog, errMsg, nil, shouldForceExposeResponsesStreamError(errMsg, emittedPayload))
 			if wrote {
 				log.Infof(
 					"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
@@ -115,6 +118,26 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, errTerminate
 		case chunk, ok := <-data:
 			if !ok {
+				// The executor can close the data channel immediately before publishing
+				// its terminal error. Prefer that pending error over synthesizing a
+				// generic disconnect, otherwise the client only sees
+				// "stream closed before response.completed" and loses the real cause.
+				if errMsg, hasPendingError := handlers.PendingStreamError(errs); hasPendingError {
+					h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+					markAPIResponseTimestamp(c)
+					errorPayload, wrote, errTerminate := writeResponsesWebsocketTerminalErrorForced(writer, wsTimelineLog, errMsg, nil, shouldForceExposeResponsesStreamError(errMsg, emittedPayload))
+					if wrote {
+						log.Infof(
+							"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
+							sessionID,
+							websocket.TextMessage,
+							websocketPayloadEventType(errorPayload),
+							websocketPayloadPreview(errorPayload),
+						)
+					}
+					cancel(errMsg.Error)
+					return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, errTerminate
+				}
 				if !completed {
 					errMsg := &interfaces.ErrorMessage{
 						StatusCode: http.StatusRequestTimeout,
@@ -203,6 +226,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					cancel(errWrite)
 					return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, errWrite
 				}
+				emittedPayload = true
 			}
 		}
 	}
@@ -233,13 +257,31 @@ func shouldExposeResponsesUpstreamError(errMsg *interfaces.ErrorMessage) bool {
 	return clienterror.IsRequestFault(responsesWebsocketErrorStatus(errMsg), errMsg.Error)
 }
 
+func shouldForceExposeResponsesStreamError(errMsg *interfaces.ErrorMessage, emittedPayload bool) bool {
+	if !emittedPayload || errMsg == nil || errMsg.Error == nil {
+		return false
+	}
+	var egressErr *egress.Error
+	return errors.As(errMsg.Error, &egressErr) && egressErr.Code == "egress_disabled"
+}
+
 func writeResponsesWebsocketTerminalError(
 	writer *responsesWebsocketWriter,
 	wsTimelineLog websocketTimelineAppender,
 	errMsg *interfaces.ErrorMessage,
 	payload []byte,
 ) ([]byte, bool, error) {
-	if !shouldExposeResponsesUpstreamError(errMsg) {
+	return writeResponsesWebsocketTerminalErrorForced(writer, wsTimelineLog, errMsg, payload, false)
+}
+
+func writeResponsesWebsocketTerminalErrorForced(
+	writer *responsesWebsocketWriter,
+	wsTimelineLog websocketTimelineAppender,
+	errMsg *interfaces.ErrorMessage,
+	payload []byte,
+	force bool,
+) ([]byte, bool, error) {
+	if !force && !shouldExposeResponsesUpstreamError(errMsg) {
 		// Keep the upstream reason in the request-log timeline even though the client
 		// only observes a closed connection, otherwise silent failures are
 		// undiagnosable after the fact.

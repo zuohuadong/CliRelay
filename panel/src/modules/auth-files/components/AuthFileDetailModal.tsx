@@ -606,12 +606,13 @@ export function AuthFileDetailModal({
                             </p>
                             <textarea
                               value={prefixProxyEditor.excludedModelsText}
-                              onChange={(event) =>
+                              onChange={(event) => {
+                                const value = event.currentTarget.value;
                                 setPrefixProxyEditor((prev) => ({
                                   ...prev,
-                                  excludedModelsText: event.currentTarget.value,
-                                }))
-                              }
+                                  excludedModelsText: value,
+                                }));
+                              }}
                               spellCheck={false}
                               rows={4}
                               className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs leading-5 text-slate-900 outline-none transition focus-visible:ring-2 focus-visible:ring-black/10 dark:border-neutral-800 dark:bg-neutral-900 dark:text-white dark:focus-visible:ring-white/15"

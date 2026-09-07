@@ -1224,6 +1224,7 @@ export type PrefixProxyEditorState = {
   json: Record<string, unknown> | null;
   prefix: string;
   proxyUrl: string;
+  excludedModelsText: string;
   egressMode: "fixed_endpoint" | "shared_proxy";
   subscriptionStartedAt: string;
   subscriptionPeriod: AuthFileSubscriptionPeriod;

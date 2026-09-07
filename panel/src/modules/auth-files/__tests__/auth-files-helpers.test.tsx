@@ -643,6 +643,50 @@ describe("Auth Files helper coverage", () => {
     expect(loadAll).toHaveBeenCalledTimes(1);
   });
 
+  test("loads and persists per-account Codex excluded models", async () => {
+    let uploadedText = "";
+    mocks.downloadText.mockImplementation(async () =>
+      JSON.stringify({
+        type: "codex",
+        excluded_models: ["GPT-5.6-SOL", "gpt-5.6-sol", "gpt-5.5"],
+      }),
+    );
+    mocks.upload.mockImplementation(async (file: File) => {
+      uploadedText = await file.text();
+      return {};
+    });
+
+    const loadAll = vi.fn(async () => [] as AuthFileItem[]);
+    const { result } = renderHook(() => useAuthFilesDetailEditors(loadAll), { wrapper });
+
+    await act(async () => {
+      result.current.setDetailFile({ name: "codex-models.json" } as AuthFileItem);
+      result.current.setDetailOpen(true);
+      result.current.setDetailTab("fields");
+    });
+
+    await waitFor(() => {
+      expect(result.current.prefixProxyEditor.excludedModelsText).toBe(
+        "gpt-5.5\ngpt-5.6-sol",
+      );
+    });
+
+    await act(async () => {
+      result.current.setPrefixProxyEditor((prev) => ({
+        ...prev,
+        excludedModelsText: "gpt-5.6-*\n GPT-5.5 ",
+      }));
+    });
+    await act(async () => {
+      await result.current.savePrefixProxy();
+    });
+
+    expect(JSON.parse(uploadedText)).toEqual({
+      type: "codex",
+      excluded_models: ["gpt-5.5", "gpt-5.6-*"],
+    });
+  });
+
   test("persists an explicit shared-proxy egress mode for a Codex auth file", async () => {
     let uploadedText = "";
     mocks.downloadText.mockImplementation(async () =>

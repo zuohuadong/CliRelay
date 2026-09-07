@@ -35,6 +35,7 @@ const basePrefixProxyEditor: DetailModalProps["prefixProxyEditor"] = {
   json: { prefix: "team-a", proxy_url: "http://127.0.0.1:7890" },
   prefix: "team-a",
   proxyUrl: "http://127.0.0.1:7890",
+  excludedModelsText: "gpt-5.1-mini",
   egressMode: "fixed_endpoint",
   subscriptionStartedAt: "2026-04-01T08:30",
   subscriptionPeriod: "monthly",
@@ -304,6 +305,9 @@ describe("AuthFileDetailModal", () => {
     expect(grid.className).not.toMatch(/\bborder\b/);
     expect(grid.className).not.toContain("divide-y");
     expect(within(grid).getByPlaceholderText("e.g. team-a")).toHaveValue("team-a");
+    expect(within(grid).getByLabelText("Excluded models (excluded_models)")).toHaveValue(
+      "gpt-5.1-mini",
+    );
     expect(
       within(grid).getByRole("combobox", { name: "Proxy egress endpoint" }),
     ).toBeInTheDocument();

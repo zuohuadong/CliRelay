@@ -41,6 +41,7 @@ const createPrefixProxyEditorState = (): PrefixProxyEditorState => ({
   json: null,
   prefix: "",
   proxyUrl: "",
+  excludedModelsText: "",
   egressMode: "fixed_endpoint",
   subscriptionStartedAt: "",
   subscriptionPeriod: "monthly",
@@ -62,6 +63,16 @@ const readSubscriptionStartValue = (json: Record<string, unknown>): unknown =>
 
 const normalizeCodexEgressMode = (value: unknown): "fixed_endpoint" | "shared_proxy" =>
   value === "shared_proxy" ? "shared_proxy" : "fixed_endpoint";
+
+const parseExcludedModels = (value: unknown): string[] => {
+  const values = Array.isArray(value) ? value : typeof value === "string" ? value.split(/[\n,]/) : [];
+  return Array.from(
+    new Set(values.map((item) => String(item ?? "").trim().toLowerCase()).filter(Boolean)),
+  ).sort();
+};
+
+const readExcludedModels = (json: Record<string, unknown>): string[] =>
+  parseExcludedModels(json.excluded_models ?? json["excluded-models"]);
 
 const removeSubscriptionFields = (json: Record<string, unknown>) => {
   delete json.subscription_started_at;
@@ -296,6 +307,7 @@ export function useAuthFilesDetailEditors(
         json: null,
         prefix: "",
         proxyUrl: "",
+        excludedModelsText: "",
         egressMode: "fixed_endpoint",
         subscriptionStartedAt: "",
         subscriptionPeriod: "monthly",
@@ -329,6 +341,7 @@ export function useAuthFilesDetailEditors(
         const json = parsed as Record<string, unknown>;
         const prefix = typeof json.prefix === "string" ? json.prefix : "";
         const proxyUrl = typeof json.proxy_url === "string" ? json.proxy_url : "";
+        const excludedModels = readExcludedModels(json);
         const egressMode = normalizeCodexEgressMode(json.egress_mode);
         const subscriptionStartedAt = dateLikeToDateTimeLocalInput(
           readSubscriptionStartValue(json),
@@ -343,6 +356,7 @@ export function useAuthFilesDetailEditors(
           json,
           prefix,
           proxyUrl,
+          excludedModelsText: excludedModels.join("\n"),
           egressMode,
           subscriptionStartedAt,
           subscriptionPeriod,
@@ -438,6 +452,7 @@ export function useAuthFilesDetailEditors(
       typeof prefixProxyEditor.json.prefix === "string" ? prefixProxyEditor.json.prefix : "";
     const originalProxyUrl =
       typeof prefixProxyEditor.json.proxy_url === "string" ? prefixProxyEditor.json.proxy_url : "";
+    const originalExcludedModels = readExcludedModels(prefixProxyEditor.json);
     const originalEgressMode = normalizeCodexEgressMode(prefixProxyEditor.json.egress_mode);
     const originalSubscriptionStartedAt = dateLikeToDateTimeLocalInput(
       readSubscriptionStartValue(prefixProxyEditor.json),
@@ -448,6 +463,8 @@ export function useAuthFilesDetailEditors(
     return (
       originalPrefix !== prefixProxyEditor.prefix ||
       originalProxyUrl !== prefixProxyEditor.proxyUrl ||
+      JSON.stringify(originalExcludedModels) !==
+        JSON.stringify(parseExcludedModels(prefixProxyEditor.excludedModelsText)) ||
       originalEgressMode !== prefixProxyEditor.egressMode ||
       originalSubscriptionStartedAt !== prefixProxyEditor.subscriptionStartedAt ||
       originalSubscriptionPeriod !== prefixProxyEditor.subscriptionPeriod
@@ -456,6 +473,7 @@ export function useAuthFilesDetailEditors(
     prefixProxyEditor.json,
     prefixProxyEditor.prefix,
     prefixProxyEditor.proxyUrl,
+    prefixProxyEditor.excludedModelsText,
     prefixProxyEditor.egressMode,
     prefixProxyEditor.subscriptionPeriod,
     prefixProxyEditor.subscriptionStartedAt,
@@ -472,6 +490,11 @@ export function useAuthFilesDetailEditors(
     const proxyUrl = prefixProxyEditor.proxyUrl.trim();
     if (proxyUrl) next.proxy_url = proxyUrl;
     else delete next.proxy_url;
+
+    delete next["excluded-models"];
+    const excludedModels = parseExcludedModels(prefixProxyEditor.excludedModelsText);
+    if (excludedModels.length > 0) next.excluded_models = excludedModels;
+    else delete next.excluded_models;
 
     if (prefixProxyEditor.egressMode === "shared_proxy") next.egress_mode = "shared_proxy";
     else delete next.egress_mode;
@@ -491,6 +514,7 @@ export function useAuthFilesDetailEditors(
     prefixProxyEditor.json,
     prefixProxyEditor.prefix,
     prefixProxyEditor.proxyUrl,
+    prefixProxyEditor.excludedModelsText,
     prefixProxyEditor.egressMode,
     prefixProxyEditor.subscriptionPeriod,
     prefixProxyEditor.subscriptionStartedAt,

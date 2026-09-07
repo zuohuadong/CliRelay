@@ -599,6 +599,31 @@ export function AuthFileDetailModal({
                           </p>
                         </div>
 
+                        {isCodexDetail ? (
+                          <div className="grid gap-2">
+                            <p className="text-xs font-semibold text-slate-700 dark:text-white/75">
+                              {t("auth_files.excluded_models_label")}
+                            </p>
+                            <textarea
+                              value={prefixProxyEditor.excludedModelsText}
+                              onChange={(event) =>
+                                setPrefixProxyEditor((prev) => ({
+                                  ...prev,
+                                  excludedModelsText: event.currentTarget.value,
+                                }))
+                              }
+                              spellCheck={false}
+                              rows={4}
+                              className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs leading-5 text-slate-900 outline-none transition focus-visible:ring-2 focus-visible:ring-black/10 dark:border-neutral-800 dark:bg-neutral-900 dark:text-white dark:focus-visible:ring-white/15"
+                              placeholder={t("auth_files.excluded_models_placeholder")}
+                              aria-label={t("auth_files.excluded_models_label")}
+                            />
+                            <p className="text-xs text-slate-500 dark:text-white/55">
+                              {t("auth_files.excluded_models_hint")}
+                            </p>
+                          </div>
+                        ) : null}
+
                         {isCodexDetail || isAntigravityDetail ? (
                           <div className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-neutral-800">
                             {isCodexDetail ? (

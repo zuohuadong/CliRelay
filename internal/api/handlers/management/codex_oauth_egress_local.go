@@ -114,15 +114,25 @@ func codexOAuthEndpointAvailable(ctx context.Context, service *egress.Service, e
 	if service == nil {
 		return fmt.Errorf("%w: egress service is unavailable", egress.ErrEgressRequired)
 	}
-	if endpoint, err := service.GetEndpoint(ctx, egressID); err == nil && endpoint.SharingMode == egress.EndpointSharingModeShared {
-		return nil
-	}
-	impact, err := service.EndpointImpact(ctx, egressID, egress.EndpointActionDisable)
+	endpoint, err := service.GetEndpoint(ctx, egressID)
 	if err != nil {
 		return err
 	}
-	if impact.BindingCount > 0 {
-		return fmt.Errorf("%w: endpoint %s already has %d binding(s)", egress.ErrEndpointInUse, egressID, impact.BindingCount)
+	if endpoint.SharingMode == egress.EndpointSharingModeShared {
+		return nil
+	}
+	bindings, err := service.ListBindings(ctx)
+	if err != nil {
+		return err
+	}
+	codexBindings := 0
+	for _, binding := range bindings {
+		if binding.EndpointID == egressID && strings.HasPrefix(strings.TrimSpace(binding.Identity), "codex:") {
+			codexBindings++
+		}
+	}
+	if codexBindings > 0 {
+		return fmt.Errorf("%w: endpoint %s already has %d binding(s)", egress.ErrEndpointInUse, egressID, codexBindings)
 	}
 	return nil
 }

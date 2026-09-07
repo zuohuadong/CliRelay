@@ -530,3 +530,29 @@ func TestCodexOAuthEndpointAvailableRejectsExclusiveWithBindings(t *testing.T) {
 		t.Fatalf("expected in-use error, got %v", err)
 	}
 }
+
+func TestCodexOAuthEndpointAvailableIgnoresAntigravityBindings(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{EgressNetwork: config.EgressNetworkConfig{Enabled: true}}
+	service, err := egress.NewService(cfg, filepath.Join(t.TempDir(), "egress.db"))
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	endpoint := createReadyEgressEndpoint(t, service, "10.77.0.6", "198.51.100.6")
+	for _, authID := range []string{"antigravity-a.json", "antigravity-b.json", "antigravity-c.json"} {
+		identity, identityErr := egress.StableIdentityForProvider("antigravity", authID)
+		if identityErr != nil {
+			t.Fatalf("StableIdentityForProvider(%q): %v", authID, identityErr)
+		}
+		if putErr := service.PutBinding(context.Background(), egress.Binding{Identity: identity, EndpointID: endpoint.ID, AuthFileID: authID}); putErr != nil {
+			t.Fatalf("PutBinding(%q): %v", authID, putErr)
+		}
+	}
+
+	if err = codexOAuthEndpointAvailable(context.Background(), service, endpoint.ID); err != nil {
+		t.Fatalf("antigravity-only bindings should not block Codex OAuth: %v", err)
+	}
+}

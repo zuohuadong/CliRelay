@@ -278,6 +278,7 @@ export function useAuthFilesGroupOverview({
               );
         const targets = scopedFiles
           .map((file) => {
+            if (file.disabled === true || file.status === "disabled") return null;
             const provider = resolveQuotaProvider(file);
             return provider ? { file, provider } : null;
           })

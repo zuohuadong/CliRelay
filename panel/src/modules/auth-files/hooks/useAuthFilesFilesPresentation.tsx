@@ -1098,6 +1098,7 @@ export function useAuthFilesFilesPresentation({
                   <Button
                     variant="ghost"
                     size="sm"
+                    disabled={file.disabled === true || file.status === "disabled"}
                     onClick={() => void refreshQuota(file, quotaProvider)}
                     title={t("common.refresh")}
                     aria-label={t("common.refresh")}

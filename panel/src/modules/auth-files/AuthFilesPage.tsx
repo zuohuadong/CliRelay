@@ -456,6 +456,7 @@ export function AuthFilesPage() {
     async (targetFiles: AuthFileItem[]) => {
       if (tab !== "files") return;
       const targets = targetFiles.flatMap((file) => {
+        if (file.disabled === true || file.status === "disabled") return [];
         const provider = resolveQuotaProvider(file);
         return provider ? [{ file, provider }] : [];
       });
@@ -498,7 +499,7 @@ export function AuthFilesPage() {
     (file: Parameters<typeof openDetail>[0]) => {
       const openPromise = openDetail(file);
       const provider = resolveQuotaProvider(file);
-      if (provider === "codex" || provider === "kimi") {
+      if ((provider === "codex" || provider === "kimi") && !file.disabled && file.status !== "disabled") {
         void refreshQuota(file, provider)
           .catch(() => undefined)
           .finally(() => void refreshDetailTrend(file, { silent: true }));

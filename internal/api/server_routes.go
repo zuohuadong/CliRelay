@@ -56,16 +56,20 @@ func (s *Server) setupRoutes() {
 	})
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.HEAD("/management.html", s.serveManagementControlPanel)
 	// /manage 是管理面板 SPA 的挂载点：面板资源以绝对路径 /manage/assets/* 引用，
 	// 由 serveManagementControlPanelAsset 统一服务并带 SPA 回退。
-	s.engine.GET("/manage", func(c *gin.Context) {
+	manageRedirect := func(c *gin.Context) {
 		target := "/manage/"
 		if rawQuery := c.Request.URL.RawQuery; rawQuery != "" {
 			target += "?" + rawQuery
 		}
 		c.Redirect(http.StatusFound, target)
-	})
+	}
+	s.engine.GET("/manage", manageRedirect)
+	s.engine.HEAD("/manage", manageRedirect)
 	s.engine.GET("/manage/*filepath", s.serveManagementControlPanelAsset)
+	s.engine.HEAD("/manage/*filepath", s.serveManagementControlPanelAsset)
 	s.engine.GET("/v0/management/api-key-billing", s.apiKeyBillingRateLimitMiddleware(), s.mgmt.GetPublicAPIKeyBilling)
 	publicManagement := s.engine.Group("/v0/management/public")
 	publicManagement.GET("/api-key-billing", s.apiKeyBillingRateLimitMiddleware(), s.mgmt.GetPublicAPIKeyBilling)

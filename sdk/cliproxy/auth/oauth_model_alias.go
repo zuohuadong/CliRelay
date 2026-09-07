@@ -524,6 +524,19 @@ func OAuthModelAliasDefaults(channel string) []internalconfig.OAuthModelAlias {
 			Name:  "gemini-3.7-flash-high",
 			Alias: "gemini-3.7-flash-tiered",
 		}}
+	case "codex":
+		return []internalconfig.OAuthModelAlias{
+			{
+				Name:  "gpt-5.6-sol",
+				Alias: "gpt-5.6-ultra",
+				Fork:  true,
+			},
+			{
+				Name:  "gpt-5.6-sol",
+				Alias: "gpt-5.6",
+				Fork:  true,
+			},
+		}
 	default:
 		return nil
 	}

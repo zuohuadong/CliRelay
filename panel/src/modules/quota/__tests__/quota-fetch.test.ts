@@ -368,4 +368,28 @@ describe("fetchQuota for kimi", () => {
       },
     ]);
   });
+
+  test("rejects immediately without API calls when auth file is disabled", async () => {
+    await expect(
+      fetchQuota("codex", {
+        name: "codex-disabled.json",
+        type: "codex",
+        provider: "codex",
+        auth_index: "auth-codex-disabled",
+        disabled: true,
+      } as any),
+    ).rejects.toThrow("auth_disabled");
+
+    await expect(
+      fetchQuota("kimi", {
+        name: "kimi-disabled.json",
+        type: "kimi",
+        provider: "kimi",
+        auth_index: "auth-kimi-disabled",
+        status: "disabled",
+      } as any),
+    ).rejects.toThrow("auth_disabled");
+
+    expect(mocks.request).not.toHaveBeenCalled();
+  });
 });

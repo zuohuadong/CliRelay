@@ -1898,6 +1898,12 @@ func TestManagePathServesControlPanelAssets(t *testing.T) {
 		if !strings.Contains(rr.Body.String(), "management app") {
 			t.Fatalf("management panel body missing: %s", rr.Body.String())
 		}
+		if got := rr.Header().Get("Cache-Control"); !strings.Contains(got, "no-cache") || !strings.Contains(got, "no-store") {
+			t.Fatalf("Cache-Control = %q, want no-cache, no-store", got)
+		}
+		if got := rr.Header().Get("Pragma"); got != "no-cache" {
+			t.Fatalf("Pragma = %q, want no-cache", got)
+		}
 	})
 
 	t.Run("manage serves hashed asset files", func(t *testing.T) {
@@ -1910,6 +1916,9 @@ func TestManagePathServesControlPanelAssets(t *testing.T) {
 		if !strings.Contains(rr.Body.String(), "console.log('app')") {
 			t.Fatalf("asset body missing: %s", rr.Body.String())
 		}
+		if got := rr.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+			t.Fatalf("Cache-Control = %q, want public, max-age=31536000, immutable", got)
+		}
 	})
 
 	t.Run("manage serves panel meta", func(t *testing.T) {
@@ -1921,6 +1930,9 @@ func TestManagePathServesControlPanelAssets(t *testing.T) {
 		}
 		if !strings.Contains(rr.Body.String(), `"version":"test"`) {
 			t.Fatalf("panel meta body missing: %s", rr.Body.String())
+		}
+		if got := rr.Header().Get("Cache-Control"); !strings.Contains(got, "no-cache") {
+			t.Fatalf("Cache-Control = %q, want no-cache", got)
 		}
 	})
 
@@ -1942,6 +1954,21 @@ func TestManagePathServesControlPanelAssets(t *testing.T) {
 		}
 		if !strings.Contains(rr.Body.String(), "management app") {
 			t.Fatalf("spa fallback body missing: %s", rr.Body.String())
+		}
+		if got := rr.Header().Get("Cache-Control"); !strings.Contains(got, "no-cache") || !strings.Contains(got, "no-store") {
+			t.Fatalf("Cache-Control = %q, want no-cache, no-store", got)
+		}
+	})
+
+	t.Run("manage head request serves panel entry headers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodHead, "/manage/", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+		}
+		if got := rr.Header().Get("Cache-Control"); !strings.Contains(got, "no-cache") || !strings.Contains(got, "no-store") {
+			t.Fatalf("Cache-Control = %q, want no-cache, no-store", got)
 		}
 	})
 }

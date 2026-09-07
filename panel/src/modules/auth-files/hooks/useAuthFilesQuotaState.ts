@@ -267,6 +267,7 @@ export function useAuthFilesQuotaState({
       provider: QuotaProvider,
       options?: { showLoading?: boolean; refreshUsage?: boolean },
     ) => {
+      if (file.disabled === true || file.status === "disabled") return;
       const name = file.name;
       if (quotaInFlightRef.current.has(name)) return;
       quotaInFlightRef.current.add(name);
@@ -403,7 +404,7 @@ export function useAuthFilesQuotaState({
   const resolveQuotaTargets = useCallback((targetFiles: AuthFileItem[]) => {
     return targetFiles
       .map((file) => {
-        if (file.disabled === true) return null;
+        if (file.disabled === true || file.status === "disabled") return null;
         const provider = resolveQuotaProvider(file);
         return provider ? { file, provider } : null;
       })

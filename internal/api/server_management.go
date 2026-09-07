@@ -445,6 +445,12 @@ func (s *Server) ensureManagementControlPanel(c *gin.Context) bool {
 	return true
 }
 
+func setNoCacheHeaders(c *gin.Context) {
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
+}
+
 func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	if !s.ensureManagementControlPanel(c) {
 		return
@@ -456,6 +462,7 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		return
 	}
 
+	setNoCacheHeaders(c)
 	c.File(filePath)
 }
 
@@ -469,6 +476,7 @@ func (s *Server) serveManagementControlPanelAsset(c *gin.Context) {
 
 	requestedPath := strings.TrimPrefix(c.Param("filepath"), "/")
 	if requestedPath == "" {
+		setNoCacheHeaders(c)
 		c.File(managementasset.FilePath(s.configFilePath))
 		return
 	}
@@ -481,6 +489,11 @@ func (s *Server) serveManagementControlPanelAsset(c *gin.Context) {
 
 	info, err := os.Stat(filePath)
 	if err == nil && !info.IsDir() {
+		if strings.HasPrefix(requestedPath, "assets/") {
+			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			setNoCacheHeaders(c)
+		}
 		c.File(filePath)
 		return
 	}
@@ -495,5 +508,6 @@ func (s *Server) serveManagementControlPanelAsset(c *gin.Context) {
 		return
 	}
 
+	setNoCacheHeaders(c)
 	c.File(managementasset.FilePath(s.configFilePath))
 }

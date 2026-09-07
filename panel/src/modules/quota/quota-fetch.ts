@@ -100,6 +100,9 @@ export const fetchQuota = async (
   type: QuotaProvider,
   file: AuthFileItem,
 ): Promise<QuotaFetchResult> => {
+  if (file.disabled === true || file.status === "disabled") {
+    throw new Error("auth_disabled");
+  }
   const rawAuthIndex = (file as any)["auth_index"] ?? file.authIndex;
   const authIndex = normalizeAuthIndexValue(rawAuthIndex);
   if (!authIndex) throw new Error("missing_auth_index");

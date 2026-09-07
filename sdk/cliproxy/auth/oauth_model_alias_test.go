@@ -184,6 +184,28 @@ func TestDefaultOAuthModelAliasGemini37FlashTiered(t *testing.T) {
 	}
 }
 
+func TestDefaultOAuthModelAliasCodex(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "gpt-5.6-ultra", want: "gpt-5.6-sol"},
+		{input: "gpt-5.6-ultra(high)", want: "gpt-5.6-sol(high)"},
+		{input: "gpt-5.6", want: "gpt-5.6-sol"},
+		{input: "gpt-5.6(medium)", want: "gpt-5.6-sol(medium)"},
+	}
+
+	mgr := NewManager(nil, nil, nil)
+	auth := createAuthForChannel("codex")
+	for _, tt := range tests {
+		if got := mgr.resolveOAuthUpstreamModel(auth, tt.input); got != tt.want {
+			t.Fatalf("resolveOAuthUpstreamModel(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestOAuthModelAliasChannel_Kimi(t *testing.T) {
 	t.Parallel()
 

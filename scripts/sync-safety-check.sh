@@ -27,6 +27,7 @@ for removed_model in sora-2; do
     ':!progress.md' \
     ':!.mailbox/**' \
     ':!scripts/sync-safety-check.sh' \
+    ':!sdk/api/handlers/openai/openai_videos_handlers.go' \
     ':!**/*_test.go' \
     ':!**/*.test.ts' \
     ':!**/*.test.tsx' \

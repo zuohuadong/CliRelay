@@ -7,8 +7,8 @@ import (
 )
 
 func TestNormalizeSamplingForReasoning_StripsTemperatureForGPT5(t *testing.T) {
-	body := []byte(`{"model":"gpt-5.4","temperature":0.7,"top_p":0.9,"top_k":40,"messages":[]}`)
-	out := NormalizeSamplingForReasoning(body, "gpt-5.4", "openai")
+	body := []byte(`{"model":"gpt-5.5","temperature":0.7,"top_p":0.9,"top_k":40,"messages":[]}`)
+	out := NormalizeSamplingForReasoning(body, "gpt-5.5", "openai")
 	if gjson.GetBytes(out, "temperature").Exists() {
 		t.Fatalf("temperature should be removed for reasoning model, got %s", out)
 	}
@@ -29,8 +29,8 @@ func TestNormalizeSamplingForReasoning_KeepsTemperatureForNonReasoning(t *testin
 }
 
 func TestNormalizeSamplingForReasoning_StripsForSuffixModel(t *testing.T) {
-	body := []byte(`{"model":"gpt-5.4","temperature":0,"top_p":0.9,"messages":[]}`)
-	out := NormalizeSamplingForReasoning(body, "gpt-5.4(high)", "openai")
+	body := []byte(`{"model":"gpt-5.5","temperature":0,"top_p":0.9,"messages":[]}`)
+	out := NormalizeSamplingForReasoning(body, "gpt-5.5(high)", "openai")
 	if gjson.GetBytes(out, "temperature").Exists() {
 		t.Fatalf("temperature should be removed for suffix reasoning model, got %s", out)
 	}

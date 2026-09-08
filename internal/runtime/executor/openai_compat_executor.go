@@ -1123,6 +1123,7 @@ type statusErr struct {
 	errorCode         string
 	requestAuthScheme string
 	retryAfter        *time.Duration
+	credentialScoped  bool
 }
 
 func (e statusErr) Error() string {
@@ -1135,6 +1136,7 @@ func (e statusErr) StatusCode() int            { return e.code }
 func (e statusErr) ErrorCode() string          { return e.errorCode }
 func (e statusErr) RequestAuthScheme() string  { return e.requestAuthScheme }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
+func (e statusErr) IsCredentialScoped() bool   { return e.credentialScoped }
 
 const openAICompatTPMFallbackRetryAfter = time.Minute
 

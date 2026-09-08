@@ -176,6 +176,10 @@ type CodexConfig struct {
 	// Trade-off: the response headers are delayed until the upstream starts generating, which can
 	// trip client or reverse-proxy read timeouts. Default is false.
 	StreamBootstrapBuffering bool `yaml:"stream-bootstrap-buffering" json:"stream-bootstrap-buffering"`
+	// CapacitySameAccountRetries overrides the global same-account retry count for
+	// transient Codex capacity rejections. Nil uses the global/provider default;
+	// 0 disables same-account retries.
+	CapacitySameAccountRetries *int `yaml:"capacity-same-account-retries,omitempty" json:"capacity-same-account-retries,omitempty"`
 	// OptimizeMultiAgentV2 optimizes official Codex multi-agent requests.
 	OptimizeMultiAgentV2 bool `yaml:"optimize-multi-agent-v2" json:"optimize-multi-agent-v2"`
 	// OrphanDelegationCompatibility enables opt-in compatibility for orphan Codex delegation outputs.

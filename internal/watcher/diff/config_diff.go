@@ -76,6 +76,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.RequestRetry != newCfg.RequestRetry {
 		changes = append(changes, fmt.Sprintf("request-retry: %d -> %d", oldCfg.RequestRetry, newCfg.RequestRetry))
 	}
+	if !optionalIntEqual(oldCfg.CapacitySameAccountRetries, newCfg.CapacitySameAccountRetries) {
+		changes = appendOptionalIntChange(changes, "capacity-same-account-retries", oldCfg.CapacitySameAccountRetries, newCfg.CapacitySameAccountRetries)
+	}
 	if oldCfg.MaxRetryCredentials != newCfg.MaxRetryCredentials {
 		changes = append(changes, fmt.Sprintf("max-retry-credentials: %d -> %d", oldCfg.MaxRetryCredentials, newCfg.MaxRetryCredentials))
 	}
@@ -145,6 +148,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	}
 	if oldCfg.Codex.StreamBootstrapBuffering != newCfg.Codex.StreamBootstrapBuffering {
 		changes = append(changes, fmt.Sprintf("codex.stream-bootstrap-buffering: %t -> %t", oldCfg.Codex.StreamBootstrapBuffering, newCfg.Codex.StreamBootstrapBuffering))
+	}
+	if !optionalIntEqual(oldCfg.Codex.CapacitySameAccountRetries, newCfg.Codex.CapacitySameAccountRetries) {
+		changes = appendOptionalIntChange(changes, "codex.capacity-same-account-retries", oldCfg.Codex.CapacitySameAccountRetries, newCfg.Codex.CapacitySameAccountRetries)
 	}
 	if oldCfg.Codex.OptimizeMultiAgentV2 != newCfg.Codex.OptimizeMultiAgentV2 {
 		changes = append(changes, fmt.Sprintf("codex.optimize-multi-agent-v2: %t -> %t", oldCfg.Codex.OptimizeMultiAgentV2, newCfg.Codex.OptimizeMultiAgentV2))

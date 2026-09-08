@@ -215,6 +215,8 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 	var upstreamErr error
 	didRefreshOnUnauthorized := false
 	for idx, execModel := range execModels {
+		capacityRetryLimit := m.effectiveCapacitySameAccountRetries(auth)
+		capacityRetriesUsed := 0
 		ctx = newUpstreamAttemptContext(ctx)
 		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
 		execReq := req
@@ -244,6 +246,24 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		startStream := time.Now()
 		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
+		for errStream != nil && capacityRetriesUsed < capacityRetryLimit && isUpstreamCapacityOverloadError(errStream) {
+			if hasUpstreamExecutionAttempt(errStream) {
+				upstreamErr = errStream
+			}
+			if errCtx := ctx.Err(); errCtx != nil {
+				return nil, errCtx
+			}
+			if errWait := waitForCapacitySameAccountRetry(ctx, errStream, capacityRetriesUsed); errWait != nil {
+				return nil, errWait
+			}
+			capacityRetriesUsed++
+			ctx = newUpstreamAttemptContext(ctx)
+			ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
+			startRetry := time.Now()
+			streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
+			errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
+			startStream = startRetry
+		}
 		if hasUpstreamExecutionAttempt(errStream) {
 			upstreamErr = errStream
 		}
@@ -283,6 +303,21 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			} else {
 				warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationStream, errStream)
 			}
+		}
+		for errStream != nil && capacityRetriesUsed < capacityRetryLimit && isUpstreamCapacityOverloadError(errStream) {
+			if errWait := waitForCapacitySameAccountRetry(ctx, errStream, capacityRetriesUsed); errWait != nil {
+				return nil, errWait
+			}
+			capacityRetriesUsed++
+			ctx = newUpstreamAttemptContext(ctx)
+			ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
+			startRetry := time.Now()
+			streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
+			errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
+			if hasUpstreamExecutionAttempt(errStream) {
+				upstreamErr = errStream
+			}
+			durationStream = time.Since(startRetry)
 		}
 		if !ephemeralResult {
 			if errCancel := claudeOAuthRequestCancellation(ctx, auth, errStream); errCancel != nil {
@@ -371,6 +406,34 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				}
 			} else {
 				warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), bootstrapErr)
+			}
+			for bootstrapErr != nil && capacityRetriesUsed < capacityRetryLimit && isUpstreamCapacityOverloadError(bootstrapErr) {
+				if streamResult != nil {
+					discardStreamChunks(streamResult.Chunks)
+				}
+				if errWait := waitForCapacitySameAccountRetry(ctx, bootstrapErr, capacityRetriesUsed); errWait != nil {
+					return nil, errWait
+				}
+				capacityRetriesUsed++
+				ctx = newUpstreamAttemptContext(ctx)
+				ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
+				startRetry := time.Now()
+				streamResult, bootstrapErr = executor.ExecuteStream(ctx, auth, execReq, execOpts)
+				bootstrapErr = markUpstreamExecutionAttemptFromContext(ctx, bootstrapErr)
+				streamResult, bootstrapErr = validateStreamResult(streamResult, bootstrapErr)
+				bootstrapErr = markUpstreamExecutionAttemptFromContext(ctx, bootstrapErr)
+				if streamResult == nil {
+					streamResult = &cliproxyexecutor.StreamResult{}
+				}
+				buffered = nil
+				closed = false
+				if bootstrapErr == nil {
+					buffered, closed, bootstrapErr = readStreamBootstrap(ctx, streamResult.Chunks)
+					bootstrapErr = markUpstreamExecutionAttemptFromContext(ctx, bootstrapErr)
+				}
+				if bootstrapErr != nil {
+					warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startRetry), bootstrapErr)
+				}
 			}
 			if hasUpstreamExecutionAttempt(bootstrapErr) {
 				upstreamErr = newStreamBootstrapError(bootstrapErr, streamResult.Headers)

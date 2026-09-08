@@ -574,6 +574,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		var authErr error
 		didRefreshOnUnauthorized := false
 		for _, upstreamModel := range models {
+			capacityRetryLimit := m.effectiveCapacitySameAccountRetries(auth)
+			capacityRetriesUsed := 0
 			execCtx = newUpstreamAttemptContext(execCtx)
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
@@ -615,6 +617,24 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
+			for errExec != nil && capacityRetriesUsed < capacityRetryLimit && isUpstreamCapacityOverloadError(errExec) {
+				if hasUpstreamExecutionAttempt(errExec) {
+					upstreamErr = errExec
+				}
+				if errCtx := execCtx.Err(); errCtx != nil {
+					return cliproxyexecutor.Response{}, errCtx
+				}
+				if errWait := waitForCapacitySameAccountRetry(execCtx, errExec, capacityRetriesUsed); errWait != nil {
+					return cliproxyexecutor.Response{}, errWait
+				}
+				capacityRetriesUsed++
+				execCtx = newUpstreamAttemptContext(execCtx)
+				execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
+				startRetry := time.Now()
+				resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+				errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+				durationExec = time.Since(startRetry)
+			}
 			if errExec != nil {
 				if hasUpstreamExecutionAttempt(errExec) {
 					upstreamErr = errExec
@@ -636,6 +656,24 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
+					for errExec != nil && capacityRetriesUsed < capacityRetryLimit && isUpstreamCapacityOverloadError(errExec) {
+						if hasUpstreamExecutionAttempt(errExec) {
+							upstreamErr = errExec
+						}
+						if errCtx := execCtx.Err(); errCtx != nil {
+							return cliproxyexecutor.Response{}, errCtx
+						}
+						if errWait := waitForCapacitySameAccountRetry(execCtx, errExec, capacityRetriesUsed); errWait != nil {
+							return cliproxyexecutor.Response{}, errWait
+						}
+						capacityRetriesUsed++
+						execCtx = newUpstreamAttemptContext(execCtx)
+						execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
+						startCapacityRetry := time.Now()
+						resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+						errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+						durationRetry = time.Since(startCapacityRetry)
+					}
 					if errExec != nil {
 						if hasUpstreamExecutionAttempt(errExec) {
 							upstreamErr = errExec

@@ -189,6 +189,11 @@ passthrough-headers: false
 # rounds, while an omitted or negative override inherits this global setting.
 request-retry: 3
 
+# Number of retries on the same Codex OAuth credential for transient upstream
+# capacity errors before rotating to another credential. When omitted, Codex
+# defaults to 3 only if codex.stream-bootstrap-buffering is enabled. Set 0 to disable.
+# capacity-same-account-retries: 3
+
 # Maximum number of different credentials to try in each credential retry round
 # after per-credential round filtering. Set to 0 to try all available
 # credentials. Credentials skipped by this cap still age with the global round,
@@ -445,6 +450,8 @@ codex:
   # reverse-proxy read timeouts (e.g. nginx proxy_read_timeout) on long reasoning requests.
   # Default: false
   stream-bootstrap-buffering: false
+  # Optional Codex-specific override for capacity-same-account-retries.
+  # capacity-same-account-retries: 3
   # When true, optimize Codex Desktop, codex-tui, and codex_cli_rs requests for multi-agent v2.
   # This refreshes Codex spawn_agent model details, removes message parameter encryption,
   # normalizes encrypted agent_message content for Codex, and converts agent_message input

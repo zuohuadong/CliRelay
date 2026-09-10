@@ -135,12 +135,26 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	var lastErr error
 	var preferredUpstreamErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	requestAttempted := make(map[string]struct{})
 	for attempt := 0; ; attempt++ {
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
-		resp, errExec := m.executeMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry)
+		resp, errExec := m.executeMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry, requestAttempted)
 		if errExec == nil {
 			return resp, nil
+		}
+		// Capacity-overload rejections skip credential cooldown, so remember the
+		// credentials attempted this round: later rounds must rotate to fresh
+		// credentials instead of re-picking the same ones.
+		if isCapacityOverloadExecutionError(errExec) {
+			for authID := range roundAttempted {
+				requestAttempted[authID] = struct{}{}
+			}
+		}
+		// When every credential is excluded the round fails at selection time with
+		// a sentinel; surface the last real upstream error instead.
+		if lastErr != nil && len(requestAttempted) > 0 && isCredentialExhaustedPickError(errExec) {
+			errExec = lastErr
 		}
 		if isTerminalEgressError(errExec) {
 			return cliproxyexecutor.Response{}, errExec
@@ -198,12 +212,26 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	var lastErr error
 	var preferredUpstreamErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	requestAttempted := make(map[string]struct{})
 	for attempt := 0; ; attempt++ {
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
-		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry)
+		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry, requestAttempted)
 		if errExec == nil {
 			return resp, nil
+		}
+		// Capacity-overload rejections skip credential cooldown, so remember the
+		// credentials attempted this round: later rounds must rotate to fresh
+		// credentials instead of re-picking the same ones.
+		if isCapacityOverloadExecutionError(errExec) {
+			for authID := range roundAttempted {
+				requestAttempted[authID] = struct{}{}
+			}
+		}
+		// When every credential is excluded the round fails at selection time with
+		// a sentinel; surface the last real upstream error instead.
+		if lastErr != nil && len(requestAttempted) > 0 && isCredentialExhaustedPickError(errExec) {
+			errExec = lastErr
 		}
 		if isTerminalEgressError(errExec) {
 			return cliproxyexecutor.Response{}, errExec
@@ -256,15 +284,29 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	var preferredUpstreamErr error
 	homeRetryLimit := -1
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	requestAttempted := make(map[string]struct{})
 	attempt := 0
 	retryRoundPending := false
 	retryRoundWaited := false
 	for {
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
-		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry)
+		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry, requestAttempted)
 		if errStream == nil {
 			return result, nil
+		}
+		// Capacity-overload rejections skip credential cooldown, so remember the
+		// credentials attempted this round: later rounds must rotate to fresh
+		// credentials instead of re-picking the same ones.
+		if isCapacityOverloadExecutionError(errStream) {
+			for authID := range roundAttempted {
+				requestAttempted[authID] = struct{}{}
+			}
+		}
+		// When every credential is excluded the round fails at selection time with
+		// a sentinel; surface the last real upstream error instead.
+		if lastErr != nil && len(requestAttempted) > 0 && isCredentialExhaustedPickError(errStream) {
+			errStream = lastErr
 		}
 		if isTerminalEgressError(errStream) {
 			var bootstrapErr *streamBootstrapError
@@ -471,7 +513,7 @@ func mergeRequestHeaders(current, updates http.Header, clear []string) http.Head
 	return out
 }
 
-func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, retryRound int, defaultRequestRetry int) (cliproxyexecutor.Response, error) {
+func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, retryRound int, defaultRequestRetry int, priorAttempted map[string]struct{}) (cliproxyexecutor.Response, error) {
 	if len(providers) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
@@ -489,6 +531,13 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	tried := make(map[string]struct{})
 	if !homeMode {
 		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+			tried[authID] = struct{}{}
+		}
+		// Credentials attempted in earlier retry rounds of this request stay
+		// excluded even when their cooldown was skipped (e.g. transient
+		// capacity overload), so later rounds rotate to fresh credentials
+		// instead of re-picking the same ones.
+		for authID := range priorAttempted {
 			tried[authID] = struct{}{}
 		}
 	}
@@ -772,7 +821,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	}
 }
 
-func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, retryRound int, defaultRequestRetry int) (cliproxyexecutor.Response, error) {
+func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, retryRound int, defaultRequestRetry int, priorAttempted map[string]struct{}) (cliproxyexecutor.Response, error) {
 	if len(providers) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
@@ -784,6 +833,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	tried := make(map[string]struct{})
 	if !homeMode {
 		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+			tried[authID] = struct{}{}
+		}
+		// Keep earlier-round attempts excluded across retry rounds (see
+		// executeMixedOnce) so cooldown-skipped credentials are not re-picked.
+		for authID := range priorAttempted {
 			tried[authID] = struct{}{}
 		}
 	}
@@ -988,7 +1042,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	}
 }
 
-func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, homeRetryLimit *int, retryRound int, defaultRequestRetry int) (*cliproxyexecutor.StreamResult, error) {
+func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, homeRetryLimit *int, retryRound int, defaultRequestRetry int, priorAttempted map[string]struct{}) (*cliproxyexecutor.StreamResult, error) {
 	if len(providers) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
@@ -1007,6 +1061,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	tried := make(map[string]struct{})
 	if !homeMode {
 		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+			tried[authID] = struct{}{}
+		}
+		// Keep earlier-round attempts excluded across retry rounds (see
+		// executeMixedOnce) so cooldown-skipped credentials are not re-picked.
+		for authID := range priorAttempted {
 			tried[authID] = struct{}{}
 		}
 	}
@@ -1352,6 +1411,21 @@ func shouldExcludeHomeAuthAfterStreamError(ctx context.Context, _ *Auth, err err
 		return false
 	}
 	return true
+}
+
+// isCredentialExhaustedPickError reports whether the error is the selection-time sentinel
+// returned when no eligible credential remains (as opposed to a real upstream fault).
+func isCredentialExhaustedPickError(err error) bool {
+	var authErr *Error
+	if !errors.As(err, &authErr) || authErr == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(authErr.Code)) {
+	case "auth_not_found", "auth_unavailable":
+		return true
+	default:
+		return false
+	}
 }
 
 func withAttemptedAuthTracker(opts cliproxyexecutor.Options, attempted map[string]struct{}) cliproxyexecutor.Options {

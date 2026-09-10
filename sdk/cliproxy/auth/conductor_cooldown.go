@@ -1506,23 +1506,52 @@ func shouldSkipCredentialCooldown(err *Error) bool {
 // upstream capacity/overload signal that must not trigger credential cooldown.
 // These errors are already handled by same-account capacity retries; applying a
 // cooldown on top would incorrectly mark a healthy credential as unavailable.
-func isCapacityOverloadResultError(err *Error) bool {
-	if err == nil {
-		return false
-	}
-	lower := strings.ToLower(err.Message)
-	for _, marker := range [...]string{
-		"server_is_overloaded",
-		"selected model is at capacity",
-		"our servers are currently overloaded",
-		"you can retry your request",
-		"service_unavailable_error",
-	} {
+// capacityOverloadMarkers are the upstream message fragments that identify a
+// transient capacity/overload rejection.
+var capacityOverloadMarkers = [...]string{
+	"server_is_overloaded",
+	"selected model is at capacity",
+	"our servers are currently overloaded",
+	"you can retry your request",
+	"service_unavailable_error",
+}
+
+func containsCapacityOverloadMarker(message string) bool {
+	lower := strings.ToLower(message)
+	for _, marker := range capacityOverloadMarkers {
 		if strings.Contains(lower, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+func isCapacityOverloadResultError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	return containsCapacityOverloadMarker(err.Message)
+}
+
+// isCapacityOverloadExecutionError reports whether a round-level execution error is a
+// transient upstream capacity/overload rejection. These errors skip credential cooldown,
+// so retry rounds must exclude already-attempted credentials explicitly to keep rotating
+// towards fresh credentials instead of re-picking the same ones.
+func isCapacityOverloadExecutionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil && isCapacityOverloadResultError(authErr) {
+		return true
+	}
+	switch statusCodeFromError(err) {
+	case http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return containsCapacityOverloadMarker(err.Error())
+	default:
+		return false
+	}
 }
 
 // isConnectionLifecycleError reports transport/session lifecycle failures that must

@@ -38,6 +38,7 @@ func isUpstreamCapacityOverloadError(err error) bool {
 		"model is at capacity. please try a different model",
 		"our servers are currently overloaded",
 		"slow_down",
+		"you can retry your request",
 	} {
 		if strings.Contains(lower, marker) {
 			return true

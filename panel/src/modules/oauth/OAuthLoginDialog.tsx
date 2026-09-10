@@ -180,10 +180,10 @@ export function OAuthLoginDialog({
       const projectId = extra?.projectId?.trim();
       return {
         ...(projectId ? { projectId } : {}),
-        ...(provider === "codex" && egressId ? { egressId } : {}),
+        ...(provider === "codex" && egressEnabled && egressId ? { egressId } : {}),
       };
     },
-    [selectedEgressID],
+    [egressEnabled, selectedEgressID],
   );
 
   const completeAuthorization = useCallback(
@@ -415,8 +415,8 @@ export function OAuthLoginDialog({
     (provider: OAuthProvider) => {
       const state = states[provider] ?? {};
       const status = state.status ?? "idle";
-      const noCodexEndpoint = provider === "codex" && !selectedEgressID.trim();
-      const codexReadinessBlocked = provider === "codex" && (!egressEnabled || !codexOAuthAllowed);
+      const noCodexEndpoint = provider === "codex" && egressEnabled && !selectedEgressID.trim();
+      const codexReadinessBlocked = provider === "codex" && egressEnabled && !codexOAuthAllowed;
       const disabled = status === "waiting" || noCodexEndpoint || codexReadinessBlocked;
       const url = state.url ?? "";
       const polling = Boolean(state.polling);
@@ -610,7 +610,7 @@ export function OAuthLoginDialog({
             <TabsTrigger value="vertex">{t("oauth.vertex_title")}</TabsTrigger>
           </TabsList>
 
-          {tab === "codex" ? (
+          {tab === "codex" && egressEnabled ? (
             <div className="mt-4 rounded-2xl border border-slate-200 bg-white/70 p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-950/60">
               <p className="mb-2 text-xs font-semibold text-slate-700 dark:text-white/75">
                 {t("oauth.authorization_egress")}

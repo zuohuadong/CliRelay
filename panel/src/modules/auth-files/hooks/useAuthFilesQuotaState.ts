@@ -440,11 +440,14 @@ export function useAuthFilesQuotaState({
         const current = candidate as { file: AuthFileItem; provider: QuotaProvider };
         if (quotaInFlightRef.current.has(current.file.name)) return false;
         const state = quotaByFileNameRef.current[current.file.name];
+        if (state?.status === "loading") return false;
         const items = Array.isArray(state?.items) ? state.items : [];
         const updatedAt = state?.updatedAt ?? 0;
         const isStale =
           typeof updatedAt === "number" && updatedAt > 0 ? now - updatedAt > staleMs : true;
-        const needs = !state || state.status === "error" || items.length === 0 || isStale;
+        const isFailed = state?.status === "error";
+        const hasItems = items.length > 0;
+        const needs = !state || (isFailed ? isStale : (!hasItems || isStale));
         if (!needs) return false;
 
         const lastAttempt = quotaWarmupAttemptRef.current.get(current.file.name) ?? 0;
@@ -501,10 +504,11 @@ export function useAuthFilesQuotaState({
 
     const firstVisibleScope = previousVisibleScopeKey === null;
     const initialVisibleScope = firstVisibleScope && navigationType !== "POP";
-    const switchedVisibleScope = !firstVisibleScope && previousVisibleScopeKey !== visibleScopeKey;
-    if (!initialVisibleScope && !switchedVisibleScope && quotaAutoRefreshMs <= 0) return;
+   const switchedVisibleScope = !firstVisibleScope && previousVisibleScopeKey !== visibleScopeKey;
+    const isPopNavigation = firstVisibleScope && navigationType === "POP";
+    if (!initialVisibleScope && !switchedVisibleScope && !isPopNavigation) return;
 
-    const toFetch =
+   const toFetch =
       initialVisibleScope || switchedVisibleScope
         ? resolveQuotaTargets(pageItems)
         : collectQuotaFetchTargets(pageItems);

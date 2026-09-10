@@ -16,31 +16,39 @@ describe("OAuth egress serialization", () => {
     postMock.mockReset();
   });
 
-  test("requires and passes egress_id for Codex authorization", async () => {
+  test("allows Codex authorization without egress and passes egress_id when provided", async () => {
     const { oauthApi } = await import("@/lib/http/apis/oauth");
     getMock.mockResolvedValue({ url: "https://auth.example", state: "state-1" });
 
-    expect(() => oauthApi.startAuth("codex")).toThrow("egress endpoint");
+    await oauthApi.startAuth("codex");
     await oauthApi.startAuth("codex", { egressId: "hk" });
 
-    expect(getMock).toHaveBeenCalledWith("/codex-auth-url", {
+    expect(getMock).toHaveBeenNthCalledWith(1, "/codex-auth-url", {
+      params: { is_webui: true },
+    });
+    expect(getMock).toHaveBeenNthCalledWith(2, "/codex-auth-url", {
       params: { is_webui: true, egress_id: "hk" },
     });
   });
 
-  test("passes egress_id for Codex callback only", async () => {
+  test("passes egress_id for Codex callback only when provided", async () => {
     const { oauthApi } = await import("@/lib/http/apis/oauth");
     postMock.mockResolvedValue({ status: "ok" });
 
+    await oauthApi.submitCallback("codex", "https://callback.example");
     await oauthApi.submitCallback("codex", "https://callback.example", { egressId: "hk" });
     await oauthApi.submitCallback("xai", "https://callback.example", { egressId: "ignored" });
 
     expect(postMock).toHaveBeenNthCalledWith(1, "/oauth-callback", {
       provider: "codex",
       redirect_url: "https://callback.example",
-      egress_id: "hk",
     });
     expect(postMock).toHaveBeenNthCalledWith(2, "/oauth-callback", {
+      provider: "codex",
+      redirect_url: "https://callback.example",
+      egress_id: "hk",
+    });
+    expect(postMock).toHaveBeenNthCalledWith(3, "/oauth-callback", {
       provider: "xai",
       redirect_url: "https://callback.example",
     });

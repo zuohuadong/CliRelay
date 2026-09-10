@@ -263,18 +263,30 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
 	egressID := strings.TrimSpace(c.Query("egress_id"))
-	if egressID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "egress_required", "message": "egress_id is required for Codex OAuth"}})
-		return
-	}
-	egressService, oauthHTTPClient, err := h.codexOAuthEgressClient(ctx, egressID)
-	if err != nil {
-		writeEgressError(c, err)
-		return
-	}
-	if err = codexOAuthEndpointAvailable(ctx, egressService, egressID); err != nil {
-		writeEgressError(c, err)
-		return
+	var (
+		egressService   *egress.Service
+		oauthHTTPClient *http.Client
+		proxyURL        string
+		proxyID         string
+		persistProxy    bool
+	)
+	if egressID != "" {
+		var err error
+		egressService, oauthHTTPClient, err = h.codexOAuthEgressClient(ctx, egressID)
+		if err != nil {
+			writeEgressError(c, err)
+			return
+		}
+		if err = codexOAuthEndpointAvailable(ctx, egressService, egressID); err != nil {
+			writeEgressError(c, err)
+			return
+		}
+	} else {
+		var okProxy bool
+		proxyURL, proxyID, persistProxy, okProxy = resolveOAuthProxy(c, h.cfg)
+		if !okProxy {
+			return
+		}
 	}
 
 	fmt.Println("Initializing Codex authentication...")
@@ -294,13 +306,22 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
 		return
 	}
-	if err = RegisterOAuthSessionWithEndpointReservation(state, "codex", egressID, map[string]any{"egress_id": egressID}); err != nil {
-		writeEgressError(c, fmt.Errorf("%w: %v", egress.ErrEndpointInUse, err))
-		return
+	if egressID != "" {
+		if err = RegisterOAuthSessionWithEndpointReservation(state, "codex", egressID, map[string]any{"egress_id": egressID}); err != nil {
+			writeEgressError(c, fmt.Errorf("%w: %v", egress.ErrEndpointInUse, err))
+			return
+		}
+	} else {
+		RegisterOAuthSession(state, "codex")
 	}
 
 	// Initialize Codex auth service
 	oauthCfg := h.codexOAuthConfig()
+	if egressID == "" && proxyURL != "" && oauthCfg != nil {
+		cfgCopy := *oauthCfg
+		cfgCopy.ProxyURL = proxyURL
+		oauthCfg = &cfgCopy
+	}
 	openaiAuth := newCodexOAuthService(oauthCfg, oauthHTTPClient)
 	authDir := ""
 	if oauthCfg != nil {
@@ -377,18 +398,34 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		}
 
 		log.Debug("Authorization code received, exchanging for tokens...")
-		currentEgressService, exchangeHTTPClient, errRoute := h.codexOAuthEgressClient(ctx, egressID)
-		if errRoute != nil {
-			SetOAuthSessionError(state, oauthSessionErrorWithCause("Codex OAuth egress is not ready", errRoute))
-			log.Errorf("Codex OAuth egress recheck failed: %v", errRoute)
-			return
+		var (
+			exchangeAuth         codexOAuthService
+			currentEgressService *egress.Service
+		)
+		if egressID != "" {
+			var errRoute error
+			var exchangeHTTPClient *http.Client
+			currentEgressService, exchangeHTTPClient, errRoute = h.codexOAuthEgressClient(ctx, egressID)
+			if errRoute != nil {
+				SetOAuthSessionError(state, oauthSessionErrorWithCause("Codex OAuth egress is not ready", errRoute))
+				log.Errorf("Codex OAuth egress recheck failed: %v", errRoute)
+				return
+			}
+			if errAvailable := codexOAuthEndpointAvailable(ctx, currentEgressService, egressID); errAvailable != nil {
+				SetOAuthSessionError(state, oauthSessionErrorWithCause("Codex OAuth egress endpoint is no longer available", errAvailable))
+				log.Errorf("Codex OAuth endpoint availability recheck failed: %v", errAvailable)
+				return
+			}
+			exchangeAuth = newCodexOAuthService(h.codexOAuthConfig(), exchangeHTTPClient)
+		} else {
+			exchangeCfg := h.codexOAuthConfig()
+			if proxyURL != "" && exchangeCfg != nil {
+				cfgCopy := *exchangeCfg
+				cfgCopy.ProxyURL = proxyURL
+				exchangeCfg = &cfgCopy
+			}
+			exchangeAuth = newCodexOAuthService(exchangeCfg, nil)
 		}
-		if errAvailable := codexOAuthEndpointAvailable(ctx, currentEgressService, egressID); errAvailable != nil {
-			SetOAuthSessionError(state, oauthSessionErrorWithCause("Codex OAuth egress endpoint is no longer available", errAvailable))
-			log.Errorf("Codex OAuth endpoint availability recheck failed: %v", errAvailable)
-			return
-		}
-		exchangeAuth := newCodexOAuthService(h.codexOAuthConfig(), exchangeHTTPClient)
 		// Exchange code for tokens using internal auth service
 		bundle, errExchange := exchangeAuth.ExchangeCodeForTokens(ctx, code, pkceCodes)
 		if errExchange != nil {
@@ -427,7 +464,16 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 			return
 		}
 		tokenStorage.SetMetadata(record.Metadata)
-		savedPath, errSave := h.saveCodexTokenWithBinding(ctx, currentEgressService, egressID, record, tokenStorage)
+		var (
+			savedPath string
+			errSave   error
+		)
+		if egressID != "" {
+			savedPath, errSave = h.saveCodexTokenWithBinding(ctx, currentEgressService, egressID, record, tokenStorage)
+		} else {
+			applyOAuthProxy(record, record.Metadata, proxyURL, proxyID, persistProxy)
+			savedPath, errSave = h.saveTokenRecord(ctx, record)
+		}
 		if errSave != nil {
 			SetOAuthSessionError(state, "Failed to save authentication tokens")
 			log.Errorf("Failed to save authentication tokens: %v", errSave)

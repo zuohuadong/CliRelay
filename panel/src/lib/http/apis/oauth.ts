@@ -33,13 +33,10 @@ export const oauthApi = {
     }
     const projectId = normalizeString(options?.projectId);
     const egressId = normalizeString(options?.egressId);
-    if (provider === "codex" && !egressId) {
-      throw new Error("Codex authorization requires an egress endpoint");
-    }
     if (provider === "gemini-cli" && projectId) {
       params.project_id = projectId;
     }
-    if (provider === "codex") {
+    if (provider === "codex" && egressId) {
       params.egress_id = egressId;
     }
     const path = `/${provider}-auth-url`;
@@ -59,13 +56,10 @@ export const oauthApi = {
   ) => {
     const callbackProvider = CALLBACK_PROVIDER_MAP[provider] ?? provider;
     const egressId = normalizeString(options?.egressId);
-    if (provider === "codex" && !egressId) {
-      throw new Error("Codex authorization requires an egress endpoint");
-    }
     return apiClient.post<OAuthCallbackResponse>("/oauth-callback", {
       provider: callbackProvider,
       redirect_url: redirectUrl,
-      ...(provider === "codex" ? { egress_id: egressId } : {}),
+      ...(provider === "codex" && egressId ? { egress_id: egressId } : {}),
     });
   },
   iflowCookieAuth: (cookie: string) => {

@@ -538,7 +538,7 @@ describe("AuthFilesPage OAuth login dialog", () => {
     expect(within(dialog).getByRole("button", { name: "Start authorization" })).toBeDisabled();
   });
 
-  test("blocks Codex when fixed egress runtime is disabled and explains browser versus server egress scope", async () => {
+  test("allows Codex authorization without egress when fixed egress runtime is disabled", async () => {
     const user = userEvent.setup();
     mocks.getOverview.mockResolvedValue({
       ...(await mocks.getOverview()),
@@ -569,13 +569,17 @@ describe("AuthFilesPage OAuth login dialog", () => {
     const dialog = await screen.findByRole("dialog");
     const scoped = within(dialog);
     expect(
-      scoped.getByText(/Fixed egress runtime is disabled, so Codex authorization is blocked/),
-    ).toBeInTheDocument();
-    expect(scoped.getByText(/Browser authorization uses the operator network/)).toBeInTheDocument();
-    expect(scoped.getByRole("button", { name: "Start authorization" })).toBeDisabled();
-
-    await user.click(scoped.getByRole("tab", { name: "Anthropic OAuth" }));
+      scoped.queryByText(/Fixed egress runtime is disabled, so Codex authorization is blocked/),
+    ).not.toBeInTheDocument();
+    expect(
+      scoped.queryByRole("combobox", { name: "Authorization Egress" }),
+    ).not.toBeInTheDocument();
     expect(scoped.getByRole("button", { name: "Start authorization" })).toBeEnabled();
+
+    await user.click(scoped.getByRole("button", { name: "Start authorization" }));
+    await waitFor(() => {
+      expect(mocks.startAuth).toHaveBeenCalledWith("codex", {});
+    });
   });
 
   test("shows translated callback guidance instead of raw oauth keys after starting authorization", async () => {

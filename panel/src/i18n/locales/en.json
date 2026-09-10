@@ -1940,7 +1940,7 @@
       "unbound_codex_auths": "One or more Codex accounts have no endpoint binding.",
       "missing_account_id": "One or more Codex accounts need reauthorization to obtain a stable identity.",
       "bound_endpoint_not_ready": "One or more bound endpoints are not runtime ready.",
-      "runtime_disabled": "Fixed egress runtime is disabled, so Codex authorization is blocked.",
+      "runtime_disabled": "Fixed egress runtime is disabled.",
       "endpoint_disabled": "The endpoint is disabled.",
       "expected_public_ip_required": "Expected public IP is missing.",
       "expected_public_ip_invalid": "Expected public IP is invalid.",

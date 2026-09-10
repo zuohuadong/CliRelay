@@ -64,6 +64,59 @@ func TestRequestCodexTokenRejectsRuntimeDisabled(t *testing.T) {
 	}
 }
 
+func TestRequestCodexTokenWithoutEgressSucceedsWhenRuntimeDisabled(t *testing.T) {
+	var exchanges atomic.Int32
+	originalNewCodexOAuthService := newCodexOAuthService
+	newCodexOAuthService = func(_ *config.Config, _ *http.Client) codexOAuthService {
+		return &countingCodexOAuthService{fakeCodexOAuthService: &fakeCodexOAuthService{}, exchanges: &exchanges}
+	}
+	defer func() { newCodexOAuthService = originalNewCodexOAuthService }()
+
+	handler, service, _, authDir := newCodexOAuthEgressFlow(t)
+	updated := *handler.codexOAuthConfig()
+	updated.EgressNetwork.Enabled = false
+	handler.SetConfig(&updated)
+
+	router := gin.New()
+	router.GET("/codex-auth-url", handler.RequestCodexToken)
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/codex-auth-url", nil)
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Status string `json:"status"`
+		URL    string `json:"url"`
+		State  string `json:"state"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.Status != "ok" || payload.State == "" || payload.URL == "" {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+	defer CompleteOAuthSession(payload.State)
+
+	if _, err := WriteOAuthCallbackFileForPendingSession(authDir, "codex", payload.State, "regular-code", ""); err != nil {
+		t.Fatalf("write callback: %v", err)
+	}
+	waitForOAuthSessionDone(t, payload.State)
+
+	if exchanges.Load() != 1 {
+		t.Fatalf("token exchange count=%d, want 1 for direct OAuth", exchanges.Load())
+	}
+	bindings, err := service.ListBindings(context.Background())
+	if err != nil {
+		t.Fatalf("ListBindings() error: %v", err)
+	}
+	if len(bindings) != 0 {
+		t.Fatalf("expected 0 bindings for direct OAuth, got %d", len(bindings))
+	}
+}
+
 func TestRequestCodexTokenRechecksSelectedEgressBeforeExchange(t *testing.T) {
 	var exchanges atomic.Int32
 	originalNewCodexOAuthService := newCodexOAuthService

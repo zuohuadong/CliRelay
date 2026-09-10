@@ -146,7 +146,7 @@ func egressReadinessIssue(code string) gin.H {
 		"unbound_codex_auths":        "One or more Codex accounts are unbound.",
 		"missing_account_id":         "One or more Codex accounts have no stable account identity.",
 		"bound_endpoint_not_ready":   "One or more bound endpoints are not runtime ready.",
-		"runtime_disabled":           "Egress runtime is disabled; Codex OAuth traffic is blocked.",
+		"runtime_disabled":           "Fixed egress runtime is disabled.",
 	}
 	message := messages[code]
 	if message == "" {

@@ -1955,7 +1955,7 @@
       "unbound_codex_auths": "一个或多个 Codex 账号尚未绑定出口端点。",
       "missing_account_id": "一个或多个 Codex 账号需要重新授权以获取稳定身份。",
       "bound_endpoint_not_ready": "一个或多个已绑定端点尚未运行时就绪。",
-      "runtime_disabled": "固定出口运行态已禁用，因此 Codex 授权被阻止。",
+      "runtime_disabled": "固定出口运行态已禁用。",
       "endpoint_disabled": "出口端点已停用。",
       "expected_public_ip_required": "缺少预期公网 IP。",
       "expected_public_ip_invalid": "预期公网 IP 无效。",

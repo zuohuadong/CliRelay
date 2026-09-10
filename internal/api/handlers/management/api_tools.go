@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
+	codexauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
@@ -130,6 +132,10 @@ func (h *Handler) APICall(c *gin.Context) {
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndex(authIndex)
+	if authIndex != "" && auth == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "auth not found"})
+		return
+	}
 	if auth != nil && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "auth is disabled"})
 		return
@@ -152,16 +158,13 @@ func (h *Handler) APICall(c *gin.Context) {
 			token, tokenErr = h.resolveTokenForAuth(c.Request.Context(), auth, requestProxyURL)
 			tokenResolved = true
 		}
-		if auth != nil && token == "" {
+		if token == "" {
 			if tokenErr != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "auth token refresh failed"})
 				return
 			}
 			c.JSON(http.StatusBadRequest, gin.H{"error": "auth token not found"})
 			return
-		}
-		if token == "" {
-			continue
 		}
 		reqHeaders[key] = strings.ReplaceAll(value, "$TOKEN$", token)
 	}
@@ -237,6 +240,9 @@ func tokenValueForAuth(auth *coreauth.Auth) string {
 	if v := tokenValueFromMetadata(auth.Metadata); v != "" {
 		return v
 	}
+	if v := tokenValueFromStorage(auth.Storage); v != "" {
+		return v
+	}
 	if auth.Attributes != nil {
 		if v := strings.TrimSpace(auth.Attributes["api_key"]); v != "" {
 			return v
@@ -255,7 +261,100 @@ func (h *Handler) resolveTokenForAuth(ctx context.Context, auth *coreauth.Auth, 
 		return token, errToken
 	}
 
+
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	if provider == "codex" {
+		return h.resolveCodexOAuthAccessToken(ctx, auth, requestProxyURL)
+	}
+	if provider == "claude" || provider == "anthropic" {
+		return h.resolveClaudeOAuthAccessToken(ctx, auth, requestProxyURL)
+	}
+
 	return tokenValueForAuth(auth), nil
+}
+
+
+func tokenValueFromStorage(storage interface{}) string {
+	if storage == nil {
+		return ""
+	}
+	switch s := storage.(type) {
+	case *codexauth.CodexTokenStorage:
+		if s != nil {
+			return strings.TrimSpace(s.AccessToken)
+		}
+	case *claudeauth.ClaudeTokenStorage:
+		if s != nil {
+			return strings.TrimSpace(s.AccessToken)
+		}
+	}
+	return ""
+}
+
+func (h *Handler) resolveCodexOAuthAccessToken(ctx context.Context, auth *coreauth.Auth, requestProxyURL string) (string, error) {
+	current := strings.TrimSpace(tokenValueForAuth(auth))
+	if current != "" && !antigravityTokenNeedsRefresh(auth.Metadata) {
+		return current, nil
+	}
+	refreshToken := stringValue(auth.Metadata, "refresh_token")
+	if refreshToken == "" {
+		return current, nil
+	}
+	proxyURL := strings.TrimSpace(requestProxyURL)
+	if proxyURL == "" && auth != nil {
+		proxyURL = strings.TrimSpace(auth.ProxyURL)
+	}
+	svc := codexauth.NewCodexAuthWithProxyURL(h.cfg, proxyURL)
+	td, errRefresh := svc.RefreshTokensWithRetry(ctx, refreshToken, 3)
+	if errRefresh != nil {
+		return current, errRefresh
+	}
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	auth.Metadata["access_token"] = td.AccessToken
+	if td.RefreshToken != "" {
+		auth.Metadata["refresh_token"] = td.RefreshToken
+	}
+	auth.Metadata["expired"] = td.Expire
+	auth.Metadata["type"] = "codex"
+	if h != nil && h.authManager != nil {
+		_, _ = h.authManager.Update(ctx, auth)
+	}
+	return strings.TrimSpace(td.AccessToken), nil
+}
+
+func (h *Handler) resolveClaudeOAuthAccessToken(ctx context.Context, auth *coreauth.Auth, requestProxyURL string) (string, error) {
+	current := strings.TrimSpace(tokenValueForAuth(auth))
+	if current != "" && !antigravityTokenNeedsRefresh(auth.Metadata) {
+		return current, nil
+	}
+	refreshToken := strings.TrimSpace(claudeauth.ReadMetadataString(&auth.Metadata, "refresh_token"))
+	if refreshToken == "" {
+		return current, nil
+	}
+	proxyURL := strings.TrimSpace(requestProxyURL)
+	if proxyURL == "" && auth != nil {
+		proxyURL = strings.TrimSpace(auth.ProxyURL)
+	}
+	svc := claudeauth.NewClaudeAuthWithProxyURL(h.cfg, proxyURL)
+	td, errRefresh := svc.RefreshTokensWithRetry(ctx, refreshToken, 3)
+	if errRefresh != nil {
+		return current, errRefresh
+	}
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	claudeauth.StoreMetadataValue(&auth.Metadata, "access_token", td.AccessToken)
+	if td.RefreshToken != "" {
+		claudeauth.StoreMetadataString(&auth.Metadata, "refresh_token", td.RefreshToken)
+	}
+	claudeauth.StoreMetadataValue(&auth.Metadata, "expired", td.Expire)
+	claudeauth.StoreMetadataValue(&auth.Metadata, "type", "claude")
+	if h != nil && h.authManager != nil {
+		_, _ = h.authManager.Update(ctx, auth)
+	}
+	return strings.TrimSpace(td.AccessToken), nil
 }
 
 func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *coreauth.Auth, requestProxyURL string) (string, error) {

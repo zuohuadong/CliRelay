@@ -292,7 +292,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	var bufferedChunks [][]byte
 	var initialChunks [][]byte
 	immediateTerminal := false
-	// bootstrapTerminalErr holds a non-overload terminal failure seen while buffering. It is
+	// bootstrapTerminalErr holds a non-retryable terminal failure seen while buffering. It is
 	// delivered as an in-stream chunk after the buffered handshake so downstream behaviour stays
 	// identical to the unbuffered path instead of silently turning into a credential failover.
 	var bootstrapTerminalErr error
@@ -371,12 +371,12 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return nil, wsErr
 			}
 			if streamErr, terminalBody, ok := codexTerminalFailureErr(payload); ok {
-				// A transient capacity rejection is retried on another credential, so the
+				// A retryable rejection is retried on another credential, so the
 				// downstream websocket session must survive this upstream teardown. Notifying
 				// the disconnect here would close the client connection before the retry can
 				// deliver anything. Every other terminal failure is forwarded in-stream and
 				// legitimately terminates the session, so it keeps the notifying variant.
-				failoverPending := isCodexOverloadBootstrapFailure(terminalBody)
+				failoverPending := isCodexRetryableBootstrapFailure(terminalBody)
 				if sess != nil {
 					unlockStreamSession()
 					if failoverPending {
@@ -400,8 +400,11 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					// Fail the attempt before the downstream headers are committed so the
 					// conductor can transparently retry on another credential, and report the
 					// status the upstream refused to put on the wire.
-					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap overload rejection after %d buffered handshake events, failing over", len(bufferedChunks))
-					return nil, newCodexBootstrapOverloadErr(terminalBody)
+					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap retryable rejection after %d buffered handshake events, failing over", len(bufferedChunks))
+					if isCodexOverloadBootstrapFailure(terminalBody) {
+						return nil, newCodexBootstrapOverloadErr(terminalBody)
+					}
+					return nil, streamErr
 				}
 				bootstrapTerminalErr = streamErr
 				break
@@ -461,7 +464,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				currentChunks = helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, clientBody, line, &param, claudeInputTokens)
 			}
 
-			if isCodexHandshakeMetadataEvent(eventType) && !isTerminalEvent {
+			if isCodexBootstrapMetadata(payload) && !isTerminalEvent {
 				if len(bufferedChunks) < codexBootstrapMaxBufferedEvents {
 					bufferedChunks = append(bufferedChunks, currentChunks...)
 					continue

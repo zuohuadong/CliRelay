@@ -559,3 +559,77 @@ func TestCodexWebsocketsExecutor_BootstrapNonOverload_StillNotifiesDownstreamDis
 		t.Fatal("a terminal failure that is delivered in-stream must still signal the downstream disconnect")
 	}
 }
+
+func TestCodexBootstrapRetryBoundary(t *testing.T) {
+	const serverFailure = `{"type":"response.failed","response":{"error":{"type":"server_error","code":"server_error","message":"Internal error"}}}`
+	const timeoutFailure = `{"type":"error","error":{"type":"timeout_error","code":"request_timeout"}}`
+	const partAdded = `{"type":"response.content_part.added","part":{"type":"output_text","text":""}}`
+	tests := []struct {
+		name   string
+		events []string
+		retry  bool
+		status int
+	}{
+		{"empty_announcements_overload", []string{codexOutputAddedEvent, partAdded, codexOverloadEvent}, true, 503},
+		{"server_failure", []string{codexOutputAddedEvent, partAdded, serverFailure}, true, 502},
+		{"timeout_failure", []string{partAdded, timeoutFailure}, true, 502},
+		{"invalid_request", []string{codexOutputAddedEvent, codexInvalidEvent}, false, 400},
+		{"unknown_failure", []string{`{"type":"error","error":{"type":"upstream_error","code":"unknown"}}`}, false, 502},
+		{"text_committed", []string{`{"type":"response.output_text.delta","delta":"hello"}`, serverFailure}, false, 502},
+		{"reasoning_committed", []string{`{"type":"response.reasoning_summary_text.delta","delta":"thinking"}`, serverFailure}, false, 502},
+		{"tool_committed", []string{`{"type":"response.output_item.added","item":{"type":"function_call","name":"run","arguments":"{}"}}`, serverFailure}, false, 502},
+		{"arguments_committed", []string{`{"type":"response.function_call_arguments.delta","delta":"{}"}`, serverFailure}, false, 502},
+		{"populated_message", []string{`{"type":"response.output_item.added","item":{"type":"message","content":[{"type":"output_text","text":"hello"}]}}`, serverFailure}, false, 502},
+		{"populated_part", []string{`{"type":"response.content_part.added","part":{"type":"output_text","text":"hello"}}`, serverFailure}, false, 502},
+	}
+	for _, transport := range []string{"http", "websocket"} {
+		for _, tt := range tests {
+			t.Run(transport+"/"+tt.name, func(t *testing.T) {
+				events := append([]string{codexCreatedEvent, codexInProgressEvent}, tt.events...)
+				req, opts := codexTestRequest()
+				var result *cliproxyexecutor.StreamResult
+				var err error
+				if transport == "http" {
+					server := codexSSEServer(events...)
+					defer server.Close()
+					result, err = NewCodexExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+				} else {
+					server := codexWebsocketServer(t, events...)
+					defer server.Close()
+					result, err = NewCodexWebsocketsExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+				}
+				if tt.retry {
+					if err == nil || result != nil {
+						t.Fatalf("retryable bootstrap must return error without a stream: result=%v err=%v", result, err)
+					}
+				} else {
+					if err != nil || result == nil {
+						t.Fatalf("expected in-stream failure: result=%v err=%v", result, err)
+					}
+					var output string
+					output, err = drainChunks(result)
+					if !strings.Contains(output, "response.created") {
+						t.Fatalf("committed stream lost its handshake: %s", output)
+					}
+					if err == nil {
+						t.Fatal("expected terminal error")
+					}
+				}
+				if got := statusCodeFromTestError(t, err); got != tt.status {
+					t.Fatalf("status=%d, want %d", got, tt.status)
+				}
+			})
+		}
+	}
+}
+
+func TestCodexBootstrapServerFailurePreservesDownstreamSession(t *testing.T) {
+	notified, err := executeWebsocketStreamInSession(t, codexCreatedEvent, codexOutputAddedEvent,
+		`{"type":"response.failed","response":{"error":{"type":"server_error","code":"server_error"}}}`)
+	if err == nil {
+		t.Fatal("expected retryable server failure")
+	}
+	if notified {
+		t.Fatal("retryable server failure must not close the downstream session")
+	}
+}

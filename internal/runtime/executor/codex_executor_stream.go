@@ -149,7 +149,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	var initialChunks [][]byte
 	streamStarted := false
 	immediateTerminal := false
-	// bootstrapTerminalErr holds a non-overload terminal failure seen while buffering. It is
+	// bootstrapTerminalErr holds a non-retryable terminal failure seen while buffering. It is
 	// delivered as an in-stream chunk after the buffered handshake so downstream behaviour stays
 	// identical to the unbuffered path instead of silently turning into a credential failover.
 	var bootstrapTerminalErr error
@@ -198,13 +198,16 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					}
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
-					if isCodexOverloadBootstrapFailure(terminalBody) {
+					if isCodexRetryableBootstrapFailure(terminalBody) {
 						// Transient capacity rejection smuggled into an HTTP 200 stream. Fail the
 						// attempt before the downstream headers are committed so the conductor can
 						// transparently retry on another credential, and report the status the
 						// upstream refused to put on the wire.
-						helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d buffered handshake events, failing over", len(bufferedChunks))
-						return nil, newCodexBootstrapOverloadErr(terminalBody)
+						helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap retryable rejection after %d buffered handshake events, failing over", len(bufferedChunks))
+						if isCodexOverloadBootstrapFailure(terminalBody) {
+							return nil, newCodexBootstrapOverloadErr(terminalBody)
+						}
+						return nil, streamErr
 					}
 					bootstrapTerminalErr = streamErr
 					break bootstrapLoop
@@ -219,7 +222,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					reporter.PublishFailure(ctx, streamErr)
 					return nil, streamErr
 				}
-				if isCodexHandshakeMetadataEvent(eventType) {
+				if isCodexBootstrapMetadata(data) {
 					isHandshake = true
 				}
 				switch eventType {

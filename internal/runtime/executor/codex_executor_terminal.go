@@ -576,8 +576,43 @@ const codexBootstrapMaxBufferedEvents = 16
 // before the rejection event is seen.
 func isCodexHandshakeMetadataEvent(eventType string) bool {
 	switch eventType {
-	case "response.created", "response.in_progress", "codex.rate_limits", "codex.response.metadata":
+	case "response.created", "response.queued", "response.in_progress", "response.metadata",
+		"codex.rate_limits", "codex.response.metadata",
+		"keepalive", "response.keepalive", "ping", "response.ping", "heartbeat", "response.heartbeat":
 		return true
+	default:
+		return false
+	}
+}
+
+func isCodexBootstrapMetadata(payload []byte) bool {
+	eventType := gjson.GetBytes(payload, "type").String()
+	switch eventType {
+	case "response.output_item.added":
+		item := gjson.GetBytes(payload, "item")
+		// Only empty message announcements are safe; tool and unknown items may
+		// already describe executable work even without a text delta.
+		return item.Get("type").String() == "message" &&
+			item.Get("content").IsArray() && len(item.Get("content").Array()) == 0
+	case "response.content_part.added":
+		part := gjson.GetBytes(payload, "part")
+		return part.Get("type").String() == "output_text" &&
+			part.Get("text").Type == gjson.String && part.Get("text").String() == ""
+	default:
+		return isCodexHandshakeMetadataEvent(eventType)
+	}
+}
+
+func isCodexRetryableBootstrapFailure(body []byte) bool {
+	if isCodexOverloadBootstrapFailure(body) {
+		return true
+	}
+	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
+	errorCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
+	// Do not infer retryability from the fallback 502 status used for unknown errors.
+	switch errorType {
+	case "server_error", "timeout_error":
+		return errorCode == "" || errorCode == errorType || errorCode == "timeout" || errorCode == "request_timeout"
 	default:
 		return false
 	}

@@ -1496,7 +1496,33 @@ func shouldSkipCredentialCooldown(err *Error) bool {
 	if err != nil && err.Code == ErrorCodeForceCooldown {
 		return false
 	}
+	if isCapacityOverloadResultError(err) {
+		return true
+	}
 	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err)
+}
+
+// isCapacityOverloadResultError reports whether a result error is a transient
+// upstream capacity/overload signal that must not trigger credential cooldown.
+// These errors are already handled by same-account capacity retries; applying a
+// cooldown on top would incorrectly mark a healthy credential as unavailable.
+func isCapacityOverloadResultError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Message)
+	for _, marker := range [...]string{
+		"server_is_overloaded",
+		"selected model is at capacity",
+		"our servers are currently overloaded",
+		"you can retry your request",
+		"service_unavailable_error",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // isConnectionLifecycleError reports transport/session lifecycle failures that must

@@ -52,6 +52,14 @@ func SummarizeOAuthExcludedModels(entries map[string][]string) map[string]Exclud
 
 // DiffOAuthExcludedModelChanges compares OAuth excluded models maps.
 func DiffOAuthExcludedModelChanges(oldMap, newMap map[string][]string) ([]string, []string) {
+	return DiffOAuthProviderModelMapChanges(oldMap, newMap, "oauth-excluded-models")
+}
+
+// DiffOAuthProviderModelMapChanges compares provider -> model pattern maps.
+func DiffOAuthProviderModelMapChanges(oldMap, newMap map[string][]string, field string) ([]string, []string) {
+	if strings.TrimSpace(field) == "" {
+		field = "oauth-excluded-models"
+	}
 	oldSummary := SummarizeOAuthExcludedModels(oldMap)
 	newSummary := SummarizeOAuthExcludedModels(newMap)
 	keys := make(map[string]struct{}, len(oldSummary)+len(newSummary))
@@ -68,13 +76,13 @@ func DiffOAuthExcludedModelChanges(oldMap, newMap map[string][]string) ([]string
 		newInfo, okNew := newSummary[key]
 		switch {
 		case okOld && !okNew:
-			changes = append(changes, fmt.Sprintf("oauth-excluded-models[%s]: removed", key))
+			changes = append(changes, fmt.Sprintf("%s[%s]: removed", field, key))
 			affected = append(affected, key)
 		case !okOld && okNew:
-			changes = append(changes, fmt.Sprintf("oauth-excluded-models[%s]: added (%d entries)", key, newInfo.count))
+			changes = append(changes, fmt.Sprintf("%s[%s]: added (%d entries)", field, key, newInfo.count))
 			affected = append(affected, key)
 		case okOld && okNew && oldInfo.hash != newInfo.hash:
-			changes = append(changes, fmt.Sprintf("oauth-excluded-models[%s]: updated (%d -> %d entries)", key, oldInfo.count, newInfo.count))
+			changes = append(changes, fmt.Sprintf("%s[%s]: updated (%d -> %d entries)", field, key, oldInfo.count, newInfo.count))
 			affected = append(affected, key)
 		}
 	}

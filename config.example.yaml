@@ -1072,6 +1072,17 @@ nonstream-keepalive-interval: 0
 #   xai:
 #     - "grok-3-mini"
 
+# OAuth provider allowed models
+# Empty/omitted keeps the current catalog. A non-empty list is an allowlist:
+# only matching models remain visible and routable for that OAuth provider.
+# Supports the same wildcards as oauth-excluded-models.
+# oauth-allowed-models:
+#   xai:
+#     - "grok-4.6"
+#     - "grok-4.6-*"
+#     - "grok-4.7"
+#     - "grok-4.7-*"
+
 # OAuth provider request-scoped error rules (custom error classification for OAuth credentials)
 # oauth-request-scoped-errors:
 #   vertex:

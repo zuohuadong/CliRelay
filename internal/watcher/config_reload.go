@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"os"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -114,7 +115,9 @@ func (w *Watcher) reloadConfig() bool {
 
 	var affectedOAuthProviders []string
 	if oldConfig != nil {
-		_, affectedOAuthProviders = diff.DiffOAuthExcludedModelChanges(oldConfig.OAuthExcludedModels, newConfig.OAuthExcludedModels)
+		_, excludedAffected := diff.DiffOAuthExcludedModelChanges(oldConfig.OAuthExcludedModels, newConfig.OAuthExcludedModels)
+		_, allowedAffected := diff.DiffOAuthProviderModelMapChanges(oldConfig.OAuthAllowedModels, newConfig.OAuthAllowedModels, "oauth-allowed-models")
+		affectedOAuthProviders = mergeUniqueStrings(excludedAffected, allowedAffected)
 	}
 
 	util.SetLogLevel(newConfig)
@@ -141,4 +144,23 @@ func (w *Watcher) reloadConfig() bool {
 	log.Infof("config successfully reloaded, triggering client reload")
 	w.reloadClients(authDirChanged, affectedOAuthProviders, forceAuthRefresh)
 	return true
+}
+
+func mergeUniqueStrings(groups ...[]string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, group := range groups {
+		for _, item := range group {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			if _, exists := seen[item]; exists {
+				continue
+			}
+			seen[item] = struct{}{}
+			out = append(out, item)
+		}
+	}
+	return out
 }

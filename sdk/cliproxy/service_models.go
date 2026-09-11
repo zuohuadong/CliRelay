@@ -347,12 +347,13 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			}
 		}
 	}
-	models = applyAllowedModels(models, s.oauthAllowedModels(provider, authKind))
+	allowed := s.oauthAllowedModels(provider, authKind)
+	models = applyAllowedModels(models, allowed)
 	models = applyModelOverrides(s.cfg, provider, authKind, models)
 	if ctx.Err() != nil {
 		return
 	}
-	models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, a.Attributes, models)
+	models = applyOAuthModelAliasForAuthAllowed(s.cfg, provider, authKind, a.Attributes, models, allowed)
 	if ctx.Err() != nil {
 		return
 	}
@@ -737,17 +738,43 @@ func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
 	return filtered
 }
 
-func applyAllowedModels(models []*ModelInfo, allowed []string) []*ModelInfo {
-	if len(models) == 0 || len(allowed) == 0 {
-		return models
+func normalizeModelPatterns(items []string) []string {
+	if len(items) == 0 {
+		return nil
 	}
-
-	patterns := make([]string, 0, len(allowed))
-	for _, item := range allowed {
+	patterns := make([]string, 0, len(items))
+	for _, item := range items {
 		if trimmed := strings.TrimSpace(item); trimmed != "" {
 			patterns = append(patterns, strings.ToLower(trimmed))
 		}
 	}
+	if len(patterns) == 0 {
+		return nil
+	}
+	return patterns
+}
+
+func modelIDMatchesPatterns(modelID string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	modelID = strings.ToLower(strings.TrimSpace(modelID))
+	if modelID == "" {
+		return false
+	}
+	for _, pattern := range patterns {
+		if matchWildcard(pattern, modelID) {
+			return true
+		}
+	}
+	return false
+}
+
+func applyAllowedModels(models []*ModelInfo, allowed []string) []*ModelInfo {
+	if len(models) == 0 {
+		return models
+	}
+	patterns := normalizeModelPatterns(allowed)
 	if len(patterns) == 0 {
 		return models
 	}
@@ -757,15 +784,7 @@ func applyAllowedModels(models []*ModelInfo, allowed []string) []*ModelInfo {
 		if model == nil {
 			continue
 		}
-		modelID := strings.ToLower(strings.TrimSpace(model.ID))
-		keep := false
-		for _, pattern := range patterns {
-			if matchWildcard(pattern, modelID) {
-				keep = true
-				break
-			}
-		}
-		if keep {
+		if modelIDMatchesPatterns(model.ID, patterns) {
 			filtered = append(filtered, model)
 		}
 	}
@@ -1264,6 +1283,10 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 }
 
 func applyOAuthModelAliasForAuth(cfg *config.Config, provider, authKind string, attributes map[string]string, models []*ModelInfo) []*ModelInfo {
+	return applyOAuthModelAliasForAuthAllowed(cfg, provider, authKind, attributes, models, nil)
+}
+
+func applyOAuthModelAliasForAuthAllowed(cfg *config.Config, provider, authKind string, attributes map[string]string, models []*ModelInfo, allowed []string) []*ModelInfo {
 	if len(models) == 0 {
 		return models
 	}
@@ -1283,7 +1306,7 @@ func applyOAuthModelAliasForAuth(cfg *config.Config, provider, authKind string, 
 	if len(aliases) == 0 {
 		return models
 	}
-	return applyOAuthModelAliasEntries(aliases, models)
+	return applyOAuthModelAliasEntries(aliases, models, allowed)
 }
 
 func oauthModelAliasesForAuth(cfg *config.Config, channel string, attributes map[string]string) []config.OAuthModelAlias {
@@ -1319,7 +1342,7 @@ func oauthModelAliasesForAuth(cfg *config.Config, channel string, attributes map
 	return out
 }
 
-func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*ModelInfo) []*ModelInfo {
+func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*ModelInfo, allowed []string) []*ModelInfo {
 	type aliasEntry struct {
 		alias       string
 		displayName string
@@ -1418,6 +1441,7 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 			out = append(out, model)
 		}
 	}
+	allowedPatterns := normalizeModelPatterns(allowed)
 	for sourceKey, entries := range forward {
 		if _, matched := matchedSources[sourceKey]; matched {
 			continue
@@ -1426,6 +1450,9 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 		for _, entry := range entries {
 			mappedID := strings.TrimSpace(entry.alias)
 			if mappedID == "" {
+				continue
+			}
+			if len(allowedPatterns) > 0 && !modelIDMatchesPatterns(mappedID, allowedPatterns) {
 				continue
 			}
 			aliasKey := strings.ToLower(mappedID)

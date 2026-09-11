@@ -151,6 +151,37 @@ func TestApplyOAuthModelAlias_AddsAliasWhenSourceModelMissing(t *testing.T) {
 	}
 }
 
+func TestApplyOAuthModelAlias_AllowlistSkipsMissingSourceUnlessAliasMatches(t *testing.T) {
+	cfg := &config.Config{
+		OAuthModelAlias: map[string][]config.OAuthModelAlias{
+			"xai": {
+				{Name: "grok-4.6", Alias: "gpt-5.4", Fork: true},
+				{Name: "grok-4.7-preview", Alias: "grok-4.7"},
+				{Name: "grok-4.5", Alias: "grok-4.5-latest"},
+				{Name: "grok-4.20-0309-reasoning", Alias: "grok-4.20-reasoning"},
+			},
+		},
+	}
+	out := applyOAuthModelAliasForAuthAllowed(cfg, "xai", "oauth", nil, []*ModelInfo{
+		{ID: "grok-4.6", Name: "models/grok-4.6"},
+	}, []string{"grok-4.6", "grok-4.6-*", "grok-4.7", "grok-4.7-*"})
+	ids := make([]string, 0, len(out))
+	for _, model := range out {
+		if model != nil {
+			ids = append(ids, model.ID)
+		}
+	}
+	want := []string{"grok-4.6", "gpt-5.4", "grok-4.7"}
+	if len(ids) != len(want) {
+		t.Fatalf("allowed alias models = %v, want %v", ids, want)
+	}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("allowed alias models = %v, want %v", ids, want)
+		}
+	}
+}
+
 func TestApplyOAuthModelAlias_DefaultsGemini37FlashTiered(t *testing.T) {
 	for _, provider := range []string{"antigravity", "gemini-cli"} {
 		t.Run(provider, func(t *testing.T) {

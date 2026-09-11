@@ -90,6 +90,67 @@ func TestRegisterModelsForAuth_XAIAllowedModelsKeepsGrok46(t *testing.T) {
 	}
 }
 
+func TestRegisterModelsForAuth_XAIAllowedModelsDoesNotRestoreDroppedAliases(t *testing.T) {
+	service := &Service{
+		cfg: &config.Config{
+			OAuthAllowedModels: map[string][]string{
+				"xai": {"grok-4.6", "grok-4.6-*", "grok-4.7", "grok-4.7-*"},
+			},
+			OAuthModelAlias: map[string][]config.OAuthModelAlias{
+				"xai": {{Name: "grok-4.6", Alias: "gpt-5.4", Fork: true}},
+			},
+		},
+	}
+	auth := &coreauth.Auth{
+		ID:       "auth-xai-allowlist-aliases",
+		Provider: "xai",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+	}
+	coreauth.SetOAuthModelAliasesAttribute(auth, []config.OAuthModelAlias{
+		{Name: "grok-4.5", Alias: "grok-4.5-latest"},
+		{Name: "grok-4.20-0309-reasoning", Alias: "grok-4.20-reasoning"},
+		{Name: "grok-imagine-image-2.0", Alias: "grok-imagine-image-quality-latest"},
+	})
+
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		registry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	ids := modelIDs(registry.GetAvailableModelsByProvider("xai"))
+	if len(ids) == 0 {
+		t.Fatal("expected xai models to be registered")
+	}
+
+	seenGrok46 := false
+	seenFork := false
+	for _, id := range ids {
+		lower := strings.ToLower(id)
+		switch {
+		case lower == "grok-4.6" || strings.HasPrefix(lower, "grok-4.6-") || lower == "grok-4.7" || strings.HasPrefix(lower, "grok-4.7-"):
+			if lower == "grok-4.6" {
+				seenGrok46 = true
+			}
+		case lower == "gpt-5.4":
+			seenFork = true
+		default:
+			t.Fatalf("unexpected xai model %q remained after allowlist aliases, got %v", id, ids)
+		}
+	}
+	if !seenGrok46 {
+		t.Fatalf("expected grok-4.6 to remain, got %v", ids)
+	}
+	if !seenFork {
+		t.Fatalf("expected grok-4.6 fork gpt-5.4 to remain, got %v", ids)
+	}
+}
+
 func modelIDs(models []*ModelInfo) []string {
 	ids := make([]string, 0, len(models))
 	for _, model := range models {

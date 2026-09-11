@@ -390,3 +390,9 @@ func NormalizeOAuthExcludedModels(entries map[string][]string) map[string][]stri
 	}
 	return out
 }
+
+// NormalizeOAuthAllowedModels cleans provider -> allowed model mappings.
+// Empty/omitted maps stay empty and mean "allow the current catalog".
+func NormalizeOAuthAllowedModels(entries map[string][]string) map[string][]string {
+	return NormalizeOAuthExcludedModels(entries)
+}

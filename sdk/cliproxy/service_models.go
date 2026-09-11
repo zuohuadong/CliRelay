@@ -347,6 +347,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			}
 		}
 	}
+	models = applyAllowedModels(models, s.oauthAllowedModels(provider, authKind))
 	models = applyModelOverrides(s.cfg, provider, authKind, models)
 	if ctx.Err() != nil {
 		return
@@ -688,6 +689,19 @@ func (s *Service) oauthExcludedModels(provider, authKind string) []string {
 	return cfg.OAuthExcludedModels[providerKey]
 }
 
+func (s *Service) oauthAllowedModels(provider, authKind string) []string {
+	cfg := s.cfg
+	if cfg == nil {
+		return nil
+	}
+	authKindKey := strings.ToLower(strings.TrimSpace(authKind))
+	providerKey := strings.ToLower(strings.TrimSpace(provider))
+	if authKindKey == "apikey" {
+		return nil
+	}
+	return cfg.OAuthAllowedModels[providerKey]
+}
+
 func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
 	if len(models) == 0 || len(excluded) == 0 {
 		return models
@@ -717,6 +731,41 @@ func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
 			}
 		}
 		if !blocked {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
+}
+
+func applyAllowedModels(models []*ModelInfo, allowed []string) []*ModelInfo {
+	if len(models) == 0 || len(allowed) == 0 {
+		return models
+	}
+
+	patterns := make([]string, 0, len(allowed))
+	for _, item := range allowed {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			patterns = append(patterns, strings.ToLower(trimmed))
+		}
+	}
+	if len(patterns) == 0 {
+		return models
+	}
+
+	filtered := make([]*ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		modelID := strings.ToLower(strings.TrimSpace(model.ID))
+		keep := false
+		for _, pattern := range patterns {
+			if matchWildcard(pattern, modelID) {
+				keep = true
+				break
+			}
+		}
+		if keep {
 			filtered = append(filtered, model)
 		}
 	}

@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -150,23 +151,48 @@ func (h *Handler) APICall(c *gin.Context) {
 	var token string
 	var tokenResolved bool
 	var tokenErr error
-	for key, value := range reqHeaders {
-		if !strings.Contains(value, "$TOKEN$") {
-			continue
-		}
+
+	resolveToken := func() error {
 		if !tokenResolved {
 			token, tokenErr = h.resolveTokenForAuth(c.Request.Context(), auth, requestProxyURL)
 			tokenResolved = true
 		}
 		if token == "" {
 			if tokenErr != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "auth token refresh failed"})
-				return
+				return errors.New("auth token refresh failed")
 			}
-			c.JSON(http.StatusBadRequest, gin.H{"error": "auth token not found"})
+			return errors.New("auth token not found")
+		}
+		return nil
+	}
+
+	for key, value := range reqHeaders {
+		if !strings.Contains(value, "$TOKEN$") {
+			continue
+		}
+		if errToken := resolveToken(); errToken != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errToken.Error()})
 			return
 		}
-		reqHeaders[key] = strings.ReplaceAll(value, "$TOKEN$", token)
+		if token != "" {
+			reqHeaders[key] = strings.ReplaceAll(value, "$TOKEN$", token)
+		}
+	}
+
+	if strings.Contains(body.Data, "$TOKEN$") {
+		if errToken := resolveToken(); errToken != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errToken.Error()})
+			return
+		}
+		if token != "" {
+			replacement := token
+			if json.Valid([]byte(body.Data)) && strings.ContainsAny(token, "\"\\\r\n\t") {
+				if b, errMarshal := json.Marshal(token); errMarshal == nil && len(b) >= 2 {
+					replacement = string(b[1 : len(b)-1])
+				}
+			}
+			body.Data = strings.ReplaceAll(body.Data, "$TOKEN$", replacement)
+		}
 	}
 
 	var requestBody io.Reader
@@ -247,6 +273,9 @@ func tokenValueForAuth(auth *coreauth.Auth) string {
 		if v := strings.TrimSpace(auth.Attributes["api_key"]); v != "" {
 			return v
 		}
+		if v := strings.TrimSpace(auth.Attributes["session_token"]); v != "" {
+			return v
+		}
 	}
 	return ""
 }
@@ -261,7 +290,6 @@ func (h *Handler) resolveTokenForAuth(ctx context.Context, auth *coreauth.Auth, 
 		return token, errToken
 	}
 
-
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
 	if provider == "codex" {
 		return h.resolveCodexOAuthAccessToken(ctx, auth, requestProxyURL)
@@ -272,7 +300,6 @@ func (h *Handler) resolveTokenForAuth(ctx context.Context, auth *coreauth.Auth, 
 
 	return tokenValueForAuth(auth), nil
 }
-
 
 func tokenValueFromStorage(storage interface{}) string {
 	if storage == nil {
@@ -558,6 +585,12 @@ func tokenValueFromMetadata(metadata map[string]any) string {
 		return strings.TrimSpace(v)
 	}
 	if v, ok := metadata["id_token"].(string); ok && strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
+	}
+	if v, ok := metadata["api_key"].(string); ok && strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
+	}
+	if v, ok := metadata["session_token"].(string); ok && strings.TrimSpace(v) != "" {
 		return strings.TrimSpace(v)
 	}
 	if v, ok := metadata["cookie"].(string); ok && strings.TrimSpace(v) != "" {

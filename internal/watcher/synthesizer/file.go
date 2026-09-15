@@ -156,6 +156,12 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 					auth.Metadata["disabled"] = metadata["disabled"]
 				}
 				coreauth.RestorePersistedDisabled(auth)
+				if p, ok := metadata["proxy_url"].(string); ok && auth.ProxyURL == "" {
+					auth.ProxyURL = strings.TrimSpace(p)
+				}
+				if pref, ok := metadata["prefix"].(string); ok && auth.Prefix == "" {
+					auth.Prefix = strings.Trim(strings.TrimSpace(pref), "/")
+				}
 				if errWeight := coreauth.ApplyAuthWeightMetadata(auth, metadata); errWeight != nil {
 					return nil, fmt.Errorf("invalid plugin auth weight in %s: %w", filepath.Base(fullPath), errWeight)
 				}
@@ -303,25 +309,26 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 	}
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, authKind)
 	applyFingerprintProfileAttribute(a, metadata)
-	// For codex auth files, extract plan_type from the JWT id_token.
+	// For codex auth files, extract plan_type from metadata or JWT id_token.
 	if provider == "codex" {
-		// 套餐类型优先从 id_token 解析；部分凭证文件只保存 access_token，
-		// 其 JWT 同样携带 chatgpt_plan_type，作为回退来源。
-		planTokens := make([]string, 0, 2)
-		if idTokenRaw, ok := metadata["id_token"].(string); ok && strings.TrimSpace(idTokenRaw) != "" {
-			planTokens = append(planTokens, idTokenRaw)
-		}
-		if accessTokenRaw, ok := metadata["access_token"].(string); ok && strings.TrimSpace(accessTokenRaw) != "" {
-			planTokens = append(planTokens, accessTokenRaw)
-		}
-		for _, token := range planTokens {
-			claims, errParse := codex.ParseJWTToken(token)
-			if errParse != nil || claims == nil {
-				continue
+		if ptRaw, ok := metadata["plan_type"].(string); ok && strings.TrimSpace(ptRaw) != "" {
+			a.Attributes["plan_type"] = strings.TrimSpace(ptRaw)
+		} else {
+			planTokens := make([]string, 0, 2)
+			for _, key := range []string{"id_token", "access_token"} {
+				if raw, ok := metadata[key].(string); ok && strings.TrimSpace(raw) != "" {
+					planTokens = append(planTokens, raw)
+				}
 			}
-			if pt := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); pt != "" {
-				a.Attributes["plan_type"] = pt
-				break
+			for _, token := range planTokens {
+				claims, errParse := codex.ParseJWTToken(token)
+				if errParse != nil || claims == nil {
+					continue
+				}
+				if pt := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); pt != "" {
+					a.Attributes["plan_type"] = pt
+					break
+				}
 			}
 		}
 		if accountID := codex.AccountIDFromMetadata(metadata); accountID != "" {

@@ -97,6 +97,9 @@ type Handler struct {
 	managementAuthGeneration      uint64
 	channelLatencyLoader          func(context.Context, int) ([]usage.ChannelLatency, error)
 	agentIdentityRegistrar        agentIdentityRegistrarFactory
+	authStatusMu                  sync.Mutex
+	pluginStoreRateLimiter        *pluginstore.GitHubRateLimiter
+	pluginReleases                pluginReleaseCache
 }
 
 type configReloadSnapshot struct {

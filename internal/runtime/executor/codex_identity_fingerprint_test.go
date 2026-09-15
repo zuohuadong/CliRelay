@@ -94,7 +94,7 @@ func TestApplyCodexWebsocketHeadersIdentityFingerprintOverridesClientHeaders(t *
 		},
 	}
 
-	got := applyCodexWebsocketHeaders(ctx, headers, nil, "token", cfg)
+	got := applyCodexWebsocketHeaders(ctx, headers, nil, "token", cfg, false)
 
 	if ua := got.Get("User-Agent"); ua != "codex_cli_rs/test" {
 		t.Fatalf("User-Agent = %q, want fingerprint value", ua)

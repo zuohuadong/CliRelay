@@ -31,8 +31,18 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		return
 	}
 	if a.Disabled {
+		if s != nil && s.coreManager != nil {
+			if current, ok := s.coreManager.GetByID(a.ID); ok && current != nil && !current.Disabled {
+				return
+			}
+		}
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
+	}
+	if s != nil && s.coreManager != nil {
+		if current, ok := s.coreManager.GetByID(a.ID); !ok || current == nil || current.Disabled {
+			return
+		}
 	}
 	authKind := a.AuthKind()
 	// Unregister legacy client ID (if present) to avoid double counting
@@ -232,6 +242,8 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 				excluded = entry.ExcludedModels
 			}
 		}
+	case "devin":
+		models = registry.GetDevinModels()
 		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
@@ -365,6 +377,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	models = s.appendPluginModels(key, models)
 	if len(models) > 0 {
 		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+		if strings.EqualFold(strings.TrimSpace(a.Provider), "antigravity") {
+			s.asyncProbeAntigravityCapabilities(ctx, a, key)
+		}
 		return
 	}
 
@@ -791,6 +806,19 @@ func applyAllowedModels(models []*ModelInfo, allowed []string) []*ModelInfo {
 	return filtered
 }
 
+func cloneModelInfoForCatalogRoute(model *ModelInfo) ModelInfo {
+	clone := *model
+	if model.NativeCapabilities != nil {
+		capabilities := *model.NativeCapabilities
+		if model.NativeCapabilities.WebSearch != nil {
+			webSearch := *model.NativeCapabilities.WebSearch
+			capabilities.WebSearch = &webSearch
+		}
+		clone.NativeCapabilities = &capabilities
+	}
+	return clone
+}
+
 func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix bool) []*ModelInfo {
 	trimmedPrefix := strings.TrimSpace(prefix)
 	if trimmedPrefix == "" || len(models) == 0 {
@@ -826,8 +854,13 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 		if !forceModelPrefix || trimmedPrefix == baseID {
 			addModel(model)
 		}
-		clone := *model
+		clone := cloneModelInfoForCatalogRoute(model)
 		clone.ID = trimmedPrefix + "/" + baseID
+		if clone.MetadataModelID == "" {
+			clone.MetadataModelID = baseID
+		}
+		clone.ExplicitThinking = model.ExplicitThinking
+		clone.ExplicitInputModalities = model.ExplicitInputModalities
 		addModel(&clone)
 	}
 	return out
@@ -908,14 +941,19 @@ func buildConfiguredModelInfo(model modelEntry, ownedBy, modelType string, creat
 	if displayName == "" {
 		displayName = alias
 	}
+	metadataModelID := name
+	if metadataModelID == "" {
+		metadataModelID = alias
+	}
 	info := &ModelInfo{
-		ID:          alias,
-		Object:      "model",
-		Created:     created,
-		OwnedBy:     ownedBy,
-		Type:        modelType,
-		DisplayName: displayName,
-		UserDefined: userDefined,
+		ID:              alias,
+		MetadataModelID: metadataModelID,
+		Object:          "model",
+		Created:         created,
+		OwnedBy:         ownedBy,
+		Type:            modelType,
+		DisplayName:     displayName,
+		UserDefined:     userDefined,
 	}
 	if maxContextModel, okMaxContext := any(model).(modelMaxContextLengthEntry); okMaxContext {
 		if maxContextLength := maxContextModel.GetMaxContextLength(); maxContextLength > 0 {
@@ -950,6 +988,12 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		thinkingSupport := model.Thinking
 		if thinkingSupport == nil && !model.Image && !model.Video {
 			thinkingSupport = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
+		}
+		if model.Thinking != nil {
+			info.ExplicitThinking = true
+		}
+		if len(model.InputModalities) > 0 {
+			info.ExplicitInputModalities = true
 		}
 		info.Thinking = modelconfig.NormalizeThinkingSupport(thinkingSupport)
 		info.SupportedInputModalities = normalizeCompatConfigModalities(model.InputModalities)
@@ -1154,7 +1198,7 @@ func normalizeCompatConfigModalities(raw []string) []string {
 	return out
 }
 
-func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*ModelInfo {
+func buildConfigModels[T modelEntry](models []T, ownedBy, modelType, metadataChannel string) []*ModelInfo {
 	if len(models) == 0 {
 		return nil
 	}
@@ -1174,8 +1218,14 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 			continue
 		}
 		seen[key] = struct{}{}
+		if model.GetThinking() != nil {
+			info.ExplicitThinking = true
+		}
 		if resolved := modelconfig.ResolveModelInfo(name, modelType, model.GetThinking()); resolved.Thinking != nil {
 			info.Thinking = resolved.Thinking
+		}
+		if staticInfo := registry.LookupStaticModelInfoByChannel(name, metadataChannel); staticInfo != nil && staticInfo.NativeCapabilities != nil {
+			info.NativeCapabilities = cloneModelInfoForCatalogRoute(staticInfo).NativeCapabilities
 		}
 		out = append(out, info)
 	}
@@ -1186,28 +1236,28 @@ func buildVertexCompatConfigModels(entry *config.VertexCompatKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return buildConfigModels(entry.Models, "google", "vertex")
+	return buildConfigModels(entry.Models, "google", "vertex", "vertex")
 }
 
 func buildGeminiConfigModels(entry *config.GeminiKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return buildConfigModels(entry.Models, "google", "gemini")
+	return buildConfigModels(entry.Models, "google", "gemini", "gemini")
 }
 
 func buildClaudeConfigModels(entry *config.ClaudeKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return buildConfigModels(entry.Models, "anthropic", "claude")
+	return buildConfigModels(entry.Models, "anthropic", "claude", "claude")
 }
 
 func buildXAIConfigModels(entry *config.XAIKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return buildConfigModels(entry.Models, "xai", "xai")
+	return buildConfigModels(entry.Models, "xai", "xai", "xai")
 }
 
 func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
@@ -1218,7 +1268,7 @@ func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
 		return registry.GetCodexProModels()
 	}
 
-	models := buildConfigModels(entry.Models, "openai", "openai")
+	models := buildConfigModels(entry.Models, "openai", "openai", "codex")
 	configuredDisplayNames := make(map[string]string, len(entry.Models))
 	seenConfiguredModels := make(map[string]struct{}, len(entry.Models))
 	for i := range entry.Models {
@@ -1421,8 +1471,15 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 				continue
 			}
 			seen[aliasKey] = struct{}{}
-			clone := *model
+			clone := cloneModelInfoForCatalogRoute(model)
 			clone.ID = mappedID
+			if model.MetadataModelID != "" {
+				clone.MetadataModelID = model.MetadataModelID
+			} else {
+				clone.MetadataModelID = id
+			}
+			clone.ExplicitThinking = model.ExplicitThinking
+			clone.ExplicitInputModalities = model.ExplicitInputModalities
 			if entry.displayName != "" {
 				clone.DisplayName = entry.displayName
 			}

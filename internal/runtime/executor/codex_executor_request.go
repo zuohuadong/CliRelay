@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	codexUserAgent             = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
+	codexUserAgent             = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
 	codexOriginator            = "codex-tui"
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
@@ -397,6 +397,7 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 	}
 	misc.EnsureHeader(r.Header, ginHeaders, "Version", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-Metadata", "")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-State", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Client-Request-Id", "")
 	fingerprint, fingerprintEnabled := codexIdentityFingerprint(cfg)
 	cfgUserAgent, _ := codexHeaderDefaults(cfg, auth)
@@ -460,7 +461,10 @@ func applyCodexCloakingHeaders(headers http.Header, cfg *config.Config) {
 	headers.Set("Originator", codexOriginator)
 }
 
-func normalizeCodexInstructions(body []byte) []byte {
+func normalizeCodexInstructions(body []byte, nativeRequest ...bool) []byte {
+	if len(nativeRequest) > 0 && nativeRequest[0] {
+		return body
+	}
 	instructions := gjson.GetBytes(body, "instructions")
 	if !instructions.Exists() || instructions.Type == gjson.Null {
 		body, _ = sjson.SetBytes(body, "instructions", "")
@@ -479,6 +483,17 @@ func isCodexFreePlanAuth(auth *cliproxyauth.Auth) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(auth.Attributes["plan_type"]), "free")
+}
+
+func isCodexResponsesLiteRequest(body []byte, headers http.Header) bool {
+	if strings.EqualFold(strings.TrimSpace(headers.Get(codexResponsesLiteHeader)), "true") {
+		return true
+	}
+	value := gjson.GetBytes(body, codexResponsesLiteMetadata)
+	if !value.Exists() {
+		return false
+	}
+	return value.Type == gjson.True || value.Type == gjson.String && strings.EqualFold(strings.TrimSpace(value.String()), "true")
 }
 
 func isImageGenerationFunctionTool(tool gjson.Result) bool {
@@ -502,20 +517,8 @@ func isImageGenerationFunctionTool(tool gjson.Result) bool {
 	return false
 }
 
-func isCodexResponsesLiteRequest(body []byte, headers http.Header) bool {
-	if strings.EqualFold(strings.TrimSpace(headers.Get(codexResponsesLiteHeader)), "true") {
-		return true
-	}
-	// Codex Desktop mirrors websocket-only request headers into client_metadata.
-	value := gjson.GetBytes(body, codexResponsesLiteMetadata)
-	if !value.Exists() {
-		return false
-	}
-	return value.Type == gjson.True || value.Type == gjson.String && strings.EqualFold(strings.TrimSpace(value.String()), "true")
-}
-
 func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth.Auth, headers http.Header) []byte {
-	if isCodexResponsesLiteRequest(body, headers) {
+	if util.IsCodexResponsesLiteRequest(body, headers) {
 		return body
 	}
 	if strings.HasSuffix(baseModel, "spark") {
@@ -540,7 +543,7 @@ func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth
 }
 
 func normalizeCodexParallelToolCalls(body []byte, headers http.Header) []byte {
-	if isCodexResponsesLiteRequest(body, headers) {
+	if util.IsCodexResponsesLiteRequest(body, headers) {
 		body = helps.SetBoolIfDifferent(body, "parallel_tool_calls", false)
 		return body
 	}

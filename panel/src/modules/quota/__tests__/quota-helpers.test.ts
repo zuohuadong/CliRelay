@@ -4,10 +4,13 @@ import {
   buildClaudeItems,
   buildCodexItems,
   buildKimiItems,
+  buildXaiItems,
   formatRelativeResetLabel,
   parseAntigravityPayload,
   parseClaudeScopedQuotaLabel,
   parseKimiUsagePayload,
+  parseXaiBillingPayload,
+  parseXaiPlanType,
 } from "@/modules/quota/quota-helpers";
 
 describe("buildClaudeItems", () => {
@@ -359,5 +362,71 @@ describe("buildKimiItems", () => {
         windowSeconds: 604800,
       },
     ]);
+  });
+});
+
+describe("buildXaiItems", () => {
+  test("treats omitted protobuf usage fields as 100% remaining for a live weekly period", () => {
+    const payload = parseXaiBillingPayload({
+      config: {
+        currentPeriod: {
+          type: "weekly",
+          start: "2026-09-08T18:57:00Z",
+          end: "2026-09-15T18:57:00Z",
+        },
+      },
+    });
+    expect(payload).not.toBeNull();
+    expect(buildXaiItems(payload!)).toEqual([
+      expect.objectContaining({
+        key: "xai_week",
+        label: "xai_quota.weekly",
+        percent: 100,
+        resetAtMs: Date.parse("2026-09-15T18:57:00Z"),
+        windowSeconds: 604800,
+      }),
+    ]);
+  });
+
+  test("maps unified-billing used percent into remaining weekly quota", () => {
+    const items = buildXaiItems({
+      config: {
+        creditUsagePercent: 37.4,
+        currentPeriod: { type: "WEEKLY", end: "2026-09-20T00:00:00Z" },
+      },
+    });
+    expect(items).toEqual([
+      expect.objectContaining({
+        key: "xai_week",
+        label: "xai_quota.weekly",
+        percent: 63,
+        resetAtMs: Date.parse("2026-09-20T00:00:00Z"),
+      }),
+    ]);
+  });
+
+  test("maps legacy monthly credits into remaining percent and credit meta", () => {
+    const items = buildXaiItems({
+      config: {
+        monthlyLimit: { val: 2000 },
+        used: { val: 500 },
+        billingPeriodEnd: "2026-10-01T00:00:00Z",
+      },
+    });
+    expect(items).toEqual([
+      {
+        key: "xai_month",
+        label: "xai_quota.monthly",
+        percent: 75,
+        resetAtMs: Date.parse("2026-10-01T00:00:00Z"),
+        windowSeconds: 2592000,
+        meta: "1,500 / 2,000",
+      },
+    ]);
+  });
+
+  test("reads subscription tier from settings-like payloads", () => {
+    expect(parseXaiPlanType({ subscription_tier_display: "SuperGrok" })).toBe("SuperGrok");
+    expect(parseXaiPlanType({ config: { subscription_tier: "subscription:super" } })).toBe("super");
   });
 });

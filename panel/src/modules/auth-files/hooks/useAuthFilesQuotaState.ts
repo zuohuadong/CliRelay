@@ -143,6 +143,7 @@ export function useAuthFilesQuotaState({
           });
         }
         if (text.startsWith("claude_quota.")) return t(text);
+        if (text.startsWith("xai_quota.")) return t(text);
         return text;
       };
 

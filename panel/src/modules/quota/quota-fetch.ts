@@ -16,12 +16,16 @@ import {
   KIRO_QUOTA_URL,
   KIRO_REQUEST_BODY,
   KIRO_REQUEST_HEADERS,
+  XAI_BILLING_URL,
+  XAI_REQUEST_HEADERS,
+  XAI_SETTINGS_URL,
   buildAntigravityItems,
   buildClaudeItems,
   buildCodexItems,
   buildGeminiCliBuckets,
   buildKimiItems,
   buildKiroItems,
+  buildXaiItems,
   clampPercent,
   isRecord,
   normalizeAuthIndexValue,
@@ -36,6 +40,8 @@ import {
   parseGeminiCliQuotaPayload,
   parseKimiUsagePayload,
   parseKiroQuotaPayload,
+  parseXaiBillingPayload,
+  parseXaiPlanType,
   parseResetTimeToMs,
   resolveAuthProvider,
   resolveCodexChatgptAccountId,
@@ -43,7 +49,7 @@ import {
   type QuotaItem,
 } from "@/modules/quota/quota-helpers";
 
-export type QuotaProvider = "antigravity" | "claude" | "codex" | "gemini-cli" | "kimi" | "kiro";
+export type QuotaProvider = "antigravity" | "claude" | "codex" | "gemini-cli" | "kimi" | "kiro" | "xai";
 export type QuotaFetchResult = {
   items: QuotaItem[];
   planType?: string | null;
@@ -58,6 +64,7 @@ export const resolveQuotaProvider = (file: AuthFileItem): QuotaProvider | null =
   if (provider === "gemini-cli") return "gemini-cli";
   if (provider === "kimi") return "kimi";
   if (provider === "kiro") return "kiro";
+  if (provider === "xai" && isXaiOAuthLikeFile(file)) return "xai";
   return null;
 };
 
@@ -89,6 +96,14 @@ const resolveAntigravityProjectId = async (file: AuthFileItem): Promise<string> 
 };
 
 const isClaudeOAuthLikeFile = (file: AuthFileItem): boolean => {
+  const accountType = normalizeStringValue(file.account_type ?? file.accountType)?.toLowerCase();
+  if (accountType === "api-key" || accountType === "apikey" || accountType === "api_key") {
+    return false;
+  }
+  return true;
+};
+
+const isXaiOAuthLikeFile = (file: AuthFileItem): boolean => {
   const accountType = normalizeStringValue(file.account_type ?? file.accountType)?.toLowerCase();
   if (accountType === "api-key" || accountType === "apikey" || accountType === "api_key") {
     return false;
@@ -257,6 +272,36 @@ export const fetchQuota = async (
     const payload = parseKimiUsagePayload(result.body ?? result.bodyText);
     if (!payload) throw new Error("parse_kimi_failed");
     return { items: buildKimiItems(payload) };
+  }
+
+  if (type === "xai") {
+    const result = await apiCallApi.request({
+      authIndex,
+      method: "GET",
+      url: XAI_BILLING_URL,
+      header: { ...XAI_REQUEST_HEADERS },
+    });
+    if (result.statusCode < 200 || result.statusCode >= 300)
+      throw new Error(getApiCallErrorMessage(result));
+    const payload = parseXaiBillingPayload(result.body ?? result.bodyText);
+    if (!payload) throw new Error("parse_xai_failed");
+    const items = buildXaiItems(payload);
+    if (items.length === 0) throw new Error("parse_xai_failed");
+    let planType = parseXaiPlanType(payload);
+    try {
+      const settings = await apiCallApi.request({
+        authIndex,
+        method: "GET",
+        url: XAI_SETTINGS_URL,
+        header: { ...XAI_REQUEST_HEADERS },
+      });
+      if (settings?.statusCode >= 200 && settings.statusCode < 300) {
+        planType = parseXaiPlanType(settings.body ?? settings.bodyText) ?? planType;
+      }
+    } catch {
+      // 套餐探测是 best effort；额度结果仍然有效。
+    }
+    return { items, planType };
   }
 
   const result = await apiCallApi.request({

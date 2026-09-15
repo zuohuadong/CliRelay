@@ -1919,3 +1919,136 @@ func TestXAIWebsocketsCompactionTriggerFreshSessionFallback(t *testing.T) {
 		t.Fatalf("error status = %v, want %d", errEmpty, http.StatusBadRequest)
 	}
 }
+
+func TestXAIWebsocketsExecuteStreamStopsOnResponseIncomplete(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	releaseServer := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, errRead := conn.ReadMessage(); errRead != nil {
+			t.Errorf("read upstream websocket message: %v", errRead)
+			return
+		}
+		payload := []byte(`{"type":"response.incomplete","response":{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"id":"rs_1","type":"reasoning","summary":[]}],"usage":{"input_tokens":8,"output_tokens":1,"total_tokens":9}}}`)
+		if errWrite := conn.WriteMessage(websocket.TextMessage, payload); errWrite != nil {
+			t.Errorf("write incomplete websocket message: %v", errWrite)
+			return
+		}
+		<-releaseServer
+	}))
+	defer server.Close()
+	defer close(releaseServer)
+
+	exec := NewXAIWebsocketsExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider: "xai",
+		Attributes: map[string]string{
+			"base_url":   server.URL,
+			"websockets": "true",
+		},
+		Metadata: map[string]any{"access_token": "xai-token"},
+	}
+	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
+	result, err := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatOpenAIResponse,
+		ResponseFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:         true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	done := make(chan struct{})
+	var gotIncomplete bool
+	go func() {
+		defer close(done)
+		for chunk := range result.Chunks {
+			if chunk.Err != nil {
+				t.Errorf("stream chunk error = %v", chunk.Err)
+				return
+			}
+			if gjson.GetBytes(chunk.Payload, "type").String() == "response.incomplete" {
+				gotIncomplete = true
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not finish after response.incomplete while upstream stayed open")
+	}
+	if !gotIncomplete {
+		t.Fatal("missing response.incomplete payload")
+	}
+}
+
+func TestXAIWebsocketsExecuteStreamSkipsKeepaliveForDownstreamWebsocket(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, errRead := conn.ReadMessage(); errRead != nil {
+			t.Errorf("read upstream websocket message: %v", errRead)
+			return
+		}
+		for _, payload := range [][]byte{
+			[]byte(`{"type":"keepalive","sequence_number":3}`),
+			[]byte(`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`),
+		} {
+			if errWrite := conn.WriteMessage(websocket.TextMessage, payload); errWrite != nil {
+				t.Errorf("write websocket message: %v", errWrite)
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	exec := NewXAIWebsocketsExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider: "xai",
+		Attributes: map[string]string{
+			"base_url":   server.URL,
+			"websockets": "true",
+		},
+		Metadata: map[string]any{"access_token": "xai-token"},
+	}
+	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
+	result, err := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatOpenAIResponse,
+		ResponseFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:         true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	var types []string
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v", chunk.Err)
+		}
+		types = append(types, gjson.GetBytes(chunk.Payload, "type").String())
+	}
+	for _, eventType := range types {
+		if eventType == "keepalive" {
+			t.Fatalf("downstream websocket received keepalive payload: %v", types)
+		}
+	}
+	if len(types) == 0 || types[len(types)-1] != "response.completed" {
+		t.Fatalf("types = %v, want terminal response.completed", types)
+	}
+}

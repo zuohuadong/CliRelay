@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -703,6 +704,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
 		namespaceRestorer := newXAINamespaceRestorer(prepared.namespaceTools)
 		recordedTranscript := false
+		sawProgress := false
 		for {
 			if ctx != nil && ctx.Err() != nil {
 				terminateReason = "context_done"
@@ -718,7 +720,17 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					_ = send(cliproxyexecutor.StreamChunk{Err: ctx.Err()})
 					return
 				}
+				if ctx != nil && ctx.Err() != nil {
+					terminateReason = "context_done"
+					terminateErr = ctx.Err()
+					_ = send(cliproxyexecutor.StreamChunk{Err: ctx.Err()})
+					return
+				}
 				mappedErr := mapXAIWebsocketReadError(errRead)
+				var tooBig codexWebsocketMessageTooBigError
+				if !errors.As(mappedErr, &tooBig) {
+					mappedErr = newCodexIncompleteStreamErrorEmitted(sawProgress)
+				}
 				terminateReason = "read_error"
 				terminateErr = mappedErr
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "read", mappedErr)
@@ -769,7 +781,15 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					continue
 				}
 				eventType := gjson.GetBytes(payload, "type").String()
-				isTerminalEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "error"
+				if xaiIsKeepaliveEventType(eventType) {
+					if cliproxyexecutor.DownstreamWebsocket(ctx) {
+						continue
+					}
+				}
+				if codexStreamEventIndicatesProgress(payload) {
+					sawProgress = true
+				}
+				isTerminalEvent := xaiIsTerminalResponseEventType(eventType)
 				warmupCompletedPayload := []byte(nil)
 				switch eventType {
 				case "response.created":
@@ -783,22 +803,15 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					}
 				case "response.output_item.done":
 					xaiCollectOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
-				case "response.completed":
+				case "response.completed", "response.incomplete", "response.done":
 					logXAIWebsocketTerminalResponse(executionSessionID, authID, wsURL, eventType, payload)
 					if detail, ok := helps.ParseCodexUsage(payload); ok {
 						reporter.Publish(ctx, detail)
 					}
 					payload = xaiPatchCompletedOutput(payload, outputItemsByIndex, outputItemsFallback)
 					payload = xaiNormalizeReasoningSummaryData(payload)
-					cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, payload)
-					if !warmupRequest && idMapper != nil && idMapper.state != nil && !recordedTranscript {
-						idMapper.state.recordTranscriptTurn(wsReqBody, payload, transcriptReset)
-						recordedTranscript = true
-					}
-				case "response.done":
-					logXAIWebsocketTerminalResponse(executionSessionID, authID, wsURL, eventType, payload)
-					if detail, ok := helps.ParseCodexUsage(payload); ok {
-						reporter.Publish(ctx, detail)
+					if eventType != "response.incomplete" {
+						cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, payload)
 					}
 					if !warmupRequest && idMapper != nil && idMapper.state != nil && !recordedTranscript {
 						idMapper.state.recordTranscriptTurn(wsReqBody, payload, transcriptReset)
@@ -856,7 +869,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					}
 					return
 				}
-				if eventType == "response.completed" || eventType == "response.done" {
+				if isTerminalEvent {
 					return
 				}
 			}

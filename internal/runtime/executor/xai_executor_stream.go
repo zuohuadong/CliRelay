@@ -69,6 +69,8 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
+		idleReset, stopIdleWatch, idleTimedOut := startXAIHTTPStreamIdleWatch(ctx, httpResp.Body)
+		defer stopIdleWatch()
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("xai executor: close response body error: %v", errClose)
@@ -83,6 +85,16 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
 		namespaceRestorer := newXAINamespaceRestorer(prepared.namespaceTools)
 		var pendingEventLine []byte
+		sawProgress := false
+		sawTerminal := false
+		emitError := func(streamErr error) {
+			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+			reporter.PublishFailure(ctx, streamErr)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+			case <-ctx.Done():
+			}
+		}
 		emitTranslatedLine := func(translatedLine []byte) bool {
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param, claudeInputTokens)
 			for i := range chunks {
@@ -95,6 +107,10 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			return true
 		}
 		for scanner.Scan() {
+			select {
+			case idleReset <- struct{}{}:
+			default:
+			}
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 
@@ -119,21 +135,27 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 						continue
 					}
 					normalizedEventName := gjson.GetBytes(eventData, "type").String()
+					if codexStreamEventIndicatesProgress(eventData) {
+						sawProgress = true
+					}
 					switch normalizedEventName {
 					case "response.output_item.done":
 						xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
-					case "response.completed", "response.incomplete":
+					case "response.completed", "response.incomplete", "response.done":
 						if detail, ok := helps.ParseCodexUsage(eventData); ok {
 							reporter.Publish(ctx, detail)
 						}
 						eventData = xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 						eventData = xaiNormalizeReasoningSummaryData(eventData)
-						if normalizedEventName == "response.completed" {
+						if normalizedEventName == "response.completed" || normalizedEventName == "response.done" {
 							// A truncated turn carries no replayable terminal state, so only a
 							// completed response may refresh the reasoning replay cache.
 							cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, eventData)
 						}
 						normalizedEventName = gjson.GetBytes(eventData, "type").String()
+					}
+					if xaiIsTerminalResponseEventType(normalizedEventName) {
+						sawTerminal = true
 					}
 
 					if hasPendingEventLine {
@@ -147,6 +169,9 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 						}
 					}
 					if !emitTranslatedLine(append([]byte("data: "), eventData...)) {
+						return
+					}
+					if sawTerminal {
 						return
 					}
 				}
@@ -166,14 +191,22 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		if pendingEventLine != nil {
 			emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, ""))
 		}
-		if errScan := scanner.Err(); errScan != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-			case <-ctx.Done():
-			}
+		if sawTerminal {
+			return
 		}
+		if idleTimedOut.Load() {
+			idleErr := statusErr{code: http.StatusRequestTimeout, msg: `{"error":{"message":"upstream stream idle timeout","type":"server_error","code":"stream_idle_timeout"}}`}
+			emitError(idleErr)
+			return
+		}
+		if errScan := scanner.Err(); errScan != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			emitError(newCodexIncompleteStreamErrorEmitted(sawProgress))
+			return
+		}
+		emitError(newCodexIncompleteStreamErrorEmitted(sawProgress))
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }

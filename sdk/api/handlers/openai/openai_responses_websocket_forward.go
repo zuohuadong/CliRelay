@@ -28,6 +28,20 @@ type responsesWebsocketForwardOptions struct {
 	keepAliveInterval *time.Duration
 }
 
+func responsesWebsocketKeepAliveInterval(h *OpenAIResponsesAPIHandler, c *gin.Context, opts responsesWebsocketForwardOptions) time.Duration {
+	interval := time.Duration(0)
+	if h != nil {
+		interval = handlers.StreamingKeepAliveInterval(h.Cfg)
+	}
+	if opts.keepAliveInterval != nil {
+		interval = *opts.keepAliveInterval
+	}
+	if interval == 0 && isCodexResponsesSSEClient(c) {
+		return responsesSSEKeepAliveDefaultInterval
+	}
+	return interval
+}
+
 func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	c *gin.Context,
 	writer *responsesWebsocketWriter,
@@ -57,13 +71,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 
 	var keepAliveTicker *time.Ticker
 	var keepAliveC <-chan time.Time
-	keepAliveInterval := time.Duration(0)
-	if h != nil {
-		keepAliveInterval = handlers.StreamingKeepAliveInterval(h.Cfg)
-	}
-	if opts.keepAliveInterval != nil {
-		keepAliveInterval = *opts.keepAliveInterval
-	}
+	keepAliveInterval := responsesWebsocketKeepAliveInterval(h, c, opts)
 	if keepAliveInterval > 0 {
 		keepAliveTicker = time.NewTicker(keepAliveInterval)
 		defer keepAliveTicker.Stop()

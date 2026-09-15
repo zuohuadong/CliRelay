@@ -6148,3 +6148,30 @@ func TestForwardResponsesWebsocketPingWriteFailureAbortsSession(t *testing.T) {
 		t.Fatal("timed out awaiting cancel callback on ping write failure")
 	}
 }
+
+func TestIsResponsesWebsocketCompletionEventIncludesIncomplete(t *testing.T) {
+	if !isResponsesWebsocketCompletionEvent(wsEventTypeCompleted) || !isResponsesWebsocketCompletionEvent(wsEventTypeDone) {
+		t.Fatal("completed/done should remain completion events")
+	}
+	if !isResponsesWebsocketCompletionEvent(wsEventTypeIncomplete) {
+		t.Fatal("response.incomplete should count as a websocket completion event")
+	}
+	if isResponsesWebsocketCompletionEvent("response.created") {
+		t.Fatal("created should not count as completion")
+	}
+}
+
+func TestResponsesWebsocketKeepAliveIntervalDefaultsForCodex(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	h := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil))
+	if got := responsesWebsocketKeepAliveInterval(h, c, responsesWebsocketForwardOptions{}); got != 0 {
+		t.Fatalf("non-Codex keepalive = %s, want 0", got)
+	}
+	c.Request.Header.Set("Originator", "codex_cli_rs")
+	if got := responsesWebsocketKeepAliveInterval(h, c, responsesWebsocketForwardOptions{}); got != responsesSSEKeepAliveDefaultInterval {
+		t.Fatalf("Codex keepalive = %s, want %s", got, responsesSSEKeepAliveDefaultInterval)
+	}
+}

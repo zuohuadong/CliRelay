@@ -185,7 +185,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				observeCodexTokenEvent(reporter, data)
 				translatedLine = append([]byte("data: "), data...)
 				eventType := gjson.GetBytes(data, "type").String()
-				if codexStreamEventIndicatesProgress(eventType) {
+				if codexStreamEventIndicatesProgress(data) {
 					sawProgressOutput = true
 				}
 				if streamErr, terminalBody, ok := codexTerminalFailureErr(data); ok {
@@ -357,7 +357,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				observeCodexTokenEvent(reporter, data)
 				translatedLine = append([]byte("data: "), data...)
 				eventType := gjson.GetBytes(data, "type").String()
-				if codexStreamEventIndicatesProgress(eventType) {
+				if codexStreamEventIndicatesProgress(data) {
 					sawProgressOutput = true
 				}
 				if streamErr, terminalBody, ok := codexTerminalFailureErr(data); ok {

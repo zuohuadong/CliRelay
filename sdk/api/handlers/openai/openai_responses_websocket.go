@@ -29,6 +29,7 @@ const (
 	wsEventTypeError                      = "error"
 	wsEventTypeCompleted                  = "response.completed"
 	wsEventTypeDone                       = "response.done"
+	wsEventTypeIncomplete                 = "response.incomplete"
 	wsDoneMarker                          = "[DONE]"
 	wsTurnStateHeader                     = "x-codex-turn-state"
 	wsTimelineBodyKey                     = "WEBSOCKET_TIMELINE_OVERRIDE"

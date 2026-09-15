@@ -34,14 +34,24 @@ func newCodexIncompleteStreamErrorEmitted(emittedPayload bool) codexIncompleteSt
 	}
 }
 
-// codexStreamEventIndicatesProgress reports whether an upstream SSE event type
-// carries substantive output progress. Pure lifecycle events (created,
-// in_progress, ping) do not count: a disconnect before any progress event can
-// be retried on another credential without duplicating client-visible content.
-func codexStreamEventIndicatesProgress(eventType string) bool {
+// codexStreamEventIndicatesProgress reports whether an upstream event carries
+// client-visible generated output. Empty item/content announcements are still
+// bootstrap metadata, so a disconnect after them may safely be retried.
+func codexStreamEventIndicatesProgress(eventData []byte) bool {
+	eventType := gjson.GetBytes(eventData, "type").String()
 	switch eventType {
-	case "", "response.created", "response.in_progress", "ping":
+	case "", "response.created", "response.queued", "response.in_progress", "response.metadata",
+		"codex.rate_limits", "codex.response.metadata", "keepalive", "response.keepalive",
+		"ping", "response.ping", "heartbeat", "response.heartbeat":
 		return false
+	case "response.output_item.added":
+		item := gjson.GetBytes(eventData, "item")
+		return !(item.Get("type").String() == "message" && item.Get("content").IsArray() && len(item.Get("content").Array()) == 0)
+	case "response.content_part.added":
+		part := gjson.GetBytes(eventData, "part")
+		return !(part.Get("type").String() == "output_text" && part.Get("text").Type == gjson.String && strings.TrimSpace(part.Get("text").String()) == "")
+	case "response.output_text.delta", "response.reasoning_text.delta", "response.reasoning_summary_text.delta", "response.function_call_arguments.delta":
+		return helps.HasMeaningfulCodexOutputDelta(eventData)
 	default:
 		return true
 	}

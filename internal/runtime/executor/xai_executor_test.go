@@ -6316,3 +6316,138 @@ func TestXAIExecutorExecuteVideosOAuthBaseURLResolution(t *testing.T) {
 		})
 	}
 }
+
+func TestXAIExecutorExecuteStreamStopsAfterIncompleteWhileUpstreamStaysOpen(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[]}}\n\n")
+		_, _ = fmt.Fprint(w, "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[],\"usage\":{\"input_tokens\":8,\"output_tokens\":1,\"total_tokens\":9}}}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}
+	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":"hi","max_output_tokens":1}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	done := make(chan struct{})
+	var stream bytes.Buffer
+	go func() {
+		defer close(done)
+		for chunk := range result.Chunks {
+			if chunk.Err != nil {
+				t.Errorf("stream chunk error = %v", chunk.Err)
+				return
+			}
+			stream.Write(chunk.Payload)
+			stream.WriteByte('\n')
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not finish after response.incomplete while upstream stayed open")
+	}
+	if !strings.Contains(stream.String(), `"type":"response.incomplete"`) {
+		t.Fatalf("missing response.incomplete: %s", stream.String())
+	}
+}
+
+func TestXAIExecutorExecuteStreamDisconnectBeforeCompletionIsRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp-1"}}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","content":[]}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	result, err := NewXAIExecutor(&config.Config{}).ExecuteStream(context.Background(), &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			break
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("expected incomplete stream error")
+	}
+	requestErr, ok := streamErr.(interface{ IsRequestScoped() bool })
+	if ok && requestErr.IsRequestScoped() {
+		t.Fatalf("pre-output disconnect should remain retryable, got %T %v", streamErr, streamErr)
+	}
+}
+
+func TestXAIExecutorExecuteStreamIdleTimeout(t *testing.T) {
+	original := xaiHTTPStreamIdleTimeout
+	xaiHTTPStreamIdleTimeout = 200 * time.Millisecond
+	defer func() { xaiHTTPStreamIdleTimeout = original }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	result, err := NewXAIExecutor(&config.Config{}).ExecuteStream(context.Background(), &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			break
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("expected idle timeout error")
+	}
+	if !strings.Contains(streamErr.Error(), "idle timeout") {
+		t.Fatalf("error = %v, want idle timeout", streamErr)
+	}
+}

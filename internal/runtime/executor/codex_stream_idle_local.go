@@ -11,27 +11,40 @@ import (
 )
 
 var codexHTTPStreamIdleTimeout = 3 * time.Minute
+var xaiHTTPStreamIdleTimeout = 3 * time.Minute
 
 func startCodexHTTPStreamIdleWatch(ctx context.Context, body io.Closer) (chan struct{}, func(), *atomic.Bool) {
+	return startHTTPStreamIdleWatch(ctx, body, "codex executor", &codexHTTPStreamIdleTimeout)
+}
+
+func startXAIHTTPStreamIdleWatch(ctx context.Context, body io.Closer) (chan struct{}, func(), *atomic.Bool) {
+	return startHTTPStreamIdleWatch(ctx, body, "xai executor", &xaiHTTPStreamIdleTimeout)
+}
+
+func startHTTPStreamIdleWatch(ctx context.Context, body io.Closer, label string, timeout *time.Duration) (chan struct{}, func(), *atomic.Bool) {
 	idleReset := make(chan struct{}, 1)
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	timedOut := new(atomic.Bool)
 	var stopOnce sync.Once
+	idle := 3 * time.Minute
+	if timeout != nil && *timeout > 0 {
+		idle = *timeout
+	}
 
 	go func() {
 		defer close(done)
-		timer := time.NewTimer(codexHTTPStreamIdleTimeout)
+		timer := time.NewTimer(idle)
 		defer timer.Stop()
 		for {
 			select {
 			case <-timer.C:
 				timedOut.Store(true)
-				helps.LogWithRequestID(ctx).Warnf("codex executor: stream idle timeout after %s without upstream data, aborting read", codexHTTPStreamIdleTimeout)
+				helps.LogWithRequestID(ctx).Warnf("%s: stream idle timeout after %s without upstream data, aborting read", label, idle)
 				_ = body.Close()
 				return
 			case <-idleReset:
-				resetCodexHTTPStreamIdleTimer(timer)
+				resetHTTPStreamIdleTimer(timer, idle)
 			case <-stop:
 				return
 			case <-ctx.Done():
@@ -49,11 +62,15 @@ func startCodexHTTPStreamIdleWatch(ctx context.Context, body io.Closer) (chan st
 }
 
 func resetCodexHTTPStreamIdleTimer(timer *time.Timer) {
+	resetHTTPStreamIdleTimer(timer, codexHTTPStreamIdleTimeout)
+}
+
+func resetHTTPStreamIdleTimer(timer *time.Timer, idle time.Duration) {
 	if !timer.Stop() {
 		select {
 		case <-timer.C:
 		default:
 		}
 	}
-	timer.Reset(codexHTTPStreamIdleTimeout)
+	timer.Reset(idle)
 }

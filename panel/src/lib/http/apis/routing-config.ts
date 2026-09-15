@@ -3,7 +3,7 @@ import { apiClient } from "@/lib/http/client";
 export interface RoutingConfigGroupItem {
   name?: string;
   description?: string;
-  strategy?: "round-robin" | "fill-first";
+  strategy?: "round-robin" | "weighted-round-robin" | "fill-first";
   match?: {
     channels?: string[];
     tags?: string[];
@@ -20,8 +20,11 @@ export interface RoutingConfigPathRouteItem {
 }
 
 export interface RoutingConfigItem {
-  strategy?: "round-robin" | "fill-first";
+  strategy?: "round-robin" | "weighted-round-robin" | "fill-first";
   "include-default-group"?: boolean;
+  "session-affinity"?: boolean;
+  "session-affinity-ttl"?: string;
+  "session-affinity-subagents"?: boolean;
   "channel-groups"?: RoutingConfigGroupItem[];
   "path-routes"?: RoutingConfigPathRouteItem[];
 }

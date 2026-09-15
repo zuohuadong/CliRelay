@@ -150,3 +150,76 @@ func TestChannelGroupsExposeConfiguredProviderChannels(t *testing.T) {
 		}
 	}
 }
+
+func TestPanelRoutingConfigPreservesSessionAffinityWhenOmitted(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("routing:\n  strategy: round-robin\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	subagents := true
+	h := &Handler{
+		cfg: &config.Config{Routing: config.RoutingConfig{
+			Strategy:                 "weighted-round-robin",
+			SessionAffinity:          true,
+			SessionAffinityTTL:       "2h",
+			SessionAffinitySubagents: &subagents,
+		}},
+		configFilePath: configPath,
+	}
+
+	body := `{"strategy":"weighted-round-robin","include-default-group":true,"channel-groups":[{"name":"team","match":{"channels":["Alpha"]}}]}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPut, "/v0/management/routing-config", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	h.PutRoutingConfig(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := h.cfg.Routing.Strategy; got != "weighted-round-robin" {
+		t.Fatalf("strategy = %q, want weighted-round-robin", got)
+	}
+	if !h.cfg.Routing.SessionAffinity {
+		t.Fatal("expected session affinity to be preserved")
+	}
+	if got := h.cfg.Routing.SessionAffinityTTL; got != "2h" {
+		t.Fatalf("session affinity ttl = %q, want 2h", got)
+	}
+}
+
+func TestPanelRoutingConfigWritesSessionAffinityWhenProvided(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("routing:\n  strategy: round-robin\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	h := &Handler{
+		cfg:            &config.Config{},
+		configFilePath: configPath,
+	}
+	body := `{"strategy":"fill-first","session-affinity":true,"session-affinity-ttl":"30m","session-affinity-subagents":false,"channel-groups":[]}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPut, "/v0/management/routing-config", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	h.PutRoutingConfig(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !h.cfg.Routing.SessionAffinity {
+		t.Fatal("expected session affinity to be enabled")
+	}
+	if got := h.cfg.Routing.SessionAffinityTTL; got != "30m" {
+		t.Fatalf("ttl = %q, want 30m", got)
+	}
+	if h.cfg.Routing.SessionAffinitySubagents == nil || *h.cfg.Routing.SessionAffinitySubagents {
+		t.Fatalf("subagents = %#v, want false", h.cfg.Routing.SessionAffinitySubagents)
+	}
+}

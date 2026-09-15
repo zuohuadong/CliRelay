@@ -76,6 +76,8 @@ type Handler struct {
 	pluginReleaseCache            map[string]pluginReleaseCacheEntry
 	imageTasksMu                  sync.Mutex
 	imageGenerationTasks          map[string]*imageGenerationTestTask
+	videoTasksMu                  sync.Mutex
+	videoGenerationTasks          map[string]*videoGenerationTestTask
 	startTime                     time.Time
 	egressService                 *egress.Service
 	usageAggregateCacheMu         sync.Mutex
@@ -124,6 +126,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		envSecret:            envSecret,
 		startTime:            time.Now(),
 		imageGenerationTasks: make(map[string]*imageGenerationTestTask),
+		videoGenerationTasks: make(map[string]*videoGenerationTestTask),
 	}
 	h.startAttemptCleanup()
 	h.startManagementAuthCacheCleanup()

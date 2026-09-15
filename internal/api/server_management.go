@@ -304,6 +304,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/image-generation/channels", s.mgmt.GetImageGenerationChannels)
 		mgmt.POST("/image-generation/test", s.mgmt.StartImageGenerationTest)
 		mgmt.GET("/image-generation/test/:task_id", s.mgmt.GetImageGenerationTest)
+		mgmt.GET("/video-generation/channels", s.mgmt.GetVideoGenerationChannels)
+		mgmt.POST("/video-generation/test", s.mgmt.StartVideoGenerationTest)
+		mgmt.GET("/video-generation/test/:task_id", s.mgmt.GetVideoGenerationTest)
 	}
 }
 

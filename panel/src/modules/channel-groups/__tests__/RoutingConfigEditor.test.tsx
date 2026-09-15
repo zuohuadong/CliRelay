@@ -64,6 +64,8 @@ function Harness({
       <div data-testid="group-count">{values.routingChannelGroups.length}</div>
       <div data-testid="route-count">{values.routingPathRoutes.length}</div>
       <div data-testid="group-name">{values.routingChannelGroups[0]?.name ?? ""}</div>
+      <div data-testid="default-strategy">{values.routingStrategy}</div>
+      <div data-testid="session-affinity">{String(values.sessionAffinity)}</div>
       <div data-testid="group-strategy">{values.routingChannelGroups[0]?.strategy ?? ""}</div>
       <div data-testid="channel-name">
         {values.routingChannelGroups[0]?.channels[0]?.name ?? ""}
@@ -127,6 +129,40 @@ describe("RoutingConfigEditor", () => {
     await user.click(screen.getByRole("button", { name: "添加" }));
 
     expect(screen.getByTestId("group-strategy")).toHaveTextContent("fill-first");
+  });
+
+  test("stores weighted round-robin from the group editor", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.click(screen.getByRole("combobox", { name: "分组内调度策略" }));
+    await user.click(screen.getByRole("option", { name: "按权重轮询" }));
+    await user.type(screen.getByPlaceholderText("pro"), "team-weighted");
+    await user.type(screen.getByPlaceholderText("/pro"), "/team-weighted");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Main Codex" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("button", { name: "添加" }));
+
+    expect(screen.getByTestId("group-strategy")).toHaveTextContent("weighted-round-robin");
+  });
+
+  test("updates default scheduling and session stickiness", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("combobox", { name: "默认调度策略" }));
+    await user.click(screen.getByRole("option", { name: "按权重轮询" }));
+    await user.click(screen.getByRole("switch", { name: "会话粘性" }));
+
+    expect(screen.getByTestId("default-strategy")).toHaveTextContent("weighted-round-robin");
+    expect(screen.getByTestId("session-affinity")).toHaveTextContent("true");
+    expect(screen.getByLabelText("粘性有效期")).toBeInTheDocument();
   });
 
   test("shows fill-first as the table scheduling mode for that group", async () => {

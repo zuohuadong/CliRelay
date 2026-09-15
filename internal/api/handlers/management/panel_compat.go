@@ -282,8 +282,13 @@ func (h *Handler) GetRoutingConfig(c *gin.Context) {
 }
 
 func (h *Handler) PutRoutingConfig(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
 	var body config.RoutingConfig
-	if err := c.ShouldBindJSON(&body); err != nil {
+	if err := json.Unmarshal(data, &body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
@@ -293,6 +298,24 @@ func (h *Handler) PutRoutingConfig(c *gin.Context) {
 		return
 	}
 	body.Strategy = normalized
+	existing := currentRoutingConfig(nil)
+	if h != nil && h.cfg != nil {
+		existing = currentRoutingConfig(h.cfg)
+	}
+	var presentKeys map[string]json.RawMessage
+	_ = json.Unmarshal(data, &presentKeys)
+	if _, present := presentKeys["session-affinity"]; !present {
+		body.SessionAffinity = existing.SessionAffinity
+	}
+	if _, present := presentKeys["session-affinity-ttl"]; !present {
+		body.SessionAffinityTTL = existing.SessionAffinityTTL
+	}
+	if _, present := presentKeys["session-affinity-subagents"]; !present {
+		body.SessionAffinitySubagents = existing.SessionAffinitySubagents
+	}
+	if _, present := presentKeys["model-routes"]; !present {
+		body.ModelRoutes = existing.ModelRoutes
+	}
 	nextCfg := &config.Config{}
 	if h != nil && h.cfg != nil {
 		copied := *h.cfg

@@ -621,4 +621,49 @@ describe("ChannelGroupsPage", () => {
       }),
     );
   });
+
+  test("preserves weighted scheduling and session stickiness when saving a group", async () => {
+    const fallback = mockedApiGet.getMockImplementation();
+    mockedApiGet.mockImplementation((path: string) => {
+      if (path === "/routing-config") {
+        return Promise.resolve({
+          strategy: "weighted-round-robin",
+          "include-default-group": true,
+          "session-affinity": true,
+          "session-affinity-ttl": "2h",
+          "session-affinity-subagents": true,
+          "channel-groups": [],
+          "path-routes": [],
+        });
+      }
+      return fallback ? fallback(path) : Promise.resolve({});
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByTestId("routing-defaults")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "默认调度策略" })).toHaveTextContent("按权重轮询");
+    expect(screen.getByRole("switch", { name: "会话粘性" })).toHaveAttribute("aria-checked", "true");
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.type(screen.getByPlaceholderText("pro"), "keep-affinity");
+    await user.type(screen.getByPlaceholderText("/pro"), "/keep-affinity");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(await screen.findByRole("option", { name: "Team A Claude" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("button", { name: "添加" }));
+
+    await waitFor(() => expect(mockedApiPut).toHaveBeenCalled());
+    expect(mockedApiPut).toHaveBeenCalledWith(
+      "/routing-config",
+      expect.objectContaining({
+        strategy: "weighted-round-robin",
+        "session-affinity": true,
+        "session-affinity-ttl": "2h",
+        "session-affinity-subagents": true,
+        "channel-groups": [expect.objectContaining({ name: "keep-affinity" })],
+      }),
+    );
+  });
 });

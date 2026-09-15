@@ -13,6 +13,7 @@ import {
   Activity,
   ArrowDownToLine,
   Bot,
+  Clapperboard,
   Cpu,
   Fingerprint,
   Image,
@@ -62,6 +63,7 @@ const NAV_ITEMS = [
     icon: ArrowDownToLine,
   },
   { to: "/image-generation", i18nKey: "shell.nav_image_generation", icon: Image },
+  { to: "/video-generation", i18nKey: "shell.nav_video_generation", icon: Clapperboard },
   { to: "/channel-groups", i18nKey: "shell.nav_channel_groups", icon: Layers },
   {
     to: "/identity-fingerprint",
@@ -93,6 +95,7 @@ const getPageTitleKey = (pathname: string): string => {
   )
     return "shell.nav_ccswitch_import_settings";
   if (pathname.startsWith("/image-generation")) return "shell.nav_image_generation";
+  if (pathname.startsWith("/video-generation")) return "shell.nav_video_generation";
   if (pathname.startsWith("/channel-groups")) return "shell.page_channel_groups";
   if (
     pathname.startsWith("/identity-fingerprint") ||

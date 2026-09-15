@@ -72,6 +72,11 @@ const ImageGenerationPage = lazy(() =>
     default: m.ImageGenerationPage,
   })),
 );
+const VideoGenerationPage = lazy(() =>
+  import("@/modules/video-generation/VideoGenerationPage").then((m) => ({
+    default: m.VideoGenerationPage,
+  })),
+);
 
 export function AppRouter() {
   return (
@@ -131,6 +136,7 @@ export function AppRouter() {
                               element={<Navigate to="/ccswitch-import-settings" replace />}
                             />
                             <Route path="/image-generation" element={<ImageGenerationPage />} />
+                            <Route path="/video-generation" element={<VideoGenerationPage />} />
                             <Route path="/channel-groups" element={<ChannelGroupsPage />} />
                             <Route
                               path="/identity-fingerprint"

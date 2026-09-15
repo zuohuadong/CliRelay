@@ -39,7 +39,30 @@ export interface StreamingConfig {
   nonstreamKeepaliveInterval: string;
 }
 
-export type RoutingStrategy = "round-robin" | "fill-first";
+export type RoutingStrategy = "round-robin" | "weighted-round-robin" | "fill-first";
+
+export function parseRoutingStrategy(raw: unknown): RoutingStrategy {
+  const value = String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, "-");
+  if (value === "fill-first" || value === "fillfirst" || value === "ff") {
+    return "fill-first";
+  }
+  if (
+    value === "weighted-round-robin" ||
+    value === "weightedroundrobin" ||
+    value === "weighted" ||
+    value === "wrr"
+  ) {
+    return "weighted-round-robin";
+  }
+  return "round-robin";
+}
+
+export function parseSessionAffinitySubagents(raw: unknown): boolean {
+  return raw !== false;
+}
 
 export type RoutingFallback = "none" | "default";
 
@@ -109,6 +132,9 @@ export type VisualConfigValues = {
 
   routingStrategy: RoutingStrategy;
   routingIncludeDefaultGroup: boolean;
+  sessionAffinity: boolean;
+  sessionAffinityTTL: string;
+  sessionAffinitySubagents: boolean;
   routingChannelGroups: RoutingChannelGroupEntry[];
   routingPathRoutes: RoutingPathRouteEntry[];
 
@@ -161,6 +187,9 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   quotaSwitchPreviewModel: true,
   routingStrategy: "round-robin",
   routingIncludeDefaultGroup: true,
+  sessionAffinity: false,
+  sessionAffinityTTL: "",
+  sessionAffinitySubagents: true,
   routingChannelGroups: [],
   routingPathRoutes: [],
   payloadDefaultRules: [],

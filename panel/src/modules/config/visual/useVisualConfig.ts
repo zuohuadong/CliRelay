@@ -9,10 +9,14 @@ import type {
   RoutingChannelGroupMemberEntry,
   RoutingFallback,
   RoutingPathRouteEntry,
-  RoutingStrategy,
   VisualConfigValues,
 } from "@/modules/config/visual/types";
-import { DEFAULT_VISUAL_VALUES, makeClientId } from "@/modules/config/visual/types";
+import {
+  DEFAULT_VISUAL_VALUES,
+  makeClientId,
+  parseRoutingStrategy,
+  parseSessionAffinitySubagents,
+} from "@/modules/config/visual/types";
 
 function hasOwn(obj: unknown, key: string): obj is Record<string, unknown> {
   return obj !== null && typeof obj === "object" && Object.prototype.hasOwnProperty.call(obj, key);
@@ -250,10 +254,6 @@ function parseRoutingFallback(raw: unknown): RoutingFallback {
   return raw === "default" ? "default" : "none";
 }
 
-function parseRoutingStrategy(raw: unknown): RoutingStrategy {
-  return raw === "fill-first" ? "fill-first" : "round-robin";
-}
-
 function parseRoutingTags(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return Array.from(
@@ -410,7 +410,7 @@ function serializeRoutingChannelGroupsForYaml(
       if (group.description.trim()) {
         item.description = group.description.trim();
       }
-      item.strategy = group.strategy === "fill-first" ? "fill-first" : "round-robin";
+      item.strategy = parseRoutingStrategy(group.strategy);
 
       const match: Record<string, unknown> = {};
       if (group.matchMode === "tags") {
@@ -548,8 +548,16 @@ export function useVisualConfig() {
         quotaSwitchProject: Boolean(quotaExceeded?.["switch-project"] ?? true),
         quotaSwitchPreviewModel: Boolean(quotaExceeded?.["switch-preview-model"] ?? true),
 
-        routingStrategy: routing?.strategy === "fill-first" ? "fill-first" : "round-robin",
+        routingStrategy: parseRoutingStrategy(routing?.strategy),
         routingIncludeDefaultGroup: routing?.["include-default-group"] !== false,
+        sessionAffinity: routing?.["session-affinity"] === true,
+        sessionAffinityTTL:
+          typeof routing?.["session-affinity-ttl"] === "string"
+            ? routing["session-affinity-ttl"]
+            : "",
+        sessionAffinitySubagents: parseSessionAffinitySubagents(
+          routing?.["session-affinity-subagents"],
+        ),
         routingChannelGroups: parseRoutingChannelGroups(routing?.["channel-groups"]),
         routingPathRoutes: parseRoutingPathRoutes(routing?.["path-routes"]),
 
@@ -679,6 +687,9 @@ export function useVisualConfig() {
         if (
           hasOwn(parsed, "routing") ||
           values.routingStrategy !== "round-robin" ||
+          values.sessionAffinity ||
+          values.sessionAffinityTTL.trim() ||
+          !values.sessionAffinitySubagents ||
           !values.routingIncludeDefaultGroup ||
           values.routingChannelGroups.length > 0 ||
           values.routingPathRoutes.length > 0
@@ -688,7 +699,22 @@ export function useVisualConfig() {
           );
           const serializedPathRoutes = serializeRoutingPathRoutesForYaml(values.routingPathRoutes);
           const routing = ensureRecord(parsed, "routing");
-          routing.strategy = values.routingStrategy;
+          routing.strategy = parseRoutingStrategy(values.routingStrategy);
+          if (values.sessionAffinity) {
+            routing["session-affinity"] = true;
+          } else if (hasOwn(routing, "session-affinity")) {
+            delete routing["session-affinity"];
+          }
+          if (values.sessionAffinity && values.sessionAffinityTTL.trim()) {
+            routing["session-affinity-ttl"] = values.sessionAffinityTTL.trim();
+          } else if (hasOwn(routing, "session-affinity-ttl")) {
+            delete routing["session-affinity-ttl"];
+          }
+          if (values.sessionAffinity && !values.sessionAffinitySubagents) {
+            routing["session-affinity-subagents"] = false;
+          } else if (hasOwn(routing, "session-affinity-subagents")) {
+            delete routing["session-affinity-subagents"];
+          }
           if (!values.routingIncludeDefaultGroup) {
             routing["include-default-group"] = false;
           } else if (hasOwn(routing, "include-default-group")) {

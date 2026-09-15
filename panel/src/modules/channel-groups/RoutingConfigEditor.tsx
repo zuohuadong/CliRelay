@@ -10,7 +10,7 @@ import type {
   RoutingStrategy,
   VisualConfigValues,
 } from "@/modules/config/visual/types";
-import { makeClientId } from "@/modules/config/visual/types";
+import { makeClientId, parseRoutingStrategy } from "@/modules/config/visual/types";
 import { Button } from "@/modules/ui/Button";
 import { Checkbox } from "@/modules/ui/Checkbox";
 import { ConfirmModal } from "@/modules/ui/ConfirmModal";
@@ -19,6 +19,7 @@ import { Modal } from "@/modules/ui/Modal";
 import { SearchableCheckboxMultiSelect } from "@/modules/ui/SearchableCheckboxMultiSelect";
 import { Select } from "@/modules/ui/Select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/modules/ui/Tabs";
+import { ToggleSwitch } from "@/modules/ui/ToggleSwitch";
 import { useToast } from "@/modules/ui/ToastProvider";
 import { HoverTooltip, OverflowTooltip } from "@/modules/ui/Tooltip";
 import { VirtualTable, type VirtualTableColumn } from "@/modules/ui/VirtualTable";
@@ -635,7 +636,7 @@ export function RoutingConfigEditor({
       setGroupDraft({
         name: group.name,
         description: group.description,
-        strategy: group.strategy === "fill-first" ? "fill-first" : "round-robin",
+        strategy: parseRoutingStrategy(group.strategy),
         matchMode: isSystemDefault ? "channels" : (group.matchMode ?? "channels"),
         channels: cloneMembers(group.channels),
         tags: isSystemDefault ? [] : syncDraftTags(group.tags ?? []),
@@ -787,7 +788,7 @@ export function RoutingConfigEditor({
         id: existingDefault?.id ?? makeClientId(),
         name: SYSTEM_DEFAULT_GROUP_NAME,
         description: existingDefault?.description ?? "",
-        strategy: existingDefault?.strategy === "fill-first" ? "fill-first" : "round-robin",
+        strategy: parseRoutingStrategy(existingDefault?.strategy),
         matchMode: "channels",
         channels: existingDefault ? cloneMembers(existingDefault.channels) : [],
         tags: [],
@@ -817,7 +818,7 @@ export function RoutingConfigEditor({
       id: groupEditorId ?? makeClientId(),
       name: groupName,
       description: groupDraft.description.trim(),
-      strategy: groupDraft.strategy === "fill-first" ? "fill-first" : "round-robin",
+      strategy: parseRoutingStrategy(groupDraft.strategy),
       matchMode: groupDraft.matchMode,
       tags: groupDraft.matchMode === "tags" ? syncDraftTags(groupDraft.tags) : [],
       allowedModels: Array.from(
@@ -1035,11 +1036,13 @@ export function RoutingConfigEditor({
           const summary =
             group.strategy === "fill-first"
               ? t("channel_groups_page.routing_strategy_fill_first")
-              : summarizePriorityMode(
-                  resolveGroupChannels(group),
-                  t("channel_groups_page.round_robin_mode"),
-                  t("channel_groups_page.priority_short"),
-                );
+              : group.strategy === "weighted-round-robin"
+                ? t("channel_groups_page.routing_strategy_weighted")
+                : summarizePriorityMode(
+                    resolveGroupChannels(group),
+                    t("channel_groups_page.round_robin_mode"),
+                    t("channel_groups_page.priority_short"),
+                  );
           return (
             <OverflowTooltip content={summary} className="block min-w-0">
               <span className="block truncate">{summary}</span>
@@ -1384,6 +1387,67 @@ export function RoutingConfigEditor({
   return (
     <>
       <div className="space-y-3">
+        <div
+          data-testid="routing-defaults"
+          className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-950/40 md:grid-cols-2"
+        >
+          <Field
+            label={t("channel_groups_page.default_strategy_label")}
+            tooltip={t("channel_groups_page.default_strategy_tooltip")}
+          >
+            <Select
+              aria-label={t("channel_groups_page.default_strategy_label")}
+              value={values.routingStrategy}
+              disabled={disabled}
+              className="w-full"
+              options={[
+                {
+                  value: "round-robin",
+                  label: t("channel_groups_page.routing_strategy_round_robin"),
+                },
+                {
+                  value: "weighted-round-robin",
+                  label: t("channel_groups_page.routing_strategy_weighted"),
+                },
+                {
+                  value: "fill-first",
+                  label: t("channel_groups_page.routing_strategy_fill_first"),
+                },
+              ]}
+              onChange={(value) => update({ routingStrategy: parseRoutingStrategy(value) })}
+            />
+          </Field>
+          <div className="space-y-3">
+            <ToggleSwitch
+              checked={values.sessionAffinity}
+              onCheckedChange={(checked) => update({ sessionAffinity: checked })}
+              label={t("channel_groups_page.session_affinity_label")}
+              description={t("channel_groups_page.session_affinity_desc")}
+              disabled={disabled}
+            />
+            {values.sessionAffinity ? (
+              <>
+                <Field label={t("channel_groups_page.session_affinity_ttl_label")}>
+                  <TextInput
+                    value={values.sessionAffinityTTL}
+                    onChange={(event) =>
+                      update({ sessionAffinityTTL: event.currentTarget.value })
+                    }
+                    placeholder={t("channel_groups_page.session_affinity_ttl_placeholder")}
+                    disabled={disabled}
+                    aria-label={t("channel_groups_page.session_affinity_ttl_label")}
+                  />
+                </Field>
+                <ToggleSwitch
+                  checked={values.sessionAffinitySubagents}
+                  onCheckedChange={(checked) => update({ sessionAffinitySubagents: checked })}
+                  label={t("channel_groups_page.session_affinity_subagents_label")}
+                  disabled={disabled}
+                />
+              </>
+            ) : null}
+          </div>
+        </div>
         <div className="flex flex-wrap justify-end gap-3">
           <Button variant="primary" size="sm" onClick={openCreateGroup} disabled={disabled}>
             <Plus size={14} />
@@ -1603,6 +1667,10 @@ export function RoutingConfigEditor({
                           label: t("channel_groups_page.routing_strategy_round_robin"),
                         },
                         {
+                          value: "weighted-round-robin",
+                          label: t("channel_groups_page.routing_strategy_weighted"),
+                        },
+                        {
                           value: "fill-first",
                           label: t("channel_groups_page.routing_strategy_fill_first"),
                         },
@@ -1610,7 +1678,7 @@ export function RoutingConfigEditor({
                       onChange={(value) => {
                         setGroupDraft((current) => ({
                           ...current,
-                          strategy: value === "fill-first" ? "fill-first" : "round-robin",
+                          strategy: parseRoutingStrategy(value),
                         }));
                       }}
                     />

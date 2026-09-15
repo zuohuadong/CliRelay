@@ -51,6 +51,8 @@ describe("AppShell", () => {
     expect(navBlock).toContain('to: "/models"');
     expect(navBlock).toContain('to: "/egress"');
     expect(navBlock).toContain('i18nKey: "shell.nav_egress"');
+    expect(navBlock).toContain('to: "/video-generation"');
+    expect(navBlock).toContain('i18nKey: "shell.nav_video_generation"');
     expect(navBlock).not.toContain('to: "/proxies"');
     expect(navBlock).toContain('to: "/api-key-permissions"');
     expect(navBlock).toContain('i18nKey: "shell.nav_api_key_permissions"');

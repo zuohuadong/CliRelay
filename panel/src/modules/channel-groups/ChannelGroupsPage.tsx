@@ -20,6 +20,8 @@ import {
 import {
   DEFAULT_VISUAL_VALUES,
   makeClientId,
+  parseRoutingStrategy,
+  parseSessionAffinitySubagents,
   type VisualConfigValues,
 } from "@/modules/config/visual/types";
 import {
@@ -80,8 +82,13 @@ const collectMappedOwnersForChannels = (
 
 function hydrateRoutingValues(payload: RoutingConfigItem | undefined): VisualConfigValues {
   const next = createEmptyRoutingValues();
-  next.routingStrategy = payload?.strategy === "fill-first" ? "fill-first" : "round-robin";
+  next.routingStrategy = parseRoutingStrategy(payload?.strategy);
   next.routingIncludeDefaultGroup = payload?.["include-default-group"] !== false;
+  next.sessionAffinity = payload?.["session-affinity"] === true;
+  next.sessionAffinityTTL = String(payload?.["session-affinity-ttl"] ?? "").trim();
+  next.sessionAffinitySubagents = parseSessionAffinitySubagents(
+    payload?.["session-affinity-subagents"],
+  );
   next.routingChannelGroups = Array.isArray(payload?.["channel-groups"])
     ? payload["channel-groups"].map((group, index) => {
         const priorityMap = group?.["channel-priorities"] ?? {};
@@ -99,7 +106,7 @@ function hydrateRoutingValues(payload: RoutingConfigItem | undefined): VisualCon
           id: `routing-group-${index}-${makeClientId()}`,
           name: String(group?.name ?? ""),
           description: String(group?.description ?? ""),
-          strategy: group?.strategy === "fill-first" ? "fill-first" : "round-robin",
+          strategy: parseRoutingStrategy(group?.strategy),
           matchMode: tags.length > 0 ? "tags" : "channels",
           tags,
           allowedModels: Array.isArray(group?.["allowed-models"])
@@ -145,7 +152,7 @@ function serializeRoutingValues(values: VisualConfigValues): RoutingConfigItem {
     if (group.description.trim()) {
       item.description = group.description.trim();
     }
-    item.strategy = group.strategy === "fill-first" ? "fill-first" : "round-robin";
+    item.strategy = parseRoutingStrategy(group.strategy);
     if (group.matchMode === "tags") {
       const tags = normalizeRoutingTags(group.tags);
       if (tags.length > 0) {
@@ -194,12 +201,18 @@ function serializeRoutingValues(values: VisualConfigValues): RoutingConfigItem {
     return acc;
   }, []);
 
-  return {
-    strategy: values.routingStrategy,
+  const payload: RoutingConfigItem = {
+    strategy: parseRoutingStrategy(values.routingStrategy),
     "include-default-group": values.routingIncludeDefaultGroup,
+    "session-affinity": values.sessionAffinity,
+    "session-affinity-subagents": values.sessionAffinitySubagents,
     "channel-groups": groups,
     "path-routes": routes,
   };
+  if (values.sessionAffinityTTL.trim()) {
+    payload["session-affinity-ttl"] = values.sessionAffinityTTL.trim();
+  }
+  return payload;
 }
 
 export function ChannelGroupsPage() {

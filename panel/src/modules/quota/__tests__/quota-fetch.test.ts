@@ -72,6 +72,27 @@ describe("resolveQuotaProvider", () => {
       } as any),
     ).toBeNull();
   });
+
+  test("supports xAI OAuth auth files", () => {
+    expect(
+      resolveQuotaProvider({
+        name: "xai-user.json",
+        provider: "xai",
+        type: "xai",
+        account_type: "oauth",
+      } as any),
+    ).toBe("xai");
+  });
+
+  test("does not treat xAI API key auth files as quota files", () => {
+    expect(
+      resolveQuotaProvider({
+        name: "xai-api-key.json",
+        provider: "xai",
+        account_type: "api-key",
+      } as any),
+    ).toBeNull();
+  });
 });
 
 describe("fetchQuota for codex", () => {
@@ -390,6 +411,74 @@ describe("fetchQuota for kimi", () => {
       } as any),
     ).rejects.toThrow("auth_disabled");
 
+    await expect(
+      fetchQuota("xai", {
+        name: "xai-disabled.json",
+        type: "xai",
+        provider: "xai",
+        auth_index: "auth-xai-disabled",
+        disabled: true,
+      } as any),
+    ).rejects.toThrow("auth_disabled");
+
     expect(mocks.request).not.toHaveBeenCalled();
+  });
+});
+
+describe("fetchQuota for xai", () => {
+  test("requests Grok billing credits and overlays settings plan type", async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        header: {},
+        bodyText: "",
+        body: {
+          config: {
+            creditUsagePercent: 20,
+            currentPeriod: { type: "weekly", end: "2026-09-22T00:00:00Z" },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        header: {},
+        bodyText: "",
+        body: { subscription_tier_display: "SuperGrok" },
+      });
+
+    const result = await fetchQuota("xai", {
+      name: "xai-user.json",
+      provider: "xai",
+      account_type: "oauth",
+      auth_index: "xai-7",
+    } as any);
+
+    expect(mocks.request).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        authIndex: "xai-7",
+        method: "GET",
+        url: "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+        header: expect.objectContaining({
+          Authorization: "Bearer $TOKEN$",
+          "X-XAI-Token-Auth": "xai-grok-cli",
+        }),
+      }),
+    );
+    expect(mocks.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        url: "https://cli-chat-proxy.grok.com/v1/settings",
+      }),
+    );
+    expect(result.planType).toBe("SuperGrok");
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        key: "xai_week",
+        label: "xai_quota.weekly",
+        percent: 80,
+        resetAtMs: Date.parse("2026-09-22T00:00:00Z"),
+      }),
+    ]);
   });
 });

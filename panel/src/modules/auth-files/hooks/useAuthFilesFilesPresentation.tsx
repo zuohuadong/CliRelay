@@ -61,6 +61,7 @@ const KNOWN_QUOTA_TEXT_KEYS = new Set([
   "parse_codex_failed",
   "missing_project_id",
   "parse_kiro_failed",
+  "parse_xai_failed",
 ]);
 
 const SUBSCRIPTION_TONE_CLASSES = {
@@ -214,6 +215,7 @@ export function useAuthFilesFilesPresentation({
         return t("claude_quota.model_weekly", { name: claudeScopedModel });
       }
       if (text.startsWith("claude_quota.")) return t(text);
+      if (text.startsWith("xai_quota.")) return t(text);
       if (KNOWN_QUOTA_TEXT_KEYS.has(text)) return t(`m_quota.${text}`);
       const additionalQuota = parseAdditionalQuotaWindowLabel(text);
       if (additionalQuota) {
@@ -235,6 +237,9 @@ export function useAuthFilesFilesPresentation({
       }
       if (normalized === "plus" || normalized === "team" || normalized === "free") {
         return t(`codex_quota.plan_${normalized}`);
+      }
+      if (normalized === "super" || normalized === "supergrok" || normalized === "build") {
+        return t(`xai_quota.plan_${normalized === "super" ? "super" : normalized}`);
       }
       return normalized.charAt(0).toUpperCase() + normalized.slice(1);
     },

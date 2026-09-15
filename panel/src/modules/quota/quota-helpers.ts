@@ -33,6 +33,8 @@ export { type KiroQuotaPayload } from "@/modules/quota/quota-kiro";
 export { buildKiroItems, parseKiroQuotaPayload } from "@/modules/quota/quota-kiro";
 export { type KimiUsagePayload } from "@/modules/quota/quota-kimi";
 export { buildKimiItems, parseKimiUsagePayload } from "@/modules/quota/quota-kimi";
+export { type XaiBillingPayload } from "@/modules/quota/quota-xai";
+export { buildXaiItems, parseXaiBillingPayload, parseXaiPlanType } from "@/modules/quota/quota-xai";
 export {
   clampPercent,
   formatRelativeResetLabel,
@@ -100,6 +102,18 @@ export const KIRO_REQUEST_BODY = JSON.stringify({
 export const KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages";
 export const KIMI_REQUEST_HEADERS = {
   Authorization: "Bearer $TOKEN$",
+};
+
+export const XAI_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
+export const XAI_SETTINGS_URL = "https://cli-chat-proxy.grok.com/v1/settings";
+export const XAI_REQUEST_HEADERS = {
+  Authorization: "Bearer $TOKEN$",
+  Accept: "application/json",
+  "X-XAI-Token-Auth": "xai-grok-cli",
+  "x-grok-client-version": "0.2.120",
+  "User-Agent": "xai-grok-workspace/0.2.120",
+  "x-grok-client-identifier": "grok-shell",
+  "x-authenticateresponse": "authenticate-response",
 };
 
 export const resolveAuthProvider = (file: AuthFileItem): string => {

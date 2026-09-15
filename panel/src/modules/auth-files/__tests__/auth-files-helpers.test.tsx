@@ -473,6 +473,10 @@ describe("Auth Files helper coverage", () => {
     ];
     expect(pickQuotaPreviewItem(quotaItems, "5h")?.label).toBe("m_quota.code_5h");
     expect(pickQuotaPreviewItem(quotaItems, "week")?.label).toBe("m_quota.code_weekly");
+
+    const xaiItems = [{ label: "xai_quota.weekly", percent: 80 } as any];
+    expect(pickQuotaPreviewItem(xaiItems, "week")?.label).toBe("xai_quota.weekly");
+    expect(pickQuotaPreviewItem(xaiItems, "5h")?.label).toBe("xai_quota.weekly");
   });
 
   test("derives subscription expiration from start time and billing period", () => {

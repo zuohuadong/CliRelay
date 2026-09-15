@@ -260,6 +260,10 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 					disabled, _ := metadata["disabled"].(bool)
 					fileData["disabled"] = disabled
 					addAuthFileTokenHealth(fileData, typeValue, metadata, disabled, time.Now())
+					addAuthFileSubscriptionFields(fileData, metadata)
+					if claims := extractCodexIDTokenClaimsFromMetadata(typeValue, metadata); claims != nil {
+						fileData["id_token"] = claims
+					}
 				}
 				if projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String()); projectID != "" {
 					fileData["project_id"] = projectID
@@ -405,6 +409,7 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 		}
 	}
 	addAuthFileTokenHealth(entry, auth.Provider, auth.Metadata, auth.Disabled, time.Now())
+	addAuthFileSubscriptionFields(entry, auth.Metadata)
 	if !auth.NextRetryAfter.IsZero() {
 		entry["next_retry_after"] = auth.NextRetryAfter
 	}
@@ -596,43 +601,10 @@ func authProjectID(auth *coreauth.Auth) string {
 }
 
 func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
-	if auth == nil || auth.Metadata == nil {
+	if auth == nil {
 		return nil
 	}
-	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
-		return nil
-	}
-	idTokenRaw, ok := auth.Metadata["id_token"].(string)
-	if !ok {
-		return nil
-	}
-	idToken := strings.TrimSpace(idTokenRaw)
-	if idToken == "" {
-		return nil
-	}
-	claims, err := codex.ParseJWTToken(idToken)
-	if err != nil || claims == nil {
-		return nil
-	}
-
-	result := gin.H{}
-	if v := strings.TrimSpace(claims.CodexAuthInfo.ChatgptAccountID); v != "" {
-		result["chatgpt_account_id"] = v
-	}
-	if v := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); v != "" {
-		result["plan_type"] = v
-	}
-	if v := claims.CodexAuthInfo.ChatgptSubscriptionActiveStart; v != nil {
-		result["chatgpt_subscription_active_start"] = v
-	}
-	if v := claims.CodexAuthInfo.ChatgptSubscriptionActiveUntil; v != nil {
-		result["chatgpt_subscription_active_until"] = v
-	}
-
-	if len(result) == 0 {
-		return nil
-	}
-	return result
+	return extractCodexIDTokenClaimsFromMetadata(auth.Provider, auth.Metadata)
 }
 
 func authEmail(auth *coreauth.Auth) string {

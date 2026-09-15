@@ -55,6 +55,138 @@ func addAuthFileTokenHealth(entry gin.H, provider string, metadata map[string]an
 	}
 }
 
+func addAuthFileSubscriptionFields(entry gin.H, metadata map[string]any) {
+	if entry == nil || metadata == nil {
+		return
+	}
+	if startedAt := metadataString(metadata, "subscription_started_at", "subscriptionStartedAt", "subscription_start_at", "subscriptionStartAt"); startedAt != "" {
+		entry["subscription_started_at"] = startedAt
+	}
+	if period := metadataString(metadata, "subscription_period", "subscriptionPeriod"); period != "" {
+		entry["subscription_period"] = period
+	}
+	if expiresAt := metadataString(metadata, "subscription_expires_at", "subscriptionExpiresAt"); expiresAt != "" {
+		entry["subscription_expires_at"] = expiresAt
+	}
+	if startedAtMs, ok := metadataPositiveInt64(metadata, "subscription_started_at_ms", "subscriptionStartedAtMs"); ok {
+		entry["subscription_started_at_ms"] = startedAtMs
+	}
+	if expiresAtMs, ok := metadataPositiveInt64(metadata, "subscription_expires_at_ms", "subscriptionExpiresAtMs"); ok {
+		entry["subscription_expires_at_ms"] = expiresAtMs
+	}
+}
+
+func metadataPositiveInt64(metadata map[string]any, keys ...string) (int64, bool) {
+	if len(metadata) == 0 {
+		return 0, false
+	}
+	for _, key := range keys {
+		switch value := metadata[key].(type) {
+		case float64:
+			if value > 0 && value == float64(int64(value)) {
+				return int64(value), true
+			}
+		case int64:
+			if value > 0 {
+				return value, true
+			}
+		case int:
+			if value > 0 {
+				return int64(value), true
+			}
+		case json.Number:
+			parsed, err := value.Int64()
+			if err == nil && parsed > 0 {
+				return parsed, true
+			}
+		case string:
+			parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+			if err == nil && parsed > 0 {
+				return parsed, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func parseAuthFileTimestamp(value any) (time.Time, bool) {
+	switch typed := value.(type) {
+	case time.Time:
+		if typed.IsZero() {
+			return time.Time{}, false
+		}
+		return typed.UTC(), true
+	case float64:
+		return unixLikeTimestamp(typed)
+	case int64:
+		return unixLikeTimestamp(float64(typed))
+	case int:
+		return unixLikeTimestamp(float64(typed))
+	case json.Number:
+		parsed, err := typed.Float64()
+		if err != nil {
+			return time.Time{}, false
+		}
+		return unixLikeTimestamp(parsed)
+	default:
+		return parseLastRefreshValue(value)
+	}
+}
+
+func unixLikeTimestamp(value float64) (time.Time, bool) {
+	if value <= 0 {
+		return time.Time{}, false
+	}
+	if value >= 1e12 {
+		return time.UnixMilli(int64(value)).UTC(), true
+	}
+	return time.Unix(int64(value), 0).UTC(), true
+}
+
+func extractCodexIDTokenClaimsFromMetadata(provider string, metadata map[string]any) gin.H {
+	if metadata == nil || !strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		return nil
+	}
+	idTokenRaw, ok := metadata["id_token"].(string)
+	if !ok {
+		return nil
+	}
+	idToken := strings.TrimSpace(idTokenRaw)
+	if idToken == "" {
+		return nil
+	}
+	claims, err := codex.ParseJWTToken(idToken)
+	if err != nil || claims == nil {
+		return nil
+	}
+
+	result := gin.H{}
+	if v := strings.TrimSpace(claims.CodexAuthInfo.ChatgptAccountID); v != "" {
+		result["chatgpt_account_id"] = v
+	}
+	if v := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); v != "" {
+		result["plan_type"] = v
+	}
+	if v := claims.CodexAuthInfo.ChatgptSubscriptionActiveStart; v != nil {
+		if ts, ok := parseAuthFileTimestamp(v); ok {
+			result["chatgpt_subscription_active_start"] = ts
+		} else {
+			result["chatgpt_subscription_active_start"] = v
+		}
+	}
+	if v := claims.CodexAuthInfo.ChatgptSubscriptionActiveUntil; v != nil {
+		if ts, ok := parseAuthFileTimestamp(v); ok {
+			result["chatgpt_subscription_active_until"] = ts
+		} else {
+			result["chatgpt_subscription_active_until"] = v
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
 func authCodexFastModeValue(auth *coreauth.Auth) (bool, bool) {
 	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
 		return false, false

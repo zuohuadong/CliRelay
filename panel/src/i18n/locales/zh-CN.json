@@ -824,6 +824,7 @@
     "subscription_period_monthly": "月订阅",
     "subscription_period_yearly": "年订阅",
     "subscription_expires_at_title": "{{period}} · 开始于 {{start}} · 到期于 {{date}}",
+    "subscription_expires_only_title": "{{period}} · 到期于 {{date}}",
     "subscription_remaining_short": "剩余 {{days}} 天",
     "subscription_expired_short": "已过期 {{days}} 天",
     "token_health_ok": "正常",

@@ -340,11 +340,17 @@ export function useAuthFilesFilesPresentation({
       const label = status.expired
         ? t("auth_files.subscription_expired_short", { days })
         : t("auth_files.subscription_remaining_short", { days });
-      const title = t("auth_files.subscription_expires_at_title", {
-        start: status.startedAtText,
-        date: status.expiresAtText,
-        period: t(`auth_files.subscription_period_${status.period}`),
-      });
+      const periodLabel = t(`auth_files.subscription_period_${status.period}`);
+      const title = status.startedAtMs
+        ? t("auth_files.subscription_expires_at_title", {
+            start: status.startedAtText,
+            date: status.expiresAtText,
+            period: periodLabel,
+          })
+        : t("auth_files.subscription_expires_only_title", {
+            date: status.expiresAtText,
+            period: periodLabel,
+          });
 
       return (
         <HoverTooltip content={title}>

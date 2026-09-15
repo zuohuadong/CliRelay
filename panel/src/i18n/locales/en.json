@@ -816,6 +816,7 @@
     "subscription_period_monthly": "Monthly",
     "subscription_period_yearly": "Yearly",
     "subscription_expires_at_title": "{{period}} - started {{start}} - expires {{date}}",
+    "subscription_expires_only_title": "{{period}} - expires {{date}}",
     "subscription_remaining_short": "{{days}}d left",
     "subscription_expired_short": "Expired {{days}}d",
     "token_health_ok": "OK",

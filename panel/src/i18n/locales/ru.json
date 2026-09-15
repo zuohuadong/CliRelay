@@ -563,6 +563,7 @@
     "subscription_period_monthly": "Ежемесячно",
     "subscription_period_yearly": "Ежегодно",
     "subscription_expires_at_title": "{{period}} - начало {{start}} - истекает {{date}}",
+    "subscription_expires_only_title": "{{period}} - истекает {{date}}",
     "subscription_remaining_short": "Осталось {{days}} д",
     "subscription_expired_short": "Истекла {{days}} д назад",
     "token_health_ok": "OK",

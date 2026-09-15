@@ -666,7 +666,7 @@ export const resolveAuthFileRestrictionBadges = (
 };
 
 export type AuthFileSubscriptionStatus = {
-  startedAtMs: number;
+  startedAtMs: number | null;
   startedAtText: string;
   expiresAtMs: number;
   expiresAtText: string;
@@ -677,6 +677,7 @@ export type AuthFileSubscriptionStatus = {
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const YEARISH_MS = 300 * DAY_MS;
 
 export const normalizeAuthFileSubscriptionPeriod = (value: unknown): AuthFileSubscriptionPeriod => {
   const normalized = String(value ?? "")
@@ -697,6 +698,32 @@ const resolveSubscriptionStartMs = (file: AuthFileItem): number | null =>
       file.subscriptionStartAt,
   );
 
+const resolveSubscriptionExpiresMs = (file: AuthFileItem): number | null =>
+  parseDateLikeMs(file.subscription_expires_at_ms ?? file.subscriptionExpiresAtMs) ??
+  parseDateLikeMs(file.subscription_expires_at ?? file.subscriptionExpiresAt);
+
+const readPlainRecord = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+};
+
+const resolveCodexIdTokenRecord = (file: AuthFileItem): Record<string, unknown> | null => {
+  const idToken = readPlainRecord(file.id_token);
+  if (!idToken) return null;
+  const nested = readPlainRecord(idToken["https://api.openai.com/auth"]);
+  return nested ? { ...nested, ...idToken } : idToken;
+};
+
+const resolveCodexSubscriptionDateMs = (file: AuthFileItem, keys: string[]): number | null => {
+  const idToken = resolveCodexIdTokenRecord(file);
+  if (!idToken) return null;
+  for (const key of keys) {
+    const parsed = parseDateLikeMs(idToken[key]);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+};
+
 const addCalendarMonths = (startMs: number, months: number): number | null => {
   const date = new Date(startMs);
   if (Number.isNaN(date.getTime())) return null;
@@ -711,32 +738,69 @@ const addCalendarMonths = (startMs: number, months: number): number | null => {
   return Number.isNaN(result.getTime()) ? null : result.getTime();
 };
 
+const remainingDaysFromExpiry = (expiresAtMs: number, nowMs: number): number => {
+  const diffMs = expiresAtMs - nowMs;
+  if (diffMs === 0) return 0;
+  return diffMs > 0 ? Math.ceil(diffMs / DAY_MS) : -Math.ceil(Math.abs(diffMs) / DAY_MS);
+};
+
+const inferSubscriptionPeriod = (
+  explicitPeriod: unknown,
+  startedAtMs: number | null,
+  expiresAtMs: number,
+): AuthFileSubscriptionPeriod => {
+  if (String(explicitPeriod ?? "").trim()) {
+    return normalizeAuthFileSubscriptionPeriod(explicitPeriod);
+  }
+  if (startedAtMs !== null && expiresAtMs - startedAtMs >= YEARISH_MS) {
+    return "yearly";
+  }
+  return "monthly";
+};
+
 export const resolveAuthFileSubscriptionStatus = (
   file: AuthFileItem,
   nowMs = Date.now(),
 ): AuthFileSubscriptionStatus | null => {
-  const startedAtMs = resolveSubscriptionStartMs(file);
-  if (startedAtMs === null) return null;
+  const manualStartedAtMs = resolveSubscriptionStartMs(file);
+  const manualExpiresAtMs = resolveSubscriptionExpiresMs(file);
+  const codexStartedAtMs = resolveCodexSubscriptionDateMs(file, [
+    "chatgpt_subscription_active_start",
+    "chatgptSubscriptionActiveStart",
+  ]);
+  const codexExpiresAtMs = resolveCodexSubscriptionDateMs(file, [
+    "chatgpt_subscription_active_until",
+    "chatgptSubscriptionActiveUntil",
+  ]);
 
-  const period = normalizeAuthFileSubscriptionPeriod(
-    file.subscription_period ?? file.subscriptionPeriod,
-  );
-  const expiresAtMs = addCalendarMonths(startedAtMs, period === "yearly" ? 12 : 1);
+  let startedAtMs = manualStartedAtMs;
+  let expiresAtMs = manualExpiresAtMs;
+  if (expiresAtMs === null && startedAtMs !== null) {
+    const period = normalizeAuthFileSubscriptionPeriod(
+      file.subscription_period ?? file.subscriptionPeriod,
+    );
+    expiresAtMs = addCalendarMonths(startedAtMs, period === "yearly" ? 12 : 1);
+  }
+  if (expiresAtMs === null) {
+    expiresAtMs = codexExpiresAtMs;
+  }
+  if (startedAtMs === null) {
+    startedAtMs = codexStartedAtMs;
+  }
   if (expiresAtMs === null) return null;
 
-  const diffMs = expiresAtMs - nowMs;
-  const remainingDays =
-    diffMs === 0
-      ? 0
-      : diffMs > 0
-        ? Math.ceil(diffMs / DAY_MS)
-        : -Math.ceil(Math.abs(diffMs) / DAY_MS);
+  const remainingDays = remainingDaysFromExpiry(expiresAtMs, nowMs);
   const expired = remainingDays <= 0;
   const tone = expired ? "expired" : remainingDays <= 5 ? "urgent" : "active";
+  const period = inferSubscriptionPeriod(
+    file.subscription_period ?? file.subscriptionPeriod,
+    startedAtMs,
+    expiresAtMs,
+  );
 
   return {
     startedAtMs,
-    startedAtText: new Date(startedAtMs).toLocaleString(),
+    startedAtText: startedAtMs === null ? "" : new Date(startedAtMs).toLocaleString(),
     expiresAtMs,
     expiresAtText: new Date(expiresAtMs).toLocaleString(),
     remainingDays,

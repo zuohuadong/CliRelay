@@ -511,6 +511,88 @@ describe("Auth Files helper coverage", () => {
     );
   });
 
+  test("derives Codex OAuth remaining days from id_token subscription dates", () => {
+    const nowMs = Date.parse("2026-04-26T00:00:00.000Z");
+    const untilSeconds = Math.floor(Date.parse("2026-05-01T00:00:00.000Z") / 1000);
+    const startSeconds = Math.floor(Date.parse("2025-05-01T00:00:00.000Z") / 1000);
+
+    const fromUnix = resolveAuthFileSubscriptionStatus(
+      {
+        name: "codex-oauth.json",
+        type: "codex",
+        account_type: "oauth",
+        id_token: {
+          chatgpt_subscription_active_start: startSeconds,
+          chatgpt_subscription_active_until: untilSeconds,
+        },
+      } as AuthFileItem,
+      nowMs,
+    );
+    expect(fromUnix).toEqual(
+      expect.objectContaining({
+        startedAtMs: Date.parse("2025-05-01T00:00:00.000Z"),
+        expiresAtMs: Date.parse("2026-05-01T00:00:00.000Z"),
+        remainingDays: 5,
+        expired: false,
+        period: "yearly",
+        tone: "urgent",
+      }),
+    );
+
+    const fromNestedIso = resolveAuthFileSubscriptionStatus(
+      {
+        name: "codex-nested.json",
+        type: "codex",
+        id_token: {
+          "https://api.openai.com/auth": {
+            chatgpt_subscription_active_until: "2026-05-01T00:00:00.000Z",
+          },
+        },
+      } as AuthFileItem,
+      nowMs,
+    );
+    expect(fromNestedIso).toEqual(
+      expect.objectContaining({
+        startedAtMs: null,
+        expiresAtMs: Date.parse("2026-05-01T00:00:00.000Z"),
+        remainingDays: 5,
+        expired: false,
+      }),
+    );
+
+    const fromExplicitExpiry = resolveAuthFileSubscriptionStatus(
+      {
+        name: "codex-expiry.json",
+        subscription_expires_at: "2026-05-01T00:00:00.000Z",
+      } as AuthFileItem,
+      nowMs,
+    );
+    expect(fromExplicitExpiry).toEqual(
+      expect.objectContaining({
+        expiresAtMs: Date.parse("2026-05-01T00:00:00.000Z"),
+        remainingDays: 5,
+      }),
+    );
+
+    const manualStartWins = resolveAuthFileSubscriptionStatus(
+      {
+        name: "codex-manual.json",
+        subscription_started_at: "2026-04-01T00:00:00.000Z",
+        subscription_period: "monthly",
+        id_token: {
+          chatgpt_subscription_active_until: "2026-12-01T00:00:00.000Z",
+        },
+      } as AuthFileItem,
+      nowMs,
+    );
+    expect(manualStartWins).toEqual(
+      expect.objectContaining({
+        expiresAtMs: Date.parse("2026-05-01T00:00:00.000Z"),
+        remainingDays: 5,
+      }),
+    );
+  });
+
   test("filters auth files, paginates, and prunes runtime-only selections", async () => {
     const files = [
       { name: "beta.json", type: "codex", provider: "codex" },

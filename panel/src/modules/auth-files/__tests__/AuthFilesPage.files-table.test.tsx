@@ -2487,6 +2487,43 @@ describe("AuthFilesPage files table", () => {
     expect(screen.getByText(/5d left/)).toBeInTheDocument();
   });
 
+  test("shows remaining days from Codex OAuth id_token subscription", async () => {
+    useTableFilesView();
+    const expiresAt = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000);
+    mocks.list.mockImplementation(async () => ({
+      files: [
+        {
+          name: "codex-oauth.json",
+          label: "Codex OAuth",
+          account_type: "oauth",
+          type: "codex",
+          size: 1024,
+          modified: Date.now(),
+          disabled: false,
+          id_token: {
+            plan_type: "plus",
+            chatgpt_subscription_active_until: Math.floor(expiresAt.getTime() / 1000),
+          },
+        },
+      ],
+    }));
+
+    render(
+      <MemoryRouter initialEntries={["/auth-files"]}>
+        <ThemeProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/auth-files" element={<AuthFilesPage />} />
+            </Routes>
+          </ToastProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Codex OAuth")).toBeInTheDocument();
+    expect(screen.getByText(/5d left/)).toBeInTheDocument();
+  });
+
   test("shows codex token health in table", async () => {
     useTableFilesView();
     const expiresAt = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);

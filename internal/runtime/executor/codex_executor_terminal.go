@@ -631,6 +631,17 @@ const codexBootstrapMaxBufferedFrames = 48
 // materialised the frame by the time it is consulted.
 const codexBootstrapMaxBufferedBytes = 1 << 20
 
+func isCodexHandshakeMetadataEvent(eventType string) bool {
+	switch eventType {
+	case "response.created", "response.queued", "response.in_progress", "response.metadata",
+		"codex.rate_limits", "codex.response.metadata",
+		"keepalive", "response.keepalive", "ping", "response.ping", "heartbeat", "response.heartbeat":
+		return true
+	default:
+		return false
+	}
+}
+
 // isCodexBootstrapBufferableEvent reports whether a frame may be held back before the downstream
 // response headers are committed, i.e. whether nothing observable has happened yet.
 //

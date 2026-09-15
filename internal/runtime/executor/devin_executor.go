@@ -1210,7 +1210,7 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 	// Prioritize stable session identifiers across turns (session_id, sessionId, conversation_id)
 	// to ensure upstream session ID and cascade ID remain stable, preserving prompt caching.
 	// Fall back to previous_interaction_id only when no stable session identifier exists.
-	sessionID = strings.TrimSpace(firstNonEmpty(
+	sessionID = strings.TrimSpace(devinFirstNonEmpty(
 		root.Get("session_id").String(),
 		root.Get("sessionId").String(),
 		root.Get("conversation_id").String(),
@@ -1218,7 +1218,7 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 	))
 	if sessionID == "" && len(originalRequest) > 0 {
 		origRoot := gjson.ParseBytes(originalRequest)
-		sessionID = strings.TrimSpace(firstNonEmpty(
+		sessionID = strings.TrimSpace(devinFirstNonEmpty(
 			origRoot.Get("session_id").String(),
 			origRoot.Get("sessionId").String(),
 			origRoot.Get("conversation_id").String(),
@@ -1244,7 +1244,7 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 
 			case "model_output":
 				text := extractInteractionsStepText(step)
-				sigStr := firstNonEmpty(step.Get("signature").String(), step.Get("thought_signature").String())
+				sigStr := devinFirstNonEmpty(step.Get("signature").String(), step.Get("thought_signature").String())
 				sigBytes, sigType := parseSignatureBytes(sigStr)
 				if len(prompts) > 0 && prompts[len(prompts)-1].Source == 2 {
 					if prompts[len(prompts)-1].Content != "" {
@@ -1269,7 +1269,7 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 			case "thought":
 				// If previous prompt was assistant, attach thinking; otherwise append assistant prompt
 				text := extractInteractionsStepText(step)
-				sigStr := firstNonEmpty(step.Get("signature").String(), step.Get("thought_signature").String())
+				sigStr := devinFirstNonEmpty(step.Get("signature").String(), step.Get("thought_signature").String())
 				sigBytes, sigType := parseSignatureBytes(sigStr)
 				if len(prompts) > 0 && prompts[len(prompts)-1].Source == 2 {
 					if prompts[len(prompts)-1].Thinking != "" {
@@ -1293,7 +1293,7 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 
 			case "function_call":
 				name := step.Get("name").String()
-				id := firstNonEmpty(step.Get("id").String(), step.Get("call_id").String())
+				id := devinFirstNonEmpty(step.Get("id").String(), step.Get("call_id").String())
 				args := step.Get("arguments").Raw
 				tc := helps.DevinToolCall{ID: id, Name: name, Arguments: args}
 				if len(prompts) > 0 && prompts[len(prompts)-1].Source == 2 {
@@ -1307,8 +1307,8 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 				}
 
 			case "function_result":
-				id := firstNonEmpty(step.Get("id").String(), step.Get("call_id").String())
-				resText := firstNonEmpty(
+				id := devinFirstNonEmpty(step.Get("id").String(), step.Get("call_id").String())
+				resText := devinFirstNonEmpty(
 					step.Get("result").String(),
 					step.Get("output").String(),
 					step.Get("content").String(),
@@ -1355,8 +1355,8 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 					Content:   text,
 				})
 			case "tool":
-				id := firstNonEmpty(m.Get("tool_call_id").String(), m.Get("id").String())
-				resText := firstNonEmpty(
+				id := devinFirstNonEmpty(m.Get("tool_call_id").String(), m.Get("id").String())
+				resText := devinFirstNonEmpty(
 					m.Get("content").String(),
 					m.Get("output").String(),
 					m.Get("result").String(),
@@ -1456,7 +1456,7 @@ func extractInteractionsStepContent(step gjson.Result) (string, []helps.DevinIma
 			}
 
 			if base64Data == "" {
-				url := firstNonEmpty(p.Get("image_url.url").String(), p.Get("image_url").String(), p.Get("url").String())
+				url := devinFirstNonEmpty(p.Get("image_url.url").String(), p.Get("image_url").String(), p.Get("url").String())
 				if m, d, ok := parseDataURL(url); ok {
 					base64Data = d
 					if mimeType == "" {
@@ -1553,7 +1553,7 @@ func supplementImagesFromOriginal(original []byte, prompts []helps.DevinPrompt) 
 						data := strings.TrimSpace(part.Get("source.data").String())
 						mime := strings.TrimSpace(part.Get("source.media_type").String())
 						if data == "" {
-							url := firstNonEmpty(part.Get("image_url.url").String(), part.Get("image_url").String(), part.Get("url").String())
+							url := devinFirstNonEmpty(part.Get("image_url.url").String(), part.Get("image_url").String(), part.Get("url").String())
 							if m, d, ok := parseDataURL(url); ok {
 								data = d
 								mime = m
@@ -1877,7 +1877,7 @@ func normalizeDevinUUID(raw string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(raw)).String()
 }
 
-func firstNonEmpty(values ...string) string {
+func devinFirstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if strings.TrimSpace(v) != "" {
 			return v

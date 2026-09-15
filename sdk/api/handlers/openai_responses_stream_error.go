@@ -10,17 +10,13 @@ import (
 )
 
 type openAIResponsesStreamErrorChunk struct {
-	Type           string `json:"type"`
-	Code           string `json:"code"`
-	Message        string `json:"message"`
-	SequenceNumber int    `json:"sequence_number"`
-	Status         int    `json:"status"`
-	Error          struct {
-		Code    string `json:"code"`
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error"`
-	Headers map[string]string `json:"headers"`
+	Type           string            `json:"type"`
+	Code           string            `json:"code"`
+	Message        string            `json:"message"`
+	SequenceNumber int               `json:"sequence_number"`
+	Status         int               `json:"status"`
+	Error          map[string]any    `json:"error"`
+	Headers        map[string]string `json:"headers"`
 }
 
 type openAIResponsesParsedStreamError struct {

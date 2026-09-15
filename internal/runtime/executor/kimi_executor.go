@@ -418,7 +418,7 @@ func (e *KimiExecutor) executeResponses(ctx context.Context, auth *cliproxyauth.
 	if errNewRequest != nil {
 		return resp, errNewRequest
 	}
-	applyKimiHeadersWithAuth(httpReq, token, false, auth)
+	applyKimiHeadersWithAuth(httpReq, token, false, auth, e.cfg)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -527,7 +527,7 @@ func (e *KimiExecutor) executeResponsesStream(ctx context.Context, auth *cliprox
 	if errNewRequest != nil {
 		return nil, errNewRequest
 	}
-	applyKimiHeadersWithAuth(httpReq, token, true, auth)
+	applyKimiHeadersWithAuth(httpReq, token, true, auth, e.cfg)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes

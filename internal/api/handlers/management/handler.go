@@ -98,7 +98,6 @@ type Handler struct {
 	channelLatencyLoader          func(context.Context, int) ([]usage.ChannelLatency, error)
 	agentIdentityRegistrar        agentIdentityRegistrarFactory
 	authStatusMu                  sync.Mutex
-	logDir                        string
 	pluginStoreRateLimiter        *pluginstore.GitHubRateLimiter
 	pluginReleases                pluginReleaseCache
 }

@@ -27,6 +27,7 @@ const (
 	codexOriginator            = "codex-tui"
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
+	codexResponsesLiteMetadata = "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite"
 )
 
 var dataTag = []byte("data:")
@@ -482,6 +483,17 @@ func isCodexFreePlanAuth(auth *cliproxyauth.Auth) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(auth.Attributes["plan_type"]), "free")
+}
+
+func isCodexResponsesLiteRequest(body []byte, headers http.Header) bool {
+	if strings.EqualFold(strings.TrimSpace(headers.Get(codexResponsesLiteHeader)), "true") {
+		return true
+	}
+	value := gjson.GetBytes(body, codexResponsesLiteMetadata)
+	if !value.Exists() {
+		return false
+	}
+	return value.Type == gjson.True || value.Type == gjson.String && strings.EqualFold(strings.TrimSpace(value.String()), "true")
 }
 
 func isImageGenerationFunctionTool(tool gjson.Result) bool {

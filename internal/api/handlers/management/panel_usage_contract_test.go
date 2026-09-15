@@ -108,6 +108,7 @@ func newUsageContractTestHandler(t *testing.T) *Handler {
 		t.Fatalf("seed usage data: %v", err)
 	}
 
+	resetUsageLogFiltersCache()
 	return &Handler{
 		cfg:            &config.Config{},
 		configFilePath: filepath.Join(dir, "config.yaml"),
@@ -240,6 +241,46 @@ func TestUsageLogsContractFiltersAndContentFlag(t *testing.T) {
 	names := filters["api_key_names"].(map[string]any)
 	if names["sk-a"] != "Primary" {
 		t.Fatalf("api key names = %#v", names)
+	}
+	models := filters["models"].([]any)
+	for _, model := range models {
+		if model == "old-model" {
+			t.Fatalf("7-day filters included out-of-window model: %#v", models)
+		}
+	}
+}
+
+func TestUsageLogsListNewestTimestampFirst(t *testing.T) {
+	h := newUsageContractTestHandler(t)
+	db, err := sql.Open("sqlite", filepath.Join(filepath.Dir(h.configFilePath), "data", "usage.db"))
+	if err != nil {
+		t.Fatalf("open usage db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	newer := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339Nano)
+	older := time.Now().UTC().Add(-40 * time.Minute).Format(time.RFC3339Nano)
+	_, err = db.Exec(`insert into request_logs (
+		id, timestamp, api_key, api_key_name, model, source, channel_name, auth_index, failed,
+		latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost
+	) values
+		(10, ?, 'sk-a', 'Primary', 'gpt-newer', 'codex', 'Codex', 'auth-a', 0, 10, 1, 1, 1, 0, 0, 2, 0),
+		(11, ?, 'sk-a', 'Primary', 'gpt-older', 'codex', 'Codex', 'auth-a', 0, 10, 1, 1, 1, 0, 0, 2, 0)`, newer, older)
+	if err != nil {
+		t.Fatalf("insert ordered usage rows: %v", err)
+	}
+
+	status, payload := performUsageContractRequest(t, http.MethodGet, "/v0/management/usage/logs?days=7", nil, nil, h.GetUsageLogs)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	items := payload["items"].([]any)
+	if len(items) == 0 {
+		t.Fatal("expected usage log items")
+	}
+	first := items[0].(map[string]any)
+	if first["id"].(float64) != 10 || first["model"] != "gpt-newer" {
+		t.Fatalf("newest timestamp row was not first: %#v", first)
 	}
 }
 

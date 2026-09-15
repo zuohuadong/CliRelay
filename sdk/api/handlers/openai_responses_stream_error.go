@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -61,6 +62,12 @@ func openAIResponsesStreamErrorCode(status int) string {
 		}
 		return "unknown_error"
 	}
+}
+
+func unmarshalJSONWithNumber(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return dec.Decode(v)
 }
 
 func normalizeOpenAIResponsesStreamErrorCode(status int, code string, message string) string {
@@ -144,14 +151,13 @@ func parseOpenAIResponsesStreamError(status int, errText string) openAIResponses
 	if message == "" {
 		message = http.StatusText(status)
 	}
-
 	code := openAIResponsesStreamErrorCode(status)
 	errType := openAIResponsesStreamErrorType(status, code)
 
 	trimmed := strings.TrimSpace(errText)
 	if trimmed != "" && json.Valid([]byte(trimmed)) {
 		var payload map[string]any
-		if err := json.Unmarshal([]byte(trimmed), &payload); err == nil {
+		if err := unmarshalJSONWithNumber([]byte(trimmed), &payload); err == nil {
 			if t, ok := payload["type"].(string); ok && strings.TrimSpace(t) == "error" {
 				if m, ok := payload["message"].(string); ok && strings.TrimSpace(m) != "" {
 					message = strings.TrimSpace(m)
@@ -163,8 +169,17 @@ func parseOpenAIResponsesStreamError(status int, errText string) openAIResponses
 						code = strings.TrimSpace(fmt.Sprint(v))
 					}
 				}
-				if v, ok := payload["status"].(float64); ok && v > 0 {
-					status = int(v)
+				if v, ok := payload["status"]; ok {
+					switch n := v.(type) {
+					case json.Number:
+						if parsed, err := n.Int64(); err == nil && parsed > 0 {
+							status = int(parsed)
+						}
+					case float64:
+						if n > 0 {
+							status = int(n)
+						}
+					}
 				}
 			}
 			if e, ok := payload["error"].(map[string]any); ok {
@@ -198,12 +213,7 @@ func parseOpenAIResponsesStreamError(status int, errText string) openAIResponses
 		errType = openAIResponsesStreamErrorType(status, code)
 	}
 
-	return openAIResponsesParsedStreamError{
-		status:  status,
-		code:    code,
-		errType: errType,
-		message: message,
-	}
+	return openAIResponsesParsedStreamError{status: status, code: code, errType: errType, message: message}
 }
 
 func IsOpenAIResponsesContextWindowError(status int, errText string) bool {
@@ -283,9 +293,7 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 			"Content-Type": "application/json",
 		},
 	}
-	chunk.Error.Code = parsed.code
-	chunk.Error.Type = parsed.errType
-	chunk.Error.Message = parsed.message
+	chunk.Error = map[string]any{"code": parsed.code, "type": parsed.errType, "message": parsed.message}
 
 	data, err := json.Marshal(chunk)
 	if err == nil {
@@ -303,9 +311,7 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 			"Content-Type": "application/json",
 		},
 	}
-	fallback.Error.Code = "internal_server_error"
-	fallback.Error.Type = "server_error"
-	fallback.Error.Message = parsed.message
+	fallback.Error = map[string]any{"code": "internal_server_error", "type": "server_error", "message": parsed.message}
 	data, _ = json.Marshal(fallback)
 	if len(data) > 0 {
 		return data
@@ -313,15 +319,28 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 	return []byte(`{"type":"error","code":"internal_server_error","message":"internal error","sequence_number":0,"status":500,"error":{"code":"internal_server_error","type":"server_error","message":"internal error"},"headers":{"Content-Type":"application/json"}}`)
 }
 
-func openAIResponsesStreamFailedErrorDetail(status int, errText, code, message string) map[string]any {
+func openAIResponsesStreamErrorDetail(status int, errText, code, message string) map[string]any {
 	var payload map[string]any
-	if errUnmarshal := json.Unmarshal([]byte(strings.TrimSpace(errText)), &payload); errUnmarshal == nil {
-		if errorDetail, ok := payload["error"].(map[string]any); ok {
-			return errorDetail
-		}
-		if response, ok := payload["response"].(map[string]any); ok {
-			if errorDetail, ok := response["error"].(map[string]any); ok {
+	trimmed := strings.TrimSpace(errText)
+	if trimmed != "" && json.Valid([]byte(trimmed)) {
+		if errUnmarshal := unmarshalJSONWithNumber([]byte(trimmed), &payload); errUnmarshal == nil {
+			if errorDetail, ok := payload["error"].(map[string]any); ok {
 				return errorDetail
+			}
+			if response, ok := payload["response"].(map[string]any); ok {
+				if errorDetail, ok := response["error"].(map[string]any); ok {
+					return errorDetail
+				}
+			}
+			if m, ok := payload["message"].(string); ok && strings.TrimSpace(m) != "" {
+				message = strings.TrimSpace(m)
+			}
+			if v, ok := payload["code"]; ok && v != nil {
+				if c, ok := v.(string); ok && strings.TrimSpace(c) != "" {
+					code = strings.TrimSpace(c)
+				} else {
+					code = strings.TrimSpace(fmt.Sprint(v))
+				}
 			}
 		}
 	}
@@ -330,11 +349,25 @@ func openAIResponsesStreamFailedErrorDetail(status int, errText, code, message s
 	if status >= http.StatusInternalServerError {
 		errorType = "server_error"
 	}
-	return map[string]any{
+	detail := map[string]any{
 		"type":    errorType,
 		"code":    code,
 		"message": message,
+		"param":   nil,
 	}
+	if payload != nil {
+		if t, ok := payload["type"].(string); ok && strings.TrimSpace(t) != "" && strings.TrimSpace(t) != "error" {
+			detail["type"] = strings.TrimSpace(t)
+		}
+		if paramVal, exists := payload["param"]; exists {
+			detail["param"] = paramVal
+		}
+	}
+	return detail
+}
+
+func openAIResponsesStreamFailedErrorDetail(status int, errText, code, message string) map[string]any {
+	return openAIResponsesStreamErrorDetail(status, errText, code, message)
 }
 
 // BuildOpenAIResponsesStreamFailedChunk builds the terminal Responses event used by official Codex clients.
@@ -347,15 +380,19 @@ func BuildOpenAIResponsesStreamFailedChunk(status int, errText string, sequenceN
 		sequenceNumber = 0
 	}
 
-	legacyChunk := BuildOpenAIResponsesStreamErrorChunk(status, errText, sequenceNumber)
-	var legacyPayload openAIResponsesStreamErrorChunk
-	if errUnmarshal := json.Unmarshal(legacyChunk, &legacyPayload); errUnmarshal != nil {
-		legacyPayload.Code = openAIResponsesStreamErrorCode(status)
-		legacyPayload.Message = http.StatusText(status)
-		legacyPayload.SequenceNumber = sequenceNumber
-	}
-	if sequenceNumber == 0 && legacyPayload.SequenceNumber > 0 {
-		sequenceNumber = legacyPayload.SequenceNumber
+	errorChunkBytes := BuildOpenAIResponsesStreamErrorChunk(status, errText, sequenceNumber)
+	var errorChunk openAIResponsesStreamErrorChunk
+	_ = unmarshalJSONWithNumber(errorChunkBytes, &errorChunk)
+	sequenceNumber = errorChunk.SequenceNumber
+
+	errorDetail := errorChunk.Error
+	if errorDetail == nil {
+		code := openAIResponsesStreamErrorCode(status)
+		message := strings.TrimSpace(errText)
+		if message == "" {
+			message = http.StatusText(status)
+		}
+		errorDetail = openAIResponsesStreamErrorDetail(status, errText, code, message)
 	}
 
 	data, errMarshal := json.Marshal(openAIResponsesStreamFailedChunk{
@@ -363,7 +400,7 @@ func BuildOpenAIResponsesStreamFailedChunk(status int, errText string, sequenceN
 		SequenceNumber: sequenceNumber,
 		Response: openAIResponsesStreamFailedResponse{
 			Status: "failed",
-			Error:  openAIResponsesStreamFailedErrorDetail(status, errText, legacyPayload.Code, legacyPayload.Message),
+			Error:  errorDetail,
 		},
 	})
 	if errMarshal == nil {

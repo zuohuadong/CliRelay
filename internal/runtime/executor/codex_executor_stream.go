@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/client/grokbuild"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -26,6 +27,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if err != nil {
 		return nil, err
 	}
+	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
 	}
@@ -44,6 +46,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
+	preserveNativeOutput := helps.IsNativeCodexRequest(req.Payload, opts)
 	isGrokClient := grokbuild.IsGrokClientContext(ctx, opts.Headers)
 	to := sdktranslator.FromString("codex")
 	originalPayloadSource := req.Payload
@@ -70,7 +73,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		body, _ = sjson.SetBytes(body, "stream_options.reasoning_summary_delivery", reasoningSummaryDelivery.Value())
 	}
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
-	body = normalizeCodexInstructions(body)
+	body = normalizeCodexInstructions(body, preserveNativeOutput)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 	}
@@ -121,7 +124,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = newCodexStatusErrForResponse(httpResp, data)
+		statusErr := newCodexStatusErrWithCooling(httpResp.StatusCode, data, e.modelLevelCooling())
+		statusErr.requestAuthScheme = codexResponseRequestAuthScheme(httpResp)
+		err = statusErr
 		return nil, err
 	}
 	streamHeaders := httpResp.Header.Clone()
@@ -129,6 +134,12 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	streamAuthScheme := codexResponseRequestAuthScheme(httpResp)
 
 	buffering := e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering
+	var bootstrapTimeout time.Duration
+	var bootstrapStart time.Time
+	if buffering {
+		bootstrapTimeout = e.cfg.Codex.StreamBootstrapTimeoutDuration()
+		bootstrapStart = nowCodexBootstrap()
+	}
 
 	scanner := bufio.NewScanner(streamBody)
 	scanner.Buffer(nil, 52_428_800) // 50MB
@@ -146,6 +157,19 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	idleReset, stopIdleWatch, idleTimedOut := startCodexHTTPStreamIdleWatch(ctx, streamBody)
 
 	var bufferedChunks [][]byte
+	// bufferedFrames counts the scanned lines this loop holds and bufferedBytes sums each line
+	// together with the chunks it translates into. Every iteration either holds the line or leaves
+	// the loop, so this is one unit per line read. Counting only the chunks would bound nothing for
+	// a downstream format that renders a frame as zero chunks, and counting only some line kinds
+	// would let the upstream's choice of framing decide whether the bound advances at all. The cost
+	// is that a verbose framing spends the budget faster: the three-line event:/data:/blank shape
+	// protects roughly a third as many events as a stream of bare ": keepalive" comments does.
+	//
+	// In addition to the frame and byte budgets, bootstrapTimeout bounds how long trickled
+	// frames may hold the downstream headers. A peer that never terminates a line is bounded
+	// by the caller's request context.
+	bufferedFrames := 0
+	bufferedBytes := 0
 	var initialChunks [][]byte
 	streamStarted := false
 	immediateTerminal := false
@@ -188,7 +212,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				if codexStreamEventIndicatesProgress(eventType) {
 					sawProgressOutput = true
 				}
-				if streamErr, terminalBody, ok := codexTerminalFailureErr(data); ok {
+				if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(data, e.modelLevelCooling()); ok {
 					streamErr.requestAuthScheme = streamAuthScheme
 					closeBootstrapBody()
 					if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
@@ -206,8 +230,22 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap retryable rejection after %d buffered handshake events, failing over", len(bufferedChunks))
 						if isCodexOverloadBootstrapFailure(terminalBody) {
 							return nil, newCodexBootstrapOverloadErr(terminalBody)
+						} else {
+							return nil, streamErr
 						}
-						return nil, streamErr
+					}
+					if isCodexOverloadBootstrapFailure(terminalBody) {
+						timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
+						timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
+						if !timeoutReached {
+							// Transient capacity rejection smuggled into an HTTP 200 stream. Fail the
+							// attempt before the downstream headers are committed so the conductor can
+							// transparently retry on another credential, and report the status the
+							// upstream refused to put on the wire.
+							helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d buffered lines, failing over", bufferedFrames)
+							return nil, newCodexBootstrapOverloadErr(terminalBody)
+						}
+						helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d lines / %v, time budget exhausted; delivering in-stream", bufferedFrames, timeSinceStart)
 					}
 					bootstrapTerminalErr = streamErr
 					break bootstrapLoop
@@ -220,9 +258,15 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					streamErr := newCodexEmptyIncompleteStreamError()
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
-					return nil, streamErr
+					// Not an overload rejection, so it keeps its in-stream delivery: flush what is
+					// held and hand the error downstream, matching the websocket executor and the
+					// contract that only overload and rate-limit rejections fail the attempt over.
+					// The conductor commits a stream once it has seen a payload, so this only takes
+					// effect for downstream formats that render the held frames into a chunk.
+					bootstrapTerminalErr = streamErr
+					break
 				}
-				if isCodexBootstrapMetadata(data) {
+				if isCodexBootstrapBufferableEvent(eventType, data) || isCodexBootstrapMetadata(data) {
 					isHandshake = true
 				}
 				switch eventType {
@@ -237,7 +281,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						reporter.EnsurePublished(ctx)
 					}
 					publishCodexImageToolUsage(ctx, reporter, body, data)
-					data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
+					if !preserveNativeOutput {
+						data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
+					}
 					explicitCompleted := strings.EqualFold(strings.TrimSpace(gjson.GetBytes(data, "response.status").String()), "completed")
 					emptyCompleted := !sawGrokKeepaliveEvent && !isCodexResponsesLiteRequest(body, opts.Headers) && !codexOutputArrayHasSemanticOutput(gjson.GetBytes(data, "response.output"))
 					if eventType == "response.completed" && explicitCompleted && emptyCompleted {
@@ -258,17 +304,34 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					translatedLine = append([]byte("data: "), data...)
 				}
 			} else {
+				// Lines that are not data: frames - SSE comments, event:, id:, retry: and the blank
+				// separator - carry no event to check against the allow-list, so they are held with
+				// the frame they belong to. They spend the same budgets.
 				isHandshake = true
 			}
 
 			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param, claudeInputTokens)
 			if isHandshake && !terminalSuccess {
-				if len(bufferedChunks) < codexBootstrapMaxBufferedEvents {
+				frameBytes := len(line)
+				for i := range chunks {
+					frameBytes += len(chunks[i])
+				}
+				timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
+				timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
+				if !timeoutReached && bufferedFrames < codexBootstrapMaxBufferedFrames && bufferedBytes+frameBytes <= codexBootstrapMaxBufferedBytes {
+					bufferedFrames++
+					bufferedBytes += frameBytes
 					bufferedChunks = append(bufferedChunks, chunks...)
 					continue
 				}
-				helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap buffer limit %d reached, releasing stream without overload probing", codexBootstrapMaxBufferedEvents)
+				exhausted := "frame budget"
+				if timeoutReached {
+					exhausted = "time budget"
+				} else if bufferedFrames < codexBootstrapMaxBufferedFrames {
+					exhausted = "byte budget"
+				}
+				helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap %s exhausted after %d lines / %d bytes / %v, releasing stream without overload probing", exhausted, bufferedFrames, bufferedBytes, timeSinceStart)
 			}
 
 			initialChunks = chunks
@@ -360,7 +423,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				if codexStreamEventIndicatesProgress(eventType) {
 					sawProgressOutput = true
 				}
-				if streamErr, terminalBody, ok := codexTerminalFailureErr(data); ok {
+				if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(data, e.modelLevelCooling()); ok {
 					streamErr.requestAuthScheme = streamAuthScheme
 					if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 						helps.RecordAPIResponseError(ctx, e.cfg, errClearReplay)
@@ -450,7 +513,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						reporter.EnsurePublished(ctx)
 					}
 					publishCodexImageToolUsage(ctx, reporter, body, data)
-					data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
+					if !preserveNativeOutput {
+						data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
+					}
 					explicitCompleted := strings.EqualFold(strings.TrimSpace(gjson.GetBytes(data, "response.status").String()), "completed")
 					emptyCompleted := !sawGrokKeepaliveEvent && !isCodexResponsesLiteRequest(body, opts.Headers) && !codexOutputArrayHasSemanticOutput(gjson.GetBytes(data, "response.output"))
 					if eventType == "response.completed" && explicitCompleted && emptyCompleted {

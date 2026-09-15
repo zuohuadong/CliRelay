@@ -45,6 +45,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/plugins/:id/config", s.mgmt.GetPluginConfig)
 		mgmt.PUT("/plugins/:id/config", s.mgmt.PutPluginConfig)
 		mgmt.PATCH("/plugins/:id/config", s.mgmt.PatchPluginConfig)
+		mgmt.GET("/plugins/:id/quota", s.mgmt.GetPluginQuota)
+		mgmt.POST("/plugins/:id/quota", s.mgmt.FetchPluginQuota)
+		mgmt.DELETE("/plugins/:id/quota", s.mgmt.ResetPluginQuota)
+		mgmt.POST("/plugins/:id/quota/reset", s.mgmt.ResetPluginQuota)
 
 		mgmt.GET("/debug", s.mgmt.GetDebug)
 		mgmt.PUT("/debug", s.mgmt.PutDebug)
@@ -107,6 +111,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.POST("/reset-quota", s.mgmt.ResetQuota)
 		mgmt.POST("/quota/reconcile", s.mgmt.ReconcileQuota)
+
+		mgmt.GET("/quota/providers", s.mgmt.GetQuotaProviders)
+		mgmt.POST("/quota/fetch", s.mgmt.FetchCredentialQuota)
+		mgmt.POST("/quota/reset", s.mgmt.ResetCredentialQuota)
 
 		mgmt.GET("/api-keys", s.mgmt.GetAPIKeys)
 		mgmt.PUT("/api-keys", s.mgmt.PutAPIKeys)
@@ -288,6 +296,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/auth-files/fields", s.mgmt.PatchAuthFileFields)
 		mgmt.GET("/auth-files/codex-reset-credits", s.mgmt.GetCodexResetCredits)
 		mgmt.POST("/auth-files/codex-reset-credits/consume", s.mgmt.ConsumeCodexResetCredit)
+		mgmt.POST("/auth-files/refresh", s.mgmt.RefreshAuthFiles)
 		mgmt.POST("/vertex/import", s.mgmt.ImportVertexCredential)
 
 		mgmt.GET("/anthropic-auth-url", s.mgmt.RequestAnthropicToken)
@@ -298,6 +307,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/iflow-auth-url", s.mgmt.RequestIFlowToken)
 		mgmt.POST("/iflow-auth-url", s.mgmt.RequestIFlowTokenOrCookie)
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
+		mgmt.GET("/devin-auth-url", s.mgmt.RequestDevinToken)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
 

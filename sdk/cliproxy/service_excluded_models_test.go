@@ -366,6 +366,7 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 	})
 
 	service.registerModelsForAuth(context.Background(), auth)
+	service.WaitAntigravityProbes()
 	if !sawFetch {
 		t.Fatal("expected fetchAvailableModels request")
 	}

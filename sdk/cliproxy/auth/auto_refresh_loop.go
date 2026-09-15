@@ -10,6 +10,12 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// maxRefreshTimerWait caps the sleep duration for the refresh timer.
+// On Linux systems, CLOCK_MONOTONIC stops ticking during suspend/sleep.
+// Capping the timer ensures that when the system resumes, the loop wakes
+// up promptly to detect and refresh any credentials that expired during sleep.
+const maxRefreshTimerWait = 30 * time.Second
+
 type authAutoRefreshLoop struct {
 	manager     *Manager
 	interval    time.Duration
@@ -163,8 +169,24 @@ func (l *authAutoRefreshLoop) handleQuotaRecoveries(ctx context.Context, now tim
 	l.manager.checkQuotaRecoveries(ctx, l.manager.snapshotAuths(), now)
 }
 
-func (l *authAutoRefreshLoop) resetTimer(timer *time.Timer, timerCh *<-chan time.Time, now time.Time) {
+func (l *authAutoRefreshLoop) nextWait(now time.Time) (time.Duration, bool) {
 	next, ok := l.peek()
+	if !ok {
+		return 0, false
+	}
+
+	wait := next.Sub(now)
+	if wait < 0 {
+		wait = 0
+	}
+	if wait > maxRefreshTimerWait {
+		wait = maxRefreshTimerWait
+	}
+	return wait, true
+}
+
+func (l *authAutoRefreshLoop) resetTimer(timer *time.Timer, timerCh *<-chan time.Time, now time.Time) {
+	wait, ok := l.nextWait(now)
 	if !ok {
 		if !timer.Stop() {
 			select {
@@ -176,10 +198,6 @@ func (l *authAutoRefreshLoop) resetTimer(timer *time.Timer, timerCh *<-chan time
 		return
 	}
 
-	wait := next.Sub(now)
-	if wait < 0 {
-		wait = 0
-	}
 	if !timer.Stop() {
 		select {
 		case <-timer.C:
@@ -247,7 +265,7 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 	}
 	next, shouldSchedule := nextRefreshCheckAt(now, auth, l.interval)
 	shouldRefresh := manager.shouldRefresh(auth, now)
-	exec := manager.executors[auth.Provider]
+	exec := manager.executors[executorKeyFromAuth(auth)]
 	manager.mu.RUnlock()
 
 	if !shouldSchedule {

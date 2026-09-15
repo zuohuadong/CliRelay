@@ -544,7 +544,7 @@ function VideoGenerationTestModal({
               onChange={(value) => setSeconds(value as (typeof SECONDS_OPTIONS)[number])}
               options={SECONDS_OPTIONS.map((item) => ({
                 value: item,
-                label: t("video_generation.seconds_option", { count: item }),
+                label: t("video_generation.seconds_option", { count: Number(item) }),
               }))}
               aria-label={t("video_generation.seconds_label")}
             />

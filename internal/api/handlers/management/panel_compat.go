@@ -2600,35 +2600,41 @@ func buildUsageLogsPayload(db *sql.DB, filters usageFilters, public bool) gin.H 
 
 	offset := (filters.Page - 1) * filters.Size
 	joinSQL, keyExpr, nameExpr := usageAPIKeyNameLookup(db, cols)
+	idJoin := "request_logs.id"
+	if !cols["id"] {
+		idJoin = "request_logs.rowid"
+	}
 	selectCols := strings.Join([]string{
-		usageColumnExpr(cols, "id", "0"),
-		usageColumnExpr(cols, "timestamp", "''"),
+		usageRequestLogColumnExpr(cols, "id", "0"),
+		usageRequestLogColumnExpr(cols, "timestamp", "''"),
 		keyExpr,
 		nameExpr,
-		usageColumnExpr(cols, "model", "''"),
-		usageColumnExpr(cols, "source", "''"),
-		usageColumnExpr(cols, "channel_name", "''"),
-		usageColumnExpr(cols, "auth_index", "''"),
-		usageColumnExpr(cols, "failed", "0"),
-		usageColumnExpr(cols, "latency_ms", "0"),
-		usageColumnExpr(cols, "first_token_ms", "0"),
-		usageColumnExpr(cols, "input_tokens", "0"),
-		usageColumnExpr(cols, "output_tokens", "0"),
-		usageColumnExpr(cols, "reasoning_tokens", "0"),
-		usageColumnExpr(cols, "cached_tokens", "0"),
-		usageColumnExpr(cols, "total_tokens", "0"),
-		usageColumnExpr(cols, "cost", "0"),
+		usageRequestLogColumnExpr(cols, "model", "''"),
+		usageRequestLogColumnExpr(cols, "source", "''"),
+		usageRequestLogColumnExpr(cols, "channel_name", "''"),
+		usageRequestLogColumnExpr(cols, "auth_index", "''"),
+		usageRequestLogColumnExpr(cols, "failed", "0"),
+		usageRequestLogColumnExpr(cols, "latency_ms", "0"),
+		usageRequestLogColumnExpr(cols, "first_token_ms", "0"),
+		usageRequestLogColumnExpr(cols, "input_tokens", "0"),
+		usageRequestLogColumnExpr(cols, "output_tokens", "0"),
+		usageRequestLogColumnExpr(cols, "reasoning_tokens", "0"),
+		usageRequestLogColumnExpr(cols, "cached_tokens", "0"),
+		usageRequestLogColumnExpr(cols, "total_tokens", "0"),
+		usageRequestLogColumnExpr(cols, "cost", "0"),
+		usageLogHasContentSelectExpr(db, cols),
 	}, ", ")
-	rows, err := db.Query("SELECT "+selectCols+" FROM request_logs"+joinSQL+" WHERE "+whereSQL+" ORDER BY "+usageColumnExpr(cols, "id", "rowid")+" DESC LIMIT ? OFFSET ?", append(args, filters.Size, offset)...)
+	query := "SELECT " + selectCols + " FROM (SELECT " + usageColumnExpr(cols, "id", "rowid") + " AS page_id FROM request_logs WHERE " + whereSQL + " ORDER BY " + usageLogListOrderExpr(cols, "") + " LIMIT ? OFFSET ?) AS page JOIN request_logs ON " + idJoin + " = page.page_id" + joinSQL + " ORDER BY " + usageLogListOrderExpr(cols, "request_logs")
+	rows, err := db.Query(query, append(append([]any{}, args...), filters.Size, offset)...)
 	items := make([]gin.H, 0)
 	if err == nil && rows != nil {
 		defer rows.Close()
 		for rows.Next() {
-			var id, failed, latency, firstTok, inTok, outTok, reasonTok, cachedTok, totalTok int64
+			var id, failed, latency, firstTok, inTok, outTok, reasonTok, cachedTok, totalTok, hasContent int64
 			var ts, apiKey, apiKeyName, model, source, channel, authIdx string
 			var cost float64
-			if rows.Scan(&id, &ts, &apiKey, &apiKeyName, &model, &source, &channel, &authIdx, &failed, &latency, &firstTok, &inTok, &outTok, &reasonTok, &cachedTok, &totalTok, &cost) == nil {
-				item := gin.H{"id": id, "timestamp": ts, "model": model, "failed": failed != 0, "latency_ms": latency, "first_token_ms": firstTok, "input_tokens": inTok, "output_tokens": outTok, "reasoning_tokens": reasonTok, "cached_tokens": cachedTok, "total_tokens": totalTok, "cost": cost, "has_content": usageLogHasContent(db, id)}
+			if rows.Scan(&id, &ts, &apiKey, &apiKeyName, &model, &source, &channel, &authIdx, &failed, &latency, &firstTok, &inTok, &outTok, &reasonTok, &cachedTok, &totalTok, &cost, &hasContent) == nil {
+				item := gin.H{"id": id, "timestamp": ts, "model": model, "failed": failed != 0, "latency_ms": latency, "first_token_ms": firstTok, "input_tokens": inTok, "output_tokens": outTok, "reasoning_tokens": reasonTok, "cached_tokens": cachedTok, "total_tokens": totalTok, "cost": cost, "has_content": hasContent != 0}
 				if !public {
 					item["api_key"] = apiKey
 					item["api_key_name"] = apiKeyName
@@ -2641,13 +2647,19 @@ func buildUsageLogsPayload(db *sql.DB, filters usageFilters, public bool) gin.H 
 		}
 	}
 
-	payload := gin.H{"items": items, "total": totalStats.Total, "page": filters.Page, "size": filters.Size, "filters": usageLogFilters(db, public), "stats": gin.H{"total": totalStats.Total, "success_rate": successRate, "total_tokens": totalStats.TotalTokens, "total_cost": totalStats.TotalCost}}
+	payload := gin.H{"items": items, "total": totalStats.Total, "page": filters.Page, "size": filters.Size, "filters": usageLogFilters(db, filters, public), "stats": gin.H{"total": totalStats.Total, "success_rate": successRate, "total_tokens": totalStats.TotalTokens, "total_cost": totalStats.TotalCost}}
 	return payload
 }
 
+const (
+	usageLogFilterSampleLimit = 8000
+	usageLogFilterValueLimit  = 200
+	usageLogFiltersCacheTTL   = 60 * time.Second
+)
+
 var (
 	usageLogFiltersMu    sync.RWMutex
-	usageLogFiltersCache = make(map[bool]usageLogFiltersCacheEntry)
+	usageLogFiltersCache = make(map[string]usageLogFiltersCacheEntry)
 )
 
 type usageLogFiltersCacheEntry struct {
@@ -2655,9 +2667,62 @@ type usageLogFiltersCacheEntry struct {
 	filters   gin.H
 }
 
-func usageLogFilters(db *sql.DB, public bool) gin.H {
+func resetUsageLogFiltersCache() {
+	usageLogFiltersMu.Lock()
+	usageLogFiltersCache = make(map[string]usageLogFiltersCacheEntry)
+	usageLogFiltersMu.Unlock()
+}
+
+func usageLogFiltersCacheKey(public bool, filters usageFilters) string {
+	scope := "private"
+	if public {
+		scope = "public"
+	}
+	return fmt.Sprintf("%s|d=%d|s=%s|e=%s", scope, filters.Days, strings.TrimSpace(filters.Start), strings.TrimSpace(filters.End))
+}
+
+func usageLogListOrderExpr(cols map[string]bool, table string) string {
+	prefix := ""
+	if strings.TrimSpace(table) != "" {
+		prefix = table + "."
+	}
+	idExpr := prefix + "rowid"
+	if cols["id"] {
+		idExpr = prefix + "id"
+	}
+	if cols["timestamp"] {
+		return prefix + "timestamp DESC, " + idExpr + " DESC"
+	}
+	return idExpr + " DESC"
+}
+
+func usageLogHasContentSelectExpr(db *sql.DB, cols map[string]bool) string {
+	clauses := make([]string, 0, 2)
+	if dbTableExists(db, "request_log_content") {
+		contentCols := tableColumns(db, "request_log_content")
+		logID := usageColumnExpr(contentCols, "log_id", "0")
+		clauses = append(clauses, "EXISTS (SELECT 1 FROM request_log_content WHERE "+logID+" = "+usageRequestLogColumnExpr(cols, "id", "request_logs.rowid")+" AND (length(coalesce("+usageColumnExpr(contentCols, "input_content", "''")+", '')) > 0 OR length(coalesce("+usageColumnExpr(contentCols, "output_content", "''")+", '')) > 0 OR length(coalesce("+usageColumnExpr(contentCols, "detail_content", "''")+", '')) > 0))")
+	}
+	legacy := make([]string, 0, 2)
+	if cols["input_content"] {
+		legacy = append(legacy, "length(coalesce(request_logs.input_content, '')) > 0")
+	}
+	if cols["output_content"] {
+		legacy = append(legacy, "length(coalesce(request_logs.output_content, '')) > 0")
+	}
+	if len(legacy) > 0 {
+		clauses = append(clauses, "("+strings.Join(legacy, " OR ")+")")
+	}
+	if len(clauses) == 0 {
+		return "0"
+	}
+	return "CASE WHEN " + strings.Join(clauses, " OR ") + " THEN 1 ELSE 0 END"
+}
+
+func usageLogFilters(db *sql.DB, filters usageFilters, public bool) gin.H {
+	key := usageLogFiltersCacheKey(public, filters)
 	usageLogFiltersMu.RLock()
-	if entry, ok := usageLogFiltersCache[public]; ok && time.Now().Before(entry.expiresAt) {
+	if entry, ok := usageLogFiltersCache[key]; ok && time.Now().Before(entry.expiresAt) {
 		usageLogFiltersMu.RUnlock()
 		return entry.filters
 	}
@@ -2665,70 +2730,94 @@ func usageLogFilters(db *sql.DB, public bool) gin.H {
 
 	usageLogFiltersMu.Lock()
 	defer usageLogFiltersMu.Unlock()
-	if entry, ok := usageLogFiltersCache[public]; ok && time.Now().Before(entry.expiresAt) {
+	if entry, ok := usageLogFiltersCache[key]; ok && time.Now().Before(entry.expiresAt) {
 		return entry.filters
 	}
 
+	built := buildUsageLogFilters(db, filters, public)
+	usageLogFiltersCache[key] = usageLogFiltersCacheEntry{
+		expiresAt: time.Now().Add(usageLogFiltersCacheTTL),
+		filters:   built,
+	}
+	return built
+}
+
+func buildUsageLogFilters(db *sql.DB, filters usageFilters, public bool) gin.H {
+	out := gin.H{"models": []string{}}
+	if !public {
+		out["api_keys"] = []string{}
+		out["api_key_names"] = gin.H{}
+		out["channels"] = []string{}
+	}
+	if db == nil || !dbTableExists(db, "request_logs") {
+		return out
+	}
+
 	cols := requestLogColumns(db)
-	models := []string{}
-	if cols["model"] {
-		models = distinctStringValues(db, "request_logs", "model", "model != ''", nil)
+	whereSQL, args := usageFilters{Days: filters.Days, Start: filters.Start, End: filters.End}.whereClause(db)
+	joinSQL, keyExpr, nameExpr := usageAPIKeyNameLookup(db, cols)
+	selectCols := strings.Join([]string{
+		usageRequestLogColumnExpr(cols, "model", "''"),
+		keyExpr,
+		usageRequestLogColumnExpr(cols, "channel_name", "''"),
+		nameExpr,
+	}, ", ")
+	query := "SELECT " + selectCols + " FROM request_logs" + joinSQL + " WHERE " + whereSQL + " ORDER BY " + usageLogListOrderExpr(cols, "request_logs") + " LIMIT ?"
+	rows, err := db.Query(query, append(append([]any{}, args...), usageLogFilterSampleLimit)...)
+	if err != nil || rows == nil {
+		return out
 	}
-	filters := gin.H{"models": models}
-	if public {
-		usageLogFiltersCache[public] = usageLogFiltersCacheEntry{
-			expiresAt: time.Now().Add(60 * time.Second),
-			filters:   filters,
-		}
-		return filters
-	}
-	apiKeys := []string{}
-	if cols["api_key"] {
-		apiKeys = distinctStringValues(db, "request_logs", "api_key", "api_key != ''", nil)
-	}
+	defer rows.Close()
+
+	models := make([]string, 0, 16)
+	modelSeen := map[string]struct{}{}
+	apiKeys := make([]string, 0, 16)
+	apiKeySeen := map[string]struct{}{}
+	channels := make([]string, 0, 16)
+	channelSeen := map[string]struct{}{}
 	apiKeyNames := gin.H{}
-	if cols["api_key"] {
-		joinSQL, keyExpr, nameExpr := usageAPIKeyNameLookup(db, cols)
-		rows, err := db.Query("SELECT " + keyExpr + ", " + nameExpr + " FROM request_logs" + joinSQL + " WHERE coalesce(" + keyExpr + ", '') != '' AND coalesce(" + nameExpr + ", '') != '' GROUP BY " + keyExpr + ", " + nameExpr + " ORDER BY " + nameExpr + ", " + keyExpr + " LIMIT 500")
-		if err == nil && rows != nil {
-			defer rows.Close()
-			for rows.Next() {
-				var key, name string
-				if rows.Scan(&key, &name) == nil {
-					apiKeyNames[key] = name
-				}
+	appendUnique := func(list *[]string, seen map[string]struct{}, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, exists := seen[value]; exists {
+			return
+		}
+		if len(*list) >= usageLogFilterValueLimit {
+			return
+		}
+		seen[value] = struct{}{}
+		*list = append(*list, value)
+	}
+
+	for rows.Next() {
+		var model, apiKey, channel, name string
+		if rows.Scan(&model, &apiKey, &channel, &name) != nil {
+			continue
+		}
+		appendUnique(&models, modelSeen, model)
+		if public {
+			continue
+		}
+		appendUnique(&apiKeys, apiKeySeen, apiKey)
+		appendUnique(&channels, channelSeen, channel)
+		apiKey = strings.TrimSpace(apiKey)
+		name = strings.TrimSpace(name)
+		if apiKey != "" && name != "" {
+			if _, exists := apiKeyNames[apiKey]; !exists {
+				apiKeyNames[apiKey] = name
 			}
 		}
 	}
-	filters["api_keys"] = apiKeys
-	filters["api_key_names"] = apiKeyNames
-	channels := []string{}
-	if cols["channel_name"] {
-		channels = distinctStringValues(db, "request_logs", "channel_name", "channel_name != ''", nil)
-	}
-	filters["channels"] = channels
-	usageLogFiltersCache[public] = usageLogFiltersCacheEntry{
-		expiresAt: time.Now().Add(60 * time.Second),
-		filters:   filters,
-	}
-	return filters
-}
-
-func distinctStringValues(db *sql.DB, table, expr, where string, args []any) []string {
-	if !dbTableExists(db, table) {
-		return []string{}
-	}
-	rows, err := db.Query("SELECT DISTINCT "+expr+" FROM "+table+" WHERE "+where+" ORDER BY 1 LIMIT 200", args...)
-	if err != nil || rows == nil {
-		return []string{}
-	}
-	defer rows.Close()
-	out := []string{}
-	for rows.Next() {
-		var value string
-		if rows.Scan(&value) == nil && strings.TrimSpace(value) != "" {
-			out = append(out, value)
-		}
+	sort.Strings(models)
+	out["models"] = models
+	if !public {
+		sort.Strings(apiKeys)
+		sort.Strings(channels)
+		out["api_keys"] = apiKeys
+		out["api_key_names"] = apiKeyNames
+		out["channels"] = channels
 	}
 	return out
 }
@@ -3024,6 +3113,11 @@ func (h *Handler) openAPIKeysDB() (*sql.DB, bool) {
 	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
+		return nil, false
+	}
+	db.SetMaxOpenConns(1)
+	if _, errPragma := db.Exec(`PRAGMA busy_timeout = 5000`); errPragma != nil {
+		_ = db.Close()
 		return nil, false
 	}
 	return db, true

@@ -164,12 +164,8 @@ func TestBuildOpenAIResponsesStreamErrorChunkPrioritizesPayloadSequenceNumber(t 
 	if payload.SequenceNumber != 7 {
 		t.Fatalf("sequence_number = %d, want 7 (from payload)", payload.SequenceNumber)
 	}
-	errorPayload, ok := payload["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing nested error object: %#v", payload["error"])
-	}
-	if errorPayload["type"] != "server_error" {
-		t.Fatalf("error.type = %v, want %q", errorPayload["type"], "server_error")
+	if payload.Error["type"] != "server_error" {
+		t.Fatalf("error.type = %v, want %q", payload.Error["type"], "server_error")
 	}
 }
 

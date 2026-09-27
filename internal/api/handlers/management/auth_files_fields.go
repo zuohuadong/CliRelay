@@ -94,12 +94,20 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 		return
 	}
 	if coreauth.IsFileBundleAuth(targetAuth) {
-		if errPatch := h.patchSourceAuthFileStatus(ctx, targetAuth, *req.Disabled); errPatch != nil {
+		hookAuths, errPatch := h.patchPluginVirtualSourceStatus(ctx, targetAuth, *req.Disabled)
+		if errPatch != nil {
 			status := http.StatusInternalServerError
 			if errors.Is(errPatch, errAuthFileNotFound) || os.IsNotExist(errPatch) {
 				status = http.StatusNotFound
 			}
 			c.JSON(status, gin.H{"error": errPatch.Error()})
+			return
+		}
+		locked = false
+		h.authStatusMu.Unlock()
+		if errHook := h.invokePostAuthPersistHooks(ctx, hookAuths); errHook != nil {
+			log.Errorf("post-auth persist hook failed for plugin virtual source status update on %s: %v", targetAuth.ID, errHook)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to synchronize plugin virtual auth: %v", errHook)})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
@@ -779,7 +787,11 @@ func syncAuthFilePriorityAttribute(auth *coreauth.Auth) {
 	priority, ok := authFileIntValue(auth.Metadata["priority"])
 	if !ok {
 		delete(auth.Attributes, "priority")
+		delete(auth.Attributes, coreauth.AttributeFilePriority)
 		return
+	}
+	if auth.Attributes[coreauth.AttributeSourceBackend] == coreauth.AuthSourceFile {
+		auth.Attributes[coreauth.AttributeFilePriority] = "true"
 	}
 	if priority == 0 {
 		delete(auth.Attributes, "priority")

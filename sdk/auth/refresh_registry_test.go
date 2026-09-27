@@ -10,11 +10,14 @@ func TestProviderRefreshLeads(t *testing.T) {
 		name          string
 		authenticator Authenticator
 		want          time.Duration
+		wantNil       bool
 	}{
 		{name: "codex", authenticator: NewCodexAuthenticator(), want: 24 * time.Hour},
 		{name: "claude", authenticator: NewClaudeAuthenticator(), want: 4 * time.Hour},
 		{name: "antigravity", authenticator: NewAntigravityAuthenticator(), want: 30 * time.Minute},
 		{name: "kimi", authenticator: NewKimiAuthenticator(), want: 5 * time.Minute},
+		{name: "kimi-ai", authenticator: NewKimiAIAuthenticator(), want: 5 * time.Minute},
+		{name: "kimi.ai", authenticator: NewKimiAIDotAuthenticator(), want: 5 * time.Minute},
 		{name: "xai", authenticator: NewXAIAuthenticator(), want: 5 * time.Minute},
 		{name: "devin", authenticator: NewDevinAuthenticator(), want: 0},
 	}

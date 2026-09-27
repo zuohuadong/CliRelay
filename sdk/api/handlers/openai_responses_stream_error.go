@@ -37,27 +37,55 @@ type openAIResponsesStreamFailedResponse struct {
 	Error  map[string]any `json:"error"`
 }
 
-func openAIResponsesStreamErrorCode(status int) string {
-	switch status {
-	case http.StatusUnauthorized:
-		return "invalid_api_key"
-	case http.StatusForbidden:
-		return "insufficient_quota"
-	case http.StatusTooManyRequests:
-		return "rate_limit_exceeded"
-	case http.StatusNotFound:
-		return "model_not_found"
-	case http.StatusRequestTimeout:
-		return "request_timeout"
-	default:
-		if status >= http.StatusInternalServerError {
-			return "internal_server_error"
-		}
-		if status >= http.StatusBadRequest {
-			return "invalid_request_error"
-		}
-		return "unknown_error"
+// openAIResponsesStreamErrorClass pairs the OpenAI error code and the OpenAI
+// error type that a given HTTP status is reported as.
+//
+// The two are kept together deliberately. They are halves of one classification
+// and a client reads both: the code names the condition, the type says whose
+// fault it was and therefore whether a retry is allowed. Deriving them in two
+// places let them contradict each other, which is how a Codex stream that was
+// cut in transit came to be reported with the retryable code "request_timeout"
+// alongside the type "invalid_request_error" — a type that tells every
+// downstream consumer the request was malformed and must not be replayed.
+type openAIResponsesStreamErrorClass struct {
+	code      string
+	errorType string
+}
+
+const (
+	openAIResponsesClientErrorType = "invalid_request_error"
+	openAIResponsesServerErrorType = "server_error"
+)
+
+// openAIResponsesStreamErrorClasses holds the statuses that do not follow the
+// plain "4xx is the caller's fault, 5xx is ours" split.
+//
+// StatusRequestTimeout is the reason this table exists. A Codex stream that ends
+// before response.completed is surfaced with that status, and the request itself
+// was well formed: the connection failed, so the caller may replay it.
+var openAIResponsesStreamErrorClasses = map[int]openAIResponsesStreamErrorClass{
+	http.StatusUnauthorized:    {code: "invalid_api_key", errorType: openAIResponsesClientErrorType},
+	http.StatusForbidden:       {code: "insufficient_quota", errorType: openAIResponsesClientErrorType},
+	http.StatusTooManyRequests: {code: "rate_limit_exceeded", errorType: openAIResponsesClientErrorType},
+	http.StatusNotFound:        {code: "model_not_found", errorType: openAIResponsesClientErrorType},
+	http.StatusRequestTimeout:  {code: "request_timeout", errorType: openAIResponsesServerErrorType},
+}
+
+func openAIResponsesStreamErrorClassFor(status int) openAIResponsesStreamErrorClass {
+	if class, ok := openAIResponsesStreamErrorClasses[status]; ok {
+		return class
 	}
+	if status >= http.StatusInternalServerError {
+		return openAIResponsesStreamErrorClass{code: "internal_server_error", errorType: openAIResponsesServerErrorType}
+	}
+	if status >= http.StatusBadRequest {
+		return openAIResponsesStreamErrorClass{code: "invalid_request_error", errorType: openAIResponsesClientErrorType}
+	}
+	return openAIResponsesStreamErrorClass{code: "unknown_error", errorType: openAIResponsesClientErrorType}
+}
+
+func openAIResponsesStreamErrorCode(status int) string {
+	return openAIResponsesStreamErrorClassFor(status).code
 }
 
 func unmarshalJSONWithNumber(data []byte, v any) error {
@@ -123,7 +151,11 @@ func NormalizeOpenAIResponsesStreamErrorStatus(status int, code string, message 
 	return status
 }
 
-func openAIResponsesStreamErrorType(status int, code string) string {
+func openAIResponsesStreamErrorType(status int, codes ...string) string {
+	if len(codes) == 0 {
+		return openAIResponsesStreamErrorClassFor(status).errorType
+	}
+	code := codes[0]
 	switch {
 	case code == "context_too_large" || code == "context_length_exceeded":
 		return "invalid_request_error"
@@ -134,7 +166,7 @@ func openAIResponsesStreamErrorType(status int, code string) string {
 	case status >= http.StatusInternalServerError:
 		return "server_error"
 	default:
-		return "invalid_request_error"
+		return openAIResponsesStreamErrorClassFor(status).errorType
 	}
 }
 
@@ -224,6 +256,14 @@ func BuildOpenAIResponsesResponseFailedChunk(status int, errText string, sequenc
 		sequenceNumber = 0
 	}
 	parsed := parseOpenAIResponsesStreamError(status, errText)
+	var originalPayload map[string]any
+	if unmarshalJSONWithNumber([]byte(errText), &originalPayload) == nil {
+		if n, ok := originalPayload["sequence_number"].(json.Number); ok {
+			if seq, err := n.Int64(); err == nil && seq >= 0 {
+				sequenceNumber = int(seq)
+			}
+		}
+	}
 	code := parsed.code
 	if code == "context_too_large" {
 		code = "context_length_exceeded"
@@ -278,6 +318,14 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 	}
 
 	parsed := parseOpenAIResponsesStreamError(status, errText)
+	var payload map[string]any
+	if unmarshalJSONWithNumber([]byte(errText), &payload) == nil {
+		if n, ok := payload["sequence_number"].(json.Number); ok {
+			if seq, err := n.Int64(); err == nil && seq >= 0 {
+				sequenceNumber = int(seq)
+			}
+		}
+	}
 
 	chunk := openAIResponsesStreamErrorChunk{
 		Type:           "error",
@@ -289,7 +337,7 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 			"Content-Type": "application/json",
 		},
 	}
-	chunk.Error = map[string]any{"code": parsed.code, "type": parsed.errType, "message": parsed.message}
+	chunk.Error = openAIResponsesStreamErrorDetail(parsed.status, errText, parsed.code, parsed.message)
 
 	data, err := json.Marshal(chunk)
 	if err == nil {
@@ -341,10 +389,7 @@ func openAIResponsesStreamErrorDetail(status int, errText, code, message string)
 		}
 	}
 
-	errorType := "invalid_request_error"
-	if status >= http.StatusInternalServerError {
-		errorType = "server_error"
-	}
+	errorType := openAIResponsesStreamErrorType(status, code)
 	detail := map[string]any{
 		"type":    errorType,
 		"code":    code,

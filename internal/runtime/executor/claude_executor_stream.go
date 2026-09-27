@@ -44,6 +44,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
+	if upstreamModel != baseModel {
+		reporter.SetUpstreamModel(upstreamModel)
+	}
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("claude")
@@ -76,8 +79,8 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		ctx = helps.WithClaudeSessionID(ctx, claudeSessionID)
 	}
 
-	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, true, helps.APIKeyModelIsCompat(req))
-	body := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, true, helps.APIKeyModelIsCompat(req))
+	isCompat := helps.APIKeyModelIsCompat(req)
+	originalTranslated, body := helps.TranslateRequestPairWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, req.Payload, true, isCompat)
 	body = helps.SetStringIfDifferent(body, "model", upstreamModel)
 
 	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier())
@@ -217,6 +220,8 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 
 	// Enforce Anthropic's cache_control block limit (max 4 breakpoints per request).
+	// Cloaking and ensureCacheControl may push the total over 4 when the client
+	// already sends multiple cache_control blocks.
 	body = enforceCacheControlLimit(body, 4)
 
 	// Native selects the 1h cache pool only for OAuth credentials and pairs it with
@@ -332,7 +337,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			helps.RecordAPIResponseError(ctx, e.cfg, decErr)
 			msg := fmt.Sprintf("failed to decode error response body: %v", decErr)
 			helps.LogWithRequestID(ctx).Warn(msg)
-			errClassified := classifyClaudeUpstreamError(httpResp.StatusCode, httpResp.Header, []byte(msg))
+			errClassified := classifyClaudeUpstreamErrorWithCooling(httpResp.StatusCode, httpResp.Header, []byte(msg), e.modelLevelCooling())
 			if fastRequest {
 				return nil, wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errClassified)
 			}
@@ -353,7 +358,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		if fastRequest {
 			return nil, newClaudeFastDirectResponseError(httpResp, b)
 		}
-		return nil, classifyClaudeUpstreamError(httpResp.StatusCode, httpResp.Header, b)
+		return nil, classifyClaudeUpstreamErrorWithCooling(httpResp.StatusCode, httpResp.Header, b, e.modelLevelCooling())
 	}
 	decodedBody, err := decodeResponseBody(httpResp.Body, claudeResponseContentEncoding(httpResp.Header))
 	if err != nil {
@@ -429,9 +434,14 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				line = e.restoreResponseModel(restoredLine, req.Model)
 				event.Write(line)
 				event.WriteByte('\n')
-				if len(bytes.TrimSpace(line)) == 0 && !flushEvent() {
-					emitCancellation(ctx.Err())
-					return
+				if len(bytes.TrimSpace(line)) == 0 {
+					if !flushEvent() {
+						emitCancellation(ctx.Err())
+						return
+					}
+					if upstreamCompleted {
+						break
+					}
 				}
 			}
 			if !flushEvent() {
@@ -449,7 +459,6 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 				case <-ctx.Done():
 				}
-				return
 			}
 			if upstreamCompleted {
 				commitClaudeContinuity(diagnosticsState, upstreamMessageID, helps.HeaderValueCaseInsensitive(httpResp.Header, "request-id"))
@@ -509,7 +518,6 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
 			}
-			return
 		}
 		if upstreamCompleted {
 			commitClaudeContinuity(diagnosticsState, upstreamMessageID, helps.HeaderValueCaseInsensitive(httpResp.Header, "request-id"))

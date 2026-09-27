@@ -716,7 +716,7 @@ func TestStreamingUsage_PreservesCacheWriteTokens(t *testing.T) {
 		{
 			name:                 "cache_write_tokens field",
 			usageJSON:            `{"prompt_tokens":1000,"completion_tokens":200,"prompt_tokens_details":{"cached_tokens":800,"cache_write_tokens":150}}`,
-			wantInputTokens:      200,
+			wantInputTokens:      50,
 			wantOutputTokens:     200,
 			wantCacheReadTokens:  800,
 			wantCacheWriteTokens: 150,
@@ -724,7 +724,7 @@ func TestStreamingUsage_PreservesCacheWriteTokens(t *testing.T) {
 		{
 			name:                 "cache_creation_tokens alias",
 			usageJSON:            `{"prompt_tokens":1000,"completion_tokens":200,"prompt_tokens_details":{"cached_tokens":800,"cache_creation_tokens":150}}`,
-			wantInputTokens:      200,
+			wantInputTokens:      50,
 			wantOutputTokens:     200,
 			wantCacheReadTokens:  800,
 			wantCacheWriteTokens: 150,
@@ -744,6 +744,22 @@ func TestStreamingUsage_PreservesCacheWriteTokens(t *testing.T) {
 			wantOutputTokens:     200,
 			wantCacheReadTokens:  800,
 			wantCacheWriteTokens: 0,
+		},
+		{
+			name:                 "cache_write_tokens only deducts from input_tokens",
+			usageJSON:            `{"prompt_tokens":4022,"completion_tokens":462,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":4019}}`,
+			wantInputTokens:      3,
+			wantOutputTokens:     462,
+			wantCacheReadTokens:  0,
+			wantCacheWriteTokens: 4019,
+		},
+		{
+			name:                 "combined cached and cache_write greater than prompt_tokens clamps to zero",
+			usageJSON:            `{"prompt_tokens":500,"completion_tokens":100,"prompt_tokens_details":{"cached_tokens":300,"cache_write_tokens":300}}`,
+			wantInputTokens:      0,
+			wantOutputTokens:     100,
+			wantCacheReadTokens:  300,
+			wantCacheWriteTokens: 300,
 		},
 	}
 
@@ -797,7 +813,7 @@ func TestNonStreamingUsage_PreservesCacheWriteTokens(t *testing.T) {
 		{
 			name:                 "cache_write_tokens field",
 			usageJSON:            `{"prompt_tokens":1000,"completion_tokens":200,"prompt_tokens_details":{"cached_tokens":800,"cache_write_tokens":150}}`,
-			wantInputTokens:      200,
+			wantInputTokens:      50,
 			wantOutputTokens:     200,
 			wantCacheReadTokens:  800,
 			wantCacheWriteTokens: 150,
@@ -805,7 +821,7 @@ func TestNonStreamingUsage_PreservesCacheWriteTokens(t *testing.T) {
 		{
 			name:                 "cache_creation_tokens alias",
 			usageJSON:            `{"prompt_tokens":1000,"completion_tokens":200,"prompt_tokens_details":{"cached_tokens":800,"cache_creation_tokens":150}}`,
-			wantInputTokens:      200,
+			wantInputTokens:      50,
 			wantOutputTokens:     200,
 			wantCacheReadTokens:  800,
 			wantCacheWriteTokens: 150,
@@ -825,6 +841,22 @@ func TestNonStreamingUsage_PreservesCacheWriteTokens(t *testing.T) {
 			wantOutputTokens:     200,
 			wantCacheReadTokens:  800,
 			wantCacheWriteTokens: 0,
+		},
+		{
+			name:                 "cache_write_tokens only deducts from input_tokens",
+			usageJSON:            `{"prompt_tokens":4022,"completion_tokens":462,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":4019}}`,
+			wantInputTokens:      3,
+			wantOutputTokens:     462,
+			wantCacheReadTokens:  0,
+			wantCacheWriteTokens: 4019,
+		},
+		{
+			name:                 "combined cached and cache_write greater than prompt_tokens clamps to zero",
+			usageJSON:            `{"prompt_tokens":500,"completion_tokens":100,"prompt_tokens_details":{"cached_tokens":300,"cache_write_tokens":300}}`,
+			wantInputTokens:      0,
+			wantOutputTokens:     100,
+			wantCacheReadTokens:  300,
+			wantCacheWriteTokens: 300,
 		},
 	}
 

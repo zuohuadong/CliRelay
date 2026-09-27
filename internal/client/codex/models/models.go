@@ -105,6 +105,7 @@ func buildCodexClientModels(models []map[string]any, providersForModel Providers
 			if optimizeMultiAgentV2 {
 				entry["multi_agent_version"] = "v2"
 			}
+			applyCodexClientDevinDisplayName(entry, id, model, providersForModel)
 			result = append(result, entry)
 			continue
 		}
@@ -116,6 +117,7 @@ func buildCodexClientModels(models []map[string]any, providersForModel Providers
 		applyCPAWebSearchCapability(entry, id, webSearchCapabilityForModel, clientVersion)
 		sanitizeCodexClientReasoningMetadata(entry, clientVersion)
 		applyCodexClientVisibilityOverride(entry, id)
+		applyCodexClientDevinDisplayName(entry, id, model, providersForModel)
 		result = append(result, entry)
 	}
 
@@ -548,21 +550,20 @@ func applyCodexClientModelMetadata(entry map[string]any, id string, model map[st
 		entry["multi_agent_version"] = "v2"
 	}
 	entry["service_tiers"] = []any{}
-	delete(entry, "apply_patch_tool_type")
-	delete(entry, "upgrade")
-	delete(entry, "availability_nux")
+	nullCodexClientRequiredOptions(entry)
 
 	if contextWindow > 0 {
 		entry["context_window"] = contextWindow
 		entry["max_context_window"] = contextWindow
 	}
 
-	if baseInstructions := stringModelValue(model, "base_instructions"); baseInstructions != "" {
-		entry["base_instructions"] = baseInstructions
-	}
 	if plans, ok := model["available_in_plans"]; ok {
 		entry["available_in_plans"] = cloneCodexClientModelValue(plans)
 	}
+	// Codex 0.156+ caps an explicit model_catalog_url body at 1MiB. Cloning the
+	// full template instructions onto every non-template model exceeds that limit
+	// and the client keeps its bundled catalog.
+	useCompactCodexClientInstructions(entry)
 }
 
 func codexClientThinkingSupport(model map[string]any) *registry.ThinkingSupport {

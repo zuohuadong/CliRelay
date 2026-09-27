@@ -80,6 +80,15 @@ func TestResolveOAuthUpstreamModel_SuffixPreservation(t *testing.T) {
 			want:    "kimi-k2.5(high)",
 		},
 		{
+			name: "meta suffix preserved",
+			aliases: map[string][]internalconfig.OAuthModelAlias{
+				"meta": {{Name: "muse-spark-1.3", Alias: "muse-latest"}},
+			},
+			channel: "meta",
+			input:   "muse-latest(high)",
+			want:    "muse-spark-1.3(high)",
+		},
+		{
 			name: "case insensitive alias lookup with suffix",
 			aliases: map[string][]internalconfig.OAuthModelAlias{
 				"antigravity": {{Name: "gemini-2.5-pro-exp-03-25", Alias: "Gemini-2.5-Pro"}},
@@ -157,6 +166,8 @@ func createAuthForChannel(channel string) *Auth {
 		return &Auth{Provider: "aistudio"}
 	case "kimi":
 		return &Auth{Provider: "kimi"}
+	case "meta":
+		return &Auth{Provider: "meta", Attributes: map[string]string{"auth_kind": "oauth"}}
 	default:
 		return &Auth{Provider: channel}
 	}
@@ -209,8 +220,21 @@ func TestDefaultOAuthModelAliasCodex(t *testing.T) {
 func TestOAuthModelAliasChannel_Kimi(t *testing.T) {
 	t.Parallel()
 
-	if got := OAuthModelAliasChannel("kimi", "oauth"); got != "kimi" {
-		t.Fatalf("OAuthModelAliasChannel() = %q, want %q", got, "kimi")
+	for _, provider := range []string{"kimi", "kimi-ai", "kimi.ai", "kimi.com"} {
+		if got := OAuthModelAliasChannel(provider, "oauth"); got != provider {
+			t.Fatalf("OAuthModelAliasChannel(%q) = %q, want %q", provider, got, provider)
+		}
+	}
+}
+
+func TestOAuthModelAliasChannel_Meta(t *testing.T) {
+	t.Parallel()
+
+	if got := OAuthModelAliasChannel("meta", "oauth"); got != "meta" {
+		t.Fatalf("OAuthModelAliasChannel() = %q, want %q", got, "meta")
+	}
+	if got := OAuthModelAliasChannel("meta", "api_key"); got != "" {
+		t.Fatalf("OAuthModelAliasChannel() = %q, want empty channel for meta-api-key", got)
 	}
 }
 

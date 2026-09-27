@@ -272,6 +272,13 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		return
 	}
 	conn.SetReadLimit(h.responsesMaxInboundBytes())
+	var duplexInput <-chan cliproxyexecutor.WebsocketInput
+	if h != nil && h.Cfg != nil && h.Cfg.CodexResponseSteering {
+		socketCtx, cancelSocket := context.WithCancel(c.Request.Context())
+		defer cancelSocket()
+		c.Request = c.Request.WithContext(socketCtx)
+		duplexInput = readResponsesWebsocketInput(socketCtx, cancelSocket, conn)
+	}
 	writer := newResponsesWebsocketWriter(conn)
 	passthroughSessionID := uuid.NewString()
 	downstreamSessionKey := websocketDownstreamSessionKey(c.Request)
@@ -290,6 +297,12 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			UpstreamDisconnectChan(sessionID string) <-chan error
 		}
 		for _, provider := range []string{"codex", "xai"} {
+			if provider == "codex" && duplexInput != nil {
+				// Duplex owns the socket until its ordered event stream ends.
+				// An out-of-band close could discard an already received steering
+				// acknowledgement or pending event before it reaches the client.
+				continue
+			}
 			exec, ok := h.AuthManager.Executor(provider)
 			if !ok || exec == nil {
 				continue
@@ -392,7 +405,22 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	}
 
 	for {
-		msgType, payload, errReadMessage := conn.ReadMessage()
+		var msgType int
+		var payload []byte
+		var errReadMessage error
+		if duplexInput == nil {
+			msgType, payload, errReadMessage = conn.ReadMessage()
+		} else {
+			select {
+			case message, ok := <-duplexInput:
+				if !ok {
+					return
+				}
+				msgType, payload, errReadMessage = websocket.TextMessage, message.Payload, message.Err
+			case <-c.Request.Context().Done():
+				return
+			}
+		}
 		if errReadMessage != nil {
 			wsTerminateErr = errReadMessage
 			if websocket.IsCloseError(errReadMessage, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
@@ -548,6 +576,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 
 		var requestJSON []byte
+		isPrewarm := !useUpstreamWebsocketPassthrough && shouldHandleResponsesWebsocketPrewarmLocally(payload, false)
 		var updatedLastRequest []byte
 		var errMsg *interfaces.ErrorMessage
 		previousResponseID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
@@ -609,7 +638,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		requestJSON = h.prepareCodexMultiAgentV2Tools(c, requestJSON)
 		requestJSON = h.prepareCodexOrphanDelegation(c, requestJSON)
 
-		if !useUpstreamWebsocketPassthrough && shouldHandleResponsesWebsocketPrewarmLocally(payload, lastRequest, false) {
+		if isPrewarm {
 			if updated, errDelete := sjson.DeleteBytes(requestJSON, "generate"); errDelete == nil {
 				requestJSON = updated
 			}
@@ -650,6 +679,13 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		pinnedAuthAttempted := false
 		cliCtx, cliCancel := h.GetContextWithCancel(h, c, executionParent)
 		cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
+		if duplexInput != nil {
+			cliCtx = cliproxyexecutor.WithWebsocketInput(cliCtx, duplexInput)
+			cliCtx = cliproxyexecutor.WithWebsocketAuthCheck(cliCtx, func(authID string) bool {
+				current, ok := sessionAuthByID(authID)
+				return ok && current != nil && !current.Disabled && current.Status != coreauth.StatusDisabled
+			})
+		}
 		if nativeWebsocketPassthrough && requestRequiresCurrentUpstreamWebsocket {
 			cliCtx = cliproxyexecutor.WithRequiredUpstreamWebsocket(cliCtx)
 		}

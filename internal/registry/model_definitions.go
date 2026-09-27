@@ -34,6 +34,7 @@ type staticModelsJSON struct {
 	Antigravity []*ModelInfo `json:"antigravity"`
 	XAI         []*ModelInfo `json:"xai"`
 	Devin       []*ModelInfo `json:"devin"`
+	Meta        []*ModelInfo `json:"meta"`
 	Bedrock     []*ModelInfo `json:"bedrock"`
 }
 
@@ -314,6 +315,7 @@ func GetXAIModels() []*ModelInfo {
 // not depend on remote models.json updates. Built-ins replace any matching IDs
 // already present in the provided slice.
 func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
+	models = upsertModelInfos(models, codexBuiltinGPT56ModelInfos()...)
 	return upsertModelInfos(models,
 		codexBuiltinImage15ModelInfo(),
 		codexBuiltinImageModelInfo(),
@@ -562,7 +564,7 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetAIStudioModels()
 	case "codex":
 		return GetCodexProModels()
-	case "kimi":
+	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		return GetKimiModels()
 	case "antigravity":
 		return GetAntigravityModels()

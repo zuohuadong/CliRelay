@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
+	kimiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -162,8 +163,20 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				if pref, ok := metadata["prefix"].(string); ok && auth.Prefix == "" {
 					auth.Prefix = strings.Trim(strings.TrimSpace(pref), "/")
 				}
+				if p, ok := metadata["proxy_url"].(string); ok && auth.ProxyURL == "" {
+					auth.ProxyURL = strings.TrimSpace(p)
+				}
+				if pref, ok := metadata["prefix"].(string); ok && auth.Prefix == "" {
+					auth.Prefix = strings.Trim(strings.TrimSpace(pref), "/")
+				}
 				if errWeight := coreauth.ApplyAuthWeightMetadata(auth, metadata); errWeight != nil {
 					return nil, fmt.Errorf("invalid plugin auth weight in %s: %w", filepath.Base(fullPath), errWeight)
+				}
+				coreauth.ApplyAuthPriorityMetadata(auth, metadata)
+				if _, inherited := auth.Attributes[coreauth.AttributeFilePriority]; inherited {
+					if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
+						setter.SetMetadata(auth.Metadata)
+					}
 				}
 				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
 				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
@@ -252,6 +265,7 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 	perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
 	a := &coreauth.Auth{
 		ID:       id,
+		FileName: filepath.Base(fullPath),
 		Provider: provider,
 		Label:    label,
 		Prefix:   prefix,
@@ -267,6 +281,19 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 		UpdatedAt: now,
 	}
 	coreauth.RestorePersistedDisabled(a)
+	if provider == "kimi" || provider == "kimi-ai" {
+		if baseURL, _ := metadata["base_url"].(string); strings.TrimSpace(baseURL) != "" {
+			a.Attributes["base_url"] = strings.TrimSpace(baseURL)
+		}
+		if domain, _ := metadata["domain"].(string); strings.TrimSpace(domain) != "" {
+			a.Attributes["domain"] = strings.TrimSpace(domain)
+		}
+		resolvedDomain := kimiauth.ResolveKimiDomainFromAuth(a)
+		a.Attributes["domain"] = resolvedDomain
+		if a.Attributes["base_url"] == "" {
+			a.Attributes["base_url"] = kimiauth.ResolveKimiAPIBaseURL(resolvedDomain)
+		}
+	}
 	if provider == "openai-compatibility" {
 		if compatName != "" {
 			a.Attributes["compat_name"] = compatName

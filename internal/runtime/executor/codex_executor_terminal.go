@@ -647,9 +647,8 @@ func isCodexHandshakeMetadataEvent(eventType string) bool {
 		"codex.rate_limits", "codex.response.metadata",
 		"keepalive", "response.keepalive", "ping", "response.ping", "heartbeat", "response.heartbeat":
 		return true
-	default:
-		return false
 	}
+	return false
 }
 
 // isCodexBootstrapBufferableEvent reports whether a frame may be held back before the downstream
@@ -783,6 +782,7 @@ func isCodexRetryableBootstrapFailure(body []byte) bool {
 // observeCodexTokenEvent inspects a stream payload and marks TTFT on the first substantive token event.
 func observeCodexTokenEvent(reporter *helps.UsageReporter, payload []byte) {
 	helps.ObserveResponsesTokenEvent(reporter, payload)
+	reporter.ObserveCodexResponseModel(payload)
 }
 
 // newCodexBootstrapOverloadErr reports a buffered overload rejection with its real status.

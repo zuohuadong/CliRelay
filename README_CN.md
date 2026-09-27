@@ -16,7 +16,7 @@ CLIProxyAPI 是一个为 CLI 提供 OpenAI/Gemini/Claude/Codex/Grok 兼容 API �
     </tr>
     <tr>
         <td align="center"><a href="https://www.kimi.com/code/?aff=cliproxyapi"><img src="./assets/logo/kimi.svg" alt="Kimi" width="28" height="28" /></a></td>
-        <td>Kimi 系列模型（Kimi K3、K2.7 Code 等）。<a href="https://platform.kimi.com/docs/guide/kimi-k3-quickstart">Kimi K3</a> 是 Moonshot AI 迄今能力最强的模型，也是全球首个开源 3T 级模型。K3 拥有 2.8T 参数、原生视觉能力与 100 万 Token 上下文，面向长周期编码、知识工作与推理任务。CLIProxyAPI 支持通过 OAuth 或兼容 API 接入 Kimi。立即体验 <a href="https://www.kimi.com/code/?aff=cliproxyapi">Kimi Code 订阅</a>，或前往 <a href="https://platform.kimi.com?track_id=track-f15622e7182046baa22ca35e006e13a7&aff=cliproxyapi">Kimi 开放平台</a> 获取 API Key。感谢 Kimi 对 CLIProxyAPI 及开源社区的支持！</td>
+        <td>Kimi 系列模型（Kimi K3、K2.7 Code 等）。<a href="https://platform.kimi.com/docs/guide/kimi-k3-quickstart">Kimi K3</a> 是 Moonshot AI 迄今能力最强的模型，也是全球首个开源 3T 级模型。K3 拥有 2.8T 参数、原生视觉能力与 100 万 Token 上下文，面向长周期编码、知识工作与推理任务。CLIProxyAPI 支持通过 OAuth 或兼容 API 接入 Kimi。立即体验 <strong>Kimi Code 订阅</strong>（<a href="https://www.kimi.com/code?aff=cliproxyapi">中文站</a>｜<a href="https://www.kimi.ai/code?aff=cliproxyapi">Global</a>），或前往 Kimi 开放平台（<a href="https://platform.kimi.com?track_id=track-f15622e7182046baa22ca35e006e13a7&aff=cliproxyapi">中文站</a>｜<a href="https://platform.kimi.ai?track_id=track-8a28e4b291d84f62af2fccc3e7a21cb3&aff=cliproxyapi">Global</a>）获取 <strong>API Key</strong>。感谢 Kimi 对 CLIProxyAPI 及开源社区的支持！</td>
     </tr>
     <tr>
         <td align="center"><a href="https://platform.openai.com/docs/guide/gpt-5.6"><img src="./assets/logo/openai.svg" alt="OpenAI" width="28" height="28" /></a></td>
@@ -252,7 +252,7 @@ Quotio 的跨平台（Tauri）移植版，支持 Windows / macOS / Linux。通�
 
 VS Code 扩展，可将你的 Claude、ChatGPT/Codex、Antigravity、Grok 和 Kimi 订阅作为原生语言模型接入 GitHub Copilot Chat，并且也可用于生成 Git 提交信息、聊天标题和摘要。它以完全托管的后台生命周期运行 CLIProxyAPI（下载、验证、监督），并在所有窗口间共享，因此无需配置。无需 API 密钥，只需 OAuth。
 
-### [CPA-Tray-Powershell](https://github.com/IQ-Director/CPA-Tray-Powershell)
+### [CPA-Tray-Powershell](https://github.com/ztzpro/CPA-Tray-Powershell.git)
 
 基于 PowerShell 的 Windows CLIProxyAPI 托盘启动工具。支持无终端窗口后台运行、打开管理页面、关闭管理窗口后保持后端运行，并可通过托盘重新打开页面；同时支持启动时自动检查 CLIProxyAPI 更新、SHA-256 校验与失败回滚、一键重启并更新 CLIProxyAPI、基于 PID 校验的进程管理以及安全停止服务。
 
@@ -275,6 +275,18 @@ VS Code 扩展，可将你的 Claude、ChatGPT/Codex、Antigravity、Grok 和 Ki
 ### [Infinitus](https://github.com/deathemperor/infinitus)
 
 原生 macOS 菜单栏应用，通过 CLIProxyAPI 的管理 API 管理多个 Claude 账号（也支持 claude-swap 与 9Router）：5 小时 / 7 天 / 按模型的配额仪表，弹窗内切换 / 暂停 / 星标账号，按当前消耗速度预测各窗口何时耗尽，并可在 iPhone 上同步查看。
+
+### [PiCloud](https://github.com/cookerpapa/pi-cloud)
+
+基于 Pi SDK 的自托管编程 Agent 平台，提供 Web 界面、并发子 Agent 和 CubeSandbox KVM 工作空间。使用 CLIProxyAPI 作为模型供应商网关，将供应商凭据保留在客户机工作空间之外。
+
+### [cc-status-line](https://github.com/kinka/cc-status-line)
+
+Claude Code 状态栏，按当前 CPA 实例展示 Codex / Grok / Antigravity / Claude 的逐账户额度（5h / 7d / 周）与重置倒计时。根据 `ANTHROPIC_BASE_URL` 选择实例，通过 Management API 采集额度。
+
+### [CLIProxy Quota Tray](https://github.com/ZYHUO/CLIProxy-Quota-Tray)
+
+适用于 CLIProxyAPI 的跨平台 Electron 托盘仪表盘。展示 ChatGPT/Codex、Claude、Gemini/Antigravity、Grok、Kimi 和 Cursor 各账户的真实 OAuth 配额窗口，预估用量队列成本，并跟踪 OpenAI/Claude 服务状态。深色终端风格 UI；支持在 Windows 和 Linux 上运行。
 
 > [!NOTE]  
 > 如果你开发了基于 CLIProxyAPI 的项目，请提交一个 PR（拉取请求）将其添加到此列表中。

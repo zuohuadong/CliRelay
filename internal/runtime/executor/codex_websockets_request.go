@@ -159,7 +159,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 			headers.Set("Originator", fingerprint.Originator)
 		}
 	} else {
-		applyCodexCloakingHeaders(headers, cfg)
+		applyCodexCloakingHeaders(headers, cfg, auth)
 	}
 
 	return headers

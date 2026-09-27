@@ -58,6 +58,7 @@ type codexWebsocketSession struct {
 	connCloser                *websocketConnectionCloser
 	wsURL                     string
 	authID                    string
+	proxyURL                  string
 	multiAgentV2OptimizedConn *websocket.Conn
 	routeKey                  string
 	lifecycleBindMu           sync.Mutex
@@ -391,7 +392,7 @@ func closeWebsocketAfterBindFailure(sess *codexWebsocketSession, conn *websocket
 	}
 }
 
-func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, wsURL string) bool {
+func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) bool {
 	if sess == nil {
 		return false
 	}
@@ -401,19 +402,17 @@ func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, w
 	if strings.TrimSpace(sess.authID) == "" && strings.TrimSpace(sess.wsURL) == "" {
 		return false
 	}
-	return strings.TrimSpace(sess.authID) != strings.TrimSpace(authID) || strings.TrimSpace(sess.wsURL) != strings.TrimSpace(wsURL)
+	return !websocketSessionTargetMatches(sess, authID, wsURL, proxyURL)
 }
 
-func existingWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string) (*websocket.Conn, *websocketConnectionCloser) {
+func existingWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) (*websocket.Conn, *websocketConnectionCloser) {
 	if sess == nil {
 		return nil, nil
 	}
 	sess.connMu.Lock()
 	conn := sess.conn
 	closer := sess.connCloser
-	matches := conn != nil && closer != nil &&
-		strings.TrimSpace(sess.authID) == strings.TrimSpace(authID) &&
-		strings.TrimSpace(sess.wsURL) == strings.TrimSpace(wsURL)
+	matches := conn != nil && closer != nil && websocketSessionTargetMatches(sess, authID, wsURL, proxyURL)
 	sess.connMu.Unlock()
 	if !matches || sess.upstreamDisconnectError(conn) != nil {
 		return nil, nil
@@ -421,7 +420,13 @@ func existingWebsocketSessionConn(sess *codexWebsocketSession, authID string, ws
 	return conn, closer
 }
 
-func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string) (*websocket.Conn, *websocketConnectionCloser, string, string, cliproxyexecutor.ExecutionLifecycle) {
+func websocketSessionTargetMatches(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) bool {
+	return strings.TrimSpace(sess.authID) == strings.TrimSpace(authID) &&
+		strings.TrimSpace(sess.wsURL) == strings.TrimSpace(wsURL) &&
+		strings.TrimSpace(sess.proxyURL) == strings.TrimSpace(proxyURL)
+}
+
+func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) (*websocket.Conn, *websocketConnectionCloser, string, string, cliproxyexecutor.ExecutionLifecycle) {
 	if sess == nil {
 		return nil, nil, "", "", nil
 	}
@@ -429,7 +434,7 @@ func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID st
 	sess.connMu.Lock()
 	defer sess.connMu.Unlock()
 	conn := sess.conn
-	if conn == nil || (strings.TrimSpace(sess.authID) == strings.TrimSpace(authID) && strings.TrimSpace(sess.wsURL) == strings.TrimSpace(wsURL)) {
+	if conn == nil || websocketSessionTargetMatches(sess, authID, wsURL, proxyURL) {
 		return nil, nil, "", "", nil
 	}
 
@@ -617,7 +622,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	wsURL = strings.TrimSpace(wsURL)
 	routeKey := strings.TrimSpace(codexWebsocketRouteKey(auth))
 
-	if staleConn, staleCloser, staleAuthID, staleWSURL, staleLifecycle := detachMismatchedWebsocketSessionConn(sess, authID, wsURL); staleConn != nil {
+	if staleConn, staleCloser, staleAuthID, staleWSURL, staleLifecycle := detachMismatchedWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, e.cfg, auth)); staleConn != nil {
 		sess.cancelActiveForConn(staleConn)
 		staleLastEvent := sess.getLastEventType(staleConn)
 		logCodexWebsocketDisconnectedWithLastEvent(sess, sess.sessionID, staleAuthID, staleWSURL, "target_changed", staleLastEvent, nil)

@@ -110,17 +110,17 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 	if accessToken == "" {
 		return antigravityModelCapabilityHints{}
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
+
 	baseURLs := antigravityModelBaseURLs(auth)
 	if len(baseURLs) == 0 {
 		return antigravityModelCapabilityHints{}
 	}
+
 	proxyURL := s.antigravityModelFetchProxyURL(auth)
 	cacheKey := strings.Join(baseURLs, "|") + "#" + proxyURL
 	tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(accessToken)))
 	authFailKey := auth.ID + "#" + tokenHash
+
 	now := antigravityNowFunc()
 	antigravityCapabilityMu.RLock()
 	if failExpiry, failed := antigravityAuthFailureCache[authFailKey]; failed && now.Before(failExpiry) {
@@ -133,8 +133,10 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 		return hints
 	}
 	antigravityCapabilityMu.RUnlock()
+
 	antigravityProbeInFlight.Add(1)
 	defer antigravityProbeInFlight.Add(-1)
+
 	res, errDo, _ := antigravityCapabilityGroup.Do(cacheKey, func() (any, error) {
 		nowInside := antigravityNowFunc()
 		antigravityCapabilityMu.RLock()
@@ -144,16 +146,20 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 			return antigravityProbeResult{hints: hints, status: antigravityProbeStatusSuccess, token: accessToken}, nil
 		}
 		antigravityCapabilityMu.RUnlock()
+
 		hints, status := s.probeAntigravityModelCapabilityHints(ctx, auth, baseURLs, proxyURL, accessToken)
 		if status == antigravityProbeStatusSuccess || status == antigravityProbeStatusTransientError {
-			if status != antigravityProbeStatusTransientError || ctx.Err() == nil {
+			if status != antigravityProbeStatusTransientError || ctx == nil || ctx.Err() == nil {
 				ttl := antigravityCapabilityCacheTTL
 				if status != antigravityProbeStatusSuccess {
 					ttl = antigravityCapabilityFailureTTL
 				}
 				antigravityCapabilityMu.Lock()
 				purgeExpiredAntigravityCacheLocked(nowInside)
-				antigravityCapabilityCache[cacheKey] = antigravityCapabilityCacheEntry{hints: hints.clone(), expiresAt: antigravityNowFunc().Add(ttl)}
+				antigravityCapabilityCache[cacheKey] = antigravityCapabilityCacheEntry{
+					hints:     hints.clone(),
+					expiresAt: antigravityNowFunc().Add(ttl),
+				}
 				antigravityCapabilityMu.Unlock()
 			}
 		}
@@ -166,13 +172,21 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 	if !ok {
 		return antigravityModelCapabilityHints{}
 	}
+
 	if result.status == antigravityProbeStatusAuthError {
+		if result.token != accessToken {
+			// The shared probe failed with an auth error from another account's token.
+			// Re-try with our own account's token.
+			return s.fetchAntigravityModelCapabilityHintsForAuth(ctx, auth)
+		}
+		// Our own token failed with 401/403. Record backoff for this account/token.
 		antigravityCapabilityMu.Lock()
 		purgeExpiredAntigravityCacheLocked(now)
 		antigravityAuthFailureCache[authFailKey] = antigravityNowFunc().Add(antigravityCapabilityFailureTTL)
 		antigravityCapabilityMu.Unlock()
 		return antigravityModelCapabilityHints{}
 	}
+
 	return result.hints.clone()
 }
 

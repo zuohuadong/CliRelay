@@ -24,6 +24,7 @@ import (
 )
 
 type responsesWebsocketForwardOptions struct {
+	duplexStream             func() bool
 	preserveCompletionOutput func() bool
 	toolCacheTurn            *responsesWebsocketToolCacheTurn
 	suppressError            func(*interfaces.ErrorMessage) bool
@@ -54,6 +55,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	sessionID string,
 	options ...responsesWebsocketForwardOptions,
 ) ([]byte, string, []string, *interfaces.ErrorMessage, error) {
+	responseStarted := false
 	var opts responsesWebsocketForwardOptions
 	if len(options) > 0 {
 		opts = options[0]
@@ -171,6 +173,13 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
 			for i := range payloads {
+				if gjson.GetBytes(payloads[i], "type").String() == "response.created" {
+					responseStarted = true
+					completed = false
+					outputItemsByIndex = make(map[int64][]byte)
+					outputItemsFallback = nil
+					pendingToolCallIDs = make(map[string]struct{})
+				}
 				collectResponsesWebsocketOutputItem(payloads[i], outputItemsByIndex, &outputItemsFallback)
 				eventType := gjson.GetBytes(payloads[i], "type").String()
 				if isResponsesWebsocketCompletionEvent(eventType) && (opts.preserveCompletionOutput == nil || !opts.preserveCompletionOutput()) {
@@ -183,7 +192,11 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				}
 				recordPendingToolCallIDsFromPayload(pendingToolCallIDs, payloads[i])
 				var payloadErrMsg *interfaces.ErrorMessage
-				if eventType == wsEventTypeError {
+				// In Codex duplex mode the executor owns connection termination:
+				// payload errors after response.created are recoverable events;
+				// StreamChunk.Err still arrives through errs and closes the socket.
+				preserveErrorEvent := responseStarted && opts.duplexStream != nil && opts.duplexStream()
+				if eventType == wsEventTypeError && !preserveErrorEvent {
 					payloadErrMsg = responsesWebsocketErrorMessageFromPayload(payloads[i])
 					if h != nil {
 						h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), payloadErrMsg)

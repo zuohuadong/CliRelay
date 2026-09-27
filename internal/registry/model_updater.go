@@ -122,6 +122,10 @@ func tryRefreshModels(ctx context.Context, label string) {
 		return
 	}
 
+	if len(parsed.Meta) == 0 && oldData != nil && len(oldData.Meta) > 0 {
+		parsed.Meta = oldData.Meta
+	}
+
 	// Detect changes before updating store.
 	changed := detectChangedProviders(oldData, parsed)
 
@@ -215,6 +219,9 @@ func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 		{"codex", oldData.CodexPlus, newData.CodexPlus},
 		{"codex", oldData.CodexPro, newData.CodexPro},
 		{"kimi", oldData.Kimi, newData.Kimi},
+		{"kimi-ai", oldData.Kimi, newData.Kimi},
+		{"kimi.ai", oldData.Kimi, newData.Kimi},
+		{"kimi.com", oldData.Kimi, newData.Kimi},
 		{"antigravity", oldData.Antigravity, newData.Antigravity},
 		{"xai", oldData.XAI, newData.XAI},
 		{"bedrock", oldData.Bedrock, newData.Bedrock},
@@ -245,7 +252,7 @@ func modelSectionChanged(a, b []*ModelInfo) bool {
 		return false
 	}
 	for i := range a {
-		if a[i] != nil && b[i] != nil && !reflect.DeepEqual(a[i].NativeCapabilities, b[i].NativeCapabilities) {
+		if a[i] != nil && b[i] != nil && (a[i].SupportConfigurationUpdate != b[i].SupportConfigurationUpdate || !reflect.DeepEqual(a[i].NativeCapabilities, b[i].NativeCapabilities)) {
 			return true
 		}
 	}

@@ -12,57 +12,6 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-func sanitizeOpenAIResponsesReasoningItems(ctx context.Context, provider string, body []byte) []byte {
-	input := gjson.GetBytes(body, "input")
-	if !input.Exists() || !input.IsArray() {
-		return body
-	}
-	provider = openAIResponsesSignatureProviderName(provider)
-
-	items := input.Array()
-	replayableItems := make([]string, 0, len(items))
-	dropped := false
-	for index, item := range items {
-		if strings.TrimSpace(item.Get("type").String()) != "reasoning" {
-			replayableItems = append(replayableItems, item.Raw)
-			continue
-		}
-
-		encryptedContent := item.Get("encrypted_content")
-		if !encryptedContent.Exists() {
-			replayableItems = append(replayableItems, item.Raw)
-			continue
-		}
-
-		reason := invalidGPTReasoningEncryptedContentReason(encryptedContent)
-		if reason == "" {
-			replayableItems = append(replayableItems, item.Raw)
-			continue
-		}
-
-		dropped = true
-		itemID := strings.TrimSpace(item.Get("id").String())
-		if itemID == "" {
-			itemID = fmt.Sprintf("input[%d]", index)
-		}
-		helps.LogWithRequestID(ctx).Debugf("%s: dropped unreplayable reasoning item at input[%d] item_id=%q reason=%s", provider, index, itemID, reason)
-	}
-
-	updated := body
-	if dropped {
-		var err error
-		updated, err = sjson.SetRawBytes(body, "input", []byte("["+strings.Join(replayableItems, ",")+"]"))
-		if err != nil {
-			helps.LogWithRequestID(ctx).Debugf("%s: failed to replace input after dropping unreplayable reasoning items: %v", provider, err)
-			return body
-		}
-	}
-
-	return sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, provider, updated)
-}
-
-// sanitizeOpenAIResponsesReasoningEncryptedContent 保留上游的字段级清理语义。
-// Codex 运行路径会先用上面的严格策略删除不可重放项，再由这里清除孤立 ID。
 func openaiResponsesReasoningSummaryIsEmpty(summary gjson.Result) bool {
 	if !summary.Exists() || summary.Type == gjson.Null {
 		return true
@@ -100,14 +49,33 @@ func promoteOpenAIResponsesReasoningTextToSummary(itemRaw string, content gjson.
 }
 
 func sanitizeOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provider string, body []byte) []byte {
+	return sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, provider, body, false)
+}
+
+func sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx context.Context, provider string, body []byte, isCompat bool) []byte {
 	inputResult := util.GetGJSONBytesNoCopy(body, "input")
 	if !inputResult.Exists() || !inputResult.IsArray() {
 		return body
 	}
-	provider = openAIResponsesSignatureProviderName(provider)
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		provider = "openai responses upstream"
+	}
+
+	// Codex backend rejects store=true and does not persist items when store=false.
+	// A reasoning item that still carries an id without usable encrypted_content is
+	// treated as a store lookup and returns:
+	//   Item with id '...' not found. Items are not persisted when `store` is set to false.
+	// Strip those orphan ids unless the request explicitly opts into store=true.
 	stripOrphanReasoningIDs := !gjson.GetBytes(body, "store").Bool()
+
 	items := inputResult.Array()
 
+	// rebuilt accumulates the edited "input" array as JSON array bytes. It
+	// stays nil while no item needs editing so the common case (nothing to
+	// sanitize) does no allocation or rebuilding. Edits are applied directly
+	// to each item's own raw JSON rather than re-parsing the whole body,
+	// keeping the cost proportional to the item being edited.
 	var rebuilt []byte
 	itemsWritten := 0
 	keep := func(raw string) {
@@ -124,6 +92,8 @@ func sanitizeOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provi
 		if rebuilt != nil {
 			return
 		}
+		// First item that needs editing: start the buffer and backfill
+		// it with the raw JSON of every preceding item.
 		rebuilt = make([]byte, 0, len(inputResult.Raw))
 		rebuilt = append(rebuilt, '[')
 		for i := range index {
@@ -142,14 +112,17 @@ func sanitizeOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provi
 		if itemID == "" {
 			itemID = fmt.Sprintf("input[%d]", index)
 		}
+
 		nextItem := item.Raw
 		changed := false
 
 		// Official Codex schema sets maxItems: 0 on reasoning.content. Third-party
 		// channels replay cleartext thinking there; promote it into summary when
 		// summary is empty, then force content to [].
+		// When isCompat is true, third-party Responses models (such as DeepSeek)
+		// require original reasoning_text inside reasoning.content to be replayed.
 		content := item.Get("content")
-		if content.IsArray() && len(content.Array()) > 0 {
+		if !isCompat && content.IsArray() && len(content.Array()) > 0 {
 			if openaiResponsesReasoningSummaryIsEmpty(item.Get("summary")) {
 				promoted, errPromote := promoteOpenAIResponsesReasoningTextToSummary(nextItem, content)
 				if errPromote != nil {
@@ -169,7 +142,7 @@ func sanitizeOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provi
 		}
 
 		if !encryptedContent.Exists() {
-			if stripOrphanReasoningIDs && item.Get("id").Exists() {
+			if !isCompat && stripOrphanReasoningIDs && item.Get("id").Exists() {
 				dropped, err := sjson.Delete(nextItem, "id")
 				if err != nil {
 					helps.LogWithRequestID(ctx).Debugf("%s: failed to drop orphan reasoning id at input[%d]: %v", provider, index, err)
@@ -188,7 +161,20 @@ func sanitizeOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provi
 			continue
 		}
 
-		reason := invalidGPTReasoningEncryptedContentReason(encryptedContent)
+		reason := ""
+		switch encryptedContent.Type {
+		case gjson.String:
+			rawSignature := encryptedContent.String()
+			if rawSignature != strings.TrimSpace(rawSignature) {
+				reason = "encrypted_content has leading or trailing whitespace"
+			} else if _, err := signature.InspectGPTReasoningSignature(rawSignature); err != nil {
+				reason = err.Error()
+			}
+		case gjson.Null:
+			reason = "encrypted_content is null"
+		default:
+			reason = fmt.Sprintf("encrypted_content must be a string, got %s", encryptedContent.Type.String())
+		}
 		if reason == "" {
 			if !changed {
 				keep(item.Raw)
@@ -212,13 +198,17 @@ func sanitizeOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provi
 		}
 		nextItem = dropped
 		changed = true
-		if stripOrphanReasoningIDs && item.Get("id").Exists() {
-			if nextID, errID := sjson.Delete(nextItem, "id"); errID == nil {
+		if !isCompat && stripOrphanReasoningIDs && item.Get("id").Exists() {
+			if nextID, errID := sjson.Delete(nextItem, "id"); errID != nil {
+				helps.LogWithRequestID(ctx).Debugf("%s: failed to drop reasoning id after invalid encrypted_content at input[%d]: %v", provider, index, errID)
+			} else {
 				nextItem = nextID
 			}
 		}
+
 		startRebuild(index)
 		keep(nextItem)
+
 		helps.LogWithRequestID(ctx).Debugf("%s: dropped invalid reasoning encrypted_content at input[%d] item_id=%q reason=%s", provider, index, itemID, reason)
 	}
 
@@ -226,79 +216,11 @@ func sanitizeOpenAIResponsesReasoningEncryptedContent(ctx context.Context, provi
 		return body
 	}
 	rebuilt = append(rebuilt, ']')
+
 	updated, err := sjson.SetRawBytes(body, "input", rebuilt)
 	if err != nil {
 		helps.LogWithRequestID(ctx).Debugf("%s: failed to rebuild input array while sanitizing reasoning encrypted_content: %v", provider, err)
 		return body
 	}
 	return updated
-}
-
-func invalidGPTReasoningEncryptedContentReason(encryptedContent gjson.Result) string {
-	switch encryptedContent.Type {
-	case gjson.String:
-		rawSignature := encryptedContent.String()
-		if rawSignature != strings.TrimSpace(rawSignature) {
-			return "encrypted_content has leading or trailing whitespace"
-		}
-		if _, err := signature.InspectGPTReasoningSignature(rawSignature); err != nil {
-			return err.Error()
-		}
-		return ""
-	case gjson.Null:
-		return "encrypted_content is null"
-	default:
-		return fmt.Sprintf("encrypted_content must be a string, got %s", encryptedContent.Type.String())
-	}
-}
-
-func dropOpenAIResponsesReasoningItemsWithEncryptedContent(ctx context.Context, provider string, body []byte, reason string) ([]byte, bool) {
-	input := gjson.GetBytes(body, "input")
-	if !input.Exists() || !input.IsArray() {
-		return body, false
-	}
-	provider = openAIResponsesSignatureProviderName(provider)
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "upstream rejected reasoning encrypted_content"
-	}
-
-	items := input.Array()
-	remainingItems := make([]string, 0, len(items))
-	dropped := false
-	for index, item := range items {
-		if strings.TrimSpace(item.Get("type").String()) != "reasoning" {
-			remainingItems = append(remainingItems, item.Raw)
-			continue
-		}
-		if !item.Get("encrypted_content").Exists() {
-			remainingItems = append(remainingItems, item.Raw)
-			continue
-		}
-
-		dropped = true
-		itemID := strings.TrimSpace(item.Get("id").String())
-		if itemID == "" {
-			itemID = fmt.Sprintf("input[%d]", index)
-		}
-		helps.LogWithRequestID(ctx).Debugf("%s: dropped reasoning item at input[%d] item_id=%q reason=%s", provider, index, itemID, reason)
-	}
-	if !dropped {
-		return body, false
-	}
-
-	updated, err := sjson.SetRawBytes(body, "input", []byte("["+strings.Join(remainingItems, ",")+"]"))
-	if err != nil {
-		helps.LogWithRequestID(ctx).Debugf("%s: failed to replace input after dropping reasoning items: %v", provider, err)
-		return body, false
-	}
-	return updated, true
-}
-
-func openAIResponsesSignatureProviderName(provider string) string {
-	provider = strings.TrimSpace(provider)
-	if provider == "" {
-		return "openai responses upstream"
-	}
-	return provider
 }

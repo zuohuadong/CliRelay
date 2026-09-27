@@ -56,7 +56,6 @@ func (h *handlerInterceptorTestHost) InterceptRequestBeforeAuth(ctx context.Cont
 	}
 	return pluginapi.RequestInterceptResponse{
 		Headers: cloneHeader(req.Headers),
-		Body:    cloneBytes(req.Body),
 	}
 }
 
@@ -66,7 +65,6 @@ func (h *handlerInterceptorTestHost) InterceptRequestAfterAuth(ctx context.Conte
 	}
 	return pluginapi.RequestInterceptResponse{
 		Headers: cloneHeader(req.Headers),
-		Body:    cloneBytes(req.Body),
 	}
 }
 

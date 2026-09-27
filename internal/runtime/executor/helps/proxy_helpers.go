@@ -9,6 +9,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
@@ -16,6 +17,13 @@ import (
 // ResolveAuthProxyURL returns the proxy URL a credential should use for outbound traffic
 // and background token refreshes. It checks auth.ProxyURL, auth.Metadata["proxy_url"],
 // auth.ProxyID / auth.Metadata["proxy_id"] (when containing a URL/scheme), and falls back to cfg.ProxyURL.
+func effectiveProxyURL(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth) string {
+	if proxyURL := cliproxyexecutor.RequestProxyURL(ctx); proxyURL != "" {
+		return proxyURL
+	}
+	return ResolveAuthProxyURL(cfg, auth)
+}
+
 func ResolveAuthProxyURL(cfg *config.Config, auth *cliproxyauth.Auth) string {
 	if auth != nil {
 		if proxyURL := strings.TrimSpace(auth.ProxyURL); proxyURL != "" {
@@ -65,7 +73,7 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	}
 
 	// Priority 1 & 2: Use credential-scoped proxy or fallback to cfg.ProxyURL
-	proxyURL := ResolveAuthProxyURL(cfg, auth)
+	proxyURL := effectiveProxyURL(ctx, cfg, auth)
 
 	// If we have a proxy URL configured, set up the transport
 	if proxyURL != "" {

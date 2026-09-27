@@ -1342,7 +1342,7 @@ func TestConvertCodexResponseToClaude_StreamPreservesCacheWriteUsage(t *testing.
 		{
 			name:                 "cache_write_tokens field",
 			terminalUsageJSON:    `{"input_tokens":1000,"output_tokens":200,"input_tokens_details":{"cached_tokens":800,"cache_write_tokens":150}}`,
-			wantInputTokens:      200,
+			wantInputTokens:      50,
 			wantOutputTokens:     200,
 			wantCacheReadTokens:  800,
 			wantCacheWriteTokens: 150,
@@ -1350,7 +1350,7 @@ func TestConvertCodexResponseToClaude_StreamPreservesCacheWriteUsage(t *testing.
 		{
 			name:                 "cache_creation_tokens field alias",
 			terminalUsageJSON:    `{"input_tokens":1000,"output_tokens":200,"input_tokens_details":{"cached_tokens":800,"cache_creation_tokens":150}}`,
-			wantInputTokens:      200,
+			wantInputTokens:      50,
 			wantOutputTokens:     200,
 			wantCacheReadTokens:  800,
 			wantCacheWriteTokens: 150,
@@ -1370,6 +1370,22 @@ func TestConvertCodexResponseToClaude_StreamPreservesCacheWriteUsage(t *testing.
 			wantOutputTokens:     200,
 			wantCacheReadTokens:  800,
 			wantCacheWriteTokens: 0,
+		},
+		{
+			name:                 "cache_write_tokens only deducts from input_tokens",
+			terminalUsageJSON:    `{"input_tokens":4022,"output_tokens":462,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":4019}}`,
+			wantInputTokens:      3,
+			wantOutputTokens:     462,
+			wantCacheReadTokens:  0,
+			wantCacheWriteTokens: 4019,
+		},
+		{
+			name:                 "combined cached and cache_write greater than input_tokens clamps to zero",
+			terminalUsageJSON:    `{"input_tokens":500,"output_tokens":100,"input_tokens_details":{"cached_tokens":300,"cache_write_tokens":300}}`,
+			wantInputTokens:      0,
+			wantOutputTokens:     100,
+			wantCacheReadTokens:  300,
+			wantCacheWriteTokens: 300,
 		},
 	}
 
@@ -1437,7 +1453,7 @@ func TestConvertCodexResponseToClaudeNonStream_PreservesCacheWriteUsage(t *testi
 					"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]
 				}
 			}`,
-			wantInputTokens:      200,
+			wantInputTokens:      50,
 			wantOutputTokens:     200,
 			wantCacheReadTokens:  800,
 			wantCacheWriteTokens: 150,
@@ -1454,7 +1470,7 @@ func TestConvertCodexResponseToClaudeNonStream_PreservesCacheWriteUsage(t *testi
 					"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]
 				}
 			}`,
-			wantInputTokens:      200,
+			wantInputTokens:      50,
 			wantOutputTokens:     200,
 			wantCacheReadTokens:  800,
 			wantCacheWriteTokens: 150,
@@ -1492,6 +1508,40 @@ func TestConvertCodexResponseToClaudeNonStream_PreservesCacheWriteUsage(t *testi
 			wantOutputTokens:     200,
 			wantCacheReadTokens:  800,
 			wantCacheWriteTokens: 0,
+		},
+		{
+			name: "cache_write_tokens only deducts from input_tokens",
+			responseJSON: `{
+				"type":"response.completed",
+				"response":{
+					"id":"resp_1",
+					"model":"gpt-5",
+					"stop_reason":"stop",
+					"usage":{"input_tokens":4022,"output_tokens":462,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":4019}},
+					"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]
+				}
+			}`,
+			wantInputTokens:      3,
+			wantOutputTokens:     462,
+			wantCacheReadTokens:  0,
+			wantCacheWriteTokens: 4019,
+		},
+		{
+			name: "combined cached and cache_write greater than input_tokens clamps to zero",
+			responseJSON: `{
+				"type":"response.completed",
+				"response":{
+					"id":"resp_1",
+					"model":"gpt-5",
+					"stop_reason":"stop",
+					"usage":{"input_tokens":500,"output_tokens":100,"input_tokens_details":{"cached_tokens":300,"cache_write_tokens":300}},
+					"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]
+				}
+			}`,
+			wantInputTokens:      0,
+			wantOutputTokens:     100,
+			wantCacheReadTokens:  300,
+			wantCacheWriteTokens: 300,
 		},
 	}
 

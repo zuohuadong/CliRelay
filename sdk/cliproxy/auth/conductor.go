@@ -208,6 +208,8 @@ type Manager struct {
 	refreshLoop      *authAutoRefreshLoop
 	refreshSemaphore chan struct{}
 	quotaProbeAfter  map[string]time.Time
+	// refreshJobs retains queued and running jobs across loop restarts under m.mu.
+	refreshJobs map[string]*authRefreshJob
 
 	requestPrepareLocks sync.Map
 	mutationLocks       sync.Map

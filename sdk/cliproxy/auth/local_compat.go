@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 func noExecutableUpstreamModelError(ctx context.Context, cfg *internalconfig.Config, auth *Auth, opts cliproxyexecutor.Options, provider, routeModel string, candidates []string) *Error {

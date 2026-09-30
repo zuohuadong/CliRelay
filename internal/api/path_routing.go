@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v7/internal/routing"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v8/internal/routing"
 )
 
 func attachPathRouteContext(c *gin.Context, route *internalrouting.PathRouteContext) {

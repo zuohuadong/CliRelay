@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 )
 
 const maxBufferedResponseBodyBytes = 2 * 1024 * 1024

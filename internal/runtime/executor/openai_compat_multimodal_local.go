@@ -3,8 +3,8 @@ package executor
 import (
 	"context"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/multimodaladapter"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/multimodaladapter"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 )
 
 func (e *OpenAICompatExecutor) applyMultimodalAdapter(ctx context.Context, payload []byte, model, protocol, requestedModel string) ([]byte, error) {

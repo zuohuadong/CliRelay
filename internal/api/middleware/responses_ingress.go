@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/requestbody"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/requestbody"
 )
 
 const responsesIngressAmplification int64 = 4

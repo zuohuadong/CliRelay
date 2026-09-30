@@ -136,11 +136,6 @@ func (c *JWTClaims) GetUserID() string {
 	return strings.TrimSpace(c.CodexAuthInfo.UserID)
 }
 
-// GetPlanType returns the raw ChatGPT plan type claim.
-func (c *JWTClaims) GetPlanType() string {
-	return strings.TrimSpace(c.CodexAuthInfo.ChatgptPlanType)
-}
-
 // IsFedRAMPAccount reports whether the selected ChatGPT account uses FedRAMP routing.
 func (c *JWTClaims) IsFedRAMPAccount() bool {
 	return c.CodexAuthInfo.ChatgptAccountIsFedramp
@@ -178,4 +173,19 @@ func AccountIDFromMetadata(metadata map[string]any) string {
 	}
 	metadata["account_id"] = accountID
 	return accountID
+}
+
+// DefaultPlanType defines the default subscription plan type when not present in claims.
+const DefaultPlanType = "free"
+
+// GetPlanType extracts the ChatGPT plan type from the JWT claims.
+// If the claim is missing or empty, it defaults to "free".
+func (c *JWTClaims) GetPlanType() string {
+	if c == nil {
+		return DefaultPlanType
+	}
+	if pt := strings.TrimSpace(c.CodexAuthInfo.ChatgptPlanType); pt != "" {
+		return pt
+	}
+	return DefaultPlanType
 }

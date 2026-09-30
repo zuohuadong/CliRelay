@@ -3,8 +3,8 @@ package handlers
 import (
 	"strings"
 
-	executorhelps "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	executorhelps "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 func setEstimatedInputTokensMetadata(meta map[string]any, modelName string, rawJSON []byte) {

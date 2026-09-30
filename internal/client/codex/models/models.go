@@ -2,13 +2,14 @@
 package models
 
 import (
+	"bytes"
 	"encoding/json"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 type codexClientModelsPayload struct {
@@ -68,6 +69,18 @@ func BuildResponseForClientWithCPACapabilities(availableModels []map[string]any,
 	return map[string]any{
 		"models": buildCodexClientModels(availableModels, providersForModel, webSearchCapabilityForModel, optimizeMultiAgentV2, clientVersion),
 	}
+}
+
+// MarshalCompact serializes a Codex client catalog as a single JSON line.
+// HTML escaping is disabled so instruction text is not expanded into \u003c sequences.
+func MarshalCompact(payload any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if errEncode := encoder.Encode(payload); errEncode != nil {
+		return nil, errEncode
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 func buildCodexClientModels(models []map[string]any, providersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) []map[string]any {

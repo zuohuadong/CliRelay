@@ -19,8 +19,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -442,6 +443,9 @@ func BuildDevinGetChatMessageRequest(
 
 	// 6. Repeated Tools (Field 10)
 	for _, tool := range tools {
+		if tool.Name == "" || translatorcommon.IsDevinCodexAppAutomationUpdate("", tool.Name) {
+			continue
+		}
 		var tBytes []byte
 		if tool.Name != "" {
 			tBytes = protowire.AppendTag(tBytes, 1, protowire.BytesType)
@@ -454,6 +458,7 @@ func BuildDevinGetChatMessageRequest(
 		if strings.Contains(desc, "Takes a task_id parameter identifying the task") {
 			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
 		}
+		desc = translatorcommon.SanitizeDevinToolDescription(tool.Name, desc)
 		if desc != "" {
 			tBytes = protowire.AppendTag(tBytes, 2, protowire.BytesType)
 			tBytes = protowire.AppendString(tBytes, desc)
@@ -1147,13 +1152,21 @@ func BuildDevinUpstreamLogBody(
 
 	var toolItems []DevinToolLogItem
 	for _, t := range tools {
+		if t.Name == "" || translatorcommon.IsDevinCodexAppAutomationUpdate("", t.Name) {
+			continue
+		}
+		desc := t.Description
+		if strings.Contains(desc, "Takes a task_id parameter identifying the task") {
+			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
+		}
+		desc = translatorcommon.SanitizeDevinToolDescription(t.Name, desc)
 		var params json.RawMessage
 		if len(t.Parameters) > 0 && json.Valid(t.Parameters) {
 			params = json.RawMessage(t.Parameters)
 		}
 		toolItems = append(toolItems, DevinToolLogItem{
 			Name:        t.Name,
-			Description: t.Description,
+			Description: desc,
 			Parameters:  params,
 		})
 	}

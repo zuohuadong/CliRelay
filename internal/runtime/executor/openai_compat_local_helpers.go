@@ -12,11 +12,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 )
 
@@ -138,7 +138,9 @@ func (e *OpenAICompatExecutor) useResponsesEndpoint(auth *cliproxyauth.Auth, opt
 			return true
 		}
 	}
-	compat := e.resolveCompatConfig(auth)
+	// Home model options are request-scoped; this probe path has no request, so only
+	// the credential-owned options participate in resolution.
+	compat := e.resolveCompatConfig(auth, cliproxyexecutor.Request{})
 	if compat == nil {
 		return false
 	}
@@ -438,7 +440,9 @@ func (e *OpenAICompatExecutor) applyIdentityFingerprint(req *http.Request, auth 
 		fingerprint = strings.TrimSpace(strings.ToLower(auth.Attributes["identity_fingerprint"]))
 	}
 	if fingerprint == "" {
-		if compat := e.resolveCompatConfig(auth); compat != nil {
+		// Home model options are request-scoped; header shaping happens before a request
+		// is available, so only credential-owned options participate in resolution.
+		if compat := e.resolveCompatConfig(auth, cliproxyexecutor.Request{}); compat != nil {
 			fingerprint = strings.TrimSpace(strings.ToLower(compat.IdentityFingerprint))
 		}
 	}

@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/dop251/goja v0.0.0-20260607120635-348e6bea910d
-	github.com/router-for-me/CLIProxyAPI/v7 v7.1.55
+	github.com/router-for-me/CLIProxyAPI/v8 v7.1.55
 	github.com/sirupsen/logrus v1.9.4
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -17,4 +17,4 @@ require (
 	golang.org/x/text v0.31.0 // indirect
 )
 
-replace github.com/router-for-me/CLIProxyAPI/v7 => ../../..
+replace github.com/router-for-me/CLIProxyAPI/v8 => ../../..

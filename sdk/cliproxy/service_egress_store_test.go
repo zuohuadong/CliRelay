@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/egress"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 func TestBuilderUsesDedicatedLockedEgressDatabase(t *testing.T) {

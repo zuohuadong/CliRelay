@@ -4,8 +4,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v7/internal/routing"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v8/internal/routing"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // FilterModelsByAccess filters available models by the API key's direct model allow-list,

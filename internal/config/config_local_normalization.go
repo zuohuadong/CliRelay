@@ -743,3 +743,41 @@ func removeLegacyAmpKeys(root *yaml.Node) {
 	removeMapKey(root, "amp-restrict-management-to-localhost")
 	removeMapKey(root, "amp-model-mappings")
 }
+
+// v8LocalRootSections lists CLI Relay-only top-level configuration sections.
+// Upstream's v8 layout has no counterpart for them, so their existing spelling is
+// the v8 spelling: they stay valid input for v8 writes and are left untouched by
+// v8 migration instead of being archived as comments.
+var v8LocalRootSections = []string{
+	"agnes",
+	"astron-code",
+	"bedrock-api-key",
+	"bigmodel-coding",
+	"billing-multipliers",
+	"capacity-same-account-retries",
+	"context-retrieval",
+	"egress-network",
+	"identity-fingerprint",
+	"kimi-header-defaults",
+	"mcp-proxy",
+	"model-overrides",
+	"multimodal-adapters",
+	"oauth-allowed-models",
+	"oauth-user-agent",
+	"opencode-go-api-key",
+	"openrouter-api-key",
+	"openrouter-sync-enabled",
+	"openrouter-sync-interval-minutes",
+	"provider-preferences",
+	"reject-unconfigured-models",
+	"request-log-body",
+	"request-policies",
+	"responses-max-inbound-bytes",
+	"responses-memory-budget-bytes",
+	"responses-websocket-max-connections",
+	"responses-websocket-max-session-bytes",
+	"responses-websocket-max-turn-output-bytes",
+	"responses-websocket-memory-budget-bytes",
+	"responses-websocket-tool-cache-bytes",
+	"video-storage",
+}

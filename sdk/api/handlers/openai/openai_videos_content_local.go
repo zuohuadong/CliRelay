@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	internalvideo "github.com/router-for-me/CLIProxyAPI/v7/internal/video"
+	internalvideo "github.com/router-for-me/CLIProxyAPI/v8/internal/video"
 )
 
 func (h *OpenAIAPIHandler) durableVideoJob(ctx context.Context, videoID string) (internalvideo.Job, bool) {

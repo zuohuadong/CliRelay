@@ -49,6 +49,7 @@ docs/*
 !docs/codex-socks-egress_CN.md
 !docs/video-generation.md
 !docs/video-generation_CN.md
+!docs/management-api-v8.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md

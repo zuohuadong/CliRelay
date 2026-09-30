@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	pscpu "github.com/shirou/gopsutil/v3/cpu"
 	psdisk "github.com/shirou/gopsutil/v3/disk"
 	psmem "github.com/shirou/gopsutil/v3/mem"

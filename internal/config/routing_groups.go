@@ -3,7 +3,7 @@ package config
 import (
 	"strings"
 
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v7/internal/routing"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v8/internal/routing"
 )
 
 type ChannelGroupMatch struct {
@@ -99,7 +99,9 @@ func (cfg *Config) SanitizeRouting() {
 	if cfg == nil {
 		return
 	}
-	cfg.Routing.Strategy = NormalizeRoutingStrategy(cfg.Routing.Strategy)
+	// An absent strategy stays absent so an unset routing block keeps its zero
+	// value; runtime consumers already default to round-robin.
+	cfg.Routing.Strategy = normalizeOptionalRoutingStrategy(cfg.Routing.Strategy)
 
 	seenGroups := make(map[string]struct{}, len(cfg.Routing.ChannelGroups))
 	groups := make([]RoutingChannelGroup, 0, len(cfg.Routing.ChannelGroups))
@@ -126,6 +128,11 @@ func (cfg *Config) SanitizeRouting() {
 		seenGroups[group.Name] = struct{}{}
 		groups = append(groups, group)
 	}
+	// An empty result keeps the collection absent so an unset routing block
+	// still compares equal to its zero value.
+	if len(groups) == 0 {
+		groups = nil
+	}
 	cfg.Routing.ChannelGroups = groups
 
 	seenPaths := make(map[string]struct{}, len(cfg.Routing.PathRoutes))
@@ -143,6 +150,9 @@ func (cfg *Config) SanitizeRouting() {
 		}
 		seenPaths[route.Path] = struct{}{}
 		pathRoutes = append(pathRoutes, route)
+	}
+	if len(pathRoutes) == 0 {
+		pathRoutes = nil
 	}
 	cfg.Routing.PathRoutes = pathRoutes
 
@@ -183,6 +193,9 @@ func (cfg *Config) SanitizeRouting() {
 		}
 		route.Routes = branches
 		routes = append(routes, route)
+	}
+	if len(routes) == 0 {
+		routes = nil
 	}
 	cfg.Routing.ModelRoutes = routes
 }

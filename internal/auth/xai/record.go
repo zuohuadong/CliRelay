@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // OAuthRecordFromTokenStorage converts an xAI OAuth token into the canonical

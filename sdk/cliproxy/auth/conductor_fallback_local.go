@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	internalegress "github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	internalegress "github.com/router-for-me/CLIProxyAPI/v8/internal/egress"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 )
 
 func shouldStopMixedProviderFallback(provider, routeModel string, err error) bool {

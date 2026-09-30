@@ -203,7 +203,9 @@ func populateManagedOAuthIdentity(identity *managedOAuthIdentity, metadata map[s
 	if claimEmail := claims.GetUserEmail(); claimEmail != "" {
 		identity.email = claimEmail
 	}
-	if claimPlanType := claims.GetPlanType(); claimPlanType != "" {
+	// Read the raw claim here: an absent plan_type must stay empty so the
+	// normalizer can report it as "unknown" instead of the default plan.
+	if claimPlanType := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); claimPlanType != "" {
 		identity.planType = claimPlanType
 	}
 	if identity.accountID == "" {

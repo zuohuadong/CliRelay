@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
-	kimiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
+	kimiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kimi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/egress"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -341,22 +341,27 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 		if ptRaw, ok := metadata["plan_type"].(string); ok && strings.TrimSpace(ptRaw) != "" {
 			a.Attributes["plan_type"] = strings.TrimSpace(ptRaw)
 		} else {
-			planTokens := make([]string, 0, 2)
+			planType := ""
+			// 部分凭证文件只保存 access_token（无 id_token），其 JWT 同样携带
+			// chatgpt_plan_type，套餐类型应从 access_token 回退解析。
 			for _, key := range []string{"id_token", "access_token"} {
-				if raw, ok := metadata[key].(string); ok && strings.TrimSpace(raw) != "" {
-					planTokens = append(planTokens, raw)
+				raw, ok := metadata[key].(string)
+				if !ok || strings.TrimSpace(raw) == "" {
+					continue
 				}
-			}
-			for _, token := range planTokens {
-				claims, errParse := codex.ParseJWTToken(token)
+				claims, errParse := codex.ParseJWTToken(raw)
 				if errParse != nil || claims == nil {
 					continue
 				}
-				if pt := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); pt != "" {
-					a.Attributes["plan_type"] = pt
+				if pt := claims.GetPlanType(); pt != "" {
+					planType = pt
 					break
 				}
 			}
+			if planType == "" {
+				planType = codex.DefaultPlanType
+			}
+			a.Attributes["plan_type"] = planType
 		}
 		if accountID := codex.AccountIDFromMetadata(metadata); accountID != "" {
 			if identity, errIdentity := egress.StableIdentity(accountID); errIdentity == nil {

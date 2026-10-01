@@ -98,6 +98,12 @@ var claudeManagedBetaSet = func() map[string]bool {
 		claudeCodeBeta,
 		claudeContext1MBeta,
 		claudeMidConvSystemBeta,
+		claudePerTurnControlBeta,
+		claudePerTurnTimingBeta,
+		claudeMidConvToolChangesBeta,
+		claudeInlineToolsBeta,
+		claudeMidConvSystemClearAtBeta,
+		claudeDangerousToolUseBeta,
 		claudeAdvisorToolBeta,
 		claudeAdvancedToolUseBeta,
 		claudeEffortBeta,
@@ -105,7 +111,10 @@ var claudeManagedBetaSet = func() map[string]bool {
 		claudeFallbackCreditBeta,
 		claudeStructuredOutputsBeta,
 		claudeThinkingDisplayUpdatesBeta,
+		claudeThinkingBindingBeta,
+		claudeThinkingResumptionBeta,
 		claudeExtendedCacheTTLBeta,
+		claudePromptCachingEvictBeta,
 		claudeCacheDiagnosisBeta,
 		claudeRedactThinkingBeta,
 		claudeAFKModeBeta,
@@ -144,22 +153,31 @@ func isManagedClaudeBeta(beta string) bool {
 //	 7 context-management-2025-06-27
 //	 8 prompt-caching-scope-2026-01-05
 //	 9 mid-conversation-system-2026-04-07  models accepting a role=system turn
-//	10 advisor-tool-2026-03-01             requests declaring advisor tools or requesting advisor beta
-//	11 advanced-tool-use-2025-11-20       requests using tool search or another advanced tool-use feature
-//	12 effort-2025-11-24                  effort-supporting models with active thinking
-//	13 server-side-fallback-2026-06-01    requests with fallbacks or requested
-//	14 fallback-credit-2026-06-01         OAuth credentials
-//	15 structured-outputs-2025-12-15      structured output requests
-//	16 thinking-display-updates-2026-08-18 requests with thinking.display=updates
-//	17 fast-mode-2026-02-01               speed:fast requests only
-//	18 afk-mode-2026-01-31                auto-mode sessions, forwarded when the caller sends it
-//	19 extended-cache-ttl-2025-04-11      OAuth credentials (omitted on subagent & probe)
-//	20 cache-diagnosis-2026-04-07         requests with diagnostics only
+//	10 per-turn-control-2026-07-01        opus-5-5 and fable-5-1, or requested
+//	11 timing-2026-09-09                  per-turn timing body, or requested
+//	12 mid-conversation-tool-changes-2026-07-01  same models as mid-conversation-system
+//	13 inline-tools-2026-09-15            inline tool_addition blocks, or requested
+//	14 advisor-tool-2026-03-01            requests declaring advisor tools or requesting advisor beta
+//	15 advanced-tool-use-2025-11-20       requests using tool search or another advanced tool-use feature
+//	16 mid-conversation-system-clear-at-2026-08-21  messages with clear_at, or requested
+//	17 dangerous-tool-use-2026-09-03      safeguards body, or requested
+//	18 effort-2025-11-24                  effort-supporting models with active thinking
+//	19 server-side-fallback-2026-06-01    requests with fallbacks or requested
+//	20 fallback-credit-2026-06-01         requests with fallback tokens, fallbacks, or requested
+//	21 structured-outputs-2025-12-15      structured output requests
+//	22 thinking-binding-controls-2026-08-01  thinking.block_binding, or requested
+//	23 thinking-display-updates-2026-08-18 requests with thinking.display=updates
+//	24 thinking-resumption-2026-07-17     requested only; the 2.1.280 flag defaults off
+//	25 fast-mode-2026-02-01               speed:fast requests only
+//	26 afk-mode-2026-01-31                auto-mode sessions, forwarded when the caller sends it
+//	27 extended-cache-ttl-2025-04-11      OAuth credentials (omitted on subagent & probe)
+//	28 prompt-caching-evict-2026-05-12    evict_on_complete, or requested
+//	29 cache-diagnosis-2026-04-07         requests with diagnostics only
 //
 // An empty body keeps the optimistic role=system default, matching the cloaking
 // policy for unknown and future model IDs.
 func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool) string {
-	betas := make([]string, 0, len(claudeCodeCLIConstantBetas)+len(claudeCodeTrailingBetas)+9)
+	betas := make([]string, 0, len(claudeCodeCLIConstantBetas)+len(claudeCodeTrailingBetas)+10)
 	betas = append(betas, claudeCodeBeta)
 	if oauthToken {
 		betas = append(betas, claudeOAuthBeta)
@@ -255,6 +273,9 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 		if includeExtended {
 			betas = append(betas, claudeExtendedCacheTTLBeta)
 		}
+	}
+	if requested[claudePromptCachingEvictBeta] || bytes.Contains(body, []byte(`"evict_on_complete"`)) {
+		betas = append(betas, claudePromptCachingEvictBeta)
 	}
 	if diagnostics := gjson.GetBytes(body, "diagnostics"); diagnostics.IsObject() {
 		betas = append(betas, claudeCacheDiagnosisBeta)
@@ -1184,8 +1205,9 @@ func applyClaudeHeadersWithNativeProfile(
 		// are dropped: appending them to the measured baseline produces a shape
 		// real Claude Code never sends. Caller betas the proxy does not manage
 		// are newer-client features the pinned profile predates; dropping them
-		// fails those requests outright (per-turn effort directives need
-		// per-turn-control-2026-07-01), so they are forwarded (#5738). Custom
+		// fails those requests outright, so they are forwarded (#5738).
+		// per-turn-control-2026-07-01 is assembled for models that send it.
+		// Custom
 		// gateways keep all caller extensions.
 		if !confirmedClaudeCode && incomingBetas != "" {
 			for _, beta := range strings.Split(incomingBetas, ",") {

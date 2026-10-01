@@ -625,17 +625,16 @@ func hasThinkingConfig(config ThinkingConfig) bool {
 // precedence over a suffix because they describe the source turn's intent;
 // otherwise a valid suffix overrides the top-level setting.
 func ExtractReasoningEffort(body []byte, provider, model string) string {
-	if effort := reasoningEffortFromSuffix(ParseSuffix(model)); effort != "" {
-		return effort
-	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if isResponsesFormat(provider) {
 		if effort := reasoningEffortFromConfig(extractConfigurationUpdateConfig(body)); effort != "" {
 			return effort
 		}
 	}
+	if effort := reasoningEffortFromSuffix(ParseSuffix(model)); effort != "" {
+		return effort
+	}
 
-	provider = strings.ToLower(strings.TrimSpace(provider))
 	config := extractThinkingConfigForUsage(body, provider)
 	if !hasThinkingConfig(config) {
 		switch provider {

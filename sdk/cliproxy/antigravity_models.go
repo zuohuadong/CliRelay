@@ -39,12 +39,13 @@ const (
 )
 
 type antigravityCapabilityCacheEntry struct {
-	hints     antigravityModelCapabilityHints
+	body      []byte
 	expiresAt time.Time
 }
 
 type antigravityProbeResult struct {
 	hints  antigravityModelCapabilityHints
+	models []*ModelInfo
 	status antigravityProbeStatus
 	token  string
 }
@@ -101,19 +102,22 @@ func (h antigravityModelCapabilityHints) clone() antigravityModelCapabilityHints
 	return antigravityModelCapabilityHints{WebSearchModelIDs: cloned}
 }
 
-func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Context, auth *coreauth.Auth) antigravityModelCapabilityHints {
+// fetchAntigravityModelsForAuth resolves the Antigravity model catalog and capability hints for one
+// auth. It reuses the shared capability-probe cache so concurrent registrations do not fan out, and it
+// never blocks model registration: callers on the registration path run it from a background probe.
+func (s *Service) fetchAntigravityModelsForAuth(ctx context.Context, auth *coreauth.Auth) antigravityFetchedModelsResult {
 	if auth == nil || auth.Metadata == nil {
-		return antigravityModelCapabilityHints{}
+		return antigravityFetchedModelsResult{}
 	}
 	accessToken, _ := auth.Metadata["access_token"].(string)
 	accessToken = strings.TrimSpace(accessToken)
 	if accessToken == "" {
-		return antigravityModelCapabilityHints{}
+		return antigravityFetchedModelsResult{}
 	}
 
 	baseURLs := antigravityModelBaseURLs(auth)
 	if len(baseURLs) == 0 {
-		return antigravityModelCapabilityHints{}
+		return antigravityFetchedModelsResult{}
 	}
 
 	proxyURL := s.antigravityModelFetchProxyURL(auth)
@@ -125,12 +129,12 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 	antigravityCapabilityMu.RLock()
 	if failExpiry, failed := antigravityAuthFailureCache[authFailKey]; failed && now.Before(failExpiry) {
 		antigravityCapabilityMu.RUnlock()
-		return antigravityModelCapabilityHints{}
+		return antigravityFetchedModelsResult{}
 	}
 	if entry, ok := antigravityCapabilityCache[cacheKey]; ok && now.Before(entry.expiresAt) {
-		hints := entry.hints.clone()
+		body := append([]byte(nil), entry.body...)
 		antigravityCapabilityMu.RUnlock()
-		return hints
+		return parseAntigravityFetchedModels(body)
 	}
 	antigravityCapabilityMu.RUnlock()
 
@@ -141,13 +145,14 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 		nowInside := antigravityNowFunc()
 		antigravityCapabilityMu.RLock()
 		if entry, ok := antigravityCapabilityCache[cacheKey]; ok && nowInside.Before(entry.expiresAt) {
-			hints := entry.hints.clone()
+			body := append([]byte(nil), entry.body...)
 			antigravityCapabilityMu.RUnlock()
-			return antigravityProbeResult{hints: hints, status: antigravityProbeStatusSuccess, token: accessToken}, nil
+			parsed := parseAntigravityFetchedModels(body)
+			return antigravityProbeResult{hints: parsed.Hints, models: parsed.Models, status: antigravityProbeStatusSuccess, token: accessToken}, nil
 		}
 		antigravityCapabilityMu.RUnlock()
 
-		hints, status := s.probeAntigravityModelCapabilityHints(ctx, auth, baseURLs, proxyURL, accessToken)
+		body, hints, models, status := s.probeAntigravityModelCapabilityHints(ctx, auth, baseURLs, proxyURL, accessToken)
 		if status == antigravityProbeStatusSuccess || status == antigravityProbeStatusTransientError {
 			if status != antigravityProbeStatusTransientError || ctx == nil || ctx.Err() == nil {
 				ttl := antigravityCapabilityCacheTTL
@@ -157,93 +162,44 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 				antigravityCapabilityMu.Lock()
 				purgeExpiredAntigravityCacheLocked(nowInside)
 				antigravityCapabilityCache[cacheKey] = antigravityCapabilityCacheEntry{
-					hints:     hints.clone(),
+					body:      append([]byte(nil), body...),
 					expiresAt: antigravityNowFunc().Add(ttl),
 				}
 				antigravityCapabilityMu.Unlock()
 			}
 		}
-		return antigravityProbeResult{hints: hints, status: status, token: accessToken}, nil
+		return antigravityProbeResult{hints: hints, models: models, status: status, token: accessToken}, nil
 	})
 	if errDo != nil || res == nil {
-		return antigravityModelCapabilityHints{}
+		return antigravityFetchedModelsResult{}
 	}
 	result, ok := res.(antigravityProbeResult)
 	if !ok {
-		return antigravityModelCapabilityHints{}
+		return antigravityFetchedModelsResult{}
 	}
 
 	if result.status == antigravityProbeStatusAuthError {
 		if result.token != accessToken {
 			// The shared probe failed with an auth error from another account's token.
 			// Re-try with our own account's token.
-			return s.fetchAntigravityModelCapabilityHintsForAuth(ctx, auth)
+			return s.fetchAntigravityModelsForAuth(ctx, auth)
 		}
 		// Our own token failed with 401/403. Record backoff for this account/token.
 		antigravityCapabilityMu.Lock()
 		purgeExpiredAntigravityCacheLocked(now)
 		antigravityAuthFailureCache[authFailKey] = antigravityNowFunc().Add(antigravityCapabilityFailureTTL)
 		antigravityCapabilityMu.Unlock()
-		return antigravityModelCapabilityHints{}
+		return antigravityFetchedModelsResult{}
 	}
 
-	return result.hints.clone()
+	return antigravityFetchedModelsResult{Models: result.models, Hints: result.hints.clone()}
 }
 
-func (s *Service) fetchAntigravityModelsForAuth(ctx context.Context, auth *coreauth.Auth) antigravityFetchedModelsResult {
-	if auth == nil || auth.Metadata == nil {
-		return antigravityFetchedModelsResult{}
-	}
-	accessToken, _ := auth.Metadata["access_token"].(string)
-	accessToken = strings.TrimSpace(accessToken)
-	if accessToken == "" {
-		return antigravityFetchedModelsResult{}
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	baseURLs := antigravityModelBaseURLs(auth)
-	if len(baseURLs) == 0 {
-		return antigravityFetchedModelsResult{}
-	}
-	proxyURL := s.antigravityModelFetchProxyURL(auth)
-	client := &http.Client{}
-	if transport, _, errProxy := proxyutil.BuildHTTPTransport(proxyURL); errProxy == nil && transport != nil {
-		client.Transport = transport
-	}
-	payload := antigravityModelsRequestPayload(auth)
-	for _, baseURL := range baseURLs {
-		req, errReq := http.NewRequestWithContext(fetchCtx, http.MethodPost, strings.TrimRight(baseURL, "/")+antigravityModelsPath, strings.NewReader(payload))
-		if errReq != nil {
-			continue
-		}
-		req.Close = true
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+accessToken)
-		req.Header.Set("User-Agent", misc.AntigravityUserAgent())
-		resp, errDo := client.Do(req)
-		if errDo != nil {
-			continue
-		}
-		body, errRead := io.ReadAll(resp.Body)
-		if errClose := resp.Body.Close(); errClose != nil {
-			log.Debugf("antigravity model fetch: close response body: %v", errClose)
-		}
-		if errRead != nil || resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-			continue
-		}
-		result := parseAntigravityFetchedModels(body)
-		if len(result.Models) > 0 || len(result.Hints.WebSearchModelIDs) > 0 {
-			return result
-		}
-	}
-	return antigravityFetchedModelsResult{}
+func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Context, auth *coreauth.Auth) antigravityModelCapabilityHints {
+	return s.fetchAntigravityModelsForAuth(ctx, auth).Hints
 }
 
-func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth *coreauth.Auth, baseURLs []string, proxyURL string, accessToken string) (antigravityModelCapabilityHints, antigravityProbeStatus) {
+func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth *coreauth.Auth, baseURLs []string, proxyURL string, accessToken string) ([]byte, antigravityModelCapabilityHints, []*ModelInfo, antigravityProbeStatus) {
 	probeCtx := context.Background()
 	var cancel context.CancelFunc
 	probeCtx, cancel = context.WithTimeout(probeCtx, antigravityCapabilityProbeTimeout)
@@ -261,31 +217,33 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
 	}
 
 	type probeResult struct {
+		body   []byte
 		hints  antigravityModelCapabilityHints
+		models []*ModelInfo
 		status antigravityProbeStatus
 	}
 	ch := make(chan probeResult, len(baseURLs))
 	for _, baseURL := range baseURLs {
 		go func(url string) {
-			h, status := s.fetchAntigravityModelHintsFromURL(probeCtx, client, url, accessToken)
-			ch <- probeResult{hints: h, status: status}
+			body, h, models, status := s.fetchAntigravityModelHintsFromURL(probeCtx, client, url, accessToken)
+			ch <- probeResult{body: body, hints: h, models: models, status: status}
 		}(baseURL)
 	}
 
-	var firstSuccess antigravityModelCapabilityHints
+	var firstSuccess probeResult
 	var hadSuccess bool
 	overallStatus := antigravityProbeStatusTransientError
 	for i := 0; i < len(baseURLs); i++ {
 		select {
 		case <-probeCtx.Done():
-			return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
+			return nil, antigravityModelCapabilityHints{}, nil, antigravityProbeStatusTransientError
 		case res := <-ch:
 			if res.status == antigravityProbeStatusSuccess {
 				if len(res.hints.WebSearchModelIDs) > 0 {
-					return res.hints, antigravityProbeStatusSuccess
+					return res.body, res.hints, res.models, antigravityProbeStatusSuccess
 				}
 				if !hadSuccess {
-					firstSuccess = res.hints
+					firstSuccess = res
 					hadSuccess = true
 				}
 			} else if res.status == antigravityProbeStatusAuthError {
@@ -294,15 +252,15 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
 		}
 	}
 	if hadSuccess {
-		return firstSuccess, antigravityProbeStatusSuccess
+		return firstSuccess.body, firstSuccess.hints, firstSuccess.models, antigravityProbeStatusSuccess
 	}
-	return antigravityModelCapabilityHints{}, overallStatus
+	return nil, antigravityModelCapabilityHints{}, nil, overallStatus
 }
 
-func (s *Service) fetchAntigravityModelHintsFromURL(ctx context.Context, client *http.Client, baseURL string, accessToken string) (antigravityModelCapabilityHints, antigravityProbeStatus) {
+func (s *Service) fetchAntigravityModelHintsFromURL(ctx context.Context, client *http.Client, baseURL string, accessToken string) ([]byte, antigravityModelCapabilityHints, []*ModelInfo, antigravityProbeStatus) {
 	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+antigravityModelsPath, strings.NewReader(`{}`))
 	if errReq != nil {
-		return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
+		return nil, antigravityModelCapabilityHints{}, nil, antigravityProbeStatusTransientError
 	}
 	req.Close = true
 	req.Header.Set("Content-Type", "application/json")
@@ -311,7 +269,7 @@ func (s *Service) fetchAntigravityModelHintsFromURL(ctx context.Context, client 
 
 	resp, errDo := client.Do(req)
 	if errDo != nil {
-		return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
+		return nil, antigravityModelCapabilityHints{}, nil, antigravityProbeStatusTransientError
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -319,20 +277,20 @@ func (s *Service) fetchAntigravityModelHintsFromURL(ctx context.Context, client 
 		}
 	}()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return antigravityModelCapabilityHints{}, antigravityProbeStatusAuthError
+		return nil, antigravityModelCapabilityHints{}, nil, antigravityProbeStatusAuthError
 	}
 	body, errRead := io.ReadAll(resp.Body)
 	if errRead != nil {
-		return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
+		return nil, antigravityModelCapabilityHints{}, nil, antigravityProbeStatusTransientError
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
+		return nil, antigravityModelCapabilityHints{}, nil, antigravityProbeStatusTransientError
 	}
-	hints, ok := parseAntigravityModelCapabilityHints(body)
-	if !ok {
-		return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
+	if _, ok := parseAntigravityModelCapabilityHints(body); !ok {
+		return nil, antigravityModelCapabilityHints{}, nil, antigravityProbeStatusTransientError
 	}
-	return hints, antigravityProbeStatusSuccess
+	parsed := parseAntigravityFetchedModels(body)
+	return body, parsed.Hints, parsed.Models, antigravityProbeStatusSuccess
 }
 
 func (s *Service) antigravityModelFetchProxyURL(auth *coreauth.Auth) string {
@@ -390,50 +348,6 @@ func resolveAntigravityModelBaseURL(auth *coreauth.Auth) string {
 		}
 	}
 	return ""
-}
-
-func antigravityModelsRequestPayload(auth *coreauth.Auth) string {
-	projectID := ""
-	if auth != nil {
-		if auth.Metadata != nil {
-			projectID = antigravityMetadataString(auth.Metadata, "project_id")
-			if projectID == "" {
-				projectID = antigravityMetadataString(auth.Metadata, "project")
-			}
-		}
-		if projectID == "" && auth.Attributes != nil {
-			projectID = strings.TrimSpace(auth.Attributes["project_id"])
-			if projectID == "" {
-				projectID = strings.TrimSpace(auth.Attributes["project"])
-			}
-		}
-	}
-	if projectID == "" {
-		return `{}`
-	}
-	payload, err := json.Marshal(map[string]string{"project": projectID})
-	if err != nil {
-		return `{}`
-	}
-	return string(payload)
-}
-
-func antigravityMetadataString(metadata map[string]any, key string) string {
-	if len(metadata) == 0 {
-		return ""
-	}
-	value, ok := metadata[key]
-	if !ok {
-		return ""
-	}
-	switch typed := value.(type) {
-	case string:
-		return strings.TrimSpace(typed)
-	case json.Number:
-		return strings.TrimSpace(typed.String())
-	default:
-		return strings.TrimSpace(fmt.Sprint(typed))
-	}
 }
 
 func parseAntigravityFetchedModels(body []byte) antigravityFetchedModelsResult {
@@ -659,8 +573,9 @@ func (s *Service) asyncProbeAntigravityCapabilities(ctx context.Context, auth *c
 		if s != nil {
 			defer s.antigravityProbeWg.Done()
 		}
-		hints := s.fetchAntigravityModelCapabilityHintsForAuth(probeCtx, authClone)
-		if len(hints.WebSearchModelIDs) == 0 {
+		result := s.fetchAntigravityModelsForAuth(probeCtx, authClone)
+		hints := result.Hints
+		if len(hints.WebSearchModelIDs) == 0 && len(result.Models) == 0 {
 			return
 		}
 		if s == nil {
@@ -678,6 +593,23 @@ func (s *Service) asyncProbeAntigravityCapabilities(ctx context.Context, auth *c
 				return
 			}
 		}
+
+		// Fetched models that are not part of the static catalog (e.g. newly published Antigravity
+		// models) are registered here rather than on the registration hot path, so auth registration
+		// never blocks on the network probe. Skip the refresh when the registration already advanced.
+		if len(result.Models) > 0 && GlobalModelRegistry().ClientRegistrationEpoch(authClone.ID) == expectedRegEpoch {
+			merged := mergeAntigravityFetchedModels(registry.GetAntigravityModels(), result.Models, hints)
+			if len(merged) > 0 {
+				merged = s.appendPluginModels(providerKey, merged)
+				s.registerResolvedModelsForAuth(authClone, providerKey, applyModelPrefixes(merged, authClone.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+				if s.coreManager != nil {
+					s.coreManager.ReconcileRegistryModelStates(context.Background(), authClone.ID)
+					s.coreManager.RefreshSchedulerEntry(authClone.ID)
+				}
+				return
+			}
+		}
+
 		aliasMap := s.buildAntigravityReverseAliasMap(authClone)
 
 		// Atomically update capabilities on existing registered models if epoch matches

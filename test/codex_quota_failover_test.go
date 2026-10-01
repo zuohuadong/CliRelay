@@ -151,7 +151,7 @@ func TestCodexModelLevelCoolingPreservesSiblingModel(t *testing.T) {
 			const model, siblingModel = "gpt-5.3-codex-spark", "gpt-5.6-sol"
 			const created = `{"type":"response.created","response":{"id":"quota-test-response"}}`
 			const quota = `{"type":"usage_limit_reached","message":"You've hit your usage limit.","resets_in_seconds":3600}`
-			const completed = `{"type":"response.completed","response":{"id":"quota-test-success","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`
+			const completed = `{"type":"response.completed","response":{"id":"quota-test-success","status":"completed","output":[{"id":"msg_quota_test","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`
 			attempts := make(chan string, 8)
 			upgrader := websocket.Upgrader{}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -491,6 +491,18 @@ func TestPublicAPIKeyBillingReturnsJSONByDefault(t *testing.T) {
 	h := newUsageContractTestHandler(t)
 	_, _ = h.currentAPIKeyEntries()
 
+	// 固定账期锚点，避免默认的“自然月”账期在月初把 25 小时前的日志划到上一账期，
+	// 使当前账期计数依赖运行日期。
+	db, ok := h.openAPIKeysDB()
+	if !ok {
+		t.Fatal("open api keys db")
+	}
+	anchor := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
+	if _, err := db.Exec(`update api_keys set billing_cycle_anchor = ? where key = ?`, anchor, "sk-a"); err != nil {
+		t.Fatalf("update api key billing anchor: %v", err)
+	}
+	_ = db.Close()
+
 	status, payload := performUsageContractRequest(t, http.MethodGet, "/v0/management/public/api-key-billing?api_key=sk-a", nil, nil, h.GetPublicAPIKeyBilling)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want %d", status, http.StatusOK)

@@ -11,7 +11,7 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-func sanitizeOpenAIResponsesReasoningItems(ctx context.Context, provider string, body []byte) []byte {
+func sanitizeOpenAIResponsesReasoningItems(ctx context.Context, provider string, body []byte, isCompat bool) []byte {
 	input := gjson.GetBytes(body, "input")
 	if !input.Exists() || !input.IsArray() {
 		return body
@@ -46,7 +46,7 @@ func sanitizeOpenAIResponsesReasoningItems(ctx context.Context, provider string,
 			return body
 		}
 	}
-	return sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, provider, updated)
+	return sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, provider, updated, isCompat)
 }
 
 func invalidGPTReasoningEncryptedContentReason(encryptedContent gjson.Result) string {

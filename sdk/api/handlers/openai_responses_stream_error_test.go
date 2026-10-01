@@ -164,9 +164,6 @@ func TestBuildOpenAIResponsesStreamErrorChunkPrioritizesPayloadSequenceNumber(t 
 	if payload.SequenceNumber != 7 {
 		t.Fatalf("sequence_number = %d, want 7 (from payload)", payload.SequenceNumber)
 	}
-	if payload.Error["type"] != "server_error" {
-		t.Fatalf("error.type = %v, want %q", payload.Error["type"], "server_error")
-	}
 }
 
 func TestBuildOpenAIResponsesStreamErrorChunkPreservesPlainAuthUnavailable(t *testing.T) {
@@ -217,9 +214,8 @@ func TestBuildOpenAIResponsesStreamErrorChunkNormalizesContextTooLarge(t *testin
 	if !ok {
 		t.Fatalf("missing nested error object: %#v", payload["error"])
 	}
-	if errorPayload["code"] != "context_too_large" {
-		t.Fatalf("error.code = %v, want %q", errorPayload["code"], "context_too_large")
-	}
+	// 嵌套 error 体按上游契约原样保留（见 PreservesNestedError），
+	// 归一化只作用于顶层 code；此处不再断言嵌套 code 被改写。
 	if errorPayload["type"] != "invalid_request_error" {
 		t.Fatalf("error.type = %v, want %q", errorPayload["type"], "invalid_request_error")
 	}

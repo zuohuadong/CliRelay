@@ -273,7 +273,8 @@ func claudeToolUseToInteractions(part gjson.Result) []byte {
 	step := []byte(`{"type":"function_call","name":"","arguments":{}}`)
 	step, _ = sjson.SetBytes(step, "name", part.Get("name").String())
 	if id := part.Get("id").String(); id != "" {
-		step, _ = sjson.SetBytes(step, "call_id", id)
+		// Interactions API: function_call 携带 id，function_result 用 call_id 引用它。
+		step, _ = sjson.SetBytes(step, "id", id)
 	}
 	input := part.Get("input")
 	if input.Exists() && input.IsObject() {

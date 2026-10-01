@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -16,18 +15,16 @@ func applyCodexFastModeServiceTier(auth *cliproxyauth.Auth, rawJSON []byte) []by
 		return rawJSON
 	}
 
-	normalized := rawJSON
-	if gjson.GetBytes(normalized, "service_tier").Exists() {
-		if updated, errDelete := sjson.DeleteBytes(normalized, "service_tier"); errDelete == nil {
-			normalized = updated
-		}
-	}
+	// The upstream contract lets a client-requested tier (for example Claude Code
+	// Fast, which the translator maps to service_tier=priority) flow through the
+	// body untouched. The fast-mode toggle is an additional operator override: it
+	// forces priority on when enabled and otherwise leaves the request alone.
 	if !codexFastModeEnabled(auth) {
-		return normalized
+		return rawJSON
 	}
-	updated, errSet := sjson.SetBytes(normalized, "service_tier", codexFastModeServiceTier)
+	updated, errSet := sjson.SetBytes(rawJSON, "service_tier", codexFastModeServiceTier)
 	if errSet != nil {
-		return normalized
+		return rawJSON
 	}
 	return updated
 }

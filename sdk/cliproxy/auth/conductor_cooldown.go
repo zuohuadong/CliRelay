@@ -270,29 +270,6 @@ func (m *Manager) cooldownDisabledForAuth(auth *Auth) bool {
 	return quotaCooldownDisabledForAuthWithConfig(auth, cfg)
 }
 
-// singleActiveProviderLocked reports whether all non-disabled auths route through
-// the same execution channel. The caller must hold m.mu.
-func (m *Manager) singleActiveProviderLocked() bool {
-	if m == nil {
-		return false
-	}
-	providers := make(map[string]struct{}, 2)
-	for _, auth := range m.auths {
-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
-			continue
-		}
-		provider := executorKeyFromAuth(auth)
-		if provider == "" {
-			continue
-		}
-		providers[provider] = struct{}{}
-		if len(providers) > 1 {
-			return false
-		}
-	}
-	return len(providers) == 1
-}
-
 func (m *Manager) clearDisabledCooldownStates(cfg *internalconfig.Config) bool {
 	if m == nil {
 		return false
@@ -832,7 +809,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		} else {
 			if modelKey != "" {
 				if !shouldSkipCredentialCooldown(result.Error) {
-					disableCooling := m.cooldownDisabledForAuth(auth) || m.singleActiveProviderLocked()
+					disableCooling := m.cooldownDisabledForAuth(auth)
 					if result.Error != nil && result.Error.Code == ErrorCodeForceCooldown {
 						disableCooling = false
 					}
@@ -853,6 +830,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					if isModelSupportResultError(result.Error) {
 						if disableCooling {
 							state.NextRetryAfter = time.Time{}
+						} else if result.RetryAfter != nil && *result.RetryAfter > 0 {
+							state.NextRetryAfter = now.Add(*result.RetryAfter)
 						} else {
 							next := now.Add(12 * time.Hour)
 							state.NextRetryAfter = next
@@ -888,6 +867,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						case 404:
 							if disableCooling {
 								state.NextRetryAfter = time.Time{}
+							} else if result.RetryAfter != nil && *result.RetryAfter > 0 {
+								state.NextRetryAfter = now.Add(*result.RetryAfter)
 							} else if isImplicitUpstreamNotFoundResultError(result.Error) {
 								// Cloudflare/边缘节点拦截返回的 404 无结构化模型未找到体，
 								// 按临时上游错误短冷却，避免模型状态被误判 12 小时不可用。
@@ -1029,7 +1010,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					updateAggregatedAvailability(auth, now)
 				}
 			} else {
-				disableCooling := m.cooldownDisabledForAuth(auth) || m.singleActiveProviderLocked()
+				disableCooling := m.cooldownDisabledForAuth(auth)
 				if result.Error != nil && result.Error.Code == ErrorCodeForceCooldown {
 					disableCooling = false
 				}
@@ -2443,6 +2424,8 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.StatusMessage = "not_found"
 			if disableCooling {
 				auth.NextRetryAfter = time.Time{}
+			} else if retryAfter != nil && *retryAfter > 0 {
+				auth.NextRetryAfter = now.Add(*retryAfter)
 			} else if isImplicitUpstreamNotFoundResultError(resultErr) {
 				auth.StatusMessage = "implicit upstream 404"
 				auth.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)

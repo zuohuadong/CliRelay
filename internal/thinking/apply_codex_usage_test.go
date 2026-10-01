@@ -105,12 +105,20 @@ func TestExtractCodexReasoningEffortWithConfigurationUpdate(t *testing.T) {
 			wantTranslatedEffort: "xhigh",
 		},
 		{
-			name:                 "model suffix takes precedence over configuration_update for request effort",
+			name:                 "source configuration_update takes precedence over suffix for request effort",
 			provider:             "codex",
 			model:                "gpt-6-astra(high)",
 			body:                 `{"model":"gpt-6-astra","reasoning":{"effort":"xhigh"},"input":[{"type":"configuration_update","reasoning":{"effort":"low"}}]}`,
-			wantRequestEffort:    "high",
+			wantRequestEffort:    "low",
 			wantTranslatedEffort: "low",
+		},
+		{
+			name:                 "suffix takes precedence over top-level without updates",
+			provider:             "openai-response",
+			model:                "gpt-6-astra(high)",
+			body:                 `{"reasoning":{"effort":"xhigh"},"input":[{"type":"configuration_update","tools":[]}]}`,
+			wantRequestEffort:    "high",
+			wantTranslatedEffort: "xhigh",
 		},
 	}
 

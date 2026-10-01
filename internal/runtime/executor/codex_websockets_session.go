@@ -75,6 +75,13 @@ type codexWebsocketSession struct {
 
 	readerConn *websocket.Conn
 
+	// pendingReadMu guards a terminal read that arrived before any consumer
+	// activated a channel. Without it a connection that dies during the
+	// handshake window would leave the next reader blocked forever.
+	pendingReadMu   sync.Mutex
+	pendingReadConn *websocket.Conn
+	pendingRead     *codexWebsocketRead
+
 	upstreamDisconnectOnce    sync.Once
 	upstreamDisconnectCh      chan error
 	upstreamDisconnectErrMu   sync.RWMutex
@@ -119,7 +126,41 @@ func (s *codexWebsocketSession) activate(conn *websocket.Conn) chan codexWebsock
 	}
 	ch := make(chan codexWebsocketRead, 4096)
 	s.setActive(conn, ch)
+	if event := s.takePendingRead(conn); event != nil {
+		select {
+		case ch <- *event:
+		default:
+		}
+	}
 	return ch
+}
+
+// stashPendingRead records a terminal read event that no active channel could
+// receive, so the next activate on the same connection observes the failure
+// instead of waiting on a producer that has already exited.
+func (s *codexWebsocketSession) stashPendingRead(conn *websocket.Conn, event codexWebsocketRead) {
+	if s == nil || conn == nil {
+		return
+	}
+	s.pendingReadMu.Lock()
+	s.pendingReadConn = conn
+	s.pendingRead = &event
+	s.pendingReadMu.Unlock()
+}
+
+func (s *codexWebsocketSession) takePendingRead(conn *websocket.Conn) *codexWebsocketRead {
+	if s == nil || conn == nil {
+		return nil
+	}
+	s.pendingReadMu.Lock()
+	defer s.pendingReadMu.Unlock()
+	if s.pendingReadConn != conn || s.pendingRead == nil {
+		return nil
+	}
+	event := s.pendingRead
+	s.pendingReadConn = nil
+	s.pendingRead = nil
+	return event
 }
 
 func (s *codexWebsocketSession) activeForConn(conn *websocket.Conn) (chan codexWebsocketRead, <-chan struct{}) {
@@ -754,10 +795,16 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 			invalidate := func() {
 				e.invalidateUpstreamConn(sess, conn, "upstream_disconnected", errRead)
 			}
+			// Publish the terminal event before consulting the active channel: a
+			// consumer may register its channel at any moment, and whichever side
+			// runs second has to observe the event.
+			sess.stashPendingRead(conn, codexWebsocketRead{conn: conn, err: errRead})
 			invalidated := false
 			ch, done := sess.activeForConn(conn)
 			if ch != nil {
-				invalidated = sendTerminalWebsocketRead(ch, done, codexWebsocketRead{conn: conn, err: errRead}, invalidate)
+				if event := sess.takePendingRead(conn); event != nil {
+					invalidated = sendTerminalWebsocketRead(ch, done, *event, invalidate)
+				}
 				if sess.clearActive(conn, ch) {
 					close(ch)
 				}
@@ -774,10 +821,13 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 				invalidate := func() {
 					e.invalidateUpstreamConn(sess, conn, "unexpected_binary", errBinary)
 				}
+				sess.stashPendingRead(conn, codexWebsocketRead{conn: conn, err: errBinary})
 				invalidated := false
 				ch, done := sess.activeForConn(conn)
 				if ch != nil {
-					invalidated = sendTerminalWebsocketRead(ch, done, codexWebsocketRead{conn: conn, err: errBinary}, invalidate)
+					if event := sess.takePendingRead(conn); event != nil {
+						invalidated = sendTerminalWebsocketRead(ch, done, *event, invalidate)
+					}
 					if sess.clearActive(conn, ch) {
 						close(ch)
 					}

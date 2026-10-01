@@ -88,6 +88,11 @@ func GetAntigravityModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Antigravity)
 }
 
+// GetMetaModels returns the standard Meta Muse model definitions.
+func GetMetaModels() []*ModelInfo {
+	return cloneModelInfos(getModels().Meta)
+}
+
 // GetBedrockModels returns the standard AWS Bedrock model definitions.
 func GetBedrockModels() []*ModelInfo {
 	models := cloneModelInfos(getModels().Bedrock)

@@ -67,7 +67,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 	}
-	body = sanitizeOpenAIResponsesReasoningItems(ctx, "codex websockets executor", body)
+	body = sanitizeOpenAIResponsesReasoningItems(ctx, "codex websockets executor", body, isCompat)
 	body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
 	multiAgentV2Conflict := helps.HasCodexMultiAgentV2NamespaceConflict(body)

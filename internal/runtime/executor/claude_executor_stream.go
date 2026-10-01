@@ -506,17 +506,23 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					return
 				}
 			}
+			if upstreamCompleted {
+				break
+			}
 		}
-		if emitCancellation(scanner.Err()) {
-			return
-		}
-		if errScan := scanner.Err(); errScan != nil {
-			errScan = wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errScan)
-			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			streamUsage.PublishFailure(ctx, reporter, errScan)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-			case <-ctx.Done():
+		if !upstreamCompleted {
+			if emitCancellation(scanner.Err()) {
+				return
+			}
+			if errScan := scanner.Err(); errScan != nil {
+				errScan = wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errScan)
+				helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+				streamUsage.PublishFailure(ctx, reporter, errScan)
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+				case <-ctx.Done():
+				}
+				return
 			}
 		}
 		if upstreamCompleted {

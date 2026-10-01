@@ -557,7 +557,7 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 	}
 
 	availableByPriority := make(map[int][]*Auth)
-	retryWaitCount := 0
+	cooldownCount := 0
 	unauthorizedCount := 0
 	var earliest time.Time
 	for _, candidate := range auths {
@@ -567,12 +567,11 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 			availableByPriority[priority] = append(availableByPriority[priority], candidate)
 			continue
 		}
-		if reason != blockReasonDisabled && !next.IsZero() {
-			retryWaitCount++
-			if earliest.IsZero() || next.Before(earliest) {
-				earliest = next
-			}
-			continue
+		if reason == blockReasonCooldown {
+			cooldownCount++
+		}
+		if reason != blockReasonDisabled && next.After(now) && (earliest.IsZero() || next.Before(earliest)) {
+			earliest = next
 		}
 		if hasUnauthorizedAuthFailure(candidate) {
 			unauthorizedCount++
@@ -584,7 +583,7 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 			return m.selectionModelForAuth(candidate, routeModel)
 		})
 
-		if retryWaitCount > 0 && !earliest.IsZero() {
+		if cooldownCount == len(auths) && !earliest.IsZero() {
 			providerForError := provider
 			if providerForError == "mixed" {
 				providerForError = ""
@@ -607,7 +606,7 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 				HTTPStatus: http.StatusServiceUnavailable,
 			}, terminalCause)
 		}
-		return nil, WithCause(&Error{Code: "auth_unavailable", Message: "no auth available"}, lastCandidateErr)
+		return nil, newAuthUnavailableErrorWithCause(earliest, now, lastCandidateErr)
 	}
 
 	return availableAuthsFromPriorityBuckets(availableByPriority, allPriorities), nil
@@ -619,7 +618,8 @@ func (m *Manager) routeModelAvailability(auth *Auth, routeModel string, now time
 	}
 	candidates := m.executionModelCandidatesForCapacityCheck(auth, routeModel)
 	if len(candidates) > 1 {
-		retryWaitCount := 0
+		cooldownCount := 0
+		otherWaitCount := 0
 		disabledCount := 0
 		var earliest time.Time
 		for _, candidate := range candidates {
@@ -629,13 +629,13 @@ func (m *Manager) routeModelAvailability(auth *Auth, routeModel string, now time
 			}
 			switch reason {
 			case blockReasonCooldown:
-				retryWaitCount++
+				cooldownCount++
 				if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
 					earliest = next
 				}
 			case blockReasonOther:
 				if !next.IsZero() {
-					retryWaitCount++
+					otherWaitCount++
 					if earliest.IsZero() || next.Before(earliest) {
 						earliest = next
 					}
@@ -644,11 +644,14 @@ func (m *Manager) routeModelAvailability(auth *Auth, routeModel string, now time
 				disabledCount++
 			}
 		}
-		if retryWaitCount > 0 && !earliest.IsZero() {
+		if cooldownCount > 0 && !earliest.IsZero() {
 			return false, blockReasonCooldown, earliest
 		}
 		if disabledCount == len(candidates) {
 			return false, blockReasonDisabled, time.Time{}
+		}
+		if otherWaitCount > 0 && !earliest.IsZero() {
+			return false, blockReasonOther, earliest
 		}
 		return false, blockReasonOther, time.Time{}
 	}

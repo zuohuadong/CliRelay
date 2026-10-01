@@ -437,6 +437,10 @@ func candidateSupportsModel(cfg *internalconfig.Config, registryRef *registry.Mo
 	if auth == nil || modelID == "" {
 		return false
 	}
+	// Registry membership is keyed by the canonical model name, so a thinking
+	// suffix such as "(medium)" must be stripped before lookup, matching the
+	// route-aware contract used by authSupportsRouteModel.
+	modelID = canonicalModelKey(modelID)
 	groups := authGroups(cfg, auth)
 	if !modelAllowedByRoutingGroupScopes(cfg, modelID, groups, routeGroup, allowedGroups) {
 		return false

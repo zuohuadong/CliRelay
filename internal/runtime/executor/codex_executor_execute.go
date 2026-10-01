@@ -65,12 +65,11 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
-	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body = normalizeCodexInstructions(body, helps.IsNativeCodexRequest(req.Payload, opts))
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 	}
-	body = sanitizeOpenAIResponsesReasoningItems(ctx, "codex executor", body)
+	body = sanitizeOpenAIResponsesReasoningItems(ctx, "codex executor", body, isCompat)
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
 	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, isCompat)
@@ -89,6 +88,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if err = applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers); err != nil {
 		return resp, err
 	}
+	applyCodexRoutingHint(ctx, httpReq.Header, auth, baseModel, upstreamBody, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
@@ -260,7 +260,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
 	body = normalizeCodexInstructions(body, helps.IsNativeCodexRequest(req.Payload, opts))
-	body = sanitizeOpenAIResponsesReasoningItems(ctx, "codex executor", body)
+	body = sanitizeOpenAIResponsesReasoningItems(ctx, "codex executor", body, isCompat)
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
 	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, isCompat)
@@ -275,6 +275,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	if err = applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg, opts.Headers); err != nil {
 		return resp, err
 	}
+	applyCodexRoutingHint(ctx, httpReq.Header, auth, baseModel, upstreamBody, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string

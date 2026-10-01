@@ -78,7 +78,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 	}
-	body = sanitizeOpenAIResponsesReasoningItems(ctx, "codex executor", body)
+	body = sanitizeOpenAIResponsesReasoningItems(ctx, "codex executor", body, isCompat)
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
 	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, isCompat)
@@ -199,7 +199,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			isHandshake := false
 			terminalSuccess := false
 
-			if transformed, ok := grokbuild.TransformKeepaliveSSELine(translatedLine, isGrokClient); ok {
+			if transformed, ok := grokbuild.TransformKeepaliveSSELine(line, isGrokClient); ok {
 				sawGrokKeepaliveEvent = true
 				translatedLine = transformed
 				isHandshake = true
@@ -285,7 +285,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
 					}
 					explicitCompleted := strings.EqualFold(strings.TrimSpace(gjson.GetBytes(data, "response.status").String()), "completed")
-					emptyCompleted := !sawGrokKeepaliveEvent && !isCodexResponsesLiteRequest(body, opts.Headers) && !codexOutputArrayHasSemanticOutput(gjson.GetBytes(data, "response.output"))
+					emptyCompleted := !sawGrokKeepaliveEvent && !sawOutputDelta && !isCodexResponsesLiteRequest(body, opts.Headers) && !codexOutputArrayHasSemanticOutput(gjson.GetBytes(data, "response.output"))
 					if eventType == "response.completed" && explicitCompleted && emptyCompleted {
 						emptyErr := statusErr{
 							code:              http.StatusBadGateway,
@@ -516,7 +516,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
 					}
 					explicitCompleted := strings.EqualFold(strings.TrimSpace(gjson.GetBytes(data, "response.status").String()), "completed")
-					emptyCompleted := !sawGrokKeepaliveEvent && !isCodexResponsesLiteRequest(body, opts.Headers) && !codexOutputArrayHasSemanticOutput(gjson.GetBytes(data, "response.output"))
+					emptyCompleted := !sawGrokKeepaliveEvent && !sawOutputDelta && !isCodexResponsesLiteRequest(body, opts.Headers) && !codexOutputArrayHasSemanticOutput(gjson.GetBytes(data, "response.output"))
 					if eventType == "response.completed" && explicitCompleted && emptyCompleted {
 						emptyErr := statusErr{
 							code:              http.StatusBadGateway,

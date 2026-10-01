@@ -516,6 +516,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		var seenDone bool
 		var pendingTranslated [][]byte
 		semanticOutput := false
+		sawUpstreamFrame := false
 		var streamFailed bool
 		var streamAborted bool
 		var upstreamEvent string
@@ -568,15 +569,31 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				return true
 			}
 			if !isDone {
+				sawUpstreamFrame = true
 				if streamErr, isError := openAICompatStreamDataError(dataPayload, eventName); isError {
 					publishStreamError(streamErr, true)
 					return true
 				}
 			}
 
+			// Judge "did the upstream produce output" from the upstream payload itself. The
+			// translated chunks are not a reliable signal for every client protocol: a Claude
+			// Messages response format renders a content-bearing chunk as a plain message
+			// object, which would leave the pending buffer holding every frame forever.
+			if !isDone && !semanticOutput && openAICompatStreamPayloadHasSemanticOutput(dataPayload) {
+				semanticOutput = true
+				if !openAICompatSendStreamChunks(ctx, out, pendingTranslated) {
+					streamAborted = true
+					return true
+				}
+				pendingTranslated = nil
+			}
+
 			streamLine := append([]byte("data: "), dataPayload...)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, streamLine, &param, claudeInputTokens)
-			if isDone && !semanticOutput && !openAICompatStreamChunksHaveSemanticOutput(chunks) {
+			// A provider that streamed frames without any content is broken; a bare [DONE]
+			// with no frame at all is a tolerated no-op, matching the EOF handling below.
+			if isDone && sawUpstreamFrame && !semanticOutput && !openAICompatStreamChunksHaveSemanticOutput(chunks) {
 				publishStreamError(statusErr{code: http.StatusBadGateway, msg: "openai compat executor: upstream returned empty stream response"}, false)
 				return true
 			}
@@ -650,7 +667,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 
 			// Other protocols retain compatibility with providers that omit [DONE].
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param, claudeInputTokens)
-			if !semanticOutput && !openAICompatStreamChunksHaveSemanticOutput(chunks) {
+			if sawUpstreamFrame && !semanticOutput && !openAICompatStreamChunksHaveSemanticOutput(chunks) {
 				streamErr := statusErr{code: http.StatusBadGateway, msg: "openai compat executor: upstream returned empty stream response"}
 				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 				reporter.PublishFailure(ctx, streamErr)

@@ -188,8 +188,21 @@ func TestDevinModelsRemoteFetchFallback(t *testing.T) {
 	tryRefreshDevinModels(context.Background(), "test succeeding refresh")
 
 	updatedModels := GetDevinModels()
-	if len(updatedModels) != 1 || updatedModels[0].ID != "devin/custom-test-model" {
-		t.Fatalf("expected catalog to be updated to custom-test-model, got: %+v", updatedModels)
+	foundCustom := false
+	foundBuiltinSlow := false
+	for _, m := range updatedModels {
+		if m != nil && m.ID == "devin/custom-test-model" {
+			foundCustom = true
+		}
+		if m != nil && (m.ID == "devin/swe-1-6-slow" || m.ID == "swe-1-6-slow") {
+			foundBuiltinSlow = true
+		}
+	}
+	if !foundCustom {
+		t.Fatalf("expected catalog to be updated to include custom-test-model, got: %+v", updatedModels)
+	}
+	if !foundBuiltinSlow {
+		t.Fatalf("expected catalog to retain builtin swe-1-6-slow, got: %+v", updatedModels)
 	}
 
 	// Restore original embedded data for following tests

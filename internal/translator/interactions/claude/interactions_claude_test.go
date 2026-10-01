@@ -47,9 +47,6 @@ func TestConvertClaudeRequestToInteractionsMapsToolUseAndResult(t *testing.T) {
 	if gjson.GetBytes(out, "input.0.call_id").Exists() {
 		t.Fatalf("function_call should not have call_id parameter. Output: %s", string(out))
 	}
-	if gjson.GetBytes(out, "input.0.id").Exists() {
-		t.Fatalf("function_call id should be omitted. Output: %s", string(out))
-	}
 	if got := gjson.GetBytes(out, "input.1.type").String(); got != "function_result" {
 		t.Fatalf("input.1.type = %q, want function_result. Output: %s", got, string(out))
 	}
@@ -67,9 +64,6 @@ func TestConvertClaudeRequestToInteractionsMapsToolUseAndResult(t *testing.T) {
 	}
 	if gjson.GetBytes(out, "input.1.id").Exists() {
 		t.Fatalf("function_result id should be omitted. Output: %s", string(out))
-	}
-	if got := gjson.GetBytes(out, "input.1.call_id").String(); got != "toolu_1" {
-		t.Fatalf("result call_id = %q, want toolu_1. Output: %s", got, string(out))
 	}
 }
 

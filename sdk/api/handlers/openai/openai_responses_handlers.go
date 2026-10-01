@@ -542,8 +542,10 @@ func isResponsesServiceUnavailableTerminalError(status int, errText string) bool
 	failedPayload := handlers.BuildOpenAIResponsesResponseFailedChunk(status, errText, 0)
 	code := strings.TrimSpace(gjson.GetBytes(failedPayload, "response.error.code").String())
 	errType := strings.TrimSpace(gjson.GetBytes(failedPayload, "response.error.type").String())
-	return status == http.StatusServiceUnavailable ||
-		strings.EqualFold(code, "server_is_overloaded") ||
+	// 仅凭 503 状态码不能判定为上游过载：终止性认证失败同样返回 503，
+	// 但必须按 error 帧（terminal auth error）暴露给客户端。只有携带
+	// 过载语义的结构化错误体才降级为 response.failed。
+	return strings.EqualFold(code, "server_is_overloaded") ||
 		strings.EqualFold(errType, "service_unavailable_error")
 }
 
@@ -1313,11 +1315,6 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			return
 		}
 		chunk := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, seq)
-		if !isCodexResponsesClientRequest(c) {
-			if flattened, errDelete := sjson.DeleteBytes(chunk, "error"); errDelete == nil {
-				chunk = flattened
-			}
-		}
 		_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", string(chunk))
 	}
 

@@ -834,6 +834,9 @@ func (e *DevinExecutor) streamDevinFrames(
 		completedEvent, _ = sjson.SetBytes(completedEvent, "interaction.usage.total_tokens", totalTokens)
 		if detail, ok := helps.ParseInteractionsStreamUsage(completedEvent); ok {
 			if reporter != nil {
+				if finalUsage.ModelName != "" {
+					reporter.SetResponseModel(finalUsage.ModelName)
+				}
 				reporter.Publish(ctx, detail)
 			}
 		}

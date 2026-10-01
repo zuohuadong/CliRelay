@@ -1105,43 +1105,58 @@ func queryAPIKeyBillingModelBreakdown(db *sql.DB, apiKey string, start, end time
 	}
 	defer func() { _ = rows.Close() }()
 
+	// 先完整读取结果集并关闭游标，再解析模型价格：openAPIKeysDB 把连接池上限设为 1，
+	// 游标未关闭时发起新查询会在 database/sql 中等待空闲连接而永久阻塞。
+	type billingRow struct {
+		model                                                    string
+		requests, success, failed                                int64
+		input, output, reasoning, cached, tokens                 int64
+		actualCost                                               float64
+		billedInput, billedOutput, billedReasoning, billedCached int64
+	}
+	rawRows := make([]billingRow, 0)
+	for rows.Next() {
+		var raw billingRow
+		if errScan := rows.Scan(&raw.model, &raw.requests, &raw.success, &raw.failed, &raw.input, &raw.output, &raw.reasoning, &raw.cached, &raw.tokens, &raw.actualCost, &raw.billedInput, &raw.billedOutput, &raw.billedReasoning, &raw.billedCached); errScan != nil {
+			continue
+		}
+		raw.model = strings.TrimSpace(raw.model)
+		if raw.model == "" {
+			raw.model = "unknown"
+		}
+		rawRows = append(rawRows, raw)
+	}
+	if errRows := rows.Err(); errRows != nil {
+		return []gin.H{}
+	}
+	_ = rows.Close()
+
 	type modelRow struct {
 		payload gin.H
 	}
-	items := make([]modelRow, 0)
+	items := make([]modelRow, 0, len(rawRows))
 	var totalRequests, totalTokens int64
 	var totalCost float64
-	for rows.Next() {
-		var model string
-		var requests, success, failed, input, output, reasoning, cached, tokens int64
-		var billedInput, billedOutput, billedReasoning, billedCached int64
-		var actualCost float64
-		if errScan := rows.Scan(&model, &requests, &success, &failed, &input, &output, &reasoning, &cached, &tokens, &actualCost, &billedInput, &billedOutput, &billedReasoning, &billedCached); errScan != nil {
-			continue
-		}
-		model = strings.TrimSpace(model)
-		if model == "" {
-			model = "unknown"
-		}
-		price, hasPrice := apiKeyBillingModelPrice(db, model)
-		listCost := apiKeyBillingListCost(price, success, billedInput, billedOutput, billedReasoning, billedCached)
+	for _, raw := range rawRows {
+		price, hasPrice := apiKeyBillingModelPrice(db, raw.model)
+		listCost := apiKeyBillingListCost(price, raw.success, raw.billedInput, raw.billedOutput, raw.billedReasoning, raw.billedCached)
 		discountRate := 0.0
 		billingMultiplier := 0.0
 		if listCost > 0 {
-			billingMultiplier = actualCost / listCost
+			billingMultiplier = raw.actualCost / listCost
 			discountRate = 1 - billingMultiplier
 		}
 		item := gin.H{
-			"model":                    model,
-			"request_count":            requests,
-			"success_count":            success,
-			"failed_count":             failed,
-			"input_tokens":             input,
-			"output_tokens":            output,
-			"reasoning_tokens":         reasoning,
-			"cached_tokens":            cached,
-			"total_tokens":             tokens,
-			"total_cost":               actualCost,
+			"model":                    raw.model,
+			"request_count":            raw.requests,
+			"success_count":            raw.success,
+			"failed_count":             raw.failed,
+			"input_tokens":             raw.input,
+			"output_tokens":            raw.output,
+			"reasoning_tokens":         raw.reasoning,
+			"cached_tokens":            raw.cached,
+			"total_tokens":             raw.tokens,
+			"total_cost":               raw.actualCost,
 			"estimated_list_cost":      listCost,
 			"billing_multiplier":       billingMultiplier,
 			"discount_rate":            discountRate,
@@ -1154,12 +1169,9 @@ func queryAPIKeyBillingModelBreakdown(db *sql.DB, apiKey string, start, end time
 			"price_per_call":           price.PricePerCall,
 		}
 		items = append(items, modelRow{payload: item})
-		totalRequests += requests
-		totalTokens += tokens
-		totalCost += actualCost
-	}
-	if errRows := rows.Err(); errRows != nil {
-		return []gin.H{}
+		totalRequests += raw.requests
+		totalTokens += raw.tokens
+		totalCost += raw.actualCost
 	}
 	out := make([]gin.H, 0, len(items))
 	for _, item := range items {

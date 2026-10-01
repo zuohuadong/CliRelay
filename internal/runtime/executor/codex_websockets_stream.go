@@ -157,7 +157,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	restoreMultiAgentV2 := !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
 
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
-	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
+	if errSend := e.writeCodexWebsocketMessageForAuth(auth, sess, conn, wsReqBody); errSend != nil {
 		errSend = mapCodexWebsocketWriteError(sess, conn, errSend)
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
 		if sess != nil && !isEphemeralSession {
@@ -212,7 +212,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
 			reporter.StartResponseTTFT()
 			cliproxyexecutor.MarkUpstreamAttempt(ctx)
-			if errSendRetry := writeCodexWebsocketMessage(sess, conn, wsReqBodyRetry); errSendRetry != nil {
+			if errSendRetry := e.writeCodexWebsocketMessageForAuth(auth, sess, conn, wsReqBodyRetry); errSendRetry != nil {
 				errSendRetry = mapCodexWebsocketWriteError(sess, conn, errSendRetry)
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
 				e.invalidateUpstreamConn(sess, conn, "send_error", errSendRetry)
@@ -289,7 +289,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
 			if errRead != nil {
-				mappedErr := mapCodexWebsocketReadError(errRead)
+				mappedErr := e.mapWebsocketReadErrorForAuth(auth, errRead)
 				if sess != nil {
 					e.invalidateUpstreamConn(sess, conn, "read_error", mappedErr)
 					sess.clearActive(conn, readCh)
@@ -389,7 +389,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				// the disconnect here would close the client connection before the retry can
 				// deliver anything. Every other terminal failure is forwarded in-stream and
 				// legitimately terminates the session, so it keeps the notifying variant.
-				failoverPending := isCodexOverloadBootstrapFailure(terminalBody)
+				failoverPending := isCodexRetryableBootstrapFailure(terminalBody)
 				if failoverPending && timeoutReached {
 					failoverPending = false
 					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap overload rejection after %d messages read / %v, time budget exhausted; delivering in-stream", bufferedFrames, timeSinceStart)
@@ -418,10 +418,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 						closeCodexWebsocketSession(sess, "bootstrap_overload")
 					}
 					// Fail the attempt before the downstream headers are committed so the
-					// conductor can transparently retry on another credential, and report the
-					// status the upstream refused to put on the wire.
-					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap overload rejection after %d messages read, failing over", bufferedFrames)
-					return nil, newCodexBootstrapOverloadErr(terminalBody)
+					// conductor can transparently retry on another credential. Overload keeps the
+					// 503 the shared status mapping would hide, while server/timeout failures keep
+					// their own status, matching the HTTP executor's retryable-bootstrap contract.
+					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap retryable rejection after %d messages read, failing over", bufferedFrames)
+					if isCodexOverloadBootstrapFailure(terminalBody) {
+						return nil, newCodexBootstrapOverloadErr(terminalBody)
+					}
+					return nil, streamErr
 				}
 				bootstrapTerminalErr = streamErr
 				break
@@ -591,7 +595,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					_ = send(cliproxyexecutor.StreamChunk{Err: ctx.Err()})
 					return
 				}
-				mappedErr := mapCodexWebsocketReadError(errRead)
+				mappedErr := e.mapWebsocketReadErrorForAuth(auth, errRead)
 				terminateReason = "read_error"
 				terminateErr = mappedErr
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "read", mappedErr)

@@ -206,7 +206,9 @@ func TestCodexExecutorIsCompatConvertsAgentMessage(t *testing.T) {
 func TestCodexExecutorsMultiAgentV2UsesSelectedHomeModel(t *testing.T) {
 	capturedPayload := make(chan []byte, 1)
 	upgrader := websocket.Upgrader{}
-	completed := []byte(`{"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","output":[]}}`)
+	// The stub must carry semantic output: the executor rejects a completed stream
+	// with an empty output array, so an empty stub would fail the streaming modes.
+	completed := []byte(`{"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}}`)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if websocket.IsWebSocketUpgrade(request) {
 			conn, errUpgrade := upgrader.Upgrade(w, request, nil)

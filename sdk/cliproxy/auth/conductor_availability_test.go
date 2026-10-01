@@ -106,47 +106,14 @@ func TestManager_AvailableProvidersAndHasProviderAuth_ExcludeDisabled(t *testing
 	}
 }
 
-func TestManagerAvailableAuthsForRouteModelDisabledAuthDoesNotMaskRecoverableCooldown(t *testing.T) {
+func TestManagerAvailableAuthsForRouteModelKeepsTransientRecoveryDeadline(t *testing.T) {
 	const (
 		provider = "astron-code"
 		model    = "glm-5.2"
 	)
 
 	manager := NewManager(nil, nil, nil)
-	available, err := manager.availableAuthsForRouteModel([]*Auth{
-		{ID: "disabled-auth", Provider: provider, Status: StatusDisabled},
-		{
-			ID:       "cooling-auth",
-			Provider: provider,
-			ModelStates: map[string]*ModelState{
-				model: {
-					Status:         StatusError,
-					Unavailable:    true,
-					NextRetryAfter: time.Now().Add(time.Minute),
-					Quota:          QuotaState{Exceeded: true},
-				},
-			},
-		},
-	}, provider, model, time.Now())
-	if err == nil {
-		t.Fatal("availableAuthsForRouteModel() error = nil, want model cooldown")
-	}
-	if len(available) != 0 {
-		t.Fatalf("available auths = %v, want none", available)
-	}
-	var cooldownErr *modelCooldownError
-	if !errors.As(err, &cooldownErr) {
-		t.Fatalf("availableAuthsForRouteModel() error = %v, want model cooldown", err)
-	}
-}
-
-func TestManagerAvailableAuthsForRouteModelDisabledAuthDoesNotMaskRecoverableTransientBlock(t *testing.T) {
-	const (
-		provider = "astron-code"
-		model    = "glm-5.2"
-	)
-
-	manager := NewManager(nil, nil, nil)
+	now := time.Now()
 	available, err := manager.availableAuthsForRouteModel([]*Auth{
 		{ID: "disabled-auth", Provider: provider, Status: StatusDisabled},
 		{
@@ -156,20 +123,61 @@ func TestManagerAvailableAuthsForRouteModelDisabledAuthDoesNotMaskRecoverableTra
 				model: {
 					Status:         StatusError,
 					Unavailable:    true,
-					NextRetryAfter: time.Now().Add(time.Minute),
+					NextRetryAfter: now.Add(time.Minute),
 				},
 			},
 		},
-	}, provider, model, time.Now())
+	}, provider, model, now)
 	if err == nil {
-		t.Fatal("availableAuthsForRouteModel() error = nil, want model cooldown")
+		t.Fatal("availableAuthsForRouteModel() error = nil, want recoverable auth_unavailable")
 	}
 	if len(available) != 0 {
 		t.Fatalf("available auths = %v, want none", available)
 	}
-	var cooldownErr *modelCooldownError
-	if !errors.As(err, &cooldownErr) {
-		t.Fatalf("availableAuthsForRouteModel() error = %v, want model cooldown", err)
+	var authErr *Error
+	if !errors.As(err, &authErr) || authErr.Code != "auth_unavailable" || !authErr.Retryable {
+		t.Fatalf("availableAuthsForRouteModel() error = %T %v, want recoverable auth_unavailable", err, err)
+	}
+	if got := SafeResponseHeaders(err).Get("Retry-After"); got != "60" {
+		t.Fatalf("Retry-After = %q, want 60", got)
+	}
+}
+
+func TestManagerAvailableAuthsForRouteModelKeepsQuotaRecoveryDeadline(t *testing.T) {
+	const (
+		provider = "astron-code"
+		model    = "glm-5.2"
+	)
+
+	manager := NewManager(nil, nil, nil)
+	now := time.Now()
+	available, err := manager.availableAuthsForRouteModel([]*Auth{
+		{ID: "disabled-auth", Provider: provider, Status: StatusDisabled},
+		{
+			ID:       "cooling-auth",
+			Provider: provider,
+			ModelStates: map[string]*ModelState{
+				model: {
+					Status:         StatusError,
+					Unavailable:    true,
+					NextRetryAfter: now.Add(time.Minute),
+					Quota:          QuotaState{Exceeded: true},
+				},
+			},
+		},
+	}, provider, model, now)
+	if err == nil {
+		t.Fatal("availableAuthsForRouteModel() error = nil, want recoverable auth_unavailable")
+	}
+	if len(available) != 0 {
+		t.Fatalf("available auths = %v, want none", available)
+	}
+	var authErr *Error
+	if !errors.As(err, &authErr) || authErr.Code != "auth_unavailable" || !authErr.Retryable {
+		t.Fatalf("availableAuthsForRouteModel() error = %T %v, want recoverable auth_unavailable", err, err)
+	}
+	if got := SafeResponseHeaders(err).Get("Retry-After"); got != "60" {
+		t.Fatalf("Retry-After = %q, want 60", got)
 	}
 }
 

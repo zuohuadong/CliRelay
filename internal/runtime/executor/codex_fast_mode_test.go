@@ -18,14 +18,14 @@ func TestApplyCodexFastModeServiceTierDefaultsOff(t *testing.T) {
 	}
 }
 
-func TestApplyCodexFastModeServiceTierStripsClientTierWhenDisabled(t *testing.T) {
+func TestApplyCodexFastModeServiceTierKeepsClientTierWhenDisabled(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","input":"hi","service_tier":"priority"}`)
 	auth := &cliproxyauth.Auth{Provider: "codex"}
 
 	got := applyCodexFastModeServiceTier(auth, body)
 
-	if gjson.GetBytes(got, "service_tier").Exists() {
-		t.Fatalf("client service_tier should be ignored when fast mode is disabled, got %s", got)
+	if tier := gjson.GetBytes(got, "service_tier").String(); tier != "priority" {
+		t.Fatalf("client service_tier should pass through when fast mode is disabled, got %q; body=%s", tier, got)
 	}
 }
 

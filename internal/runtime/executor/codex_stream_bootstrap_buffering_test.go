@@ -1472,14 +1472,30 @@ func TestCodexBootstrapServerFailurePreservesDownstreamSession(t *testing.T) {
 }
 
 type mockClock struct {
-	mu  sync.Mutex
-	cur time.Time
+	mu      sync.Mutex
+	cur     time.Time
+	started chan struct{}
+	once    sync.Once
 }
 
 func (m *mockClock) now() time.Time {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.cur
+	now := m.cur
+	m.mu.Unlock()
+	// 先捕获计时起点，再通知服务端；否则推进时钟仍可能抢在首次读取之前。
+	m.once.Do(func() { close(m.started) })
+	return now
+}
+
+func (m *mockClock) waitForStart(t *testing.T) bool {
+	t.Helper()
+	select {
+	case <-m.started:
+		return true
+	case <-time.After(2 * time.Second):
+		t.Error("timed out waiting for bootstrap clock initialization")
+		return false
+	}
 }
 
 func (m *mockClock) advance(d time.Duration) {
@@ -1489,7 +1505,7 @@ func (m *mockClock) advance(d time.Duration) {
 }
 
 func withMockClock(t *testing.T, initial time.Time) *mockClock {
-	m := &mockClock{cur: initial}
+	m := &mockClock{cur: initial, started: make(chan struct{})}
 	cleanup := setCodexBootstrapNowForTest(m.now)
 	t.Cleanup(cleanup)
 	return m
@@ -1541,16 +1557,6 @@ func TestCodexExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *testing.T)
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	clock := withMockClock(t, t0)
 
-	bootstrapStarted := make(chan struct{})
-	var once sync.Once
-	cleanup := setCodexBootstrapNowForTest(func() time.Time {
-		once.Do(func() {
-			close(bootstrapStarted)
-		})
-		return clock.now()
-	})
-	t.Cleanup(cleanup)
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: response.in_progress\ndata: " + codexInProgressEvent + "\n\n"))
@@ -1558,7 +1564,9 @@ func TestCodexExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *testing.T)
 			f.Flush()
 		}
 
-		<-bootstrapStarted
+		if !clock.waitForStart(t) {
+			return
+		}
 		clock.advance(11 * time.Second)
 
 		_, _ = w.Write([]byte("event: response.in_progress\ndata: " + codexInProgressEvent + "\n\n"))
@@ -1603,6 +1611,9 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexInProgressEvent))
 
 		// Advance clock past default 10s timeout
+		if !clock.waitForStart(t) {
+			return
+		}
 		clock.advance(11 * time.Second)
 
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexInProgressEvent))
@@ -1636,6 +1647,9 @@ func TestCodexExecutor_BootstrapBuffering_DisabledTimeBudget(t *testing.T) {
 		}
 
 		// Advance clock by 100 seconds
+		if !clock.waitForStart(t) {
+			return
+		}
 		clock.advance(100 * time.Second)
 
 		_, _ = w.Write([]byte("event: response.in_progress\ndata: " + codexInProgressEvent + "\n\n"))
@@ -1678,6 +1692,9 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_DisabledTimeBudget(t *testin
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexInProgressEvent))
 
 		// Advance clock by 100 seconds
+		if !clock.waitForStart(t) {
+			return
+		}
 		clock.advance(100 * time.Second)
 
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexInProgressEvent))
@@ -1709,6 +1726,9 @@ func TestCodexExecutor_BootstrapBuffering_DefaultUnsetTimeoutIsUnlimited(t *test
 		}
 
 		// Advance clock by 100 seconds
+		if !clock.waitForStart(t) {
+			return
+		}
 		clock.advance(100 * time.Second)
 
 		_, _ = w.Write([]byte("event: response.in_progress\ndata: " + codexInProgressEvent + "\n\n"))
@@ -1741,16 +1761,6 @@ func TestCodexExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeoutDeliveredI
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	clock := withMockClock(t, t0)
 
-	bootstrapStarted := make(chan struct{})
-	var once sync.Once
-	cleanup := setCodexBootstrapNowForTest(func() time.Time {
-		once.Do(func() {
-			close(bootstrapStarted)
-		})
-		return clock.now()
-	})
-	t.Cleanup(cleanup)
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -1758,8 +1768,10 @@ func TestCodexExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeoutDeliveredI
 			f.Flush()
 		}
 
-		<-bootstrapStarted
 		// Advance clock past 10s timeout before the first event arrives
+		if !clock.waitForStart(t) {
+			return
+		}
 		clock.advance(11 * time.Second)
 
 		_, _ = w.Write([]byte("event: error\ndata: " + codexOverloadEvent + "\n\n"))
@@ -1798,6 +1810,9 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeout
 		}
 
 		// Advance clock past 10s timeout before writing any messages
+		if !clock.waitForStart(t) {
+			return
+		}
 		clock.advance(11 * time.Second)
 
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexOverloadEvent))
@@ -1837,6 +1852,9 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_StatusBearingErrorAfterTimeo
 		}
 
 		// Advance clock past 10s timeout before writing error frame
+		if !clock.waitForStart(t) {
+			return
+		}
 		clock.advance(11 * time.Second)
 
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(statusBearingError))

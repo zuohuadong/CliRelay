@@ -23,10 +23,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api repos/zuohuadong/CliRelay/actions/jobs/110687480188/logs > "${RUNNER_TEMP}/failed-job.log"
+          gh api --allow-escape-sequences repos/zuohuadong/CliRelay/actions/jobs/110687480188/logs > "${RUNNER_TEMP}/failed-job.log"
           python3 - <<'PY'
           import os, pathlib, re
-          lines = (pathlib.Path(os.environ['RUNNER_TEMP']) / 'failed-job.log').read_text(encoding='utf-8-sig').splitlines()
+          raw = (pathlib.Path(os.environ['RUNNER_TEMP']) / 'failed-job.log').read_text(encoding='utf-8-sig')
+          lines = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', raw).splitlines()
           selected = set()
           for i, line in enumerate(lines):
               if re.search(r'--- FAIL:|^.*Z FAIL\s|panic:|fatal error:|\[build failed\]', line):

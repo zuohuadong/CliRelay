@@ -1,0 +1,53 @@
+name: review-format-repair
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    if: >-
+      github.repository == 'zuohuadong/CliRelay' &&
+      github.event.pull_request.number == 192 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'fix/review-maintenance-workflows-20261002'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/review-maintenance-workflows-20261002
+          fetch-depth: 1
+      - name: Set up repository Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Apply whitespace-only formatter changes to the repair branch
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD}"
+          files=(
+            internal/pluginhost/host.go
+            internal/runtime/executor/claude_thinking_replay_test.go
+            internal/runtime/executor/codex_stream_bootstrap_buffering_test.go
+          )
+          gofmt -w "${files[@]}"
+          git diff --check
+          git diff --ignore-all-space --ignore-blank-lines --exit-code -- "${files[@]}"
+          git diff --stat
+          if git diff --quiet -- "${files[@]}"; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- "${files[@]}"
+          git commit -m 'style: gofmt three files left unformatted by upstream merge'
+          git push origin HEAD:refs/heads/fix/review-maintenance-workflows-20261002

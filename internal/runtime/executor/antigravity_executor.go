@@ -1009,5 +1009,5 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 	auth = routedAuth
 
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
-	return httpClient.Do(httpReq)
+	return helps.WithAntigravityHTTPClientTrace(httpClient, auth, "http_request").Do(httpReq)
 }

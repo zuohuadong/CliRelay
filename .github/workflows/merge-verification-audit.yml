@@ -1,0 +1,37 @@
+name: merge-verification-audit
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  sources:
+    if: >-
+      github.repository == 'zuohuadong/CliRelay' &&
+      github.event.pull_request.number == 193 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'fix/panel-verification-20261002'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Record exact source inventory
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/merge-audit
+          git rev-parse HEAD > /tmp/merge-audit/head.txt
+          git ls-files > /tmp/merge-audit/files.txt
+          git grep -n -E 'KeepalivePingDuringUpload|OverloadDirectlyAfterTimeoutDeliveredInStream|withMockClock|nowCodexBootstrap' -- internal/runtime/executor > /tmp/merge-audit/matches.txt || true
+          cat /tmp/merge-audit/matches.txt
+          git archive --format=tar.gz HEAD > /tmp/merge-audit/source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: merge-verification-sources
+          path: /tmp/merge-audit/
+          retention-days: 3

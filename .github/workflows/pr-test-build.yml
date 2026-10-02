@@ -21,6 +21,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Maintenance workflow regression tests
+        run: python3 scripts/test-maintenance-workflows.py
       - name: Gofmt check
         run: |
           set -euo pipefail

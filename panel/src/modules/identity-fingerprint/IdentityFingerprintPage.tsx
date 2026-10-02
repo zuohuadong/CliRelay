@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { geminiFingerprintEntries, updateGroupedGeminiHeaders } from "./geminiConfig";
 import { configFileApi } from "@/lib/http/apis/config-file";
 import {
   identityFingerprintApi,
@@ -178,6 +179,8 @@ function upsertGeminiHeaders(
   root: Record<string, unknown>,
   headers: Record<string, string>,
 ): { root: Record<string, unknown>; count: number } {
+  const groupedCount = updateGroupedGeminiHeaders(root, headers);
+  if (groupedCount !== undefined) return { root, count: groupedCount };
   const rawEntries = Array.isArray(root["gemini-api-key"]) ? root["gemini-api-key"] : [];
   if (rawEntries.length === 0) {
     throw new Error("No Gemini API key entries found in config.yaml");
@@ -227,7 +230,7 @@ export function IdentityFingerprintPage() {
       const nextClaude = mergeClaude(payload["identity-fingerprint"]?.claude);
       const nextClaudeDefaults = mergeClaude(payload.defaults?.claude);
       const parsedConfig = parseConfigYaml(yamlText);
-      const gemini = firstGeminiHeaders(parsedConfig["gemini-api-key"]);
+      const gemini = firstGeminiHeaders(geminiFingerprintEntries(parsedConfig));
       setCodex(nextCodex);
       setDefaults(nextDefaults);
       setClaude(nextClaude);

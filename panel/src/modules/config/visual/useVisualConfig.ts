@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { projectVisualConfig, restoreVisualConfig } from "./configLayout";
 import type {
   PayloadFilterRule,
   PayloadParamValueType,
@@ -490,7 +491,7 @@ export function useVisualConfig() {
   const loadVisualValuesFromYaml = useCallback((yamlContent: string, runtimeConfig?: Record<string, unknown>) => {
     try {
       const parsedRaw: unknown = parseYaml(yamlContent) || {};
-      const parsed = asRecord(parsedRaw) ?? {};
+      const parsed = projectVisualConfig(asRecord(parsedRaw) ?? {});
       const tls = asRecord(parsed.tls);
       const remoteManagement = asRecord(parsed["remote-management"]);
       const quotaExceeded = asRecord(parsed["quota-exceeded"]);
@@ -589,7 +590,8 @@ export function useVisualConfig() {
   const applyVisualChangesToYaml = useCallback(
     (currentYaml: string): string => {
       try {
-        const parsed = (parseYaml(currentYaml) || {}) as Record<string, unknown>;
+        const original = asRecord(parseYaml(currentYaml)) ?? {};
+        const parsed = projectVisualConfig(original);
         const values = visualValues;
 
         setString(parsed, "host", values.host);
@@ -823,7 +825,7 @@ export function useVisualConfig() {
           }
         }
 
-        return stringifyYaml(parsed, { indent: 2, lineWidth: 120, minContentWidth: 0 });
+        return stringifyYaml(restoreVisualConfig(original, parsed), { indent: 2, lineWidth: 120, minContentWidth: 0 });
       } catch {
         return currentYaml;
       }

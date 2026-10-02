@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Code2, Eye, Search, Settings } from "lucide-react";
 import { parse as parseYaml } from "yaml";
+import { projectVisualConfig } from "./visual/configLayout";
 import { configApi, configFileApi } from "@/lib/http/apis";
 import { FloatingSaveBar } from "@/modules/config/FloatingSaveBar";
 import { RuntimeConfigPanel } from "@/modules/config/RuntimeConfigPanel";
@@ -24,7 +25,7 @@ function readCommercialModeFromYaml(yamlContent: string): boolean {
   try {
     const parsed = parseYaml(yamlContent);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-    return Boolean((parsed as Record<string, unknown>)["commercial-mode"]);
+    return Boolean(projectVisualConfig(parsed as Record<string, unknown>)["commercial-mode"]);
   } catch {
     return false;
   }

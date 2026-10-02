@@ -3,6 +3,7 @@
 #
 # Usage:
 #   ./scripts/update-codex-version.sh [NEW_VERSION]
+#   ./scripts/update-codex-version.sh --current  # print the local version without changes
 #
 # When NEW_VERSION is omitted, the latest version is fetched from the npm registry.
 # The script updates all Go source files that embed the codex-tui version string
@@ -18,9 +19,20 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+valid_version() {
+    [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[[:alnum:]][[:alnum:].-]*)?(\+[[:alnum:]][[:alnum:].-]*)?$ ]]
+}
+
 current_version() {
-    sed -n 's/.*DefaultCodexFingerprintVersion[^"]*"\([^"]*\)".*/\1/p' \
-        "$REPO_ROOT/internal/config/local_types.go"
+    local version
+    version="$(sed -nE 's/^[[:space:]]*DefaultCodexFingerprintVersion[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+        "$REPO_ROOT/internal/config/local_types.go")" || return 1
+    # Reject missing or duplicate definitions before any replacements run.
+    if ! valid_version "$version"; then
+        echo "ERROR: expected one valid DefaultCodexFingerprintVersion in internal/config/local_types.go" >&2
+        return 1
+    fi
+    printf '%s\n' "$version"
 }
 
 latest_npm_version() {
@@ -39,18 +51,27 @@ replace_literal() {
 
 # ── Determine target version ─────────────────────────────────────────────────
 
-if [ $# -ge 1 ]; then
+if [ $# -gt 1 ]; then
+    echo "Usage: $0 [NEW_VERSION | --current]" >&2
+    exit 1
+fi
+
+CUR_VERSION="$(current_version)"
+if [ "${1:-}" = "--current" ]; then
+    printf '%s\n' "$CUR_VERSION"
+    exit 0
+fi
+
+if [ $# -eq 1 ]; then
     NEW_VERSION="$1"
 else
     echo "Fetching latest @openai/codex version from npm..."
     NEW_VERSION="$(latest_npm_version)"
-    if [ -z "$NEW_VERSION" ]; then
-        echo "ERROR: could not determine latest npm version" >&2
-        exit 1
-    fi
 fi
-
-CUR_VERSION="$(current_version)"
+if ! valid_version "$NEW_VERSION"; then
+    echo "ERROR: target version must be a version such as 0.160.0 or 0.160.0-beta.1" >&2
+    exit 1
+fi
 
 if [ "$NEW_VERSION" = "$CUR_VERSION" ]; then
     echo "Version already up to date: $CUR_VERSION"
@@ -73,10 +94,14 @@ replace_literal \
     "$REPO_ROOT/internal/config/local_types.go" \
     "$OLD_UA" \
     "$NEW_UA"
-replace_literal \
-    "$REPO_ROOT/internal/config/local_types.go" \
-    "DefaultCodexFingerprintVersion       = \"${CUR_VERSION}\"" \
-    "DefaultCodexFingerprintVersion       = \"${NEW_VERSION}\""
+# Match the declaration, not gofmt's current alignment width.
+REPLACEMENT="$NEW_VERSION" perl -pi -e \
+    's/^(\s*DefaultCodexFingerprintVersion\s*=\s*")[^"]+(")/${1}$ENV{REPLACEMENT}${2}/' \
+    "$REPO_ROOT/internal/config/local_types.go"
+if [ "$(current_version)" != "$NEW_VERSION" ]; then
+    echo "ERROR: failed to update DefaultCodexFingerprintVersion" >&2
+    exit 1
+fi
 
 # 2. internal/runtime/executor/codex_executor_request.go — fallback User-Agent constant
 replace_literal \

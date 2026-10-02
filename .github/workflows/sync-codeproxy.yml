@@ -42,6 +42,9 @@ jobs:
         id: sync
         run: |
           set -euo pipefail
+          # Build the sync commit on the branch that will actually be pushed.
+          git checkout -B "${SYNC_BRANCH}" "origin/${BASE_BRANCH}"
+
           # Remove existing panel contents (keep the directory itself)
           find "${PANEL_DIR}" -mindepth 1 -delete
 
@@ -83,6 +86,8 @@ jobs:
       - name: Create or update pull request
         if: steps.sync.outputs.changed == 'true'
         env:
+          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+          UPSTREAM_LOG: ${{ steps.sync.outputs.upstream_log }}
           GH_TOKEN: ${{ secrets.SYNC_PR_TOKEN != '' && secrets.SYNC_PR_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -90,13 +95,13 @@ jobs:
           head_owner="${GITHUB_REPOSITORY_OWNER}"
           title="chore: sync panel from ${UPSTREAM_REPOSITORY}"
           body="Automated sync of the \`panel/\` directory from [${UPSTREAM_REPOSITORY}](https://github.com/${UPSTREAM_REPOSITORY}) (${UPSTREAM_BRANCH}) into \`${BASE_BRANCH}\`."
-          body="${body}"$'\n\n'"Upstream commit: \`${{ steps.sync.outputs.upstream_sha }}\`"
-          if [ -n "${{ steps.sync.outputs.upstream_log }}" ]; then
+          body="${body}"$'\n\n'"Upstream commit: \`${UPSTREAM_SHA}\`"
+          if [ -n "${UPSTREAM_LOG}" ]; then
             body="${body}"$'\n\n'"Recent upstream changes:"
             while IFS= read -r line; do
               [ -n "${line}" ] || continue
               body="${body}"$'\n'"- ${line}"
-            done <<< "${{ steps.sync.outputs.upstream_log }}"
+            done <<< "${UPSTREAM_LOG}"
           fi
           existing_pr="$(gh pr list --repo "${repository}" --base "${BASE_BRANCH}" --head "${SYNC_BRANCH}" --state open --json number --jq '.[0].number // empty')"
           if [ -n "${existing_pr}" ]; then

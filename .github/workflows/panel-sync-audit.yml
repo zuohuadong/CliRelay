@@ -11,8 +11,8 @@ jobs:
   inventory:
     if: >-
       github.repository == 'zuohuadong/CliRelay' &&
-      github.event.pull_request.number == 192 &&
-      github.event.pull_request.head.ref == 'fix/review-maintenance-workflows-20261002'
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'fix/panel-verification-20261002'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -30,7 +30,7 @@ jobs:
       - name: Compare tracked sources and collect audit inputs
         run: |
           python3 - <<'PY'
-          import collections, hashlib, json, pathlib, re, subprocess, tarfile
+          import json, pathlib, re, subprocess, tarfile
           root = pathlib.Path.cwd()
           upstream = root / '.audit-upstream'
           out = root / '.audit'
@@ -39,10 +39,10 @@ jobs:
               return subprocess.check_output(['git', 'ls-files', '-z'], cwd=cwd).decode().split('\0')[:-1]
           local_files = [p[6:] for p in tracked(root) if p.startswith('panel/')]
           upstream_files = tracked(upstream)
-          def pages(cwd, files):
+          def pages(files):
               return sorted(p for p in files if re.search(r'(?:Page|page)\.tsx$', p) and not re.search(r'\.(?:test|spec)\.', p))
-          local_pages = pages(root / 'panel', local_files)
-          upstream_pages = pages(upstream, upstream_files)
+          local_pages = pages(local_files)
+          upstream_pages = pages(upstream_files)
           shared = sorted(set(local_files) & set(upstream_files))
           same = [p for p in shared if (root / 'panel' / p).read_bytes() == (upstream / p).read_bytes()]
           report = {

@@ -33,6 +33,8 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/system-stats/ws", s.mgmt.SystemStatsWebSocket)
 
 		mgmt.GET("/config", s.mgmt.GetConfig)
+		mgmt.GET("/billing-multipliers", s.mgmt.GetBillingMultipliers)
+		mgmt.PUT("/billing-multipliers", s.mgmt.PutBillingMultipliers)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)

@@ -1,0 +1,88 @@
+name: panel-v8-repair
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    if: >-
+      github.repository == 'zuohuadong/CliRelay' &&
+      github.event.pull_request.number == 193 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'fix/panel-verification-20261002'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/panel-verification-20261002
+          fetch-depth: 0
+      - name: Integrate reviewed main baseline and patch known sources
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git merge --no-edit 3f27fd1f02c881325860061b754080815aff62a5
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          hook = Path('panel/src/modules/config/visual/useVisualConfig.ts')
+          page = Path('panel/src/modules/config/ConfigPage.tsx')
+          identity = Path('panel/src/modules/identity-fingerprint/IdentityFingerprintPage.tsx')
+          expected = {hook: '7d446a4eefcad5646673532aa8527b957ad00a29', page: '558226a26739e6b003de595d06d69bfceb1b2452', identity: 'ec3e9776453c0692df3c412ea8f962aeedcd831c'}
+          for path, sha in expected.items():
+              data = path.read_bytes()
+              actual = hashlib.sha1(f'blob {len(data)}\0'.encode() + data).hexdigest()
+              if actual != sha:
+                  raise SystemExit(f'Refusing to patch changed source: {path}')
+          def replace(path, old, new):
+              text = path.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f'Expected one patch match in {path}')
+              path.write_text(text.replace(old, new, 1))
+          replace(hook, 'import { parse as parseYaml, stringify as stringifyYaml } from "yaml";', 'import { parse as parseYaml, stringify as stringifyYaml } from "yaml";\nimport { projectVisualConfig, restoreVisualConfig } from "./configLayout";')
+          replace(hook, 'const parsed = asRecord(parsedRaw) ?? {};', 'const parsed = projectVisualConfig(asRecord(parsedRaw) ?? {});')
+          replace(hook, 'const parsed = (parseYaml(currentYaml) || {}) as Record<string, unknown>;', 'const original = asRecord(parseYaml(currentYaml)) ?? {};\n        const parsed = projectVisualConfig(original);')
+          replace(hook, 'return stringifyYaml(parsed, { indent: 2, lineWidth: 120, minContentWidth: 0 });', 'return stringifyYaml(restoreVisualConfig(original, parsed), { indent: 2, lineWidth: 120, minContentWidth: 0 });')
+          replace(page, 'import { parse as parseYaml } from "yaml";', 'import { parse as parseYaml } from "yaml";\nimport { projectVisualConfig } from "./visual/configLayout";')
+          replace(page, 'return Boolean((parsed as Record<string, unknown>)["commercial-mode"]);', 'return Boolean(projectVisualConfig(parsed as Record<string, unknown>)["commercial-mode"]);')
+          replace(identity, 'import { parse as parseYaml, stringify as stringifyYaml } from "yaml";', 'import { parse as parseYaml, stringify as stringifyYaml } from "yaml";\nimport { geminiFingerprintEntries, updateGroupedGeminiHeaders } from "./geminiConfig";')
+          replace(identity, 'const gemini = firstGeminiHeaders(parsedConfig["gemini-api-key"]);', 'const gemini = firstGeminiHeaders(geminiFingerprintEntries(parsedConfig));')
+          replace(identity, '  const rawEntries = Array.isArray(root["gemini-api-key"]) ? root["gemini-api-key"] : [];', '  const groupedCount = updateGroupedGeminiHeaders(root, headers);\n  if (groupedCount !== undefined) return { root, count: groupedCount };\n  const rawEntries = Array.isArray(root["gemini-api-key"]) ? root["gemini-api-key"] : [];')
+          PY
+          git diff --check
+          git diff --stat
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - name: Install locked dependencies
+        working-directory: panel
+        run: bun install --frozen-lockfile
+      - name: Verify v8 regressions and existing configuration pages
+        working-directory: panel
+        run: bunx --no-install vitest run src/modules/config/visual/__tests__/useVisualConfig.v8.test.tsx src/modules/identity-fingerprint/__tests__/geminiConfig.test.ts src/modules/config/__tests__/ConfigPage.test.tsx src/modules/identity-fingerprint/__tests__/IdentityFingerprintPage.test.tsx --no-file-parallelism --maxWorkers=1 --testTimeout=30000 --reporter=verbose
+      - name: Typecheck and build patched frontend
+        working-directory: panel
+        run: bun run build
+      - name: Commit verified changes only to repair branch
+        run: |
+          set -euo pipefail
+          git diff --check
+          git add -- panel/src/modules/config/visual/useVisualConfig.ts panel/src/modules/config/ConfigPage.tsx panel/src/modules/identity-fingerprint/IdentityFingerprintPage.tsx
+          git commit -m 'fix(panel): wire v8-safe visual config and grouped Gemini headers'
+          git push origin HEAD:refs/heads/fix/panel-verification-20261002

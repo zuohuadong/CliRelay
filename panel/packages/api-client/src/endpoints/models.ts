@@ -1,0 +1,438 @@
+import { apiCallApi, getApiCallErrorMessage } from "./api-call";
+import { apiClient } from "../client/client";
+
+const DEFAULT_CLAUDE_BASE_URL = "https://api.anthropic.com";
+const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
+const CLAUDE_MODELS_IN_FLIGHT = new Map<string, Promise<ModelInfo[]>>();
+
+export type ModelConfigScope = "active" | "library" | "all";
+
+export type ModelInfo = {
+  id: string;
+  alias?: string;
+  description?: string;
+};
+
+export type ModelConfigItem = {
+  id: string;
+  owned_by: string;
+  display_name?: string;
+  description: string;
+  enabled: boolean;
+  source: string;
+  context_length?: number;
+  max_completion_tokens?: number;
+  supported_parameters?: string[];
+  reasoning?: unknown;
+  knowledge_cutoff?: string;
+  input_modalities?: string[];
+  output_modalities?: string[];
+  supports_vision?: boolean;
+};
+
+export type ModelOwnerPresetItem = {
+  value: string;
+  label: string;
+  description: string;
+  enabled: boolean;
+  modelCount?: number;
+};
+
+export type AuthGroupModelOwnerMappingItem = {
+  auth_group: string;
+  owner: string;
+  updated_at?: string;
+};
+
+const normalizeApiBase = (baseUrl: string): string => {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) return "";
+  return trimmed.replace(/\/+$/g, "");
+};
+
+const buildModelsEndpoint = (baseUrl: string): string => {
+  const normalized = normalizeApiBase(baseUrl);
+  if (!normalized) return "";
+  if (/\/models$/i.test(normalized)) return normalized;
+  return `${normalized}/models`;
+};
+
+const buildV1ModelsEndpoint = (baseUrl: string): string => {
+  const normalized = normalizeApiBase(baseUrl);
+  if (!normalized) return "";
+  if (/\/v1\/models$/i.test(normalized)) return normalized;
+  if (/\/v1$/i.test(normalized)) return `${normalized}/models`;
+  return `${normalized}/v1/models`;
+};
+
+const buildClaudeModelsEndpoint = (baseUrl: string): string => {
+  const normalized = normalizeApiBase(baseUrl);
+  const fallback = normalized || DEFAULT_CLAUDE_BASE_URL;
+  let trimmed = fallback.replace(/\/+$/g, "");
+  trimmed = trimmed.replace(/\/v1\/models$/i, "");
+  trimmed = trimmed.replace(/\/v1(?:\/.*)?$/i, "");
+  return `${trimmed}/v1/models`;
+};
+
+const hasHeader = (headers: Record<string, string>, name: string) => {
+  const target = name.toLowerCase();
+  return Object.keys(headers).some((key) => key.toLowerCase() === target);
+};
+
+const resolveBearerTokenFromAuthorization = (headers: Record<string, string>): string => {
+  const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === "authorization");
+  if (!entry) return "";
+  const value = String(entry[1] ?? "").trim();
+  if (!value) return "";
+  const match = value.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || "";
+};
+
+const buildRequestSignature = (url: string, headers: Record<string, string>) => {
+  const signature = Object.entries(headers)
+    .sort(([a], [b]) => a.toLowerCase().localeCompare(b.toLowerCase()))
+    .map(([key, value]) => `${key}:${value}`)
+    .join("|");
+  return `${url}||${signature}`;
+};
+
+const normalizeModelList = (payload: unknown): ModelInfo[] => {
+  const list = (() => {
+    if (Array.isArray(payload)) return payload;
+    if (payload && typeof payload === "object") {
+      const record = payload as Record<string, unknown>;
+      const data = record.data ?? record.models;
+      if (Array.isArray(data)) return data;
+    }
+    return [];
+  })();
+
+  const seen = new Set<string>();
+  const models: ModelInfo[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const rawId = record.id ?? record.name ?? record.model;
+    const id = String(rawId ?? "").trim();
+    if (!id) continue;
+    const key = id.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const alias = record.alias ?? record.display_name ?? record.displayName;
+    const description = record.description;
+    models.push({
+      id,
+      ...(alias ? { alias: String(alias) } : {}),
+      ...(description ? { description: String(description) } : {}),
+    });
+  }
+  return models.sort((a, b) => a.id.localeCompare(b.id));
+};
+
+const normalizeOwnerValue = (value: string): string =>
+  value.trim().replace(/\s+/g, "-").toLowerCase();
+
+const asNumber = (value: unknown): number => {
+  const num = Number(value);
+  return Number.isFinite(num) && num >= 0 ? num : 0;
+};
+
+const normalizeModelConfig = (raw: Record<string, unknown>): ModelConfigItem | null => {
+  const id = String(raw.id ?? raw.model_id ?? raw.name ?? "").trim();
+  if (!id) return null;
+
+  const supportedParameters = Array.isArray(raw.supported_parameters)
+    ? raw.supported_parameters.map((item) => String(item)).filter(Boolean)
+    : Array.isArray(raw.supportedParameters)
+      ? raw.supportedParameters.map((item) => String(item)).filter(Boolean)
+      : undefined;
+  const inputModalities = Array.isArray(raw.input_modalities)
+    ? raw.input_modalities.map((item) => String(item)).filter(Boolean)
+    : Array.isArray(raw.inputModalities)
+      ? raw.inputModalities.map((item) => String(item)).filter(Boolean)
+      : undefined;
+  const outputModalities = Array.isArray(raw.output_modalities)
+    ? raw.output_modalities.map((item) => String(item)).filter(Boolean)
+    : Array.isArray(raw.outputModalities)
+      ? raw.outputModalities.map((item) => String(item)).filter(Boolean)
+      : undefined;
+  const contextLength = Number(raw.context_length ?? raw.contextLength ?? 0);
+  const maxCompletionTokens = Number(raw.max_completion_tokens ?? raw.maxCompletionTokens ?? 0);
+
+  return {
+    id,
+    owned_by: String(raw.owned_by ?? raw.owner ?? ""),
+    display_name: String(raw.display_name ?? raw.displayName ?? "").trim() || undefined,
+    description: String(raw.description ?? ""),
+    enabled: raw.enabled === false ? false : true,
+    source: String(raw.source ?? ""),
+    ...(contextLength > 0 ? { context_length: contextLength } : {}),
+    ...(maxCompletionTokens > 0 ? { max_completion_tokens: maxCompletionTokens } : {}),
+    ...(supportedParameters?.length ? { supported_parameters: supportedParameters } : {}),
+    ...(raw.reasoning !== undefined && raw.reasoning !== null ? { reasoning: raw.reasoning } : {}),
+    ...(String(raw.knowledge_cutoff ?? raw.knowledgeCutoff ?? "").trim()
+      ? { knowledge_cutoff: String(raw.knowledge_cutoff ?? raw.knowledgeCutoff).trim() }
+      : {}),
+    ...(inputModalities?.length ? { input_modalities: inputModalities } : {}),
+    ...(outputModalities?.length ? { output_modalities: outputModalities } : {}),
+    ...(raw.supports_vision !== undefined || raw.supportsVision !== undefined
+      ? { supports_vision: Boolean(raw.supports_vision ?? raw.supportsVision) }
+      : {}),
+  };
+};
+
+const normalizeModelConfigResponse = (payload: unknown): ModelConfigItem[] => {
+  const record = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const rawList = Array.isArray(record.data)
+    ? record.data
+    : Array.isArray(record.models)
+      ? record.models
+      : Array.isArray(payload)
+        ? payload
+        : [];
+
+  return rawList
+    .map((item) =>
+      item && typeof item === "object"
+        ? normalizeModelConfig(item as Record<string, unknown>)
+        : null,
+    )
+    .filter((item): item is ModelConfigItem => Boolean(item))
+    .sort((a, b) => a.id.localeCompare(b.id));
+};
+
+const normalizeOwnerPreset = (raw: Record<string, unknown>): ModelOwnerPresetItem | null => {
+  const value = normalizeOwnerValue(String(raw.value ?? raw.id ?? raw.owner ?? "")).trim();
+  if (!value) return null;
+  return {
+    value,
+    label: String(raw.label ?? raw.name ?? value).trim() || value,
+    description: String(raw.description ?? ""),
+    enabled: raw.enabled === false ? false : true,
+    modelCount: asNumber(raw.model_count ?? raw.modelCount),
+  };
+};
+
+const normalizeOwnerPresetResponse = (payload: unknown): ModelOwnerPresetItem[] => {
+  const record = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const rawList = Array.isArray(record.items)
+    ? record.items
+    : Array.isArray(record.data)
+      ? record.data
+      : Array.isArray(payload)
+        ? payload
+        : [];
+
+  return rawList
+    .map((item) =>
+      item && typeof item === "object"
+        ? normalizeOwnerPreset(item as Record<string, unknown>)
+        : null,
+    )
+    .filter((item): item is ModelOwnerPresetItem => Boolean(item))
+    .sort((a, b) => a.label.localeCompare(b.label));
+};
+
+const normalizeAuthGroupKey = (value: string): string =>
+  value.trim().replace(/\s+/g, "-").toLowerCase();
+
+const normalizeAuthGroupModelOwnerMappings = (
+  payload: unknown,
+): AuthGroupModelOwnerMappingItem[] => {
+  const record = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const rawList = Array.isArray(record.items)
+    ? record.items
+    : Array.isArray(record.data)
+      ? record.data
+      : Array.isArray(payload)
+        ? payload
+        : [];
+
+  const seen = new Set<string>();
+  const items = rawList
+    .map((item): AuthGroupModelOwnerMappingItem | null => {
+      if (!item || typeof item !== "object") return null;
+      const row = item as Record<string, unknown>;
+      const authGroup = normalizeAuthGroupKey(String(row.auth_group ?? row.authGroup ?? ""));
+      const owner = normalizeOwnerValue(String(row.owner ?? row.owner_value ?? ""));
+      if (!authGroup || authGroup === "all" || !owner || seen.has(authGroup)) return null;
+      seen.add(authGroup);
+      return {
+        auth_group: authGroup,
+        owner,
+        updated_at:
+          typeof row.updated_at === "string"
+            ? row.updated_at
+            : typeof row.updatedAt === "string"
+              ? row.updatedAt
+              : undefined,
+      };
+    })
+    .filter((item): item is AuthGroupModelOwnerMappingItem => item !== null);
+  return items.sort((a, b) => a.auth_group.localeCompare(b.auth_group));
+};
+
+export const modelsApi = {
+  // The catalog probe lives in ./model-test: it is shaped per modality and has
+  // its own task polling, which does not belong in the catalog CRUD surface.
+  buildClaudeModelsEndpoint,
+
+  async listAvailableModels(
+    params: { allowedChannelGroups?: string[]; allowedChannels?: string[] } = {},
+  ) {
+    const query = new URLSearchParams();
+    const groups = (params.allowedChannelGroups ?? [])
+      .map((group) => String(group ?? "").trim())
+      .filter(Boolean);
+    if (groups.length > 0) {
+      query.set("allowed_channel_groups", groups.join(","));
+    }
+    const channels = (params.allowedChannels ?? [])
+      .map((channel) => String(channel ?? "").trim())
+      .filter(Boolean);
+    if (channels.length > 0) {
+      query.set("allowed_channels", channels.join(","));
+    }
+    const qs = query.toString();
+    return normalizeModelList(await apiClient.get(`/models${qs ? `?${qs}` : ""}`));
+  },
+
+  async getModelConfigs(scope: ModelConfigScope = "active") {
+    return normalizeModelConfigResponse(await apiClient.get(`/model-configs?scope=${scope}`));
+  },
+
+  async getModelOwnerPresets() {
+    return normalizeOwnerPresetResponse(await apiClient.get("/model-owner-presets"));
+  },
+
+  async getAuthGroupModelOwnerMappings(options?: { signal?: AbortSignal }) {
+    return normalizeAuthGroupModelOwnerMappings(
+      await (options?.signal
+        ? apiClient.get("/auth-group-model-owner-mappings", { signal: options.signal })
+        : apiClient.get("/auth-group-model-owner-mappings")),
+    );
+  },
+
+  async getAuthGroupModelOwnerMappingMap(options?: { signal?: AbortSignal }) {
+    const items = normalizeAuthGroupModelOwnerMappings(
+      await (options?.signal
+        ? apiClient.get("/auth-group-model-owner-mappings", { signal: options.signal })
+        : apiClient.get("/auth-group-model-owner-mappings")),
+    );
+    return Object.fromEntries(items.map((item) => [item.auth_group, item.owner]));
+  },
+
+  async saveAuthGroupModelOwnerMapping(authGroup: string, owner: string) {
+    const normalizedAuthGroup = normalizeAuthGroupKey(authGroup);
+    if (!normalizedAuthGroup || normalizedAuthGroup === "all") {
+      throw new Error("Invalid auth group");
+    }
+    await apiClient.patch("/auth-group-model-owner-mappings", {
+      auth_group: normalizedAuthGroup,
+      owner: normalizeOwnerValue(owner),
+    });
+  },
+
+  async fetchV1Models(baseUrl: string, apiKey?: string, headers: Record<string, string> = {}) {
+    const endpoint = buildV1ModelsEndpoint(baseUrl);
+    if (!endpoint) {
+      throw new Error("Invalid base url");
+    }
+
+    const resolvedHeaders: Record<string, string> = { ...headers };
+    if (apiKey) {
+      resolvedHeaders.Authorization = `Bearer ${apiKey}`;
+    }
+
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: Object.keys(resolvedHeaders).length ? resolvedHeaders : undefined,
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(text.trim() || `Request failed (${response.status})`);
+    }
+    const payload = (await response.json().catch(() => null)) as unknown;
+    return normalizeModelList(payload);
+  },
+
+  async fetchModelsViaApiCall(
+    baseUrl: string,
+    apiKey?: string,
+    headers: Record<string, string> = {},
+  ) {
+    const endpoint = buildModelsEndpoint(baseUrl);
+    if (!endpoint) {
+      throw new Error("Invalid base url");
+    }
+
+    const resolvedHeaders: Record<string, string> = { ...headers };
+    const hasAuthHeader =
+      typeof resolvedHeaders.Authorization === "string" ||
+      hasHeader(resolvedHeaders, "authorization");
+    if (apiKey && !hasAuthHeader) {
+      resolvedHeaders.Authorization = `Bearer ${apiKey}`;
+    }
+
+    const result = await apiCallApi.request({
+      method: "GET",
+      url: endpoint,
+      header: Object.keys(resolvedHeaders).length ? resolvedHeaders : undefined,
+    });
+
+    if (result.statusCode < 200 || result.statusCode >= 300) {
+      throw new Error(getApiCallErrorMessage(result));
+    }
+
+    return normalizeModelList(result.body ?? result.bodyText);
+  },
+
+  async fetchClaudeModelsViaApiCall(
+    baseUrl: string,
+    apiKey?: string,
+    headers: Record<string, string> = {},
+  ) {
+    const endpoint = buildClaudeModelsEndpoint(baseUrl);
+    if (!endpoint) {
+      throw new Error("Invalid base url");
+    }
+
+    const resolvedHeaders: Record<string, string> = { ...headers };
+    let resolvedApiKey = String(apiKey ?? "").trim();
+    if (!resolvedApiKey && !hasHeader(resolvedHeaders, "x-api-key")) {
+      resolvedApiKey = resolveBearerTokenFromAuthorization(resolvedHeaders);
+    }
+
+    if (resolvedApiKey && !hasHeader(resolvedHeaders, "x-api-key")) {
+      resolvedHeaders["x-api-key"] = resolvedApiKey;
+    }
+    if (!hasHeader(resolvedHeaders, "anthropic-version")) {
+      resolvedHeaders["anthropic-version"] = DEFAULT_ANTHROPIC_VERSION;
+    }
+
+    const signature = buildRequestSignature(endpoint, resolvedHeaders);
+    const existing = CLAUDE_MODELS_IN_FLIGHT.get(signature);
+    if (existing) return existing;
+
+    const request = (async () => {
+      const result = await apiCallApi.request({
+        method: "GET",
+        url: endpoint,
+        header: Object.keys(resolvedHeaders).length ? resolvedHeaders : undefined,
+      });
+
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(getApiCallErrorMessage(result));
+      }
+
+      return normalizeModelList(result.body ?? result.bodyText);
+    })();
+
+    CLAUDE_MODELS_IN_FLIGHT.set(signature, request);
+    try {
+      return await request;
+    } finally {
+      CLAUDE_MODELS_IN_FLIGHT.delete(signature);
+    }
+  },
+};

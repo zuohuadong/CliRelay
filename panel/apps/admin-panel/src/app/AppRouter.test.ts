@@ -1,0 +1,96 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, expect, test } from "vitest";
+
+const appRoot = resolve(__dirname, "..");
+const repoRoot = resolve(__dirname, "../../../..");
+
+const readAppModule = (path: string) => readFileSync(resolve(appRoot, path), "utf8");
+const readRepoModule = (path: string) => readFileSync(resolve(repoRoot, path), "utf8");
+
+describe("AppRouter", () => {
+  test("keeps management routes relative to the /manage basename", () => {
+    const source = readAppModule("app/AppRouter.tsx");
+    const modelsRoute = readRepoModule("pages/models/route.tsx");
+    const accountSecurityRoute = readRepoModule("pages/account-security/route.tsx");
+    const identityRoute = readRepoModule("pages/identity-fingerprint/route.tsx");
+    const ccSwitchRoute = readRepoModule("pages/ccswitch-import-settings/route.tsx");
+    const apiKeyPermissionsRoute = readRepoModule("pages/api-key-permissions/route.tsx");
+    const contentModerationRoute = readRepoModule("pages/content-moderation/route.tsx");
+    // The management-key sidebar fixtures live beside AuthProvider rather than
+    // inside it; the assertions below still guard the same menu entries.
+    const authProvider = readAppModule("app/providers/legacyServiceMenus.ts");
+    const appShell = readAppModule("app/layout/AppShell.tsx");
+
+    expect(source).toContain("pageRoutes");
+    expect(modelsRoute).toMatch(/path:\s*"\/models\/catalog"/);
+    expect(modelsRoute).toContain('{ from: "/manage/models", to: "/models/catalog" }');
+    expect(source).not.toContain('to="/manage/models" replace');
+
+    expect(accountSecurityRoute).toMatch(/path:\s*"\/access\/ai-accounts"/);
+    expect(accountSecurityRoute).toContain(
+      '{ from: "/manage/identity-fingerprint", to: "/access/ai-accounts" }',
+    );
+    expect(accountSecurityRoute).toContain(
+      '{ from: "/system/account-security", to: "/access/ai-accounts" }',
+    );
+
+    expect(identityRoute).toMatch(/path:\s*"\/identity-fingerprint"/);
+    expect(identityRoute).toContain(
+      'redirects: [{ from: "/manage/identity-fingerprint", to: "/access/ai-accounts" }]',
+    );
+
+    expect(ccSwitchRoute).toContain("CcSwitchImportSettingsPage");
+    expect(ccSwitchRoute).toMatch(/path:\s*"\/access\/ccswitch-import-settings"/);
+    expect(ccSwitchRoute).toContain(
+      '{ from: "/manage/ccswitch-import-settings", to: "/access/ccswitch-import-settings" }',
+    );
+    // Tenant-scoped: ordinary tenants have routing.read, not platform system.config.read.
+    expect(ccSwitchRoute).toContain('requiredPermission: "routing.read"');
+
+    expect(apiKeyPermissionsRoute).toContain("ApiKeyPermissionsPage");
+    expect(apiKeyPermissionsRoute).toMatch(/path:\s*"\/access\/api-key-permissions"/);
+    expect(apiKeyPermissionsRoute).toContain(
+      '{ from: "/manage/api-key-permissions", to: "/access/api-key-permissions" }',
+    );
+    expect(apiKeyPermissionsRoute).toContain(
+      '{ from: "/system/api-key-permissions", to: "/access/api-key-permissions" }',
+    );
+
+    expect(contentModerationRoute).toMatch(/path:\s*"\/access\/content-moderation"/);
+    expect(contentModerationRoute).toContain(
+      '{ from: "/runtime/content-moderation", to: "/access/content-moderation" }',
+    );
+    expect(contentModerationRoute).toContain(
+      '{ from: "/manage/runtime/content-moderation", to: "/access/content-moderation" }',
+    );
+    expect(authProvider).toContain('code: "runtime.content-moderation"');
+    expect(authProvider).toContain('parent_code: "group.access"');
+    expect(authProvider).toContain('path: "/access/content-moderation"');
+    expect(appShell).toContain('pathname.startsWith("/access/content-moderation")');
+    expect(appShell).toContain('pathname.startsWith("/runtime/content-moderation")');
+  });
+
+  test("keeps the HTML app loader as the only initial page loader", () => {
+    const routerSource = readAppModule("app/AppRouter.tsx");
+    const protectedRouteSource = readAppModule("app/guards/ProtectedRoute.tsx");
+    const mainSource = readAppModule("main.tsx");
+    const manageEntrySource = readAppModule("manage-entry.tsx");
+
+    expect(mainSource).toContain("dismissAppLoader(true)");
+    expect(manageEntrySource).toContain("dismissAppLoader(true)");
+    expect(mainSource).toContain("installChunkLoadRecoveryHandlers()");
+    expect(manageEntrySource).toContain("installChunkLoadRecoveryHandlers()");
+    expect(routerSource).toContain("const RouteFallback = () => null");
+    expect(routerSource).toContain("ChunkLoadErrorBoundary");
+    expect(routerSource).not.toContain("PageLoader");
+    expect(routerSource).not.toContain('variant="initial"');
+    expect(routerSource).not.toContain('variant="inline"');
+    expect(protectedRouteSource).toContain("if (hasAppLoader()) return null");
+    expect(routerSource).not.toContain(
+      '<Route path="*" element={<Navigate to="/dashboard" replace />} />',
+    );
+    expect(routerSource).toContain('<Route path="*" element={readyRoute(<StaleRoutePage />)} />');
+    expect(routerSource).toContain("window.location.reload()");
+  });
+});

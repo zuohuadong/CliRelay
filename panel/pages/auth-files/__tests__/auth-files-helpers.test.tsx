@@ -1,0 +1,1748 @@
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { useState, type PropsWithChildren } from "react";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { AuthFileItem } from "@code-proxy/api-client";
+import {
+  AUTH_FILE_STATUS_FILTERS,
+  AUTH_FILES_DATA_CACHE_KEY,
+  AUTH_FILES_DATA_CACHE_TTL_MS,
+  AUTH_FILES_UI_STATE_KEY,
+  authFileMatchesStatusFilter,
+  buildUsageIndex,
+  DEFAULT_CACHE_TENANT_ID,
+  pickQuotaPreviewItem,
+  readAuthFilesDataCache,
+  readAuthFilesUiState,
+  resolveAuthFileStatusBuckets,
+  resolveClaudeOAuthHealth,
+  resolveClaudeOAuthHealthBadges,
+  resolveAuthFileDisplayName,
+  resolveAuthFileRestrictionBadges,
+  resolveAuthFileDisplayTags,
+  estimateQuotaBudgetUsd,
+  formatPlanBadgeLabel,
+  mergeAuthFileWithLastGoodStatus,
+  resolveAuthFileDisplayPlanType,
+  resolveAuthFilePlanType,
+  resolveAuthFileSupplementalTags,
+  resolveAuthFileSubscriptionStatus,
+  resolveCodexProMultiplierTier,
+  resolveFileType,
+  resolveAuthFileStats,
+  resolvePlanBadgeClass,
+  sanitizeAuthFilesForCache,
+  setActiveCacheTenantId,
+  setCacheTenantResolver,
+  shouldShowAuthFileDisplayTag,
+  shouldShowAuthFilePlanBadge,
+  writeAuthFilesDataCache,
+  writeAuthFilesUiState,
+} from "@code-proxy/domain";
+import { useAuthFilesListState } from "@pages/auth-files/hooks/useAuthFilesListState";
+import { useAuthFilesDetailEditors } from "@pages/auth-files/hooks/useAuthFilesDetailEditors";
+import { useAuthFilesOAuthConfig } from "@pages/auth-files/hooks/useAuthFilesOAuthConfig";
+import { ThemeProvider } from "@code-proxy/ui";
+import { ToastProvider } from "@code-proxy/ui";
+
+const mocks = vi.hoisted(() => ({
+  getOauthExcludedModels: vi.fn(async () => ({})),
+  getOauthModelAlias: vi.fn(async () => ({ codex: [{ name: "existing", alias: "existing" }] })),
+  downloadText: vi.fn(async () => "{}"),
+  upload: vi.fn(async (_file: File) => ({})),
+  getModelDefinitions: vi.fn(async () => [
+    { id: "existing", display_name: "Existing" },
+    { id: "new-model", display_name: "New Model" },
+  ]),
+}));
+
+vi.mock("@code-proxy/api-client", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@code-proxy/api-client")>();
+  return {
+    ...mod,
+    authFilesApi: {
+      ...mod.authFilesApi,
+      getOauthExcludedModels: mocks.getOauthExcludedModels,
+      getOauthModelAlias: mocks.getOauthModelAlias,
+      downloadText: mocks.downloadText,
+      upload: mocks.upload,
+      getModelDefinitions: mocks.getModelDefinitions,
+    },
+  };
+});
+
+const wrapper = ({ children }: PropsWithChildren) => (
+  <ThemeProvider>
+    <ToastProvider>{children}</ToastProvider>
+  </ThemeProvider>
+);
+
+describe("Auth Files helper coverage", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    setCacheTenantResolver(null);
+    setActiveCacheTenantId(DEFAULT_CACHE_TENANT_ID);
+    mocks.getOauthExcludedModels.mockReset();
+    mocks.getOauthModelAlias.mockReset();
+    mocks.downloadText.mockReset();
+    mocks.upload.mockReset();
+    mocks.getModelDefinitions.mockReset();
+    mocks.getOauthExcludedModels.mockImplementation(async () => ({}));
+    mocks.getOauthModelAlias.mockImplementation(async () => ({
+      codex: [{ name: "existing", alias: "existing" }],
+    }));
+    mocks.downloadText.mockImplementation(async () => "{}");
+    mocks.upload.mockImplementation(async () => ({}));
+    mocks.getModelDefinitions.mockImplementation(async () => [
+      { id: "existing", display_name: "Existing" },
+      { id: "new-model", display_name: "New Model" },
+    ]);
+  });
+
+  afterEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    setCacheTenantResolver(null);
+    setActiveCacheTenantId(DEFAULT_CACHE_TENANT_ID);
+  });
+
+  test("keeps auth-files UI state isolated per tenant and migrates legacy unscoped payload", () => {
+    // Legacy unscoped v3 shape migrates into the default tenant only.
+    window.localStorage.setItem(
+      AUTH_FILES_UI_STATE_KEY,
+      JSON.stringify({ tab: "files", filter: "xai", search: "old", page: 2 }),
+    );
+    setActiveCacheTenantId(DEFAULT_CACHE_TENANT_ID);
+    expect(readAuthFilesUiState()).toEqual({
+      tab: "files",
+      filter: "xai",
+      search: "old",
+      page: 2,
+    });
+    setActiveCacheTenantId("tenant-b");
+    expect(readAuthFilesUiState()).toBeNull();
+
+    writeAuthFilesUiState(
+      { tab: "files", filter: "codex", search: "tenant-a", page: 1 },
+      "tenant-a",
+    );
+    writeAuthFilesUiState(
+      { tab: "files", filter: "qwen", search: "tenant-b", page: 4 },
+      "tenant-b",
+    );
+    expect(readAuthFilesUiState("tenant-a")).toEqual({
+      tab: "files",
+      filter: "codex",
+      search: "tenant-a",
+      page: 1,
+    });
+    expect(readAuthFilesUiState("tenant-b")).toEqual({
+      tab: "files",
+      filter: "qwen",
+      search: "tenant-b",
+      page: 4,
+    });
+    // Writing for one tenant must not clobber the other bucket.
+    writeAuthFilesUiState({ filter: "gemini", page: 1 }, "tenant-a");
+    expect(readAuthFilesUiState("tenant-b")?.filter).toBe("qwen");
+    expect(readAuthFilesUiState("tenant-a")?.filter).toBe("gemini");
+  });
+
+  test("round-trips ui state and sanitized session cache", () => {
+    writeAuthFilesUiState({
+      tab: "files",
+      filter: "codex",
+      search: "oauth",
+      page: 3,
+    });
+    expect(window.localStorage.getItem(AUTH_FILES_UI_STATE_KEY)).toContain('"byTenant"');
+    expect(window.localStorage.getItem(AUTH_FILES_UI_STATE_KEY)).toContain('"filter":"codex"');
+    expect(readAuthFilesUiState()).toEqual({
+      tab: "files",
+      filter: "codex",
+      search: "oauth",
+      page: 3,
+    });
+
+    const rawClaudeOAuthHealth = {
+      enabled: true,
+      status: "refresh_pending",
+      updated_at: "2026-06-23T08:00:00Z",
+      refresh_available: true,
+      last_runtime_status: 401,
+      temporary_unschedulable_until: "2026-06-23T08:10:00Z",
+      temporary_unschedulable_reason: "oauth_401",
+      windows: {
+        five_hour: {
+          status: "rejected",
+          reset_at: "2026-06-23T10:00:00Z",
+          utilization: 1.02,
+          exceeded: true,
+          access_token: "should-not-persist",
+        },
+      },
+      runtime_profile: {
+        name: "claude_oauth_runtime",
+        identity_fingerprint: "claude_headers",
+        transport: "go_http_transport",
+        egress: "proxy_pool",
+      },
+      refresh_token: "should-not-persist",
+    };
+
+    const files: AuthFileItem[] = [
+      {
+        id: "codex-main",
+        name: "codex.json",
+        type: "codex",
+        provider: "codex",
+        label: "Codex Main",
+        email: "codex@example.com",
+        account: "Codex Account",
+        account_type: "oauth",
+        auth_index: "auth-1",
+        authIndex: "auth-1",
+        disabled: false,
+        status: undefined,
+        status_message: undefined,
+        unavailable: undefined,
+        next_retry_after: undefined,
+        restrictions: undefined,
+        modified: 123456,
+        size: 2048,
+        runtimeOnly: true,
+        planType: "pro",
+        shared_subscription_started_at: "2026-07-01T00:00:00.000Z",
+        shared_subscription_expires_at: "2026-08-01T00:00:00.000Z",
+        shared_subscription_source: "signed_claims",
+        account_status_scope: "shared",
+        subject_scope: "shared",
+        share_eligible: true,
+        id_token: {
+          chatgpt_account_id: "acct-1",
+          plan_type: "pro",
+        },
+        access_token: "should-not-persist",
+      } as AuthFileItem,
+      {
+        id: "claude-oauth-main",
+        name: "claude-oauth-primary.json",
+        type: "claude",
+        provider: "claude",
+        label: "Claude OAuth Primary",
+        account_type: "oauth",
+        auth_index: "claude-oauth-1",
+        disabled: false,
+        modified: 1782182400000,
+        size: 1024,
+        claude_oauth_health: rawClaudeOAuthHealth,
+        access_token: "should-not-persist",
+        refresh_token: "should-not-persist",
+      },
+    ];
+
+    const sanitized = sanitizeAuthFilesForCache(files);
+    expect(sanitized).toEqual([
+      {
+        id: "codex-main",
+        name: "codex.json",
+        type: "codex",
+        provider: "codex",
+        label: "Codex Main",
+        email: "codex@example.com",
+        account: "Codex Account",
+        account_type: "oauth",
+        auth_index: "auth-1",
+        authIndex: "auth-1",
+        disabled: false,
+        modified: 123456,
+        modtime: undefined,
+        size: 2048,
+        runtimeOnly: true,
+        runtime_only: undefined,
+        plan_type: undefined,
+        planType: "pro",
+        shared_subscription_started_at: "2026-07-01T00:00:00.000Z",
+        shared_subscription_expires_at: "2026-08-01T00:00:00.000Z",
+        shared_subscription_source: "signed_claims",
+        account_status_scope: "shared",
+        subject_scope: "shared",
+        share_eligible: true,
+        subscription_started_at: undefined,
+        subscriptionStartedAt: undefined,
+        subscription_start_at: undefined,
+        subscriptionStartAt: undefined,
+        subscription_started_at_ms: undefined,
+        subscriptionStartedAtMs: undefined,
+        subscription_period: undefined,
+        subscriptionPeriod: undefined,
+        subscription_expires_at: undefined,
+        subscriptionExpiresAt: undefined,
+        subscription_expires_at_ms: undefined,
+        subscriptionExpiresAtMs: undefined,
+        subscription_remaining_minutes: undefined,
+        subscriptionRemainingMinutes: undefined,
+        subscription_expired: undefined,
+        subscriptionExpired: undefined,
+        default_tags: [],
+        custom_tags: [],
+        hidden_default_tags: [],
+        display_tags: undefined,
+        id_token: {
+          chatgpt_account_id: "acct-1",
+          plan_type: "pro",
+        },
+      },
+      {
+        id: "claude-oauth-main",
+        name: "claude-oauth-primary.json",
+        type: "claude",
+        provider: "claude",
+        label: "Claude OAuth Primary",
+        email: undefined,
+        account: undefined,
+        account_type: "oauth",
+        auth_index: "claude-oauth-1",
+        authIndex: undefined,
+        disabled: false,
+        status: undefined,
+        status_message: undefined,
+        unavailable: undefined,
+        next_retry_after: undefined,
+        restrictions: undefined,
+        modified: 1782182400000,
+        modtime: undefined,
+        size: 1024,
+        runtimeOnly: undefined,
+        runtime_only: undefined,
+        plan_type: undefined,
+        planType: undefined,
+        shared_subscription_started_at: undefined,
+        shared_subscription_expires_at: undefined,
+        shared_subscription_source: undefined,
+        account_status_scope: undefined,
+        subject_scope: undefined,
+        share_eligible: undefined,
+        subscription_started_at: undefined,
+        subscriptionStartedAt: undefined,
+        subscription_start_at: undefined,
+        subscriptionStartAt: undefined,
+        subscription_started_at_ms: undefined,
+        subscriptionStartedAtMs: undefined,
+        subscription_period: undefined,
+        subscriptionPeriod: undefined,
+        subscription_expires_at: undefined,
+        subscriptionExpiresAt: undefined,
+        subscription_expires_at_ms: undefined,
+        subscriptionExpiresAtMs: undefined,
+        subscription_remaining_minutes: undefined,
+        subscriptionRemainingMinutes: undefined,
+        subscription_expired: undefined,
+        subscriptionExpired: undefined,
+        default_tags: [],
+        custom_tags: [],
+        hidden_default_tags: [],
+        display_tags: undefined,
+        claude_oauth_health: {
+          enabled: true,
+          status: "refresh_pending",
+          updated_at: "2026-06-23T08:00:00Z",
+          refresh_available: true,
+          last_runtime_status: 401,
+          temporary_unschedulable_until: "2026-06-23T08:10:00Z",
+          temporary_unschedulable_reason: "oauth_401",
+          windows: {
+            five_hour: {
+              status: "rejected",
+              reset_at: "2026-06-23T10:00:00Z",
+              utilization: 1.02,
+              exceeded: true,
+            },
+          },
+          runtime_profile: {
+            name: "claude_oauth_runtime",
+            identity_fingerprint: "claude_headers",
+            transport: "go_http_transport",
+            egress: "proxy_pool",
+          },
+        },
+        id_token: undefined,
+      },
+    ]);
+    expect(JSON.stringify(sanitized)).not.toContain("should-not-persist");
+
+    const savedAtMs = Date.now();
+    writeAuthFilesDataCache({
+      tenantId: "tenant-a",
+      savedAtMs,
+      files: sanitized,
+      quotaByFileName: {
+        "codex.json": {
+          status: "success",
+          updatedAt: 456,
+          planType: "pro",
+          items: [{ key: "code_5h", label: "m_quota.code_5h", percent: 42, resetAtMs: 789 }],
+        },
+      },
+    });
+    expect(window.localStorage.getItem(AUTH_FILES_DATA_CACHE_KEY)).toContain(
+      `"savedAtMs":${savedAtMs}`,
+    );
+    expect(window.localStorage.getItem(AUTH_FILES_DATA_CACHE_KEY)).toContain("byTenant");
+    expect(readAuthFilesDataCache("tenant-a")).toEqual({
+      tenantId: "tenant-a",
+      savedAtMs,
+      files: sanitized,
+      quotaByFileName: {
+        "codex.json": {
+          status: "success",
+          updatedAt: 456,
+          planType: "pro",
+          items: [{ key: "code_5h", label: "m_quota.code_5h", percent: 42, resetAtMs: 789 }],
+        },
+      },
+    });
+    // Different tenant must not see tenant-a's list/quota payload.
+    expect(readAuthFilesDataCache("tenant-b")).toBeNull();
+  });
+
+  test("treats expired auth-files cache as a miss without reviving stale status data", () => {
+    const now = Date.now();
+    writeAuthFilesDataCache({
+      tenantId: "tenant-a",
+      savedAtMs: now - AUTH_FILES_DATA_CACHE_TTL_MS - 1,
+      files: [{ name: "stale.json", type: "codex" } as AuthFileItem],
+      quotaByFileName: {
+        "stale.json": {
+          status: "success",
+          items: [{ key: "code_5h", label: "m_quota.code_5h", percent: 99 }],
+        },
+      },
+      cycleByAuthIndex: { stale: { calls: 99 } },
+    });
+
+    expect(readAuthFilesDataCache("tenant-a")).toBeNull();
+
+    writeAuthFilesDataCache({
+      tenantId: "tenant-a",
+      savedAtMs: now,
+      files: [{ name: "fresh.json", type: "codex" } as AuthFileItem],
+    });
+    expect(readAuthFilesDataCache("tenant-a")).toEqual({
+      tenantId: "tenant-a",
+      savedAtMs: now,
+      files: [{ name: "fresh.json", type: "codex" }],
+    });
+  });
+
+  test("persists display plan tiers so membership chips warm-paint after remount", () => {
+    const savedAtMs = Date.now();
+    writeAuthFilesDataCache({
+      tenantId: "tenant-a",
+      savedAtMs,
+      files: [{ name: "codex.json", type: "codex" } as AuthFileItem],
+      displayPlanByFileName: {
+        "codex.json": "pro_20x",
+        "skip-me.json": "pro",
+      },
+    });
+    expect(readAuthFilesDataCache("tenant-a")).toEqual({
+      tenantId: "tenant-a",
+      savedAtMs,
+      files: [{ name: "codex.json", type: "codex" }],
+      displayPlanByFileName: { "codex.json": "pro_20x" },
+    });
+
+    // Partial write without displayPlan keeps last-good tiers (list refresh path).
+    writeAuthFilesDataCache({
+      tenantId: "tenant-a",
+      savedAtMs: savedAtMs + 1,
+      files: [{ name: "codex.json", type: "codex" } as AuthFileItem],
+      usageData: { source: [], auth_index: [] },
+    });
+    expect(readAuthFilesDataCache("tenant-a")?.displayPlanByFileName).toEqual({
+      "codex.json": "pro_20x",
+    });
+  });
+
+  test("persists complete quota/connectivity warm-paint data and status-only shells", () => {
+    const savedAtMs = Date.now();
+    writeAuthFilesDataCache({
+      tenantId: "tenant-a",
+      savedAtMs,
+      files: [
+        { name: "codex.json", type: "codex" } as AuthFileItem,
+        { name: "claude.json", type: "anthropic" } as AuthFileItem,
+      ],
+      quotaByFileName: {
+        "codex.json": {
+          status: "success",
+          items: [],
+          planType: "pro",
+          resetCreditCount: 2,
+          resetCreditExpirations: ["2026-08-01T00:00:00Z"],
+        },
+        "claude.json": {
+          status: "success",
+          items: [
+            {
+              key: "five_hour",
+              label: "claude_quota.five_hour",
+              percent: 72,
+              value: "72%",
+              resetAtMs: savedAtMs + 60_000,
+              windowSeconds: 18_000,
+              meta: "warm",
+              type: "rolling",
+            },
+          ],
+        },
+      },
+      connectivityByFileName: {
+        "codex.json": { latencyMs: 88, error: false },
+        "claude.json": { latencyMs: null, error: true },
+        "removed.json": { latencyMs: 9, error: false },
+      },
+    });
+
+    const cached = readAuthFilesDataCache("tenant-a");
+    expect(cached?.quotaByFileName?.["codex.json"]).toMatchObject({
+      items: [],
+      planType: "pro",
+      resetCreditCount: 2,
+      resetCreditExpirations: ["2026-08-01T00:00:00Z"],
+    });
+    expect(cached?.quotaByFileName?.["claude.json"]?.items[0]).toEqual({
+      key: "five_hour",
+      label: "claude_quota.five_hour",
+      percent: 72,
+      value: "72%",
+      resetAtMs: savedAtMs + 60_000,
+      windowSeconds: 18_000,
+      meta: "warm",
+      type: "rolling",
+    });
+    expect(cached?.connectivityByFileName).toEqual({
+      "codex.json": { latencyMs: 88, error: false },
+      "claude.json": { latencyMs: null, error: true },
+    });
+  });
+
+  test("list refresh keeps cached subscription/status projections when omitted", () => {
+    const previous = {
+      name: "claude.json",
+      type: "anthropic",
+      auth_index: "claude-1",
+      auth_subject_id: "subject-1",
+      plan_type: "max_5x",
+      subscription_started_at: "2026-07-01T00:00:00Z",
+      subscription_expires_at: "2026-08-01T00:00:00Z",
+      subscription_period: "monthly",
+      subscription_remaining_minutes: 14_400,
+      shared_subscription_expires_at: "2026-08-01T00:00:00Z",
+      usage_history_complete: true,
+      usage_projected_since: "2026-07-01T00:00:00Z",
+    } as AuthFileItem;
+
+    expect(
+      mergeAuthFileWithLastGoodStatus(
+        { name: "claude.json", type: "anthropic", disabled: false },
+        previous,
+      ),
+    ).toMatchObject(previous);
+  });
+
+  test("list refresh treats omitted runtime restrictions as cleared", () => {
+    const previous = {
+      name: "xai.json",
+      type: "xai",
+      status: "error",
+      unavailable: true,
+      restrictions: [
+        {
+          scope: "auth",
+          status: "error",
+          unavailable: true,
+          http_status: 401,
+          next_retry_after: "2026-07-27T05:49:08.000Z",
+        },
+      ],
+      claude_oauth_health: {
+        status: "refresh_pending",
+        temporary_unschedulable_reason: "oauth_401",
+      },
+    } as AuthFileItem;
+
+    const merged = mergeAuthFileWithLastGoodStatus(
+      {
+        name: "xai.json",
+        type: "xai",
+        status: "active",
+        status_message: "",
+        unavailable: false,
+      },
+      previous,
+    );
+
+    expect(merged.restrictions).toBeUndefined();
+    expect(merged.claude_oauth_health).toBeUndefined();
+    expect(resolveAuthFileRestrictionBadges(merged, Date.parse("2026-07-27T05:38:28.000Z"))).toEqual(
+      [],
+    );
+  });
+
+  test("keeps shared subscription status so the badge can warm-paint", () => {
+    const [cachedFile] = sanitizeAuthFilesForCache([
+      {
+        name: "codex.json",
+        type: "codex",
+        shared_subscription_started_at: "2026-07-01T00:00:00.000Z",
+        shared_subscription_expires_at: "2026-08-01T00:00:00.000Z",
+        shared_subscription_source: "signed_claims",
+      } as AuthFileItem,
+    ]);
+
+    expect(cachedFile).toMatchObject({
+      shared_subscription_started_at: "2026-07-01T00:00:00.000Z",
+      shared_subscription_expires_at: "2026-08-01T00:00:00.000Z",
+      shared_subscription_source: "signed_claims",
+    });
+    expect(
+      cachedFile &&
+        resolveAuthFileSubscriptionStatus(cachedFile, Date.parse("2026-07-05T00:00:00.000Z")),
+    ).toEqual(
+      expect.objectContaining({
+        expiresAtMs: Date.parse("2026-08-01T00:00:00.000Z"),
+        remainingDays: 27,
+        expired: false,
+      }),
+    );
+  });
+
+  test("keeps xAI identity fingerprint summary in sanitized cache", () => {
+    const [file] = sanitizeAuthFilesForCache([
+      {
+        name: "xai.json",
+        type: "xai",
+        provider: "xai",
+        auth_index: "xai-auth",
+        identity_fingerprint_summary: {
+          provider: "xai",
+          account_key: "xai-account",
+          enabled: true,
+          primary_source: "learned",
+          learned: true,
+          learned_fields: 2,
+          effective_fields: 2,
+          source_counts: { learned: 2 },
+          client_product: "grok-cli",
+          version: "0.3.1",
+        },
+      } as AuthFileItem,
+    ]);
+
+    expect(file?.identity_fingerprint_summary).toMatchObject({
+      provider: "xai",
+      account_key: "xai-account",
+      enabled: true,
+      learned_fields: 2,
+      effective_fields: 2,
+      client_product: "grok-cli",
+      version: "0.3.1",
+    });
+  });
+
+  test("shows codex channel emails as the display name without requiring oauth account type", () => {
+    const file = {
+      name: "codex-alpha@example.test-plus.json",
+      type: "codex",
+      provider: "codex",
+      email: "alpha@example.test",
+      label: "",
+    } satisfies AuthFileItem;
+
+    expect(resolveAuthFileDisplayName(file)).toBe("alpha@example.test");
+  });
+
+  test("infers the codex provider from file names that include dotted emails", () => {
+    const file = {
+      name: "codex-pcamtu927@gmail.com-plus.json",
+    } satisfies AuthFileItem;
+
+    expect(resolveFileType(file)).toBe("codex");
+    expect(resolveAuthFileDisplayName(file)).toBe("pcamtu927@gmail.com");
+    expect(resolveAuthFilePlanType(file)).toBe("plus");
+  });
+
+  test("treats an explicit empty display tag list as hiding every tag", () => {
+    const file = {
+      name: "codex.json",
+      default_tags: ["codex", "pro"],
+      custom_tags: ["vip"],
+      display_tags: [],
+    } satisfies AuthFileItem;
+
+    expect(resolveAuthFileDisplayTags(file)).toEqual([]);
+    expect(
+      resolveAuthFileDisplayTags({
+        name: "codex.json",
+        default_tags: ["codex", "pro"],
+        custom_tags: ["vip"],
+      }),
+    ).toEqual(["codex", "pro", "vip"]);
+  });
+
+  test("checks default badge visibility from explicit display tags or hidden defaults", () => {
+    expect(
+      shouldShowAuthFileDisplayTag(
+        {
+          name: "codex.json",
+          default_tags: ["codex", "pro"],
+          hidden_default_tags: [],
+          display_tags: ["codex"],
+        } as AuthFileItem,
+        "pro",
+      ),
+    ).toBe(false);
+    expect(
+      shouldShowAuthFileDisplayTag(
+        {
+          name: "codex.json",
+          default_tags: ["codex", "pro"],
+          hidden_default_tags: ["pro"],
+        } as AuthFileItem,
+        "pro",
+      ),
+    ).toBe(false);
+    expect(
+      shouldShowAuthFileDisplayTag(
+        {
+          name: "legacy.json",
+        } as AuthFileItem,
+        "codex",
+      ),
+    ).toBe(true);
+  });
+
+  test("membership plan badges use distinct solid styles and short labels", () => {
+    expect(formatPlanBadgeLabel("pro")).toBe("PRO");
+    expect(formatPlanBadgeLabel("pro_5x")).toBe("PRO 5X");
+    expect(formatPlanBadgeLabel("pro_20x")).toBe("PRO 20X");
+    expect(formatPlanBadgeLabel("plus")).toBe("PLUS");
+    expect(formatPlanBadgeLabel("team")).toBe("TEAM");
+    expect(formatPlanBadgeLabel("supergrok-heavy")).toBe("SUPERGROK HEAVY");
+    expect(resolvePlanBadgeClass("pro")).toContain("from-amber-300");
+    expect(resolvePlanBadgeClass("plus")).toContain("from-slate-100");
+    expect(resolvePlanBadgeClass("team")).toContain("from-violet-500");
+    expect(resolvePlanBadgeClass("pro_20x")).toContain("from-yellow-300");
+    // Soft info tags use sky-50; membership chips must not.
+    expect(resolvePlanBadgeClass("pro")).not.toContain("bg-sky-50");
+    expect(resolvePlanBadgeClass("plus")).not.toContain("bg-sky-50");
+  });
+
+  test("codex pro multiplier tiers use estimated weekly budget thresholds", () => {
+    expect(estimateQuotaBudgetUsd(100, 10)).toBe(1000);
+    expect(estimateQuotaBudgetUsd(50, 10)).toBe(500);
+    expect(estimateQuotaBudgetUsd(0, 10)).toBeNull();
+    expect(resolveCodexProMultiplierTier("pro", 1500)).toBe("pro_20x");
+    expect(resolveCodexProMultiplierTier("pro", 500)).toBe("pro_5x");
+    expect(resolveCodexProMultiplierTier("pro", 100)).toBe("pro");
+    expect(resolveCodexProMultiplierTier("pro", null)).toBe("pro");
+    // Partial refresh without budget keeps last-known pro_Nx tier instead of flashing PRO.
+    expect(resolveCodexProMultiplierTier("pro", null, "pro_20x")).toBe("pro_20x");
+    expect(resolveCodexProMultiplierTier("pro", null, "pro_5x")).toBe("pro_5x");
+    expect(resolveCodexProMultiplierTier("plus", 2000)).toBe("plus");
+    expect(
+      resolveAuthFileDisplayPlanType(
+        { name: "codex.json", type: "codex", plan_type: "pro" } as AuthFileItem,
+        null,
+        { cycleCostTotal: 120, weeklyQuotaUsedPercent: 10 },
+      ),
+    ).toBe("pro_20x");
+    expect(
+      resolveAuthFileDisplayPlanType(
+        { name: "codex.json", type: "codex", plan_type: "pro" } as AuthFileItem,
+        null,
+        { cycleCostTotal: 30, weeklyQuotaUsedPercent: 10 },
+      ),
+    ).toBe("pro_5x");
+    expect(
+      resolveAuthFileDisplayPlanType(
+        { name: "codex.json", type: "codex", plan_type: "pro" } as AuthFileItem,
+        null,
+        null,
+        "pro_20x",
+      ),
+    ).toBe("pro_20x");
+    expect(
+      resolveAuthFileDisplayPlanType(
+        { name: "xai.json", type: "xai", plan_type: "supergrok" } as AuthFileItem,
+        null,
+        { cycleCostTotal: 30, weeklyQuotaUsedPercent: 10 },
+      ),
+    ).toBe("supergrok");
+    expect(
+      resolveAuthFileDisplayPlanType(
+        { name: "xai.json", type: "xai", plan_type: "supergrok" } as AuthFileItem,
+        null,
+        { cycleCostTotal: 50, weeklyQuotaUsedPercent: 10 },
+      ),
+    ).toBe("supergrok-heavy");
+    expect(
+      resolveAuthFileDisplayPlanType(
+        { name: "xai.json", type: "xai", plan_type: "supergrok" } as AuthFileItem,
+        null,
+        null,
+        "supergrok-heavy",
+      ),
+    ).toBe("supergrok-heavy");
+  });
+
+  test("always shows quota-derived plan badges even when display tags omit them", () => {
+    // xAI SuperGrok is resolved from monthly credits, not auth-file default tags.
+    expect(
+      shouldShowAuthFilePlanBadge(
+        {
+          name: "xai.json",
+          type: "xai",
+          default_tags: ["xai"],
+          display_tags: ["xai"],
+        } as AuthFileItem,
+        "supergrok",
+      ),
+    ).toBe(true);
+    expect(
+      shouldShowAuthFilePlanBadge(
+        {
+          name: "xai.json",
+          type: "xai",
+          default_tags: ["xai"],
+          display_tags: [],
+        } as AuthFileItem,
+        "supergrok-heavy",
+      ),
+    ).toBe(true);
+    // Codex plan tags still respect display_tags / hidden defaults.
+    expect(
+      shouldShowAuthFilePlanBadge(
+        {
+          name: "codex.json",
+          default_tags: ["codex", "pro"],
+          display_tags: ["codex"],
+        } as AuthFileItem,
+        "pro",
+      ),
+    ).toBe(false);
+    expect(
+      shouldShowAuthFilePlanBadge(
+        {
+          name: "codex.json",
+          default_tags: ["codex", "pro"],
+          display_tags: ["codex", "pro"],
+        } as AuthFileItem,
+        "pro",
+      ),
+    ).toBe(true);
+    expect(shouldShowAuthFilePlanBadge({ name: "xai.json" } as AuthFileItem, null)).toBe(false);
+  });
+
+  test("drops stale display tags that no longer match current default or custom tags", () => {
+    const file = {
+      name: "codex.json",
+      plan_type: "free",
+      default_tags: ["codex", "free"],
+      custom_tags: ["vip"],
+      display_tags: ["codex", "plus", "vip"],
+    } satisfies AuthFileItem;
+
+    expect(resolveAuthFileDisplayTags(file)).toEqual(["codex", "vip"]);
+    expect(resolveAuthFileSupplementalTags(file)).toEqual(["vip"]);
+  });
+
+  test("derives active restriction badges with exact remaining time", () => {
+    const nowMs = Date.parse("2026-05-06T08:00:00.000Z");
+    const file = {
+      name: "codex.json",
+      restrictions: [
+        {
+          scope: "auth",
+          http_status: 401,
+          status_message: "unauthorized",
+          next_retry_after: "2026-05-06T09:04:52.000Z",
+        },
+      ],
+    } as AuthFileItem;
+
+    expect(resolveAuthFileRestrictionBadges(file, nowMs)).toEqual([
+      {
+        key: "auth::401:2026-05-06T09:04:52.000Z",
+        label: "401 Error",
+        reason: "unauthorized",
+        recoverAtMs: Date.parse("2026-05-06T09:04:52.000Z"),
+        remainingText: "1h 4m 52s",
+        tone: "danger",
+      },
+    ]);
+  });
+
+  test("ignores model-scoped transport errors as auth-file restriction badges", () => {
+    const rawError =
+      'Post "https://chatgpt.com/backend-api/codex/responses": read tcp [2607:8700:5500:8131::2]:44434->[2a06:98c1:310b::ac40:9bd1]:443: read: connection reset by peer';
+    const file = {
+      name: "codex.json",
+      restrictions: [
+        {
+          scope: "model",
+          model: "gpt-5.4",
+          status: "error",
+          status_message: rawError,
+        },
+      ],
+    } as AuthFileItem;
+
+    expect(resolveAuthFileRestrictionBadges(file, Date.now())).toEqual([]);
+  });
+
+  test("ignores model-scoped 429 usage errors as auth-file restriction badges", () => {
+    const file = {
+      name: "codex.json",
+      restrictions: [
+        {
+          scope: "model",
+          model: "gpt-5.5",
+          http_status: 429,
+          status_message: "usage limit exceeded",
+          quota_exceeded: true,
+          next_retry_after: "2026-05-06T13:00:00.000Z",
+        },
+      ],
+    } as AuthFileItem;
+
+    expect(resolveAuthFileRestrictionBadges(file, Date.parse("2026-05-06T08:00:00.000Z"))).toEqual(
+      [],
+    );
+  });
+
+  
+  test("shows a clear reason for 429 badges without status_message", () => {
+    const file = {
+      name: "xai.json",
+      restrictions: [
+        {
+          scope: "auth",
+          http_status: 429,
+          quota_exceeded: true,
+          reason: "quota",
+          status: "error",
+          unavailable: true,
+        },
+      ],
+    } as AuthFileItem;
+
+    expect(resolveAuthFileRestrictionBadges(file, Date.now())).toEqual([
+      expect.objectContaining({
+        label: "429 Error",
+        reason: "rate limited (HTTP 429)",
+        quotaLimited: true,
+      }),
+    ]);
+  });
+
+test("shows auth-level quota recovery records as 429 restriction badges", () => {
+    const file = {
+      name: "codex.json",
+      restrictions: [
+        {
+          scope: "auth",
+          http_status: 429,
+          quota_exceeded: true,
+          reason: "quota",
+          quota_window: "5h",
+          quota_window_minutes: 300,
+          status: "error",
+          status_message: '{"error":{"type":"usage_limit_reached","message":"usage limit"}}',
+          unavailable: true,
+          next_retry_after: "2026-05-06T13:00:00.000Z",
+        },
+      ],
+    } as AuthFileItem;
+
+    expect(resolveAuthFileRestrictionBadges(file, Date.parse("2026-05-06T08:00:00.000Z"))).toEqual([
+      expect.objectContaining({
+        label: "429 Error",
+        quotaWindow: "5h",
+        quotaWindowMinutes: 300,
+        reason: "usage limit",
+        quotaLimited: true,
+        recoverAtMs: Date.parse("2026-05-06T13:00:00.000Z"),
+      }),
+    ]);
+  });
+
+  test("keeps weekly auth-level quota windows distinct from five-hour windows", () => {
+    const file = {
+      name: "codex.json",
+      restrictions: [
+        {
+          scope: "auth",
+          http_status: 429,
+          quota_exceeded: true,
+          reason: "quota",
+          quota_window: "week",
+          quota_window_minutes: 10080,
+          status_message: '{"error":{"type":"usage_limit_reached","message":"usage limit"}}',
+          next_retry_after: "2026-05-13T08:00:00.000Z",
+        },
+      ],
+    } as AuthFileItem;
+
+    expect(resolveAuthFileRestrictionBadges(file, Date.parse("2026-05-06T08:00:00.000Z"))).toEqual([
+      expect.objectContaining({
+        label: "429 Error",
+        quotaWindow: "week",
+        quotaWindowMinutes: 10080,
+      }),
+    ]);
+  });
+
+  test("xAI week restriction uses weekly_limit resetAtMs as recovery time", () => {
+    const nowMs = Date.parse("2026-07-14T08:00:00.000Z");
+    const weeklyResetAtMs = Date.parse("2026-07-16T07:38:00.000Z");
+    const file = {
+      name: "xai.json",
+      restrictions: [
+        {
+          scope: "auth",
+          http_status: 402,
+          quota_exceeded: true,
+          reason: "quota",
+          quota_window: "week",
+          quota_window_minutes: 10080,
+          status_message: "Grok Build usage balance exhausted",
+          // short local probe cooldown — not user-facing weekly recovery
+          next_retry_after: "2026-07-14T08:01:00.000Z",
+        },
+      ],
+    } as AuthFileItem;
+
+    expect(resolveAuthFileRestrictionBadges(file, nowMs, weeklyResetAtMs)).toEqual([
+      expect.objectContaining({
+        label: "402 Error",
+        quotaWindow: "week",
+        quotaLimited: true,
+        recoverAtMs: weeklyResetAtMs,
+      }),
+    ]);
+  });
+
+  test("Antigravity suppresses auth-level 429 badge when account is not completely unavailable", () => {
+    const partiallyExhaustedFile = {
+      name: "antigravity.json",
+      type: "antigravity",
+      unavailable: false,
+      restrictions: [
+        {
+          scope: "auth",
+          http_status: 429,
+          quota_exceeded: true,
+          reason: "quota",
+          status_message: "Resource has been exhausted",
+        },
+      ],
+    } as AuthFileItem;
+
+    // Should NOT show top-level 429 badge
+    expect(resolveAuthFileRestrictionBadges(partiallyExhaustedFile, Date.now())).toEqual([]);
+    expect(Array.from(resolveAuthFileStatusBuckets(partiallyExhaustedFile))).not.toContain("http-429");
+
+    const fullyUnavailableFile = {
+      name: "antigravity.json",
+      type: "antigravity",
+      unavailable: true,
+      restrictions: [
+        {
+          scope: "auth",
+          http_status: 429,
+          quota_exceeded: true,
+          reason: "quota",
+          status_message: "Resource has been exhausted",
+        },
+      ],
+    } as AuthFileItem;
+
+    // When fully unavailable, SHOULD show 429
+    expect(resolveAuthFileRestrictionBadges(fullyUnavailableFile, Date.now()).length).toBe(1);
+    expect(Array.from(resolveAuthFileStatusBuckets(fullyUnavailableFile))).toContain("http-429");
+  });
+
+  test("does not derive restriction badges from normal auth status", () => {
+    expect(
+      resolveAuthFileRestrictionBadges({
+        name: "codex.json",
+        status: "active",
+        unavailable: false,
+      } as AuthFileItem),
+    ).toEqual([]);
+  });
+
+  test("derives Claude OAuth health badges from refresh pending and Anthropic windows", () => {
+    const nowMs = Date.parse("2026-06-23T08:00:00.000Z");
+    const file = {
+      name: "claude-oauth-primary.json",
+      type: "claude",
+      provider: "claude",
+      account_type: "oauth",
+      claude_oauth_health: {
+        enabled: true,
+        status: "refresh_pending",
+        refresh_available: true,
+        last_runtime_status: 401,
+        temporary_unschedulable_until: "2026-06-23T08:10:00.000Z",
+        temporary_unschedulable_reason: "oauth_401",
+        windows: {
+          five_hour: {
+            status: "rejected",
+            reset_at: "2026-06-23T10:00:00.000Z",
+            utilization: 1.02,
+            exceeded: true,
+          },
+          seven_day: {
+            status: "allowed",
+            utilization: 0.32,
+            exceeded: false,
+          },
+        },
+      },
+    } satisfies AuthFileItem;
+
+    expect(resolveClaudeOAuthHealth(file)).toEqual(
+      expect.objectContaining({
+        status: "refresh_pending",
+        refresh_available: true,
+        last_runtime_status: 401,
+      }),
+    );
+    expect(resolveClaudeOAuthHealthBadges(file, nowMs)).toEqual([
+      expect.objectContaining({
+        key: "refresh-pending",
+        label: "OAuth refresh pending",
+        resetAtMs: Date.parse("2026-06-23T08:10:00.000Z"),
+      }),
+      expect.objectContaining({
+        key: "five-hour-limited",
+        label: "5h limited",
+        resetAtMs: Date.parse("2026-06-23T10:00:00.000Z"),
+        utilization: 1.02,
+      }),
+    ]);
+  });
+
+  test("derives Claude OAuth health badges from seven-day Anthropic windows", () => {
+    const nowMs = Date.parse("2026-06-23T08:00:00.000Z");
+    const file = {
+      name: "claude-oauth-primary.json",
+      type: "claude",
+      provider: "claude",
+      account_type: "oauth",
+      claude_oauth_health: {
+        enabled: true,
+        status: "exhausted",
+        last_runtime_status: 429,
+        temporary_unschedulable_until: "2026-06-26T08:00:00.000Z",
+        temporary_unschedulable_reason: "anthropic_7d_window_exhausted",
+        windows: {
+          five_hour: {
+            status: "allowed",
+            utilization: 0.42,
+            exceeded: false,
+          },
+          seven_day: {
+            status: "allowed_warning",
+            reset_at: "2026-06-26T08:00:00.000Z",
+            utilization: 1.15,
+            surpassed_threshold: true,
+          },
+        },
+      },
+    } satisfies AuthFileItem;
+
+    expect(resolveClaudeOAuthHealthBadges(file, nowMs)).toEqual([
+      expect.objectContaining({
+        key: "seven-day-limited",
+        label: "7d limited",
+        resetAtMs: Date.parse("2026-06-26T08:00:00.000Z"),
+        utilization: 1.15,
+      }),
+    ]);
+    expect(Array.from(resolveAuthFileStatusBuckets(file))).toContain("http-429");
+  });
+
+  test("does not show an expired Claude OAuth refresh-pending badge", () => {
+    const file = {
+      name: "claude-oauth-primary.json",
+      type: "claude",
+      provider: "claude",
+      account_type: "oauth",
+      claude_oauth_health: {
+        enabled: true,
+        status: "refresh_pending",
+        last_runtime_status: 401,
+        temporary_unschedulable_until: "2026-06-23T08:10:00.000Z",
+        temporary_unschedulable_reason: "oauth_401",
+      },
+    } satisfies AuthFileItem;
+
+    expect(resolveClaudeOAuthHealthBadges(file, Date.parse("2026-06-23T08:11:00.000Z"))).toEqual(
+      [],
+    );
+  });
+
+  test("does not expose Claude OAuth health badges for ordinary Claude API key files", () => {
+    const file = {
+      name: "claude-api-key.json",
+      type: "claude",
+      provider: "claude",
+      account_type: "api_key",
+    } satisfies AuthFileItem;
+
+    expect(resolveClaudeOAuthHealth(file)).toBeNull();
+    expect(resolveClaudeOAuthHealthBadges(file)).toEqual([]);
+  });
+
+  test("ignores contaminated Claude OAuth health on explicit Claude API key files", () => {
+    const file = {
+      name: "claude-api-key.json",
+      type: "claude",
+      provider: "claude",
+      account_type: "api_key",
+      claude_oauth_health: {
+        enabled: true,
+        status: "refresh_pending",
+        last_runtime_status: 401,
+        temporary_unschedulable_until: "2026-06-23T08:10:00.000Z",
+        windows: {
+          seven_day: {
+            status: "rejected",
+            utilization: 1,
+            exceeded: true,
+          },
+        },
+      },
+    } satisfies AuthFileItem;
+
+    expect(resolveClaudeOAuthHealth(file)).toBeNull();
+    expect(resolveClaudeOAuthHealthBadges(file, Date.parse("2026-06-23T08:00:00.000Z"))).toEqual(
+      [],
+    );
+    // 未被禁用的账号始终命中 enabled 桶，除此之外不应出现任何错误桶。
+    expect(Array.from(resolveAuthFileStatusBuckets(file))).toEqual(["enabled"]);
+  });
+
+  test("classifies Claude OAuth health into auth and 429 status buckets", () => {
+    const file = {
+      name: "claude-oauth-primary.json",
+      type: "claude",
+      provider: "claude",
+      account_type: "oauth",
+      claude_oauth_health: {
+        enabled: true,
+        status: "refresh_pending",
+        last_runtime_status: 401,
+        temporary_unschedulable_reason: "anthropic_5h_window_exhausted",
+        windows: {
+          five_hour: {
+            status: "rejected",
+            utilization: 1,
+            exceeded: true,
+          },
+        },
+      },
+    } satisfies AuthFileItem;
+
+    expect(Array.from(resolveAuthFileStatusBuckets(file)).sort()).toEqual([
+      "enabled",
+      "http-429",
+      "http-auth",
+    ]);
+  });
+
+  test("classifies auth files into enabled / disabled status buckets", () => {
+    const enabledFile = {
+      name: "codex-enabled.json",
+      type: "codex",
+      provider: "codex",
+    } satisfies AuthFileItem;
+    const disabledFile = {
+      name: "codex-disabled.json",
+      type: "codex",
+      provider: "codex",
+      disabled: true,
+    } satisfies AuthFileItem;
+    // 启用但上游报错的账号：错误桶不该把它挤出「启用」筛选。
+    const enabledWithErrorFile = {
+      name: "codex-rate-limited.json",
+      type: "codex",
+      provider: "codex",
+      restrictions: [{ scope: "auth", http_status: 429, reason: "quota" }],
+    } satisfies AuthFileItem;
+
+    expect(Array.from(resolveAuthFileStatusBuckets(enabledFile))).toEqual(["enabled"]);
+    expect(Array.from(resolveAuthFileStatusBuckets(disabledFile))).toEqual(["disabled"]);
+    expect(Array.from(resolveAuthFileStatusBuckets(enabledWithErrorFile)).sort()).toEqual([
+      "enabled",
+      "http-429",
+    ]);
+
+    expect(authFileMatchesStatusFilter(enabledFile, "enabled")).toBe(true);
+    expect(authFileMatchesStatusFilter(enabledWithErrorFile, "enabled")).toBe(true);
+    expect(authFileMatchesStatusFilter(disabledFile, "enabled")).toBe(false);
+    expect(authFileMatchesStatusFilter(disabledFile, "disabled")).toBe(true);
+    expect(AUTH_FILE_STATUS_FILTERS).toContain("enabled");
+  });
+
+  test("prefers current auth-file plan metadata over cached quota plan", () => {
+    expect(
+      resolveAuthFilePlanType(
+        {
+          name: "codex.json",
+          plan_type: "free",
+        } as AuthFileItem,
+        {
+          status: "success",
+          planType: "plus",
+          items: [],
+          updatedAt: Date.now(),
+        },
+      ),
+    ).toBe("free");
+    expect(
+      resolveAuthFilePlanType(
+        {
+          name: "codex.json",
+        } as AuthFileItem,
+        {
+          status: "success",
+          planType: "plus",
+          items: [],
+          updatedAt: Date.now(),
+        },
+      ),
+    ).toBe("plus");
+  });
+
+  test("aggregates auth file usage and picks quota preview entries", () => {
+    const usage = buildUsageIndex({
+      source: [{ entity_name: "codex-main.json", requests: 8, failed: 3 }],
+      auth_index: [{ entity_name: "42", requests: 10, failed: 1 }],
+    } as any);
+
+    const authIndexedFile = {
+      name: "codex-main.json",
+      auth_index: "42",
+    } as AuthFileItem;
+    expect(resolveAuthFileStats(authIndexedFile, usage.index)).toEqual({ success: 9, failure: 1 });
+
+    const sourceOnlyFile = {
+      name: "codex-main.json",
+    } as AuthFileItem;
+    expect(resolveAuthFileStats(sourceOnlyFile, usage.index)).toEqual({ success: 5, failure: 3 });
+
+    const quotaItems = [
+      { label: "m_quota.code_weekly", percent: 80 } as any,
+      { label: "m_quota.code_5h", percent: 50 } as any,
+    ];
+    expect(pickQuotaPreviewItem(quotaItems, "5h")?.label).toBe("m_quota.code_5h");
+    expect(pickQuotaPreviewItem(quotaItems, "week")?.label).toBe("m_quota.code_weekly");
+  });
+
+  test("derives subscription expiration from start time and billing period", () => {
+    const monthly = resolveAuthFileSubscriptionStatus(
+      {
+        name: "monthly.json",
+        subscription_started_at: "2026-04-01T00:00:00.000Z",
+        subscription_period: "monthly",
+      } as AuthFileItem,
+      Date.parse("2026-04-26T00:00:00.000Z"),
+    );
+    expect(monthly).toEqual(
+      expect.objectContaining({
+        expiresAtMs: Date.parse("2026-05-01T00:00:00.000Z"),
+        remainingDays: 5,
+        expired: false,
+        tone: "urgent",
+      }),
+    );
+
+    const yearly = resolveAuthFileSubscriptionStatus(
+      {
+        name: "yearly.json",
+        subscription_started_at: "2025-05-01T00:00:00.000Z",
+        subscription_period: "yearly",
+      } as AuthFileItem,
+      Date.parse("2026-04-26T00:00:00.000Z"),
+    );
+    expect(yearly).toEqual(
+      expect.objectContaining({
+        expiresAtMs: Date.parse("2026-05-01T00:00:00.000Z"),
+        remainingDays: 5,
+        expired: false,
+        tone: "urgent",
+      }),
+    );
+  });
+
+  test("prefers tenant manual subscription override over shared provider claims", () => {
+    // Manual override exists so stale JWT claims (e.g. expired until 7/11 after renew) lose.
+    const status = resolveAuthFileSubscriptionStatus(
+      {
+        name: "codex.json",
+        subscription_started_at: "2026-07-11T00:00:00.000Z",
+        subscription_period: "monthly",
+        shared_subscription_started_at: "2026-06-11T00:00:00.000Z",
+        shared_subscription_expires_at: "2026-07-11T00:00:00.000Z",
+        shared_subscription_source: "signed_claims",
+      } as AuthFileItem,
+      Date.parse("2026-07-21T00:00:00.000Z"),
+    );
+    expect(status).toEqual(
+      expect.objectContaining({
+        startedAtMs: Date.parse("2026-07-11T00:00:00.000Z"),
+        expiresAtMs: Date.parse("2026-08-11T00:00:00.000Z"),
+        remainingDays: 21,
+        expired: false,
+        tone: "active",
+      }),
+    );
+  });
+
+  test("shows remaining days from shared expires alone", () => {
+    const status = resolveAuthFileSubscriptionStatus(
+      {
+        name: "codex.json",
+        shared_subscription_expires_at: "2026-08-01T00:00:00.000Z",
+        shared_subscription_source: "signed_claims",
+      } as AuthFileItem,
+      Date.parse("2026-07-06T00:00:00.000Z"),
+    );
+    expect(status).toEqual(
+      expect.objectContaining({
+        expiresAtMs: Date.parse("2026-08-01T00:00:00.000Z"),
+        remainingDays: 26,
+        expired: false,
+        tone: "active",
+      }),
+    );
+  });
+
+  test("filters auth files, paginates, and prunes runtime-only selections", async () => {
+    const files = [
+      { name: "beta.json", type: "codex", provider: "codex" },
+      { name: "alpha.json", type: "codex", provider: "codex" },
+      { name: "runtime.json", type: "codex", provider: "codex", runtimeOnly: true },
+      { name: "gemini.json", type: "gemini-cli", provider: "gemini-cli" },
+    ] as AuthFileItem[];
+
+    const { result } = renderHook(
+      () => {
+        const [page, setPage] = useState(9);
+        const [selectedFileNames, setSelectedFileNames] = useState(["alpha.json", "runtime.json"]);
+        return useAuthFilesListState({
+          files,
+          filter: "codex",
+          tagFilter: "",
+          statusFilter: "all",
+          search: ".json",
+          page,
+          pageSize: 2,
+          setPage,
+          selectedFileNames,
+          setSelectedFileNames,
+        });
+      },
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.safePage).toBe(2);
+      expect(result.current.filteredFiles.map((file) => file.name)).toEqual([
+        "alpha.json",
+        "beta.json",
+        "runtime.json",
+      ]);
+      expect(result.current.pageItems.map((file) => file.name)).toEqual(["runtime.json"]);
+      expect(Array.from(result.current.selectedFileNameSet)).toEqual(["alpha.json"]);
+      expect(result.current.filterCounts.counts.codex).toBe(3);
+      expect(result.current.selectableFilteredFiles.map((file) => file.name)).toEqual([
+        "alpha.json",
+        "beta.json",
+      ]);
+    });
+  });
+
+  test("counts and filters enabled auth files", async () => {
+    const files = [
+      { name: "alpha.json", type: "codex", provider: "codex" },
+      { name: "beta.json", type: "codex", provider: "codex", disabled: true },
+      {
+        name: "gamma.json",
+        type: "codex",
+        provider: "codex",
+        restrictions: [{ scope: "auth", http_status: 429, reason: "quota" }],
+      },
+    ] as AuthFileItem[];
+
+    const { result } = renderHook(
+      () => {
+        const [page, setPage] = useState(1);
+        const [selectedFileNames, setSelectedFileNames] = useState<string[]>([]);
+        return useAuthFilesListState({
+          files,
+          filter: "all",
+          tagFilter: "",
+          statusFilter: "enabled",
+          search: "",
+          page,
+          pageSize: 10,
+          setPage,
+          selectedFileNames,
+          setSelectedFileNames,
+        });
+      },
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.statusFilterCounts.enabled).toBe(2);
+      expect(result.current.statusFilterCounts.disabled).toBe(1);
+      expect(result.current.filteredFiles.map((file) => file.name)).toEqual([
+        "alpha.json",
+        "gamma.json",
+      ]);
+    });
+  });
+
+  test("transitions oauth alias import state and de-duplicates imported models", async () => {
+    const { result } = renderHook(() => useAuthFilesOAuthConfig("alias"), { wrapper });
+
+    await act(async () => {
+      await result.current.refreshAlias();
+    });
+
+    expect(result.current.aliasEditing.codex).toEqual([
+      { id: expect.any(String), name: "existing", alias: "existing" },
+    ]);
+
+    await act(async () => {
+      await result.current.openImport("codex");
+    });
+
+    await waitFor(() => {
+      expect(result.current.importOpen).toBe(true);
+      expect(result.current.importLoading).toBe(false);
+      expect(result.current.importModels.map((item) => item.id)).toEqual(["existing", "new-model"]);
+    });
+
+    await act(async () => {
+      result.current.applyImport();
+    });
+
+    expect(result.current.importOpen).toBe(false);
+    expect(result.current.aliasEditing.codex).toEqual([
+      { id: expect.any(String), name: "existing", alias: "existing" },
+      { id: expect.any(String), name: "new-model", alias: "new-model" },
+    ]);
+  });
+
+  test("edits auth file proxy_id together with prefix and proxy_url", async () => {
+    let uploadedText = "";
+    mocks.downloadText.mockImplementation(async () =>
+      JSON.stringify({
+        prefix: "codex-main",
+        proxy_url: "http://fallback.example:7890",
+        proxy_id: "hk",
+      }),
+    );
+    mocks.upload.mockImplementation(async (file: File) => {
+      uploadedText = await file.text();
+      return {};
+    });
+
+    const loadAll = vi.fn(async (): Promise<AuthFileItem[]> => []);
+    const { result } = renderHook(() => useAuthFilesDetailEditors(loadAll), { wrapper });
+
+    await act(async () => {
+      result.current.setDetailFile({ name: "codex.json" } as AuthFileItem);
+      result.current.setDetailOpen(true);
+      result.current.setDetailTab("fields");
+    });
+
+    await waitFor(() => {
+      expect(result.current.prefixProxyEditor.proxyId).toBe("hk");
+    });
+
+    await act(async () => {
+      result.current.setPrefixProxyEditor((prev) => ({
+        ...prev,
+        proxyId: "jp",
+      }));
+    });
+
+    expect(result.current.prefixProxyUpdatedText).toContain('"proxy_id": "jp"');
+
+    await act(async () => {
+      await result.current.savePrefixProxy();
+    });
+
+    expect(mocks.upload).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(uploadedText)).toEqual({
+      prefix: "codex-main",
+      proxy_url: "http://fallback.example:7890",
+      proxy_id: "jp",
+    });
+    expect(loadAll).toHaveBeenCalledTimes(1);
+  });
+
+  test("edits and serializes concurrency_limit in prefixProxyEditor", async () => {
+    let uploadedText = "";
+    mocks.downloadText.mockImplementation(async () =>
+      JSON.stringify({
+        type: "codex",
+        concurrency_limit: 3,
+      }),
+    );
+    mocks.upload.mockImplementation(async (file: File) => {
+      uploadedText = await file.text();
+      return {};
+    });
+
+    const loadAll = vi.fn(async (): Promise<AuthFileItem[]> => []);
+    const { result } = renderHook(() => useAuthFilesDetailEditors(loadAll), { wrapper });
+
+    await act(async () => {
+      result.current.setDetailFile({ name: "codex.json" } as AuthFileItem);
+      result.current.setDetailOpen(true);
+      result.current.setDetailTab("fields");
+    });
+
+    await waitFor(() => {
+      expect(result.current.prefixProxyEditor.concurrencyLimit).toBe("3");
+    });
+    expect(result.current.prefixProxyDirty).toBe(false);
+
+    await act(async () => {
+      result.current.setPrefixProxyEditor((prev) => ({
+        ...prev,
+        concurrencyLimit: "7",
+      }));
+    });
+
+    expect(result.current.prefixProxyDirty).toBe(true);
+    expect(result.current.prefixProxyUpdatedText).toContain('"concurrency_limit": 7');
+
+    await act(async () => {
+      await result.current.savePrefixProxy();
+    });
+
+    expect(mocks.upload).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(uploadedText)).toEqual({
+      type: "codex",
+      concurrency_limit: 7,
+    });
+  });
+
+  test("edits and serializes codex_convergence_mode in prefixProxyEditor", async () => {
+    let uploadedText = "";
+    mocks.downloadText.mockImplementation(async () =>
+      JSON.stringify({
+        type: "codex",
+        codex_convergence_mode: "device",
+      }),
+    );
+    mocks.upload.mockImplementation(async (file: File) => {
+      uploadedText = await file.text();
+      return {};
+    });
+
+    const loadAll = vi.fn(async (): Promise<AuthFileItem[]> => []);
+    const { result } = renderHook(() => useAuthFilesDetailEditors(loadAll), { wrapper });
+
+    await act(async () => {
+      result.current.setDetailFile({ name: "codex.json" } as AuthFileItem);
+      result.current.setDetailOpen(true);
+      result.current.setDetailTab("fields");
+    });
+
+    await waitFor(() => {
+      expect(result.current.prefixProxyEditor.codexConvergenceMode).toBe("device");
+    });
+    expect(result.current.prefixProxyDirty).toBe(false);
+
+    await act(async () => {
+      result.current.setPrefixProxyEditor((prev) => ({
+        ...prev,
+        codexConvergenceMode: "session",
+      }));
+    });
+
+    expect(result.current.prefixProxyDirty).toBe(true);
+    expect(result.current.prefixProxyUpdatedText).toContain('"codex_convergence_mode": "session"');
+
+    await act(async () => {
+      await result.current.savePrefixProxy();
+    });
+
+    expect(mocks.upload).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(uploadedText)).toEqual({
+      type: "codex",
+      codex_convergence_mode: "session",
+    });
+  });
+
+  test("edits and serializes codex_service_tier in prefixProxyEditor", async () => {
+    let uploadedText = "";
+    mocks.downloadText.mockImplementation(async () =>
+      JSON.stringify({
+        type: "codex",
+        codex_service_tier: "default",
+      }),
+    );
+    mocks.upload.mockImplementation(async (file: File) => {
+      uploadedText = await file.text();
+      return {};
+    });
+
+    const loadAll = vi.fn(async (): Promise<AuthFileItem[]> => []);
+    const { result } = renderHook(() => useAuthFilesDetailEditors(loadAll), { wrapper });
+
+    await act(async () => {
+      result.current.setDetailFile({ name: "codex.json" } as AuthFileItem);
+      result.current.setDetailOpen(true);
+      result.current.setDetailTab("fields");
+    });
+
+    await waitFor(() => {
+      expect(result.current.prefixProxyEditor.codexServiceTier).toBe("default");
+    });
+    expect(result.current.prefixProxyDirty).toBe(false);
+
+    await act(async () => {
+      result.current.setPrefixProxyEditor((prev) => ({
+        ...prev,
+        codexServiceTier: "priority",
+      }));
+    });
+
+    expect(result.current.prefixProxyDirty).toBe(true);
+    expect(result.current.prefixProxyUpdatedText).toContain('"codex_service_tier": "priority"');
+
+    await act(async () => {
+      await result.current.savePrefixProxy();
+    });
+
+    expect(mocks.upload).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(uploadedText)).toEqual({
+      type: "codex",
+      codex_service_tier: "priority",
+    });
+  });
+});

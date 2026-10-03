@@ -1,0 +1,212 @@
+import {
+  createContext,
+  use,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ButtonHTMLAttributes,
+  type HTMLAttributes,
+  type PropsWithChildren,
+} from "react";
+import { motion } from "framer-motion";
+import type { ControlSize } from "../utils/controlStyles";
+
+type TabsValue = string;
+
+/**
+ * `neutral` 是管理后台一直在用的中性胶囊；`brand` 用品牌主色填充选中项，
+ * 供门户等需要跟落地页视觉统一的场景使用。默认保持 neutral，避免影响既有页面。
+ */
+export type TabsTone = "neutral" | "brand";
+
+interface TabsContextState {
+  value: TabsValue;
+  onValueChange: (next: TabsValue) => void;
+  size: ControlSize;
+  tone: TabsTone;
+}
+
+const tabsListHeightBySize: Record<ControlSize, string> = {
+  sm: "h-8",
+  default: "h-9",
+  lg: "h-10",
+};
+
+const tabsTriggerHeightBySize: Record<ControlSize, string> = {
+  sm: "h-7",
+  default: "h-8",
+  lg: "h-9",
+};
+
+const tabsTriggerPaddingBySize: Record<ControlSize, string> = {
+  sm: "px-2.5",
+  default: "px-3",
+  lg: "px-4",
+};
+
+const tabsTriggerTextBySize: Record<ControlSize, string> = {
+  sm: "text-xs",
+  default: "text-xs",
+  lg: "text-sm",
+};
+
+const TabsContext = createContext<TabsContextState | null>(null);
+
+export function Tabs({
+  value,
+  onValueChange,
+  size = "default",
+  tone = "neutral",
+  children,
+}: PropsWithChildren<{
+  value: TabsValue;
+  onValueChange: (next: TabsValue) => void;
+  size?: ControlSize;
+  tone?: TabsTone;
+}>) {
+  const valueObj = useMemo<TabsContextState>(
+    () => ({ value, onValueChange, size, tone }),
+    [onValueChange, size, tone, value],
+  );
+  return <TabsContext value={valueObj}>{children}</TabsContext>;
+}
+
+export function TabsList({
+  children,
+  className,
+  ...divProps
+}: PropsWithChildren<HTMLAttributes<HTMLDivElement>>) {
+  const { size, value, tone } = useTabs();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [indicator, setIndicator] = useState<{ x: number; width: number } | null>(null);
+
+  const updateIndicator = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const activeButton = container.querySelector<HTMLButtonElement>(
+      `[data-tab-value="${CSS.escape(value)}"]`,
+    );
+    if (!activeButton) {
+      setIndicator(null);
+      return;
+    }
+
+    setIndicator({
+      x: activeButton.offsetLeft,
+      width: activeButton.offsetWidth,
+    });
+  }, [value]);
+
+  useLayoutEffect(() => {
+    updateIndicator();
+  }, [updateIndicator]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const observer = new ResizeObserver(updateIndicator);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [updateIndicator]);
+
+  return (
+    <div
+      ref={containerRef}
+      {...divProps}
+      role="tablist"
+      className={[
+        // w-fit + self-start: stay content-sized even when parent is flex-col
+        // (default align-items:stretch would stretch the pill bar full width)
+        // overscroll-x-contain: keep edge bounce on the tab strip only; without it,
+        // horizontal overscroll chains to the viewport and rubber-bands PageBackground.
+        "scrollbar-hidden relative inline-flex w-fit max-w-full shrink-0 self-start gap-0.5 overflow-x-auto overscroll-x-contain whitespace-nowrap rounded-full bg-[#EBEBEC] p-0.5 dark:bg-[#27272A]",
+        tabsListHeightBySize[size],
+        className,
+      ].join(" ")}
+    >
+      {indicator ? (
+        <motion.div
+          aria-hidden="true"
+          className={[
+            "pointer-events-none absolute bottom-0.5 left-0 top-0.5 z-0 rounded-full",
+            tone === "brand"
+              ? "bg-indigo-600 dark:bg-indigo-500"
+              : "bg-white shadow-sm shadow-black/4 dark:bg-[#46464C] dark:shadow-none",
+          ].join(" ")}
+          initial={false}
+          animate={{ x: indicator.x, width: indicator.width }}
+          transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+        />
+      ) : null}
+      {children}
+    </div>
+  );
+}
+
+export function TabsTrigger({
+  value,
+  children,
+  ...buttonProps
+}: PropsWithChildren<
+  {
+    value: TabsValue;
+  } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onClick" | "type" | "value">
+>) {
+  const { size, value: current, onValueChange, tone } = useTabs();
+  const active = current === value;
+
+  const onClick = useCallback(() => {
+    onValueChange(value);
+  }, [onValueChange, value]);
+
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      data-tab-value={value}
+      onClick={onClick}
+      {...buttonProps}
+      className={[
+        "relative z-10 inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-full transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 dark:focus-visible:ring-white/20",
+        tabsTriggerHeightBySize[size],
+        tabsTriggerPaddingBySize[size],
+        tabsTriggerTextBySize[size],
+        active
+          ? tone === "brand"
+            ? "font-semibold text-white"
+            : "font-semibold text-[#18181B] dark:text-white"
+          : "font-medium text-[#96969B] hover:text-[#18181B] dark:text-[#9F9FA8] dark:hover:text-white",
+        buttonProps.className,
+      ].join(" ")}
+    >
+      {children}
+    </button>
+  );
+}
+
+export function TabsContent({
+  value,
+  children,
+  className,
+}: PropsWithChildren<{
+  value: TabsValue;
+  className?: string;
+}>) {
+  const { value: current } = useTabs();
+  if (current !== value) return null;
+  return <div className={className}>{children}</div>;
+}
+
+const useTabs = (): TabsContextState => {
+  const context = use(TabsContext);
+  if (!context) {
+    throw new Error("Tabs components must be used within <Tabs>");
+  }
+  return context;
+};

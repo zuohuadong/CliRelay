@@ -1,0 +1,232 @@
+import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { createPortal } from "react-dom";
+import { AlertTriangle, X, Loader2, Copy, Check } from "lucide-react";
+import { usageApi } from "@code-proxy/api-client";
+import { extractErrorFromLogContent } from "../error-detail/extractErrorFromLogContent";
+
+interface ErrorDetailModalProps {
+  open: boolean;
+  logId: number | null;
+  model?: string;
+  onClose: () => void;
+}
+
+export function ErrorDetailModal({ open, logId, model, onClose }: ErrorDetailModalProps) {
+  const { t } = useTranslation();
+  const [visible, setVisible] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [errorContent, setErrorContent] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [reconstructed, setReconstructed] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  // Animation
+  useEffect(() => {
+    if (open) {
+      requestAnimationFrame(() => setVisible(true));
+    } else {
+      setVisible(false);
+    }
+  }, [open]);
+
+  // Fetch output first; when empty, fall back to request details so historical
+  // failed logs (store-content off) can still surface status / diagnostic info.
+  useEffect(() => {
+    if (!open || !logId) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setErrorContent("");
+    setErrorMessage("");
+    setReconstructed(false);
+
+    void (async () => {
+      try {
+        const outputRes = await usageApi.getLogContent(logId);
+        if (cancelled) return;
+        const extracted = extractErrorFromLogContent(outputRes.output_content || "");
+        if (extracted) {
+          setErrorContent(extracted.content);
+          setErrorMessage(extracted.message);
+          setReconstructed(extracted.reconstructed);
+          return;
+        }
+
+        try {
+          const detailsRes = await usageApi.getLogContentPart(logId, "details");
+          if (cancelled) return;
+          const fromDetails = extractErrorFromLogContent("", detailsRes.content || "");
+          if (fromDetails) {
+            setErrorContent(fromDetails.content);
+            setErrorMessage(fromDetails.message);
+            setReconstructed(fromDetails.reconstructed);
+            return;
+          }
+        } catch {
+          // Details may be unauthorized or missing; keep empty-state UX.
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : t("error_detail.load_failed"));
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [logId, open, t]);
+
+  // Escape key
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  const handleCopy = useCallback(() => {
+    void navigator.clipboard.writeText(errorContent);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [errorContent]);
+
+  if (!open) return null;
+
+  const hasErrorContent = errorContent.trim().length > 0;
+
+  /** Try to format JSON nicely */
+  let formattedContent = errorContent;
+  if (hasErrorContent) {
+    try {
+      const parsed = JSON.parse(errorContent);
+      formattedContent = JSON.stringify(parsed, null, 2);
+    } catch {
+      // keep raw text
+    }
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+      {/* Backdrop */}
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label={t("common.close")}
+        className={[
+          "absolute inset-0 cursor-default bg-slate-900/40 backdrop-blur-sm dark:bg-black/50",
+          "transition-opacity duration-200",
+          visible ? "opacity-100" : "opacity-0",
+        ].join(" ")}
+      />
+
+      {/* Dialog */}
+      <div
+        role="dialog"
+        aria-modal="true"
+        className={[
+          "relative z-10 flex w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-red-200 bg-white shadow-xl dark:border-red-900/40 dark:bg-neutral-950",
+          "max-h-[70vh] transition-all duration-200",
+          visible ? "opacity-100 translate-y-0 scale-100" : "opacity-0 translate-y-2 scale-95",
+        ].join(" ")}
+      >
+        {/* Header */}
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-red-100 bg-red-50/50 px-5 py-4 dark:border-red-900/30 dark:bg-red-950/20">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-red-100 dark:bg-red-900/30">
+              <AlertTriangle size={16} className="text-red-600 dark:text-red-400" />
+            </div>
+            <div className="min-w-0">
+              <h2 className="truncate text-base font-semibold tracking-tight text-red-900 dark:text-red-200">
+                {t("error_detail.request_failed")}
+                {model ? ` · ${model}` : ""}
+              </h2>
+              <p className="mt-0.5 text-xs text-red-600/70 dark:text-red-400/60">
+                {hasErrorContent
+                  ? reconstructed
+                    ? t("error_detail.reconstructed_from_details")
+                    : t("error_detail.upstream_error")
+                  : t("error_detail.historical_missing")}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-0 bg-transparent p-0 text-red-600 shadow-none transition-colors hover:bg-slate-100 hover:text-red-700 dark:text-red-300 dark:hover:bg-white/10 dark:hover:text-red-200"
+            aria-label={t("common.close")}
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-5 py-4">
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 size={22} className="animate-spin text-slate-400" />
+              <span className="ml-2 text-sm text-slate-500">{t("common.loading_ellipsis")}</span>
+            </div>
+          ) : error ? (
+            <div className="flex flex-col items-center justify-center py-12">
+              <p className="text-sm text-red-500">{error}</p>
+            </div>
+          ) : !hasErrorContent ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center text-slate-500 dark:text-white/45">
+              <AlertTriangle size={32} className="mb-2 opacity-40" />
+              <p className="max-w-sm text-sm leading-6">{t("error_detail.no_content")}</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {/* Error summary */}
+              {errorMessage && (
+                <div className="min-w-0 overflow-hidden rounded-xl border border-red-200 bg-red-50 px-4 py-3 dark:border-red-900/30 dark:bg-red-950/20">
+                  <p
+                    className="text-sm font-medium text-red-700 dark:text-red-300"
+                    style={{ overflowWrap: "anywhere", wordBreak: "break-all" }}
+                  >
+                    {errorMessage}
+                  </p>
+                </div>
+              )}
+
+              {/* Full response */}
+              <div className="relative">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-2xs font-semibold uppercase tracking-widest text-slate-400 dark:text-white/35">
+                    {t("error_detail.full_response")}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCopy}
+                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100 dark:text-white/40 dark:hover:bg-neutral-800"
+                  >
+                    {copied ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                    {copied ? t("common.copied") : t("log_content.copy")}
+                  </button>
+                </div>
+                <pre
+                  className="max-h-[40vh] overflow-auto rounded-xl border border-slate-900/8 bg-slate-50 p-4 text-xs leading-relaxed text-slate-800 dark:border-white/8 dark:bg-neutral-900 dark:text-slate-200"
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-all",
+                    overflowWrap: "anywhere",
+                  }}
+                >
+                  {formattedContent}
+                </pre>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}

@@ -1,0 +1,1623 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
+import { useTranslation } from "react-i18next";
+import { useLocation, useNavigate } from "react-router-dom";
+import { ampcodeApi, providersApi, usageApi } from "@code-proxy/api-client";
+import {
+  proxiesApi,
+  type ProxyPoolEntry,
+} from "@code-proxy/api-client/endpoints/proxies";
+import type {
+  BedrockProviderConfig,
+  OpenAIProvider,
+  ProviderSimpleConfig,
+} from "@code-proxy/api-client";
+import { Button } from "@code-proxy/ui";
+import { ConfirmModal } from "@code-proxy/ui";
+import { Modal } from "@code-proxy/ui";
+import { Tabs, TabsContent } from "@code-proxy/ui";
+import { useToast } from "@code-proxy/ui";
+import { downloadTextAsFile } from "@code-proxy/domain";
+import { AmpcodePanel } from "./AmpcodePanel";
+import { OpenAIProviderModal } from "./OpenAIProviderModal";
+import { OpenAIProvidersTab } from "./OpenAIProvidersTab";
+import { ProviderKeyModal } from "./ProviderKeyModal";
+import { useOpenAIProviderEditor } from "../hooks/useOpenAIProviderEditor";
+import { ProviderKeyListCard } from "../ProviderKeyListCard";
+import {
+  createOpenCodeGoUsageStore,
+  mergeOpenCodeGoUsage,
+  type OpenCodeGoUsageCacheEntry,
+  type OpenCodeGoUsageStore,
+} from "./OpenCodeGoUsageCardSection";
+import { useProviderKeyEditor } from "../hooks/useProviderKeyEditor";
+import { useProviderLatency } from "@features/provider-latency";
+import { useProviderUsageSummary } from "../hooks/useProviderUsageSummary";
+import { normalizeUsageSourceId, type KeyStatBucket } from "@code-proxy/domain";
+import { getCachedData, setCachedData } from "../provider-cache";
+import {
+  maskApiKey,
+  readBool,
+  readString,
+  type AmpMappingEntry,
+} from "../providers-helpers";
+import {
+  createProviderExportText,
+  prepareProviderImport,
+  type ProviderImportDiff,
+  type ProviderImportKind,
+} from "../provider-import-export";
+import {
+  fetchModelAccessCatalog,
+  type ModelAccessProvider,
+} from "../provider-model-access";
+import {
+  EMPTY_MODEL_ACCESS_CATALOGS,
+  EMPTY_MODEL_ACCESS_CATALOG_LOADED,
+  getProviderUsageCacheKey,
+  hasProviderUsageQuery,
+  isModelAccessProvider,
+  migrateProviderUsageCache,
+  PROVIDER_LIST_CACHE_SLOTS,
+  type ModelAccessCatalogLoadedState,
+  type ModelAccessCatalogState,
+  type OpenCodeGoUsageState,
+  type ProviderUsageProvider,
+} from "../provider-usage-config";
+import { ProviderUsageTabContent } from "./ProviderUsageTabContent";
+import { ProvidersToolbar } from "./ProvidersToolbar";
+import { ProviderTabsWithCounts } from "./ProviderTabsWithCounts";
+import type { ProviderTabId } from "./ProviderTabsWithCounts";
+import { useOptionalAuth } from "@app/providers/AuthProvider";
+
+type ProviderTab = ProviderTabId;
+
+const PROVIDER_TAB_STORAGE_KEY = "providers-page:tab";
+const PROVIDER_TAB_VALUES: ProviderTab[] = [
+  "gemini",
+  "claude",
+  "codex",
+  "opencode-go",
+  "cline",
+  "ollama-cloud",
+  "commandcode",
+  "vertex",
+  "bedrock",
+  "openai",
+  "ampcode",
+];
+const PROVIDER_LIST_TAB_VALUES: Exclude<ProviderTab, "ampcode">[] =
+  PROVIDER_TAB_VALUES.filter((item) => item !== "ampcode") as Exclude<
+    ProviderTab,
+    "ampcode"
+  >[];
+
+function readSavedProviderTab(): ProviderTab {
+  try {
+    const saved = localStorage.getItem(PROVIDER_TAB_STORAGE_KEY);
+    if (saved && PROVIDER_TAB_VALUES.includes(saved as ProviderTab))
+      return saved as ProviderTab;
+  } catch {
+    // ignore
+  }
+  return "gemini";
+}
+
+function saveProviderTab(tab: ProviderTab): void {
+  try {
+    localStorage.setItem(PROVIDER_TAB_STORAGE_KEY, tab);
+  } catch {
+    // ignore
+  }
+}
+
+const getProviderSelectionKey = (
+  kind: ProviderImportKind,
+  item: ProviderSimpleConfig | BedrockProviderConfig | OpenAIProvider,
+  index: number,
+) =>
+  kind === "openai"
+    ? `${String((item as OpenAIProvider).name ?? "")
+        .trim()
+        .toLowerCase()}:${index}`
+    : `${String((item as ProviderSimpleConfig).apiKey ?? "")
+        .trim()
+        .toLowerCase()}:${index}`;
+
+
+/**
+ * Seed list state from the active tenant bucket only.
+ * DashboardLayout remounts on tenant switch; a one-shot mount read keeps
+ * paint tenant-isolated and avoids full-page skeleton when the bucket is warm.
+ */
+const readCachedProviderList = <T,>(slot: string): T[] =>
+  getCachedData<T[]>(slot) ?? [];
+
+const activeTabHasCachedList = (tabId: ProviderTab): boolean => {
+  if (tabId === "ampcode") return false;
+  return getCachedData(PROVIDER_LIST_CACHE_SLOTS[tabId]) != null;
+};
+
+export function ProvidersPage() {
+  const { t } = useTranslation();
+  const { notify } = useToast();
+  const auth = useOptionalAuth();
+  const canWriteProviders = auth?.can("providers.write") ?? true;
+  const canTestProviders = auth?.can("providers.test") ?? true;
+  const canReadModels = auth?.can("models.read") ?? true;
+  const canReadUsage = auth?.can("monitor.read") ?? true;
+  const canReadProxies = auth?.can("proxies.read") ?? true;
+  const isSystemTenant = auth?.state.principal
+    ? auth.state.principal.effective_tenant.type === "system"
+    : true;
+  const [isPending, startTransition] = useTransition();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { getEntry: getLatencyEntry, checkLatency } = useProviderLatency();
+
+  const [tab, setTabState] = useState<ProviderTab>(() => {
+    const saved = readSavedProviderTab();
+    return !isSystemTenant && saved === "ampcode" ? "gemini" : saved;
+  });
+  const setTab = useCallback((next: ProviderTab) => {
+    setTabState(next);
+    saveProviderTab(next);
+  }, []);
+  useEffect(() => {
+    if (!isSystemTenant && tab === "ampcode") setTab("gemini");
+  }, [isSystemTenant, setTab, tab]);
+  // `loading` = cold paint (no tenant cache for active tab) → list skeleton.
+  // `refreshing` = background / toolbar revalidate → spin button, keep cards.
+  const [loading, setLoading] = useState(() => !activeTabHasCachedList(tab));
+  const [refreshing, setRefreshing] = useState(false);
+
+  const openCodeGoUsageStoreRef = useRef<OpenCodeGoUsageStore | null>(null);
+  if (!openCodeGoUsageStoreRef.current) {
+    openCodeGoUsageStoreRef.current = createOpenCodeGoUsageStore(
+      migrateProviderUsageCache(
+        getCachedData<OpenCodeGoUsageState>("opencode-go-usage") ?? {},
+      ),
+      (next) => setCachedData("opencode-go-usage", next),
+    );
+  }
+  const openCodeGoUsageStore = openCodeGoUsageStoreRef.current;
+  const [modelAccessCatalogs, setModelAccessCatalogs] =
+    useState<ModelAccessCatalogState>(EMPTY_MODEL_ACCESS_CATALOGS);
+  const [modelAccessCatalogLoaded, setModelAccessCatalogLoaded] =
+    useState<ModelAccessCatalogLoadedState>(EMPTY_MODEL_ACCESS_CATALOG_LOADED);
+
+  const loadModelAccessCatalog = useCallback(
+    async (provider: ModelAccessProvider) => {
+      try {
+        const catalog = await fetchModelAccessCatalog(provider);
+        setModelAccessCatalogs((prev) => ({ ...prev, [provider]: catalog }));
+      } catch {
+        setModelAccessCatalogs((prev) => ({ ...prev, [provider]: [] }));
+      } finally {
+        setModelAccessCatalogLoaded((prev) => ({ ...prev, [provider]: true }));
+      }
+    },
+    [],
+  );
+
+  const refreshProviderUsage = useCallback(
+    async (
+      provider: ProviderUsageProvider,
+      item: ProviderSimpleConfig,
+      index: number,
+    ) => {
+      if (!hasProviderUsageQuery(provider, item)) return;
+
+      const cacheKey = getProviderUsageCacheKey(provider, item, index);
+      openCodeGoUsageStore.setLoading(cacheKey, true);
+      try {
+        const payload = {
+          "auth-cookie": item.authCookie?.trim(),
+          "proxy-id": item.proxyId?.trim(),
+          "proxy-url": item.proxyUrl?.trim(),
+          name: item.name?.trim(),
+          "api-key": item.apiKey?.trim(),
+          index,
+        };
+        const result =
+          provider === "opencode-go"
+            ? await providersApi.queryOpenCodeGoUsage(payload)
+            : provider === "cline"
+              ? await providersApi.queryClineUsage(payload)
+              : provider === "ollama-cloud"
+                ? await providersApi.queryOllamaCloudUsage(payload)
+                : await providersApi.queryCommandCodeUsage(payload);
+        const entry: OpenCodeGoUsageCacheEntry = {
+          sourceId: provider,
+          usage: result.usage,
+          updatedAt: Date.now(),
+        };
+        openCodeGoUsageStore.updateEntry(cacheKey, (existing) => {
+          const merged = mergeOpenCodeGoUsage(
+            existing?.usage ?? [],
+            entry.usage,
+          );
+          return {
+            ...entry,
+            usage: merged,
+            sourceId: entry.sourceId ?? existing?.sourceId,
+          };
+        });
+        openCodeGoUsageStore.setLoading(cacheKey, false);
+      } catch (err: unknown) {
+        openCodeGoUsageStore.updateEntry(cacheKey, (existing) => ({
+          sourceId: existing?.sourceId,
+          usage: existing?.usage ?? [],
+          updatedAt: Date.now(),
+          error:
+            err instanceof Error
+              ? err.message
+              : t("providers.channel_usage_query_failed"),
+        }));
+        openCodeGoUsageStore.setLoading(cacheKey, false);
+      }
+    },
+    [openCodeGoUsageStore, t],
+  );
+
+  const [geminiKeys, setGeminiKeys] = useState<ProviderSimpleConfig[]>(() =>
+    readCachedProviderList<ProviderSimpleConfig>("gemini"),
+  );
+  const [claudeKeys, setClaudeKeys] = useState<ProviderSimpleConfig[]>(() =>
+    readCachedProviderList<ProviderSimpleConfig>("claude"),
+  );
+  const [codexKeys, setCodexKeys] = useState<ProviderSimpleConfig[]>(() =>
+    readCachedProviderList<ProviderSimpleConfig>("codex"),
+  );
+  const [openCodeGoKeys, setOpenCodeGoKeys] = useState<ProviderSimpleConfig[]>(
+    () => readCachedProviderList<ProviderSimpleConfig>("opencode-go"),
+  );
+  const [clineKeys, setClineKeys] = useState<ProviderSimpleConfig[]>(() =>
+    readCachedProviderList<ProviderSimpleConfig>("cline"),
+  );
+  const [ollamaCloudKeys, setOllamaCloudKeys] = useState<
+    ProviderSimpleConfig[]
+  >(() => readCachedProviderList<ProviderSimpleConfig>("ollama-cloud"));
+  const [commandCodeKeys, setCommandCodeKeys] = useState<
+    ProviderSimpleConfig[]
+  >(() => readCachedProviderList<ProviderSimpleConfig>("commandcode"));
+  const [vertexKeys, setVertexKeys] = useState<ProviderSimpleConfig[]>(() =>
+    readCachedProviderList<ProviderSimpleConfig>("vertex"),
+  );
+  const [bedrockKeys, setBedrockKeys] = useState<BedrockProviderConfig[]>(() =>
+    readCachedProviderList<BedrockProviderConfig>("bedrock"),
+  );
+  const [openaiProviders, setOpenaiProviders] = useState<OpenAIProvider[]>(() =>
+    readCachedProviderList<OpenAIProvider>("openai"),
+  );
+
+  // Auto-refresh dashboard usage when switching to providers with saved dashboard cookies.
+  const PROVIDER_USAGE_STALE_MS = 5 * 60 * 1000;
+  const autoRefreshProviderUsageInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (!canTestProviders) return;
+    if (
+      tab !== "opencode-go" &&
+      tab !== "cline" &&
+      tab !== "ollama-cloud" &&
+      tab !== "commandcode"
+    )
+      return;
+    if (loading) return;
+    if (autoRefreshProviderUsageInFlightRef.current) return;
+
+    const provider = tab;
+    const items =
+      provider === "opencode-go"
+        ? openCodeGoKeys
+        : provider === "cline"
+          ? clineKeys
+          : provider === "ollama-cloud"
+            ? ollamaCloudKeys
+            : commandCodeKeys;
+    if (items.length === 0) return;
+
+    const staleKeys = items
+      .map((item, idx) => ({
+        item,
+        idx,
+        key: getProviderUsageCacheKey(provider, item, idx),
+      }))
+      .filter(({ item }) => hasProviderUsageQuery(provider, item))
+      .filter(({ key }) => {
+        const snapshot = openCodeGoUsageStore.getSnapshot(key);
+        if (snapshot.loading) return false;
+        const entry = snapshot.usageEntry;
+        return !entry || Date.now() - entry.updatedAt > PROVIDER_USAGE_STALE_MS;
+      });
+
+    if (staleKeys.length === 0) return;
+
+    autoRefreshProviderUsageInFlightRef.current = true;
+
+    const refreshBatch = async () => {
+      for (let i = 0; i < staleKeys.length; i += 2) {
+        const batch = staleKeys.slice(i, i + 2);
+        await Promise.allSettled(
+          batch.map(({ item, idx }) =>
+            refreshProviderUsage(provider, item, idx),
+          ),
+        );
+      }
+      autoRefreshProviderUsageInFlightRef.current = false;
+    };
+
+    void refreshBatch();
+  }, [
+    tab,
+    loading,
+    canTestProviders,
+    clineKeys,
+    ollamaCloudKeys,
+    openCodeGoKeys,
+    openCodeGoUsageStore,
+    refreshProviderUsage,
+  ]);
+
+  useEffect(() => {
+    if (!canReadModels || !isModelAccessProvider(tab)) return;
+    if (modelAccessCatalogLoaded[tab]) return;
+    void loadModelAccessCatalog(tab);
+  }, [canReadModels, loadModelAccessCatalog, modelAccessCatalogLoaded, tab]);
+
+  const [proxyPoolEntries, setProxyPoolEntries] = useState<ProxyPoolEntry[]>(
+    [],
+  );
+
+  const [usageStatsBySource, setUsageStatsBySource] = useState<
+    Record<string, KeyStatBucket>
+  >(() => getCachedData<Record<string, KeyStatBucket>>("usage-stats") ?? {});
+
+  const [ampcode, setAmpcode] = useState<Record<string, unknown> | null>(null);
+  const [ampUpstreamUrl, setAmpUpstreamUrl] = useState("");
+  const [ampUpstreamApiKey, setAmpUpstreamApiKey] = useState("");
+  const [ampForceMappings, setAmpForceMappings] = useState(false);
+  const [ampMappings, setAmpMappings] = useState<AmpMappingEntry[]>([]);
+
+  const [confirm, setConfirm] = useState<
+    | null
+    | {
+        type: "deleteKey";
+        keyType:
+          | "gemini"
+          | "claude"
+          | "codex"
+          | "opencode-go"
+          | "cline"
+          | "ollama-cloud"
+          | "commandcode"
+          | "vertex"
+          | "bedrock";
+        index: number;
+      }
+    | { type: "deleteOpenAI"; index: number }
+  >(null);
+  const handledRouteRef = useRef("");
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const [importPreview, setImportPreview] = useState<{
+    kind: ProviderImportKind;
+    nextItems:
+      ProviderSimpleConfig[] | BedrockProviderConfig[] | OpenAIProvider[];
+    diff: ProviderImportDiff;
+    filename: string;
+  } | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [selectedExportKeys, setSelectedExportKeys] = useState<string[]>([]);
+
+  // Clean up stale usage cache entries when config lists change
+  useEffect(() => {
+    openCodeGoUsageStore.prune(
+      new Set([
+        ...openCodeGoKeys.map((item, idx) =>
+          getProviderUsageCacheKey("opencode-go", item, idx),
+        ),
+        ...clineKeys.map((item, idx) =>
+          getProviderUsageCacheKey("cline", item, idx),
+        ),
+        ...ollamaCloudKeys.map((item, idx) =>
+          getProviderUsageCacheKey("ollama-cloud", item, idx),
+        ),
+        ...commandCodeKeys.map((item, idx) =>
+          getProviderUsageCacheKey("commandcode", item, idx),
+        ),
+      ]),
+    );
+  }, [
+    clineKeys,
+    commandCodeKeys,
+    ollamaCloudKeys,
+    openCodeGoKeys,
+    openCodeGoUsageStore,
+  ]);
+
+  const loadProviderTab = useCallback(async (tabId: ProviderTab) => {
+    // Cold paint already seeds from tenant cache in useState. Overlaying that
+    // cache again on every refresh races the optimistic list written by Save:
+    // a 7-day-old snapshot can wipe a just-added card until GET returns, and
+    // if GET is empty/slow the card never comes back.
+    switch (tabId) {
+      case "gemini": {
+        const freshG = await providersApi.getGeminiKeys();
+        setGeminiKeys(freshG);
+        setCachedData("gemini", freshG);
+        break;
+      }
+      case "claude": {
+        const freshC = await providersApi.getClaudeConfigs();
+        setClaudeKeys(freshC);
+        setCachedData("claude", freshC);
+        break;
+      }
+      case "codex": {
+        const freshX = await providersApi.getCodexConfigs();
+        setCodexKeys(freshX);
+        setCachedData("codex", freshX);
+        break;
+      }
+      case "opencode-go": {
+        const freshO = await providersApi.getOpenCodeGoConfigs();
+        setOpenCodeGoKeys(freshO);
+        setCachedData("opencode-go", freshO);
+        break;
+      }
+      case "cline": {
+        const freshCl = await providersApi.getClineConfigs();
+        setClineKeys(freshCl);
+        setCachedData("cline", freshCl);
+        break;
+      }
+      case "ollama-cloud": {
+        const freshOl = await providersApi.getOllamaCloudConfigs();
+        setOllamaCloudKeys(freshOl);
+        setCachedData("ollama-cloud", freshOl);
+        break;
+      }
+      case "commandcode": {
+        const freshCc = await providersApi.getCommandCodeConfigs();
+        setCommandCodeKeys(freshCc);
+        setCachedData("commandcode", freshCc);
+        break;
+      }
+      case "vertex": {
+        const freshV = await providersApi.getVertexConfigs();
+        setVertexKeys(freshV);
+        setCachedData("vertex", freshV);
+        break;
+      }
+      case "bedrock": {
+        const freshB = await providersApi.getBedrockConfigs();
+        setBedrockKeys(freshB);
+        setCachedData("bedrock", freshB);
+        break;
+      }
+      case "openai": {
+        const freshA = await providersApi.getOpenAIProviders();
+        setOpenaiProviders(freshA);
+        setCachedData("openai", freshA);
+        break;
+      }
+      case "ampcode": {
+        const [amp, ampMap] = await Promise.all([
+          ampcodeApi.getAmpcode(),
+          ampcodeApi.getModelMappings(),
+        ]);
+        const ampObj =
+          amp && typeof amp === "object" && !Array.isArray(amp)
+            ? (amp as Record<string, unknown>)
+            : {};
+        setAmpcode(ampObj);
+        setAmpUpstreamUrl(readString(ampObj, "upstreamUrl", "upstream-url"));
+        setAmpForceMappings(
+          readBool(ampObj, "forceModelMappings", "force-model-mappings"),
+        );
+
+        const mappings = Array.isArray(ampMap) ? ampMap : [];
+        const entries: AmpMappingEntry[] = mappings
+          .map((item, idx) => {
+            if (!item || typeof item !== "object") return null;
+            const record = item as Record<string, unknown>;
+            const from = String(record.from ?? "").trim();
+            const to = String(record.to ?? "").trim();
+            if (!from || !to) return null;
+            return { id: `map-${idx}-${from}`, from, to };
+          })
+          .filter(Boolean) as AmpMappingEntry[];
+        setAmpMappings(
+          entries.length
+            ? entries
+            : [{ id: `map-${Date.now()}`, from: "", to: "" }],
+        );
+        break;
+      }
+    }
+  }, []);
+
+  const refreshTab = useCallback(
+    async (tabId: typeof tab) => {
+      // Skeleton only when this tenant has no list for the tab yet (cold paint).
+      // Cached remounts / tab revisits keep existing cards and toolbar-refresh only.
+      const shouldBlock = !activeTabHasCachedList(tabId);
+      if (shouldBlock) setLoading(true);
+      else setRefreshing(true);
+      try {
+        await loadProviderTab(tabId);
+      } catch (err: unknown) {
+        notify({
+          type: "error",
+          message:
+            err instanceof Error ? err.message : t("providers.load_failed"),
+        });
+      } finally {
+        if (shouldBlock) setLoading(false);
+        else setRefreshing(false);
+      }
+    },
+    [loadProviderTab, notify, t],
+  );
+
+  const loadUsage = useCallback(async () => {
+    try {
+      const cachedUsage =
+        getCachedData<Record<string, KeyStatBucket>>("usage-stats");
+      if (cachedUsage) setUsageStatsBySource(cachedUsage);
+      const usage = await usageApi.getEntityStats(30, "all").catch(() => null);
+      if (usage?.source) {
+        const stats: Record<string, KeyStatBucket> = {};
+        usage.source.forEach((pt) => {
+          const src = normalizeUsageSourceId(pt.entity_name, maskApiKey);
+          if (src) {
+            const bucket = stats[src] ?? { success: 0, failure: 0 };
+            bucket.success += pt.requests - pt.failed;
+            bucket.failure += pt.failed;
+            stats[src] = bucket;
+          }
+        });
+        setUsageStatsBySource(stats);
+        setCachedData("usage-stats", stats);
+      }
+    } catch {}
+  }, []);
+
+  const loadProxyPool = useCallback(async () => {
+    try {
+      setProxyPoolEntries(await proxiesApi.list());
+    } catch {
+      setProxyPoolEntries([]);
+    }
+  }, []);
+
+  const {
+    getSimpleStats,
+    getSimpleStatusBar,
+    getOpenAIProviderStats,
+    getOpenAIKeyEntryStats,
+    getOpenAIProviderStatusBar,
+  } = useProviderUsageSummary({
+    usageStatsBySource,
+    maskApiKey,
+  });
+
+  const refreshAll = useCallback(async () => {
+    // SWR: block with skeleton only when the active tab has no tenant cache.
+    // Toolbar refresh and warm tenant remounts keep cards visible.
+    const shouldBlock = !activeTabHasCachedList(tab);
+    if (shouldBlock) setLoading(true);
+    else setRefreshing(true);
+    const tabsToRefresh: ProviderTab[] =
+      isSystemTenant && tab === "ampcode"
+        ? [...PROVIDER_LIST_TAB_VALUES, "ampcode"]
+        : PROVIDER_LIST_TAB_VALUES;
+    const tasks: Promise<void>[] = tabsToRefresh.map((tabId) =>
+      loadProviderTab(tabId),
+    );
+    if (canReadUsage) tasks.push(loadUsage());
+    if (canReadProxies) tasks.push(loadProxyPool());
+    const results = await Promise.allSettled(tasks);
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed) {
+      notify({
+        type: "error",
+        message:
+          failed.reason instanceof Error
+            ? failed.reason.message
+            : t("providers.load_failed"),
+      });
+    }
+    if (shouldBlock) setLoading(false);
+    else setRefreshing(false);
+  }, [
+    canReadProxies,
+    canReadUsage,
+    isSystemTenant,
+    loadProviderTab,
+    loadProxyPool,
+    loadUsage,
+    notify,
+    t,
+    tab,
+  ]);
+
+  useEffect(() => {
+    void refreshAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const providersBasePath = "/access/ai-providers";
+
+  const handleKeyEditorRouteClose = useCallback(() => {
+    if (location.pathname !== providersBasePath) {
+      navigate(providersBasePath, { replace: true, viewTransition: true });
+    }
+  }, [location.pathname, navigate, providersBasePath]);
+
+  const handleOpenAIEditorRouteClose = useCallback(() => {
+    if (location.pathname !== providersBasePath) {
+      navigate(providersBasePath, { replace: true, viewTransition: true });
+    }
+  }, [location.pathname, navigate, providersBasePath]);
+
+  const {
+    editKeyOpen,
+    editKeyType,
+    editKeyIndex,
+    editKeyTitle,
+    keyDraft,
+    setKeyDraft,
+    keyDraftError,
+    closeKeyEditor,
+    openKeyEditor,
+    saveKeyDraft,
+    deleteKey,
+    toggleKeyEnabled,
+    editKeyEnabled,
+    editKeyEnabledToggle,
+    editKeyExcludedCount,
+    editKeyHeaderCount,
+    editKeyModelCount,
+  } = useProviderKeyEditor({
+    geminiKeys,
+    claudeKeys,
+    codexKeys,
+    openCodeGoKeys,
+    clineKeys,
+    ollamaCloudKeys,
+    commandCodeKeys,
+    vertexKeys,
+    bedrockKeys,
+    setGeminiKeys,
+    setClaudeKeys,
+    setCodexKeys,
+    setOpenCodeGoKeys,
+    setClineKeys,
+    setOllamaCloudKeys,
+    setCommandCodeKeys,
+    setVertexKeys,
+    setBedrockKeys,
+    refreshAll,
+    startRefreshTransition: startTransition,
+    afterClose: handleKeyEditorRouteClose,
+  });
+
+  const {
+    editOpenAIOpen,
+    editOpenAIIndex,
+    openaiDraft,
+    setOpenaiDraft,
+    openaiDraftError,
+    discoveredModels,
+    discovering,
+    discoverSelected,
+    setDiscoverSelected,
+    closeOpenAIEditor,
+    openOpenAIEditor,
+    saveOpenAIDraft,
+    deleteOpenAIProvider,
+    toggleOpenAIProviderEnabled,
+    toggleOpenAIKeyEntryEnabled,
+    discoverModels,
+    applyDiscoveredModels,
+  } = useOpenAIProviderEditor({
+    openaiProviders,
+    setOpenaiProviders,
+    refreshAll,
+    startRefreshTransition: startTransition,
+    afterClose: handleOpenAIEditorRouteClose,
+  });
+
+  useEffect(() => {
+    if (loading) return;
+    const pathname = location.pathname;
+    const providersPrefix = `${providersBasePath}/`;
+    if (!pathname.startsWith(providersPrefix)) {
+      handledRouteRef.current = "";
+      return;
+    }
+    if (handledRouteRef.current === pathname) return;
+    handledRouteRef.current = pathname;
+
+    // /access/ai-providers/:provider/:action
+    const rest = pathname.slice(providersBasePath.length).split("/").filter(Boolean);
+    const provider = rest[0] ?? "";
+    const action = rest[1] ?? "";
+
+    void (async () => {
+      if (
+        provider === "gemini" ||
+        provider === "claude" ||
+        provider === "codex" ||
+        provider === "opencode-go" ||
+        provider === "cline" ||
+        provider === "ollama-cloud" ||
+        provider === "commandcode" ||
+        provider === "vertex" ||
+        provider === "bedrock"
+      ) {
+        setSelectedExportKeys([]);
+        setTab(provider);
+        await refreshTab(provider);
+        if (!canWriteProviders) return;
+        if (action === "new") {
+          openKeyEditor(provider, null);
+          return;
+        }
+        const index = Number(action);
+        if (Number.isFinite(index) && index >= 0) {
+          openKeyEditor(provider, index);
+        }
+        return;
+      }
+
+      if (provider === "openai") {
+        setSelectedExportKeys([]);
+        setTab("openai");
+        await refreshTab("openai");
+        if (!canWriteProviders) return;
+        if (action === "new") {
+          openOpenAIEditor(null);
+          return;
+        }
+        const index = Number(action);
+        if (Number.isFinite(index) && index >= 0) {
+          openOpenAIEditor(index);
+        }
+        return;
+      }
+
+      if (provider === "ampcode" && isSystemTenant) {
+        setSelectedExportKeys([]);
+        setTab("ampcode");
+        await refreshTab("ampcode");
+      }
+    })();
+  }, [
+    canWriteProviders,
+    isSystemTenant,
+    loading,
+    location.pathname,
+    openKeyEditor,
+    openOpenAIEditor,
+    providersBasePath,
+    refreshTab,
+  ]);
+
+  const saveAmpcode = useCallback(async () => {
+    try {
+      const upstreamUrl = ampUpstreamUrl.trim();
+      if (upstreamUrl) {
+        await ampcodeApi.updateUpstreamUrl(upstreamUrl);
+      } else {
+        await ampcodeApi.clearUpstreamUrl();
+      }
+
+      const upstreamKey = ampUpstreamApiKey.trim();
+      if (upstreamKey) {
+        await ampcodeApi.updateUpstreamApiKey(upstreamKey);
+      }
+
+      await ampcodeApi.updateForceModelMappings(ampForceMappings);
+
+      const mappings = ampMappings
+        .map((m) => ({ from: m.from.trim(), to: m.to.trim() }))
+        .filter((m) => m.from && m.to);
+      await ampcodeApi.patchModelMappings(mappings);
+
+      notify({ type: "success", message: t("providers.ampcode_saved") });
+      startTransition(() => void refreshAll());
+      setAmpUpstreamApiKey("");
+    } catch (err: unknown) {
+      notify({
+        type: "error",
+        message:
+          err instanceof Error ? err.message : t("providers.save_failed"),
+      });
+    }
+  }, [
+    ampForceMappings,
+    ampMappings,
+    ampUpstreamApiKey,
+    ampUpstreamUrl,
+    notify,
+    refreshAll,
+    startTransition,
+  ]);
+
+  const copyText = useCallback(
+    async (value: string) => {
+      try {
+        await navigator.clipboard.writeText(value);
+        notify({ type: "success", message: t("providers.copied") });
+      } catch {
+        notify({ type: "error", message: t("providers.copy_failed") });
+      }
+    },
+    [notify],
+  );
+
+  const getImportKind = useCallback((): ProviderImportKind | null => {
+    if (tab === "ampcode") return null;
+    return tab;
+  }, [tab]);
+
+  const getCurrentItems = useCallback(
+    (kind: ProviderImportKind) => {
+      switch (kind) {
+        case "gemini":
+          return geminiKeys;
+        case "claude":
+          return claudeKeys;
+        case "codex":
+          return codexKeys;
+        case "opencode-go":
+          return openCodeGoKeys;
+        case "cline":
+          return clineKeys;
+        case "ollama-cloud":
+          return ollamaCloudKeys;
+        case "commandcode":
+          return commandCodeKeys;
+        case "vertex":
+          return vertexKeys;
+        case "bedrock":
+          return bedrockKeys;
+        case "openai":
+          return openaiProviders;
+      }
+    },
+    [
+      bedrockKeys,
+      claudeKeys,
+      clineKeys,
+      codexKeys,
+      commandCodeKeys,
+      geminiKeys,
+      ollamaCloudKeys,
+      openCodeGoKeys,
+      openaiProviders,
+      vertexKeys,
+    ],
+  );
+
+  const currentImportKind = getImportKind();
+  const isActiveTabListLoading = useCallback(
+    (tabId: ProviderTab) => tab === tabId && loading,
+    [loading, tab],
+  );
+  const currentTabItems = useMemo(
+    () => (currentImportKind ? getCurrentItems(currentImportKind) : []),
+    [currentImportKind, getCurrentItems],
+  );
+  const currentSelectableKeys = useMemo(
+    () =>
+      currentImportKind
+        ? currentTabItems.map((item, index) =>
+            getProviderSelectionKey(
+              currentImportKind,
+              item as
+                ProviderSimpleConfig | BedrockProviderConfig | OpenAIProvider,
+              index,
+            ),
+          )
+        : [],
+    [currentImportKind, currentTabItems],
+  );
+  const selectedExportKeySet = useMemo(
+    () => new Set(selectedExportKeys),
+    [selectedExportKeys],
+  );
+  const selectedExportCount = selectedExportKeys.length;
+  const allCurrentSelected =
+    currentSelectableKeys.length > 0 &&
+    currentSelectableKeys.every((key) => selectedExportKeySet.has(key));
+
+  const tabCounts = useMemo<Record<ProviderTab, number | null>>(() => {
+    const ampcodeCount =
+      ampcode && ampMappings.length > 0
+        ? ampMappings.filter((m) => m.from.trim() && m.to.trim()).length
+        : null;
+    return {
+      gemini: geminiKeys.length,
+      claude: claudeKeys.length,
+      codex: codexKeys.length,
+      "opencode-go": openCodeGoKeys.length,
+      cline: clineKeys.length,
+      "ollama-cloud": ollamaCloudKeys.length,
+      commandcode: commandCodeKeys.length,
+      vertex: vertexKeys.length,
+      bedrock: bedrockKeys.length,
+      openai: openaiProviders.length,
+      ampcode: ampcodeCount,
+    };
+  }, [
+    geminiKeys,
+    claudeKeys,
+    clineKeys,
+    codexKeys,
+    commandCodeKeys,
+    openCodeGoKeys,
+    ollamaCloudKeys,
+    vertexKeys,
+    bedrockKeys,
+    openaiProviders,
+    ampcode,
+    ampMappings,
+  ]);
+
+  const saveImportedItems = useCallback(
+    async (
+      kind: ProviderImportKind,
+      items:
+        ProviderSimpleConfig[] | BedrockProviderConfig[] | OpenAIProvider[],
+    ) => {
+      switch (kind) {
+        case "gemini":
+          await providersApi.saveGeminiKeys(items as ProviderSimpleConfig[]);
+          return;
+        case "claude":
+          await providersApi.saveClaudeConfigs(items as ProviderSimpleConfig[]);
+          return;
+        case "codex":
+          await providersApi.saveCodexConfigs(items as ProviderSimpleConfig[]);
+          return;
+        case "opencode-go":
+          await providersApi.saveOpenCodeGoConfigs(
+            items as ProviderSimpleConfig[],
+          );
+          return;
+        case "cline":
+          await providersApi.saveClineConfigs(items as ProviderSimpleConfig[]);
+          return;
+        case "ollama-cloud":
+          await providersApi.saveOllamaCloudConfigs(
+            items as ProviderSimpleConfig[],
+          );
+          return;
+        case "commandcode":
+          await providersApi.saveCommandCodeConfigs(
+            items as ProviderSimpleConfig[],
+          );
+          return;
+        case "vertex":
+          await providersApi.saveVertexConfigs(items as ProviderSimpleConfig[]);
+          return;
+        case "bedrock":
+          await providersApi.saveBedrockConfigs(
+            items as BedrockProviderConfig[],
+          );
+          return;
+        case "openai":
+          await providersApi.saveOpenAIProviders(items as OpenAIProvider[]);
+          return;
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (selectedExportKeys.length === 0) return;
+    const selectableKeySet = new Set(currentSelectableKeys);
+    const next = selectedExportKeys.filter((key) => selectableKeySet.has(key));
+    if (next.length !== selectedExportKeys.length) {
+      setSelectedExportKeys(next);
+    }
+  }, [currentSelectableKeys, selectedExportKeys]);
+
+  const toggleExportSelection = useCallback((key: string, checked: boolean) => {
+    setSelectedExportKeys((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(key);
+      else next.delete(key);
+      return Array.from(next);
+    });
+  }, []);
+
+  const selectAllCurrentItems = useCallback(
+    (checked: boolean) => {
+      if (!checked) {
+        setSelectedExportKeys([]);
+        return;
+      }
+      setSelectedExportKeys(currentSelectableKeys);
+    },
+    [currentSelectableKeys],
+  );
+
+  const handleExport = useCallback(() => {
+    const kind = currentImportKind;
+    if (!kind) return;
+    downloadTextAsFile(
+      createProviderExportText(kind, getCurrentItems(kind) as never),
+      `${kind}-providers.json`,
+    );
+  }, [currentImportKind, getCurrentItems]);
+
+  const handleExportSelected = useCallback(() => {
+    const kind = currentImportKind;
+    if (!kind || selectedExportCount === 0) return;
+    const selectedItems = currentTabItems.filter((item, index) =>
+      selectedExportKeySet.has(
+        getProviderSelectionKey(
+          kind,
+          item as ProviderSimpleConfig | BedrockProviderConfig | OpenAIProvider,
+          index,
+        ),
+      ),
+    );
+    downloadTextAsFile(
+      createProviderExportText(kind, selectedItems as never),
+      `${kind}-providers-selected.json`,
+    );
+  }, [
+    currentImportKind,
+    currentTabItems,
+    selectedExportCount,
+    selectedExportKeySet,
+  ]);
+
+  const handleImportFile = useCallback(
+    async (file: File | null) => {
+      const kind = currentImportKind;
+      if (!kind || !file) return;
+      if (
+        !file.name.toLowerCase().endsWith(".json") &&
+        file.type !== "application/json"
+      ) {
+        notify({ type: "error", message: t("upload_error_json") });
+        return;
+      }
+
+      try {
+        const preview = prepareProviderImport(
+          kind,
+          await file.text(),
+          getCurrentItems(kind) as never,
+        );
+        setImportPreview({
+          kind,
+          nextItems: preview.nextItems,
+          diff: preview.diff,
+          filename: file.name,
+        });
+      } catch (error: unknown) {
+        notify({
+          type: "error",
+          message:
+            error instanceof Error && error.message === "provider_mismatch"
+              ? t("providers.import_provider_mismatch")
+              : t("providers.import_invalid"),
+        });
+      }
+    },
+    [currentImportKind, getCurrentItems, notify, t],
+  );
+
+  const confirmImport = useCallback(async () => {
+    if (!importPreview || !importPreview.diff.hasChanges) return;
+    setImporting(true);
+    try {
+      await saveImportedItems(importPreview.kind, importPreview.nextItems);
+      notify({
+        type: "success",
+        message: t("providers.import_success", {
+          filename: importPreview.filename,
+        }),
+      });
+      setImportPreview(null);
+      startTransition(() => void refreshAll());
+    } catch (error: unknown) {
+      notify({
+        type: "error",
+        message:
+          error instanceof Error ? error.message : t("providers.save_failed"),
+      });
+    } finally {
+      setImporting(false);
+    }
+  }, [
+    importPreview,
+    notify,
+    refreshAll,
+    saveImportedItems,
+    startTransition,
+    t,
+  ]);
+
+  return (
+    <div
+      data-testid="providers-page-shell"
+      className="flex min-h-0 flex-1 flex-col gap-6 overflow-hidden"
+    >
+      {canWriteProviders ? (
+        <input
+          ref={importInputRef}
+          type="file"
+          accept="application/json,.json"
+          aria-label={t("providers.import_json")}
+          className="sr-only"
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0] ?? null;
+            void handleImportFile(file);
+            event.currentTarget.value = "";
+          }}
+        />
+      ) : null}
+      <ProvidersToolbar
+        currentImportKind={currentImportKind}
+        currentTabItemsCount={currentTabItems.length}
+        selectedExportCount={selectedExportCount}
+        allCurrentSelected={allCurrentSelected}
+        loading={loading || refreshing}
+        onImportClick={() => importInputRef.current?.click()}
+        onExport={handleExport}
+        onExportSelected={handleExportSelected}
+        onSelectAll={selectAllCurrentItems}
+        onRefresh={() => void refreshAll()}
+        onAddCurrent={
+          tab === "ampcode"
+            ? null
+            : tab === "openai"
+              ? () => openOpenAIEditor(null)
+              : () => openKeyEditor(tab, null)
+        }
+      />
+
+      <Tabs
+        value={tab}
+        onValueChange={(next) => {
+          const nextTab = next as typeof tab;
+          if (nextTab === tab) return;
+          setSelectedExportKeys([]);
+          setTab(nextTab);
+          void refreshTab(nextTab);
+        }}
+      >
+        <ProviderTabsWithCounts
+          tabs={[
+            { id: "gemini", label: "Gemini", count: tabCounts.gemini },
+            { id: "claude", label: "Claude", count: tabCounts.claude },
+            { id: "codex", label: "Codex", count: tabCounts.codex },
+            {
+              id: "opencode-go",
+              label: "OpenCode Go",
+              count: tabCounts["opencode-go"],
+            },
+            { id: "cline", label: "ClinePass", count: tabCounts.cline },
+            {
+              id: "ollama-cloud",
+              label: "Ollama Cloud",
+              count: tabCounts["ollama-cloud"],
+            },
+            {
+              id: "commandcode",
+              label: "Command Code",
+              count: tabCounts.commandcode,
+            },
+            { id: "vertex", label: "Vertex", count: tabCounts.vertex },
+            { id: "bedrock", label: "Bedrock", count: tabCounts.bedrock },
+            {
+              id: "openai",
+              label: t("providers.openai_compatible"),
+              count: tabCounts.openai,
+            },
+            ...(isSystemTenant
+              ? [
+                  {
+                    id: "ampcode" as const,
+                    label: "Ampcode",
+                    count: tabCounts.ampcode,
+                  },
+                ]
+              : []),
+          ]}
+          value={tab}
+        />
+        <div className="flex min-h-0 flex-1 flex-col gap-4">
+          <TabsContent value="gemini" className="min-h-0 flex flex-1 flex-col">
+            <ProviderKeyListCard
+              items={geminiKeys}
+              loading={isActiveTabListLoading("gemini")}
+              onEdit={(idx) => openKeyEditor("gemini", idx)}
+              onDelete={(idx) =>
+                setConfirm({ type: "deleteKey", keyType: "gemini", index: idx })
+              }
+              onToggleEnabled={(idx, enabled) =>
+                void toggleKeyEnabled("gemini", idx, enabled)
+              }
+              getStats={getSimpleStats}
+              getStatusBar={getSimpleStatusBar}
+              getLatencyEntry={getLatencyEntry}
+              checkLatency={checkLatency}
+              selectedKeys={selectedExportKeySet}
+              onToggleSelected={toggleExportSelection}
+            />
+          </TabsContent>
+
+          <TabsContent value="claude" className="min-h-0 flex flex-1 flex-col">
+            <ProviderKeyListCard
+              items={claudeKeys}
+              loading={isActiveTabListLoading("claude")}
+              onEdit={(idx) => openKeyEditor("claude", idx)}
+              onDelete={(idx) =>
+                setConfirm({ type: "deleteKey", keyType: "claude", index: idx })
+              }
+              onToggleEnabled={(idx, enabled) =>
+                void toggleKeyEnabled("claude", idx, enabled)
+              }
+              getStats={getSimpleStats}
+              getStatusBar={getSimpleStatusBar}
+              getLatencyEntry={getLatencyEntry}
+              checkLatency={checkLatency}
+              selectedKeys={selectedExportKeySet}
+              onToggleSelected={toggleExportSelection}
+            />
+          </TabsContent>
+
+          <TabsContent value="codex" className="min-h-0 flex flex-1 flex-col">
+            <ProviderKeyListCard
+              items={codexKeys}
+              loading={isActiveTabListLoading("codex")}
+              onEdit={(idx) => openKeyEditor("codex", idx)}
+              onDelete={(idx) =>
+                setConfirm({ type: "deleteKey", keyType: "codex", index: idx })
+              }
+              onToggleEnabled={(idx, enabled) =>
+                void toggleKeyEnabled("codex", idx, enabled)
+              }
+              getStats={getSimpleStats}
+              getStatusBar={getSimpleStatusBar}
+              getLatencyEntry={getLatencyEntry}
+              checkLatency={checkLatency}
+              selectedKeys={selectedExportKeySet}
+              onToggleSelected={toggleExportSelection}
+            />
+          </TabsContent>
+
+          {(
+            [
+              { provider: "opencode-go", items: openCodeGoKeys, showBaseUrl: false },
+              { provider: "cline", items: clineKeys },
+              { provider: "ollama-cloud", items: ollamaCloudKeys },
+              { provider: "commandcode", items: commandCodeKeys },
+            ] as const
+          ).map(({ provider, items, ...rest }) => (
+            <ProviderUsageTabContent
+              key={provider}
+              provider={provider}
+              items={items}
+              loading={isActiveTabListLoading(provider)}
+              catalog={modelAccessCatalogs[provider]}
+              usageStore={openCodeGoUsageStore}
+              getStats={getSimpleStats}
+              getStatusBar={getSimpleStatusBar}
+              onEdit={(idx) => openKeyEditor(provider, idx)}
+              onDelete={(idx) =>
+                setConfirm({ type: "deleteKey", keyType: provider, index: idx })
+              }
+              onToggleEnabled={(idx, enabled) =>
+                void toggleKeyEnabled(provider, idx, enabled)
+              }
+              onRefreshUsage={(item, idx) =>
+                void refreshProviderUsage(provider, item, idx)
+              }
+              selectedKeys={selectedExportKeySet}
+              onToggleSelected={toggleExportSelection}
+              {...rest}
+            />
+          ))}
+
+          <TabsContent value="vertex" className="min-h-0 flex flex-1 flex-col">
+            <ProviderKeyListCard
+              items={vertexKeys}
+              loading={isActiveTabListLoading("vertex")}
+              onEdit={(idx) => openKeyEditor("vertex", idx)}
+              onDelete={(idx) =>
+                setConfirm({ type: "deleteKey", keyType: "vertex", index: idx })
+              }
+              getStats={getSimpleStats}
+              getStatusBar={getSimpleStatusBar}
+              getLatencyEntry={getLatencyEntry}
+              checkLatency={checkLatency}
+              selectedKeys={selectedExportKeySet}
+              onToggleSelected={toggleExportSelection}
+            />
+          </TabsContent>
+
+          <TabsContent value="bedrock" className="min-h-0 flex flex-1 flex-col">
+            <ProviderKeyListCard
+              items={bedrockKeys}
+              loading={isActiveTabListLoading("bedrock")}
+              onEdit={(idx) => openKeyEditor("bedrock", idx)}
+              onDelete={(idx) =>
+                setConfirm({
+                  type: "deleteKey",
+                  keyType: "bedrock",
+                  index: idx,
+                })
+              }
+              onToggleEnabled={(idx, enabled) =>
+                void toggleKeyEnabled("bedrock", idx, enabled)
+              }
+              getStats={getSimpleStats}
+              getStatusBar={getSimpleStatusBar}
+              getLatencyEntry={getLatencyEntry}
+              checkLatency={checkLatency}
+              selectedKeys={selectedExportKeySet}
+              onToggleSelected={toggleExportSelection}
+            />
+          </TabsContent>
+
+          <TabsContent value="openai" className="min-h-0 flex flex-1 flex-col">
+            <OpenAIProvidersTab
+              providers={openaiProviders}
+              loading={isActiveTabListLoading("openai")}
+              openOpenAIEditor={openOpenAIEditor}
+              confirmDelete={(index) =>
+                setConfirm({ type: "deleteOpenAI", index })
+              }
+              maskApiKey={maskApiKey}
+              getKeyEntryStats={getOpenAIKeyEntryStats}
+              getProviderStats={getOpenAIProviderStats}
+              getProviderStatusBar={getOpenAIProviderStatusBar}
+              onToggleProviderEnabled={(providerIndex, enabled) =>
+                void toggleOpenAIProviderEnabled(providerIndex, enabled)
+              }
+              onToggleKeyEntryEnabled={(providerIndex, entryIndex, enabled) =>
+                void toggleOpenAIKeyEntryEnabled(
+                  providerIndex,
+                  entryIndex,
+                  enabled,
+                )
+              }
+              selectedKeys={selectedExportKeySet}
+              onToggleSelected={toggleExportSelection}
+            />
+          </TabsContent>
+
+          {isSystemTenant ? (
+            <TabsContent
+              value="ampcode"
+              className="min-h-0 flex flex-1 flex-col"
+            >
+              <AmpcodePanel
+                loading={loading || refreshing}
+                isPending={isPending}
+                saveAmpcode={saveAmpcode}
+                ampcode={ampcode}
+                ampMappings={ampMappings}
+                ampUpstreamUrl={ampUpstreamUrl}
+                setAmpUpstreamUrl={setAmpUpstreamUrl}
+                ampUpstreamApiKey={ampUpstreamApiKey}
+                setAmpUpstreamApiKey={setAmpUpstreamApiKey}
+                ampForceMappings={ampForceMappings}
+                setAmpForceMappings={setAmpForceMappings}
+                setAmpMappings={setAmpMappings}
+              />
+            </TabsContent>
+          ) : null}
+        </div>
+      </Tabs>
+
+      <ProviderKeyModal
+        open={editKeyOpen}
+        editKeyIndex={editKeyIndex}
+        editKeyTitle={editKeyTitle}
+        editKeyType={editKeyType}
+        keyDraft={keyDraft}
+        setKeyDraft={setKeyDraft}
+        keyDraftError={keyDraftError}
+        closeKeyEditor={closeKeyEditor}
+        saveKeyDraft={saveKeyDraft}
+        editKeyEnabled={editKeyEnabled}
+        editKeyEnabledToggle={editKeyEnabledToggle}
+        editKeyHeaderCount={editKeyHeaderCount}
+        editKeyModelCount={editKeyModelCount}
+        editKeyExcludedCount={editKeyExcludedCount}
+        proxyPoolEntries={proxyPoolEntries}
+        copyText={copyText}
+        maskApiKey={maskApiKey}
+      />
+
+      <OpenAIProviderModal
+        open={editOpenAIOpen}
+        editOpenAIIndex={editOpenAIIndex}
+        openaiDraft={openaiDraft}
+        setOpenaiDraft={setOpenaiDraft}
+        openaiDraftError={openaiDraftError}
+        closeOpenAIEditor={closeOpenAIEditor}
+        saveOpenAIDraft={saveOpenAIDraft}
+        discovering={discovering}
+        discoverModels={discoverModels}
+        applyDiscoveredModels={applyDiscoveredModels}
+        discoveredModels={discoveredModels}
+        discoverSelected={discoverSelected}
+        setDiscoverSelected={setDiscoverSelected}
+        proxyPoolEntries={proxyPoolEntries}
+        copyText={copyText}
+        maskApiKey={maskApiKey}
+      />
+
+      <ConfirmModal
+        open={confirm !== null}
+        title={t("providers.confirm_delete")}
+        description={
+          confirm?.type === "deleteOpenAI"
+            ? t("providers.confirm_delete_openai", {
+                name: openaiProviders[confirm.index]?.name ?? "",
+              })
+            : confirm?.type === "deleteKey"
+              ? t("providers.confirm_delete_config")
+              : t("providers.confirm_delete_generic")
+        }
+        confirmText={t("providers.delete")}
+        onClose={() => setConfirm(null)}
+        onConfirm={() => {
+          const action = confirm;
+          setConfirm(null);
+          if (!action) return;
+          if (action.type === "deleteOpenAI") {
+            void deleteOpenAIProvider(action.index);
+            return;
+          }
+          void deleteKey(action.keyType, action.index);
+        }}
+      />
+
+      <Modal
+        open={importPreview !== null}
+        title={t("providers.import_preview_title")}
+        description={
+          importPreview
+            ? t("providers.import_preview_desc", {
+                filename: importPreview.filename,
+              })
+            : undefined
+        }
+        maxWidth="max-w-2xl"
+        onClose={() => {
+          if (importing) return;
+          setImportPreview(null);
+        }}
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => setImportPreview(null)}
+              disabled={importing}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => void confirmImport()}
+              disabled={!importPreview?.diff.hasChanges || importing}
+            >
+              {t("providers.confirm_import")}
+            </Button>
+          </>
+        }
+      >
+        {importPreview ? (
+          <div className="space-y-4 text-sm text-slate-700 dark:text-white/75">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="rounded-2xl border border-slate-900/8 bg-slate-50 px-4 py-3 dark:border-white/8 dark:bg-neutral-900">
+                <div>
+                  {t("providers.diff_added", {
+                    count: importPreview.diff.added,
+                  })}
+                </div>
+                <div>
+                  {t("providers.diff_updated", {
+                    count: importPreview.diff.changed,
+                  })}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-900/8 bg-slate-50 px-4 py-3 dark:border-white/8 dark:bg-neutral-900">
+                <div>
+                  {t("providers.diff_removed", {
+                    count: importPreview.diff.removed,
+                  })}
+                </div>
+                <div>
+                  {t("providers.diff_duplicates_cleaned", {
+                    count: importPreview.diff.duplicateEntriesRemoved,
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {!importPreview.diff.hasChanges ? (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+                {t("providers.import_no_changes")}
+              </div>
+            ) : null}
+
+            {importPreview.diff.addedLabels.length ? (
+              <div>
+                <p className="font-semibold">
+                  {t("providers.diff_added_label")}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {importPreview.diff.addedLabels.map((label) => (
+                    <span
+                      key={`added-${label}`}
+                      className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-100"
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {importPreview.diff.changedLabels.length ? (
+              <div>
+                <p className="font-semibold">
+                  {t("providers.diff_updated_label")}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {importPreview.diff.changedLabels.map((label) => (
+                    <span
+                      key={`changed-${label}`}
+                      className="rounded-full border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-100"
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {importPreview.diff.removedLabels.length ? (
+              <div>
+                <p className="font-semibold">
+                  {t("providers.diff_removed_label")}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {importPreview.diff.removedLabels.map((label) => (
+                    <span
+                      key={`removed-${label}`}
+                      className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-100"
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
+    </div>
+  );
+}

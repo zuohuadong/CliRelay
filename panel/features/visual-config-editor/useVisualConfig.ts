@@ -1,0 +1,731 @@
+import { useCallback, useMemo, useState } from "react";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import type {
+  PayloadFilterRule,
+  PayloadParamValueType,
+  PayloadProtocol,
+  PayloadRule,
+  RoutingChannelGroupEntry,
+  RoutingChannelGroupMemberEntry,
+  RoutingFallback,
+  RoutingPathRouteEntry,
+  RoutingStrategy,
+  VisualConfigValues,
+} from "./types";
+import { DEFAULT_VISUAL_VALUES, makeClientId } from "./types";
+import {
+  parseRoutingChannelGroups,
+  parseRoutingPathRoutes,
+  parseRoutingStrategy,
+  serializeRoutingChannelGroupsForYaml,
+  serializeRoutingPathRoutesForYaml,
+} from "./routingSerialization";
+
+function hasOwn(obj: unknown, key: string): obj is Record<string, unknown> {
+  return obj !== null && typeof obj === "object" && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function deepClone<T>(value: T): T {
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function parseStringListText(raw: unknown): string {
+  if (!Array.isArray(raw)) return "";
+
+  const values = raw.map((item) => String(item ?? "").trim()).filter(Boolean);
+  return Array.from(new Set(values)).join("\n");
+}
+
+function parseMultilineList(value: string): string[] {
+  const seen = new Set<string>();
+  const items: string[] = [];
+  for (const line of value.split(/\r?\n/)) {
+    const item = line.trim();
+    if (!item || seen.has(item)) continue;
+    seen.add(item);
+    items.push(item);
+  }
+  return items;
+}
+
+function ensureRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> {
+  const existing = asRecord(parent[key]);
+  if (existing) return existing;
+  const next: Record<string, unknown> = {};
+  parent[key] = next;
+  return next;
+}
+
+function deleteIfEmpty(parent: Record<string, unknown>, key: string): void {
+  const value = asRecord(parent[key]);
+  if (!value) return;
+  if (Object.keys(value).length === 0) delete parent[key];
+}
+
+function hasPayloadRuleSections(
+  payload: Record<string, unknown> | null,
+): payload is Record<string, unknown> {
+  return Boolean(
+    payload &&
+    (hasOwn(payload, "default") || hasOwn(payload, "override") || hasOwn(payload, "filter")),
+  );
+}
+
+function hasVisualPayloadRules(values: VisualConfigValues): boolean {
+  return (
+    values.payloadDefaultRules.length > 0 ||
+    values.payloadOverrideRules.length > 0 ||
+    values.payloadFilterRules.length > 0
+  );
+}
+
+function setBoolean(obj: Record<string, unknown>, key: string, value: boolean): void {
+  if (value) {
+    obj[key] = true;
+    return;
+  }
+  if (hasOwn(obj, key)) obj[key] = false;
+}
+
+function setString(obj: Record<string, unknown>, key: string, value: unknown): void {
+  const safe = typeof value === "string" ? value : "";
+  const trimmed = safe.trim();
+  if (trimmed !== "") {
+    obj[key] = safe;
+    return;
+  }
+  if (hasOwn(obj, key)) delete obj[key];
+}
+
+function setIntFromString(obj: Record<string, unknown>, key: string, value: unknown): void {
+  const safe = typeof value === "string" ? value : "";
+  const trimmed = safe.trim();
+  if (trimmed === "") {
+    if (hasOwn(obj, key)) delete obj[key];
+    return;
+  }
+
+  const parsed = Number.parseInt(trimmed, 10);
+  if (Number.isFinite(parsed)) {
+    obj[key] = parsed;
+    return;
+  }
+
+  if (hasOwn(obj, key)) delete obj[key];
+}
+
+function normalizeAutoUpdateChannel(value: unknown): "main" | "dev" {
+  return typeof value === "string" && value.trim().toLowerCase() === "dev" ? "dev" : "main";
+}
+
+function parsePayloadParamValue(raw: unknown): { valueType: PayloadParamValueType; value: string } {
+  if (typeof raw === "number") {
+    return { valueType: "number", value: String(raw) };
+  }
+  if (typeof raw === "boolean") {
+    return { valueType: "boolean", value: String(raw) };
+  }
+  if (raw === null || typeof raw === "object") {
+    try {
+      const json = JSON.stringify(raw, null, 2);
+      return { valueType: "json", value: json ?? "null" };
+    } catch {
+      return { valueType: "json", value: String(raw) };
+    }
+  }
+  return { valueType: "string", value: String(raw ?? "") };
+}
+
+const PAYLOAD_PROTOCOL_VALUES = [
+  "openai",
+  "openai-response",
+  "gemini",
+  "claude",
+  "codex",
+  "antigravity",
+] as const satisfies ReadonlyArray<PayloadProtocol>;
+
+function parsePayloadProtocol(raw: unknown): PayloadProtocol | undefined {
+  if (typeof raw !== "string") return undefined;
+  return PAYLOAD_PROTOCOL_VALUES.includes(raw as PayloadProtocol)
+    ? (raw as PayloadProtocol)
+    : undefined;
+}
+
+function parsePayloadRules(rules: unknown): PayloadRule[] {
+  if (!Array.isArray(rules)) return [];
+
+  return rules.map((rule, index) => {
+    const record = asRecord(rule) ?? {};
+
+    const modelsRaw = record.models;
+    const models = Array.isArray(modelsRaw)
+      ? modelsRaw.map((model, modelIndex) => {
+          const modelRecord = asRecord(model);
+          const nameRaw =
+            typeof model === "string" ? model : (modelRecord?.name ?? modelRecord?.id ?? "");
+          const name = typeof nameRaw === "string" ? nameRaw : String(nameRaw ?? "");
+          return {
+            id: `model-${index}-${modelIndex}`,
+            name,
+            protocol: parsePayloadProtocol(modelRecord?.protocol),
+          };
+        })
+      : [];
+
+    const paramsRecord = asRecord(record.params);
+    const params = paramsRecord
+      ? Object.entries(paramsRecord).map(([path, value], pIndex) => {
+          const parsedValue = parsePayloadParamValue(value);
+          return {
+            id: `param-${index}-${pIndex}`,
+            path,
+            valueType: parsedValue.valueType,
+            value: parsedValue.value,
+          };
+        })
+      : [];
+
+    return { id: `payload-rule-${index}`, models, params };
+  });
+}
+
+function parsePayloadFilterRules(rules: unknown): PayloadFilterRule[] {
+  if (!Array.isArray(rules)) return [];
+
+  return rules.map((rule, index) => {
+    const record = asRecord(rule) ?? {};
+
+    const modelsRaw = record.models;
+    const models = Array.isArray(modelsRaw)
+      ? modelsRaw.map((model, modelIndex) => {
+          const modelRecord = asRecord(model);
+          const nameRaw =
+            typeof model === "string" ? model : (modelRecord?.name ?? modelRecord?.id ?? "");
+          const name = typeof nameRaw === "string" ? nameRaw : String(nameRaw ?? "");
+          return {
+            id: `filter-model-${index}-${modelIndex}`,
+            name,
+            protocol: parsePayloadProtocol(modelRecord?.protocol),
+          };
+        })
+      : [];
+
+    const paramsRaw = record.params;
+    const params = Array.isArray(paramsRaw) ? paramsRaw.map(String) : [];
+
+    return { id: `payload-filter-rule-${index}`, models, params };
+  });
+}
+
+
+function serializePayloadRulesForYaml(rules: PayloadRule[]): Array<Record<string, unknown>> {
+  return rules
+    .map((rule) => {
+      const models = (rule.models || [])
+        .filter((m) => m.name?.trim())
+        .map((m) => {
+          const obj: Record<string, unknown> = { name: m.name.trim() };
+          if (m.protocol) obj.protocol = m.protocol;
+          return obj;
+        });
+
+      const params: Record<string, unknown> = {};
+      for (const param of rule.params || []) {
+        if (!param.path?.trim()) continue;
+        let value: unknown = param.value;
+        if (param.valueType === "number") {
+          const num = Number(param.value);
+          value = Number.isFinite(num) ? num : param.value;
+        } else if (param.valueType === "boolean") {
+          value = param.value === "true";
+        } else if (param.valueType === "json") {
+          try {
+            value = JSON.parse(param.value);
+          } catch {
+            value = param.value;
+          }
+        }
+        params[param.path.trim()] = value;
+      }
+
+      return { models, params };
+    })
+    .filter((rule) => rule.models.length > 0);
+}
+
+function serializePayloadFilterRulesForYaml(
+  rules: PayloadFilterRule[],
+): Array<Record<string, unknown>> {
+  return rules
+    .map((rule) => {
+      const models = (rule.models || [])
+        .filter((m) => m.name?.trim())
+        .map((m) => {
+          const obj: Record<string, unknown> = { name: m.name.trim() };
+          if (m.protocol) obj.protocol = m.protocol;
+          return obj;
+        });
+
+      const params = (Array.isArray(rule.params) ? rule.params : [])
+        .map((path) => String(path).trim())
+        .filter(Boolean);
+
+      return { models, params };
+    })
+    .filter((rule) => rule.models.length > 0);
+}
+
+export function useVisualConfig() {
+  const [visualValues, setVisualValuesState] = useState<VisualConfigValues>({
+    ...DEFAULT_VISUAL_VALUES,
+  });
+  const [baselineValues, setBaselineValues] = useState<VisualConfigValues>({
+    ...DEFAULT_VISUAL_VALUES,
+  });
+
+  const visualDirty = useMemo(() => {
+    return JSON.stringify(visualValues) !== JSON.stringify(baselineValues);
+  }, [baselineValues, visualValues]);
+
+  const loadVisualValuesFromYaml = useCallback(
+    (yamlContent: string, runtimeConfig?: Record<string, unknown>) => {
+      try {
+        const parsedRaw: unknown = parseYaml(yamlContent) || {};
+        const parsed = asRecord(parsedRaw) ?? {};
+        const tls = asRecord(parsed.tls);
+        const remoteManagement = asRecord(parsed["remote-management"]);
+        const quotaExceeded = asRecord(parsed["quota-exceeded"]);
+        const routing = asRecord(parsed.routing);
+        const yamlPayload = asRecord(parsed.payload);
+        const runtimePayload = asRecord(runtimeConfig?.payload);
+        const payload = hasPayloadRuleSections(runtimePayload) ? runtimePayload : yamlPayload;
+        const streaming = asRecord(parsed.streaming);
+        const autoUpdate = asRecord(parsed["auto-update"]);
+        const requestLogStorage = asRecord(parsed["request-log-storage"]);
+
+        const newValues: VisualConfigValues = {
+          host: typeof parsed.host === "string" ? parsed.host : "",
+          port: String(parsed.port ?? ""),
+
+          tlsEnable: Boolean(tls?.enable),
+          tlsCert: typeof tls?.cert === "string" ? tls.cert : "",
+          tlsKey: typeof tls?.key === "string" ? tls.key : "",
+
+          rmAllowRemote: Boolean(remoteManagement?.["allow-remote"]),
+          rmSecretKey:
+            typeof remoteManagement?.["secret-key"] === "string"
+              ? remoteManagement["secret-key"]
+              : "",
+          rmDisableControlPanel: Boolean(remoteManagement?.["disable-control-panel"]),
+          rmPanelRepo:
+            typeof remoteManagement?.["panel-github-repository"] === "string"
+              ? remoteManagement["panel-github-repository"]
+              : typeof remoteManagement?.["panel-repo"] === "string"
+                ? remoteManagement["panel-repo"]
+                : "",
+
+          authDir: typeof parsed["auth-dir"] === "string" ? parsed["auth-dir"] : "",
+          corsAllowOriginsText: parseStringListText(parsed["cors-allow-origins"]),
+
+          debug: Boolean(parsed.debug),
+          commercialMode: Boolean(parsed["commercial-mode"]),
+          loggingToFile: Boolean(parsed["logging-to-file"]),
+          logsMaxTotalSizeMb: String(parsed["logs-max-total-size-mb"] ?? ""),
+          errorLogsMaxFiles: String(parsed["error-logs-max-files"] ?? "10"),
+          usageStatisticsEnabled: Boolean(parsed["usage-statistics-enabled"]),
+          requestLog: Boolean(parsed["request-log"]),
+          requestLogStorage: {
+            storeContent: Boolean(requestLogStorage?.["store-content"]),
+            retentionDays: String(requestLogStorage?.["retention-days"] ?? "7"),
+            contentRetentionDays: String(requestLogStorage?.["content-retention-days"] ?? "3"),
+            cleanupEnabled: requestLogStorage?.["cleanup-enabled"] !== false,
+            cleanupIntervalMinutes: String(requestLogStorage?.["cleanup-interval-minutes"] ?? "60"),
+            maxRows: String(requestLogStorage?.["max-rows"] ?? "100000"),
+            maxMetadataSizeMb: String(requestLogStorage?.["max-metadata-size-mb"] ?? "256"),
+            maxTotalSizeMb: String(requestLogStorage?.["max-total-size-mb"] ?? "128"),
+          },
+          systemStatsCacheSeconds: String(parsed["system-stats-cache-seconds"] ?? "60"),
+          systemStatsWebSocketMaxAgeSeconds: String(
+            parsed["system-stats-websocket-max-age-seconds"] ?? "300",
+          ),
+          autoUpdateEnabled: Boolean(autoUpdate?.enabled ?? true),
+          autoUpdateChannel: normalizeAutoUpdateChannel(autoUpdate?.channel),
+          autoUpdateDockerImage:
+            typeof autoUpdate?.["docker-image"] === "string" && autoUpdate["docker-image"].trim()
+              ? autoUpdate["docker-image"]
+              : DEFAULT_VISUAL_VALUES.autoUpdateDockerImage,
+
+          proxyUrl: typeof parsed["proxy-url"] === "string" ? parsed["proxy-url"] : "",
+          preferIPv4: Boolean(parsed["prefer-ipv4"]),
+          forceModelPrefix: Boolean(parsed["force-model-prefix"]),
+          requestRetry: String(parsed["request-retry"] ?? ""),
+          maxRetryInterval: String(parsed["max-retry-interval"] ?? ""),
+          wsAuth: Boolean(parsed["ws-auth"]),
+
+          quotaSwitchProject: Boolean(quotaExceeded?.["switch-project"] ?? true),
+          quotaSwitchPreviewModel: Boolean(quotaExceeded?.["switch-preview-model"] ?? true),
+
+          routingStrategy: parseRoutingStrategy(routing?.strategy),
+          routingIncludeDefaultGroup: routing?.["include-default-group"] !== false,
+          routingChannelGroups: parseRoutingChannelGroups(routing?.["channel-groups"]),
+          routingPathRoutes: parseRoutingPathRoutes(routing?.["path-routes"]),
+
+          payloadDefaultRules: parsePayloadRules(payload?.default),
+          payloadOverrideRules: parsePayloadRules(payload?.override),
+          payloadFilterRules: parsePayloadFilterRules(payload?.filter),
+
+          streaming: {
+            keepaliveSeconds: String(streaming?.["keepalive-seconds"] ?? ""),
+            bootstrapRetries: String(streaming?.["bootstrap-retries"] ?? ""),
+            nonstreamKeepaliveInterval: String(parsed["nonstream-keepalive-interval"] ?? ""),
+          },
+
+          kimiHeaderDefaults: {
+            userAgent: String(asRecord(parsed["kimi-header-defaults"])?.["user-agent"] ?? ""),
+            platform: String(asRecord(parsed["kimi-header-defaults"])?.["platform"] ?? ""),
+            version: String(asRecord(parsed["kimi-header-defaults"])?.["version"] ?? ""),
+          },
+        };
+
+        setVisualValuesState(newValues);
+        setBaselineValues(deepClone(newValues));
+      } catch {
+        setVisualValuesState({ ...DEFAULT_VISUAL_VALUES });
+        setBaselineValues(deepClone(DEFAULT_VISUAL_VALUES));
+      }
+    },
+    [],
+  );
+
+  const applyVisualChangesToYaml = useCallback(
+    (currentYaml: string): string => {
+      try {
+        const parsed = (parseYaml(currentYaml) || {}) as Record<string, unknown>;
+        const values = visualValues;
+
+        setString(parsed, "host", values.host);
+        setIntFromString(parsed, "port", values.port);
+
+        if (
+          hasOwn(parsed, "tls") ||
+          values.tlsEnable ||
+          values.tlsCert.trim() ||
+          values.tlsKey.trim()
+        ) {
+          const tls = ensureRecord(parsed, "tls");
+          setBoolean(tls, "enable", values.tlsEnable);
+          setString(tls, "cert", values.tlsCert);
+          setString(tls, "key", values.tlsKey);
+          deleteIfEmpty(parsed, "tls");
+        }
+
+        if (
+          hasOwn(parsed, "remote-management") ||
+          values.rmAllowRemote ||
+          values.rmSecretKey.trim() ||
+          values.rmDisableControlPanel ||
+          values.rmPanelRepo.trim()
+        ) {
+          const rm = ensureRecord(parsed, "remote-management");
+          setBoolean(rm, "allow-remote", values.rmAllowRemote);
+          setString(rm, "secret-key", values.rmSecretKey);
+          setBoolean(rm, "disable-control-panel", values.rmDisableControlPanel);
+          setString(rm, "panel-github-repository", values.rmPanelRepo);
+          if (hasOwn(rm, "panel-repo")) delete rm["panel-repo"];
+          deleteIfEmpty(parsed, "remote-management");
+        }
+
+        setString(parsed, "auth-dir", values.authDir);
+
+        if (hasOwn(parsed, "cors-allow-origins") || values.corsAllowOriginsText.trim()) {
+          const origins = parseMultilineList(values.corsAllowOriginsText);
+          if (origins.length > 0) {
+            parsed["cors-allow-origins"] = origins;
+          } else if (hasOwn(parsed, "cors-allow-origins")) {
+            delete parsed["cors-allow-origins"];
+          }
+        }
+
+        setBoolean(parsed, "debug", values.debug);
+        setBoolean(parsed, "commercial-mode", values.commercialMode);
+        setBoolean(parsed, "logging-to-file", values.loggingToFile);
+        setIntFromString(parsed, "logs-max-total-size-mb", values.logsMaxTotalSizeMb);
+        setIntFromString(parsed, "error-logs-max-files", values.errorLogsMaxFiles);
+        setBoolean(parsed, "usage-statistics-enabled", values.usageStatisticsEnabled);
+        setBoolean(parsed, "request-log", values.requestLog);
+        setIntFromString(parsed, "system-stats-cache-seconds", values.systemStatsCacheSeconds);
+        setIntFromString(
+          parsed,
+          "system-stats-websocket-max-age-seconds",
+          values.systemStatsWebSocketMaxAgeSeconds,
+        );
+
+        const requestLogStorageValues = values.requestLogStorage;
+        if (
+          hasOwn(parsed, "request-log-storage") ||
+          requestLogStorageValues.storeContent ||
+          requestLogStorageValues.retentionDays.trim() !== "7" ||
+          requestLogStorageValues.contentRetentionDays.trim() !== "3" ||
+          !requestLogStorageValues.cleanupEnabled ||
+          requestLogStorageValues.cleanupIntervalMinutes.trim() !== "60" ||
+          requestLogStorageValues.maxRows.trim() !== "100000" ||
+          requestLogStorageValues.maxMetadataSizeMb.trim() !== "256" ||
+          requestLogStorageValues.maxTotalSizeMb.trim() !== "128"
+        ) {
+          const storage = ensureRecord(parsed, "request-log-storage");
+          setBoolean(storage, "store-content", requestLogStorageValues.storeContent);
+          setIntFromString(storage, "retention-days", requestLogStorageValues.retentionDays);
+          setIntFromString(
+            storage,
+            "content-retention-days",
+            requestLogStorageValues.contentRetentionDays,
+          );
+          storage["cleanup-enabled"] = requestLogStorageValues.cleanupEnabled;
+          setIntFromString(
+            storage,
+            "cleanup-interval-minutes",
+            requestLogStorageValues.cleanupIntervalMinutes,
+          );
+          setIntFromString(storage, "max-rows", requestLogStorageValues.maxRows);
+          setIntFromString(
+            storage,
+            "max-metadata-size-mb",
+            requestLogStorageValues.maxMetadataSizeMb,
+          );
+          setIntFromString(storage, "max-total-size-mb", requestLogStorageValues.maxTotalSizeMb);
+          if (hasOwn(storage, "vacuum-on-cleanup")) delete storage["vacuum-on-cleanup"];
+          deleteIfEmpty(parsed, "request-log-storage");
+        }
+
+        if (
+          hasOwn(parsed, "auto-update") ||
+          !values.autoUpdateEnabled ||
+          values.autoUpdateChannel !== "main" ||
+          values.autoUpdateDockerImage.trim()
+        ) {
+          const autoUpdate = ensureRecord(parsed, "auto-update");
+          autoUpdate.enabled = values.autoUpdateEnabled;
+          autoUpdate.channel = values.autoUpdateChannel;
+          setString(autoUpdate, "docker-image", values.autoUpdateDockerImage);
+          deleteIfEmpty(parsed, "auto-update");
+        }
+
+        setString(parsed, "proxy-url", values.proxyUrl);
+        setBoolean(parsed, "prefer-ipv4", values.preferIPv4);
+        setBoolean(parsed, "force-model-prefix", values.forceModelPrefix);
+        setIntFromString(parsed, "request-retry", values.requestRetry);
+        setIntFromString(parsed, "max-retry-interval", values.maxRetryInterval);
+        setBoolean(parsed, "ws-auth", values.wsAuth);
+
+        if (
+          hasOwn(parsed, "quota-exceeded") ||
+          !values.quotaSwitchProject ||
+          !values.quotaSwitchPreviewModel
+        ) {
+          const quota = ensureRecord(parsed, "quota-exceeded");
+          quota["switch-project"] = values.quotaSwitchProject;
+          quota["switch-preview-model"] = values.quotaSwitchPreviewModel;
+          deleteIfEmpty(parsed, "quota-exceeded");
+        }
+
+        if (
+          hasOwn(parsed, "routing") ||
+          values.routingStrategy !== "round-robin" ||
+          !values.routingIncludeDefaultGroup ||
+          values.routingChannelGroups.length > 0 ||
+          values.routingPathRoutes.length > 0
+        ) {
+          const serializedRoutingGroups = serializeRoutingChannelGroupsForYaml(
+            values.routingChannelGroups,
+          );
+          const serializedPathRoutes = serializeRoutingPathRoutesForYaml(values.routingPathRoutes);
+          const routing = ensureRecord(parsed, "routing");
+          routing.strategy = values.routingStrategy;
+          if (!values.routingIncludeDefaultGroup) {
+            routing["include-default-group"] = false;
+          } else if (hasOwn(routing, "include-default-group")) {
+            delete routing["include-default-group"];
+          }
+          if (serializedRoutingGroups.length > 0) {
+            routing["channel-groups"] = serializedRoutingGroups;
+          } else if (hasOwn(routing, "channel-groups")) {
+            delete routing["channel-groups"];
+          }
+          if (serializedPathRoutes.length > 0) {
+            routing["path-routes"] = serializedPathRoutes;
+          } else if (hasOwn(routing, "path-routes")) {
+            delete routing["path-routes"];
+          }
+          deleteIfEmpty(parsed, "routing");
+        }
+
+        const keepaliveSeconds =
+          typeof values.streaming?.keepaliveSeconds === "string"
+            ? values.streaming.keepaliveSeconds
+            : "";
+        const bootstrapRetries =
+          typeof values.streaming?.bootstrapRetries === "string"
+            ? values.streaming.bootstrapRetries
+            : "";
+        const nonstreamKeepaliveInterval =
+          typeof values.streaming?.nonstreamKeepaliveInterval === "string"
+            ? values.streaming.nonstreamKeepaliveInterval
+            : "";
+
+        const streamingDefined =
+          hasOwn(parsed, "streaming") || keepaliveSeconds.trim() || bootstrapRetries.trim();
+        if (streamingDefined) {
+          const streaming = ensureRecord(parsed, "streaming");
+          setIntFromString(streaming, "keepalive-seconds", keepaliveSeconds);
+          setIntFromString(streaming, "bootstrap-retries", bootstrapRetries);
+          deleteIfEmpty(parsed, "streaming");
+        }
+
+        setIntFromString(parsed, "nonstream-keepalive-interval", nonstreamKeepaliveInterval);
+
+        // Handle kimi-header-defaults
+        const kimiUserAgent =
+          typeof values.kimiHeaderDefaults?.userAgent === "string"
+            ? values.kimiHeaderDefaults.userAgent
+            : "";
+        const kimiPlatform =
+          typeof values.kimiHeaderDefaults?.platform === "string"
+            ? values.kimiHeaderDefaults.platform
+            : "";
+        const kimiVersion =
+          typeof values.kimiHeaderDefaults?.version === "string"
+            ? values.kimiHeaderDefaults.version
+            : "";
+
+        if (
+          hasOwn(parsed, "kimi-header-defaults") ||
+          kimiUserAgent.trim() ||
+          kimiPlatform.trim() ||
+          kimiVersion.trim()
+        ) {
+          const kimiHeaderDefaults: Record<string, unknown> = {};
+          if (kimiUserAgent.trim()) {
+            kimiHeaderDefaults["user-agent"] = kimiUserAgent.trim();
+          }
+          if (kimiPlatform.trim()) {
+            kimiHeaderDefaults["platform"] = kimiPlatform.trim();
+          }
+          if (kimiVersion.trim()) {
+            kimiHeaderDefaults["version"] = kimiVersion.trim();
+          }
+          if (Object.keys(kimiHeaderDefaults).length > 0) {
+            parsed["kimi-header-defaults"] = kimiHeaderDefaults;
+          } else if (hasOwn(parsed, "kimi-header-defaults")) {
+            delete parsed["kimi-header-defaults"];
+          }
+        }
+
+        const currentHasPayloadRules = hasVisualPayloadRules(values);
+        const baselineHadPayloadRules = hasVisualPayloadRules(baselineValues);
+
+        if (hasOwn(parsed, "payload") || currentHasPayloadRules || baselineHadPayloadRules) {
+          const payload = ensureRecord(parsed, "payload");
+          if (values.payloadDefaultRules.length > 0) {
+            payload.default = serializePayloadRulesForYaml(values.payloadDefaultRules);
+          } else if (hasOwn(payload, "default")) {
+            delete payload.default;
+          }
+          if (values.payloadOverrideRules.length > 0) {
+            payload.override = serializePayloadRulesForYaml(values.payloadOverrideRules);
+          } else if (hasOwn(payload, "override")) {
+            delete payload.override;
+          }
+          if (values.payloadFilterRules.length > 0) {
+            payload.filter = serializePayloadFilterRulesForYaml(values.payloadFilterRules);
+          } else if (hasOwn(payload, "filter")) {
+            delete payload.filter;
+          }
+          if (Object.keys(payload).length === 0) {
+            if (baselineHadPayloadRules && !currentHasPayloadRules) {
+              parsed.payload = {};
+            } else {
+              delete parsed.payload;
+            }
+          }
+        }
+
+        return stringifyYaml(parsed, { indent: 2, lineWidth: 120, minContentWidth: 0 });
+      } catch {
+        return currentYaml;
+      }
+    },
+    [baselineValues, visualValues],
+  );
+
+  const setVisualValues = useCallback((newValues: Partial<VisualConfigValues>) => {
+    setVisualValuesState((prev) => {
+      const next: VisualConfigValues = { ...prev, ...newValues } as VisualConfigValues;
+      if (newValues.streaming) {
+        next.streaming = { ...prev.streaming, ...newValues.streaming };
+      }
+      if (newValues.requestLogStorage) {
+        next.requestLogStorage = { ...prev.requestLogStorage, ...newValues.requestLogStorage };
+      }
+      if (newValues.kimiHeaderDefaults) {
+        next.kimiHeaderDefaults = { ...prev.kimiHeaderDefaults, ...newValues.kimiHeaderDefaults };
+      }
+      return next;
+    });
+  }, []);
+
+  const createEmptyPayloadRule = useCallback((): PayloadRule => {
+    return {
+      id: makeClientId(),
+      models: [{ id: makeClientId(), name: "", protocol: undefined }],
+      params: [],
+    };
+  }, []);
+
+  const createEmptyPayloadFilterRule = useCallback((): PayloadFilterRule => {
+    return {
+      id: makeClientId(),
+      models: [{ id: makeClientId(), name: "", protocol: undefined }],
+      params: [],
+    };
+  }, []);
+
+  return {
+    visualValues,
+    visualDirty,
+    loadVisualValuesFromYaml,
+    applyVisualChangesToYaml,
+    setVisualValues,
+    createEmptyPayloadRule,
+    createEmptyPayloadFilterRule,
+  };
+}
+
+export const VISUAL_CONFIG_PROTOCOL_OPTIONS: ReadonlyArray<{
+  value: "" | PayloadProtocol;
+  label: string;
+}> = [
+  { value: "", label: "Default" },
+  { value: "openai", label: "OpenAI" },
+  { value: "openai-response", label: "OpenAI Response" },
+  { value: "gemini", label: "Gemini" },
+  { value: "claude", label: "Claude" },
+  { value: "codex", label: "Codex" },
+  { value: "antigravity", label: "Antigravity" },
+];
+
+export const VISUAL_CONFIG_PAYLOAD_VALUE_TYPE_OPTIONS: ReadonlyArray<{
+  value: PayloadParamValueType;
+  label: string;
+}> = [
+  { value: "string", label: "String" },
+  { value: "number", label: "Number" },
+  { value: "boolean", label: "Boolean" },
+  { value: "json", label: "JSON" },
+];

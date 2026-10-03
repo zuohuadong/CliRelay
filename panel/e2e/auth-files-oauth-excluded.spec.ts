@@ -52,7 +52,7 @@ test("Auth Files: OAuth excluded models tab should not stay loading on empty res
   await page.goto("/#/auth-files?tab=excluded");
 
   await expect(
-    page.getByRole("tab", { name: /OAuth Excluded Models|OAuth 模型禁用/i }),
+    page.getByRole("dialog", { name: /OAuth Excluded Models|OAuth 模型禁用/i }),
   ).toBeVisible();
   await expect(page.getByText(/No config|No configuration|暂无配置/i)).toBeVisible();
 
@@ -140,4 +140,77 @@ test("Auth Files: OAuth dialog should submit callback url through management api
     .getByText("Submitted", { exact: true })
     .or(page.getByText("已提交", { exact: true }));
   await expect(submittedStatus).toBeVisible();
+});
+
+test("Auth Files: mobile cards expose the selection checkbox without hover", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "test-management-key",
+        rememberPassword: true,
+        expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+      }),
+    );
+    localStorage.setItem("authFilesPage.filesViewMode.v1", JSON.stringify("cards"));
+    localStorage.setItem("authFilesPage.quotaAutoRefreshMs.v1", JSON.stringify(0));
+  });
+
+  await page.route("**/v0/management/config", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+  });
+  await page.route("**/v0/management/auth-files", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        files: [
+          {
+            name: "qwen.json",
+            type: "qwen",
+            size: 1024,
+            modified: Date.now(),
+            disabled: false,
+          },
+        ],
+      }),
+    });
+  });
+  await page.route("**/v0/management/usage**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ source: [], auth_index: [] }),
+    });
+  });
+  await page.route("**/v0/management/model-configs**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
+  await page.route("**/v0/management/model-owner-presets", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
+  await page.route("**/v0/management/auth-group-model-owner-mappings", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "{\"items\":[]}" });
+  });
+  await page.route("**/v0/management/proxy-pool", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "{\"items\":[]}" });
+  });
+
+  await page.goto("/#/auth-files");
+
+  await expect(page.getByText("qwen.json")).toBeVisible();
+  const checkbox = page.getByRole("checkbox", { name: "Select qwen.json" });
+  await expect
+    .poll(async () =>
+      checkbox.evaluate((input) => {
+        const style = getComputedStyle(input.parentElement as HTMLElement);
+        return `${style.opacity}:${style.pointerEvents}`;
+      }),
+    )
+    .toBe("1:auto");
+
+  await checkbox.click();
+  await expect(checkbox).toBeChecked();
 });

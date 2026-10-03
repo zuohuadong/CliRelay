@@ -1,0 +1,558 @@
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import i18n from "@code-proxy/i18n";
+import { imageGenerationApi } from "@code-proxy/api-client";
+import { ImageGenerationPage } from "../ImageGenerationPage";
+import { ThemeProvider } from "@code-proxy/ui";
+import { ToastProvider } from "@code-proxy/ui";
+
+const imageGenerationGetChannelsMock = () =>
+  imageGenerationApi.getChannels as unknown as ReturnType<typeof vi.fn>;
+const imageGenerationStartTaskMock = () =>
+  imageGenerationApi.startTestTask as unknown as ReturnType<typeof vi.fn>;
+const imageGenerationGetTaskMock = () =>
+  imageGenerationApi.getTestTask as unknown as ReturnType<typeof vi.fn>;
+const imageGenerationGetSizePresetsMock = () =>
+  imageGenerationApi.getSizePresets as unknown as ReturnType<typeof vi.fn>;
+const imageGenerationUpdateSizePresetsMock = () =>
+  imageGenerationApi.updateSizePresets as unknown as ReturnType<typeof vi.fn>;
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function renderPage() {
+  return render(
+    <MemoryRouter>
+      <ThemeProvider>
+        <ToastProvider>
+          <ImageGenerationPage />
+        </ToastProvider>
+      </ThemeProvider>
+    </MemoryRouter>,
+  );
+}
+
+describe("ImageGenerationPage", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("zh-CN");
+    vi.spyOn(imageGenerationApi, "getChannels");
+    vi.spyOn(imageGenerationApi, "getSizePresets");
+    vi.spyOn(imageGenerationApi, "updateSizePresets");
+    vi.spyOn(imageGenerationApi, "startTestTask");
+    vi.spyOn(imageGenerationApi, "getTestTask");
+    imageGenerationGetChannelsMock().mockResolvedValue({
+      model: "gpt-image-2",
+      channels: ["设计号 A", "设计号 B"],
+    });
+    imageGenerationGetSizePresetsMock().mockResolvedValue({
+      sizes: ["1024x1024", "1792x1024", "1024x1792", "2560x1440", "2160x3840"],
+    });
+    imageGenerationUpdateSizePresetsMock().mockResolvedValue({
+      sizes: ["1024x1024", "1792x1024", "1024x1792", "2560x1440", "2160x3840"],
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  test("renders text-to-image call docs with structured endpoint tables", async () => {
+    renderPage();
+
+    expect(await screen.findByRole("tab", { name: "图片生成" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "生图模型" })).toBeInTheDocument();
+    const callCard = screen.getByText("调用方式").closest("section");
+    expect(callCard).not.toBeNull();
+    expect(screen.getByRole("tab", { name: "文生图" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "图生图" })).toBeInTheDocument();
+    expect(within(callCard as HTMLElement).getByText("POST")).toBeInTheDocument();
+    expect(within(callCard as HTMLElement).getByText("/v1/images/generations")).toBeInTheDocument();
+    // The snippet is syntax-highlighted, so its text is split across token spans:
+    // assert on the block's textContent rather than on a single text node.
+    const textCurl = document.querySelector("[data-code-block]") as HTMLElement;
+    expect(textCurl).not.toBeNull();
+    expect(textCurl.textContent).toContain("curl http://127.0.0.1:8317/v1/images/generations");
+    expect(
+      textCurl.compareDocumentPosition(screen.getByText("请求参数")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getByText("请求参数")).toBeInTheDocument();
+    expect(screen.getByText("返回结构")).toBeInTheDocument();
+    const specCards = screen.getAllByTestId("image-generation-spec-card");
+    expect(specCards).toHaveLength(2);
+    for (const card of specCards) {
+      expect(callCard).not.toContainElement(card);
+      expect(card.className).toContain("p-4");
+      expect(card.className).not.toContain("shadow");
+    }
+    expect(within(callCard as HTMLElement).queryByText("请求参数")).not.toBeInTheDocument();
+    expect(within(callCard as HTMLElement).queryByText("返回结构")).not.toBeInTheDocument();
+    expect(screen.getByText("data[].revised_prompt").className).toContain("break-all");
+    expect(screen.queryByText(/已加载全部/)).not.toBeInTheDocument();
+    expect(screen.getByText("size")).toBeInTheDocument();
+    expect(screen.getByText("quality")).toBeInTheDocument();
+    expect(screen.getByText("n")).toBeInTheDocument();
+    // Same reason as above: the highlighted snippet has no single node holding these.
+    expect(textCurl.textContent).toContain('"size": "1024x1024"');
+    expect(textCurl.textContent).toContain('"quality": "high"');
+    expect(screen.queryByText("BaseURL")).not.toBeInTheDocument();
+    expect(screen.getByText(/Authorization: Bearer YOUR_API_KEY/)).toBeInTheDocument();
+    expect(within(callCard as HTMLElement).getByRole("button", { name: "测试生成" })).toBeEnabled();
+    expect(
+      screen.queryByText("查看 gpt-image-2 的调用方式、当前使用渠道，并直接发起测试生成。"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("测试调用会自动轮询当前可用渠道。")).not.toBeInTheDocument();
+    expect(screen.queryByText("设计号 A")).not.toBeInTheDocument();
+    expect(screen.queryByText("设计号 B")).not.toBeInTheDocument();
+    expect(screen.queryByText("Gemini 账号")).not.toBeInTheDocument();
+  });
+
+  test("opens the redesigned modal with image edit entry and uses options plus a round send button", async () => {
+    const user = userEvent.setup();
+    const deferred = createDeferred<{
+      task_id: string;
+      status: "succeeded";
+      phase: string;
+      result: {
+        created: number;
+        data: Array<{ b64_json: string; revised_prompt: string }>;
+      };
+    }>();
+    imageGenerationStartTaskMock().mockResolvedValue({
+      task_id: "task-1",
+      status: "queued",
+      phase: "queued",
+    });
+    imageGenerationGetTaskMock().mockReturnValue(deferred.promise);
+
+    renderPage();
+
+    await screen.findByRole("tab", { name: "图片生成" });
+    await user.click(screen.getByRole("button", { name: "测试生成" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "测试生成" });
+    expect(dialog.className).toContain("max-w-[640px]");
+    expect(dialog.className).not.toContain("w-[78vw]");
+    expect(dialog.className).not.toContain("min-w-[720px]");
+    expect(within(dialog).getByTestId("image-generation-stage")).toBeInTheDocument();
+    expect(within(dialog).getByTestId("image-generation-composer")).toBeInTheDocument();
+    expect(within(dialog).queryByText("准备创建图片")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("正在生成图片")).not.toBeInTheDocument();
+    expect(within(dialog).getByText("输入提示词后开始生成图片")).toBeInTheDocument();
+    expect(within(dialog).getByRole("textbox", { name: "提示词" })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("tab", { name: "文生图" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("tab", { name: "图生图" })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("combobox", { name: "分辨率" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("combobox", { name: "质量" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("combobox", { name: "生成数量" })).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("上传图片")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "发送" })).toBeVisible();
+    expect(within(dialog).getByTestId("image-generation-upload-trigger")).toBeInTheDocument();
+    expect(within(dialog).getByTestId("image-generation-send-button")).toHaveClass(
+      "right-2",
+      "bottom-2",
+      "h-7",
+      "w-7",
+    );
+    expect(within(dialog).getByRole("textbox", { name: "提示词" })).toHaveClass("pb-10");
+    expect(within(dialog).getByTestId("image-generation-stage")).toHaveClass(
+      "bg-slate-50",
+      "h-[clamp(240px,42vh,400px)]",
+    );
+    expect(dialog.querySelector(".image-generation-dots-layer")).not.toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("combobox", { name: "分辨率" }));
+    expect(await screen.findByRole("option", { name: "2560x1440" })).toBeVisible();
+    expect(await screen.findByRole("option", { name: "2160x3840" })).toBeVisible();
+    await user.click(await screen.findByRole("option", { name: "2160x3840" }));
+    await user.click(within(dialog).getByRole("combobox", { name: "质量" }));
+    await user.click(await screen.findByRole("option", { name: "high" }));
+    await user.click(within(dialog).getByRole("combobox", { name: "生成数量" }));
+    await user.click(await screen.findByRole("option", { name: "2 张" }));
+
+    await user.type(within(dialog).getByPlaceholderText(/输入提示词/i), "画一只狐狸");
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "发送" }));
+    });
+
+    expect(imageGenerationStartTaskMock()).toHaveBeenCalledWith({
+      mode: "generations",
+      model: "gpt-image-2",
+      prompt: "画一只狐狸",
+      quality: "high",
+      size: "2160x3840",
+      n: 2,
+    });
+
+    expect(within(dialog).getByText("正在打草稿")).toBeInTheDocument();
+    expect(within(dialog).getByText("00:00")).toBeInTheDocument();
+    expect(within(dialog).getByTestId("image-generation-stage")).toHaveClass("bg-slate-50");
+    expect(dialog.querySelectorAll(".image-generation-dots-layer")).toHaveLength(1);
+    expect(dialog.querySelectorAll(".image-generation-flow-layer")).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(within(dialog).getByText("00:01")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1800);
+    });
+    expect(within(dialog).getByText("正在生成图片")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1800);
+    });
+    expect(within(dialog).getByText("正在细化细节")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1800);
+    });
+    expect(within(dialog).getByText("开始生成")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3600);
+    });
+    expect(within(dialog).getByText("开始生成")).toBeInTheDocument();
+    expect(within(dialog).queryByText("正在打草稿")).not.toBeInTheDocument();
+
+    await act(async () => {
+      deferred.resolve({
+        task_id: "task-1",
+        status: "succeeded",
+        phase: "completed",
+        result: {
+          created: 1,
+          data: [
+            {
+              b64_json: "aGVsbG8=",
+              revised_prompt: "修订提示词",
+            },
+            {
+              b64_json: "d29ybGQ=",
+              revised_prompt: "第二张",
+            },
+          ],
+        },
+      });
+    });
+    vi.useRealTimers();
+
+    const image = await within(dialog).findByRole("img", {
+      name: /gpt-image-2 预览/i,
+    });
+    expect(image).toHaveAttribute("src", "data:image/png;base64,aGVsbG8=");
+    expect(within(dialog).getByTestId("image-generation-counter")).toHaveTextContent("1/2");
+    expect(within(dialog).getByText("00:10")).toBeInTheDocument();
+    expect(within(dialog).getByTestId("image-generation-carousel-track")).toHaveStyle({
+      transform: "translateX(0%)",
+    });
+    expect(within(dialog).getByRole("button", { name: "上一张" })).toBeDisabled();
+    await user.click(within(dialog).getByRole("button", { name: "下一张" }));
+    const activeImageAfterNext = within(dialog).getByRole("img", {
+      name: /gpt-image-2 预览/i,
+    });
+    expect(activeImageAfterNext).toHaveAttribute("src", "data:image/png;base64,d29ybGQ=");
+    expect(within(dialog).getByTestId("image-generation-counter")).toHaveTextContent("2/2");
+    expect(within(dialog).getByTestId("image-generation-carousel-track")).toHaveStyle({
+      transform: "translateX(-100%)",
+    });
+    expect(within(dialog).getByTestId("image-generation-result-scroll")).toHaveClass(
+      "overflow-auto",
+    );
+    expect(image).toHaveClass("w-full");
+    expect(within(dialog).getByText("第二张")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "点击预览" })).toBeVisible();
+
+    await user.click(image);
+    const preview = await screen.findByRole("dialog", { name: "图片预览" });
+    expect(preview).toHaveAttribute("data-variant", "image-only");
+    expect(preview).not.toHaveClass("max-w-[860px]");
+    expect(within(preview).getByRole("img", { name: /gpt-image-2 预览/i })).toHaveClass(
+      "max-w-none",
+    );
+  });
+
+  test("creates and persists a custom size preset from the size dropdown", async () => {
+    const user = userEvent.setup();
+    const savedSizes = [
+      "1024x1024",
+      "1792x1024",
+      "1024x1792",
+      "2560x1440",
+      "2160x3840",
+      "4096x2304",
+    ];
+    imageGenerationUpdateSizePresetsMock().mockResolvedValue({ sizes: savedSizes });
+    imageGenerationStartTaskMock().mockResolvedValue({
+      task_id: "task-custom-size",
+      status: "queued",
+      phase: "queued",
+    });
+    imageGenerationGetTaskMock().mockResolvedValue({
+      task_id: "task-custom-size",
+      status: "succeeded",
+      phase: "completed",
+      result: {
+        created: 1,
+        data: [{ b64_json: "aA==", revised_prompt: "超宽海报" }],
+      },
+    });
+
+    renderPage();
+
+    await screen.findByRole("tab", { name: "图片生成" });
+    await user.click(screen.getByRole("button", { name: "测试生成" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "测试生成" });
+    await waitFor(() => {
+      expect(imageGenerationGetSizePresetsMock()).toHaveBeenCalled();
+    });
+
+    const sizeSelect = within(dialog).getByRole("combobox", { name: "分辨率" });
+    await user.click(sizeSelect);
+    await user.type(screen.getByPlaceholderText("搜索或输入分辨率"), "4096x2304");
+    await user.click(await screen.findByRole("option", { name: /新增 4096x2304.*确定/ }));
+
+    await waitFor(() => {
+      expect(imageGenerationUpdateSizePresetsMock()).toHaveBeenCalledWith(savedSizes);
+    });
+    expect(sizeSelect).toHaveTextContent("4096x2304");
+
+    await user.type(within(dialog).getByRole("textbox", { name: "提示词" }), "画一个超宽海报");
+    await user.click(within(dialog).getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      expect(imageGenerationStartTaskMock()).toHaveBeenCalledWith({
+        mode: "generations",
+        model: "gpt-image-2",
+        prompt: "画一个超宽海报",
+        quality: "medium",
+        size: "4096x2304",
+        n: 1,
+      });
+    });
+  });
+
+  test("deletes a custom size preset from the size dropdown and can undo it", async () => {
+    const user = userEvent.setup();
+    const defaultSizes = ["1024x1024", "1792x1024", "1024x1792", "2560x1440", "2160x3840"];
+    const customSizes = [...defaultSizes, "4096x2304"];
+    imageGenerationGetSizePresetsMock().mockResolvedValue({ sizes: customSizes });
+    imageGenerationUpdateSizePresetsMock()
+      .mockResolvedValueOnce({ sizes: defaultSizes })
+      .mockResolvedValueOnce({ sizes: customSizes });
+
+    renderPage();
+
+    await screen.findByRole("tab", { name: "图片生成" });
+    await user.click(screen.getByRole("button", { name: "测试生成" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "测试生成" });
+    await waitFor(() => {
+      expect(imageGenerationGetSizePresetsMock()).toHaveBeenCalled();
+    });
+
+    const sizeSelect = within(dialog).getByRole("combobox", { name: "分辨率" });
+    await user.click(sizeSelect);
+    await user.click(await screen.findByRole("button", { name: "4096x2304" }));
+    expect(sizeSelect).toHaveTextContent("4096x2304");
+
+    await user.click(sizeSelect);
+    await user.click(await screen.findByRole("button", { name: "删除尺寸预设 4096x2304" }));
+
+    await waitFor(() => {
+      expect(imageGenerationUpdateSizePresetsMock()).toHaveBeenCalledWith(defaultSizes);
+    });
+    expect(sizeSelect).toHaveTextContent("1024x1024");
+    expect(await screen.findAllByText("已删除尺寸预设 4096x2304")).not.toHaveLength(0);
+
+    await user.click(await screen.findByRole("button", { name: "撤销" }));
+    await waitFor(() => {
+      expect(imageGenerationUpdateSizePresetsMock()).toHaveBeenLastCalledWith(customSizes);
+    });
+    expect(sizeSelect).toHaveTextContent("4096x2304");
+  });
+
+  test("rejects an oversized custom size preset before persistence", async () => {
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await screen.findByRole("tab", { name: "图片生成" });
+    await user.click(screen.getByRole("button", { name: "测试生成" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "测试生成" });
+    const sizeSelect = within(dialog).getByRole("combobox", { name: "分辨率" });
+    await user.click(sizeSelect);
+    await user.type(screen.getByPlaceholderText("搜索或输入分辨率"), "9000x9000");
+    await user.click(await screen.findByRole("option", { name: /新增 9000x9000.*确定/ }));
+
+    expect(imageGenerationUpdateSizePresetsMock()).not.toHaveBeenCalled();
+    expect(
+      await screen.findAllByText("尺寸过大，最长边不能超过 8192，总像素不能超过 8192x8192"),
+    ).not.toHaveLength(0);
+  });
+
+  test("switches to image edit mode after uploading reference images", async () => {
+    const user = userEvent.setup();
+    const imageFile = new File(["hello"], "ref.png", { type: "image/png" });
+    imageGenerationStartTaskMock().mockResolvedValue({
+      task_id: "task-edits",
+      status: "queued",
+      phase: "queued",
+    });
+    imageGenerationGetTaskMock().mockResolvedValue({
+      task_id: "task-edits",
+      status: "succeeded",
+      phase: "completed",
+      result: {
+        created: 1,
+        data: [{ b64_json: "aGVsbG8=", revised_prompt: "改成蓝色图标" }],
+      },
+    });
+
+    renderPage();
+
+    await screen.findByRole("tab", { name: "图片生成" });
+    await user.click(screen.getByRole("button", { name: "测试生成" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "测试生成" });
+    const uploadInput = within(dialog).getByLabelText("上传图片");
+    expect(uploadInput).toBeInTheDocument();
+    expect(within(dialog).getByTestId("image-generation-upload-trigger")).toBeInTheDocument();
+    await user.upload(uploadInput, imageFile);
+    expect(await within(dialog).findByTestId("image-generation-upload-strip")).toBeInTheDocument();
+    expect(within(dialog).getByText("ref.png")).toBeInTheDocument();
+    expect(within(dialog).getByRole("textbox", { name: "提示词" })).toHaveClass("pt-12");
+
+    await user.type(
+      within(dialog).getByRole("textbox", { name: "提示词" }),
+      "把这张图改成蓝色图标",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "发送" }));
+
+    expect(imageGenerationStartTaskMock()).toHaveBeenCalledWith({
+      mode: "edits",
+      model: "gpt-image-2",
+      prompt: "把这张图改成蓝色图标",
+      quality: "medium",
+      size: "1024x1024",
+      n: 1,
+      images: [imageFile],
+    });
+  });
+
+  test("collapses the preview area into an alert when generation fails", async () => {
+    const deferred = createDeferred<{
+      task_id: string;
+      status: "failed";
+      error: {
+        body: {
+          error: {
+            message: string;
+          };
+        };
+      };
+    }>();
+    imageGenerationStartTaskMock().mockResolvedValue({
+      task_id: "task-1",
+      status: "queued",
+    });
+    imageGenerationGetTaskMock().mockReturnValue(deferred.promise);
+
+    renderPage();
+
+    await screen.findByRole("tab", { name: "图片生成" });
+    await userEvent.click(screen.getByRole("button", { name: "测试生成" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "测试生成" });
+    await userEvent.type(within(dialog).getByPlaceholderText(/输入提示词/i), "画一只狐狸");
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "发送" }));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(within(dialog).getByText("00:02")).toBeInTheDocument();
+
+    await act(async () => {
+      deferred.resolve({
+        task_id: "task-1",
+        status: "failed",
+        error: {
+          body: {
+            error: {
+              message: "上游图片生成失败",
+            },
+          },
+        },
+      });
+    });
+    vi.useRealTimers();
+
+    expect(await within(dialog).findByText("上游图片生成失败")).toBeInTheDocument();
+    expect(within(dialog).getByText("00:02")).toBeInTheDocument();
+    // The failure now uses the panel's alert treatment and collapses the stage: a
+    // full-height grey canvas for one line of text is what forced the dialog to
+    // scroll. Asserting the tone on the stage keeps the intent without pinning the
+    // exact palette.
+    const stage = dialog.querySelector('[data-state="error"]');
+    expect(stage?.className).toContain("bg-rose-50");
+    expect(stage?.className).toContain("h-auto");
+  });
+
+  test("greys related actions and shows the empty hint when no channel is configured", async () => {
+    imageGenerationGetChannelsMock().mockResolvedValue({
+      model: "gpt-image-2",
+      channels: [],
+    });
+
+    renderPage();
+
+    expect(await screen.findByText("当前没有可用于 gpt-image-2 的渠道。")).toBeInTheDocument();
+    const callCard = screen.getByText("调用方式").closest("section");
+    expect(
+      within(callCard as HTMLElement).getByRole("button", { name: "测试生成" }),
+    ).toBeDisabled();
+    expect(screen.getByTestId("image-generation-disabled-state")).toHaveClass("opacity-60");
+  });
+
+  // Regression for issue #491: the page used to derive availability from the auth-files
+  // list, which requires auth_files.read while the page itself only needs
+  // image_generation.read. A role holding just the latter got a 403 that was swallowed
+  // and rendered as "no channels configured", hiding a working setup.
+  test("reads availability from the image-generation endpoint, not the auth-files list", async () => {
+    renderPage();
+
+    await waitFor(() => {
+      expect(imageGenerationGetChannelsMock()).toHaveBeenCalled();
+    });
+    expect(screen.queryByTestId("image-generation-disabled-state")).not.toBeInTheDocument();
+  });
+
+  test("distinguishes a failed availability lookup from an empty channel list", async () => {
+    imageGenerationGetChannelsMock().mockRejectedValue(new Error("403 forbidden"));
+
+    renderPage();
+
+    expect(
+      await screen.findByText(
+        "无法获取 gpt-image-2 的渠道可用性。请确认账号具有生图管理权限后重试。",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("当前没有可用于 gpt-image-2 的渠道。")).not.toBeInTheDocument();
+  });
+});

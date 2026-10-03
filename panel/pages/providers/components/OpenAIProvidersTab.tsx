@@ -1,0 +1,230 @@
+import { useTranslation } from "react-i18next";
+import { Plus } from "lucide-react";
+import type { OpenAIProvider } from "@code-proxy/api-client";
+import { Button } from "@code-proxy/ui";
+import { Card } from "@code-proxy/ui";
+import { EmptyState } from "@code-proxy/ui";
+import { ProviderCard, ProviderCardSkeleton } from "../ProviderCard";
+import { CARD_GRID_CLASS } from "../ProviderKeyListCard";
+import { ProviderSuccessRateBar } from "./ProviderSuccessRateBar";
+import { ProviderMetricChip } from "./ProviderMetricChip";
+import { ProviderModelChips } from "./ProviderModelChips";
+import { OpenAIKeyEntrySummary } from "./OpenAIKeyEntrySummary";
+import type { StatusBarData } from "@code-proxy/domain/usage";
+import { useOptionalAuth } from "@app/providers/AuthProvider";
+
+interface OpenAIProvidersTabProps {
+  providers: OpenAIProvider[];
+  loading?: boolean;
+  openOpenAIEditor: (index: number | null) => void;
+  confirmDelete: (index: number) => void;
+  maskApiKey: (value: string) => string;
+  getKeyEntryStats: (
+    entry: NonNullable<OpenAIProvider["apiKeyEntries"]>[number],
+  ) => {
+    success: number;
+    failure: number;
+  };
+  getProviderStats: (provider: OpenAIProvider) => {
+    success: number;
+    failure: number;
+  };
+  getProviderStatusBar: (provider: OpenAIProvider) => StatusBarData;
+  onToggleProviderEnabled?: (providerIndex: number, enabled: boolean) => void;
+  onToggleKeyEntryEnabled?: (
+    providerIndex: number,
+    entryIndex: number,
+    enabled: boolean,
+  ) => void;
+  selectedKeys?: Set<string>;
+  onToggleSelected?: (key: string, checked: boolean) => void;
+}
+
+export function OpenAIProvidersTab({
+  providers,
+  loading = false,
+  openOpenAIEditor,
+  confirmDelete,
+  maskApiKey,
+  getKeyEntryStats,
+  getProviderStats,
+  getProviderStatusBar,
+  onToggleProviderEnabled,
+  onToggleKeyEntryEnabled,
+  selectedKeys,
+  onToggleSelected,
+}: OpenAIProvidersTabProps) {
+  const { t } = useTranslation();
+  const auth = useOptionalAuth();
+  const canWrite = auth?.can("providers.write") ?? true;
+  const showSkeleton = loading && providers.length === 0;
+
+  return (
+    <Card
+      title={t("providers.openai_compatible")}
+      description={t("providers.openai_tab_desc")}
+      className="flex h-full min-h-0 flex-col"
+      bodyClassName="min-h-0 flex flex-1 flex-col"
+      actions={
+        canWrite ? (
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => openOpenAIEditor(null)}
+          >
+            <Plus size={14} />
+            {t("providers.add_provider")}
+          </Button>
+        ) : undefined
+      }
+    >
+      {showSkeleton ? (
+        <div
+          role="status"
+          aria-label={t("common.loading")}
+          data-testid="providers-list-skeleton"
+          className={`${CARD_GRID_CLASS} overflow-hidden`}
+        >
+          {Array.from({ length: 6 }, (_, index) => (
+            <ProviderCardSkeleton key={index} dense />
+          ))}
+        </div>
+      ) : providers.length === 0 ? (
+        // Fill the list area like the other tabs do: an empty state sized to its
+        // own content leaves the bottom of the page blank.
+        <div className="flex min-h-0 flex-1 flex-col justify-center">
+          <EmptyState
+            title={t("providers.no_openai_providers")}
+            description={t("providers.no_openai_desc")}
+          />
+        </div>
+      ) : (
+        <div
+          data-testid="providers-tab-scroll"
+          className={`${CARD_GRID_CLASS} overflow-y-auto`}
+        >
+          {providers.map((provider, idx) => {
+            const selectionKey = `${provider.name.trim().toLowerCase()}:${idx}`;
+            const selected = selectedKeys?.has(selectionKey) ?? false;
+            const headerEntries = Object.entries(provider.headers || {});
+            const stats = getProviderStats(provider);
+            const statusData = getProviderStatusBar(provider);
+            // Same as the key list: a provider with no traffic showed a row
+            // of grey blocks and a "--" instead of nothing.
+            const hasStatusData =
+              statusData.totalSuccess + statusData.totalFailure > 0;
+
+            return (
+              <ProviderCard
+                key={`${provider.name}:${idx}`}
+                title={provider.name}
+                selected={selected}
+                enabled={provider.disabled !== true}
+                dimmed={provider.disabled === true}
+                dense
+                onToggleSelected={
+                  onToggleSelected
+                    ? (checked) => onToggleSelected(selectionKey, checked)
+                    : undefined
+                }
+                onToggleEnabled={
+                  canWrite && onToggleProviderEnabled
+                    ? (enabled) => onToggleProviderEnabled(idx, enabled)
+                    : undefined
+                }
+                onEdit={canWrite ? () => openOpenAIEditor(idx) : undefined}
+                onDelete={canWrite ? () => confirmDelete(idx) : undefined}
+              >
+                {provider.id ? (
+                  <p className="mt-1 truncate font-mono text-xs text-slate-500 dark:text-white/50" title={provider.id}>
+                    ID: {provider.id}
+                  </p>
+                ) : null}
+                {provider.prefix ? (
+                  <p className="mt-1 truncate font-mono text-xs text-slate-700 dark:text-slate-200">
+                    prefix: {provider.prefix}
+                  </p>
+                ) : null}
+                <p className="mt-1 truncate font-mono text-xs text-slate-700 dark:text-slate-200">
+                  baseUrl: {provider.baseUrl || "--"}
+                </p>
+
+                {headerEntries.length ? (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {headerEntries.map(([key, value]) => (
+                      <span
+                        key={key}
+                        className="inline-flex max-w-full min-w-0 items-center gap-1 rounded-full border border-slate-900/8 bg-white px-2 py-0.5 text-xs text-slate-700 dark:border-white/8 dark:bg-neutral-950/60 dark:text-white/75"
+                        title={`${key}: ${String(value)}`}
+                      >
+                        <span className="shrink-0 font-semibold">{key}:</span>
+                        <span className="min-w-0 truncate">
+                          {String(value)}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+
+                {provider.apiKeyEntries?.length ? (
+                  <OpenAIKeyEntrySummary
+                    entries={provider.apiKeyEntries}
+                    maskApiKey={maskApiKey}
+                    getKeyEntryStats={getKeyEntryStats}
+                    onToggleKeyEntryEnabled={
+                      canWrite && onToggleKeyEntryEnabled
+                        ? (entryIndex, enabled) =>
+                            onToggleKeyEntryEnabled(idx, entryIndex, enabled)
+                        : undefined
+                    }
+                  />
+                ) : null}
+
+                {/* Zero-valued badges are dropped, as on the key list: a fresh
+                    provider showed three chips all reading 0. */}
+                <div className="mt-2 flex flex-wrap gap-1.5 empty:mt-0">
+                  {provider.models?.length ? (
+                    <ProviderMetricChip
+                      tone="blue"
+                      label={t("providers.models_label")}
+                      value={provider.models.length}
+                    />
+                  ) : null}
+                  {stats.success > 0 ? (
+                    <ProviderMetricChip
+                      tone="emerald"
+                      label={t("providers.success_stats", {
+                        count: stats.success,
+                      })}
+                    />
+                  ) : null}
+                  {stats.failure > 0 ? (
+                    <ProviderMetricChip
+                      tone="rose"
+                      label={t("providers.failed_stats", {
+                        count: stats.failure,
+                      })}
+                    />
+                  ) : null}
+                  {provider.testModel ? (
+                    <span className="inline-flex items-center rounded-full bg-slate-600/10 px-2 py-0.5 text-xs font-medium text-slate-700 dark:bg-white/10 dark:text-white/65">
+                      testModel: {provider.testModel}
+                    </span>
+                  ) : null}
+                </div>
+
+                {provider.models?.length ? (
+                  <div className="mt-2">
+                    <ProviderModelChips models={provider.models} />
+                  </div>
+                ) : null}
+
+                {hasStatusData ? <ProviderSuccessRateBar data={statusData} /> : null}
+              </ProviderCard>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}

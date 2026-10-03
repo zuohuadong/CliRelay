@@ -6,13 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const distAssetsDir = join(root, "dist", "assets");
 const baselinePath = join(root, "docs", "internal-review", "bundle-baseline.md");
-const defaultOutputPath = resolve(
-  root,
-  "..",
-  ".omx",
-  "logs",
-  "phase-4-bundle-diff.md",
-);
+const defaultOutputPath = resolve(root, "..", ".omx", "logs", "phase-4-bundle-diff.md");
 
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 1) {
@@ -31,7 +25,7 @@ const toleranceKb = Number(args.get("tolerance-kb") ?? 5);
 const readBaseline = () => {
   const text = readFileSync(baselinePath, "utf8");
   const rows = new Map();
-  const rowPattern = /^\| `([^`]+)` \| ([\d.]+) kB \| ([\d.]+) kB \|/gm;
+  const rowPattern = /^\|\s*`([^`]+)`\s*\|\s*([\d.]+) kB\s*\|\s*([\d.]+) kB\s*\|/gm;
   let match;
   while ((match = rowPattern.exec(text))) {
     rows.set(match[1], {
@@ -42,18 +36,33 @@ const readBaseline = () => {
   return rows;
 };
 
+const CSS_SUFFIX = ".css";
+
+/*
+ * 入口脚本和入口样式表同名（index-<hash>.js / index-<hash>.css），推导出的 stem 会撞在
+ * 一起，然后 gzip 更大的那个把另一个顶掉——监控对象是脚本还是样式表，取决于当下谁更大，
+ * 而不是基线写了什么。自托管字体让 index.css 反超 index.js 之后这一点才暴露出来。
+ * 所以样式表单独挂 `<stem>.css` 这个 key，两者各自对账。
+ */
 const findCurrentChunks = (baselineKeys) => {
   const chunks = new Map();
   for (const name of readdirSync(distAssetsDir)) {
     const path = join(distAssetsDir, name);
     if (!statSync(path).isFile()) continue;
-    const stem =
-      baselineKeys.find((key) => name === key || name.startsWith(`${key}-`) || name.startsWith(`${key}.`)) ??
+    const isCss = name.endsWith(CSS_SUFFIX);
+    const comparableKeys = baselineKeys
+      .filter((key) => key.endsWith(CSS_SUFFIX) === isCss)
+      .map((key) => (isCss ? key.slice(0, -CSS_SUFFIX.length) : key));
+    const stemBase =
+      comparableKeys.find(
+        (key) => name === key || name.startsWith(`${key}-`) || name.startsWith(`${key}.`),
+      ) ??
       (() => {
         const withoutExt = name.replace(/\.(?:[cm]?js|css|svg)$/, "");
         const separatorIndex = withoutExt.lastIndexOf("-");
         return separatorIndex === -1 ? withoutExt : withoutExt.slice(0, separatorIndex);
       })();
+    const stem = isCss ? `${stemBase}${CSS_SUFFIX}` : stemBase;
     const data = readFileSync(path);
     const sizeKb = data.byteLength / 1024;
     const gzipKb = gzipSync(data).byteLength / 1024;
@@ -80,7 +89,10 @@ const rows = tracked.map((key) => {
   const base = baseline.get(key);
   const now = current.get(key);
   const deltaGzip = now.gzipKb - base.gzipKb;
-  const overPageBudget = !key.startsWith("vendor-") && now.gzipKb > budgetGzipKb;
+  // 页面 gzip 预算只约束按页加载的 chunk；入口与 vendor 不受它管，样式表同理。
+  const stem = key.endsWith(CSS_SUFFIX) ? key.slice(0, -CSS_SUFFIX.length) : key;
+  const overPageBudget =
+    stem !== "index" && !stem.startsWith("vendor-") && now.gzipKb > budgetGzipKb;
   const overTolerance = deltaGzip > toleranceKb;
   return {
     key,
@@ -99,7 +111,7 @@ const markdown = [
   "",
   `Generated at: \`${generatedAt}\``,
   `Baseline: \`${baselinePath}\``,
-  `Budget: non-vendor gzip <= \`${budgetGzipKb} kB\`; gzip delta tolerance <= \`${toleranceKb} kB\``,
+  `Budget: non-vendor non-entry gzip <= \`${budgetGzipKb} kB\`; gzip delta tolerance <= \`${toleranceKb} kB\``,
   "",
   "| Chunk | Current | Current gzip | Baseline gzip | Delta gzip | Status |",
   "| --- | ---: | ---: | ---: | ---: | --- |",
@@ -116,7 +128,9 @@ const markdown = [
     return `| \`${row.key}\` | ${formatKb(row.now.sizeKb)} | ${formatKb(row.now.gzipKb)} | ${formatKb(row.base.gzipKb)} | ${formatDelta(row.deltaGzip)} | ${status} |`;
   }),
   "",
-  missing.length ? `Missing tracked chunks: ${missing.map((key) => `\`${key}\``).join(", ")}` : "Missing tracked chunks: none",
+  missing.length
+    ? `Missing tracked chunks: ${missing.map((key) => `\`${key}\``).join(", ")}`
+    : "Missing tracked chunks: none",
   "",
   failures.length
     ? `Result: FAIL (${failures.length} tracked chunk budget issue${failures.length === 1 ? "" : "s"})`

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -205,9 +206,20 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		scanner.Buffer(nil, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
+		var decoder antigravityStreamDecoder
+		var streamErr error
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+			payload, decodeErr := decoder.Decode(line)
+			if decodeErr != nil {
+				streamErr = decodeErr
+				break
+			}
+			if payload == nil {
+				continue
+			}
+			line = append([]byte("data: "), payload...)
 			if replayAccumulator != nil {
 				replayAccumulator.ObserveSSELine(line)
 			}
@@ -216,7 +228,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			// Only retain usage statistics in the terminal chunk
 			line = helps.FilterSSEUsageMetadata(line)
 
-			payload := helps.JSONPayload(line)
+			payload = helps.JSONPayload(line)
 			if payload == nil {
 				continue
 			}
@@ -236,11 +248,17 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				}
 			}
 		}
-		if errScan := scanner.Err(); errScan != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+		if streamErr == nil {
+			streamErr = scanner.Err()
+		}
+		if streamErr == nil {
+			streamErr = decoder.Finish()
+		}
+		if streamErr != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+			reporter.PublishFailure(ctx, streamErr)
 			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 			case <-ctx.Done():
 			}
 		} else {
@@ -262,6 +280,60 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		}
 	}(httpResp)
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+// Assemble split JSON before usage filtering or signature replay can mutate it.
+type antigravityStreamDecoder struct {
+	pending []byte
+}
+
+func (d *antigravityStreamDecoder) Decode(line []byte) ([]byte, error) {
+	line = bytes.TrimSpace(line)
+	if len(line) == 0 || bytes.HasPrefix(line, []byte(":")) ||
+		bytes.HasPrefix(line, []byte("event:")) || bytes.HasPrefix(line, []byte("id:")) ||
+		bytes.HasPrefix(line, []byte("retry:")) {
+		return nil, nil
+	}
+	if bytes.HasPrefix(line, []byte("data:")) {
+		line = bytes.TrimSpace(line[len("data:"):])
+	}
+	if bytes.Equal(line, []byte("[DONE]")) {
+		return nil, d.Finish()
+	}
+	if len(d.pending) == 0 && (len(line) == 0 || line[0] != '{') {
+		return nil, nil
+	}
+	if len(d.pending)+len(line)+1 > streamScannerBuffer {
+		return nil, statusErr{code: http.StatusBadGateway, msg: "antigravity: stream JSON exceeds size limit"}
+	}
+	if len(d.pending) > 0 {
+		d.pending = append(d.pending, '\n')
+	}
+	d.pending = append(d.pending, line...)
+	if !json.Valid(d.pending) {
+		return nil, nil
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, d.pending); err != nil {
+		return nil, err
+	}
+	payload := compact.Bytes()
+	d.pending = nil
+	if upstreamErr := gjson.GetBytes(payload, "error"); upstreamErr.Exists() {
+		code := int(upstreamErr.Get("code").Int())
+		if code < http.StatusBadRequest || code > 599 {
+			code = http.StatusBadGateway
+		}
+		return nil, newAntigravityStatusErr(code, payload)
+	}
+	return payload, nil
+}
+
+func (d *antigravityStreamDecoder) Finish() error {
+	if len(d.pending) > 0 {
+		return statusErr{code: http.StatusBadGateway, msg: "antigravity: incomplete stream JSON"}
+	}
+	return nil
 }
 
 func (e *AntigravityExecutor) executeCompactionStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {

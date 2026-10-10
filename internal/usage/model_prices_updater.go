@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -21,8 +22,8 @@ const (
 // LiteLLM is the community-maintained, no-auth, single-JSON source of official
 // per-provider pricing (input/output/cache per token). It covers the major
 // international models we route to (OpenAI, Anthropic, Google, DeepSeek, etc.).
-// Models it does NOT cover (grok, kimi, glm, astron, qwen, etc.) fall back to
-// the local officialModelPrices seed.
+// Native provider-prefixed entries supplement bare model IDs. Models without
+// published prices fall back to the local officialModelPrices seed.
 var pricesURLs = []string{
 	"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
 	"https://litellm-proxy-store.s3.amazonaws.com/model_prices_and_context_window.json",
@@ -155,19 +156,14 @@ func fetchLitellmPrices(ctx context.Context) (litellmPricesFile, string) {
 	return nil, ""
 }
 
-// parseLitellmPrices decodes the raw JSON map into a model->entry map, skipping
-// the sample_spec and any provider-prefixed variants so only bare model ids are
-// used (e.g. "gpt-4o", not "azure/gpt-4o").
+// parseLitellmPrices prefers bare IDs, then fills gaps from native providers.
+// Reseller, regional, and batch prices must not become a model's standard rate.
 func parseLitellmPrices(data litellmPricesFile) map[string]litellmModelEntry {
 	out := make(map[string]litellmModelEntry, len(data))
+	prefixed := make(map[string]litellmModelEntry, len(data))
 	for model, raw := range data {
 		model = strings.TrimSpace(model)
-		if model == "" || model == "sample_spec" {
-			continue
-		}
-		// Skip provider-prefixed variants; bare keys are authoritative and map
-		// directly to the upstream model names that appear in usage records.
-		if strings.Contains(model, "/") || strings.Contains(model, ":") {
+		if model == "" || model == "sample_spec" || strings.ContainsAny(model, ":@") {
 			continue
 		}
 		var entry litellmModelEntry
@@ -177,9 +173,60 @@ func parseLitellmPrices(data litellmPricesFile) map[string]litellmModelEntry {
 		if !litellmEntryHasPrice(&entry) {
 			continue
 		}
+		if strings.Contains(model, "/") {
+			normalized := nativeLitellmModelID(model)
+			if normalized == "" {
+				continue
+			}
+			if _, exists := prefixed[normalized]; !exists {
+				prefixed[normalized] = entry
+			}
+			continue
+		}
 		out[model] = entry
 	}
+	for model, entry := range prefixed {
+		if _, exists := out[model]; !exists {
+			out[model] = entry
+		}
+	}
 	return out
+}
+
+func nativeLitellmModelID(key string) string {
+	provider, model, ok := strings.Cut(key, "/")
+	if !ok || model == "" || strings.Contains(model, "/") {
+		return ""
+	}
+	var prefixes []string
+	switch provider {
+	case "openai":
+		prefixes = []string{"gpt-", "o1", "o3", "o4", "codex-"}
+	case "anthropic":
+		prefixes = []string{"claude-"}
+	case "gemini":
+		prefixes = []string{"gemini-"}
+	case "xai":
+		prefixes = []string{"grok-"}
+	case "moonshot":
+		prefixes = []string{"kimi-", "moonshot-"}
+	case "deepseek":
+		prefixes = []string{"deepseek-"}
+	case "zai":
+		prefixes = []string{"glm-"}
+	case "dashscope":
+		prefixes = []string{"qwen", "qwq-", "wan"}
+	case "minimax":
+		prefixes = []string{"MiniMax-"}
+	case "meta":
+		prefixes = []string{"muse-spark-"}
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(model, prefix) {
+			return model
+		}
+	}
+	return ""
 }
 
 func litellmEntryHasPrice(e *litellmModelEntry) bool {
@@ -187,10 +234,19 @@ func litellmEntryHasPrice(e *litellmModelEntry) bool {
 		return false
 	}
 	if e.Mode == "image_generation" {
-		return e.InputCostPerImage != nil && *e.InputCostPerImage > 0
+		return validLitellmPrice(e.InputCostPerImage) && e.InputCostPerImage != nil && *e.InputCostPerImage > 0
+	}
+	if !validLitellmPrice(e.InputCostPerToken) || !validLitellmPrice(e.OutputCostPerToken) ||
+		!validLitellmPrice(e.OutputCostPerReasoningToken) || !validLitellmPrice(e.CacheReadInputTokenCost) {
+		return false
 	}
 	return (e.InputCostPerToken != nil && *e.InputCostPerToken > 0) ||
-		(e.OutputCostPerToken != nil && *e.OutputCostPerToken > 0)
+		(e.OutputCostPerToken != nil && *e.OutputCostPerToken > 0) ||
+		(e.OutputCostPerReasoningToken != nil && *e.OutputCostPerReasoningToken > 0)
+}
+
+func validLitellmPrice(price *float64) bool {
+	return price == nil || (*price >= 0 && !math.IsNaN(*price) && !math.IsInf(*price, 0))
 }
 
 // upsertLitellmPrices inserts new models and refreshes existing rows. Rows the
@@ -261,16 +317,17 @@ func litellmEntryToPriceRow(model string, e *litellmModelEntry, now string) Mode
 	if e.OutputCostPerToken != nil {
 		row.OutputPricePerM = *e.OutputCostPerToken * 1_000_000
 	}
-	// Prefer the dedicated reasoning token cost when present (e.g. o-series
-	// models bill reasoning separately); otherwise reasoning is folded into
-	// output cost and OutputPricePerM already covers it.
-	if e.OutputCostPerReasoningToken != nil && *e.OutputCostPerReasoningToken > 0 {
-		row.OutputPricePerM += *e.OutputCostPerReasoningToken * 1_000_000
+	// The schema has one output rate for output and reasoning tokens; adding
+	// their unit prices would charge every output token twice.
+	if e.OutputCostPerToken == nil && e.OutputCostPerReasoningToken != nil {
+		row.OutputPricePerM = *e.OutputCostPerReasoningToken * 1_000_000
 	}
 	if e.CacheReadInputTokenCost != nil {
 		row.CachedPricePerM = *e.CacheReadInputTokenCost * 1_000_000
-	} else if e.CacheCreationInputTokenCost != nil {
-		row.CachedPricePerM = *e.CacheCreationInputTokenCost * 1_000_000
+	} else {
+		// Without a published read discount, cached input uses the input rate,
+		// never the separate cache-creation rate.
+		row.CachedPricePerM = row.InputPricePerM
 	}
 	return row
 }

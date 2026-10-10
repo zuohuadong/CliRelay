@@ -2,6 +2,7 @@ package usage
 
 import (
 	"database/sql"
+	"math"
 	"path/filepath"
 	"testing"
 )
@@ -18,7 +19,7 @@ func newTestPricesDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func TestParseLitellmPricesSkipsPrefixedAndSample(t *testing.T) {
+func TestParseLitellmPricesSkipsResellersAndSample(t *testing.T) {
 	raw := litellmPricesFile{
 		"sample_spec":              []byte(`{"input_cost_per_token":0}`),
 		"gpt-4o":                   []byte(`{"input_cost_per_token":0.0000025,"output_cost_per_token":0.00001,"mode":"chat"}`),
@@ -30,8 +31,8 @@ func TestParseLitellmPricesSkipsPrefixedAndSample(t *testing.T) {
 	if _, ok := parsed["sample_spec"]; ok {
 		t.Fatal("sample_spec should be skipped")
 	}
-	if _, ok := parsed["vertex_ai/gemini-2.5-pro"]; ok {
-		t.Fatal("provider-prefixed models should be skipped")
+	if _, ok := parsed["gemini-2.5-pro"]; ok {
+		t.Fatal("Vertex rates must not replace AI Studio's bare model rates")
 	}
 	if _, ok := parsed["empty-model"]; ok {
 		t.Fatal("entry without prices should be skipped")
@@ -41,6 +42,88 @@ func TestParseLitellmPricesSkipsPrefixedAndSample(t *testing.T) {
 	}
 	if _, ok := parsed["dall-e-3"]; !ok {
 		t.Fatal("dall-e-3 should be parsed")
+	}
+}
+
+func TestParseLitellmPricesNormalizesNativeProviders(t *testing.T) {
+	models := map[string]string{
+		"openai/gpt-6-astra":        "gpt-6-astra",
+		"anthropic/claude-opus-5-5": "claude-opus-5-5",
+		"gemini/gemini-3.8-flash":   "gemini-3.8-flash",
+		"xai/grok-4.7":              "grok-4.7",
+		"moonshot/kimi-k2.5":        "kimi-k2.5",
+		"deepseek/deepseek-v3.2":    "deepseek-v3.2",
+		"zai/glm-5.3":               "glm-5.3",
+		"dashscope/qwen3.8-max":     "qwen3.8-max",
+		"minimax/MiniMax-M2.5":      "MiniMax-M2.5",
+		"meta/muse-spark-1.3":       "muse-spark-1.3",
+	}
+	raw := litellmPricesFile{}
+	for key := range models {
+		raw[key] = []byte(`{"input_cost_per_token":0.000002,"output_cost_per_token":0.000006,"mode":"chat"}`)
+	}
+	for _, key := range []string{"azure/grok-4.7", "dashscope/deepseek-v3.2", "openai/gpt-6-astra:batch", "vertex_ai/us/gemini-3.8-flash", "xai/grok-4.7@fast"} {
+		raw[key] = []byte(`{"input_cost_per_token":0.000099,"mode":"chat"}`)
+	}
+	parsed := parseLitellmPrices(raw)
+	if len(parsed) != len(models) {
+		t.Fatalf("parsed %d entries, want %d: %#v", len(parsed), len(models), parsed)
+	}
+	for _, model := range models {
+		entry, ok := parsed[model]
+		if !ok || entry.InputCostPerToken == nil || *entry.InputCostPerToken != 0.000002 {
+			t.Fatalf("native price missing or replaced for %s: %#v", model, entry)
+		}
+	}
+}
+
+func TestParseLitellmPricesBareModelsAlwaysWin(t *testing.T) {
+	raw := litellmPricesFile{
+		"gpt-6-sol":         []byte(`{"input_cost_per_token":0.000002,"mode":"chat"}`),
+		"openai/gpt-6-sol":  []byte(`{"input_cost_per_token":0.000099,"mode":"chat"}`),
+		"zai/glm-4.7-flash": []byte(`{"input_cost_per_token":0.000001,"mode":"chat"}`),
+	}
+	for range 50 {
+		parsed := parseLitellmPrices(raw)
+		if len(parsed) != 2 || *parsed["gpt-6-sol"].InputCostPerToken != 0.000002 ||
+			*parsed["glm-4.7-flash"].InputCostPerToken != 0.000001 {
+			t.Fatalf("bare prices must win regardless of map iteration: %#v", parsed)
+		}
+	}
+}
+
+func TestLitellmEntryHasPriceRejectsInvalidRates(t *testing.T) {
+	for _, entry := range []litellmModelEntry{
+		{},
+		{InputCostPerToken: p(-1)},
+		{OutputCostPerToken: p(math.NaN())},
+		{OutputCostPerToken: p(math.Inf(1))},
+		{InputCostPerToken: p(1), CacheReadInputTokenCost: p(-1)},
+	} {
+		if litellmEntryHasPrice(&entry) {
+			t.Fatalf("invalid rate accepted: %#v", entry)
+		}
+	}
+}
+
+func TestLitellmEntryToPriceRowReasoningAndCacheFallbacks(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry litellmModelEntry
+		out   float64
+		cache float64
+	}{
+		{"separate reasoning is not added", litellmModelEntry{InputCostPerToken: p(0.000002), OutputCostPerToken: p(0.00001), OutputCostPerReasoningToken: p(0.00001), CacheCreationInputTokenCost: p(0.000004)}, 10, 2},
+		{"reasoning-only output", litellmModelEntry{InputCostPerToken: p(0.000002), OutputCostPerReasoningToken: p(0.00001)}, 10, 2},
+		{"zero cache read is preserved", litellmModelEntry{InputCostPerToken: p(0.000002), OutputCostPerToken: p(0.00001), CacheReadInputTokenCost: p(0)}, 10, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			row := litellmEntryToPriceRow("test-model", &tt.entry, "")
+			if row.OutputPricePerM != tt.out || row.CachedPricePerM != tt.cache {
+				t.Fatalf("converted price = %#v, want output=%f cache=%f", row, tt.out, tt.cache)
+			}
+		})
 	}
 }
 
@@ -247,6 +330,89 @@ func TestSeedOfficialModelPricesRefreshesPreviousBuiltInPrices(t *testing.T) {
 	}
 }
 
+func TestSeedOfficialModelPricesRefreshesRecentAndFreePrices(t *testing.T) {
+	db := newTestPricesDB(t)
+	initial := []ModelPriceRow{
+		{Model: "gemini-3.7-flash", Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 7.5, CachedPricePerM: 0.075},
+		{Model: "deepseek-v4-flash", Mode: "token", InputPricePerM: 0.14, OutputPricePerM: 0.28, CachedPricePerM: 0.0028},
+		{Model: "glm-4.7-flash", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+		{Model: "kimi-k2.5", Mode: "token", InputPricePerM: 99},
+		{Model: "gpt-6-astra", Mode: "LOCKED"},
+	}
+	for _, row := range initial {
+		if err := SetModelPrice(row); err != nil {
+			t.Fatalf("SetModelPrice %s: %v", row.Model, err)
+		}
+	}
+	modelPricesSeedingMu.Lock()
+	modelPricesSeededDone = false
+	modelPricesSeedingMu.Unlock()
+	SeedOfficialModelPrices(db)
+	for _, want := range []ModelPriceRow{
+		{Model: "gemini-3.7-flash", Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
+		{Model: "deepseek-v4-flash", Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 1.2, CachedPricePerM: 0.006},
+		{Model: "glm-4.7-flash", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+		initial[3],
+		initial[4],
+	} {
+		got := GetModelPrice(want.Model)
+		if got == nil {
+			t.Fatalf("missing model price %s", want.Model)
+		}
+		got.UpdatedAt = ""
+		if *got != want {
+			t.Fatalf("price = %#v, want %#v", *got, want)
+		}
+	}
+}
+
+func TestOfficialModelPricesCoverOctoberCatalog(t *testing.T) {
+	want := map[string]ModelPriceRow{
+		"gpt-6-astra":                {Mode: "token", InputPricePerM: 10, OutputPricePerM: 50, CachedPricePerM: 1},
+		"gpt-6-sol":                  {Mode: "token", InputPricePerM: 2, OutputPricePerM: 10, CachedPricePerM: 0.2},
+		"gpt-6-luna":                 {Mode: "token", InputPricePerM: 0.1, OutputPricePerM: 0.5, CachedPricePerM: 0.01},
+		"gpt-6.1-sol":                {Mode: "token", InputPricePerM: 2, OutputPricePerM: 10, CachedPricePerM: 0.1},
+		"claude-fable-5-1":           {Mode: "token", InputPricePerM: 10, OutputPricePerM: 50, CachedPricePerM: 0.25},
+		"claude-opus-5-5":            {Mode: "token", InputPricePerM: 4, OutputPricePerM: 20, CachedPricePerM: 0.2},
+		"claude-sonnet-5-5":          {Mode: "token", InputPricePerM: 2, OutputPricePerM: 10, CachedPricePerM: 0.1},
+		"gemini-3.8-flash":           {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
+		"gemini-3.8-flash-high":      {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
+		"grok-4.7":                   {Mode: "token", InputPricePerM: 2, OutputPricePerM: 6, CachedPricePerM: 0.5},
+		"muse-spark-1.1":             {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 4.25, CachedPricePerM: 0.15},
+		"muse-spark-1.2":             {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 4.25, CachedPricePerM: 0.15},
+		"muse-spark-1.2-contributor": {Mode: "token", InputPricePerM: 0.1, OutputPricePerM: 0.2, CachedPricePerM: 0.002},
+		"muse-spark-1.3":             {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 4.25, CachedPricePerM: 0.15},
+		"muse-spark-1.3-contributor": {Mode: "token", InputPricePerM: 0.1, OutputPricePerM: 0.2, CachedPricePerM: 0.002},
+		"kimi-k2.5":                  {Mode: "token", InputPricePerM: 0.6, OutputPricePerM: 3, CachedPricePerM: 0.1},
+		"deepseek-v3.2":              {Mode: "token", InputPricePerM: 0.28, OutputPricePerM: 0.4, CachedPricePerM: 0.028},
+		"MiniMax-M2.5":               {Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 1.2, CachedPricePerM: 0.03},
+		"glm-5":                      {Mode: "token", InputPricePerM: 1, OutputPricePerM: 3.2, CachedPricePerM: 0.2},
+		"glm-5.1":                    {Mode: "token", InputPricePerM: 1.4, OutputPricePerM: 4.4, CachedPricePerM: 0.26},
+	}
+	seen := make(map[string]bool, len(officialModelPrices))
+	for _, row := range officialModelPrices {
+		if seen[row.Model] {
+			t.Fatalf("duplicate price seed %s", row.Model)
+		}
+		seen[row.Model] = true
+		if expected, ok := want[row.Model]; ok {
+			expected.Model = row.Model
+			if row != expected {
+				t.Fatalf("price = %#v, want %#v", row, expected)
+			}
+			delete(want, row.Model)
+		}
+	}
+	if len(want) > 0 {
+		t.Fatalf("missing October price seeds: %#v", want)
+	}
+	for _, model := range []string{"kimi-k2.8", "kimi-k2.8-code", "grok-4.7-build-fast"} {
+		if seen[model] {
+			t.Fatalf("unpublished price must not be inferred for %s", model)
+		}
+	}
+}
+
 func TestOfficialModelPricesCoverVisibleUnpricedModels(t *testing.T) {
 	want := map[string]ModelPriceRow{
 		"agnes-1.5-flash":               {Mode: "token", InputPricePerM: 0.005, OutputPricePerM: 0.015, CachedPricePerM: 0.0005},
@@ -259,16 +425,16 @@ func TestOfficialModelPricesCoverVisibleUnpricedModels(t *testing.T) {
 		"claude-haiku-4-5":              {Mode: "token", InputPricePerM: 1, OutputPricePerM: 5, CachedPricePerM: 0.1},
 		"claude-opus-5":                 {Mode: "token", InputPricePerM: 5, OutputPricePerM: 25, CachedPricePerM: 0.5},
 		"claude-sonnet-5":               {Mode: "token", InputPricePerM: 2, OutputPricePerM: 10, CachedPricePerM: 0.2},
-		"deepseek-v4-flash":             {Mode: "token", InputPricePerM: 0.44, OutputPricePerM: 1.32, CachedPricePerM: 0.014},
+		"deepseek-v4-flash":             {Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 1.2, CachedPricePerM: 0.006},
 		"deepseek-v4-pro":               {Mode: "token", InputPricePerM: 1.32, OutputPricePerM: 3.96, CachedPricePerM: 0.044},
 		"gemini-3.1-pro":                {Mode: "token", InputPricePerM: 2, OutputPricePerM: 12, CachedPricePerM: 0.2},
 		"gemini-3.1-pro-high":           {Mode: "token", InputPricePerM: 2, OutputPricePerM: 12, CachedPricePerM: 0.2},
-		"gemini-3.5-flash":              {Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 18, CachedPricePerM: 0.15},
-		"gemini-3.5-flash-extra-low":    {Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 18, CachedPricePerM: 0.15},
-		"gemini-3.5-flash-lite":         {Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 5, CachedPricePerM: 0.03},
-		"gemini-3.6-flash":              {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 7.5, CachedPricePerM: 0.075},
-		"gemini-3.7-flash":              {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 7.5, CachedPricePerM: 0.075},
-		"gemini-3.7-flash-high":         {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 7.5, CachedPricePerM: 0.075},
+		"gemini-3.5-flash":              {Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 9, CachedPricePerM: 0.15},
+		"gemini-3.5-flash-extra-low":    {Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 9, CachedPricePerM: 0.15},
+		"gemini-3.5-flash-lite":         {Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 2.5, CachedPricePerM: 0.03},
+		"gemini-3.6-flash":              {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
+		"gemini-3.7-flash":              {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
+		"gemini-3.7-flash-high":         {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
 		"gemini-3-pro-image":            {Mode: "call", PricePerCall: 0.0011},
 		"gpt-5.6-luna":                  {Mode: "token", InputPricePerM: 0.2, OutputPricePerM: 1.2, CachedPricePerM: 0.02},
 		"gpt-5.6-sol":                   {Mode: "token", InputPricePerM: 4, OutputPricePerM: 20, CachedPricePerM: 0.4},

@@ -14,13 +14,19 @@ import (
 // appear in usage records (record.Model), so cost is always computed from the
 // real model that handled the request, never from a client alias.
 //
-// Sources: official provider pricing pages (OpenAI, Anthropic, Google, etc.)
-// as of 2026-09-04. Prices use each provider's standard paid tier and short
+// Sources: provider pricing pages, supplemented by the LiteLLM pricing catalog
+// fetched on 2026-10-10. Newly published rates were cross-checked against the
+// OpenRouter model catalog where available; unpublished preview prices are
+// not inferred from related models. Prices use the standard tier and short
 // context rate: long-context, batch, priority, and image-resolution pricing
 // cannot be represented by this three-price schema. Prices are input / output
 // / cached per 1M tokens unless the entry is mode "call" with a per-call price.
 var officialModelPrices = []ModelPriceRow{
 	// --- OpenAI / Codex (codex channel, upstream OAuth) ---
+	{Model: "gpt-6-astra", Mode: "token", InputPricePerM: 10, OutputPricePerM: 50, CachedPricePerM: 1},
+	{Model: "gpt-6-sol", Mode: "token", InputPricePerM: 2, OutputPricePerM: 10, CachedPricePerM: 0.2},
+	{Model: "gpt-6-luna", Mode: "token", InputPricePerM: 0.1, OutputPricePerM: 0.5, CachedPricePerM: 0.01},
+	{Model: "gpt-6.1-sol", Mode: "token", InputPricePerM: 2, OutputPricePerM: 10, CachedPricePerM: 0.1},
 	{Model: "gpt-5.5", Mode: "token", InputPricePerM: 5, OutputPricePerM: 30, CachedPricePerM: 0.5},
 	{Model: "gpt-5.6-sol", Mode: "token", InputPricePerM: 4, OutputPricePerM: 20, CachedPricePerM: 0.4},
 	{Model: "gpt-5.6-terra", Mode: "token", InputPricePerM: 2, OutputPricePerM: 12, CachedPricePerM: 0.2},
@@ -48,6 +54,9 @@ var officialModelPrices = []ModelPriceRow{
 	{Model: "dall-e-3", Mode: "call", PricePerCall: 0.04},
 
 	// --- Anthropic Claude (claude channel) ---
+	{Model: "claude-fable-5-1", Mode: "token", InputPricePerM: 10, OutputPricePerM: 50, CachedPricePerM: 0.25},
+	{Model: "claude-opus-5-5", Mode: "token", InputPricePerM: 4, OutputPricePerM: 20, CachedPricePerM: 0.2},
+	{Model: "claude-sonnet-5-5", Mode: "token", InputPricePerM: 2, OutputPricePerM: 10, CachedPricePerM: 0.1},
 	{Model: "claude-fable-5", Mode: "token", InputPricePerM: 10, OutputPricePerM: 50, CachedPricePerM: 1},
 	{Model: "claude-opus-5", Mode: "token", InputPricePerM: 5, OutputPricePerM: 25, CachedPricePerM: 0.5},
 	{Model: "claude-opus-4-8", Mode: "token", InputPricePerM: 5, OutputPricePerM: 25, CachedPricePerM: 0.5},
@@ -76,32 +85,35 @@ var officialModelPrices = []ModelPriceRow{
 	{Model: "gemini-3.1-pro-preview", Mode: "token", InputPricePerM: 2, OutputPricePerM: 12, CachedPricePerM: 0.2},
 	{Model: "gemini-3.1-pro-high", Mode: "token", InputPricePerM: 2, OutputPricePerM: 12, CachedPricePerM: 0.2},
 	{Model: "gemini-3.1-pro-low", Mode: "token", InputPricePerM: 2, OutputPricePerM: 12, CachedPricePerM: 0.2},
-	{Model: "gemini-3-flash-preview", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 6, CachedPricePerM: 0.05},
-	{Model: "gemini-3-flash", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 6, CachedPricePerM: 0.05},
-	{Model: "gemini-3-flash-agent", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 6, CachedPricePerM: 0.05},
-	{Model: "gemini-3.1-flash-lite-preview", Mode: "token", InputPricePerM: 0.25, OutputPricePerM: 3, CachedPricePerM: 0.025},
-	{Model: "gemini-3.1-flash-lite", Mode: "token", InputPricePerM: 0.25, OutputPricePerM: 3, CachedPricePerM: 0.025},
+	{Model: "gemini-3-flash-preview", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 3, CachedPricePerM: 0.05},
+	{Model: "gemini-3-flash", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 3, CachedPricePerM: 0.05},
+	{Model: "gemini-3-flash-agent", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 3, CachedPricePerM: 0.05},
+	{Model: "gemini-3.1-flash-lite-preview", Mode: "token", InputPricePerM: 0.25, OutputPricePerM: 1.5, CachedPricePerM: 0.025},
+	{Model: "gemini-3.1-flash-lite", Mode: "token", InputPricePerM: 0.25, OutputPricePerM: 1.5, CachedPricePerM: 0.025},
 	{Model: "gemini-3.1-flash-image", Mode: "call", PricePerCall: 0.00056},
 	{Model: "gemini-3.1-flash-image-preview", Mode: "call", PricePerCall: 0.00056},
 	{Model: "gemini-3-pro-image", Mode: "call", PricePerCall: 0.0011},
 	{Model: "gemini-3-pro-image-preview", Mode: "call", PricePerCall: 0.0011},
-	{Model: "gemini-3.5-flash", Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 18, CachedPricePerM: 0.15},
-	{Model: "gemini-3.5-flash-low", Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 18, CachedPricePerM: 0.15},
-	{Model: "gemini-3.5-flash-extra-low", Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 18, CachedPricePerM: 0.15},
-	{Model: "gemini-3.5-flash-lite", Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 5, CachedPricePerM: 0.03},
-	{Model: "gemini-3.6-flash", Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 7.5, CachedPricePerM: 0.075},
-	{Model: "gemini-3.6-flash-high", Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 7.5, CachedPricePerM: 0.075},
-	{Model: "gemini-3.7-flash", Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 7.5, CachedPricePerM: 0.075},
-	{Model: "gemini-3.7-flash-high", Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 7.5, CachedPricePerM: 0.075},
+	{Model: "gemini-3.5-flash", Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 9, CachedPricePerM: 0.15},
+	{Model: "gemini-3.5-flash-low", Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 9, CachedPricePerM: 0.15},
+	{Model: "gemini-3.5-flash-extra-low", Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 9, CachedPricePerM: 0.15},
+	{Model: "gemini-3.5-flash-lite", Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 2.5, CachedPricePerM: 0.03},
+	{Model: "gemini-3.6-flash", Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
+	{Model: "gemini-3.6-flash-high", Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
+	{Model: "gemini-3.7-flash", Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
+	{Model: "gemini-3.7-flash-high", Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
+	{Model: "gemini-3.8-flash", Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
+	{Model: "gemini-3.8-flash-high", Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
 	{Model: "gemini-2.5-pro", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
-	{Model: "gemini-2.5-flash", Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 5, CachedPricePerM: 0.03},
-	{Model: "gemini-2.5-flash-image", Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 5, CachedPricePerM: 0.03},
-	{Model: "gemini-2.5-flash-lite", Mode: "token", InputPricePerM: 0.1, OutputPricePerM: 0.8, CachedPricePerM: 0.01},
-	{Model: "gemini-pro-latest", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
-	{Model: "gemini-flash-latest", Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 5, CachedPricePerM: 0.03},
-	{Model: "gemini-flash-lite-latest", Mode: "token", InputPricePerM: 0.1, OutputPricePerM: 0.8, CachedPricePerM: 0.01},
+	{Model: "gemini-2.5-flash", Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 2.5, CachedPricePerM: 0.03},
+	{Model: "gemini-2.5-flash-image", Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 2.5, CachedPricePerM: 0.3},
+	{Model: "gemini-2.5-flash-lite", Mode: "token", InputPricePerM: 0.1, OutputPricePerM: 0.4, CachedPricePerM: 0.01},
+	{Model: "gemini-pro-latest", Mode: "token", InputPricePerM: 2, OutputPricePerM: 12, CachedPricePerM: 0.2},
+	{Model: "gemini-flash-latest", Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 3.75, CachedPricePerM: 0.075},
+	{Model: "gemini-flash-lite-latest", Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 2.5, CachedPricePerM: 0.03},
 
 	// --- xAI Grok (xai channel) ---
+	{Model: "grok-4.7", Mode: "token", InputPricePerM: 2, OutputPricePerM: 6, CachedPricePerM: 0.5},
 	{Model: "grok-4.6", Mode: "token", InputPricePerM: 2, OutputPricePerM: 6, CachedPricePerM: 0.5},
 	{Model: "grok-4.5", Mode: "token", InputPricePerM: 2, OutputPricePerM: 6, CachedPricePerM: 0.3},
 	{Model: "grok-4.3", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 2.5, CachedPricePerM: 0.2},
@@ -116,12 +128,19 @@ var officialModelPrices = []ModelPriceRow{
 	// --- Moonshot Kimi (kimi channel) ---
 	{Model: "kimi-k2", Mode: "token", InputPricePerM: 0.6, OutputPricePerM: 2.5, CachedPricePerM: 0.06},
 	{Model: "kimi-k2-thinking", Mode: "token", InputPricePerM: 0.6, OutputPricePerM: 2.5, CachedPricePerM: 0.06},
-	{Model: "kimi-k2.5", Mode: "token", InputPricePerM: 0.6, OutputPricePerM: 2.5, CachedPricePerM: 0.06},
+	{Model: "kimi-k2.5", Mode: "token", InputPricePerM: 0.6, OutputPricePerM: 3, CachedPricePerM: 0.1},
 	{Model: "kimi-k2.6", Mode: "token", InputPricePerM: 0.95, OutputPricePerM: 4, CachedPricePerM: 0.16},
 	{Model: "kimi-k2.7-code", Mode: "token", InputPricePerM: 0.95, OutputPricePerM: 4, CachedPricePerM: 0.19},
 	{Model: "kimi-k2.7-code-highspeed", Mode: "token", InputPricePerM: 1.9, OutputPricePerM: 8, CachedPricePerM: 0.38},
 	{Model: "kimi-k3", Mode: "token", InputPricePerM: 3, OutputPricePerM: 15, CachedPricePerM: 0.3},
 	{Model: "kimi-k3-256k", Mode: "token", InputPricePerM: 3, OutputPricePerM: 15, CachedPricePerM: 0.3},
+
+	// --- Meta Muse ---
+	{Model: "muse-spark-1.1", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 4.25, CachedPricePerM: 0.15},
+	{Model: "muse-spark-1.2", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 4.25, CachedPricePerM: 0.15},
+	{Model: "muse-spark-1.2-contributor", Mode: "token", InputPricePerM: 0.1, OutputPricePerM: 0.2, CachedPricePerM: 0.002},
+	{Model: "muse-spark-1.3", Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 4.25, CachedPricePerM: 0.15},
+	{Model: "muse-spark-1.3-contributor", Mode: "token", InputPricePerM: 0.1, OutputPricePerM: 0.2, CachedPricePerM: 0.002},
 
 	// --- Google Imagen (Vertex image-generation models, USD per output image) ---
 	{Model: "imagen-3.0-generate-002", Mode: "call", PricePerCall: 0.04},
@@ -143,19 +162,19 @@ var officialModelPrices = []ModelPriceRow{
 
 	// --- BigModel / Zhipu GLM (bigmodel-coding channel, upstream) ---
 	{Model: "glm-4.7-flash", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
-	{Model: "glm-5", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
-	{Model: "glm-5.1", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+	{Model: "glm-5", Mode: "token", InputPricePerM: 1, OutputPricePerM: 3.2, CachedPricePerM: 0.2},
+	{Model: "glm-5.1", Mode: "token", InputPricePerM: 1.4, OutputPricePerM: 4.4, CachedPricePerM: 0.26},
 	{Model: "glm-5.2", Mode: "token", InputPricePerM: 1.4, OutputPricePerM: 4.4, CachedPricePerM: 0.26},
 	{Model: "xopglm52", Mode: "token", InputPricePerM: 1.4, OutputPricePerM: 4.4, CachedPricePerM: 0.26},
-	{Model: "glm-4.6", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
-	{Model: "glm-4.5", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+	{Model: "glm-4.6", Mode: "token", InputPricePerM: 0.6, OutputPricePerM: 2.2, CachedPricePerM: 0.11},
+	{Model: "glm-4.5", Mode: "token", InputPricePerM: 0.6, OutputPricePerM: 2.2, CachedPricePerM: 0.6},
 
 	// --- Astron / iFlytek (astron-code channel, upstream) ---
 	{Model: "astron-code-latest", Mode: "token", InputPricePerM: 0.4, OutputPricePerM: 1.2, CachedPricePerM: 0.04},
 
 	// --- Third-party OpenAI-compatible models observed in production ---
-	{Model: "deepseek-v3.2", Mode: "token", InputPricePerM: 0.27, OutputPricePerM: 1.1, CachedPricePerM: 0.027},
-	{Model: "deepseek-v4-flash", Mode: "token", InputPricePerM: 0.44, OutputPricePerM: 1.32, CachedPricePerM: 0.014},
+	{Model: "deepseek-v3.2", Mode: "token", InputPricePerM: 0.28, OutputPricePerM: 0.4, CachedPricePerM: 0.028},
+	{Model: "deepseek-v4-flash", Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 1.2, CachedPricePerM: 0.006},
 	{Model: "deepseek-v4-pro", Mode: "token", InputPricePerM: 1.32, OutputPricePerM: 3.96, CachedPricePerM: 0.044},
 	{Model: "xopdeepseekv4pro", Mode: "token", InputPricePerM: 1.32, OutputPricePerM: 3.96, CachedPricePerM: 0.044},
 	{Model: "qwen3.6-plus", Mode: "token", InputPricePerM: 0.4, OutputPricePerM: 1.2, CachedPricePerM: 0.04},
@@ -163,7 +182,7 @@ var officialModelPrices = []ModelPriceRow{
 	{Model: "qwen-image-2.0", Mode: "call", PricePerCall: 0.03},
 	{Model: "qwen-image-2.0-pro", Mode: "call", PricePerCall: 0.04},
 	{Model: "mimo-v2.5-pro", Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 0.9, CachedPricePerM: 0.03},
-	{Model: "MiniMax-M2.5", Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+	{Model: "MiniMax-M2.5", Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 1.2, CachedPricePerM: 0.03},
 	{Model: "wan2.7-image", Mode: "call", PricePerCall: 0.025},
 	{Model: "wan2.7-image-pro", Mode: "call", PricePerCall: 0.04},
 	{Model: "nano-banana", Mode: "call", PricePerCall: 0.03},
@@ -208,7 +227,8 @@ func SeedOfficialModelPrices(db *sql.DB) {
 			&existing.Model, &existing.Mode, &existing.InputPricePerM, &existing.OutputPricePerM, &existing.CachedPricePerM, &existing.PricePerCall, &existing.UpdatedAt,
 		)
 		if err == nil {
-			if (isUnpricedSeedPrice(existing) || isPreviousOfficialSeedPrice(existing, row)) && !isUnpricedSeedPrice(row) {
+			if !strings.EqualFold(seedMode(existing), "locked") && !isUnpricedSeedPrice(row) &&
+				(isPreviousOfficialSeedPrice(existing, row) || isUnpricedSeedPrice(existing)) {
 				_, errUpdate := db.Exec(`UPDATE model_prices SET mode=?, input_price_per_m=?, output_price_per_m=?, cached_price_per_m=?, price_per_call=?, updated_at=? WHERE model=?`,
 					seedMode(row), row.InputPricePerM, row.OutputPricePerM, row.CachedPricePerM, row.PricePerCall, now, model)
 				if errUpdate != nil {
@@ -262,21 +282,23 @@ func isUnpricedSeedPrice(row ModelPriceRow) bool {
 // built-in seed. It lets a release correct known standard prices without
 // replacing an operator's custom price.
 func isPreviousOfficialSeedPrice(existing, current ModelPriceRow) bool {
-	if seedMode(existing) == "locked" || existing.Model != current.Model {
+	if strings.EqualFold(seedMode(existing), "locked") || existing.Model != current.Model {
 		return false
 	}
-	previous, ok := previousOfficialModelPrices[existing.Model]
-	if !ok {
-		return false
+	for _, snapshot := range previousOfficialModelPrices {
+		previous, ok := snapshot[existing.Model]
+		if ok && seedMode(existing) == previous.Mode &&
+			existing.InputPricePerM == previous.InputPricePerM &&
+			existing.OutputPricePerM == previous.OutputPricePerM &&
+			existing.CachedPricePerM == previous.CachedPricePerM &&
+			existing.PricePerCall == previous.PricePerCall {
+			return true
+		}
 	}
-	return seedMode(existing) == previous.Mode &&
-		existing.InputPricePerM == previous.InputPricePerM &&
-		existing.OutputPricePerM == previous.OutputPricePerM &&
-		existing.CachedPricePerM == previous.CachedPricePerM &&
-		existing.PricePerCall == previous.PricePerCall
+	return false
 }
 
-var previousOfficialModelPrices = map[string]ModelPriceRow{
+var previousOfficialModelPrices = []map[string]ModelPriceRow{{
 	"gpt-5.5":                        {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
 	"gpt-5.6-sol":                    {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
 	"gpt-5.6-terra":                  {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
@@ -327,4 +349,33 @@ var previousOfficialModelPrices = map[string]ModelPriceRow{
 	"deepseek-v4-flash":              {Mode: "token", InputPricePerM: 0.14, OutputPricePerM: 0.28, CachedPricePerM: 0.0028},
 	"deepseek-v4-pro":                {Mode: "token", InputPricePerM: 0.435, OutputPricePerM: 0.87, CachedPricePerM: 0.003625},
 	"xopdeepseekv4pro":               {Mode: "token", InputPricePerM: 0.435, OutputPricePerM: 0.87, CachedPricePerM: 0.003625},
-}
+}, {
+	"gemini-3-flash-preview":        {Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 6, CachedPricePerM: 0.05},
+	"gemini-3-flash":                {Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 6, CachedPricePerM: 0.05},
+	"gemini-3-flash-agent":          {Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 6, CachedPricePerM: 0.05},
+	"gemini-3.1-flash-lite-preview": {Mode: "token", InputPricePerM: 0.25, OutputPricePerM: 3, CachedPricePerM: 0.025},
+	"gemini-3.1-flash-lite":         {Mode: "token", InputPricePerM: 0.25, OutputPricePerM: 3, CachedPricePerM: 0.025},
+	"gemini-3.5-flash":              {Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 18, CachedPricePerM: 0.15},
+	"gemini-3.5-flash-low":          {Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 18, CachedPricePerM: 0.15},
+	"gemini-3.5-flash-extra-low":    {Mode: "token", InputPricePerM: 1.5, OutputPricePerM: 18, CachedPricePerM: 0.15},
+	"gemini-3.5-flash-lite":         {Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 5, CachedPricePerM: 0.03},
+	"gemini-3.6-flash":              {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 7.5, CachedPricePerM: 0.075},
+	"gemini-3.6-flash-high":         {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 7.5, CachedPricePerM: 0.075},
+	"gemini-3.7-flash":              {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 7.5, CachedPricePerM: 0.075},
+	"gemini-3.7-flash-high":         {Mode: "token", InputPricePerM: 0.75, OutputPricePerM: 7.5, CachedPricePerM: 0.075},
+	"gemini-2.5-flash":              {Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 5, CachedPricePerM: 0.03},
+	"gemini-2.5-flash-image":        {Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 5, CachedPricePerM: 0.03},
+	"gemini-2.5-flash-lite":         {Mode: "token", InputPricePerM: 0.1, OutputPricePerM: 0.8, CachedPricePerM: 0.01},
+	"gemini-pro-latest":             {Mode: "token", InputPricePerM: 1.25, OutputPricePerM: 10, CachedPricePerM: 0.125},
+	"gemini-flash-latest":           {Mode: "token", InputPricePerM: 0.3, OutputPricePerM: 5, CachedPricePerM: 0.03},
+	"gemini-flash-lite-latest":      {Mode: "token", InputPricePerM: 0.1, OutputPricePerM: 0.8, CachedPricePerM: 0.01},
+	"kimi-k2.5":                     {Mode: "token", InputPricePerM: 0.6, OutputPricePerM: 2.5, CachedPricePerM: 0.06},
+	"glm-4.7-flash":                 {Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+	"glm-5":                         {Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+	"glm-5.1":                       {Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+	"glm-4.6":                       {Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+	"glm-4.5":                       {Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+	"deepseek-v3.2":                 {Mode: "token", InputPricePerM: 0.27, OutputPricePerM: 1.1, CachedPricePerM: 0.027},
+	"deepseek-v4-flash":             {Mode: "token", InputPricePerM: 0.44, OutputPricePerM: 1.32, CachedPricePerM: 0.014},
+	"MiniMax-M2.5":                  {Mode: "token", InputPricePerM: 0.5, OutputPricePerM: 1.5, CachedPricePerM: 0.05},
+}}

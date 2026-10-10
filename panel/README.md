@@ -1,340 +1,211 @@
 <p align="center">
   <img src="https://img.shields.io/badge/React-19.2-61DAFB?style=for-the-badge&logo=react&logoColor=white" alt="React" />
-  <img src="https://img.shields.io/badge/Vite-8.1-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite" />
+  <img src="https://img.shields.io/badge/Vite-7.3-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite" />
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/Tailwind_CSS-4.3-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white" alt="Tailwind CSS" />
-  <img src="https://img.shields.io/badge/Bun-1.3-FBF0DF?style=for-the-badge&logo=bun&logoColor=black" alt="Bun" />
+  <img src="https://img.shields.io/badge/Tailwind_CSS-4.1-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white" alt="Tailwind CSS" />
+  <img src="https://img.shields.io/badge/Bun-1.2-FBF0DF?style=for-the-badge&logo=bun&logoColor=black" alt="Bun" />
 </p>
 
-<h1 align="center">🖥️ Code Proxy · Admin Dashboard</h1>
+<h1 align="center">codeProxy · CliRelay Control Panel</h1>
 
 <p align="center">
-  <strong>The official frontend management panel for <a href="https://github.com/kittors/CliRelay">CliRelay (CLI Proxy API)</a></strong>
-</p>
-
-<p align="center">
-  <em>Monitor, manage, and configure your CLI proxy channels — all from a modern web UI.</em>
+  <strong>The web console for <a href="https://github.com/kittors/CliRelay">CliRelay</a> — monitor traffic, manage AI accounts and keys, and run a multi-tenant AI gateway from the browser.</strong>
 </p>
 
 <p align="center">
+  <a href="https://github.com/kittors/codeProxy/releases"><img src="https://img.shields.io/github/v/release/kittors/codeProxy?style=flat-square&color=8b5cf6" alt="Release" /></a>
   <a href="https://github.com/kittors/codeProxy/stargazers"><img src="https://img.shields.io/github/stars/kittors/codeProxy?style=flat-square&color=f5a623" alt="Stars" /></a>
-  <a href="https://github.com/kittors/codeProxy/network/members"><img src="https://img.shields.io/github/forks/kittors/codeProxy?style=flat-square&color=4a90d9" alt="Forks" /></a>
   <a href="https://github.com/kittors/codeProxy/issues"><img src="https://img.shields.io/github/issues/kittors/codeProxy?style=flat-square&color=e74c3c" alt="Issues" /></a>
-  <a href="https://github.com/kittors/codeProxy/blob/main/LICENSE"><img src="https://img.shields.io/github/license/kittors/codeProxy?style=flat-square&color=27ae60" alt="License" /></a>
+</p>
+
+<p align="center">
+  <img src="docs/images/monitor-center.png" width="100%" alt="Monitor center with health score, live traffic and golden-signal tiles" />
 </p>
 
 ---
 
-## ✨ Overview
+## Contents
 
-**Code Proxy** is the official web-based admin panel for [**CliRelay**](https://github.com/kittors/CliRelay) — a proxy server that wraps Gemini CLI, Antigravity, ChatGPT Codex, Claude Code, Qwen Code, Kiro, and iFlow as OpenAI/Gemini/Claude compatible API services.
+- [What it is](#what-it-is)
+- [Highlights](#highlights)
+- [Screenshots](#screenshots)
+- [How the panel reaches your server](#how-the-panel-reaches-your-server)
+- [Develop locally](#develop-locally)
+- [Quality gates](#quality-gates)
+- [Project structure](#project-structure)
+- [Internationalization](#internationalization)
+- [Tech stack](#tech-stack)
+- [Talking to CliRelay](#talking-to-clirelay)
+- [Contributing](#contributing)
+- [License](#license)
 
-This dashboard provides a complete management interface for your AI proxy infrastructure:
+## What it is
 
-- 📊 **Real-time Dashboard** — KPI cards, health score, system monitoring, channel latency
-- 📈 **Advanced Monitoring Center** — Model usage distribution, daily trends, hourly heatmaps with API Key filtering
-- 📋 **Request Logs** — Full request history with token counts, latency, status, and clickable error details
-- 💬 **Message Viewer** — Beautiful Markdown-rendered input/output content with XML tag collapsible sections
-- 🔗 **AI Provider Management** — Multi-tab provider config (Gemini, Claude, Codex, Vertex, OpenAI, Ampcode) with enable/disable toggles
-- 🗂️ **Auth File Workspace** — Saved OAuth/auth files with model inspection, prefix/proxy controls, and download actions
-- 🧪 **OAuth Workbench** — Provider-specific authorization launcher with remote callback submission
-- 🔑 **API Key Management** — Create, edit, delete keys with quota & rate limit controls
-- 🔐 **OAuth Login Management** — Manage OAuth authentication credentials
-- 📦 **Config Panel** — Visual YAML configuration editor with import/export
-- 🎯 **Model Management** — Model alias mapping and routing rules
-- 📊 **Quota Management** — Per-key usage quota tracking and limits
-- 🔍 **API Key Lookup** — Public self-service page for users to check their own usage statistics and request logs
-- 💲 **Model Pricing** — Built-in pricing table for quota cost accounting and per-model cost controls
-- ℹ️ **System Info** — Connection info grid, version/build metadata, model listing with colorful vendor icons and click-to-copy
-- 🪵 **Live Logs** — Streaming log viewer with search, download, clear, and runtime filter controls
-- 🌙 **Dark Mode** — Full dark theme with smooth transitions
-- 🌐 **i18n Ready** — Internationalization support (Chinese, English)
+codeProxy is the official management panel for **[CliRelay](https://github.com/kittors/CliRelay)**, a self-hosted gateway that puts AI coding subscriptions (Claude, Codex, Gemini CLI, Antigravity, Grok, Qwen, Kimi…) and provider API keys behind one OpenAI / Anthropic / Gemini-compatible endpoint.
 
-## 📸 Screenshots
+The panel is a single-page React application. CliRelay serves it at **`/manage`** and keeps it up to date on its own, so most people never build it: install CliRelay, open `http://your-host:8317/manage`, and sign in. This repository is for changing the panel itself.
 
-The gallery below uses the latest 13 management-panel screenshots and maps each screen to its operational role.
+## Highlights
 
-| Screen             | What it shows                                                                             |
-| :----------------- | :---------------------------------------------------------------------------------------- |
-| Dashboard Overview | KPI cards, health score, live system monitor, throughput, resource usage, latency ranking |
-| Monitor Center     | Request KPIs, model distribution, daily token trends, API Key usage share                 |
-| Request Logs       | Multi-filter log table, time range selector, status/channel/model filtering               |
-| Request Details    | Input/output viewer with Markdown rendering and instruction block inspection              |
-| AI Providers       | Multi-provider tabs, per-channel success rate, model tags, enable/edit/delete controls    |
-| Auth Files         | Saved auth file inventory with model inspection, proxy prefix controls, and download      |
-| OAuth Login        | Authorization launcher plus remote callback submission workflow                           |
-| API Keys           | Keys, quotas, RPM/TPM, model permissions, channel bindings, quick actions                 |
-| Models             | Pricing table for input/output/cache cost accounting                                      |
-| Quota              | Remaining refresh time and current usage bars for provider-specific quotas                |
-| Config             | YAML source editor with search and runtime mode switching                                 |
-| System             | API base, management endpoint, version metadata, API Key lookup link, model tags          |
-| Logs               | Live log console with search, download, clear, and toggleable filters                     |
+| | |
+| :-- | :-- |
+| 📈 **Monitor center** | A health score with a per-check diagnosis, per-minute live traffic, six golden-signal tiles with period-over-period deltas, P50–P99 latency and time to first token, failure analysis, rankings, a portal user → model → channel traffic flow and an activity heatmap. |
+| 🔑 **Guided account setup** | One "Add AI account" dialog for browser sign-in, device codes and credential import, with the real steps for each provider and checks before anything is sent; bulk import of held credentials. |
+| 💳 **Keys, quotas and spend** | Portal accounts that own several client keys, reusable permission profiles, daily / period / lifetime quotas, rate limits and one-click period resets. |
+| 🧭 **Models and routing** | A model plaza and catalog with capabilities and pricing, channel groups with scheduling and health, and a reusable outbound proxy pool. |
+| 🏛️ **Multi-tenant governance** | Tenants, users, roles with `resource.action` permissions, per-tenant menus and an audit trail. |
+| 🧩 **Forms that explain themselves** | Dialogs with icon headers, consequences spelled out before destructive actions, inline validation, and a config editor that switches between grouped forms and YAML. |
+| 🌗 **Comfortable to live in** | Light and dark themes, a collapsible sidebar (⌘B / Ctrl+B), responsive layouts down to phones, and English, Simplified Chinese and Russian. |
 
-### 1. Dashboard Overview
+## Screenshots
 
-<p align="center">
-  <img src="docs/images/dashboard-overview.png" width="100%" />
-</p>
-<p align="center"><em>Dashboard — KPI cards, health score, live system monitor, throughput, storage, and channel latency ranking.</em></p>
+Taken from a live deployment; names, keys, addresses and accounts are replaced with sample values. The [CliRelay README](https://github.com/kittors/CliRelay#a-tour-of-the-control-panel) has a page-by-page tour with more screens.
 
-### 2. Monitor Center
+| Monitor center — traffic flow and rankings | Dark theme |
+| :-- | :-- |
+| <img src="docs/images/monitor-center-flow.png" width="100%" alt="Channel health, portal user ranking, traffic flow and heatmap" /> | <img src="docs/images/monitor-center-dark.png" width="100%" alt="Monitor center in the dark theme" /> |
 
-<p align="center">
-  <img src="docs/images/monitor-center-zh.png" width="100%" />
-</p>
-<p align="center"><em>Monitor Center (Chinese locale) — request summary, model distribution, daily token/request trends, and API Key usage share.</em></p>
+| Dashboard | Request logs |
+| :-- | :-- |
+| <img src="docs/images/dashboard.png" width="100%" alt="Dashboard with KPI cards and a live system monitor" /> | <img src="docs/images/request-logs.png" width="100%" alt="Request log table with tokens, latency and cost" /> |
 
-### 3. Request Logs
+| Add an AI account | Import held credentials in bulk |
+| :-- | :-- |
+| <img src="docs/images/add-ai-account.png" width="100%" alt="Add AI account dialog grouped by sign-in method" /> | <img src="docs/images/credential-import.png" width="100%" alt="Refresh token import with risk notice and bulk paste" /> |
 
-<p align="center">
-  <img src="docs/images/request-logs-table.png" width="100%" />
-</p>
-<p align="center"><em>Request Logs — time-range switcher, multi-filter toolbar, high-density table, and success metrics at a glance.</em></p>
+| AI accounts | AI providers |
+| :-- | :-- |
+| <img src="docs/images/ai-accounts.png" width="100%" alt="AI account cards with plan badges and quota windows" /> | <img src="docs/images/ai-providers.png" width="100%" alt="Provider key cards grouped by upstream type" /> |
 
-### 4. Request Details Viewer
+| Portal accounts | Model plaza |
+| :-- | :-- |
+| <img src="docs/images/portal-accounts.png" width="100%" alt="Portal accounts with keys, quotas and spend" /> | <img src="docs/images/model-plaza.png" width="100%" alt="Model plaza with capabilities and pricing" /> |
 
-<p align="center">
-  <img src="docs/images/request-details-modal.png" width="100%" />
-</p>
-<p align="center"><em>Request Details — input/output tabs, Markdown rendering, collapsible sections, and copy/export helpers.</em></p>
+| Channel groups | Config |
+| :-- | :-- |
+| <img src="docs/images/channel-groups.png" width="100%" alt="Channel groups with health and scheduling" /> | <img src="docs/images/config-visual-editor.png" width="100%" alt="Config page with group tabs and the low-resource profile" /> |
 
-### 5. AI Providers
+| Sign-in |
+| :-- |
+| <img src="docs/images/login.png" width="100%" alt="Sign-in page" /> |
 
-<p align="center">
-  <img src="docs/images/providers-codex.png" width="100%" />
-</p>
-<p align="center"><em>AI Providers — provider tabs, per-channel success/failure stats, model badges, latency bars, and CRUD actions.</em></p>
+## How the panel reaches your server
 
-### 6. Auth Files
+```mermaid
+flowchart LR
+    pr["Pull request → dev"] --> rel["Tag vX.Y.Z on main"]
+    rel --> zip["GitHub release<br/>panel-dist.zip"]
+    zip -- "checked every ~3 h" --> relay["CliRelay<br/>internal/managementasset"]
+    relay --> manage["/manage in your browser"]
+```
 
-<p align="center">
-  <img src="docs/images/auth-files-grid.png" width="100%" />
-</p>
-<p align="center"><em>Auth Files — card-based inventory for saved credentials with model inspection, rename, proxy-prefix, download, and delete actions.</em></p>
+- A tagged release builds the panel and attaches **`panel-dist.zip`** (`manage.html` plus `assets/`).
+- CliRelay checks the latest release of the configured repository (`remote-management.panel-github-repository`, default `kittors/codeProxy`) about every three hours, downloads it and serves it at `/manage`. You can also point CliRelay at a local build directory.
+- **A panel release reaches every self-hosted backend, including older ones.** Features that need a newer backend detect it and degrade instead of failing — the monitor center falls back to a daily view built from `/usage/chart-data`, sign-in steps are inferred from the issued URL, and credential import asks for a backend update. Keep that rule for new features: if the panel depends on a new backend field, have the backend advertise it and hide the feature until it does.
 
-### 7. OAuth Login Workbench
+## Develop locally
 
-<p align="center">
-  <img src="docs/images/oauth-login-workbench.png" width="100%" />
-</p>
-<p align="center"><em>OAuth Login — provider-specific authorization launcher plus remote callback URL submission workflow.</em></p>
-
-### 8. API Keys Management
-
-<p align="center">
-  <img src="docs/images/api-keys-management.png" width="100%" />
-</p>
-<p align="center"><em>API Keys — quotas, RPM/TPM limits, model permissions, channel bindings, and quick analytics/edit actions.</em></p>
-
-### 9. Model Pricing
-
-<p align="center">
-  <img src="docs/images/model-pricing.png" width="100%" />
-</p>
-<p align="center"><em>Models — built-in pricing catalog for input/output/cache cost calculation and quota accounting.</em></p>
-
-### 10. Quota Management
-
-<p align="center">
-  <img src="docs/images/quota-management.png" width="100%" />
-</p>
-<p align="center"><em>Quota — remaining refresh time and progress bars for Codex, Gemini CLI, Kiro, and other provider-specific quotas.</em></p>
-
-### 11. Config Editor
-
-<p align="center">
-  <img src="docs/images/config-source-editor.png" width="100%" />
-</p>
-<p align="center"><em>Config — source editor mode with YAML search, keyboard-friendly navigation, and runtime config switching.</em></p>
-
-### 12. System Info
-
-<p align="center">
-  <img src="docs/images/system-info-models.png" width="100%" />
-</p>
-<p align="center"><em>System — API base, management endpoint, version/build metadata, API Key lookup entry, and vendor-colored model tags.</em></p>
-
-### 13. Live Logs
-
-<p align="center">
-  <img src="docs/images/live-logs.png" width="100%" />
-</p>
-<p align="center"><em>Logs — live stream viewer with keyword search, hide-management toggle, download, clear, and jump-to-latest controls.</em></p>
-
-## 🧩 Feature Details
-
-### 📊 Dashboard
-
-| Module              | Description                                                                            |
-| :------------------ | :------------------------------------------------------------------------------------- |
-| **KPI Cards**       | Total requests, success rate, token consumption, failed request count (7-day / 30-day) |
-| **Health Score**    | Real-time circular gauge (0–100) evaluating overall system health                      |
-| **System Monitor**  | WebSocket-powered live stats: uptime, goroutines, CPU, memory, network I/O, DB size    |
-| **Channel Latency** | Top 5 channel average latency with visual bar indicators                               |
-| **Resource Bars**   | System CPU, memory, service CPU, memory, database size — color-coded status            |
-
-### 📈 Monitor Center
-
-| Module                 | Description                                                                       |
-| :--------------------- | :-------------------------------------------------------------------------------- |
-| **KPI Summary**        | Total requests, success rate, total/output tokens with time range selection       |
-| **Model Distribution** | Interactive donut chart showing Top 10 model usage by request count or token      |
-| **Daily Trends**       | Dual-axis chart with input/output tokens (bar) and request count (line) over time |
-| **Hourly Heatmap**     | Stacked bar chart showing per-model hourly request distribution (6h / 12h / 24h)  |
-| **API Key Filter**     | Filter all metrics by specific API Key prefix                                     |
-
-### 📋 Request Logs
-
-| Module             | Description                                                                                       |
-| :----------------- | :------------------------------------------------------------------------------------------------ |
-| **Virtual Table**  | High-performance virtual scrolling for 10,000+ log entries                                        |
-| **Multi-Filter**   | Filter by Key, model, status (success/fail), with time range selection                            |
-| **Token Details**  | Click on input/output tokens to view full message content                                         |
-| **Error Modal**    | Click on "失败" (Failed) status to view error details in a red-themed modal                       |
-| **Message Viewer** | Markdown rendering with syntax highlighting, XML tag detection, and role-based collapsible blocks |
-
-### 🔗 AI Providers
-
-| Module            | Description                                                                                            |
-| :---------------- | :----------------------------------------------------------------------------------------------------- |
-| **Multi-Tab**     | Gemini, Claude, Codex, Vertex, OpenAI Compatible, Ampcode tabs                                         |
-| **Channel Cards** | Name, masked API key, base URL, model count, success/fail stats, latency bar                           |
-| **CRUD**          | Add, edit, delete channels with full configuration (proxyUrl, headers, model aliases, excluded models) |
-| **Toggle**        | Enable/disable individual channels with instant visual feedback                                        |
-
-### 🔍 API Key Lookup
-
-| Module           | Description                                                                 |
-| :--------------- | :-------------------------------------------------------------------------- |
-| **Self-Service** | Public page (no login required) for end users to check their API Key usage  |
-| **Usage Stats**  | Per-key KPI cards, model distribution chart, daily trend chart              |
-| **Request Logs** | Per-key request history with detailed virtual table and source channel info |
-
-## 🛠️ Tech Stack
-
-| Category             | Technology                                     |
-| :------------------- | :--------------------------------------------- |
-| **Framework**        | React 19.2 + TypeScript 5.9                    |
-| **Build Tool**       | Vite 8.1                                       |
-| **Package Manager**  | Bun 1.3                                        |
-| **Styling**          | Tailwind CSS v4                                |
-| **State Management** | Zustand                                        |
-| **Charts**           | Apache ECharts                                 |
-| **Routing**          | React Router v7                                |
-| **HTTP**             | Axios + WebSocket (real-time monitoring)       |
-| **Icons**            | Lucide React + Custom vendor SVGs (14 vendors) |
-| **Linting**          | oxlint + oxfmt                                 |
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-- [Bun](https://bun.sh/) 1.3.14 (recommended and pinned), or Node.js `^20.19.0 || >=22.12.0`
-- A running [CliRelay](https://github.com/kittors/CliRelay) backend instance
-
-### Install & Run
+Prerequisites: [Bun](https://bun.sh/) 1.2+ and a CliRelay backend on `http://localhost:8317` (the dev server proxies `/v0`, `/v1` and `/v1beta` to it).
 
 ```bash
-# Clone the repository
 git clone https://github.com/kittors/codeProxy.git
 cd codeProxy
-
-# Install dependencies
 bun install
-
-# Start dev server
-bun run dev
+bun run dev        # http://localhost:5173/manage/
 ```
-
-The dashboard will be available at **http://localhost:5173/**
-
-### Build for Production
 
 ```bash
-# Type-check & build
-bun run build
-
-# Preview production build
-bun run preview
+bun run build      # type-check (tsc --noEmit) and build into dist/
+bun run preview    # serve the production build
 ```
 
-### Quality Checks
+> [!TIP]
+> For layout and interaction work you do not need a real backend or a real sign-in. The Playwright specs in `e2e/` show the pattern: seed the auth state in `localStorage` with `page.addInitScript()` and answer `/v0/management/**` with `page.route()`. Session tokens in mocks must start with `cps_`, as real ones do.
 
-Pull requests to `dev` and `main` run lint, low-concurrency Vitest, build, and bundle diff in GitHub Actions. The frontend package manager is Bun (`packageManager: bun@1.3.14`); use `bun run ...` commands for local spot checks and leave full CI validation to GitHub Actions when local hardware is constrained.
+## Quality gates
 
-## 📁 Project Structure
+Pull requests into `dev` run the same script as CI:
 
-```
-src/
-├── app/                 # Routing & auth guards
-├── assets/icons/        # Vendor SVG icons (Claude, OpenAI, Gemini, etc.)
-├── components/ui/       # Inline SVG icon components
-├── i18n/                # i18next locales (en, zh-CN)
-├── lib/
-│   ├── constants/       # App-wide constants
-│   └── http/            # Axios client, API layer, WebSocket
-├── modules/
-│   ├── auth/            # Authentication provider & session
-│   ├── apikey-lookup/   # Public API Key usage lookup
-│   ├── ccswitch/        # CC Switch deeplink import helpers
-│   ├── config/          # Visual config editor (YAML)
-│   ├── dashboard/       # Dashboard overview + system monitor
-│   ├── login/           # Login page
-│   ├── monitor/         # Monitoring center (charts, logs, modals)
-│   ├── oauth/           # OAuth management
-│   ├── providers/       # AI provider channel management
-│   ├── system/          # System info + model listing
-│   ├── ui/              # Shared UI (AppShell, Button, Table, Tabs, etc.)
-│   └── usage/           # Usage statistics & snapshot import/export
-└── styles/              # Global styles & theme tokens
+```bash
+./scripts/ci-pr.sh
 ```
 
-## 🔌 API Integration
+| Step | Command | What it guards |
+| :-- | :-- | :-- |
+| Lint | `bun run lint` | oxlint rules across the monorepo |
+| Design scale | `bun run design:check` | Font sizes and corner radii stay on the global scale |
+| Import boundaries | `bun run boundary:imports` | Packages only import what their layer allows |
+| File size ratchet | `bun run size:check` | New files stay under 800 lines; files over it may only shrink |
+| Surface usage | `bun run surface:check` | Cards and surfaces come from the shared primitives |
+| Dependency audit | `bun run audit:deps` | No unwaived high or critical advisories |
+| Unit tests | `bun run test:ci` | Full Vitest suite, run serially |
+| Build | `bun run build` | Type-check and production build |
+| Bundle diff | `bun run bundle:diff` | Gzip size of tracked chunks against `docs/internal-review/bundle-baseline.md` |
+| Critical e2e | Playwright `@critical` | Sign-in and multi-tenant flows (`SKIP_E2E_CRITICAL=1` skips it locally) |
 
-This dashboard communicates with the CliRelay backend via the Management API:
+## Project structure
 
-| Endpoint                                  | Method            | Description                         |
-| :---------------------------------------- | :---------------- | :---------------------------------- |
-| `/v0/management/config`                   | `GET`             | Verify login & fetch configuration  |
-| `/v0/management/usage`                    | `GET`             | Retrieve usage statistics           |
-| `/v0/management/usage/logs`               | `GET`             | Paginated request log history       |
-| `/v0/management/usage/log-content`        | `GET`             | Full message content (input/output) |
-| `/v0/management/usage/dashboard-summary`  | `GET`             | Dashboard KPI data                  |
-| `/v0/management/usage/model-distribution` | `GET`             | Model usage distribution            |
-| `/v0/management/usage/daily-trends`       | `GET`             | Daily token/request trends          |
-| `/v0/management/usage/hourly-model`       | `GET`             | Hourly per-model request data       |
-| `/v0/management/openai-compatibility`     | `GET/POST/DELETE` | OpenAI channel CRUD                 |
-| `/v0/management/gemini-api-key`           | `GET/POST/DELETE` | Gemini channel CRUD                 |
-| `/v0/management/claude-api-key`           | `GET/POST/DELETE` | Claude channel CRUD                 |
-| `/v0/management/codex-api-key`            | `GET/POST/DELETE` | Codex channel CRUD                  |
-| `/v0/management/vertex-api-key`           | `GET/POST/DELETE` | Vertex channel CRUD                 |
-| `/v0/management/system-stats`             | `WebSocket`       | Real-time system monitoring         |
+```text
+apps/admin-panel/   Vite application: shell, router, guards, layout, bootstrap, global styles
+pages/              One folder per route, with page-private components, hooks and tests
+features/           Workflows shared by several pages (OAuth sign-in, log viewer, routing editor…)
+packages/
+├── api-client/     Management API client, typed endpoints and DTOs
+├── assets/         Vendor icons and shared static assets
+├── domain/         Pure business logic: formatters, pricing, quota and identity rules
+├── i18n/           i18next setup and the en / zh-CN / ru locales
+├── test-utils/     Shared test helpers
+└── ui/             Design system: primitives, overlays, DataTable, charts, theme
+e2e/                Playwright specs with mocked management APIs
+scripts/            Repository gates (size, boundaries, design tokens, audit, bundle diff)
+tooling/            Vite plugins and build-time helpers
+```
 
-> **Note:** The API base is automatically normalized to `{apiBase}/v0/management`
+## Internationalization
 
-For full backend API documentation, see the [CliRelay Management API](https://help.router-for.me/management/api).
+- Locales live in `packages/i18n/src/locales/{en,zh-CN,ru}.json`. Chinese browsers start in Chinese and others in English; the header switches between all three, and the choice is remembered.
+- Missing keys fall back to English, then Chinese (`fallbackLng: ["en", "zh-CN"]`), so a new feature can ship in `en` and `zh-CN` first.
+- Russian is complete. `ru-translation-coverage.test.ts` fails if a value is copied from English instead of being translated; names and identifiers that read the same in Russian are listed in its allowlist with a reason.
+- Plurals use i18next suffixes. Russian needs `_one`, `_few`, `_many` and `_other`; a key called with `count` that has no plural variants must be worded so it reads right for any number («Выбрано: {{count}}»).
 
-## 🤝 Contributing
+## Tech stack
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+| Area | Technology |
+| :-- | :-- |
+| Framework | React 19.2, TypeScript 5.9 |
+| Build | Vite 7.3, Bun 1.2 workspaces |
+| Styling | Tailwind CSS 4.1 with design tokens, shared `@code-proxy/ui` primitives |
+| Routing and state | React Router 7, Zustand 5 |
+| Data | Typed management API client over `fetch`, WebSocket system stats |
+| Charts | Apache ECharts 6 |
+| Motion and icons | Framer Motion 12, Lucide |
+| Tables and content | TanStack Virtual, react-markdown with GFM, syntax highlighting, YAML |
+| i18n | i18next 25, react-i18next |
+| Quality | Vitest 4, Testing Library, Playwright 1.58, oxlint, oxfmt |
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+## Talking to CliRelay
 
-## 📄 Related Projects
+The panel uses CliRelay's management API under `{apiBase}/v0/management` (the base is normalised automatically), plus `/v0/auth` for sessions and `/v0/portal` for the end-user portal. The main groups:
 
-- **[CliRelay](https://github.com/kittors/CliRelay)** — The backend proxy server (Go)
-- **[CliRelay Guides](https://help.router-for.me/)** — Official documentation
+| Area | Endpoints |
+| :-- | :-- |
+| Session and identity | `/v0/auth/*`, `/tenants`, `/users`, `/roles`, `/menus`, `/audit-logs` |
+| Monitoring | `/usage/monitor/overview`, `/usage/monitor/realtime`, `/usage/chart-data`, `/usage/logs`, `/system-stats/ws` |
+| AI accounts and providers | `/auth-files`, `/*-auth-url`, `/oauth-import/*`, `/*-api-key`, `/openai-compatibility` |
+| Keys and quotas | `/end-users`, `/api-key-entries`, `/api-key-permission-profiles` |
+| Models and routing | `/model-configs`, `/routing-config`, `/channel-groups`, `/proxy-pool` |
+| Configuration and system | `/config`, `/config.yaml`, `/update/*`, `/logs` |
 
-## 📝 License
+The full reference is in the [CliRelay management API docs](https://help.router-for.me/management/api).
 
-This project is open source. See the [LICENSE](LICENSE) file for details.
+## Contributing
 
----
+1. Branch from the latest `dev` (`git switch -c feat/your-change origin/dev`).
+2. Keep changes inside the layer they belong to (`pages/` → `features/` → `packages/`) and add or update tests next to the code.
+3. Run `./scripts/ci-pr.sh` (or the steps above) and open a pull request against `dev`.
 
-<p align="center">
-  Made with ❤️ for the <a href="https://github.com/kittors/CliRelay">CliRelay</a> community
-</p>
+Related: [CliRelay](https://github.com/kittors/CliRelay) (the Go backend) · [CliRelay guides](https://help.router-for.me/).
+
+## License
+
+No license file has been published for this repository yet. CliRelay, which serves this panel, is released under the [MIT License](https://github.com/kittors/CliRelay/blob/main/LICENSE).

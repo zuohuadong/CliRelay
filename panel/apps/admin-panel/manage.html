@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN" data-palette="colorful" data-icons="colorful" data-bars="semantic">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CliRelay · 一个入口，接入全部模型能力</title>
+    <meta
+      name="description"
+      content="CliRelay 是 OpenAI 兼容的统一模型网关：一个 API Key 调度 Claude、Gemini、GPT、Grok 等模型，内置用量统计、请求日志、配额限额与账号池。"
+    />
+    <link rel="icon" type="image/svg+xml" href="/manage/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/manage/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/manage/favicon-192.png" />
+    <link rel="apple-touch-icon" href="/manage/apple-touch-icon.png" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#111114" media="(prefers-color-scheme: dark)" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CliRelay" />
+    <meta property="og:title" content="CliRelay · 一个入口，接入全部模型能力" />
+    <meta
+      property="og:description"
+      content="OpenAI 兼容的统一模型网关 · 用量可观测 · 请求日志 · 配额与账号池"
+    />
+    <meta property="og:image" content="/manage/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <!-- 阻塞渲染的主题恢复脚本：在 body 绘制前读取 localStorage 并应用暗色模式 -->
+    <script>
+      (function () {
+        try {
+          var root = document.documentElement;
+          var apply = function (isDark) {
+            root.classList.toggle("dark", isDark);
+            root.style.colorScheme = isDark ? "dark" : "light";
+            if (isDark) {
+              root.setAttribute("data-theme", "dark");
+            } else {
+              root.removeAttribute("data-theme");
+            }
+          };
+          // Windows 用系统字体与 1.0 根字号（见 styles/index.css 的 data-os 说明）。
+          // 只认平台字段开头的 Win（Win32 / Windows），不能宽松匹配——"darwin" 里也有 win。
+          // 先读 navigator.platform：UA 字符串常被伪装（Playwright 的 Desktop Chrome 设备就是
+          // Windows UA），Chrome 会照着伪装的 UA 推导 userAgentData.platform，只有
+          // navigator.platform 始终是真实系统；它为空时才退回 userAgentData。
+          var platform =
+            navigator.platform || (navigator.userAgentData && navigator.userAgentData.platform) || "";
+          if (/^win/i.test(platform)) {
+            root.setAttribute("data-os", "windows");
+          }
+          // 外观设置（系统设置 → 外观）：风格开关与自定义变量要在首屏绘制前写上，否则会先闪一帧
+          // 默认的多彩样式。这里只搬运应用存下来的计算结果（attrs / vars），不重复颜色计算；
+          // 变量名只认外观会写的那几类，值只认它会写的三种形状（#rrggbb、rgb(...)、数字）——
+          // 存储被篡改也写不进别的东西，比如进度条 background 里会去加载的 url()。
+          // 读不到时保留 <html> 上的默认值。
+          try {
+            var appearance = JSON.parse(localStorage.getItem("code-proxy-admin-appearance") || "null");
+            if (appearance && appearance.version === 1) {
+              var attrs = appearance.attrs || {};
+              var names = ["palette", "icons", "bars"];
+              for (var i = 0; i < names.length; i++) {
+                if (typeof attrs[names[i]] === "string" && /^[a-z]+$/.test(attrs[names[i]])) {
+                  root.setAttribute("data-" + names[i], attrs[names[i]]);
+                }
+              }
+              var vars = appearance.vars || {};
+              for (var name in vars) {
+                if (
+                  Object.prototype.hasOwnProperty.call(vars, name) &&
+                  /^--(cp-pref-[a-z0-9-]+|color-(emerald|green|amber|rose|red)-\d{2,3})$/.test(name) &&
+                  typeof vars[name] === "string" &&
+                  /^(#[0-9a-f]{6}|rgb\([0-9 ./]+\)|-?[0-9.]+)$/i.test(vars[name])
+                ) {
+                  root.style.setProperty(name, vars[name]);
+                }
+              }
+            }
+          } catch (appearanceError) {}
+          var t = localStorage.getItem("code-proxy-admin-theme");
+          if (t === "dark") {
+            apply(true);
+          } else if (t === "light") {
+            apply(false);
+          } else {
+            // 跟随系统偏好
+            if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+              apply(true);
+            }
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <style>
+      :root {
+        --pl-bg: #ffffff;
+        --pl-ring-track: rgba(13, 13, 13, 0.1);
+        --pl-ring: #111113;
+        --pl-text: #76767d;
+      }
+      .dark {
+        --pl-bg: #111114;
+        --pl-ring-track: rgba(255, 255, 255, 0.12);
+        --pl-ring: #f2f2f4;
+        --pl-text: #86868f;
+      }
+      body {
+        margin: 0;
+        background-color: var(--pl-bg);
+        transition: background-color 0.3s ease;
+      }
+      #app-loader {
+        position: fixed;
+        inset: 0;
+        z-index: 99999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        background-color: var(--pl-bg);
+        opacity: 1;
+        transition: opacity 0.4s ease, visibility 0.4s ease;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", system-ui, sans-serif;
+      }
+      #app-loader.fade-out {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+      .pl-loader-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        animation: pl-content-in 0.36s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+      }
+      .pl-ring {
+        width: 40px;
+        height: 40px;
+        box-sizing: border-box;
+        border-radius: 50%;
+        border: 2px solid var(--pl-ring-track);
+        border-top-color: var(--pl-ring);
+        animation: pl-spin 0.9s linear infinite;
+        margin-bottom: 18px;
+      }
+      .pl-text {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--pl-text);
+        user-select: none;
+      }
+      @keyframes pl-spin {
+        to { transform: rotate(360deg); }
+      }
+      @keyframes pl-content-in {
+        from { opacity: 0; transform: translateY(6px); }
+        to   { opacity: 1; transform: translateY(0);    }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="app-loader" aria-label="Loading">
+      <div class="pl-loader-content">
+        <div class="pl-ring"></div>
+        <span class="pl-text">CliRelay</span>
+      </div>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/manage-entry.tsx"></script>
+  </body>
+</html>

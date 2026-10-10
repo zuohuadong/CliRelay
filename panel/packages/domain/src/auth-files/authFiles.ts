@@ -1,0 +1,2141 @@
+import type {
+  AuthFileItem,
+  AuthFileIdentityFingerprintProvider,
+  AuthFileIdentityFingerprintSummary,
+  AuthFileIdentityFingerprintSource,
+  AuthFileRestriction,
+  AuthFileSubscriptionPeriod,
+  ClaudeOAuthHealth,
+  ClaudeOAuthHealthWindow,
+  ClaudeOAuthRuntimeProfile,
+  EntityStatsResponse,
+  OAuthModelAliasEntry,
+} from "./types";
+import { normalizeUsageSourceId, type KeyStatBucket } from "../providers/providerUsage";
+import { resolveCodexPlanType } from "../quota/resolvers";
+import { normalizePlanType } from "../quota/parsers";
+import { isAntigravityFile } from "../quota/validators";
+import { sanitizeQuotaByFileNameForCache } from "./quotaCache";
+import type { QuotaItem, QuotaState } from "../quota/types";
+import type { StatusBarData, StatusBlockDetail, StatusBlockState } from "../usage";
+import {
+  getActiveCacheTenantId,
+  normalizeCacheTenantId,
+  readTenantBucket,
+  writeTenantBucket,
+} from "../tenant-cache";
+
+export type AuthFileModelItem = { id: string; display_name?: string; type?: string; owned_by?: string };
+export type AuthFileModelOwnerGroup = { value: string; label: string; description: string; models: AuthFileModelItem[] };
+
+export const AUTH_FILES_PAGE_SIZE = 9;
+export const MAX_AUTH_FILE_SIZE = 50 * 1024;
+
+/** Tenant-scoped auth-files UI filters (file group / status / search / page). */
+export const AUTH_FILES_UI_STATE_KEY = "authFilesPage.uiState.v3";
+/** Tenant-scoped auth-files list/quota cache (v3). Legacy v2 is read only for migration. */
+export const AUTH_FILES_DATA_CACHE_KEY = "authFilesPage.dataCache.v3";
+export const AUTH_FILES_DATA_CACHE_KEY_V2 = "authFilesPage.dataCache.v2";
+/** Cached status/usage is only a warm-paint hint; refetch after one minute. */
+/** Warm paint for membership badges / quota / cycle across route remounts. */
+export const AUTH_FILES_DATA_CACHE_TTL_MS = 30 * 60_000;
+export const AUTH_FILES_QUOTA_PREVIEW_KEY = "authFilesPage.quotaPreview.v1";
+export const AUTH_FILES_QUOTA_AUTO_REFRESH_KEY = "authFilesPage.quotaAutoRefreshMs.v1";
+export const AUTH_FILES_FILES_VIEW_MODE_KEY = "authFilesPage.filesViewMode.v1";
+export const AUTH_FILES_CARD_COLUMNS_KEY = "authFilesPage.cardColumns.v1";
+export const AUTH_FILES_PAGE_SIZE_KEY = "authFilesPage.pageSize.v1";
+export const AUTH_FILES_MODEL_OWNER_GROUP_MAP_KEY = "authFilesPage.modelOwnerGroupMap.v1";
+
+export const AUTH_FILES_CARD_COLUMN_OPTIONS = [2, 3, 4, 5, 6] as const;
+export type AuthFilesCardColumns = (typeof AUTH_FILES_CARD_COLUMN_OPTIONS)[number];
+export const DEFAULT_AUTH_FILES_CARD_COLUMNS: AuthFilesCardColumns = 3;
+export const AUTH_FILES_PAGE_SIZE_OPTIONS = [6, 9, 12, 15, 18, 24, 30, 36] as const;
+
+export type QuotaPreviewMode = "5h" | "week";
+/** Off / 60s / 300s only. Legacy 5s/10s/30s migrate safely via normalizeQuotaAutoRefreshMs. */
+export type QuotaAutoRefreshMs = 0 | 60000 | 300000;
+export type FilesViewMode = "table" | "cards";
+export type AuthFilesModelOwnerGroupMap = Record<string, string>;
+/**
+ * 下拉选项顺序即本数组顺序；类型由数组派生，避免选项与联合类型两处各自漂移。
+ * "enabled" / "disabled" 是调度开关的互补两面，其余桶是错误信号，可与两者并存。
+ */
+export const AUTH_FILE_STATUS_FILTERS = [
+  "all",
+  "http-429",
+  "http-auth",
+  "http-5xx",
+  "other-error",
+  "enabled",
+  "disabled",
+] as const;
+export type AuthFileStatusFilter = (typeof AUTH_FILE_STATUS_FILTERS)[number];
+
+export type AuthFilesUiState = {
+  tab?: "files" | "excluded" | "alias";
+  filter?: string;
+  tagFilter?: string;
+  statusFilter?: AuthFileStatusFilter;
+  search?: string;
+  page?: number;
+};
+
+/** Last known 本周期 snapshot per auth_index for first paint after full reload. */
+export type AuthFileCycleCacheSnapshot = {
+  calls: number;
+  cycleCostTotal?: number | null;
+  cycleTotalTokens?: number | null;
+  weeklyQuotaUsedPercent?: number | null;
+};
+
+export type AuthFileConnectivityCacheSnapshot = {
+  latencyMs: number | null;
+  error: boolean;
+};
+
+export type AuthFilesDataCache = {
+  /** Effective tenant id that owns this cache bucket. Required to prevent cross-tenant reuse. */
+  tenantId: string;
+  savedAtMs: number;
+  files: AuthFileItem[];
+  usageData?: EntityStatsResponse | null;
+  quotaByFileName?: Record<string, QuotaState>;
+  /** Seed card cycle badges so full reload is 93→98, not --→98. */
+  cycleByAuthIndex?: Record<string, AuthFileCycleCacheSnapshot>;
+  /** Last measured auth-file connectivity so route remounts keep the last result. */
+  connectivityByFileName?: Record<string, AuthFileConnectivityCacheSnapshot>;
+  /** Last-good membership chip (PRO / PRO 5X / PRO 20X) for first paint after remount. */
+  displayPlanByFileName?: Record<string, string>;
+};
+
+type AuthFilesDataCacheBucket = Omit<AuthFilesDataCache, "tenantId">;
+
+const sanitizeDecodedIdToken = (value: unknown): unknown => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value;
+};
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const readOptionalString = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+};
+
+const readOptionalBoolean = (value: unknown): boolean | undefined =>
+  typeof value === "boolean" ? value : undefined;
+
+const readOptionalNumber = (value: unknown): number | undefined => {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numberValue) ? numberValue : undefined;
+};
+
+const readOptionalHttpStatus = (value: unknown): number | undefined => {
+  const status = readOptionalNumber(value);
+  if (status === undefined) return undefined;
+  const rounded = Math.round(status);
+  return rounded >= 100 && rounded <= 599 ? rounded : undefined;
+};
+
+const sanitizeClaudeOAuthHealthWindowForCache = (
+  value: unknown,
+): ClaudeOAuthHealthWindow | undefined => {
+  if (!isPlainRecord(value)) return undefined;
+  const output: ClaudeOAuthHealthWindow = {};
+  const status = readOptionalString(value.status);
+  const resetAt = readOptionalString(value.reset_at);
+  const utilization = readOptionalNumber(value.utilization);
+  const exceeded = readOptionalBoolean(value.exceeded);
+  const surpassedThreshold = readOptionalBoolean(value.surpassed_threshold);
+  const updatedAt = readOptionalString(value.updated_at);
+
+  if (status) output.status = status;
+  if (resetAt) output.reset_at = resetAt;
+  if (utilization !== undefined) output.utilization = utilization;
+  if (exceeded !== undefined) output.exceeded = exceeded;
+  if (surpassedThreshold !== undefined) output.surpassed_threshold = surpassedThreshold;
+  if (updatedAt) output.updated_at = updatedAt;
+
+  return Object.keys(output).length > 0 ? output : undefined;
+};
+
+const sanitizeClaudeOAuthRuntimeProfileForCache = (
+  value: unknown,
+): ClaudeOAuthRuntimeProfile | undefined => {
+  if (!isPlainRecord(value)) return undefined;
+  const output: ClaudeOAuthRuntimeProfile = {};
+  const name = readOptionalString(value.name);
+  const identityFingerprint = readOptionalString(value.identity_fingerprint);
+  const transport = readOptionalString(value.transport);
+  const egress = readOptionalString(value.egress);
+
+  if (name) output.name = name;
+  if (identityFingerprint) output.identity_fingerprint = identityFingerprint;
+  if (transport) output.transport = transport;
+  if (egress) output.egress = egress;
+
+  return Object.keys(output).length > 0 ? output : undefined;
+};
+
+const sanitizeClaudeOAuthHealthForCache = (value: unknown): ClaudeOAuthHealth | undefined => {
+  if (!isPlainRecord(value)) return undefined;
+  const output: ClaudeOAuthHealth = {};
+  const enabled = readOptionalBoolean(value.enabled);
+  const status = readOptionalString(value.status);
+  const updatedAt = readOptionalString(value.updated_at);
+  const refreshAvailable = readOptionalBoolean(value.refresh_available);
+  const lastRuntimeStatus = readOptionalHttpStatus(value.last_runtime_status);
+  const lastRuntimeAt = readOptionalString(value.last_runtime_at);
+  const lastRefreshAt = readOptionalString(value.last_refresh_at);
+  const last401At = readOptionalString(value.last_401_at);
+  const last401Message = readOptionalString(value.last_401_message);
+  const temporaryUntil = readOptionalString(value.temporary_unschedulable_until);
+  const temporaryReason = readOptionalString(value.temporary_unschedulable_reason);
+  const windows = isPlainRecord(value.windows) ? value.windows : undefined;
+  const fiveHour = sanitizeClaudeOAuthHealthWindowForCache(windows?.five_hour);
+  const sevenDay = sanitizeClaudeOAuthHealthWindowForCache(windows?.seven_day);
+  const runtimeProfile = sanitizeClaudeOAuthRuntimeProfileForCache(value.runtime_profile);
+
+  if (enabled !== undefined) output.enabled = enabled;
+  if (status) output.status = status;
+  if (updatedAt) output.updated_at = updatedAt;
+  if (refreshAvailable !== undefined) output.refresh_available = refreshAvailable;
+  if (lastRuntimeStatus !== undefined) output.last_runtime_status = lastRuntimeStatus;
+  if (lastRuntimeAt) output.last_runtime_at = lastRuntimeAt;
+  if (lastRefreshAt) output.last_refresh_at = lastRefreshAt;
+  if (last401At) output.last_401_at = last401At;
+  if (last401Message) output.last_401_message = last401Message;
+  if (temporaryUntil) output.temporary_unschedulable_until = temporaryUntil;
+  if (temporaryReason) output.temporary_unschedulable_reason = temporaryReason;
+  if (fiveHour || sevenDay) {
+    output.windows = {
+      ...(fiveHour ? { five_hour: fiveHour } : {}),
+      ...(sevenDay ? { seven_day: sevenDay } : {}),
+    };
+  }
+  if (runtimeProfile) output.runtime_profile = runtimeProfile;
+
+  return Object.keys(output).length > 0 ? output : undefined;
+};
+
+const IDENTITY_FINGERPRINT_SOURCES: AuthFileIdentityFingerprintSource[] = [
+  "learned",
+  "preset",
+  "builtin_default",
+];
+
+const sanitizeIdentityFingerprintSourceCountsForCache = (
+  value: unknown,
+): Partial<Record<AuthFileIdentityFingerprintSource, number>> | undefined => {
+  if (!isPlainRecord(value)) return undefined;
+  const output: Partial<Record<AuthFileIdentityFingerprintSource, number>> = {};
+  IDENTITY_FINGERPRINT_SOURCES.forEach((source) => {
+    const count = readOptionalNumber(value[source]);
+    if (count !== undefined && count >= 0) {
+      output[source] = Math.floor(count);
+    }
+  });
+  return Object.keys(output).length > 0 ? output : undefined;
+};
+
+const sanitizeIdentityFingerprintSourceForCache = (
+  value: unknown,
+): AuthFileIdentityFingerprintSource | undefined => {
+  const source = readOptionalString(value);
+  if (!source) return undefined;
+  return IDENTITY_FINGERPRINT_SOURCES.includes(source as AuthFileIdentityFingerprintSource)
+    ? (source as AuthFileIdentityFingerprintSource)
+    : undefined;
+};
+
+const sanitizeIdentityFingerprintSummaryForCache = (
+  value: unknown,
+): AuthFileIdentityFingerprintSummary | undefined => {
+  if (!isPlainRecord(value)) return undefined;
+  const provider = readOptionalString(value.provider);
+  if (!provider || !["claude", "codex", "gemini", "xai", "kimi", "antigravity"].includes(provider)) {
+    return undefined;
+  }
+  const primarySource =
+    sanitizeIdentityFingerprintSourceForCache(value.primary_source) ?? "builtin_default";
+  const sourceCounts = sanitizeIdentityFingerprintSourceCountsForCache(value.source_counts) ?? {};
+  const summary: AuthFileIdentityFingerprintSummary = {
+    provider: provider as AuthFileIdentityFingerprintProvider,
+    enabled: Boolean(value.enabled),
+    primary_source: primarySource,
+    learned: Boolean(value.learned),
+    learned_fields: Math.max(0, Math.floor(readOptionalNumber(value.learned_fields) ?? 0)),
+    effective_fields: Math.max(0, Math.floor(readOptionalNumber(value.effective_fields) ?? 0)),
+    source_counts: sourceCounts,
+  };
+  const accountKey = readOptionalString(value.account_key);
+  const authSubjectId = readOptionalString(value.auth_subject_id);
+  const profileKey = readOptionalString(value.profile_key);
+  const profileFamily = readOptionalString(value.profile_family);
+  const clientProduct = readOptionalString(value.client_product);
+  const clientVariant = readOptionalString(value.client_variant);
+  const version = readOptionalString(value.version);
+  const updatedAt = readOptionalString(value.updated_at);
+  const lastSeenAt = readOptionalString(value.last_seen_at);
+
+  if (accountKey) summary.account_key = accountKey;
+  if (authSubjectId) summary.auth_subject_id = authSubjectId;
+  if (profileKey) summary.profile_key = profileKey;
+  if (profileFamily) summary.profile_family = profileFamily;
+  if (clientProduct) summary.client_product = clientProduct;
+  if (clientVariant) summary.client_variant = clientVariant;
+  if (version) summary.version = version;
+  if (updatedAt) summary.updated_at = updatedAt;
+  if (lastSeenAt) summary.last_seen_at = lastSeenAt;
+
+  return summary;
+};
+
+const sanitizeAuthFileRestrictionsForCache = (
+  value: unknown,
+): AuthFileRestriction[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const restrictions = value
+    .map((entry): AuthFileRestriction | null => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+      const record = entry as Record<string, unknown>;
+      const scope = typeof record.scope === "string" ? record.scope : undefined;
+      const model = typeof record.model === "string" ? record.model : undefined;
+      const status = typeof record.status === "string" ? record.status : undefined;
+      const statusMessage =
+        typeof record.status_message === "string" ? record.status_message : undefined;
+      const httpStatus = Number(record.http_status);
+      const code = typeof record.code === "string" ? record.code : undefined;
+      const reason = typeof record.reason === "string" ? record.reason : undefined;
+      const quotaWindow = typeof record.quota_window === "string" ? record.quota_window : undefined;
+      const quotaWindowMinutes = Number(record.quota_window_minutes);
+      const nextRetryAfter =
+        typeof record.next_retry_after === "string" || typeof record.next_retry_after === "number"
+          ? record.next_retry_after
+          : undefined;
+      const nextRecoverAt =
+        typeof record.next_recover_at === "string" || typeof record.next_recover_at === "number"
+          ? record.next_recover_at
+          : undefined;
+      return {
+        ...(scope ? { scope } : {}),
+        ...(model ? { model } : {}),
+        ...(status ? { status } : {}),
+        ...(statusMessage ? { status_message: statusMessage } : {}),
+        ...(Number.isFinite(httpStatus) && httpStatus > 0 ? { http_status: httpStatus } : {}),
+        ...(code ? { code } : {}),
+        ...(reason ? { reason } : {}),
+        ...(quotaWindow ? { quota_window: quotaWindow } : {}),
+        ...(Number.isFinite(quotaWindowMinutes) && quotaWindowMinutes > 0
+          ? { quota_window_minutes: quotaWindowMinutes }
+          : {}),
+        ...(record.unavailable === true ? { unavailable: true } : {}),
+        ...(record.quota_exceeded === true ? { quota_exceeded: true } : {}),
+        ...(record.retryable === true ? { retryable: true } : {}),
+        ...(nextRetryAfter !== undefined ? { next_retry_after: nextRetryAfter } : {}),
+        ...(nextRecoverAt !== undefined ? { next_recover_at: nextRecoverAt } : {}),
+      };
+    })
+    .filter((entry): entry is AuthFileRestriction => Boolean(entry));
+  return restrictions.length > 0 ? restrictions : undefined;
+};
+
+const parseAuthFilesUiStateBucket = (value: unknown): AuthFilesUiState | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  // Reject tenant-store wrappers so only real UI-state objects are accepted.
+  if ("byTenant" in record && !("filter" in record) && !("tab" in record) && !("page" in record)) {
+    return null;
+  }
+  const output: AuthFilesUiState = {};
+  if (record.tab === "files" || record.tab === "excluded" || record.tab === "alias") {
+    output.tab = record.tab;
+  }
+  if (typeof record.filter === "string") output.filter = record.filter;
+  if (typeof record.tagFilter === "string") output.tagFilter = record.tagFilter;
+  if (
+    typeof record.statusFilter === "string" &&
+    AUTH_FILE_STATUS_FILTERS.includes(record.statusFilter as AuthFileStatusFilter)
+  ) {
+    output.statusFilter = record.statusFilter as AuthFileStatusFilter;
+  }
+  if (typeof record.search === "string") output.search = record.search;
+  if (typeof record.page === "number" && Number.isFinite(record.page)) {
+    output.page = Math.max(1, Math.round(record.page));
+  }
+  return output;
+};
+
+/**
+ * Read auth-files UI filters for a tenant (file group, status, search, page).
+ * Prefer explicit tenantId; fall back to the active cache tenant from AuthProvider.
+ * Legacy unscoped v3 payloads migrate into the default tenant bucket on first write.
+ */
+export const readAuthFilesUiState = (
+  tenantId?: string | null,
+): AuthFilesUiState | null => {
+  if (typeof window === "undefined") return null;
+  const tenantKey = normalizeCacheTenantId(tenantId ?? getActiveCacheTenantId());
+  return readTenantBucket({
+    key: AUTH_FILES_UI_STATE_KEY,
+    tenantId: tenantKey,
+    parseBucket: parseAuthFilesUiStateBucket,
+    // v3 may still hold a single unscoped UI-state object mid-migration.
+    acceptUnscopedCurrent: true,
+  });
+};
+
+export const writeAuthFilesUiState = (
+  state: AuthFilesUiState,
+  tenantId?: string | null,
+) => {
+  if (typeof window === "undefined") return;
+  const tenantKey = normalizeCacheTenantId(tenantId ?? getActiveCacheTenantId());
+  const bucket = parseAuthFilesUiStateBucket(state) ?? {};
+  writeTenantBucket({
+    key: AUTH_FILES_UI_STATE_KEY,
+    tenantId: tenantKey,
+    parseBucket: parseAuthFilesUiStateBucket,
+    acceptUnscopedCurrent: true,
+    bucket,
+  });
+};
+
+const sanitizeModelOwnerGroupMap = (value: unknown): AuthFilesModelOwnerGroupMap => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const output: AuthFilesModelOwnerGroupMap = {};
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const key = normalizeProviderKey(rawKey);
+    const owner =
+      typeof rawValue === "string" ? rawValue.trim().replace(/\s+/g, "-").toLowerCase() : "";
+    if (!key || key === "all" || !owner) continue;
+    output[key] = owner;
+  }
+  return output;
+};
+
+export const readAuthFilesModelOwnerGroupMap = (): AuthFilesModelOwnerGroupMap => {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(AUTH_FILES_MODEL_OWNER_GROUP_MAP_KEY);
+    if (!raw) return {};
+    return sanitizeModelOwnerGroupMap(JSON.parse(raw) as unknown);
+  } catch {
+    return {};
+  }
+};
+
+export const writeAuthFilesModelOwnerGroupMap = (map: AuthFilesModelOwnerGroupMap) => {
+  if (typeof window === "undefined") return;
+  const normalized = sanitizeModelOwnerGroupMap(map);
+  try {
+    if (Object.keys(normalized).length === 0) {
+      window.localStorage.removeItem(AUTH_FILES_MODEL_OWNER_GROUP_MAP_KEY);
+      return;
+    }
+    window.localStorage.setItem(AUTH_FILES_MODEL_OWNER_GROUP_MAP_KEY, JSON.stringify(normalized));
+  } catch {
+    // ignore storage failures; the in-memory selection still updates.
+  }
+};
+
+/** Keep optional projections from partial shells; runtime restriction absence means cleared. */
+export const mergeAuthFileWithLastGoodStatus = (
+  fresh: AuthFileItem,
+  previous?: AuthFileItem,
+): AuthFileItem => {
+  if (!previous) return fresh;
+  const planType = fresh.plan_type ?? fresh.planType ?? previous.plan_type ?? previous.planType;
+  return {
+    ...fresh,
+    auth_index: fresh.auth_index ?? previous.auth_index,
+    authIndex: fresh.authIndex ?? previous.authIndex,
+    auth_subject_id: fresh.auth_subject_id ?? previous.auth_subject_id,
+    authSubjectId: fresh.authSubjectId ?? previous.authSubjectId,
+    shared_subscription_started_at:
+      fresh.shared_subscription_started_at ?? previous.shared_subscription_started_at,
+    shared_subscription_expires_at:
+      fresh.shared_subscription_expires_at ?? previous.shared_subscription_expires_at,
+    shared_subscription_source:
+      fresh.shared_subscription_source ?? previous.shared_subscription_source,
+    account_status_scope: fresh.account_status_scope ?? previous.account_status_scope,
+    subject_scope: fresh.subject_scope ?? previous.subject_scope,
+    share_eligible: fresh.share_eligible ?? previous.share_eligible,
+    usage_history_complete:
+      fresh.usage_history_complete ?? previous.usage_history_complete,
+    usage_projected_since: fresh.usage_projected_since ?? previous.usage_projected_since,
+    plan_type: planType,
+    planType,
+    subscription_started_at:
+      fresh.subscription_started_at ?? previous.subscription_started_at,
+    subscriptionStartedAt: fresh.subscriptionStartedAt ?? previous.subscriptionStartedAt,
+    subscription_start_at: fresh.subscription_start_at ?? previous.subscription_start_at,
+    subscriptionStartAt: fresh.subscriptionStartAt ?? previous.subscriptionStartAt,
+    subscription_started_at_ms:
+      fresh.subscription_started_at_ms ?? previous.subscription_started_at_ms,
+    subscriptionStartedAtMs:
+      fresh.subscriptionStartedAtMs ?? previous.subscriptionStartedAtMs,
+    subscription_period: fresh.subscription_period ?? previous.subscription_period,
+    subscriptionPeriod: fresh.subscriptionPeriod ?? previous.subscriptionPeriod,
+    subscription_expires_at:
+      fresh.subscription_expires_at ?? previous.subscription_expires_at,
+    subscriptionExpiresAt: fresh.subscriptionExpiresAt ?? previous.subscriptionExpiresAt,
+    subscription_expires_at_ms:
+      fresh.subscription_expires_at_ms ?? previous.subscription_expires_at_ms,
+    subscriptionExpiresAtMs:
+      fresh.subscriptionExpiresAtMs ?? previous.subscriptionExpiresAtMs,
+    subscription_remaining_minutes:
+      fresh.subscription_remaining_minutes ?? previous.subscription_remaining_minutes,
+    subscriptionRemainingMinutes:
+      fresh.subscriptionRemainingMinutes ?? previous.subscriptionRemainingMinutes,
+    subscription_expired: fresh.subscription_expired ?? previous.subscription_expired,
+    subscriptionExpired: fresh.subscriptionExpired ?? previous.subscriptionExpired,
+    restrictions: fresh.restrictions,
+    claude_oauth_health: fresh.claude_oauth_health,
+  };
+};
+
+export const sanitizeAuthFilesForCache = (files: AuthFileItem[]): AuthFileItem[] =>
+  files.map((file) => ({
+    id: file.id,
+    name: file.name,
+    type: file.type,
+    provider: file.provider,
+    label: file.label,
+    email: file.email,
+    account: file.account,
+    account_type: file.account_type,
+    auth_index: file.auth_index,
+    authIndex: file.authIndex,
+    auth_subject_id: file.auth_subject_id,
+    authSubjectId: file.authSubjectId,
+    disabled: file.disabled,
+    status: file.status,
+    status_message: file.status_message,
+    unavailable: file.unavailable,
+    next_retry_after: file.next_retry_after,
+    restrictions: sanitizeAuthFileRestrictionsForCache(file.restrictions),
+    modified: file.modified,
+    modtime: file.modtime,
+    size: file.size,
+    runtimeOnly: file.runtimeOnly,
+    runtime_only: file.runtime_only,
+    plan_type: file.plan_type,
+    planType: file.planType,
+    shared_subscription_started_at: file.shared_subscription_started_at,
+    shared_subscription_expires_at: file.shared_subscription_expires_at,
+    shared_subscription_source: file.shared_subscription_source,
+    account_status_scope: file.account_status_scope,
+    subject_scope: file.subject_scope,
+    share_eligible: file.share_eligible,
+    usage_history_complete: file.usage_history_complete,
+    usage_projected_since: file.usage_projected_since,
+    subscription_started_at: file.subscription_started_at,
+    subscriptionStartedAt: file.subscriptionStartedAt,
+    subscription_start_at: file.subscription_start_at,
+    subscriptionStartAt: file.subscriptionStartAt,
+    subscription_started_at_ms: file.subscription_started_at_ms,
+    subscriptionStartedAtMs: file.subscriptionStartedAtMs,
+    subscription_period: file.subscription_period,
+    subscriptionPeriod: file.subscriptionPeriod,
+    subscription_expires_at: file.subscription_expires_at,
+    subscriptionExpiresAt: file.subscriptionExpiresAt,
+    subscription_expires_at_ms: file.subscription_expires_at_ms,
+    subscriptionExpiresAtMs: file.subscriptionExpiresAtMs,
+    subscription_remaining_minutes: file.subscription_remaining_minutes,
+    subscriptionRemainingMinutes: file.subscriptionRemainingMinutes,
+    subscription_expired: file.subscription_expired,
+    subscriptionExpired: file.subscriptionExpired,
+    default_tags: normalizeTagList(file.default_tags),
+    custom_tags: normalizeTagList(file.custom_tags),
+    hidden_default_tags: normalizeTagList(file.hidden_default_tags),
+    display_tags: Array.isArray(file.display_tags)
+      ? normalizeTagList(file.display_tags)
+      : undefined,
+    claude_oauth_health: sanitizeClaudeOAuthHealthForCache(file.claude_oauth_health),
+    identity_fingerprint_summary: sanitizeIdentityFingerprintSummaryForCache(
+      file.identity_fingerprint_summary,
+    ),
+    id_token: sanitizeDecodedIdToken(file.id_token),
+  }));
+
+
+const sanitizeConnectivityByFileNameForCache = (
+  connectivityByFileName: unknown,
+  fileNames?: Set<string>,
+): Record<string, AuthFileConnectivityCacheSnapshot> | undefined => {
+  if (
+    !connectivityByFileName ||
+    typeof connectivityByFileName !== "object" ||
+    Array.isArray(connectivityByFileName)
+  ) {
+    return undefined;
+  }
+  const output: Record<string, AuthFileConnectivityCacheSnapshot> = {};
+  for (const [fileName, raw] of Object.entries(
+    connectivityByFileName as Record<string, unknown>,
+  )) {
+    if (!fileName || (fileNames && !fileNames.has(fileName))) continue;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const snapshot = raw as Record<string, unknown>;
+    const latencyMs =
+      typeof snapshot.latencyMs === "number" && Number.isFinite(snapshot.latencyMs)
+        ? Math.max(0, snapshot.latencyMs)
+        : null;
+    const error = snapshot.error === true;
+    if (latencyMs === null && !error) continue;
+    output[fileName] = { latencyMs, error };
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+};
+
+const sanitizeCycleByAuthIndexForCache = (
+  cycleByAuthIndex: unknown,
+): Record<string, AuthFileCycleCacheSnapshot> | undefined => {
+  if (!cycleByAuthIndex || typeof cycleByAuthIndex !== "object" || Array.isArray(cycleByAuthIndex)) {
+    return undefined;
+  }
+  const output: Record<string, AuthFileCycleCacheSnapshot> = {};
+  for (const [authIndex, raw] of Object.entries(
+    cycleByAuthIndex as Record<string, unknown>,
+  )) {
+    const key = typeof authIndex === "string" ? authIndex.trim() : "";
+    if (!key || !raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const snapshot = raw as Record<string, unknown>;
+    const calls =
+      typeof snapshot.calls === "number" && Number.isFinite(snapshot.calls)
+        ? Math.max(0, Math.round(snapshot.calls))
+        : null;
+    if (calls === null) continue;
+    const cycleCostTotal =
+      typeof snapshot.cycleCostTotal === "number" && Number.isFinite(snapshot.cycleCostTotal)
+        ? snapshot.cycleCostTotal
+        : null;
+    const cycleTotalTokens =
+      typeof snapshot.cycleTotalTokens === "number" &&
+      Number.isFinite(snapshot.cycleTotalTokens)
+        ? Math.max(0, Math.round(snapshot.cycleTotalTokens))
+        : null;
+    const weeklyQuotaUsedPercent =
+      typeof snapshot.weeklyQuotaUsedPercent === "number" &&
+      Number.isFinite(snapshot.weeklyQuotaUsedPercent)
+        ? snapshot.weeklyQuotaUsedPercent
+        : null;
+    output[key] = { calls, cycleCostTotal, cycleTotalTokens, weeklyQuotaUsedPercent };
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+};
+
+const sanitizeDisplayPlanByFileNameForCache = (
+  displayPlanByFileName: unknown,
+  fileNames?: Set<string>,
+): Record<string, string> | undefined => {
+  if (
+    !displayPlanByFileName ||
+    typeof displayPlanByFileName !== "object" ||
+    Array.isArray(displayPlanByFileName)
+  ) {
+    return undefined;
+  }
+  const output: Record<string, string> = {};
+  for (const [fileName, raw] of Object.entries(
+    displayPlanByFileName as Record<string, unknown>,
+  )) {
+    if (!fileName || (fileNames && !fileNames.has(fileName))) continue;
+    const planType = normalizePlanType(raw);
+    if (!planType) continue;
+    output[fileName] = planType;
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+};
+
+const parseAuthFilesDataCacheBucket = (
+  value: unknown,
+): AuthFilesDataCacheBucket | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const parsed = value as Partial<AuthFilesDataCacheBucket> & { tenantId?: string };
+  const files = Array.isArray(parsed.files) ? (parsed.files as AuthFileItem[]) : null;
+  if (!files) return null;
+  const savedAtMs =
+    typeof parsed.savedAtMs === "number" && Number.isFinite(parsed.savedAtMs)
+      ? parsed.savedAtMs
+      : null;
+  if (savedAtMs === null) return null;
+  return {
+    savedAtMs,
+    files,
+    usageData:
+      parsed.usageData && typeof parsed.usageData === "object"
+        ? (parsed.usageData as EntityStatsResponse)
+        : undefined,
+    quotaByFileName: sanitizeQuotaByFileNameForCache(parsed.quotaByFileName),
+    cycleByAuthIndex: sanitizeCycleByAuthIndexForCache(parsed.cycleByAuthIndex),
+    connectivityByFileName: sanitizeConnectivityByFileNameForCache(
+      parsed.connectivityByFileName,
+    ),
+    displayPlanByFileName: sanitizeDisplayPlanByFileNameForCache(parsed.displayPlanByFileName),
+  };
+};
+
+const isAuthFilesDataCacheFresh = (
+  cache: AuthFilesDataCacheBucket,
+  nowMs = Date.now(),
+): boolean => nowMs - cache.savedAtMs <= AUTH_FILES_DATA_CACHE_TTL_MS;
+
+/**
+ * Read auth-files list/quota cache for a tenant.
+ * Prefer explicit tenantId; fall back to the active cache tenant from AuthProvider.
+ */
+export const readAuthFilesDataCache = (
+  tenantId?: string | null,
+): AuthFilesDataCache | null => {
+  const tenantKey = normalizeCacheTenantId(tenantId ?? getActiveCacheTenantId());
+  const bucket = readTenantBucket({
+    key: AUTH_FILES_DATA_CACHE_KEY,
+    tenantId: tenantKey,
+    legacyKey: AUTH_FILES_DATA_CACHE_KEY_V2,
+    parseBucket: parseAuthFilesDataCacheBucket,
+    // v3 may still hold a single unscoped bucket mid-migration.
+    acceptUnscopedCurrent: true,
+  });
+  if (!bucket || !isAuthFilesDataCacheFresh(bucket)) return null;
+  return { tenantId: tenantKey, ...bucket };
+};
+
+export const writeAuthFilesDataCache = (cache: AuthFilesDataCache) => {
+  const tenantKey = normalizeCacheTenantId(cache.tenantId || getActiveCacheTenantId());
+  writeTenantBucket({
+    key: AUTH_FILES_DATA_CACHE_KEY,
+    tenantId: tenantKey,
+    legacyKey: AUTH_FILES_DATA_CACHE_KEY_V2,
+    parseBucket: parseAuthFilesDataCacheBucket,
+    acceptUnscopedCurrent: true,
+    legacyKeysToRemove: [AUTH_FILES_DATA_CACHE_KEY_V2],
+    bucket: {
+      savedAtMs: cache.savedAtMs,
+      files: cache.files,
+      usageData: cache.usageData,
+      quotaByFileName: cache.quotaByFileName,
+      cycleByAuthIndex: cache.cycleByAuthIndex,
+      connectivityByFileName: cache.connectivityByFileName,
+      displayPlanByFileName: cache.displayPlanByFileName,
+    },
+    merge: (previous, next) => {
+      const freshPrevious = previous && isAuthFilesDataCacheFresh(previous) ? previous : null;
+      const fileNames = new Set(next.files.map((file) => file.name).filter(Boolean));
+      return {
+        savedAtMs: next.savedAtMs,
+        files: next.files,
+        usageData: next.usageData ?? freshPrevious?.usageData,
+        quotaByFileName: sanitizeQuotaByFileNameForCache(next.quotaByFileName ?? freshPrevious?.quotaByFileName, fileNames),
+        cycleByAuthIndex: sanitizeCycleByAuthIndexForCache(next.cycleByAuthIndex ?? freshPrevious?.cycleByAuthIndex),
+        connectivityByFileName: sanitizeConnectivityByFileNameForCache(next.connectivityByFileName ?? freshPrevious?.connectivityByFileName, fileNames),
+        displayPlanByFileName: sanitizeDisplayPlanByFileNameForCache(next.displayPlanByFileName ?? freshPrevious?.displayPlanByFileName, fileNames),
+      };
+    },
+  });
+};
+
+export const formatFileSize = (bytes?: number): string => {
+  const value = typeof bytes === "number" && Number.isFinite(bytes) ? bytes : 0;
+  if (value <= 0) return "--";
+  if (value < 1024) return `${value} B`;
+  const kb = value / 1024;
+  if (kb < 1024) return `${kb.toFixed(1).replace(/\.0$/, "")} KB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(1).replace(/\.0$/, "")} MB`;
+};
+
+export const formatModified = (file: AuthFileItem): string => {
+  const raw = (file.modtime ?? file.modified) as unknown;
+  if (!raw) return "--";
+  const asNumber = Number(raw);
+  const date =
+    Number.isFinite(asNumber) && !Number.isNaN(asNumber)
+      ? new Date(asNumber < 1e12 ? asNumber * 1000 : asNumber)
+      : new Date(String(raw));
+  return Number.isNaN(date.getTime()) ? "--" : date.toLocaleString();
+};
+
+const parseDateLikeMs = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value < 1e12 ? value * 1000 : value;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric < 1e12 ? numeric * 1000 : numeric;
+    }
+    const parsed = Date.parse(trimmed);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+};
+
+export type AuthFileRestrictionBadge = {
+  key: string;
+  label: string;
+  model?: string;
+  reason?: string;
+  quotaWindow?: string;
+  quotaWindowMinutes?: number;
+  quotaLimited?: boolean;
+  recoverAtMs?: number;
+  remainingText?: string;
+  tone: "danger" | "warning" | "neutral";
+};
+
+const readRestrictionDateMs = (restriction: AuthFileRestriction): number | null =>
+  parseDateLikeMs(restriction.next_retry_after) ?? parseDateLikeMs(restriction.next_recover_at);
+
+// Grok/xAI weekly 402: user-facing recovery is the weekly period end (quota preview
+// weekly_limit.resetAtMs), not short local probe NextRetryAfter when upstream omits reset.
+const resolveRestrictionRecoverAtMs = (
+  restriction: AuthFileRestriction,
+  nowMs: number,
+  weeklyResetAtMs?: number | null,
+): number | null => {
+  const quotaWindow = normalizeRestrictionQuotaWindow(restriction);
+  const weekly =
+    typeof weeklyResetAtMs === "number" && Number.isFinite(weeklyResetAtMs) && weeklyResetAtMs > nowMs
+      ? weeklyResetAtMs
+      : null;
+  if (quotaWindow === "week" && weekly !== null) {
+    return weekly;
+  }
+  return readRestrictionDateMs(restriction);
+};
+
+export const resolveAuthFileWeeklyQuotaResetAtMs = (
+  items: Array<{ key?: string; label?: string; resetAtMs?: number }> | null | undefined,
+): number | null => {
+  if (!Array.isArray(items) || items.length === 0) return null;
+  const weekly = items.find((item) => {
+    const key = normalizeTagValue(item.key);
+    if (["weekly_limit", "week", "seven_day"].includes(key) || key.includes("weekly")) return true;
+    const label = normalizeQuotaLabel(item.label ?? "");
+    return label.includes("weekly") || label.includes("week") || label.includes("周");
+  });
+  const resetAtMs = weekly?.resetAtMs;
+  return typeof resetAtMs === "number" && Number.isFinite(resetAtMs) ? resetAtMs : null;
+};
+
+const isLegacyAuthRestrictionActive = (file: AuthFileItem): boolean => {
+  if (file.unavailable === true) return true;
+  const status = normalizeTagValue(file.status);
+  if (status === "error") return true;
+  return parseDateLikeMs(file.next_retry_after) !== null;
+};
+
+const getAuthLevelRestrictions = (file: AuthFileItem): AuthFileRestriction[] =>
+  (Array.isArray(file.restrictions) ? file.restrictions : []).filter((r) => {
+    if (normalizeTagValue(r.scope) === "model") return false;
+    return !(isAntigravityFile(file) && Number(r.http_status) === 429 && file.unavailable !== true);
+  });
+
+const readRestrictionHttpStatus = (restriction: AuthFileRestriction): number | null => {
+  const status = Number(restriction.http_status);
+  return Number.isFinite(status) && status > 0 ? Math.round(status) : null;
+};
+
+const normalizeClaudeOAuthHealthToken = (value: unknown): string =>
+  normalizeTagValue(value).replace(/_/g, "-");
+
+export type ClaudeOAuthHealthBadge = {
+  key: "refresh-pending" | "five-hour-limited" | "seven-day-limited";
+  label: "OAuth refresh pending" | "5h limited" | "7d limited";
+  tone: "danger" | "warning";
+  status?: string;
+  reason?: string;
+  resetAtMs?: number;
+  utilization?: number;
+};
+
+const CLAUDE_OAUTH_429_REASONS = new Set([
+  "anthropic-5h-window-exhausted",
+  "anthropic-7d-window-exhausted",
+]);
+
+const CLAUDE_OAUTH_LIMITED_WINDOW_STATUSES = new Set([
+  "blocked",
+  "error",
+  "exceeded",
+  "limited",
+  "rate-limited",
+  "rejected",
+]);
+
+const isClaudeOAuthHealthWindowLimited = (window: ClaudeOAuthHealthWindow | undefined): boolean => {
+  if (!window) return false;
+  const status = normalizeClaudeOAuthHealthToken(window.status);
+  const utilization = readOptionalNumber(window.utilization);
+  return (
+    window.exceeded === true ||
+    window.surpassed_threshold === true ||
+    (utilization !== undefined && utilization >= 1) ||
+    CLAUDE_OAUTH_LIMITED_WINDOW_STATUSES.has(status)
+  );
+};
+
+export const isClaudeOAuthAuthFile = (file: AuthFileItem): boolean => {
+  if (normalizeProviderKey(resolveFileType(file)) !== "claude") return false;
+  const accountType = normalizeClaudeOAuthHealthToken(file.account_type);
+  if (accountType) return accountType === "oauth";
+  const health = sanitizeClaudeOAuthHealthForCache(file.claude_oauth_health);
+  if (!health) return false;
+  return Boolean(
+    health.enabled === true ||
+    health.refresh_available === true ||
+    health.last_runtime_status ||
+    normalizeClaudeOAuthHealthToken(health.status),
+  );
+};
+
+export const resolveClaudeOAuthHealth = (file: AuthFileItem): ClaudeOAuthHealth | null => {
+  if (!isClaudeOAuthAuthFile(file)) return null;
+  return sanitizeClaudeOAuthHealthForCache(file.claude_oauth_health) ?? null;
+};
+
+const hasClaudeOAuthAuthFailure = (health: ClaudeOAuthHealth | null): boolean => {
+  if (!health) return false;
+  const status = normalizeClaudeOAuthHealthToken(health.status);
+  const reason = normalizeClaudeOAuthHealthToken(health.temporary_unschedulable_reason);
+  return (
+    health.last_runtime_status === 401 ||
+    health.last_runtime_status === 403 ||
+    status === "refresh-pending" ||
+    reason === "oauth-401"
+  );
+};
+
+const hasClaudeOAuthRateLimit = (health: ClaudeOAuthHealth | null): boolean => {
+  if (!health) return false;
+  const reason = normalizeClaudeOAuthHealthToken(health.temporary_unschedulable_reason);
+  return (
+    health.last_runtime_status === 429 ||
+    CLAUDE_OAUTH_429_REASONS.has(reason) ||
+    isClaudeOAuthHealthWindowLimited(health.windows?.five_hour) ||
+    isClaudeOAuthHealthWindowLimited(health.windows?.seven_day)
+  );
+};
+
+export const resolveClaudeOAuthHealthBadges = (
+  file: AuthFileItem,
+  nowMs = Date.now(),
+): ClaudeOAuthHealthBadge[] => {
+  const health = resolveClaudeOAuthHealth(file);
+  if (!health) return [];
+
+  const badges: ClaudeOAuthHealthBadge[] = [];
+  const reason = readOptionalString(health.temporary_unschedulable_reason);
+  const temporaryUntilMs = parseDateLikeMs(health.temporary_unschedulable_until);
+  if (
+    hasClaudeOAuthAuthFailure(health) &&
+    (temporaryUntilMs === null || temporaryUntilMs > nowMs)
+  ) {
+    badges.push({
+      key: "refresh-pending",
+      label: "OAuth refresh pending",
+      tone: "warning",
+      ...(health.status ? { status: health.status } : {}),
+      ...(reason ? { reason } : {}),
+      ...(temporaryUntilMs !== null ? { resetAtMs: temporaryUntilMs } : {}),
+    });
+  }
+
+  const appendWindowBadge = (
+    windowKey: "five-hour-limited" | "seven-day-limited",
+    label: "5h limited" | "7d limited",
+    window: ClaudeOAuthHealthWindow | undefined,
+  ) => {
+    if (!isClaudeOAuthHealthWindowLimited(window)) return;
+    const resetAtMs = parseDateLikeMs(window?.reset_at);
+    const utilization = readOptionalNumber(window?.utilization);
+    badges.push({
+      key: windowKey,
+      label,
+      tone: "danger",
+      ...(window?.status ? { status: window.status } : {}),
+      ...(resetAtMs !== null ? { resetAtMs } : {}),
+      ...(utilization !== undefined ? { utilization } : {}),
+    });
+  };
+
+  appendWindowBadge("five-hour-limited", "5h limited", health.windows?.five_hour);
+  appendWindowBadge("seven-day-limited", "7d limited", health.windows?.seven_day);
+
+  return badges;
+};
+
+const hasRestrictionErrorSignal = (restriction: AuthFileRestriction): boolean => {
+  if (readRestrictionHttpStatus(restriction) !== null) return true;
+  if (restriction.unavailable === true || restriction.quota_exceeded === true) return true;
+  if (normalizeTagValue(restriction.status) === "error") return true;
+  return Boolean(
+    String(restriction.reason ?? restriction.code ?? restriction.status_message ?? "").trim(),
+  );
+};
+
+export const resolveAuthFileStatusBuckets = (file: AuthFileItem): Set<AuthFileStatusFilter> => {
+  const buckets = new Set<AuthFileStatusFilter>();
+  // disabled 缺省表示账号仍参与调度，故「启用」取 disabled 的补集；错误桶只描述上游返回，可并存。
+  buckets.add(file.disabled === true ? "disabled" : "enabled");
+  const claudeOAuthHealth = resolveClaudeOAuthHealth(file);
+
+  const restrictions = getAuthLevelRestrictions(file);
+  const statuses = restrictions
+    .map(readRestrictionHttpStatus)
+    .filter((status): status is number => status !== null);
+
+  const has429 = statuses.includes(429) || hasClaudeOAuthRateLimit(claudeOAuthHealth);
+  const hasAuthError =
+    statuses.some((status) => status === 401 || status === 403) ||
+    hasClaudeOAuthAuthFailure(claudeOAuthHealth);
+  const hasServerError = statuses.some((status) => status >= 500);
+  const hasOtherHttpError = statuses.some(
+    (status) => status !== 429 && status !== 401 && status !== 403 && status < 500,
+  );
+
+  if (has429) buckets.add("http-429");
+  if (hasAuthError) buckets.add("http-auth");
+  if (hasServerError) buckets.add("http-5xx");
+
+  const hasErrorSignal =
+    isLegacyAuthRestrictionActive(file) || restrictions.some(hasRestrictionErrorSignal);
+  if (hasErrorSignal && ((!has429 && !hasAuthError && !hasServerError) || hasOtherHttpError)) {
+    buckets.add("other-error");
+  }
+
+  return buckets;
+};
+
+export const authFileMatchesStatusFilter = (
+  file: AuthFileItem,
+  statusFilter: AuthFileStatusFilter,
+): boolean => {
+  if (statusFilter === "all") return true;
+  return resolveAuthFileStatusBuckets(file).has(statusFilter);
+};
+
+export const formatAuthFileRestrictionRemaining = (
+  recoverAtMs: number,
+  nowMs = Date.now(),
+  labels: { day: string; hour: string; minute: string; second: string } = {
+    day: "d",
+    hour: "h",
+    minute: "m",
+    second: "s",
+  },
+): string => {
+  let seconds = Math.max(0, Math.ceil((recoverAtMs - nowMs) / 1000));
+  const days = Math.floor(seconds / 86400);
+  seconds -= days * 86400;
+  const hours = Math.floor(seconds / 3600);
+  seconds -= hours * 3600;
+  const minutes = Math.floor(seconds / 60);
+  seconds -= minutes * 60;
+
+  const parts: string[] = [];
+  if (days) parts.push(`${days}${labels.day}`);
+  if (hours) parts.push(`${hours}${labels.hour}`);
+  if (minutes) parts.push(`${minutes}${labels.minute}`);
+  parts.push(`${seconds || 1}${labels.second}`);
+  return parts.join(" ");
+};
+
+const resolveRestrictionLabel = (restriction: AuthFileRestriction): string => {
+  const status = Number(restriction.http_status);
+  if (Number.isFinite(status) && status > 0) return `${Math.round(status)} Error`;
+  if (restriction.quota_exceeded || restriction.reason === "quota") return "Quota Limited";
+  return "Restricted";
+};
+
+const resolveRestrictionTone = (
+  restriction: AuthFileRestriction,
+): AuthFileRestrictionBadge["tone"] => {
+  const status = Number(restriction.http_status);
+  if (status === 401 || status === 403 || status === 429 || restriction.quota_exceeded) {
+    return "danger";
+  }
+  if (status >= 500 || restriction.retryable) return "warning";
+  return "neutral";
+};
+
+const isQuotaRestriction = (restriction: AuthFileRestriction): boolean => {
+  const status = Number(restriction.http_status);
+  if (status === 429) return true;
+  if (restriction.quota_exceeded || normalizeTagValue(restriction.reason) === "quota") return true;
+  const message = String(restriction.status_message ?? "").toLowerCase();
+  return message.includes("usage_limit") || message.includes("usage limit");
+};
+
+const normalizeRestrictionQuotaWindow = (restriction: AuthFileRestriction): string => {
+  const raw = normalizeTagValue(restriction.quota_window);
+  if (raw === "5h" || raw === "five_hour" || raw === "five-hour" || raw === "primary") {
+    return "5h";
+  }
+  if (raw === "week" || raw === "weekly" || raw === "7d" || raw === "secondary") {
+    return "week";
+  }
+  const minutes = Number(restriction.quota_window_minutes);
+  if (minutes === 300) return "5h";
+  if (minutes === 10080) return "week";
+  return raw;
+};
+
+const resolveRestrictionReason = (restriction: AuthFileRestriction): string => {
+  const rawMessage = String(restriction.status_message || "").trim();
+  if (rawMessage) {
+    try {
+      const parsed = JSON.parse(rawMessage) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const record = parsed as Record<string, unknown>;
+        const error = record.error;
+        if (error && typeof error === "object" && !Array.isArray(error)) {
+          const errorRecord = error as Record<string, unknown>;
+          const message = String(errorRecord.message ?? "").trim();
+          if (message) return message;
+          const type = String(errorRecord.type ?? "").trim();
+          if (type && type !== "usage_limit_reached") return type;
+        }
+        const topMessage = String(record.message ?? "").trim();
+        if (topMessage) return topMessage;
+      }
+    } catch {
+      // Keep raw non-JSON upstream bodies (often the full 429 text).
+      return rawMessage;
+    }
+  }
+  const reason = String(restriction.reason || restriction.code || "").trim();
+  if (reason && reason !== "quota") return reason;
+  const status = Number(restriction.http_status);
+  if (status === 429) {
+    // quota reason alone is not user-facing; surface a clear rate-limit label.
+    return "rate limited (HTTP 429)";
+  }
+  if (reason) return reason;
+  if (Number.isFinite(status) && status > 0) return `HTTP ${Math.round(status)}`;
+  return "";
+};
+
+export const resolveAuthFileRestrictionBadges = (
+  file: AuthFileItem,
+  nowMs = Date.now(),
+  weeklyResetAtMs?: number | null,
+): AuthFileRestrictionBadge[] => {
+  const rawRestrictions = Array.isArray(file.restrictions) ? file.restrictions : [];
+  const displayableRawRestrictions = rawRestrictions.filter((r) => {
+    if (normalizeTagValue(r.scope) === "model") return false;
+    const status = Number(r.http_status);
+    if (status >= 500) return false;
+    return !(isAntigravityFile(file) && status === 429 && file.unavailable !== true);
+  });
+  const restrictions =
+    rawRestrictions.length > 0
+      ? displayableRawRestrictions
+      : isLegacyAuthRestrictionActive(file)
+        ? [
+            {
+              scope: "auth",
+              status: file.status,
+              status_message: file.status_message,
+              unavailable: file.unavailable,
+              next_retry_after: file.next_retry_after,
+            },
+          ]
+        : [];
+
+  return restrictions
+    .map((restriction): AuthFileRestrictionBadge | null => {
+      const recoverAtMs = resolveRestrictionRecoverAtMs(restriction, nowMs, weeklyResetAtMs);
+      if (recoverAtMs !== null && recoverAtMs <= nowMs) return null;
+      const model = typeof restriction.model === "string" ? restriction.model.trim() : "";
+      const reason = resolveRestrictionReason(restriction);
+      const restrictionDateKey =
+        typeof restriction.next_retry_after === "string" ||
+        typeof restriction.next_retry_after === "number"
+          ? String(restriction.next_retry_after)
+          : typeof restriction.next_recover_at === "string" ||
+              typeof restriction.next_recover_at === "number"
+            ? String(restriction.next_recover_at)
+            : "";
+      // Prefer raw restriction timestamps for key stability; weekly_limit only fills gaps.
+      const dateKey =
+        restrictionDateKey || (recoverAtMs !== null ? String(recoverAtMs) : "");
+      const status = Number(restriction.http_status);
+      const statusKey = Number.isFinite(status) && status > 0 ? String(Math.round(status)) : "";
+      const quotaWindow = normalizeRestrictionQuotaWindow(restriction);
+      const quotaWindowMinutes = Number(restriction.quota_window_minutes);
+      const quotaLimited = isQuotaRestriction(restriction);
+      const key = [
+        restriction.scope || "auth",
+        model,
+        statusKey || restriction.reason || restriction.status || "restricted",
+        dateKey,
+      ].join(":");
+      return {
+        key,
+        label: resolveRestrictionLabel(restriction),
+        ...(model ? { model } : {}),
+        ...(reason ? { reason } : {}),
+        ...(quotaWindow ? { quotaWindow } : {}),
+        ...(Number.isFinite(quotaWindowMinutes) && quotaWindowMinutes > 0
+          ? { quotaWindowMinutes }
+          : {}),
+        ...(quotaLimited ? { quotaLimited: true } : {}),
+        ...(recoverAtMs !== null
+          ? {
+              recoverAtMs,
+              remainingText: formatAuthFileRestrictionRemaining(recoverAtMs, nowMs),
+            }
+          : {}),
+        tone: resolveRestrictionTone(restriction),
+      };
+    })
+    .filter((badge): badge is AuthFileRestrictionBadge => Boolean(badge));
+};
+
+export type AuthFileSubscriptionStatus = {
+  startedAtMs: number;
+  startedAtText: string;
+  expiresAtMs: number;
+  expiresAtText: string;
+  remainingDays: number;
+  expired: boolean;
+  period: AuthFileSubscriptionPeriod;
+  tone: "active" | "warning" | "urgent" | "expired";
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export const normalizeAuthFileSubscriptionPeriod = (value: unknown): AuthFileSubscriptionPeriod => {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "year" || normalized === "yearly" || normalized === "annual") {
+    return "yearly";
+  }
+  return "monthly";
+};
+
+// Tenant manual override first (auth-file metadata); shared provider claims are fallback.
+// JWT chatgpt_subscription_* can lag after renewals, so manual must win when set.
+const hasTenantSubscriptionOverride = (file: AuthFileItem): boolean =>
+  parseDateLikeMs(file.subscription_started_at_ms ?? file.subscriptionStartedAtMs) !== null ||
+  parseDateLikeMs(
+    file.subscription_started_at ??
+      file.subscriptionStartedAt ??
+      file.subscription_start_at ??
+      file.subscriptionStartAt,
+  ) !== null;
+
+const resolveSubscriptionStartMs = (file: AuthFileItem): number | null =>
+  parseDateLikeMs(file.subscription_started_at_ms ?? file.subscriptionStartedAtMs) ??
+  parseDateLikeMs(
+    file.subscription_started_at ??
+      file.subscriptionStartedAt ??
+      file.subscription_start_at ??
+      file.subscriptionStartAt,
+  ) ??
+  parseDateLikeMs(file.shared_subscription_started_at);
+
+const addCalendarMonths = (startMs: number, months: number): number | null => {
+  const date = new Date(startMs);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const day = date.getDate();
+  const result = new Date(startMs);
+  result.setDate(1);
+  result.setMonth(result.getMonth() + months);
+  const lastDayOfTargetMonth = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate();
+  result.setDate(Math.min(day, lastDayOfTargetMonth));
+
+  return Number.isNaN(result.getTime()) ? null : result.getTime();
+};
+
+export const resolveAuthFileSubscriptionStatus = (
+  file: AuthFileItem,
+  nowMs = Date.now(),
+): AuthFileSubscriptionStatus | null => {
+  const startedAtMs = resolveSubscriptionStartMs(file);
+  if (startedAtMs === null) {
+    // Shared expires alone still enough when no start is known.
+    const sharedOnly = parseDateLikeMs(file.shared_subscription_expires_at);
+    if (sharedOnly === null) return null;
+    const period = normalizeAuthFileSubscriptionPeriod(
+      file.subscription_period ?? file.subscriptionPeriod,
+    );
+    const diffMs = sharedOnly - nowMs;
+    const remainingDays =
+      diffMs === 0
+        ? 0
+        : diffMs > 0
+          ? Math.ceil(diffMs / DAY_MS)
+          : -Math.ceil(Math.abs(diffMs) / DAY_MS);
+    const expired = remainingDays <= 0;
+    const tone = expired ? "expired" : remainingDays <= 5 ? "urgent" : "active";
+    return {
+      startedAtMs: sharedOnly,
+      startedAtText: new Date(sharedOnly).toLocaleString(),
+      expiresAtMs: sharedOnly,
+      expiresAtText: new Date(sharedOnly).toLocaleString(),
+      remainingDays,
+      expired,
+      period,
+      tone,
+    };
+  }
+
+  const period = normalizeAuthFileSubscriptionPeriod(
+    file.subscription_period ?? file.subscriptionPeriod,
+  );
+  const sharedExpiresAtMs = parseDateLikeMs(file.shared_subscription_expires_at);
+  const expiresAtMs =
+    !hasTenantSubscriptionOverride(file) && sharedExpiresAtMs !== null
+      ? sharedExpiresAtMs
+      : addCalendarMonths(startedAtMs, period === "yearly" ? 12 : 1);
+  if (expiresAtMs === null) return null;
+  const effectiveStartedAtMs = startedAtMs;
+
+  const diffMs = expiresAtMs - nowMs;
+  const remainingDays =
+    diffMs === 0
+      ? 0
+      : diffMs > 0
+        ? Math.ceil(diffMs / DAY_MS)
+        : -Math.ceil(Math.abs(diffMs) / DAY_MS);
+  const expired = remainingDays <= 0;
+  const tone = expired ? "expired" : remainingDays <= 5 ? "urgent" : "active";
+
+  return {
+    startedAtMs: effectiveStartedAtMs,
+    startedAtText: new Date(effectiveStartedAtMs).toLocaleString(),
+    expiresAtMs,
+    expiresAtText: new Date(expiresAtMs).toLocaleString(),
+    remainingDays,
+    expired,
+    period,
+    tone,
+  };
+};
+
+const padDatePart = (value: number): string => String(value).padStart(2, "0");
+
+export const dateLikeToDateTimeLocalInput = (value: unknown): string => {
+  const ms = parseDateLikeMs(value);
+  if (ms === null) return "";
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return "";
+  return [
+    date.getFullYear(),
+    "-",
+    padDatePart(date.getMonth() + 1),
+    "-",
+    padDatePart(date.getDate()),
+    "T",
+    padDatePart(date.getHours()),
+    ":",
+    padDatePart(date.getMinutes()),
+  ].join("");
+};
+
+export const dateTimeLocalInputToIso = (value: string): string | null => {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const date = new Date(trimmed);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+};
+
+export const normalizeProviderKey = (value: string): string => value.trim().toLowerCase();
+
+export const normalizeTagValue = (value: unknown): string => {
+  if (typeof value !== "string") return "";
+  return value.trim().replace(/\s+/g, "-").toLowerCase();
+};
+
+export const normalizeTagList = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  value.forEach((entry) => {
+    const normalized = normalizeTagValue(entry);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    tags.push(normalized);
+  });
+  return tags;
+};
+
+export const buildAuthFileDisplayTags = (
+  defaultTags: string[],
+  customTags: string[],
+  hiddenDefaultTags: string[],
+): string[] => {
+  const hiddenSet = new Set(normalizeTagList(hiddenDefaultTags));
+  return normalizeTagList([
+    ...normalizeTagList(defaultTags).filter((tag) => !hiddenSet.has(tag)),
+    ...normalizeTagList(customTags),
+  ]);
+};
+
+export const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+export const matchesModelPattern = (modelId: string, pattern: string): boolean => {
+  const rawModel = String(modelId ?? "").trim();
+  const rawPattern = String(pattern ?? "").trim();
+  if (!rawModel || !rawPattern) return false;
+
+  if (!rawPattern.includes("*")) {
+    return rawModel.toLowerCase() === rawPattern.toLowerCase();
+  }
+
+  const escaped = escapeRegExp(rawPattern).replace(/\\\*/g, ".*");
+  try {
+    const regex = new RegExp(`^${escaped}$`, "i");
+    return regex.test(rawModel);
+  } catch {
+    return false;
+  }
+};
+
+/** Codex-only: weekly budget (USD) thresholds for Pro multiplier badges. */
+export const CODEX_PRO_20X_WEEKLY_BUDGET_USD = 1000;
+export const CODEX_PRO_5X_WEEKLY_BUDGET_USD = 200;
+export const XAI_SUPERGROK_HEAVY_WEEKLY_BUDGET_USD = 400;
+
+export type AuthFileCycleBudgetStats = {
+  cycleCostTotal?: number | null;
+  weeklyQuotaUsedPercent?: number | null;
+};
+
+/** cost / (used%/100) → estimated full-window budget; null when underdetermined. */
+export const estimateQuotaBudgetUsd = (
+  cost: number | null | undefined,
+  usedPercent: number | null | undefined,
+): number | null => {
+  if (typeof cost !== "number" || !Number.isFinite(cost) || cost <= 0) return null;
+  if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) return null;
+  const normalizedUsed = Math.min(100, Math.max(0, usedPercent));
+  if (normalizedUsed <= 0) return null;
+  return cost / (normalizedUsed / 100);
+};
+
+/**
+ * Codex Pro only: map estimated weekly USD budget → pro_20x / pro_5x / pro.
+ * Non-pro base plans pass through unchanged; missing budget falls back to plain pro,
+ * or keeps a previously resolved pro_Nx tier so partial refresh does not flash PRO.
+ */
+export const resolveCodexProMultiplierTier = (
+  basePlan: string | null | undefined,
+  estimatedWeeklyBudgetUsd: number | null | undefined,
+  previousTier?: string | null,
+): string | null => {
+  const base = normalizeTagValue(basePlan);
+  if (!base) return null;
+  if (base === "pro_20x" || base === "pro-20x") return "pro_20x";
+  if (base === "pro_5x" || base === "pro-5x") return "pro_5x";
+  if (base !== "pro" && base !== "chatgptpro") return base;
+  if (
+    typeof estimatedWeeklyBudgetUsd !== "number" ||
+    !Number.isFinite(estimatedWeeklyBudgetUsd) ||
+    estimatedWeeklyBudgetUsd <= 0
+  ) {
+    const previous = normalizeTagValue(previousTier);
+    if (previous === "pro_20x" || previous === "pro-20x") return "pro_20x";
+    if (previous === "pro_5x" || previous === "pro-5x") return "pro_5x";
+    return "pro";
+  }
+  if (estimatedWeeklyBudgetUsd >= CODEX_PRO_20X_WEEKLY_BUDGET_USD) return "pro_20x";
+  if (estimatedWeeklyBudgetUsd >= CODEX_PRO_5X_WEEKLY_BUDGET_USD) return "pro_5x";
+  return "pro";
+};
+
+export const resolveAuthFileDisplayPlanType = (
+  file: AuthFileItem,
+  quotaState?: QuotaState | null,
+  cycleStats?: AuthFileCycleBudgetStats | null,
+  previousDisplayPlan?: string | null,
+): string | null => {
+  const base = resolveAuthFilePlanType(file, quotaState);
+  if (!base) return null;
+  const provider = normalizeProviderKey(resolveFileType(file));
+  if (provider === "codex") {
+    const budget = estimateQuotaBudgetUsd(
+      cycleStats?.cycleCostTotal,
+      cycleStats?.weeklyQuotaUsedPercent,
+    );
+    return resolveCodexProMultiplierTier(base, budget, previousDisplayPlan);
+  }
+  if (provider === "xai" || provider === "grok") {
+    const norm = normalizeTagValue(base);
+    if (norm === "supergrok-heavy" || norm === "supergrok_heavy" || norm === "supergrokheavy") return "supergrok-heavy";
+    const budget = estimateQuotaBudgetUsd(cycleStats?.cycleCostTotal, cycleStats?.weeklyQuotaUsedPercent);
+    if (typeof budget === "number" && Number.isFinite(budget) && budget > 0) {
+      return budget > XAI_SUPERGROK_HEAVY_WEEKLY_BUDGET_USD ? "supergrok-heavy" : base;
+    }
+    const prev = normalizeTagValue(previousDisplayPlan);
+    if (prev === "supergrok-heavy" || prev === "supergrok_heavy" || prev === "supergrokheavy") return "supergrok-heavy";
+    return base;
+  }
+  return base;
+};
+
+/**
+ * 会员等级，五档，由低到高。徽章按档位决定「有多隆重」，颜色由厂商品牌色决定：
+ * - free：免费（描边）；
+ * - entry：入门付费（Plus 这类，品牌色淡底）；
+ * - pro：专业 / 团队（Pro、Max、Team、SuperGrok……，品牌实色）；
+ * - max：高阶倍数（Pro 5x、Max 5x，品牌渐变）；
+ * - ultra：旗舰（Pro 20x、Max 20x、SuperGrok Heavy、Ultra、Enterprise，双色渐变 + 皇冠）。
+ * 认不出的付费名称按入门档处理：宁可低调，也不把未知套餐渲染成旗舰。
+ */
+export type PlanTier = "free" | "entry" | "pro" | "max" | "ultra";
+
+const PLAN_TIER_BY_KEY: Record<string, PlanTier> = {
+  free: "free",
+  plus: "entry",
+  standard: "entry",
+  basic: "entry",
+  lite: "entry",
+  starter: "entry",
+  go: "entry",
+  pro: "pro",
+  chatgptpro: "pro",
+  max: "pro",
+  team: "pro",
+  business: "pro",
+  premium: "pro",
+  supergrok: "pro",
+  pro_5x: "max",
+  "pro-5x": "max",
+  max_5x: "max",
+  "max-5x": "max",
+  pro_20x: "ultra",
+  "pro-20x": "ultra",
+  max_20x: "ultra",
+  "max-20x": "ultra",
+  "supergrok-heavy": "ultra",
+  supergrok_heavy: "ultra",
+  supergrokheavy: "ultra",
+  ultra: "ultra",
+  enterprise: "ultra",
+};
+
+export const planTierOf = (planType: string | null | undefined): PlanTier => {
+  const normalized = normalizeTagValue(planType);
+  if (!normalized || normalized === "unknown") return "free";
+  return PLAN_TIER_BY_KEY[normalized] ?? "entry";
+};
+
+/** Short membership chip copy (PRO / PLUS / PRO 20X), distinct from soft info tags. */
+export const formatPlanBadgeLabel = (planType: string | null | undefined): string => {
+  const normalized = normalizeTagValue(planType);
+  if (!normalized) return "";
+  if (
+    normalized === "supergrok-heavy" ||
+    normalized === "supergrok_heavy" ||
+    normalized === "supergrokheavy"
+  ) {
+    return "SUPERGROK HEAVY";
+  }
+  if (normalized === "supergrok") return "SUPERGROK";
+  if (normalized === "free") return "FREE";
+  if (normalized === "plus") return "PLUS";
+  if (normalized === "pro_20x" || normalized === "pro-20x") return "PRO 20X";
+  if (normalized === "pro_5x" || normalized === "pro-5x") return "PRO 5X";
+  if (normalized === "pro" || normalized === "chatgptpro") return "PRO";
+  if (normalized === "max_20x" || normalized === "max-20x") return "MAX 20X";
+  if (normalized === "max_5x" || normalized === "max-5x") return "MAX 5X";
+  if (normalized === "max") return "MAX";
+  if (normalized === "team") return "TEAM";
+  if (normalized === "premium") return "PREMIUM";
+  if (normalized === "business") return "BUSINESS";
+  if (normalized === "enterprise") return "ENTERPRISE";
+  return normalized.replace(/[-_]+/g, " ").toUpperCase();
+};
+
+/**
+ * resolveFileType 认得的供应商类型（以前借用灰色供应商标签类表的键，标签改成品牌色后单独列出）。
+ * 长的先匹配，"gemini-cli-xxx" 不会被 "gemini" 截走。
+ */
+// prettier-ignore
+const KNOWN_AUTH_FILE_PROVIDER_KEYS = [
+  "qwen", "kimi", "gemini", "gemini-cli", "aistudio", "claude", "codex", "antigravity", "iflow", "vertex",
+].sort((left, right) => right.length - left.length);
+
+const trimAuthFileExtension = (name: string): string =>
+  String(name ?? "")
+    .trim()
+    .replace(/\.[^.]+$/u, "");
+
+const matchKnownAuthFileProviderKey = (value: string): string => {
+  const normalized = normalizeProviderKey(value);
+  if (!normalized) return "";
+  return (
+    KNOWN_AUTH_FILE_PROVIDER_KEYS.find(
+      (providerKey) => normalized === providerKey || normalized.startsWith(`${providerKey}-`),
+    ) ?? ""
+  );
+};
+
+export const resolveFileType = (file: AuthFileItem): string => {
+  const type = typeof file.type === "string" ? file.type : "";
+  const provider = typeof file.provider === "string" ? file.provider : "";
+  const directMatch =
+    matchKnownAuthFileProviderKey(type) || matchKnownAuthFileProviderKey(provider);
+  if (directMatch) return directMatch;
+
+  const explicitCandidate = normalizeProviderKey(type || provider);
+  if (explicitCandidate) return explicitCandidate;
+
+  const fromName = trimAuthFileExtension(String(file.name || ""));
+  const nameMatch = matchKnownAuthFileProviderKey(fromName);
+  if (nameMatch) return nameMatch;
+
+  return normalizeProviderKey(fromName) || "unknown";
+};
+
+export const resolveProviderLabel = (providerKey: string): string => {
+  const normalized = normalizeProviderKey(providerKey);
+  if (!normalized || normalized === "all") return "All";
+  return normalized.replace(
+    /(^|-)([a-z])/g,
+    (_, sep: string, ch: string) => `${sep}${ch.toUpperCase()}`,
+  );
+};
+
+export const formatTrendDateKey = (date: Date): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+};
+
+export const buildLast7DayAxis = () => {
+  const result: { date: string; label: string }[] = [];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  for (let i = 6; i >= 0; i -= 1) {
+    const date = new Date(today);
+    date.setDate(today.getDate() - i);
+    const key = formatTrendDateKey(date);
+    result.push({ date: key, label: key.slice(5) });
+  }
+  return result;
+};
+
+const codexFilenamePlanSuffixes = new Set([
+  "plus",
+  "pro",
+  "free",
+  "team",
+  "premium",
+  "business",
+  "enterprise",
+]);
+
+const readCodexFilenameChannelName = (fileName: string): string => {
+  const normalized = String(fileName ?? "")
+    .trim()
+    .toLowerCase();
+  const base = trimAuthFileExtension(normalized);
+  if (!base.startsWith("codex-")) return "";
+  const rest = base.slice("codex-".length);
+  if (!rest) return "";
+  const parts = rest.split("-").filter(Boolean);
+  if (parts.length === 0) return "";
+
+  const emailIndex = parts.findIndex((part) => part.includes("@"));
+  if (emailIndex >= 0) {
+    return parts[emailIndex] ?? "";
+  }
+
+  const lastPart = parts.at(-1) ?? "";
+  if (codexFilenamePlanSuffixes.has(lastPart) && parts.length > 1) {
+    return parts.slice(0, -1).join("-");
+  }
+
+  return "";
+};
+
+const readCodexFilenamePlanType = (fileName: string): string | null => {
+  const normalized = String(fileName ?? "")
+    .trim()
+    .toLowerCase();
+  const base = trimAuthFileExtension(normalized);
+  if (!base.startsWith("codex-")) return null;
+  const rest = base.slice("codex-".length);
+  if (!rest) return null;
+  const parts = rest.split("-").filter(Boolean);
+  const lastPart = parts.at(-1) ?? "";
+  return codexFilenamePlanSuffixes.has(lastPart) ? lastPart : null;
+};
+
+export const readAuthFileChannelName = (file: AuthFileItem): string => {
+  const candidates = [file.label, file.email];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  if (normalizeProviderKey(resolveFileType(file)) === "codex") {
+    const fromName = readCodexFilenameChannelName(String(file.name || ""));
+    if (fromName) return fromName;
+  }
+  return "";
+};
+
+export const isOauthAuthFile = (file: AuthFileItem): boolean =>
+  String(file.account_type || "")
+    .trim()
+    .toLowerCase() === "oauth";
+
+export const canRenameAuthFileChannel = (file: AuthFileItem): boolean =>
+  isOauthAuthFile(file) ||
+  normalizeProviderKey(resolveFileType(file)) === "kimi" ||
+  normalizeProviderKey(resolveFileType(file)) === "codex";
+
+export const resolveAuthFileDisplayName = (file: AuthFileItem): string => {
+  const channelName = readAuthFileChannelName(file);
+  if (canRenameAuthFileChannel(file) && channelName) return channelName;
+  return String(file.name || "");
+};
+
+export const resolveAuthFileSortKey = (file: AuthFileItem): string => {
+  const channelName = readAuthFileChannelName(file);
+  const fileName = String(file.name || "").trim();
+  return `${channelName || fileName}\u0000${fileName}`;
+};
+
+export const authFilesSortCollator = new Intl.Collator("zh-Hans-CN", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+export const readAuthFileDefaultTags = (file: AuthFileItem): string[] =>
+  normalizeTagList(file.default_tags);
+
+export const readAuthFileCustomTags = (file: AuthFileItem): string[] =>
+  normalizeTagList(file.custom_tags);
+
+export const readAuthFileHiddenDefaultTags = (file: AuthFileItem): string[] =>
+  normalizeTagList(file.hidden_default_tags);
+
+export const readAuthFileTagCandidates = (file: AuthFileItem): string[] =>
+  normalizeTagList([
+    ...readAuthFileDefaultTags(file),
+    ...readAuthFileCustomTags(file),
+    ...resolveAuthFileDisplayTags(file),
+  ]);
+
+export const resolveAuthFileDisplayTags = (file: AuthFileItem): string[] => {
+  if (Array.isArray(file.display_tags)) {
+    const displayTags = normalizeTagList(file.display_tags);
+    const candidates = normalizeTagList([
+      ...readAuthFileDefaultTags(file),
+      ...readAuthFileCustomTags(file),
+    ]);
+    if (candidates.length === 0) return displayTags;
+    const candidateSet = new Set(candidates);
+    return displayTags.filter((tag) => candidateSet.has(normalizeTagValue(tag)));
+  }
+  return buildAuthFileDisplayTags(
+    readAuthFileDefaultTags(file),
+    readAuthFileCustomTags(file),
+    readAuthFileHiddenDefaultTags(file),
+  );
+};
+
+export const shouldShowAuthFileDisplayTag = (file: AuthFileItem, tag: unknown): boolean => {
+  const normalizedTag = normalizeTagValue(tag);
+  if (!normalizedTag) return false;
+
+  if (Array.isArray(file.display_tags)) {
+    return resolveAuthFileDisplayTags(file).includes(normalizedTag);
+  }
+
+  return !readAuthFileHiddenDefaultTags(file).includes(normalizedTag);
+};
+
+export const resolveAuthFilePlanType = (
+  file: AuthFileItem,
+  quotaState?: QuotaState | null,
+): string | null =>
+  resolveCodexPlanType(file) ??
+  readCodexFilenamePlanType(String(file.name || "")) ??
+  normalizePlanType(quotaState?.planType);
+
+/**
+ * Plan badges may come from auth-file tags (Codex plus/pro) or quota state (xAI SuperGrok).
+ * Only enforce display_tags visibility when the plan is part of the file's default tags;
+ * quota-derived plans are always shown when resolved.
+ */
+export const shouldShowAuthFilePlanBadge = (
+  file: AuthFileItem,
+  planType: string | null | undefined,
+): boolean => {
+  const normalized = normalizeTagValue(planType);
+  if (!normalized) return false;
+  const defaultTags = readAuthFileDefaultTags(file);
+  if (defaultTags.includes(normalized)) {
+    return shouldShowAuthFileDisplayTag(file, normalized);
+  }
+  return true;
+};
+
+export const resolveAuthFileSupplementalTags = (
+  file: AuthFileItem,
+  quotaState?: QuotaState | null,
+): string[] => {
+  const hiddenByPrimaryBadges = new Set<string>();
+  const typeTag = normalizeTagValue(resolveFileType(file));
+  if (typeTag) hiddenByPrimaryBadges.add(typeTag);
+  const planTag = normalizeTagValue(resolveAuthFilePlanType(file, quotaState) ?? "");
+  if (planTag) hiddenByPrimaryBadges.add(planTag);
+  return resolveAuthFileDisplayTags(file).filter(
+    (tag) => !hiddenByPrimaryBadges.has(normalizeTagValue(tag)),
+  );
+};
+
+export const isRuntimeOnlyAuthFile = (file: AuthFileItem): boolean => {
+  const raw = (file.runtime_only ?? file.runtimeOnly) as unknown;
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "string") return raw.trim().toLowerCase() === "true";
+  return false;
+};
+
+export const normalizeAuthIndexValue = (value: unknown): string | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value.toString();
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  return null;
+};
+
+export const downloadTextAsFile = (content: string, filename: string) => {
+  const blob = new Blob([content], { type: "application/json;charset=utf-8" });
+  downloadBlobAsFile(blob, filename);
+};
+
+export const downloadBlobAsFile = (blob: Blob, filename: string) => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 800);
+};
+
+export const normalizeQuotaLabel = (label: string): string =>
+  String(label ?? "")
+    .trim()
+    .toLowerCase();
+
+export const parseAdditionalQuotaWindowLabel = (
+  label: string,
+): { name: string; window: "5h" | "weekly" } | null => {
+  const match = String(label ?? "").match(/^(.+?)\s*[:：]\s*(5h|weekly)$/i);
+  if (!match) return null;
+  const name = match[1]?.trim();
+  if (!name) return null;
+  return {
+    name,
+    window: match[2]?.toLowerCase() === "5h" ? "5h" : "weekly",
+  };
+};
+
+export const pickQuotaPreviewItem = (
+  items: QuotaItem[],
+  mode: QuotaPreviewMode,
+): QuotaItem | null => {
+  if (!Array.isArray(items) || items.length === 0) return null;
+
+  const patterns =
+    mode === "week"
+      ? ["weekly", "week", "周", "7天", "seven_day", "seven day"]
+      : ["_5h", "5h", "5小时", "five_hour", "five hour"];
+
+  const match = items.find((item) => {
+    const key = normalizeQuotaLabel(item.label);
+    return patterns.some((p) => key.includes(normalizeQuotaLabel(p)));
+  });
+
+  return match ?? items[0] ?? null;
+};
+
+export const normalizeQuotaAutoRefreshMs = (value: unknown): QuotaAutoRefreshMs => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  // Default Off: never auto-fan-out on first visit.
+  if (!Number.isFinite(parsed)) return 0;
+  const rounded = Math.max(0, Math.round(parsed));
+  if (rounded === 0) return 0;
+  // Legacy 5s/10s/30s (and any sub-minute) → 60s so old localStorage cannot resume storms.
+  if (rounded > 0 && rounded < 60_000) return 60_000;
+  if (rounded === 60_000) return 60_000;
+  if (rounded === 300_000) return 300_000;
+  // Anything else ≥ 60s clamps to nearest allowed bucket (prefer 60s over inventing intervals).
+  if (rounded > 60_000 && rounded < 300_000) return 60_000;
+  if (rounded >= 300_000) return 300_000;
+  return 0;
+};
+
+export const normalizeAuthFilesCardColumns = (value: unknown): AuthFilesCardColumns => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_AUTH_FILES_CARD_COLUMNS;
+  const rounded = Math.round(parsed);
+  return (AUTH_FILES_CARD_COLUMN_OPTIONS as readonly number[]).includes(rounded)
+    ? (rounded as AuthFilesCardColumns)
+    : DEFAULT_AUTH_FILES_CARD_COLUMNS;
+};
+
+export const normalizeAuthFilesPageSize = (value: unknown): number => {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value)
+        : Number.NaN;
+  if (!Number.isFinite(parsed)) return AUTH_FILES_PAGE_SIZE;
+  const rounded = Math.round(parsed);
+  return Math.min(
+    AUTH_FILES_PAGE_SIZE_OPTIONS[AUTH_FILES_PAGE_SIZE_OPTIONS.length - 1],
+    Math.max(AUTH_FILES_PAGE_SIZE_OPTIONS[0], rounded),
+  );
+};
+
+export const alignAuthFilesPageSizeToColumns = (
+  pageSize: unknown,
+  columns: unknown,
+): number => {
+  const normalizedColumns = normalizeAuthFilesCardColumns(columns);
+  const normalizedPageSize = normalizeAuthFilesPageSize(pageSize);
+  return normalizedColumns * Math.max(1, Math.round(normalizedPageSize / normalizedColumns));
+};
+
+/** Read + migrate auto-refresh localStorage immediately (write-back allowed buckets only). */
+export const readAndMigrateQuotaAutoRefreshMs = (
+  storageKey: string = AUTH_FILES_QUOTA_AUTO_REFRESH_KEY,
+): QuotaAutoRefreshMs => {
+  if (typeof window === "undefined") return 0;
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (raw == null) {
+      window.localStorage.setItem(storageKey, JSON.stringify(0));
+      return 0;
+    }
+    let parsed: unknown = raw;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      // keep raw string
+    }
+    const normalized = normalizeQuotaAutoRefreshMs(parsed);
+    const rawNumber =
+      typeof parsed === "number"
+        ? parsed
+        : typeof parsed === "string"
+          ? Number(parsed)
+          : Number.NaN;
+    if (!Number.isFinite(rawNumber) || rawNumber !== normalized) {
+      window.localStorage.setItem(storageKey, JSON.stringify(normalized));
+    }
+    return normalized;
+  } catch {
+    return 0;
+  }
+};
+
+export type UsageIndex = {
+  statsBySource: Record<string, KeyStatBucket>;
+  statsByAuthIndex: Record<string, KeyStatBucket>;
+};
+
+export const buildUsageIndex = (usage: EntityStatsResponse | null): { index: UsageIndex } => {
+  const statsBySource: Record<string, KeyStatBucket> = {};
+  const statsByAuthIndex: Record<string, KeyStatBucket> = {};
+
+  if (usage?.source) {
+    usage.source.forEach((pt) => {
+      const src = normalizeUsageSourceId(pt.entity_name, (v) => v);
+      if (src) {
+        statsBySource[src] = { success: pt.requests - pt.failed, failure: pt.failed };
+      }
+    });
+  }
+
+  if (usage?.auth_index) {
+    usage.auth_index.forEach((pt) => {
+      const idx = normalizeAuthIndexValue(pt.entity_name);
+      if (idx) {
+        statsByAuthIndex[idx] = { success: pt.requests - pt.failed, failure: pt.failed };
+      }
+    });
+  }
+
+  return { index: { statsBySource, statsByAuthIndex } };
+};
+
+export const buildAuthFileSourceCandidates = (file: AuthFileItem): string[] => {
+  const rawName = String(file.name || "").trim();
+  if (!rawName) return [];
+  const withoutExt = rawName.replace(/\.[^/.]+$/, "");
+  const list = [
+    normalizeUsageSourceId(rawName, (v) => v),
+    normalizeUsageSourceId(withoutExt, (v) => v),
+  ].filter(Boolean) as string[];
+  return Array.from(new Set(list));
+};
+
+export const resolveAuthFileStats = (file: AuthFileItem, index: UsageIndex): KeyStatBucket => {
+  const authIndexKey = normalizeAuthIndexValue(
+    file.auth_index ?? file.authIndex ?? file.authIndex ?? file.auth_index,
+  );
+  if (authIndexKey && index.statsByAuthIndex[authIndexKey]) {
+    return index.statsByAuthIndex[authIndexKey];
+  }
+
+  const candidates = buildAuthFileSourceCandidates(file);
+  let bucket: KeyStatBucket = { success: 0, failure: 0 };
+  candidates.forEach((key) => {
+    const entry = index.statsBySource[key];
+    if (!entry) return;
+    bucket = { success: bucket.success + entry.success, failure: bucket.failure + entry.failure };
+  });
+  return bucket;
+};
+
+export const resolveAuthFileStatusBar = (file: AuthFileItem, index: UsageIndex): StatusBarData => {
+  const stats = resolveAuthFileStats(file, index);
+  if (stats.success === 0 && stats.failure === 0) {
+    return { blocks: [], blockDetails: [], successRate: 100, totalSuccess: 0, totalFailure: 0 };
+  }
+
+  const total = stats.success + stats.failure;
+  const blockCount = 20;
+  const blocks: StatusBlockState[] = [];
+  const blockDetails: StatusBlockDetail[] = [];
+
+  let tempFail = stats.failure;
+  let tempSuccess = stats.success;
+
+  for (let i = 0; i < blockCount; i++) {
+    const failPart = Math.floor(tempFail / (blockCount - i));
+    const successPart = Math.floor(tempSuccess / (blockCount - i));
+    tempFail -= failPart;
+    tempSuccess -= successPart;
+
+    if (failPart === 0 && successPart === 0) {
+      blocks.push("idle");
+    } else if (failPart === 0) {
+      blocks.push("success");
+    } else if (successPart === 0) {
+      blocks.push("failure");
+    } else {
+      blocks.push("mixed");
+    }
+
+    blockDetails.push({
+      success: successPart,
+      failure: failPart,
+      rate: successPart + failPart > 0 ? successPart / (successPart + failPart) : -1,
+      startTime: 0,
+      endTime: 0,
+    });
+  }
+
+  return {
+    blocks,
+    blockDetails,
+    successRate: (stats.success / total) * 100,
+    totalSuccess: stats.success,
+    totalFailure: stats.failure,
+  };
+};
+
+export type PrefixProxyEditorState = {
+  open: boolean;
+  fileName: string;
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
+  json: Record<string, unknown> | null;
+  prefix: string;
+  proxyUrl: string;
+  proxyId: string;
+  subscriptionStartedAt: string;
+  subscriptionPeriod: AuthFileSubscriptionPeriod;
+  concurrencyLimit: string;
+  codexConvergenceMode: string;
+  codexServiceTier: string;
+};
+
+export type AuthFilesGroupOverview = {
+  totalCalls: number;
+  averageFiveHour: number | null;
+  averageWeekly: number | null;
+  quotaSampleCount: number;
+};
+
+export type AuthFilesGroupOverviewRow = {
+  name: string;
+  totalCalls: number;
+  averageFiveHour: number | null;
+  averageWeekly: number | null;
+  hasQuota: boolean;
+};
+
+export type AuthFilesGroupTrendPoint = {
+  date: string;
+  label: string;
+  calls: number;
+  weeklyPercent: number | null;
+};
+
+export type ChannelEditorState = {
+  open: boolean;
+  fileName: string;
+  label: string;
+  saving: boolean;
+  error: string | null;
+};
+
+export type CodexOAuthAdmissionAllowedClient = {
+  id: string;
+  label: string;
+  description?: string;
+};
+
+export type CodexOAuthAdmissionEditorState = {
+  fileName: string;
+  supported: boolean;
+  enabled: boolean;
+  allowedClients: string[];
+  availableAllowedClients: CodexOAuthAdmissionAllowedClient[];
+  saving: boolean;
+  error: string | null;
+};
+
+/** xAI OAuth endpoint mode: false = Grok Build/CLI, true = official API. */
+export type XAIEndpointEditorState = {
+  fileName: string;
+  supported: boolean;
+  usingApi: boolean;
+  saving: boolean;
+  error: string | null;
+};
+
+export type AliasRow = OAuthModelAliasEntry & { id: string };
+
+export const buildAliasRows = (entries: OAuthModelAliasEntry[] | undefined): AliasRow[] => {
+  if (!entries?.length) {
+    return [{ id: `row-${Date.now()}`, name: "", alias: "" }];
+  }
+  return entries.map((entry) => ({
+    id: `row-${entry.name}-${entry.alias}-${entry.fork ? "1" : "0"}`,
+    ...entry,
+  }));
+};

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigationType, useSearchParams } from "react-router-dom";
 import { ConfirmModal } from "@/modules/ui/ConfirmModal";
+import { Modal } from "@/modules/ui/Modal";
+import { Button } from "@/modules/ui/Button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/modules/ui/Tabs";
 import type { AuthFileItem } from "@/lib/http/types";
 import {
@@ -244,6 +246,12 @@ export function AuthFilesPage() {
 
   const {
     uploading,
+    exportFile,
+    setExportFile,
+    ignoreExportProxy,
+    setIgnoreExportProxy,
+    exporting,
+    confirmExport,
     deletingAll,
     statusUpdating,
     codexFastModeUpdating,
@@ -499,7 +507,11 @@ export function AuthFilesPage() {
     (file: Parameters<typeof openDetail>[0]) => {
       const openPromise = openDetail(file);
       const provider = resolveQuotaProvider(file);
-      if ((provider === "codex" || provider === "kimi") && !file.disabled && file.status !== "disabled") {
+      if (
+        (provider === "codex" || provider === "kimi") &&
+        !file.disabled &&
+        file.status !== "disabled"
+      ) {
         void refreshQuota(file, provider)
           .catch(() => undefined)
           .finally(() => void refreshDetailTrend(file, { silent: true }));
@@ -823,6 +835,7 @@ export function AuthFilesPage() {
       </Tabs>
 
       <AuthFileDetailModal
+        onExport={downloadAuthFile}
         open={detailOpen}
         detailFile={detailFile}
         detailLoading={detailLoading}
@@ -916,6 +929,30 @@ export function AuthFilesPage() {
         formatAveragePercent={formatAveragePercent}
         groupOverviewChartOption={groupOverviewChartOption}
       />
+
+      <Modal
+        open={exportFile !== null}
+        title={t("auth_files.download")}
+        description={t("auth_files.download_sensitive_confirm")}
+        onClose={() => {
+          if (!exporting) setExportFile(null);
+        }}
+        footer={
+          <Button disabled={exporting} onClick={() => void confirmExport()}>
+            {t("auth_files.download")}
+          </Button>
+        }
+      >
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={ignoreExportProxy}
+            disabled={exporting}
+            onChange={(event) => setIgnoreExportProxy(event.currentTarget.checked)}
+          />
+          {t("auth_files.ignore_proxy")}
+        </label>
+      </Modal>
 
       <ConfirmModal
         open={confirm !== null}

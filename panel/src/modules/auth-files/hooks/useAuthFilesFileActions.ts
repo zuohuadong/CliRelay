@@ -3,8 +3,10 @@ import { useTranslation } from "react-i18next";
 import { authFilesApi } from "@/lib/http/apis";
 import type { AuthFileItem } from "@/lib/http/types";
 import { useToast } from "@/modules/ui/ToastProvider";
+import { withoutAuthProxy } from "@/modules/auth-files/helpers/authFileTransfer";
 import {
   formatFileSize,
+  downloadTextAsFile,
   MAX_AUTH_FILE_SIZE,
   readAuthFileDefaultTags,
 } from "@/modules/auth-files/helpers/authFilesPageUtils";
@@ -37,32 +39,45 @@ export function useAuthFilesFileActions({
   const { notify } = useToast();
 
   const [uploading, setUploading] = useState(false);
+  const [exportFile, setExportFile] = useState<AuthFileItem | null>(null);
+  const [ignoreExportProxy, setIgnoreExportProxy] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [deletingAll, setDeletingAll] = useState(false);
   const [statusUpdating, setStatusUpdating] = useState<Record<string, boolean>>({});
   const [codexFastModeUpdating, setCodexFastModeUpdating] = useState<Record<string, boolean>>({});
   const [tagSavingByName, setTagSavingByName] = useState<Record<string, boolean>>({});
 
-  const downloadAuthFile = useCallback(
-    async (file: AuthFileItem) => {
-      const confirmed = window.confirm(
-        t(
-          "auth_files.download_sensitive_confirm",
-          "This downloads the full auth file and may include sensitive credentials. Continue?",
-        ),
-      );
-      if (!confirmed) return;
+  const downloadAuthFile = useCallback(async (file: AuthFileItem) => {
+    setIgnoreExportProxy(false);
+    setExportFile(file);
+  }, []);
 
-      try {
-        await authFilesApi.downloadFile(file.name);
-      } catch (err: unknown) {
-        notify({
-          type: "error",
-          message: err instanceof Error ? err.message : t("auth_files.download_failed"),
-        });
+  const confirmExport = useCallback(async () => {
+    if (!exportFile || exporting) return;
+    setExporting(true);
+    try {
+      if (ignoreExportProxy) {
+        const parsed: unknown = JSON.parse(await authFilesApi.downloadText(exportFile.name));
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error(t("auth_files.paste_json_invalid"));
+        }
+        downloadTextAsFile(
+          JSON.stringify(withoutAuthProxy(parsed as Record<string, unknown>), null, 2),
+          exportFile.name,
+        );
+      } else {
+        await authFilesApi.downloadFile(exportFile.name);
       }
-    },
-    [notify, t],
-  );
+      setExportFile(null);
+    } catch (err: unknown) {
+      notify({
+        type: "error",
+        message: err instanceof Error ? err.message : t("auth_files.download_failed"),
+      });
+    } finally {
+      setExporting(false);
+    }
+  }, [exportFile, exporting, ignoreExportProxy, notify, t]);
 
   const handleUpload = useCallback(
     async (input: FileList | File[] | null): Promise<AuthFilesUploadResult | null> => {
@@ -330,6 +345,12 @@ export function useAuthFilesFileActions({
   );
 
   return {
+    exportFile,
+    setExportFile,
+    ignoreExportProxy,
+    setIgnoreExportProxy,
+    exporting,
+    confirmExport,
     uploading,
     deletingAll,
     statusUpdating,

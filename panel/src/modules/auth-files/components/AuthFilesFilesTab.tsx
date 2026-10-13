@@ -58,6 +58,7 @@ import {
   type QuotaState,
 } from "@/modules/quota/quota-helpers";
 import type { QuotaProvider } from "@/modules/quota/quota-fetch";
+import { withoutAuthProxy } from "@/modules/auth-files/helpers/authFileTransfer";
 
 const MAX_FILENAME_PART_LENGTH = 72;
 const AUTH_IMPORT_CHANNELS = [
@@ -567,11 +568,19 @@ const buildAuthImportFile = (file: File, record: Record<string, unknown>, channe
     },
   );
 
-const prepareAuthImportFiles = async (files: File[], selectedChannel: string): Promise<File[]> =>
+const prepareAuthImportFiles = async (
+  files: File[],
+  selectedChannel: string,
+  ignoreProxy: boolean,
+): Promise<File[]> =>
   Promise.all(
     files.map(async (file) => {
       const record = await readAuthImportRecord(file);
-      return buildAuthImportFile(file, record, resolveAuthImportChannel(record, selectedChannel));
+      return buildAuthImportFile(
+        file,
+        ignoreProxy ? withoutAuthProxy(record) : record,
+        resolveAuthImportChannel(record, selectedChannel),
+      );
     }),
   );
 
@@ -742,6 +751,7 @@ export function AuthFilesFilesTab({
   const [pendingFileImports, setPendingFileImports] = useState<File[]>([]);
   const [jsonImportText, setJsonImportText] = useState("");
   const [importChannel, setImportChannel] = useState("");
+  const [ignoreImportProxy, setIgnoreImportProxy] = useState(false);
   const [jsonImportError, setJsonImportError] = useState("");
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const normalizedFilter = normalizeProviderKey(filter);
@@ -879,7 +889,7 @@ export function AuthFilesFilesTab({
 
     let uploadFiles: File[];
     try {
-      uploadFiles = await prepareAuthImportFiles(pastedFiles, importChannel);
+      uploadFiles = await prepareAuthImportFiles(pastedFiles, importChannel, ignoreImportProxy);
     } catch (error: unknown) {
       setJsonImportError(getImportErrorMessage(error));
       return;
@@ -893,20 +903,24 @@ export function AuthFilesFilesTab({
     await handleUpload(uploadFiles);
     setJsonImportText("");
     setJsonImportOpen(false);
-  }, [getImportErrorMessage, handleUpload, importChannel, jsonImportText, t]);
+  }, [getImportErrorMessage, handleUpload, importChannel, ignoreImportProxy, jsonImportText, t]);
 
   const submitFileImport = useCallback(async () => {
     if (pendingFileImports.length === 0) return;
     setJsonImportError("");
     try {
-      const uploadFiles = await prepareAuthImportFiles(pendingFileImports, importChannel);
+      const uploadFiles = await prepareAuthImportFiles(
+        pendingFileImports,
+        importChannel,
+        ignoreImportProxy,
+      );
       await handleUpload(uploadFiles);
       setFileImportOpen(false);
       setPendingFileImports([]);
     } catch (error: unknown) {
       setJsonImportError(getImportErrorMessage(error));
     }
-  }, [getImportErrorMessage, handleUpload, importChannel, pendingFileImports]);
+  }, [getImportErrorMessage, handleUpload, importChannel, ignoreImportProxy, pendingFileImports]);
 
   return (
     <div className="mt-3 space-y-3">
@@ -924,6 +938,7 @@ export function AuthFilesFilesTab({
           setJsonImportError("");
           setImportChannel(defaultImportChannel);
           setPendingFileImports(selected);
+          setIgnoreImportProxy(false);
           setFileImportOpen(true);
         }}
       />
@@ -1170,6 +1185,7 @@ export function AuthFilesFilesTab({
                     setJsonImportError("");
                     setImportChannel(defaultImportChannel);
                     setJsonImportOpen(true);
+                    setIgnoreImportProxy(false);
                   }}
                   disabled={uploading}
                   aria-label={t("auth_files.paste_json")}
@@ -1705,6 +1721,15 @@ export function AuthFilesFilesTab({
           >
             {t("auth_files.paste_json_label")}
           </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={ignoreImportProxy}
+              disabled={uploading}
+              onChange={(event) => setIgnoreImportProxy(event.currentTarget.checked)}
+            />
+            {t("auth_files.ignore_proxy")}
+          </label>
           <textarea
             id="auth-files-json-import"
             value={jsonImportText}
@@ -1761,6 +1786,15 @@ export function AuthFilesFilesTab({
             automaticLabel={t("auth_files.import_channel_auto")}
             hint={t("auth_files.import_channel_hint")}
           />
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={ignoreImportProxy}
+              disabled={uploading}
+              onChange={(event) => setIgnoreImportProxy(event.currentTarget.checked)}
+            />
+            {t("auth_files.ignore_proxy")}
+          </label>
           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm dark:border-neutral-800 dark:bg-neutral-900">
             {pendingFileImports.map((file) => (
               <div key={`${file.name}-${file.lastModified}`} className="truncate">

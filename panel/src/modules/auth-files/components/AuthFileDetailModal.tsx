@@ -52,6 +52,7 @@ const formatLocalHourKey = (timestamp: string) => {
 };
 
 interface AuthFileDetailModalProps {
+  onExport?: (file: AuthFileItem) => Promise<void>;
   open: boolean;
   detailFile: AuthFileItem | null;
   detailLoading: boolean;
@@ -93,6 +94,7 @@ interface AuthFileDetailModalProps {
 }
 
 export function AuthFileDetailModal({
+  onExport,
   open,
   detailFile,
   detailLoading,
@@ -468,7 +470,14 @@ export function AuthFileDetailModal({
           {detailFile ? (
             <Button
               variant="secondary"
-              onClick={() => downloadTextAsFile(detailText, detailFile.name)}
+              onClick={() => {
+                if (onExport) {
+                  setDetailOpen(false);
+                  void onExport(detailFile);
+                } else {
+                  downloadTextAsFile(detailText, detailFile.name);
+                }
+              }}
               disabled={detailLoading}
             >
               <Download size={14} />

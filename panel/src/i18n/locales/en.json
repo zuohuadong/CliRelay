@@ -673,6 +673,7 @@
     "paste_json_upload": "Upload JSON",
     "import_json_title": "Import Auth JSON",
     "import_json_description": "Choose the auth channel before uploading these JSON files.",
+    "ignore_proxy": "Ignore proxy",
     "import_channel_label": "Auth channel",
     "import_channel_aria": "Import channel",
     "import_channel_auto": "Auto-detect from JSON",

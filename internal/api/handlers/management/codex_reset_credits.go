@@ -122,7 +122,9 @@ func (h *Handler) codexResetExecutor() *executor.CodexExecutor {
 	egressService := h.egressService
 	h.mu.Unlock()
 	if egressService == nil {
-		return executor.NewCodexExecutorWithEgress(cfg, nil)
+		// A site without configured egress uses the normal direct Codex path.
+		// The reset-credit API should follow the same default as quota probing.
+		return executor.NewCodexExecutor(cfg)
 	}
 	return executor.NewCodexExecutorWithEgress(cfg, egressService)
 }

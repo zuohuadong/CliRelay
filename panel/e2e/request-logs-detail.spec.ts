@@ -14,8 +14,21 @@ const setAuthed = async (page: import("@playwright/test").Page) => {
   });
 };
 
-test("Request Logs: opens full detail content and switches output raw view", async ({ page }) => {
+test("Request Logs: opens full detail content and switches output raw view", async ({
+  page,
+}) => {
   await setAuthed(page);
+
+  await page.route(
+    "**/v0/management/request-log-storage/store-content",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ enabled: true }),
+      });
+    },
+  );
 
   await page.route("**/v0/management/config", async (route) => {
     await route.fulfill({
@@ -41,6 +54,7 @@ test("Request Logs: opens full detail content and switches output raw view", asy
             channel_name: "OpenAI",
             auth_index: "auth-1",
             failed: false,
+            streaming: true,
             latency_ms: 1234,
             first_token_ms: 120,
             input_tokens: 12,
@@ -70,46 +84,42 @@ test("Request Logs: opens full detail content and switches output raw view", asy
     });
   });
 
-  await page.route("**/v0/management/usage/logs/101/content?part=input&format=json", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        id: 101,
-        model: "gpt-4.1",
-        part: "input",
-        content: JSON.stringify({
-          messages: [{ role: "user", content: "hello input payload" }],
+  await page.route(
+    "**/v0/management/usage/logs/101/content?*",
+    async (route) => {
+      const part = new URL(route.request().url()).searchParams.get("part");
+      const content =
+        part === "input"
+          ? { messages: [{ role: "user", content: "hello input payload" }] }
+          : { choices: [{ message: { content: "hello output payload" } }] };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: 101,
+          model: "gpt-4.1",
+          part,
+          content: JSON.stringify(content),
         }),
-      }),
-    });
-  });
-
-  await page.route("**/v0/management/usage/logs/101/content?part=output&format=json", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        id: 101,
-        model: "gpt-4.1",
-        part: "output",
-        content: JSON.stringify({
-          choices: [{ message: { content: "hello output payload" } }],
-        }),
-      }),
-    });
-  });
+      });
+    },
+  );
 
   await page.goto("/#/monitor/request-logs");
-  await expect(page.getByRole("heading", { name: "Request Logs" }).first()).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Request Logs" }).first(),
+  ).toBeVisible();
+  await expect(page.getByText("Streaming")).toBeVisible();
+  await expect(page.getByText("120ms")).toBeVisible();
 
   await page.getByTitle("Click to view output").click();
   await expect(page.getByText("hello output payload")).toBeVisible();
 
-  await page.getByRole("button", { name: "Input" }).click();
+  const detailDialog = page.getByRole("dialog");
+  await detailDialog.getByRole("tab", { name: "Input" }).click();
   await expect(page.getByText("hello input payload")).toBeVisible();
 
-  await page.getByTitle("Raw Data").click();
+  await detailDialog.getByRole("tab", { name: "Raw Data" }).click();
   await expect(page.locator("pre")).toContainText('"messages"');
   await expect(page.locator("pre")).toContainText("hello input payload");
 });

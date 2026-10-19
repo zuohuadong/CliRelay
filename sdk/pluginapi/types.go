@@ -66,6 +66,8 @@ type ConfigField struct {
 	EnumValues []string
 	// Description explains how the plugin uses the field.
 	Description string
+	// Default is the value used when the configuration key is omitted.
+	Default any
 }
 
 // Capabilities groups the optional host integration interfaces exposed by a plugin.
@@ -196,6 +198,8 @@ type ThinkingSupport struct {
 	DynamicAllowed bool
 	// Levels lists supported named reasoning levels.
 	Levels []string
+	// DisableType is the Claude thinking.type sent when thinking is turned off.
+	DisableType string
 }
 
 // HostConfigSummary describes host configuration relevant to plugin providers.

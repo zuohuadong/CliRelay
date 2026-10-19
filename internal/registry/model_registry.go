@@ -152,6 +152,9 @@ type ThinkingSupport struct {
 	// Levels defines discrete reasoning effort levels (e.g., "low", "medium", "high").
 	// When set, the model uses level-based reasoning instead of token budgets.
 	Levels []string `json:"levels,omitempty" yaml:"levels,omitempty"`
+	// DisableType is the Claude thinking.type sent when thinking is turned off.
+	// Empty keeps the historical behavior of omitting the field.
+	DisableType string `json:"disable_type,omitempty" yaml:"disable-type,omitempty"`
 }
 
 // ModelRegistration tracks a model's availability

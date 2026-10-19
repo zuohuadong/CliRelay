@@ -1346,6 +1346,7 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(routeModel string, opt
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	now := time.Now()
 	var known []creditsCandidateEntry
 	var unknown []creditsCandidateEntry
 	for _, auth := range m.auths {
@@ -1366,9 +1367,14 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(routeModel string, opt
 		candidate := creditsCandidateEntry{auth: auth.Clone(), executor: executor, provider: providerKey}
 		hint, okHint := GetAntigravityCreditsHint(auth.ID)
 		if okHint && hint.Known {
-			if hint.Available {
-				known = append(known, candidate)
+			if !hint.Available {
+				if IsAntigravityCreditsHintFresh(hint, now) {
+					continue
+				}
+				unknown = append(unknown, candidate)
+				continue
 			}
+			known = append(known, candidate)
 			continue
 		}
 		unknown = append(unknown, candidate)

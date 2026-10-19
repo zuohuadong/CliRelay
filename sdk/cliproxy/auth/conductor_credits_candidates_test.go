@@ -70,10 +70,7 @@ func TestFindAllAntigravityCreditsCandidateAuths_PrefersKnownCreditsThenUnknown(
 		SetAntigravityCreditsHint("mm-no", AntigravityCreditsHint{})
 	})
 
-	afterExpiry, errAfterExpiry := m.findAllAntigravityCreditsCandidateAuths(context.Background(), "claude-sonnet-4-6", opts)
-	if errAfterExpiry != nil {
-		t.Fatalf("findAllAntigravityCreditsCandidateAuths(after expiry) error = %v", errAfterExpiry)
-	}
+	afterExpiry := m.findAllAntigravityCreditsCandidateAuths("claude-sonnet-4-6", opts)
 	if len(afterExpiry) != 3 {
 		t.Fatalf("afterExpiry candidates len = %d, want 3", len(afterExpiry))
 	}

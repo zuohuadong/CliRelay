@@ -31,6 +31,10 @@ type Service struct {
 	// cfg holds the current application configuration.
 	cfg *config.Config
 
+	// egressService and videoService are fork-owned durable stores wired by the builder.
+	egressService *egress.Service
+	videoService  *internalvideo.Service
+
 	// cfgMu protects concurrent access to the configuration.
 	cfgMu sync.RWMutex
 
@@ -133,10 +137,18 @@ type Service struct {
 	homePluginSyncKey            string
 	homePluginSyncFetch          func(context.Context, sdkpluginstore.PluginSyncRequest) (sdkpluginstore.PluginSyncResponse, error)
 	homePluginDeleteTask         func(context.Context, *config.Config, home.PluginTask) homeplugins.SyncReport
-
-	egressService      *egress.Service
-	videoService       *internalvideo.Service
-	antigravityProbeWg sync.WaitGroup
+	antigravityProbeWg           sync.WaitGroup
+	// antigravityContext is protected by cfgMu and owns background model probes.
+	antigravityContext       context.Context
+	antigravityProbeMu       sync.Mutex
+	antigravityAccountProbes map[string]map[*antigravityAccountProbe]struct{}
+	antigravityRefreshWake   chan struct{}
+	// antigravityRefreshPending is protected by antigravityProbeMu. Each entry
+	// owns one worker and at most one queued snapshot shared by all probe entry
+	// points. A nil value means the worker is running without a queued successor.
+	antigravityRefreshPending map[string]*antigravityModelRefreshRequest
+	antigravityPersistPending map[string]*antigravityHintPersistRequest
+	antigravityPersistActive  map[string]*antigravityHintPersistRequest
 }
 
 // SetResultPolicy sets an execution result policy on the underlying core auth manager.

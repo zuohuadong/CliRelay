@@ -301,6 +301,34 @@ func (h *Host) RegisterModels(ctx context.Context, modelRegistry modelRegistry) 
 	h.commitModelClients(snap, modelRegistry, registrations, nextClients, nextProviders, nextModelRegistrations)
 }
 
+// HasAuthModelProvider reports whether an active plugin declares per-auth model
+// discovery for provider. It does not fetch models or refresh credentials.
+func (h *Host) HasAuthModelProvider(provider string) bool {
+	if h == nil {
+		return false
+	}
+	provider = normalizeProviderID(provider)
+	if provider == "" {
+		return false
+	}
+	for _, record := range h.activeRecords() {
+		caps := record.plugin.Capabilities
+		if caps.ModelProvider == nil || h.isPluginFused(record.id) {
+			continue
+		}
+		if caps.AuthProvider != nil {
+			if identifier, okID := h.callAuthProviderIdentifier(record.id, caps.AuthProvider); okID && normalizeProviderID(identifier) == provider {
+				return true
+			}
+			continue
+		}
+		if normalizeProviderID(h.modelProvider(record.id)) == provider {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Host) ModelsForAuth(ctx context.Context, auth *coreauth.Auth) AuthModelResult {
 	if h == nil || auth == nil {
 		return AuthModelResult{}

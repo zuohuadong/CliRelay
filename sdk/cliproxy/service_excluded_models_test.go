@@ -434,7 +434,7 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 		}
 	}
 
-	var webSearchModel, highModel, agentModel, staticOnlyModel, fetchedOnlyModel *internalregistry.ModelInfo
+	var webSearchModel, highModel, staticOnlyModel, fetchedOnlyModel *internalregistry.ModelInfo
 	for _, model := range models {
 		if model == nil {
 			continue
@@ -445,7 +445,8 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 		case "gemini-3.1-pro-high":
 			highModel = model
 		case "gemini-pro-agent":
-			agentModel = model
+			// Account catalog is authoritative after a successful probe: static
+			// entries the API no longer reports are not re-registered.
 		case "gpt-oss-120b-medium":
 			staticOnlyModel = model
 		case "fetched-only-search-model":
@@ -471,17 +472,8 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 	if !highModel.SupportsWebSearch {
 		t.Fatal("expected fetched gemini-3.1-pro-high to support web search")
 	}
-	if agentModel == nil {
-		t.Fatal("expected gemini-pro-agent to be registered")
-	}
-	if !agentModel.SupportsWebSearch {
-		t.Fatal("gemini-pro-agent should support web search")
-	}
-	if staticOnlyModel == nil {
-		t.Fatal("expected static-only Antigravity model to remain registered")
-	}
-	if staticOnlyModel.SupportsWebSearch {
-		t.Fatal("gpt-oss-120b-medium should not support web search")
+	if staticOnlyModel != nil {
+		t.Fatal("static-only Antigravity model must not survive an authoritative catalog probe")
 	}
 	if fetchedOnlyModel != nil {
 		t.Fatalf("fetched-only model should not be registered: %#v", fetchedOnlyModel)

@@ -22,8 +22,9 @@ import (
 const homePluginStatusReportTimeout = 10 * time.Second
 
 type homePluginStatusWork struct {
-	cfg    *config.Config
-	report homeplugins.SyncReport
+	cfg              *config.Config
+	report           homeplugins.SyncReport
+	needsLoadMarking bool
 }
 
 type homePluginTaskWork struct {
@@ -151,15 +152,7 @@ func (s *Service) pushHomePluginStatusWithClient(ctx context.Context, cfg *confi
 	}
 	reportCtx, cancel := context.WithTimeout(ctx, homePluginStatusReportTimeout)
 	defer cancel()
-	reported := make(chan error, 1)
-	go func() { reported <- client.RPushPluginStatus(reportCtx, raw) }()
-	var errReport error
-	select {
-	case <-reportCtx.Done():
-		errReport = reportCtx.Err()
-	case errReport = <-reported:
-	}
-	if errReport != nil {
+	if errReport := client.RPushPluginStatus(reportCtx, raw); errReport != nil {
 		return fmt.Errorf("push home plugin status: %w", errReport)
 	}
 	return nil
@@ -220,7 +213,13 @@ func (s *Service) finalizeHomePluginWork(ctx context.Context, client *home.Clien
 		}
 	}
 	for work.nextStatus < len(work.statusWork) {
-		status := work.statusWork[work.nextStatus]
+		status := &work.statusWork[work.nextStatus]
+		if status.needsLoadMarking {
+			if errLoad := homeplugins.MarkLoadResults(&status.report, s.pluginHost); errLoad != nil {
+				log.Warnf("failed to load home plugins: %v", errLoad)
+			}
+			status.needsLoadMarking = false
+		}
 		if errReport := s.pushHomePluginStatusWithClient(ctx, status.cfg, status.report, client); errReport != nil {
 			return errReport
 		}
@@ -264,7 +263,7 @@ func homePluginSyncKey(cfg *config.Config) string {
 		return ""
 	}
 	hash := sha256.New()
-	_, _ = fmt.Fprintf(hash, "enabled=%t\ndir=%s\nsync-revision=%d\nauth-revision=%d\n", cfg.Plugins.Enabled, strings.TrimSpace(cfg.Plugins.Dir), cfg.Plugins.SyncRevision, cfg.Plugins.AuthRevision)
+	_, _ = fmt.Fprintf(hash, "enabled=%t\ndir=%s\nauth-revision=%d\n", cfg.Plugins.Enabled, strings.TrimSpace(cfg.Plugins.Dir), cfg.Plugins.AuthRevision)
 	ids := make([]string, 0, len(cfg.Plugins.Configs))
 	for id := range cfg.Plugins.Configs {
 		ids = append(ids, id)

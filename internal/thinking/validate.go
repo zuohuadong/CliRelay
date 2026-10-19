@@ -54,9 +54,8 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 	}
 
 	// allowClampUnsupported determines whether to clamp unsupported levels instead of returning an error.
-	// This applies when crossing request/target formats and the target model supports discrete levels.
-	// This applies when crossing provider families (e.g., openai→gemini, claude→gemini) and when
-	// different Codex/OpenAI wire formats expose different supported levels.
+	// This applies when crossing provider families (e.g., openai→gemini, claude→gemini) and the target
+	// model supports discrete levels. Same-family conversions require strict validation.
 	//
 	// modelFamilyMismatch covers providers that reuse another protocol on the wire
 	// (e.g. Kimi serving Claude-compatible /v1/messages). In that path fromFormat and
@@ -75,6 +74,9 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 			}
 		}
 	}
+	// Fork behavior: different OpenAI-family wire formats (openai vs codex vs
+	// openai-response) expose different level sets, so an unsupported level must
+	// clamp instead of erroring when the request crosses formats.
 	formatMismatch := fromFormat != "" && toFormat != "" && fromFormat != toFormat
 	allowClampUnsupported := toHasLevelSupport && (!isSameProviderFamily(fromFormat, toFormat) || modelFamilyMismatch || formatMismatch)
 
@@ -169,10 +171,24 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 	}
 
 	if config.Mode == ModeNone && toFormat == "claude" {
-		// Claude supports explicit disable via thinking.type="disabled".
-		// Keep Budget=0 so applier can omit budget_tokens.
-		config.Budget = 0
-		config.Level = ""
+		if !support.ZeroAllowed {
+			if lowest, ok := lowestSupportedLevel(support.Levels); ok {
+				// Adaptive-only Claude models (for example claude-opus-5-5, claude-fable-5,
+				// and claude-fable-5-1) reject thinking.type="disabled". Like other models
+				// that cannot be disabled, fall back to the lowest supported level.
+				config.Mode = ModeLevel
+				config.Budget = 0
+				config.Level = lowest
+			} else {
+				config.Budget = 0
+				config.Level = ""
+			}
+		} else {
+			// Claude supports explicit disable via thinking.type="disabled" (or the
+			// model's DisableType). Keep Budget=0 so applier can omit budget_tokens.
+			config.Budget = 0
+			config.Level = ""
+		}
 	} else {
 		switch config.Mode {
 		case ModeBudget, ModeAuto, ModeNone:
@@ -185,7 +201,9 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 		// their Min/Max range is zero.
 		cannotDisableLevelModel := !support.ZeroAllowed && !isLevelSupported(string(LevelNone), support.Levels)
 		if config.Mode == ModeNone && len(support.Levels) > 0 && (config.Budget > 0 || cannotDisableLevelModel) {
-			config.Level = ThinkingLevel(support.Levels[0])
+			if lowest, ok := lowestSupportedLevel(support.Levels); ok {
+				config.Level = lowest
+			}
 		}
 	}
 
@@ -240,6 +258,23 @@ func convertAutoToMidRange(config ThinkingConfig, support *registry.ThinkingSupp
 
 // standardLevelOrder defines the canonical ordering of thinking levels from lowest to highest.
 var standardLevelOrder = []ThinkingLevel{LevelMinimal, LevelLow, LevelMedium, LevelHigh, LevelXHigh, LevelMax}
+
+// lowestSupportedLevel returns the lowest canonical effort level in supported,
+// ignoring mode markers such as "none" and "auto".
+func lowestSupportedLevel(supported []string) (ThinkingLevel, bool) {
+	bestIdx := -1
+	for _, s := range supported {
+		if idx := levelIndex(strings.TrimSpace(s)); idx != -1 {
+			if bestIdx == -1 || idx < bestIdx {
+				bestIdx = idx
+			}
+		}
+	}
+	if bestIdx >= 0 {
+		return standardLevelOrder[bestIdx], true
+	}
+	return "", false
+}
 
 // clampLevel clamps the given level to the nearest supported level.
 // On tie, prefers the lower level.

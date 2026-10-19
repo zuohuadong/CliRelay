@@ -166,6 +166,10 @@ type StreamingConfig struct {
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
 
+	// SendKeepAliveBeforeFT controls whether SSE heartbeats are sent before the first token arrives
+	// when KeepAliveSeconds > 0. Default is false.
+	SendKeepAliveBeforeFT bool `yaml:"send-keepalive-before-ft,omitempty" json:"send-keepalive-before-ft,omitempty"`
+
 	// ResponsesWebsocketReplayRetries controls how many times a Responses websocket request may be replayed
 	// when the upstream closes before any response output is produced. Nil uses the server default.
 	// Set to 0 to disable these replay retries.

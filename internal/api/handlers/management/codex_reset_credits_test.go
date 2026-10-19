@@ -2,6 +2,7 @@ package management
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -136,7 +137,7 @@ func TestConsumeCodexResetCreditValidatesOneCreditAndIdempotencyKey(t *testing.T
 	}
 }
 
-func TestGetCodexResetCreditsFailsClosedWithoutEgressResolver(t *testing.T) {
+func TestGetCodexResetCreditsUsesDirectExecutorWithoutEgressResolver(t *testing.T) {
 	manager := coreauth.NewManager(nil, nil, nil)
 	auth := &coreauth.Auth{
 		ID:       "codex-auth",
@@ -159,12 +160,27 @@ func TestGetCodexResetCreditsFailsClosedWithoutEgressResolver(t *testing.T) {
 		nil,
 	)
 
+	called := false
+	ginContext.Request = ginContext.Request.WithContext(context.WithValue(
+		ginContext.Request.Context(), "cliproxy.roundtripper", resetCreditTransport(func(req *http.Request) (*http.Response, error) {
+			called = true
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"available_count":0,"credits":[]}`)),
+			}, nil
+		}),
+	))
 	handler.GetCodexResetCredits(ginContext)
 
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
+	if recorder.Code != http.StatusOK || !called {
+		t.Fatalf("status = %d, transport called = %v; body=%s", recorder.Code, called, recorder.Body.String())
 	}
 }
+
+type resetCreditTransport func(*http.Request) (*http.Response, error)
+
+func (f resetCreditTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 type codexResetStatusError int
 

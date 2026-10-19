@@ -687,6 +687,7 @@
     "paste_json_upload": "上传 JSON",
     "import_json_title": "导入认证 JSON",
     "import_json_description": "上传前先选择认证渠道，确保账号路由到正确的执行器。",
+    "ignore_proxy": "忽略代理",
     "import_channel_label": "认证渠道",
     "import_channel_aria": "导入渠道",
     "import_channel_auto": "从 JSON 自动识别",

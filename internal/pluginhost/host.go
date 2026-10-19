@@ -75,7 +75,7 @@ type Host struct {
 	runtimeConfig          *config.Config
 	authManager            *coreauth.Manager
 	modelExecutor          modelExecutor
-	modelClientIDs         map[string]struct{}
+	modelClientIDs         map[string]struct{} // Reserved for future use; catalog-only plugins do not populate it.
 	executorModelClientIDs map[string]struct{}
 	modelProviders         map[string]string
 	modelRegistrations     map[string]pluginModelRegistration
@@ -163,7 +163,7 @@ func (h *Host) Snapshot() *Snapshot {
 	return emptySnapshot()
 }
 
-// PluginLoaded reports whether a plugin dynamic library is still loaded by the host.
+// PluginLoaded reports whether a plugin is still active in the host runtime.
 func (h *Host) PluginLoaded(id string) bool {
 	if h == nil {
 		return false
@@ -181,7 +181,7 @@ func (h *Host) PluginLoaded(id string) bool {
 	return len(h.retired[id]) > 0
 }
 
-// PluginBusy reports whether a plugin dynamic library is loaded or being loaded.
+// PluginBusy reports whether a plugin is active in the host runtime or being loaded.
 func (h *Host) PluginBusy(id string) bool {
 	if h == nil {
 		return false
@@ -224,6 +224,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 	h.mu.Unlock()
 
 	if !rc.Enabled {
+		h.detachUnselectedPlugins(ctx, nil)
 		h.mu.Lock()
 		h.managementRoutes = make(map[string]managementRouteRecord)
 		h.resourceRoutes = make(map[string]resourceRouteRecord)
@@ -248,6 +249,11 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 		return
 	}
 	files = h.withLoadedPluginFallbacks(files, rc.Items, desiredVersions)
+	configuredIDs := make(map[string]struct{}, len(rc.Items))
+	for id := range rc.Items {
+		configuredIDs[id] = struct{}{}
+	}
+	h.detachUnselectedPluginsWithKnown(ctx, enabledPluginIDs(files, rc.Items), configuredIDs)
 
 	records := make([]capabilityRecord, 0, len(files))
 	loadedFiles := make([]pluginFile, 0, len(files))
@@ -638,7 +644,8 @@ func (h *Host) withLoadedPluginFallbacks(files []pluginFile, items map[string]ru
 	return files
 }
 
-// UnloadPlugin removes one plugin from the active runtime and closes its dynamic library.
+// UnloadPlugin removes one plugin from the active runtime.
+// The plugin image itself stays mapped for the lifetime of the process.
 func (h *Host) UnloadPlugin(id string) bool {
 	return h.UnloadPluginContext(context.Background(), id)
 }
@@ -654,6 +661,21 @@ func (h *Host) UnloadPluginContext(ctx context.Context, id string) bool {
 		return false
 	}
 	defer h.unlockApply()
+	return h.detachPlugin(ctx, id)
+}
+
+// detachPlugin shuts down one loaded plugin. Caller must hold the apply lock.
+func (h *Host) detachPlugin(ctx context.Context, id string) bool {
+	if h == nil {
+		return false
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	targets := make([]pluginUnloadTarget, 0)
 	h.mu.Lock()
@@ -710,7 +732,100 @@ func (h *Host) UnloadPluginContext(ctx context.Context, id string) bool {
 	return true
 }
 
-// ShutdownAll removes active plugin capabilities and closes all loaded dynamic libraries.
+// deactivateLoadedPlugin removes a plugin's runtime capabilities while keeping
+// its dynamic library mapped, matching the fork's disable semantics: an operator
+// toggling a plugin off must be able to re-enable it without reloading, and
+// management can still inspect the loaded instance.
+// Caller must hold the apply lock.
+func (h *Host) deactivateLoadedPlugin(id string) bool {
+	if h == nil {
+		return false
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	h.mu.Lock()
+	lp := h.loaded[id]
+	if lp == nil {
+		h.mu.Unlock()
+		return false
+	}
+	records, enabled := h.snapshotWithoutPluginLocked(id)
+	h.removePluginRuntimeStateLocked(id)
+	h.fused[id] = "disabled"
+	h.snapshot.Store(&Snapshot{enabled: enabled, records: records})
+	h.mu.Unlock()
+
+	h.refreshThinkingProviders(records)
+	h.RegisterFrontendAuthProviders()
+	log.WithFields(pluginLogFields(lp.id, lp.name, lp.version, lp.path)).Info("pluginhost: plugin deactivated")
+	return true
+}
+
+// detachUnselectedPlugins stops plugins that are no longer enabled. nil keeps none.
+// Caller must hold the apply lock.
+func (h *Host) detachUnselectedPlugins(ctx context.Context, selected map[string]struct{}) {
+	h.detachUnselectedPluginsWithKnown(ctx, selected, nil)
+}
+
+func (h *Host) detachUnselectedPluginsWithKnown(ctx context.Context, selected, known map[string]struct{}) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	ids := make([]string, 0, len(h.loaded)+len(h.retired)+len(h.loading))
+	for id := range h.loaded {
+		ids = append(ids, id)
+	}
+	for id := range h.retired {
+		ids = append(ids, id)
+	}
+	for id := range h.loading {
+		ids = append(ids, id)
+	}
+	h.mu.Unlock()
+	sort.Strings(ids)
+
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if _, ok := selected[id]; ok {
+			continue
+		}
+		if _, okKnown := known[id]; okKnown {
+			// Disabled but still configured: keep the library mapped.
+			h.deactivateLoadedPlugin(id)
+			continue
+		}
+		h.detachPlugin(ctx, id)
+	}
+}
+
+func enabledPluginIDs(files []pluginFile, items map[string]runtimeItemConfig) map[string]struct{} {
+	ids := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		id := strings.TrimSpace(file.ID)
+		if id == "" {
+			continue
+		}
+		item, ok := items[id]
+		if !ok {
+			item = defaultRuntimeItemConfig(id)
+		}
+		if !item.Enabled {
+			continue
+		}
+		ids[id] = struct{}{}
+	}
+	return ids
+}
+
+// ShutdownAll removes active plugin capabilities and detaches all plugins.
+// Plugin images stay mapped for the lifetime of the process.
 func (h *Host) ShutdownAll() {
 	h.ShutdownAllContext(context.Background())
 }
@@ -873,10 +988,7 @@ func (h *Host) pluginIdentityCurrent(id string, path string, version string) boo
 		return false
 	}
 	path = cleanPluginPath(path)
-	if path == "" {
-		return true
-	}
-	if h.activePluginPaths[id] != path {
+	if path == "" || h.activePluginPaths[id] != path {
 		return false
 	}
 	activePathVersion, okVersion := h.pluginFileVersions[path]
@@ -1022,17 +1134,17 @@ func (h *Host) rollbackReplacement(lp *loadedPlugin, item runtimeItemConfig) (ca
 		return capabilityRecord{}, pluginFile{}, false
 	}
 	return capabilityRecord{
-		id:       lp.id,
-		path:     lp.path,
-		version:  lp.version,
-		priority: item.Priority,
-		meta:     plugin.Metadata,
-		plugin:   plugin,
-	}, pluginFile{
-		ID:      lp.id,
-		Path:    lp.path,
-		Version: lp.version,
-	}, true
+			id:       lp.id,
+			path:     lp.path,
+			version:  lp.version,
+			priority: item.Priority,
+			meta:     plugin.Metadata,
+			plugin:   plugin,
+		}, pluginFile{
+			ID:      lp.id,
+			Path:    lp.path,
+			Version: lp.version,
+		}, true
 }
 
 func (h *Host) callRegister(ctx context.Context, lp *loadedPlugin, item runtimeItemConfig) (pluginapi.Plugin, bool) {

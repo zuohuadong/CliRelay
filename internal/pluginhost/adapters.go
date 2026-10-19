@@ -150,6 +150,7 @@ func pluginThinkingSupportToRegistryThinkingSupport(thinking *pluginapi.Thinking
 		Max:            thinking.Max,
 		ZeroAllowed:    thinking.ZeroAllowed,
 		DynamicAllowed: thinking.DynamicAllowed,
+		DisableType:    thinking.DisableType,
 		Levels:         cloneStringSlice(thinking.Levels),
 	}
 }
@@ -190,6 +191,7 @@ func registryThinkingSupportToPluginThinkingSupport(thinking *registry.ThinkingS
 		Max:            thinking.Max,
 		ZeroAllowed:    thinking.ZeroAllowed,
 		DynamicAllowed: thinking.DynamicAllowed,
+		DisableType:    thinking.DisableType,
 		Levels:         cloneStringSlice(thinking.Levels),
 	}
 }
@@ -225,6 +227,8 @@ func cloneRegistryModels(in []*registry.ModelInfo) []*registry.ModelInfo {
 	return out
 }
 
+// RegisterModels collects static catalogs for executor and per-auth registration.
+// Catalog-only plugins must not advertise availability independently of credentials.
 func (h *Host) RegisterModels(ctx context.Context, modelRegistry modelRegistry) {
 	if h == nil || modelRegistry == nil {
 		return
@@ -232,8 +236,6 @@ func (h *Host) RegisterModels(ctx context.Context, modelRegistry modelRegistry) 
 
 	snap := h.Snapshot()
 	records := h.activeRecordsFromSnapshot(snap)
-	registrations := make([]modelClientRegistration, 0)
-	nextClients := make(map[string]struct{})
 	nextProviders := make(map[string]string)
 	nextModelRegistrations := make(map[string]pluginModelRegistration)
 	for _, record := range records {
@@ -288,17 +290,52 @@ func (h *Host) RegisterModels(ctx context.Context, modelRegistry modelRegistry) 
 			hasExecutor: record.plugin.Capabilities.Executor != nil,
 		}
 		nextProviders[record.id] = provider
-		if record.plugin.Capabilities.Executor == nil {
-			clientID := "plugin:" + record.id + ":" + provider
-			registrations = append(registrations, modelClientRegistration{
-				clientID: clientID,
-				provider: provider,
-				models:   models,
-			})
-			nextClients[clientID] = struct{}{}
+	}
+	// Catalog-only plugins (no executor) are published straight into the
+	// supplied registry: the fork's scheduler resolves their models from the
+	// global registry rather than from the host snapshot.
+	nextClients := make(map[string]struct{})
+	type catalogRegistration struct {
+		clientID string
+		provider string
+		models   []*registry.ModelInfo
+	}
+	var catalogRegistrations []catalogRegistration
+	for _, registration := range nextModelRegistrations {
+		if registration.hasExecutor {
+			continue
+		}
+		clientID := "plugin:" + registration.pluginID + ":" + registration.provider
+		nextClients[clientID] = struct{}{}
+		catalogRegistrations = append(catalogRegistrations, catalogRegistration{
+			clientID: clientID,
+			provider: registration.provider,
+			models:   registration.models,
+		})
+	}
+
+	staleClients := make([]string, 0)
+	h.mu.Lock()
+	if h.Snapshot() != snap {
+		h.mu.Unlock()
+		return
+	}
+	for clientID := range h.modelClientIDs {
+		if _, okClient := nextClients[clientID]; !okClient {
+			staleClients = append(staleClients, clientID)
 		}
 	}
-	h.commitModelClients(snap, modelRegistry, registrations, nextClients, nextProviders, nextModelRegistrations)
+	h.modelClientIDs = nextClients
+	h.modelProviders = nextProviders
+	h.modelRegistrations = nextModelRegistrations
+	h.mu.Unlock()
+
+	for _, registration := range catalogRegistrations {
+		modelRegistry.RegisterClient(registration.clientID, registration.provider, registration.models)
+	}
+	for _, clientID := range staleClients {
+		modelRegistry.UnregisterClient(clientID)
+	}
 }
 
 // HasAuthModelProvider reports whether an active plugin declares per-auth model
@@ -312,21 +349,27 @@ func (h *Host) HasAuthModelProvider(provider string) bool {
 		return false
 	}
 	for _, record := range h.activeRecords() {
-		caps := record.plugin.Capabilities
-		if caps.ModelProvider == nil || h.isPluginFused(record.id) {
-			continue
-		}
-		if caps.AuthProvider != nil {
-			if identifier, okID := h.callAuthProviderIdentifier(record.id, caps.AuthProvider); okID && normalizeProviderID(identifier) == provider {
-				return true
-			}
-			continue
-		}
-		if normalizeProviderID(h.modelProvider(record.id)) == provider {
+		if h.authModelProviderMatches(record, provider) {
 			return true
 		}
 	}
 	return false
+}
+
+func (h *Host) authModelProviderMatches(record capabilityRecord, provider string) bool {
+	caps := record.plugin.Capabilities
+	if caps.ModelProvider == nil || h.isPluginFused(record.id) || !executorScopeAllowsOAuthModels(caps) {
+		return false
+	}
+	if caps.AuthProvider != nil {
+		identifier, ok := h.callAuthProviderIdentifier(record.id, caps.AuthProvider)
+		return ok && normalizeProviderID(identifier) == provider
+	}
+	candidate := normalizeProviderID(h.modelProvider(record.id))
+	if candidate == "" && caps.Executor != nil {
+		candidate, _ = h.executorProvider(record, caps.Executor)
+	}
+	return candidate == provider
 }
 
 func (h *Host) ModelsForAuth(ctx context.Context, auth *coreauth.Auth) AuthModelResult {
@@ -338,35 +381,10 @@ func (h *Host) ModelsForAuth(ctx context.Context, auth *coreauth.Auth) AuthModel
 		return AuthModelResult{}
 	}
 	for _, record := range h.activeRecords() {
-		modelProvider := record.plugin.Capabilities.ModelProvider
-		if modelProvider == nil || h.isPluginFused(record.id) {
+		if !h.authModelProviderMatches(record, providerKey) {
 			continue
 		}
-		if !executorScopeAllowsOAuthModels(record.plugin.Capabilities) {
-			continue
-		}
-		authProvider := record.plugin.Capabilities.AuthProvider
-		if authProvider != nil {
-			identifier, okIdentifier := h.callAuthProviderIdentifier(record.id, authProvider)
-			if !okIdentifier || normalizeProviderID(identifier) != providerKey {
-				continue
-			}
-		} else {
-			recordProvider := normalizeProviderID(h.modelProvider(record.id))
-			if recordProvider == "" {
-				executor := record.plugin.Capabilities.Executor
-				if executor != nil {
-					candidate, okCandidate := h.executorProvider(record, executor)
-					if okCandidate {
-						recordProvider = candidate
-					}
-				}
-			}
-			if recordProvider != providerKey {
-				continue
-			}
-		}
-		resp, errModels := h.callModelsForAuth(ctx, record, modelProvider, auth)
+		resp, errModels := h.callModelsForAuth(ctx, record, record.plugin.Capabilities.ModelProvider, auth)
 		if errModels != nil {
 			log.Warnf("pluginhost: models for auth %s failed: %v", auth.ID, errModels)
 			return AuthModelResult{Handled: true, Err: errModels}

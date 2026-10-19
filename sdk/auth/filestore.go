@@ -114,35 +114,41 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		SetMetadata(map[string]any)
 	}
 
-	switch {
-	case auth.Storage != nil:
-		if setter, ok := auth.Storage.(metadataSetter); ok {
-			setter.SetMetadata(auth.Metadata)
+	if handled, errCodex := cliproxyauth.PersistCodexAuthFile(ctx, path, auth); handled {
+		if errCodex != nil {
+			return "", errCodex
 		}
-		if err = auth.Storage.SaveTokenToFile(path); err != nil {
-			return "", err
-		}
-	case auth.Metadata != nil:
-		auth.Metadata["disabled"] = auth.Disabled
-		raw, errMarshal := json.Marshal(auth.Metadata)
-		if errMarshal != nil {
-			return "", fmt.Errorf("auth filestore: marshal metadata failed: %w", errMarshal)
-		}
-		if existing, errRead := os.ReadFile(path); errRead == nil {
-			if jsonEqual(existing, raw) {
-				if errMode := misc.TightenCredentialFilePermissions(path); errMode != nil {
-					return "", fmt.Errorf("auth filestore: tighten existing file permissions: %w", errMode)
-				}
-				break
+	} else {
+		switch {
+		case auth.Storage != nil:
+			if setter, ok := auth.Storage.(metadataSetter); ok {
+				setter.SetMetadata(auth.Metadata)
 			}
-		} else if !os.IsNotExist(errRead) {
-			return "", fmt.Errorf("auth filestore: read existing failed: %w", errRead)
+			if err = auth.Storage.SaveTokenToFile(path); err != nil {
+				return "", err
+			}
+		case auth.Metadata != nil:
+			auth.Metadata["disabled"] = auth.Disabled
+			raw, errMarshal := json.Marshal(auth.Metadata)
+			if errMarshal != nil {
+				return "", fmt.Errorf("auth filestore: marshal metadata failed: %w", errMarshal)
+			}
+			if existing, errRead := os.ReadFile(path); errRead == nil {
+				if jsonEqual(existing, raw) {
+					if errMode := misc.TightenCredentialFilePermissions(path); errMode != nil {
+						return "", fmt.Errorf("auth filestore: tighten existing file permissions: %w", errMode)
+					}
+					break
+				}
+			} else if !os.IsNotExist(errRead) {
+				return "", fmt.Errorf("auth filestore: read existing failed: %w", errRead)
+			}
+			if errWrite := misc.WriteCredentialFileAtomic(path, raw); errWrite != nil {
+				return "", fmt.Errorf("auth filestore: write file failed: %w", errWrite)
+			}
+		default:
+			return "", fmt.Errorf("auth filestore: nothing to persist for %s", auth.ID)
 		}
-		if errWrite := misc.WriteCredentialFileAtomic(path, raw); errWrite != nil {
-			return "", fmt.Errorf("auth filestore: write file failed: %w", errWrite)
-		}
-	default:
-		return "", fmt.Errorf("auth filestore: nothing to persist for %s", auth.ID)
 	}
 
 	if auth.Attributes == nil {

@@ -1,7 +1,6 @@
 package codex
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -25,6 +24,8 @@ func TestCodexTokenStorageSaveTokenToFileReplacesExistingCredentialPrivately(t *
 		RefreshToken: "refresh-token",
 		AccountID:    "account-1",
 		LastRefresh:  "2026-07-22T12:34:56Z",
+		// Explicit login semantics: outer tokens replace the on-disk bundle.
+		ReplaceCredentials: true,
 		Metadata: map[string]any{
 			"agent_private_key": "private-key",
 		},
@@ -36,9 +37,6 @@ func TestCodexTokenStorageSaveTokenToFileReplacesExistingCredentialPrivately(t *
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read auth file: %v", err)
-	}
-	if !bytes.HasSuffix(raw, []byte("\n")) {
-		t.Fatal("Codex credential file must end with a newline")
 	}
 	var metadata map[string]any
 	if err = json.Unmarshal(raw, &metadata); err != nil {

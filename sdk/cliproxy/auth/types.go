@@ -15,6 +15,7 @@ import (
 	"time"
 
 	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 )
 
 // PostAuthHook defines a function that is called after an Auth record is created
@@ -78,6 +79,8 @@ type Auth struct {
 	ProxyID string `json:"proxy_id,omitempty"`
 	// Attributes stores provider specific metadata needed by executors (immutable configuration).
 	Attributes map[string]string `json:"attributes,omitempty"`
+	// CodexRefreshPatch carries an immutable pending credential update, never configuration.
+	CodexRefreshPatch *codex.CredentialRefreshPatch `json:"-"`
 	// Metadata stores runtime mutable provider state (e.g. tokens, cookies).
 	Metadata map[string]any `json:"metadata,omitempty"`
 	// Quota captures recent quota information for load balancers.

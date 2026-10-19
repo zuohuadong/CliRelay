@@ -190,20 +190,42 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 	}
 	cliproxyauth.SyncPersistedDisabled(auth)
 
-	switch {
-	case auth.Storage != nil:
-		if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
-			setter.SetMetadata(auth.Metadata)
+	prevMirror, _ := os.ReadFile(path)
+	if handled, errCodex := cliproxyauth.PersistCodexAuthFile(ctx, path, auth); handled {
+		if errCodex != nil {
+			if prevMirror != nil {
+				_ = misc.WriteCredentialFileAtomic(path, prevMirror)
+			}
+			return "", errCodex
 		}
-		if err = auth.Storage.SaveTokenToFile(path); err != nil {
-			return "", err
+		if auth.Storage == nil {
+			raw, errMarshal := marshalAuthMetadata(auth)
+			if errMarshal != nil {
+				return "", fmt.Errorf("object store: %w", errMarshal)
+			}
+			if err = s.uploadAuthData(ctx, path, raw); err != nil {
+				if prevMirror != nil {
+					_ = misc.WriteCredentialFileAtomic(path, prevMirror)
+				}
+				return "", err
+			}
 		}
-	case auth.Metadata != nil:
-		if err = s.saveAuthMetadata(ctx, auth, path); err != nil {
-			return "", err
+	} else {
+		switch {
+		case auth.Storage != nil:
+			if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
+				setter.SetMetadata(auth.Metadata)
+			}
+			if err = auth.Storage.SaveTokenToFile(path); err != nil {
+				return "", err
+			}
+		case auth.Metadata != nil:
+			if err = s.saveAuthMetadata(ctx, auth, path); err != nil {
+				return "", err
+			}
+		default:
+			return "", fmt.Errorf("object store: nothing to persist for %s", auth.ID)
 		}
-	default:
-		return "", fmt.Errorf("object store: nothing to persist for %s", auth.ID)
 	}
 
 	if auth.Attributes == nil {

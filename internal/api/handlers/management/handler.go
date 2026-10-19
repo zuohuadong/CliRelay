@@ -100,6 +100,8 @@ type Handler struct {
 	authStatusMu                  sync.Mutex
 	pluginStoreRateLimiter        *pluginstore.GitHubRateLimiter
 	pluginReleases                pluginReleaseCache
+	siwcOAuthFactory              func(*config.Config) siwcOAuthService
+	siwcCommitMu                  sync.Mutex
 }
 
 type configReloadSnapshot struct {
@@ -172,6 +174,8 @@ func NewHandlerWithoutConfigFilePath(cfg *config.Config, manager *coreauth.Manag
 }
 
 // SetConfig updates the in-memory config reference when the server hot-reloads.
+// A config parsed from an older version of the config file is ignored: a later
+// save already changed the file, and the reload for that save publishes it.
 func (h *Handler) SetConfig(cfg *config.Config) {
 	if h == nil {
 		return
@@ -190,7 +194,9 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 		return
 	}
 	h.mu.Lock()
-	h.authManager = manager
+	if h.authManager != manager {
+		h.authManager = manager
+	}
 	h.mu.Unlock()
 	h.invalidateUsageAggregateCache()
 }
@@ -201,7 +207,9 @@ func (h *Handler) SetPluginHost(host *pluginhost.Host) {
 		return
 	}
 	h.mu.Lock()
-	h.pluginHost = host
+	if h.pluginHost != host {
+		h.pluginHost = host
+	}
 	h.mu.Unlock()
 }
 
@@ -573,7 +581,8 @@ func (h *Handler) persistLocked(c *gin.Context) bool {
 	return true
 }
 
-// Helper methods for simple types
+// Helper methods for simple types. The setter and the save run under h.mu, so a
+// reload publishing h.cfg cannot replace it between the change and the save.
 func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
 	var body struct {
 		Value *bool `json:"value"`
@@ -582,8 +591,10 @@ func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	set(*body.Value)
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
@@ -594,8 +605,10 @@ func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	set(*body.Value)
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
@@ -606,6 +619,8 @@ func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	set(*body.Value)
-	h.persist(c)
+	h.persistLocked(c)
 }

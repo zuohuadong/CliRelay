@@ -134,6 +134,13 @@ type ClaudeHeaderDefaults struct {
 	Timeout                string `yaml:"timeout" json:"timeout"`
 	Timezone               string `yaml:"timezone" json:"timezone"`
 	StabilizeDeviceProfile *bool  `yaml:"stabilize-device-profile,omitempty" json:"stabilize-device-profile,omitempty"`
+	// AnthropicBetaStrip and AnthropicBetaAppend are exact-name operator overrides applied
+	// to the final Anthropic-Beta set; InjectDiagnostics and ClientRequestID tune the
+	// first-party Claude Code CLI request shape.
+	AnthropicBetaStrip  []string `yaml:"anthropic-beta-strip,omitempty" json:"anthropic-beta-strip,omitempty"`
+	AnthropicBetaAppend []string `yaml:"anthropic-beta-append,omitempty" json:"anthropic-beta-append,omitempty"`
+	InjectDiagnostics   *bool    `yaml:"inject-diagnostics,omitempty" json:"inject-diagnostics,omitempty"`
+	ClientRequestID     string   `yaml:"client-request-id,omitempty" json:"client-request-id,omitempty"`
 }
 
 // CodexHeaderDefaults configures fallback header values injected into Codex

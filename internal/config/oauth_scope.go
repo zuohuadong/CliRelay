@@ -2,7 +2,6 @@ package config
 
 import (
 	"reflect"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,11 +15,19 @@ func (cfg *Config) ForAPIKey() *Config {
 	}
 	filtered := *cfg
 	value := reflect.ValueOf(&filtered).Elem()
-	for _, path := range v8Paths {
-		if !strings.HasPrefix(path.current, "oauth.providers.") || !cfg.OAuthOnlyFields[path.old] {
-			continue
+	for path, scoped := range cfg.OAuthOnlyFields {
+		if indexes, ok := v8FieldIndexes[path]; ok && scoped {
+			value.FieldByIndex(indexes).SetZero()
 		}
-		value.FieldByIndex(v8FieldIndexes[path.old]).SetZero()
+	}
+	if cfg.OAuthOnlyFields["codex.optimize-multi-agent-v2"] {
+		filtered.CodexOptimizeMultiAgentV2 = false
+	}
+	if cfg.OAuthOnlyFields["codex.orphan-delegation-compatibility"] {
+		filtered.CodexOrphanDelegationCompatibility = false
+	}
+	if cfg.OAuthOnlyFields["codex.response-steering"] {
+		filtered.CodexResponseSteering = false
 	}
 	filtered.OAuthOnlyFields = nil
 	return &filtered
@@ -36,7 +43,7 @@ func (cfg Config) MarshalYAML() (any, error) {
 	}
 	value := reflect.ValueOf(cfg)
 	for _, path := range v8Paths {
-		if !strings.HasPrefix(path.current, "oauth.providers.") || !cfg.OAuthOnlyFields[path.old] {
+		if !cfg.OAuthOnlyFields[path.old] {
 			continue
 		}
 		field := yamlPath(&root, path.old)

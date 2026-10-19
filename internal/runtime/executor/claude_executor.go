@@ -25,6 +25,7 @@ type ClaudeExecutor struct {
 	requestLogProvider      string
 	upstreamModelNormalizer func(string) string
 	oauthProfileFetcher     claudeOAuthProfileFetcher
+	oauthToolAliases        *claudeOAuthToolAliasStore
 }
 
 type claudeOAuthCancellationError struct {

@@ -42,7 +42,11 @@ func translateCodexRequestPairWithUpdateIntent(from, to sdktranslator.Format, mo
 	ctx := context.Background()
 	translate := func(raw []byte) ([]byte, bool) {
 		if isCompat {
-			return helps.TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntent(ctx, nil, nil, from, to, model, raw, stream, true)
+			body, changed, err := helps.TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntent(ctx, nil, nil, from, to, model, raw, stream, true)
+			if err != nil {
+				return nil, false
+			}
+			return body, changed
 		}
 		translated := sdktranslator.TranslateRequestEnvelope(ctx, from, to, sdktranslator.RequestEnvelope{Format: from, Model: model, Stream: stream, Body: raw})
 		return translated.Body, translated.ConfigurationUpdatesChanged

@@ -30,13 +30,36 @@ func ApplyPayloadConfigWithRequest(cfg *config.Config, model, protocol, fromProt
 	return out
 }
 
-// ApplyPayloadConfigWithRequestTracked applies payload config and reports whether
-// an applied rule targeted trackedPath or one of its descendants.
+// ApplyPayloadConfigWithRequestForExecutor applies payload config with explicit target executor context.
+func ApplyPayloadConfigWithRequestForExecutor(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header) []byte {
+	out, _ := ApplyPayloadConfigWithTrackedPathsForExecutor(cfg, targetExecutor, model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers)
+	return out
+}
+
+func isCodexTargetExecutor(targetExecutor string) bool {
+	te := strings.ToLower(strings.TrimSpace(targetExecutor))
+	return te == "codex" || te == "codex-websockets" || te == "codex_websockets"
+}
+
 // ApplyPayloadConfigWithTrackedPaths applies payload config and reports which
 // tracked paths (or their descendants) were targeted by an applied rule.
 func ApplyPayloadConfigWithTrackedPaths(cfg *config.Config, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPaths ...string) ([]byte, map[string]bool) {
+	return ApplyPayloadConfigWithTrackedPathsForExecutor(cfg, "", model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers, trackedPaths...)
+}
+
+// ApplyPayloadConfigWithTrackedPathsForExecutor applies payload config with target executor awareness.
+// When headers indicate a Codex client and the target executor is not Codex or Codex WebSocket,
+// it normalizes tool parameter integer types to satisfy client-side integer deserialization (#6237).
+// For Codex and Codex WebSocket targets, integer normalization is skipped (#6244).
+func ApplyPayloadConfigWithTrackedPathsForExecutor(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPaths ...string) ([]byte, map[string]bool) {
 	touched := make(map[string]bool)
-	if cfg == nil || len(payload) == 0 {
+	if len(payload) == 0 {
+		return payload, touched
+	}
+	if IsCodexUserAgent(headers) && !isCodexTargetExecutor(targetExecutor) {
+		payload = NormalizeCodexToolIntegerTypes(payload, headers)
+	}
+	if cfg == nil {
 		return payload, touched
 	}
 	out := payload
@@ -137,7 +160,7 @@ func ApplyPayloadConfigWithTrackedPaths(cfg *config.Config, model, protocol, fro
 				}
 				for path, value := range rule.Params {
 					fullPath := buildPayloadPath(root, path)
-					if fullPath == "" || isPayloadControlParam(path) {
+					if fullPath == "" {
 						continue
 					}
 					for _, resolvedPath := range resolvePayloadRulePaths(out, fullPath) {
@@ -157,7 +180,7 @@ func ApplyPayloadConfigWithTrackedPaths(cfg *config.Config, model, protocol, fro
 				}
 				for path, value := range rule.Params {
 					fullPath := buildPayloadPath(root, path)
-					if fullPath == "" || isPayloadControlParam(path) {
+					if fullPath == "" {
 						continue
 					}
 					rawValue, ok := payloadRawValue(value)
@@ -980,16 +1003,6 @@ func PayloadRequestPath(opts cliproxyexecutor.Options) string {
 //	"*-5" matches "gpt-5"
 //	"gpt-*" matches "gpt-5" and "gpt-4"
 //	"gemini-*-pro" matches "gemini-2.5-pro" and "gemini-3-pro".
-//
-// isPayloadControlParam returns true for parameter keys that are control directives
-// rather than payload fields. These keys use a "prepend_" prefix convention and are
-// consumed by executor-side helpers (e.g., PrependSystemMessage) rather than forwarded
-// to the upstream provider. This avoids "Unsupported parameter" errors.
-func isPayloadControlParam(path string) bool {
-	p := strings.TrimSpace(path)
-	return strings.HasPrefix(p, "prepend_")
-}
-
 func matchModelPattern(pattern, model string) bool {
 	pattern = strings.TrimSpace(pattern)
 	model = strings.TrimSpace(model)
@@ -1027,61 +1040,4 @@ func matchModelPattern(pattern, model string) bool {
 		pi++
 	}
 	return pi == len(pattern)
-}
-
-// PrependSystemMessage inserts a system message at the beginning of the messages
-// array in a chat-completions payload. Used for language-injection overrides
-// applied after Responses-to-Chat-Completions translation.
-func PrependSystemMessage(payload []byte, content string) []byte {
-	if len(payload) == 0 || strings.TrimSpace(content) == "" {
-		return payload
-	}
-	msgs := gjson.GetBytes(payload, "messages")
-	if !msgs.Exists() || !msgs.IsArray() {
-		return payload
-	}
-	sysMsg := map[string]string{"role": "system", "content": content}
-	sysJSON, err := json.Marshal(sysMsg)
-	if err != nil {
-		return payload
-	}
-	// Build new array: [sysMsg, ...original]
-	parts := make([]string, 0, 1+len(msgs.Array()))
-	parts = append(parts, string(sysJSON))
-	for _, m := range msgs.Array() {
-		parts = append(parts, m.Raw)
-	}
-	newArr := "[" + strings.Join(parts, ",") + "]"
-	updated, err := sjson.SetRawBytes(payload, "messages", []byte(newArr))
-	if err != nil {
-		return payload
-	}
-	return updated
-}
-
-// LookupPayloadOverrideParam searches the payload override rules for a matching model
-// and returns the value of the specified param key if found.
-func LookupPayloadOverrideParam(cfg *config.Config, model, protocol, requestedModel, paramKey string) (string, bool) {
-	if cfg == nil || paramKey == "" {
-		return "", false
-	}
-	rules := cfg.Payload.Override
-	rules = append(rules, cfg.Payload.OverrideRaw...)
-	candidates := payloadModelCandidates(model, requestedModel)
-	for i := range rules {
-		rule := &rules[i]
-		if !payloadModelRulesMatch(rule.Models, protocol, "", nil, nil, "", candidates) {
-			continue
-		}
-		if v, ok := rule.Params[paramKey]; ok {
-			switch sv := v.(type) {
-			case string:
-				return sv, true
-			default:
-				b, _ := json.Marshal(v)
-				return string(b), true
-			}
-		}
-	}
-	return "", false
 }

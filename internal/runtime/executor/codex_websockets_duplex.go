@@ -201,7 +201,11 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
 				return false
 			}
-			payload = frameCodexWebsocketRequestBody(prepared.clientBody)
+			sendBody := prepared.upstreamBody
+			if len(sendBody) == 0 {
+				sendBody = prepared.clientBody
+			}
+			payload = frameCodexWebsocketRequestBody(sendBody)
 			metadataMu.Lock()
 			if len(pending) >= 16 {
 				metadataMu.Unlock()

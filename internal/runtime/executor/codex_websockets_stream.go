@@ -845,7 +845,6 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	if errPromptCache != nil {
 		return nil, errPromptCache
 	}
-	clientBody := body
 	body = helps.SanitizeCodexInputItemIDs(body)
 	if useSIWC {
 		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
@@ -863,7 +862,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		to:                   to,
 		preserveNativeOutput: preserveNativeOutput,
 		originalPayload:      originalPayload,
-		clientBody:           clientBody,
+		clientBody:           body,
 		upstreamBody:         upstreamBody,
 		wsURL:                wsURL,
 		wsHeaders:            wsHeaders,

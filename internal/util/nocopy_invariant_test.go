@@ -104,12 +104,13 @@ type reviewedInPlaceByteWrite struct {
 }
 
 var reviewedInPlaceByteWrites = map[string]reviewedInPlaceByteWrite{
+	"internal/api/handlers/management/management_auth_cache.go": {2, "copies an HMAC sum into a local digest and clears a private cache key; neither buffer contains JSON payload data"},
+	"internal/auth/codex/agent_identity.go":                     {2, "copies private cryptographic derivation results into local fixed-size key arrays"},
+	"internal/translator/common/apply_patch_responses.go":       {1, "shifts [][]byte item references in a private output slice; no byte of any JSON payload is rewritten"},
 	"internal/runtime/executor/claude_signing.go":               {2, "writes CCH digits into bytes.Clone(body); the caller's body is never touched"},
 	"internal/runtime/executor/claude_executor_cloaking.go":     {1, "shifts []string headers to prepend a block; no byte of any payload is rewritten"},
 	"internal/runtime/executor/claude_executor_request.go":      {3, "shifts []string headers to insert a part; no byte of any payload is rewritten"},
 	"internal/runtime/executor/helps/claude_mcp_alias.go":       {1, "copies an HMAC sum into a local fixed-size digest array"},
-	"internal/api/handlers/management/management_auth_cache.go": {2, "copies an HMAC sum into a local digest and clears a private cache key; neither buffer contains JSON payload data"},
-	"internal/auth/codex/agent_identity.go":                     {2, "copies private cryptographic derivation results into local fixed-size key arrays"},
 	"internal/client/codex/live/tcp_proxy.go":                   {1, "copies header and payload into a freshly allocated frame"},
 	"internal/home/client.go":                                   {1, "zeroes a secret buffer after json.Unmarshal has copied every value out"},
 	"internal/pluginstore/auth.go":                              {1, "zeroes a locally built credential buffer after base64 encoding copied it out"},

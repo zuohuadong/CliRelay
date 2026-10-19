@@ -805,8 +805,8 @@ func TestConvertOpenAIResponsesResponseToOpenAIChatCompletionsNonStream(t *testi
 	if got := gjson.GetBytes(out, "object").String(); got != "chat.completion" {
 		t.Fatalf("object = %q, want chat.completion", got)
 	}
-	if got := gjson.GetBytes(out, "id").String(); got != "chatcmpl-1" {
-		t.Fatalf("id = %q, want chatcmpl-1", got)
+	if got := gjson.GetBytes(out, "id").String(); got != "resp_1" {
+		t.Fatalf("id = %q, want resp_1", got)
 	}
 	if got := gjson.GetBytes(out, "choices.0.message.role").String(); got != "assistant" {
 		t.Fatalf("role = %q, want assistant", got)

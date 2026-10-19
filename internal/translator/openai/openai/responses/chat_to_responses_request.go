@@ -8,8 +8,8 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-func ConvertOpenAIChatCompletionsRequestToOpenAIResponses(modelName string, inputRawJSON []byte, stream bool) []byte {
-	out := codexchat.ConvertOpenAIRequestToCodex(modelName, inputRawJSON, stream)
+func ConvertOpenAIChatCompletionsRequestToOpenAIResponses(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
+	out, _ := codexchat.ConvertOpenAIRequestToCodex(modelName, inputRawJSON, stream)
 	root := gjson.ParseBytes(inputRawJSON)
 
 	out, _ = sjson.DeleteBytes(out, "include")
@@ -57,5 +57,5 @@ func ConvertOpenAIChatCompletionsRequestToOpenAIResponses(modelName string, inpu
 
 	out, _ = sjson.SetBytes(out, "model", modelName)
 	out, _ = sjson.SetBytes(out, "stream", stream)
-	return out
+	return out, nil
 }

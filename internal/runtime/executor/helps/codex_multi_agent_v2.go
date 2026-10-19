@@ -133,17 +133,17 @@ func TranslateRequestWithAPIKeyModelCompatibility(ctx context.Context, headers h
 	var translated []byte
 	switch {
 	case from == sdktranslator.FormatClaude && to == sdktranslator.FormatCodex:
-		translated = codexclaude.ConvertClaudeRequestToCodexWithCompat(model, payload, stream)
+		translated, _ = codexclaude.ConvertClaudeRequestToCodexWithCompat(model, payload, stream)
 	case from == sdktranslator.FormatClaude && to == sdktranslator.FormatGemini:
-		translated = geminiclaude.ConvertClaudeRequestToGeminiWithCompat(model, payload, stream)
+		translated, _ = geminiclaude.ConvertClaudeRequestToGeminiWithCompat(model, payload, stream)
 	case from == sdktranslator.FormatClaude && to == sdktranslator.FormatInteractions:
-		translated = interactionsclaude.ConvertClaudeRequestToInteractionsWithCompat(model, payload, stream)
+		translated, _ = interactionsclaude.ConvertClaudeRequestToInteractionsWithCompat(model, payload, stream)
 	case from == sdktranslator.FormatClaude && to == sdktranslator.FormatOpenAI:
-		translated = openaiclaude.ConvertClaudeRequestToOpenAIWithCompat(model, payload, stream)
+		translated, _ = openaiclaude.ConvertClaudeRequestToOpenAIWithCompat(model, payload, stream)
 	case from == sdktranslator.FormatOpenAI && to == sdktranslator.FormatClaude:
-		translated = openaichatclaude.ConvertOpenAIRequestToClaudeWithCompat(model, payload, stream)
+		translated, _ = openaichatclaude.ConvertOpenAIRequestToClaudeWithCompat(model, payload, stream)
 	case from == sdktranslator.FormatOpenAIResponse && to == sdktranslator.FormatClaude:
-		translated = responsesclaude.ConvertOpenAIResponsesRequestToClaudeWithCompat(model, payload, stream)
+		translated, _ = responsesclaude.ConvertOpenAIResponsesRequestToClaudeWithCompat(model, payload, stream)
 	default:
 		return TranslateRequestWithCodexMultiAgentV2(ctx, headers, cfg, from, to, model, payload, stream)
 	}

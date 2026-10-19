@@ -19,7 +19,8 @@ func TestResponsesCompatibilityDigest(t *testing.T) {
 	hash := sha256.New()
 	ctx := context.Background()
 	for _, request := range requests {
-		hash.Write(ConvertOpenAIResponsesRequestToOpenAIChatCompletions("test", request, true))
+		digestBody, _ := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("test", request, true)
+		hash.Write(digestBody)
 		for _, name := range []string{"editor__read", "read", "editor__patch", "patch", "unknown"} {
 			var state any
 			chunks := []string{

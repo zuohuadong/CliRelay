@@ -15,6 +15,33 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// codexUseSIWC reports whether a credential opted into the OpenAI
+// sign-in-with-ChatGPT wire instead of the ChatGPT backend.
+func codexUseSIWC(auth *cliproxyauth.Auth) bool {
+	if auth == nil {
+		return false
+	}
+	enabled := false
+	if len(auth.Attributes) > 0 {
+		if raw := strings.TrimSpace(auth.Attributes["use_siwc"]); raw != "" {
+			if parsed, errParse := strconv.ParseBool(raw); errParse == nil {
+				enabled = parsed
+			}
+		}
+	}
+	if !enabled && auth.Metadata != nil {
+		switch v := auth.Metadata["use_siwc"].(type) {
+		case bool:
+			enabled = v
+		case string:
+			if parsed, errParse := strconv.ParseBool(strings.TrimSpace(v)); errParse == nil {
+				enabled = parsed
+			}
+		}
+	}
+	return enabled
+}
+
 func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	log.Debugf("codex executor: refresh called")
 	var err error

@@ -270,15 +270,15 @@ func normalizeCodexWebsocketParallelToolCalls(body []byte, headers http.Header) 
 }
 
 func buildCodexWebsocketRequestBody(body []byte) []byte {
+	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
+	return frameCodexWebsocketRequestBody(helps.SanitizeCodexInputItemIDs(body))
+}
+
+// Framing must not normalize the configured business payload.
+func frameCodexWebsocketRequestBody(body []byte) []byte {
 	if len(body) == 0 {
 		return nil
 	}
-
-	// Match codex-rs websocket v2 semantics: every request is `response.create`.
-	// Incremental follow-up turns continue on the same websocket using
-	// `previous_response_id` + incremental `input`, not `response.append`.
-	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
-	body = helps.SanitizeCodexInputItemIDs(body)
 	wsReqBody, errSet := sjson.SetBytes(body, "type", "response.create")
 	if errSet == nil && len(wsReqBody) > 0 {
 		return wsReqBody

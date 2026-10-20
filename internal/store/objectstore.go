@@ -50,6 +50,8 @@ type ObjectTokenStore struct {
 	configPath string
 	authDir    string
 	mu         sync.Mutex
+	// putObjectFn overrides the object writer in tests.
+	putObjectFn func(ctx context.Context, key string, data []byte, contentType string) error
 }
 
 // NewObjectTokenStore initializes an object storage backed token store.
@@ -530,6 +532,9 @@ func (s *ObjectTokenStore) deleteAuthObject(ctx context.Context, path string) er
 }
 
 func (s *ObjectTokenStore) putObject(ctx context.Context, key string, data []byte, contentType string) error {
+	if s.putObjectFn != nil {
+		return s.putObjectFn(ctx, key, data, contentType)
+	}
 	if len(data) == 0 {
 		return s.deleteObject(ctx, key)
 	}

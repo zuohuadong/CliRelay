@@ -52,7 +52,11 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		}
 		full := filepath.Join(ctx.AuthDir, name)
 		data, errRead := os.ReadFile(full)
-		if errRead != nil || len(data) == 0 {
+		if errRead != nil {
+			continue
+		}
+		if !json.Valid(data) {
+			ctx.RecordIncompleteFile(full)
 			continue
 		}
 		auths, errSynthesize := synthesizeFileAuths(ctx, full, data)
@@ -74,37 +78,27 @@ func SynthesizeAuthFile(ctx *SynthesisContext, fullPath string, data []byte) ([]
 	return synthesizeFileAuths(ctx, fullPath, data)
 }
 
-func resolveFileAuthKind(metadata map[string]any) string {
-	auth := &coreauth.Auth{Metadata: metadata}
-	if coreauth.IsStandaloneAgentIdentityAuth(auth) {
-		return coreauth.AuthKindAgentIdentity
-	}
-	if kind, ok := metadata[coreauth.AttributeAuthKind].(string); ok {
-		switch strings.ToLower(strings.TrimSpace(kind)) {
-		case coreauth.AuthKindAPIKey, "api_key", "api-key":
-			return coreauth.AuthKindAPIKey
-		case coreauth.AuthKindOAuth, "oauth2":
-			return coreauth.AuthKindOAuth
-		case coreauth.AuthKindAgentIdentity, "agent-identity":
-			return coreauth.AuthKindAgentIdentity
-		}
-	}
-	return coreauth.AuthKindOAuth
-}
-
 func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([]*coreauth.Auth, error) {
 	if ctx == nil || len(data) == 0 {
 		return nil, nil
 	}
 	now := ctx.Now
-	cfg := ctx.Config
 	var metadata map[string]any
 	if errUnmarshal := json.Unmarshal(data, &metadata); errUnmarshal != nil {
+		if ctx.StrictFileParsing {
+			return nil, fmt.Errorf("parse auth file: %w", errUnmarshal)
+		}
 		return nil, nil
 	}
 	coreauth.NormalizeCredentialMetadata(metadata)
 	if errWeight := coreauth.ValidateAuthWeight(&coreauth.Auth{Metadata: metadata}); errWeight != nil {
 		return nil, fmt.Errorf("invalid weight in %s: %w", filepath.Base(fullPath), errWeight)
+	}
+	// Invalid per-account rules must not drop an existing credential: keep the valid
+	// entries and warn. Write entry points (upload and PATCH) reject them before persisting.
+	perAccountExcluded, errExcluded := ExtractExcludedModelsFromMetadata(metadata)
+	if errExcluded != nil {
+		log.WithError(errExcluded).Warnf("ignoring invalid excluded models in auth file %s", filepath.Base(fullPath))
 	}
 	t, _ := metadata["type"].(string)
 	if strings.TrimSpace(t) == "" {
@@ -127,16 +121,16 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			FileName: filepath.Base(fullPath),
 			RawJSON:  data,
 		})
+		if errParse != nil && ctx.StrictFileParsing {
+			return nil, fmt.Errorf("parse plugin auth file: %w", errParse)
+		}
 		if errParse == nil && handled {
 			auths = compactPluginAuths(auths)
 			if len(auths) == 0 {
 				return nil, nil
 			}
-			perAccountExcluded, errExcluded := ExtractExcludedModelsFromMetadata(metadata)
-			if errExcluded != nil {
-				log.WithError(errExcluded).Warnf("ignoring invalid excluded models in auth file %s", filepath.Base(fullPath))
-			}
 			perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
+			disabled, _ := metadata["disabled"].(bool)
 			for index, auth := range auths {
 				if auth == nil {
 					continue
@@ -153,19 +147,15 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				auth.Attributes[coreauth.AttributePath] = fullPath
 				auth.Attributes[coreauth.AttributeSource] = fullPath
 				auth.Attributes[coreauth.AttributeSourceBackend] = coreauth.AuthSourceFile
-				if _, ok := metadata["disabled"]; ok {
+				if disabled {
+					auth.Disabled = true
+					auth.Status = coreauth.StatusDisabled
 					if auth.Metadata == nil {
 						auth.Metadata = make(map[string]any)
 					}
-					auth.Metadata["disabled"] = metadata["disabled"]
+					auth.Metadata["disabled"] = true
 				}
 				coreauth.RestorePersistedDisabled(auth)
-				if p, ok := metadata["proxy_url"].(string); ok && auth.ProxyURL == "" {
-					auth.ProxyURL = strings.TrimSpace(p)
-				}
-				if pref, ok := metadata["prefix"].(string); ok && auth.Prefix == "" {
-					auth.Prefix = strings.Trim(strings.TrimSpace(pref), "/")
-				}
 				if p, ok := metadata["proxy_url"].(string); ok && auth.ProxyURL == "" {
 					auth.ProxyURL = strings.TrimSpace(p)
 				}
@@ -182,9 +172,10 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 					}
 				}
 				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
-				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
+				ApplyAuthExcludedModelsMeta(auth, perAccountExcluded, "oauth")
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
 				applyFingerprintProfileAttribute(auth, metadata)
+				auth.BindFileSnapshot(fullPath, data)
 			}
 			return auths, nil
 		}
@@ -217,6 +208,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				auth.ID = baseID + "#" + strconv.Itoa(index)
 				coreauth.MarkFileBundleAuth(auth, fullPath, index)
 			}
+			auth.BindFileSnapshot(fullPath, data)
 			out = append(out, auth)
 		}
 		return out, nil
@@ -225,14 +217,33 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	if errAuth != nil || auth == nil {
 		return nil, errAuth
 	}
+	auth.BindFileSnapshot(fullPath, data)
 	return []*coreauth.Auth{auth}, nil
+}
+
+// resolveFileAuthKind classifies a credential by its metadata.
+func resolveFileAuthKind(metadata map[string]any) string {
+	auth := &coreauth.Auth{Metadata: metadata}
+	if coreauth.IsStandaloneAgentIdentityAuth(auth) {
+		return coreauth.AuthKindAgentIdentity
+	}
+	if kind, ok := metadata[coreauth.AttributeAuthKind].(string); ok {
+		switch strings.ToLower(strings.TrimSpace(kind)) {
+		case coreauth.AuthKindAPIKey, "api_key", "api-key":
+			return coreauth.AuthKindAPIKey
+		case coreauth.AuthKindOAuth, "oauth2":
+			return coreauth.AuthKindOAuth
+		case coreauth.AuthKindAgentIdentity, "agent-identity":
+			return coreauth.AuthKindAgentIdentity
+		}
+	}
+	return coreauth.AuthKindOAuth
 }
 
 func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider string, metadata map[string]any, now time.Time) (*coreauth.Auth, error) {
 	if metadata == nil {
 		return nil, nil
 	}
-	cfg := ctx.Config
 	label := provider
 	if email, _ := metadata["email"].(string); email != "" {
 		label = email
@@ -336,11 +347,12 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
+	applyOpenAPIModelsAttribute(a, metadata)
 	authKind := resolveFileAuthKind(metadata)
 	if provider == "openai-compatibility" && strings.TrimSpace(a.Attributes["api_key"]) != "" {
 		authKind = "api_key"
 	}
-	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, authKind)
+	ApplyAuthExcludedModelsMeta(a, perAccountExcluded, authKind)
 	applyFingerprintProfileAttribute(a, metadata)
 	// For codex auth files, extract plan_type from metadata or JWT id_token.
 	if provider == "codex" {
@@ -378,6 +390,61 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 	return a, nil
 }
 
+var codexBundleCredentialKeys = []string{
+	"account_id", "id_token", "access_token", "refresh_token", "email",
+	"plan_type", "expired", "last_refresh", "token_type",
+	"chatgpt_account_id", "chatgpt_user_id", "workspace_id", "task_id",
+	"agent_private_key", "agent_runtime_id", "auth_mode",
+}
+
+// expandCodexBundle expands a Codex multi-account bundle file into per-account
+// metadata clones. It returns nil for ordinary single-account files.
+func expandCodexBundle(metadata map[string]any) []map[string]any {
+	if metadata == nil {
+		return nil
+	}
+	accounts, ok := metadata["accounts"].([]any)
+	if !ok || len(accounts) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(accounts))
+	for _, entry := range accounts {
+		account, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		credentials, ok := account["credentials"].(map[string]any)
+		if !ok || len(credentials) == 0 {
+			continue
+		}
+		clone := make(map[string]any, len(metadata)+len(credentials)+4)
+		for key, value := range metadata {
+			clone[key] = value
+		}
+		for _, key := range codexBundleCredentialKeys {
+			if value, exists := credentials[key]; exists {
+				clone[key] = value
+			}
+		}
+		for _, key := range []string{"priority", "name", "disabled", "proxy_url", "prefix", "note"} {
+			if value, exists := account[key]; exists {
+				if key == "disabled" {
+					sourceDisabled, _ := clone[key].(bool)
+					accountDisabled, _ := value.(bool)
+					clone[key] = sourceDisabled || accountDisabled
+					continue
+				}
+				clone[key] = value
+			}
+		}
+		out = append(out, clone)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func parsePluginFileAuths(parser PluginAuthParser, req pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
 	if parser == nil {
 		return nil, false, nil
@@ -411,32 +478,91 @@ func compactPluginAuths(auths []*coreauth.Auth) []*coreauth.Auth {
 
 // extractOAuthModelAliasesFromMetadata reads per-account model aliases from OAuth JSON metadata.
 // "model_aliases" is canonical; "model-aliases" remains a legacy alias.
+// Entries under "models" that specify both "name" and "alias" are also accepted.
 func extractOAuthModelAliasesFromMetadata(metadata map[string]any) []config.OAuthModelAlias {
 	if metadata == nil {
 		return nil
 	}
-	raw, ok := metadata["model_aliases"]
-	if !ok {
-		raw, ok = metadata["model-aliases"]
+	var combined []config.OAuthModelAlias
+	for _, key := range []string{"model_aliases", "model-aliases", "models"} {
+		raw, ok := metadata[key]
+		if !ok || raw == nil {
+			continue
+		}
+		data, errMarshal := json.Marshal(raw)
+		if errMarshal != nil {
+			continue
+		}
+		var aliases []config.OAuthModelAlias
+		if errUnmarshal := json.Unmarshal(data, &aliases); errUnmarshal != nil {
+			continue
+		}
+		combined = append(combined, aliases...)
 	}
-	if !ok || raw == nil {
-		return nil
-	}
-	data, errMarshal := json.Marshal(raw)
-	if errMarshal != nil {
-		return nil
-	}
-	var aliases []config.OAuthModelAlias
-	if errUnmarshal := json.Unmarshal(data, &aliases); errUnmarshal != nil {
+	if len(combined) == 0 {
 		return nil
 	}
 	cfg := config.Config{
 		OAuthModelAlias: map[string][]config.OAuthModelAlias{
-			"auth": aliases,
+			"auth": combined,
 		},
 	}
 	cfg.SanitizeOAuthModelAlias()
 	return cfg.OAuthModelAlias["auth"]
+}
+
+func applyOpenAPIModelsAttribute(auth *coreauth.Auth, metadata map[string]any) {
+	if auth == nil || metadata == nil {
+		return
+	}
+	var names []string
+	seen := make(map[string]struct{})
+	add := func(raw string) {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			return
+		}
+		key := strings.ToLower(trimmed)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		names = append(names, trimmed)
+	}
+	for _, key := range []string{"openapi_models", "openapi-models", "models"} {
+		raw, ok := metadata[key]
+		if !ok || raw == nil {
+			continue
+		}
+		switch v := raw.(type) {
+		case string:
+			for _, part := range strings.Split(v, ",") {
+				add(part)
+			}
+		case []string:
+			for _, item := range v {
+				add(item)
+			}
+		case []any:
+			for _, item := range v {
+				switch elem := item.(type) {
+				case string:
+					add(elem)
+				case map[string]any:
+					if name, okName := elem["name"].(string); okName {
+						add(name)
+					}
+				}
+			}
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	auth.Attributes["openapi_models"] = strings.Join(names, ",")
 }
 
 // ExtractExcludedModelsFromMetadata reads per-account excluded models from the OAuth JSON metadata.
@@ -487,90 +613,4 @@ func ExtractExcludedModelsFromMetadata(metadata map[string]any) ([]string, error
 		}
 	}
 	return result, errInvalid
-}
-func extractExcludedModelsFromMetadata(metadata map[string]any) []string {
-	if metadata == nil {
-		return nil
-	}
-	raw, ok := metadata["excluded_models"]
-	if !ok {
-		raw, ok = metadata["excluded-models"]
-	}
-	if !ok || raw == nil {
-		return nil
-	}
-	var stringSlice []string
-	switch v := raw.(type) {
-	case []string:
-		stringSlice = v
-	case []interface{}:
-		stringSlice = make([]string, 0, len(v))
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				stringSlice = append(stringSlice, s)
-			}
-		}
-	default:
-		return nil
-	}
-	result := make([]string, 0, len(stringSlice))
-	for _, s := range stringSlice {
-		if trimmed := strings.TrimSpace(s); trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
-}
-
-var codexBundleCredentialKeys = []string{
-	"account_id", "id_token", "access_token", "refresh_token", "email",
-	"plan_type", "expired", "last_refresh", "token_type",
-	"chatgpt_account_id", "chatgpt_user_id", "workspace_id", "task_id",
-	"agent_private_key", "agent_runtime_id", "auth_mode",
-}
-
-func expandCodexBundle(metadata map[string]any) []map[string]any {
-	if metadata == nil {
-		return nil
-	}
-	accounts, ok := metadata["accounts"].([]any)
-	if !ok || len(accounts) == 0 {
-		return nil
-	}
-	out := make([]map[string]any, 0, len(accounts))
-	for _, entry := range accounts {
-		account, ok := entry.(map[string]any)
-		if !ok {
-			continue
-		}
-		credentials, ok := account["credentials"].(map[string]any)
-		if !ok || len(credentials) == 0 {
-			continue
-		}
-		clone := make(map[string]any, len(metadata)+len(credentials)+4)
-		for key, value := range metadata {
-			clone[key] = value
-		}
-		for _, key := range codexBundleCredentialKeys {
-			if value, exists := credentials[key]; exists {
-				clone[key] = value
-			}
-		}
-		for _, key := range []string{"priority", "name", "disabled", "proxy_url", "prefix", "note"} {
-			if value, exists := account[key]; exists {
-				if key == "disabled" {
-					sourceDisabled, _ := clone[key].(bool)
-					accountDisabled, _ := value.(bool)
-					clone[key] = sourceDisabled || accountDisabled
-					continue
-				}
-				clone[key] = value
-			}
-		}
-		out = append(out, clone)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }

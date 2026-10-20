@@ -318,6 +318,16 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 			written = backfilled
 		}
 	}
+	if !bytes.Equal(written, data) {
+		// The synthesized auths were bound to the original content digest. Rebuild
+		// them from the bytes actually written so the file snapshot still matches
+		// disk and the auth update is not discarded as stale.
+		rebuilt, errRebuild := h.buildAuthsFromFileData(dst, written)
+		if errRebuild != nil {
+			return errRebuild
+		}
+		auths = rebuilt
+	}
 	if errWrite := os.WriteFile(dst, written, 0o600); errWrite != nil {
 		return fmt.Errorf("failed to write file: %w", errWrite)
 	}

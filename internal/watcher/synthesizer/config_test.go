@@ -229,6 +229,7 @@ func TestConfigSynthesizer_ClaudeKeys(t *testing.T) {
 					BaseURL:                 "https://api.anthropic.com",
 					DisableCooling:          boolPointer(true),
 					RebuildMidSystemMessage: true,
+					NativeToolSearch:        true,
 					FingerprintProfile:      "claude-code-cli",
 					Models: []config.ClaudeModel{
 						{Name: "claude-3-opus"},
@@ -273,8 +274,25 @@ func TestConfigSynthesizer_ClaudeKeys(t *testing.T) {
 	if got := auths[0].Attributes["fingerprint_profile"]; got != "claude-code-cli" {
 		t.Errorf("expected fingerprint_profile=claude-code-cli, got %s", got)
 	}
+	if got := auths[0].Attributes["native_tool_search"]; got != "true" {
+		t.Errorf("expected native_tool_search=true, got %s", got)
+	}
 	if v, ok := auths[0].Metadata["disable_cooling"].(bool); !ok || !v {
 		t.Errorf("expected disable_cooling=true, got %v", auths[0].Metadata["disable_cooling"])
+	}
+}
+
+func TestConfigSynthesizer_ClaudeKeys_NativeToolSearchDefaultOff(t *testing.T) {
+	auths, err := NewConfigSynthesizer().Synthesize(&SynthesisContext{
+		Config:      &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "key", BaseURL: "https://gateway.example.com"}}},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	})
+	if err != nil || len(auths) != 1 {
+		t.Fatalf("synthesize: auths=%d err=%v", len(auths), err)
+	}
+	if value, exists := auths[0].Attributes["native_tool_search"]; exists {
+		t.Fatalf("native_tool_search = %q, want absent by default", value)
 	}
 }
 
@@ -744,97 +762,6 @@ func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 	}
 }
 
-func TestConfigSynthesizer_BigModelCoding(t *testing.T) {
-	synth := NewConfigSynthesizer()
-	ctx := &SynthesisContext{
-		Config: &config.Config{
-			BigModelCodingAPIKey: []config.OpenAICompatibility{
-				{
-					BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4",
-					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-						{APIKey: "bigmodel-key"},
-					},
-					Models: []config.OpenAICompatibilityModel{
-						{Name: "glm-5.1", Alias: "gpt-5.3-codex"},
-					},
-				},
-			},
-		},
-		Now:         time.Now(),
-		IDGenerator: NewStableIDGenerator(),
-	}
-
-	auths, err := synth.Synthesize(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 auth, got %d", len(auths))
-	}
-	auth := auths[0]
-	if auth.Provider != "bigmodel-coding" {
-		t.Fatalf("provider = %q, want bigmodel-coding", auth.Provider)
-	}
-	if auth.Attributes["provider_key"] != "bigmodel-coding" || auth.Attributes["compat_name"] != "bigmodel-coding" {
-		t.Fatalf("unexpected attrs: %#v", auth.Attributes)
-	}
-	if auth.Attributes["base_url"] != "https://open.bigmodel.cn/api/coding/paas/v4" {
-		t.Fatalf("base_url = %q", auth.Attributes["base_url"])
-	}
-}
-
-func TestConfigSynthesizer_AstronCode(t *testing.T) {
-	synth := NewConfigSynthesizer()
-	requestRetry := 3
-	transientCooldown := 1
-	ctx := &SynthesisContext{
-		Config: &config.Config{
-			AstronCodeAPIKey: []config.OpenAICompatibility{
-				{
-					BaseURL:                       "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
-					RequestRetry:                  &requestRetry,
-					TransientErrorCooldownSeconds: &transientCooldown,
-					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-						{APIKey: "astron-key", ProxyURL: "http://proxy.local:8080"},
-					},
-					Models: []config.OpenAICompatibilityModel{
-						{Name: "astron-code-latest", Alias: "gpt-5.3-codex"},
-					},
-				},
-			},
-		},
-		Now:         time.Now(),
-		IDGenerator: NewStableIDGenerator(),
-	}
-
-	auths, err := synth.Synthesize(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 auth, got %d", len(auths))
-	}
-	auth := auths[0]
-	if auth.Provider != "astron-code" {
-		t.Fatalf("provider = %q, want astron-code", auth.Provider)
-	}
-	if auth.Attributes["provider_key"] != "astron-code" || auth.Attributes["compat_name"] != "astron-code" {
-		t.Fatalf("unexpected attrs: %#v", auth.Attributes)
-	}
-	if auth.Attributes["base_url"] != "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2" {
-		t.Fatalf("base_url = %q", auth.Attributes["base_url"])
-	}
-	if auth.ProxyURL != "http://proxy.local:8080" {
-		t.Fatalf("proxy_url = %q", auth.ProxyURL)
-	}
-	if got, ok := auth.Metadata["request_retry"].(int); !ok || got != 3 {
-		t.Fatalf("request_retry metadata = %#v, want 3", auth.Metadata["request_retry"])
-	}
-	if got, ok := auth.Metadata["transient_error_cooldown_seconds"].(int); !ok || got != 1 {
-		t.Fatalf("transient_error_cooldown_seconds metadata = %#v, want 1", auth.Metadata["transient_error_cooldown_seconds"])
-	}
-}
-
 func TestConfigSynthesizer_OpenAICompat_UsesNamespacedProviderKey(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	ctx := &SynthesisContext{
@@ -1239,12 +1166,6 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 			OpenAICompatibility: []config.OpenAICompatibility{
 				{Name: "compat", BaseURL: "https://compat.api"},
 			},
-			BigModelCodingAPIKey: []config.OpenAICompatibility{
-				{Name: "bigmodel-coding", BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"},
-			},
-			AgnesAPIKey: []config.OpenAICompatibility{
-				{Name: "agnes", BaseURL: "https://apihub.agnes-ai.com/v1", APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "agnes-key"}}},
-			},
 			VertexCompatAPIKey: []config.VertexCompatKey{
 				{APIKey: "vertex-key", BaseURL: "https://vertex.api"},
 			},
@@ -1257,8 +1178,8 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(auths) != 9 {
-		t.Fatalf("expected 9 auths, got %d", len(auths))
+	if len(auths) != 7 {
+		t.Fatalf("expected 7 auths, got %d", len(auths))
 	}
 
 	providers := make(map[string]bool)
@@ -1266,35 +1187,10 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 		providers[a.Provider] = true
 	}
 
-	expected := []string{"gemini", "claude", "codex", "xai", "meta", "bigmodel-coding", "agnes", "openai-compatible-compat", "vertex"}
+	expected := []string{"gemini", "claude", "codex", "xai", "meta", "openai-compatible-compat", "vertex"}
 	for _, p := range expected {
 		if !providers[p] {
 			t.Errorf("expected provider %s not found", p)
-		}
-	}
-}
-
-func TestConfigSynthesizer_AgnesRequiresAPIKeyEntry(t *testing.T) {
-	synth := NewConfigSynthesizer()
-	ctx := &SynthesisContext{
-		Config: &config.Config{
-			AgnesAPIKey: []config.OpenAICompatibility{{
-				Name:          "agnes",
-				BaseURL:       "https://apihub.agnes-ai.com/v1",
-				APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "  "}, {APIKey: "sk-agnes", Disabled: true}},
-			}},
-		},
-		Now:         time.Now(),
-		IDGenerator: NewStableIDGenerator(),
-	}
-
-	auths, err := synth.Synthesize(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	for _, auth := range auths {
-		if auth.Provider == "agnes" {
-			t.Fatalf("unexpected agnes auth without an enabled api key: %#v", auth)
 		}
 	}
 }
@@ -1312,31 +1208,65 @@ func TestConfigSynthesizer_RequestRetry(t *testing.T) {
 				{APIKey: "gemini-negative", RequestRetry: &negative},
 				{APIKey: "gemini-unset"},
 			},
-			InteractionsKey: []config.GeminiKey{{APIKey: "interactions-zero", RequestRetry: &zero}},
-			ClaudeKey:       []config.ClaudeKey{{APIKey: "claude-positive", RequestRetry: &positive}},
-			CodexKey:        []config.CodexKey{{APIKey: "codex-zero", RequestRetry: &zero}},
-			XAIKey:          []config.XAIKey{{APIKey: "xai-positive", RequestRetry: &positive}},
-			OpenAICompatibility: []config.OpenAICompatibility{{
-				Name: "compat", BaseURL: "https://compat.api", RequestRetry: &zero,
-				APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "compat-key"}},
-			}},
-			VertexCompatAPIKey: []config.VertexCompatKey{{APIKey: "vertex-positive", BaseURL: "https://vertex.api", RequestRetry: &positive}},
+			InteractionsKey: []config.GeminiKey{
+				{APIKey: "interactions-zero", RequestRetry: &zero},
+			},
+			ClaudeKey: []config.ClaudeKey{
+				{APIKey: "claude-positive", RequestRetry: &positive},
+			},
+			CodexKey: []config.CodexKey{
+				{APIKey: "codex-zero", RequestRetry: &zero},
+			},
+			XAIKey: []config.XAIKey{
+				{APIKey: "xai-positive", RequestRetry: &positive},
+			},
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:         "compat",
+					BaseURL:      "https://compat.api",
+					RequestRetry: &zero,
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "compat-key"},
+					},
+				},
+			},
+			VertexCompatAPIKey: []config.VertexCompatKey{
+				{APIKey: "vertex-positive", BaseURL: "https://vertex.api", RequestRetry: &positive},
+			},
 		},
-		Now: time.Now(), IDGenerator: NewStableIDGenerator(),
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
 	}
-	auths, err := synth.Synthesize(ctx)
-	if err != nil {
-		t.Fatalf("Synthesize() error = %v", err)
+
+	auths, errSynthesize := synth.Synthesize(ctx)
+	if errSynthesize != nil {
+		t.Fatalf("Synthesize() error = %v", errSynthesize)
 	}
-	want := map[string]any{"gemini-zero": 0, "gemini-positive": 2, "gemini-negative": nil, "gemini-unset": nil, "interactions-zero": 0, "claude-positive": 2, "codex-zero": 0, "xai-positive": 2, "compat-key": 0, "vertex-positive": 2}
+
+	want := map[string]any{
+		"gemini-zero":       0,
+		"gemini-positive":   2,
+		"gemini-negative":   nil,
+		"gemini-unset":      nil,
+		"interactions-zero": 0,
+		"claude-positive":   2,
+		"codex-zero":        0,
+		"xai-positive":      2,
+		"compat-key":        0,
+		"vertex-positive":   2,
+	}
 	got := make(map[string]any, len(auths))
 	for _, auth := range auths {
 		key := auth.Attributes["api_key"]
 		if auth.Metadata == nil {
 			got[key] = nil
-		} else {
-			got[key] = auth.Metadata["request_retry"]
+			continue
 		}
+		if value, exists := auth.Metadata["request_retry"]; exists {
+			got[key] = value
+			continue
+		}
+		got[key] = nil
 	}
 	for key, expected := range want {
 		actual, exists := got[key]

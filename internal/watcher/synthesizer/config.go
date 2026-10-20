@@ -21,6 +21,18 @@ func NewConfigSynthesizer() *ConfigSynthesizer {
 	return &ConfigSynthesizer{}
 }
 
+func addWeightToAttrs(weight *int, attrs map[string]string) {
+	if weight == nil {
+		return
+	}
+	normalized := *weight
+	if normalized <= 0 {
+		normalized = 0
+	}
+	attrs[coreauth.AttributeWeight] = strconv.Itoa(normalized)
+}
+
+// Synthesize generates Auth entries from config API keys.
 func addOpenAICompatibilityRetryMetadata(compat *config.OpenAICompatibility, metadata map[string]any) {
 	if compat == nil || metadata == nil {
 		return
@@ -37,18 +49,6 @@ func addOpenAICompatibilityRetryMetadata(compat *config.OpenAICompatibility, met
 	}
 }
 
-func addWeightToAttrs(weight *int, attrs map[string]string) {
-	if weight == nil {
-		return
-	}
-	normalized := *weight
-	if normalized <= 0 {
-		normalized = 0
-	}
-	attrs[coreauth.AttributeWeight] = strconv.Itoa(normalized)
-}
-
-// Synthesize generates Auth entries from config API keys.
 func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, error) {
 	out := make([]*coreauth.Auth, 0, 32)
 	if ctx == nil || ctx.Config == nil {
@@ -539,7 +539,6 @@ func (s *ConfigSynthesizer) synthesizeInteractionsKeys(ctx *SynthesisContext) []
 }
 
 func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, entries []config.GeminiKey, idKind, sourceName, label, provider string) []*coreauth.Auth {
-	cfg := ctx.Config
 	now := ctx.Now
 	idGen := ctx.IDGenerator
 
@@ -590,7 +589,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
-		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
+		ApplyAuthExcludedModelsMeta(a, entry.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
@@ -639,6 +638,9 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		if ck.RebuildMidSystemMessage {
 			attrs["rebuild_mid_system_message"] = "true"
 		}
+		if ck.NativeToolSearch {
+			attrs["native_tool_search"] = "true"
+		}
 		if profile := strings.ToLower(strings.TrimSpace(ck.FingerprintProfile)); profile != "" {
 			attrs["fingerprint_profile"] = profile
 		}
@@ -658,7 +660,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
-		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
+		ApplyAuthExcludedModelsMeta(a, ck.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
@@ -683,7 +685,6 @@ func (s *ConfigSynthesizer) synthesizeMetaKeys(ctx *SynthesisContext) []*coreaut
 }
 
 func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entries []config.CodexKey, provider string) []*coreauth.Auth {
-	cfg := ctx.Config
 	now := ctx.Now
 	idGen := ctx.IDGenerator
 
@@ -743,7 +744,7 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
-		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
+		ApplyAuthExcludedModelsMeta(a, entry.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
@@ -809,7 +810,6 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				attrs["models_hash"] = hash
 			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
-			addConfigHeadersToAttrs(entry.Headers, attrs)
 			a := &coreauth.Auth{
 				ID:         id,
 				Provider:   internalProviderKey,
@@ -906,6 +906,12 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		if hash := diff.ComputeVertexCompatModelsHash(compat.Models); hash != "" {
 			attrs["models_hash"] = hash
 		}
+		if compat.Interactions != nil && *compat.Interactions {
+			attrs["interactions"] = "true"
+		}
+		if compat.Interactions != nil && *compat.Interactions {
+			attrs["interactions"] = "true"
+		}
 		addConfigHeadersToAttrs(compat.Headers, attrs)
 		metadata := map[string]any{}
 		if compat.DisableCooling != nil {
@@ -924,7 +930,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
-		ApplyAuthExcludedModelsMeta(a, cfg, compat.ExcludedModels, "apikey")
+		ApplyAuthExcludedModelsMeta(a, compat.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}

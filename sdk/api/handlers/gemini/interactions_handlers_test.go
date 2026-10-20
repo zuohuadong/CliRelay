@@ -235,7 +235,10 @@ func TestInteractionsAntigravityModelUsesTranslatorBridge(t *testing.T) {
 	model := "interactions-antigravity-bridge-model"
 	var upstreamBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1internal:generateContent" {
+		// The Antigravity executor assembles non-streaming responses from the
+		// stream endpoint, which is the only path that covers the full model
+		// catalog (see antigravity_executor_signature_test.go).
+		if r.URL.Path != "/v1internal:streamGenerateContent" {
 			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
 			return
 		}
@@ -245,8 +248,8 @@ func TestInteractionsAntigravityModelUsesTranslatorBridge(t *testing.T) {
 			return
 		}
 		upstreamBody = body
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"response":{"responseId":"resp_1","candidates":[{"content":{"role":"model","parts":[{"text":"translated-ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"response\":{\"responseId\":\"resp_1\",\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"translated-ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":2,\"totalTokenCount\":3}}}\n\n"))
 	}))
 	defer server.Close()
 

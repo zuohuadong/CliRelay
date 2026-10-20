@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -309,24 +308,9 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 	if provider == "" {
 		provider = "unknown"
 	}
-	if provider == "antigravity" {
-		projectID := ""
-		if pid, ok := metadata["project_id"].(string); ok {
-			projectID = strings.TrimSpace(pid)
-		}
-		if projectID == "" {
-			accessToken := extractAccessToken(metadata)
-			if accessToken != "" {
-				fetchedProjectID, errFetch := FetchAntigravityProjectID(context.Background(), accessToken, http.DefaultClient)
-				if errFetch == nil && strings.TrimSpace(fetchedProjectID) != "" {
-					metadata["project_id"] = strings.TrimSpace(fetchedProjectID)
-					if raw, errMarshal := json.Marshal(metadata); errMarshal == nil {
-						_ = misc.WriteCredentialFileAtomic(path, raw)
-					}
-				}
-			}
-		}
-	}
+	// Antigravity project discovery is intentionally not performed here: cold
+	// start file loading must not issue outbound network requests. The executor
+	// resolves project_id lazily on the first request instead.
 	info, errStat = os.Stat(path)
 	if errStat != nil {
 		return nil, fmt.Errorf("stat file: %w", errStat)

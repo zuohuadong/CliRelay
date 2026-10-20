@@ -2,6 +2,7 @@ package helps
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -216,7 +217,10 @@ func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr stri
 	tlsConfig := &tls.Config{ServerName: host}
 	tlsConn := tls.UClient(conn, tlsConfig, tls.HelloChrome_Auto)
 
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
+	handshakeCtx, cancelHandshake := handshakeContext(ctx)
+	defer cancelHandshake()
+	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
+		err = classifyHandshakeError(ctx, handshakeCtx, err)
 		if ctx.Err() == nil {
 			_ = conn.Close()
 		}
@@ -387,7 +391,46 @@ func claudeCodeTLSClientHelloSpec() *tls.ClientHelloSpec {
 	}
 }
 
-const claudeCodeRoundTripperCacheCapacity = 64
+const (
+	claudeCodeRoundTripperCacheCapacity = 64
+	utlsRoundTripperCacheCapacity       = 64
+)
+
+// cachedUtlsRoundTripper reuses the Chrome-fingerprint transport per proxy URL,
+// so the pooled HTTP/2 connections survive across requests instead of being
+// rebuilt for every call.
+func cachedUtlsRoundTripper(proxyURL string) http.RoundTripper {
+	return utlsRoundTripperCache.GetOrAdd(proxyURL, func() http.RoundTripper {
+		return newUtlsRoundTripper(proxyURL)
+	})
+}
+
+var utlsRoundTripperCache = internalcache.NewBoundedLRU[string, http.RoundTripper](
+	utlsRoundTripperCacheCapacity,
+	func(_ string, roundTripper http.RoundTripper) {
+		if transport, ok := roundTripper.(interface{ CloseIdleConnections() }); ok {
+			transport.CloseIdleConnections()
+		}
+	},
+)
+
+// CloseIdleConnections retires every pooled connection. It backs cache eviction
+// and lets callers release sockets without dropping a transport mid-request.
+func (t *utlsRoundTripper) CloseIdleConnections() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	pooled := make([]http2ClientConn, 0, len(t.connections))
+	for host, connections := range t.connections {
+		pooled = append(pooled, connections...)
+		delete(t.connections, host)
+	}
+	t.mu.Unlock()
+	for _, conn := range pooled {
+		retireHTTP2Connection(conn)
+	}
+}
 
 var claudeCodeRoundTripperCache = internalcache.NewBoundedLRU[string, http.RoundTripper](
 	claudeCodeRoundTripperCacheCapacity,
@@ -473,7 +516,29 @@ func newClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
 			dialer = proxyDialer
 		}
 	}
+	return newClaudeCodeRoundTripperForDialerAndSession(dialer, sessionCache)
+}
 
+// newClaudeCodeRoundTripperForDialer builds the Claude Code transport on an
+// injected dialer so tests can drive the handshake path directly.
+func newClaudeCodeRoundTripperForDialer(dialer proxy.Dialer) *http.Transport {
+	return newClaudeCodeRoundTripperForDialerAndSession(dialer, tls.NewLRUClientSessionCache(claudeCodeSessionCacheCapacity))
+}
+
+// newClaudeCodeRoundTripperForDialerAndRoots pins the trust roots for tests that
+// terminate the handshake with a locally minted certificate.
+func newClaudeCodeRoundTripperForDialerAndRoots(dialer proxy.Dialer, roots *x509.CertPool) *http.Transport {
+	return newClaudeCodeRoundTripperForDialerAndSessionAndRoots(dialer, tls.NewLRUClientSessionCache(claudeCodeSessionCacheCapacity), roots)
+}
+
+func newClaudeCodeRoundTripperForDialerAndSession(dialer proxy.Dialer, sessionCache tls.ClientSessionCache) *http.Transport {
+	return newClaudeCodeRoundTripperForDialerAndSessionAndRoots(dialer, sessionCache, nil)
+}
+
+func newClaudeCodeRoundTripperForDialerAndSessionAndRoots(dialer proxy.Dialer, sessionCache tls.ClientSessionCache, roots *x509.CertPool) *http.Transport {
+	if dialer == nil {
+		dialer = proxy.Direct
+	}
 	transport := &http.Transport{
 		ForceAttemptHTTP2: false,
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -497,14 +562,21 @@ func newClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
 				}
 				return nil, fmt.Errorf("claude tls: split upstream address: %w", errSplit)
 			}
-			tlsConn := tls.UClient(conn, newClaudeCodeTLSConfig(host, sessionCache), tls.HelloCustom)
+			tlsConfig := newClaudeCodeTLSConfig(host, sessionCache)
+			if roots != nil {
+				tlsConfig.RootCAs = roots
+			}
+			tlsConn := tls.UClient(conn, tlsConfig, tls.HelloCustom)
 			if errPreset := tlsConn.ApplyPreset(claudeCodeTLSClientHelloSpec()); errPreset != nil {
 				if errClose := tlsConn.Close(); errClose != nil {
 					log.Debugf("claude tls: close connection after preset failure: %v", errClose)
 				}
 				return nil, fmt.Errorf("claude tls: apply Claude Code ClientHello: %w", errPreset)
 			}
-			if errHandshake := tlsConn.HandshakeContext(ctx); errHandshake != nil {
+			handshakeCtx, cancelHandshake := handshakeContext(ctx)
+			defer cancelHandshake()
+			if errHandshake := tlsConn.HandshakeContext(handshakeCtx); errHandshake != nil {
+				errHandshake = classifyHandshakeError(ctx, handshakeCtx, errHandshake)
 				if errClose := tlsConn.Close(); errClose != nil {
 					log.Debugf("claude tls: close connection after handshake failure: %v", errClose)
 				}
@@ -546,7 +618,7 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 		ctxRoundTripper, _ = ctx.Value("cliproxy.roundtripper").(http.RoundTripper)
 	}
 
-	var chromeRT http.RoundTripper = newUtlsRoundTripper(proxyURL)
+	var chromeRT http.RoundTripper = cachedUtlsRoundTripper(proxyURL)
 	var anthropicRT http.RoundTripper = cachedClaudeCodeRoundTripper(proxyURL)
 	var standardTransport http.RoundTripper = http.DefaultTransport
 	if proxyURL != "" {
@@ -559,13 +631,22 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 		standardTransport = ctxRoundTripper
 	}
 
-	client := &http.Client{
-		Transport: &fallbackRoundTripper{
-			anthropic: anthropicRT,
-			chrome:    chromeRT,
-			fallback:  standardTransport,
-		},
+	var transport http.RoundTripper = &fallbackRoundTripper{
+		anthropic: anthropicRT,
+		chrome:    chromeRT,
+		fallback:  standardTransport,
 	}
+	// Carry the opt-in TLS establishment bound on request contexts.
+	// Both uTLS dial paths read it per dial, so cached per-proxy transports
+	// need no rebuild when the value changes after a config reload.
+	var handshakeTimeout time.Duration
+	if cfg != nil {
+		handshakeTimeout = cfg.TLSHandshakeTimeout()
+	}
+	if handshakeTimeout > 0 {
+		transport = &tlsHandshakeTimeoutRoundTripper{base: transport, timeout: handshakeTimeout}
+	}
+	client := &http.Client{Transport: transport}
 	if timeout > 0 {
 		client.Timeout = timeout
 	}

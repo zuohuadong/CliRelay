@@ -341,9 +341,9 @@ func (e *BedrockExecutor) prepareBedrockHTTPRequest(ctx context.Context, req *ht
 	}
 	util.ApplyCustomHeadersFromAttrs(req, attrs)
 	signer, err := newBedrockSigV4Signer(
-		firstNonEmpty(bedrockAttr(auth, "access_key_id"), bedrockAttr(auth, "aws_access_key_id")),
-		firstNonEmpty(bedrockAttr(auth, "secret_access_key"), bedrockAttr(auth, "aws_secret_access_key")),
-		firstNonEmpty(bedrockAttr(auth, "session_token"), bedrockAttr(auth, "aws_session_token")),
+		bedrockFirstNonEmpty(bedrockAttr(auth, "access_key_id"), bedrockAttr(auth, "aws_access_key_id")),
+		bedrockFirstNonEmpty(bedrockAttr(auth, "secret_access_key"), bedrockAttr(auth, "aws_secret_access_key")),
+		bedrockFirstNonEmpty(bedrockAttr(auth, "session_token"), bedrockAttr(auth, "aws_session_token")),
 		bedrockRegion(auth),
 	)
 	if err != nil {
@@ -612,7 +612,7 @@ func bedrockAuthMode(auth *cliproxyauth.Auth) string {
 }
 
 func bedrockRegion(auth *cliproxyauth.Auth) string {
-	region := firstNonEmpty(bedrockAttr(auth, "region"), bedrockAttr(auth, "aws_region"))
+	region := bedrockFirstNonEmpty(bedrockAttr(auth, "region"), bedrockAttr(auth, "aws_region"))
 	if region == "" {
 		return defaultBedrockRegion
 	}
@@ -631,7 +631,7 @@ func bedrockAttr(auth *cliproxyauth.Auth, key string) string {
 	return strings.TrimSpace(auth.Attributes[key])
 }
 
-func firstNonEmpty(values ...string) string {
+func bedrockFirstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
 			return strings.TrimSpace(value)

@@ -3,6 +3,7 @@ package openai
 import (
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
 )
 
 func (h *OpenAIAPIHandler) codexClientModelsResponse(clientVersion ...string) map[string]any {
@@ -14,8 +15,22 @@ func (h *OpenAIAPIHandler) codexClientModelsResponse(clientVersion ...string) ma
 }
 
 func (h *OpenAIAPIHandler) codexClientModelsResponseForModels(models []map[string]any, clientVersion string) map[string]any {
-	optimizeMultiAgentV2 := h != nil && h.Cfg != nil && h.Cfg.CodexOptimizeMultiAgentV2
-	return codexmodels.BuildResponseForClient(models, registry.GetGlobalRegistry().GetModelProviders, optimizeMultiAgentV2, clientVersion)
+	optimizeMultiAgentV2 := false
+	var applyPatchCapabilityForModel codexmodels.ApplyPatchCapabilityForModelFunc
+	if h != nil {
+		if cfg := h.CurrentConfig(); cfg != nil {
+			optimizeMultiAgentV2 = cfg.Client.Codex.OptimizeMultiAgentV2 || cfg.CodexOptimizeMultiAgentV2
+			if cfg.Client.Codex.EnableApplyPatch {
+				applyPatchCapabilityForModel = h.SupportsApplyPatchModel
+			}
+		}
+	}
+	var toolSearchCapabilityForModel codexmodels.ToolSearchCapabilityForModelFunc
+	if h != nil && responsesclaude.ClientToolSearchEnabled() {
+		toolSearchCapabilityForModel = h.SupportsNativeToolSearchModel
+	}
+	modelRegistry := registry.GetGlobalRegistry()
+	return codexmodels.BuildResponseForClientWithToolCapabilities(models, modelRegistry.GetModelProviders, modelRegistry.GetResponsesWebSearchCapability, applyPatchCapabilityForModel, toolSearchCapabilityForModel, optimizeMultiAgentV2, clientVersion)
 }
 
 // CodexClientModelsResponse builds a Codex client model response.

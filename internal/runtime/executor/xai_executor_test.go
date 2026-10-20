@@ -6229,8 +6229,8 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get(xaiTokenAuthHeader); got != xaiTokenAuthValue {
 			t.Fatalf("%s = %q, want %q", xaiTokenAuthHeader, got, xaiTokenAuthValue)
 		}
-		if got := req.Header.Get(xaiClientVersionHeader); got != xaiClientVersionValue {
-			t.Fatalf("%s = %q, want %q", xaiClientVersionHeader, got, xaiClientVersionValue)
+		if got := req.Header.Get(xaiClientVersionHeader); got != xaiClientVersion() {
+			t.Fatalf("%s = %q, want %q", xaiClientVersionHeader, got, xaiClientVersion())
 		}
 		if got := req.Header.Get("x-grok-client-identifier"); got != "grok-shell" {
 			t.Fatalf("x-grok-client-identifier = %q, want grok-shell", got)
@@ -6238,8 +6238,8 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get("x-authenticateresponse"); got != "authenticate-response" {
 			t.Fatalf("x-authenticateresponse = %q, want authenticate-response", got)
 		}
-		if got := req.Header.Get("User-Agent"); got != "xai-grok-workspace/"+xaiClientVersionValue {
-			t.Fatalf("User-Agent = %q, want xai-grok-workspace/%s", got, xaiClientVersionValue)
+		if got := req.Header.Get("User-Agent"); got != "xai-grok-workspace/"+xaiClientVersion() {
+			t.Fatalf("User-Agent = %q, want xai-grok-workspace/%s", got, xaiClientVersion())
 		}
 	})
 
@@ -6310,8 +6310,8 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get(xaiTokenAuthHeader); got != xaiTokenAuthValue {
 			t.Fatalf("%s = %q, want %q", xaiTokenAuthHeader, got, xaiTokenAuthValue)
 		}
-		if got := req.Header.Get(xaiClientVersionHeader); got != xaiClientVersionValue {
-			t.Fatalf("%s = %q, want %q", xaiClientVersionHeader, got, xaiClientVersionValue)
+		if got := req.Header.Get(xaiClientVersionHeader); got != xaiClientVersion() {
+			t.Fatalf("%s = %q, want %q", xaiClientVersionHeader, got, xaiClientVersion())
 		}
 	})
 }

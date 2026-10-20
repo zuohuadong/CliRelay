@@ -36,22 +36,20 @@ const (
 	xaiCodexAppNamespaceName    = "codex_app"
 	xaiAutomationUpdateToolName = "automation_update"
 	// Permissive placeholder schema: keeps the tool callable without the hang.
-	xaiSafeFunctionParameters   = `{"type":"object","properties":{},"additionalProperties":true}`
-	xaiImagesGenerationsPath    = "/images/generations"
-	xaiImagesEditsPath          = "/images/edits"
-	xaiDefaultImageEndpointPath = xaiImagesGenerationsPath
-	xaiVideosGenerationsPath    = "/videos/generations"
-	xaiVideosEditsPath          = "/videos/edits"
-	xaiVideosExtensionsPath     = "/videos/extensions"
-	xaiVideosPath               = "/videos"
-	xaiTTSPath                  = "/tts"
-	xaiIdempotencyKeyMetaKey    = "idempotency_key"
-	xaiComposerModelPrefix      = "grok-composer-"
-	xaiTokenAuthHeader          = "X-XAI-Token-Auth"
-	xaiTokenAuthValue           = "xai-grok-cli"
-	xaiClientVersionHeader      = "x-grok-client-version"
-	// Keep in sync with the current Grok CLI client version that chat-proxy expects.
-	xaiClientVersionValue         = "0.2.120"
+	xaiSafeFunctionParameters     = `{"type":"object","properties":{},"additionalProperties":true}`
+	xaiImagesGenerationsPath      = "/images/generations"
+	xaiImagesEditsPath            = "/images/edits"
+	xaiDefaultImageEndpointPath   = xaiImagesGenerationsPath
+	xaiVideosGenerationsPath      = "/videos/generations"
+	xaiVideosEditsPath            = "/videos/edits"
+	xaiVideosExtensionsPath       = "/videos/extensions"
+	xaiVideosPath                 = "/videos"
+	xaiTTSPath                    = "/tts"
+	xaiIdempotencyKeyMetaKey      = "idempotency_key"
+	xaiComposerModelPrefix        = "grok-composer-"
+	xaiTokenAuthHeader            = "X-XAI-Token-Auth"
+	xaiTokenAuthValue             = "xai-grok-cli"
+	xaiClientVersionHeader        = "x-grok-client-version"
 	xaiClientIdentifierHeader     = "x-grok-client-identifier"
 	xaiClientIdentifierValue      = "grok-shell"
 	xaiAuthenticateResponseHeader = "x-authenticateresponse"
@@ -74,10 +72,25 @@ func NewXAIExecutor(cfg *config.Config) *XAIExecutor {
 	return &XAIExecutor{cfg: cfg}
 }
 
+// xaiClientVersion returns the active Grok CLI client version (dynamically fetched
+// from npm or falling back to xaiClientVersionFallback).
+func xaiClientVersion() string {
+	return helps.GetXAIClientVersion()
+}
+
+// StartXAIVersionUpdater starts the periodic Grok CLI version updater from npm.
+// proxyURL is the global outbound proxy; an empty value inherits the process environment.
+func StartXAIVersionUpdater(ctx context.Context, proxyURL string) {
+	helps.StartXAIVersionUpdater(ctx, proxyURL)
+}
+
 // Identifier returns the provider identifier.
 func (e *XAIExecutor) Identifier() string {
 	return "xai"
 }
+
+// SupportsApplyPatch reports the actual executor contract, independent of its provider name.
+func (e *XAIExecutor) SupportsApplyPatch() bool { return e != nil }
 
 // PrepareRequest injects xAI credentials into the outgoing HTTP request.
 func (e *XAIExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth) error {

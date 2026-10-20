@@ -451,7 +451,7 @@ func xaiBuiltinVideoModelInfo() *ModelInfo {
 		Object:      "model",
 		Created:     1735689600, // 2025-01-01
 		OwnedBy:     "xai",
-		Type:        "xai",
+		Type:        OpenAIVideoModelType,
 		DisplayName: "Grok Imagine Video",
 		Name:        xaiBuiltinVideoModelID,
 		Description: "xAI Grok video generation model.",
@@ -464,7 +464,7 @@ func xaiBuiltinVideo15ModelInfo() *ModelInfo {
 		Object:      "model",
 		Created:     1735689600, // 2025-01-01
 		OwnedBy:     "xai",
-		Type:        "xai",
+		Type:        OpenAIVideoModelType,
 		DisplayName: "Grok Imagine Video 1.5",
 		Name:        xaiBuiltinVideo15ModelID,
 		Description: "xAI Grok video generation model.",
@@ -477,7 +477,7 @@ func xaiBuiltinVideo15PreviewModelInfo() *ModelInfo {
 		Object:      "model",
 		Created:     1735689600, // 2025-01-01
 		OwnedBy:     "xai",
-		Type:        "xai",
+		Type:        OpenAIVideoModelType,
 		DisplayName: "Grok Imagine Video 1.5 Preview",
 		Name:        xaiBuiltinVideo15PreviewID,
 		Description: "Compatibility alias for the xAI Grok video generation model.",

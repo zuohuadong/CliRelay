@@ -162,6 +162,13 @@ func TestWithXAIBuiltinsIncludesVideo15GAAndPreviewAlias(t *testing.T) {
 		if model == nil {
 			continue
 		}
+		if model.ID == xaiBuiltinVideoModelID || model.ID == xaiBuiltinVideo15ModelID || model.ID == xaiBuiltinVideo15PreviewID {
+			// Video builtins must be marked as OpenAI-compatible video models so the
+			// video MCP model list and the panel video page can discover them.
+			if model.Type != OpenAIVideoModelType {
+				t.Fatalf("%s type = %q, want %q", model.ID, model.Type, OpenAIVideoModelType)
+			}
+		}
 		if model.ID == xaiBuiltinVideo15ModelID {
 			foundGA = true
 		}

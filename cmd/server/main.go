@@ -723,6 +723,15 @@ func main() {
 				log.Errorf("failed to bootstrap git-backed config: %v", errCopy)
 				return
 			}
+			// Rewrite the seeded template exactly as the startup load would, so a
+			// plaintext management secret never reaches the remote repository.
+			if errPrepare := config.PrepareConfigFileForUpload(configFilePath); errPrepare != nil {
+				if errRemove := os.Remove(configFilePath); errRemove != nil {
+					log.WithError(errRemove).Warn("failed to remove the config copied from the template")
+				}
+				log.Errorf("failed to prepare git-backed config for upload: %v", errPrepare)
+				return
+			}
 			if errCommit := gitStoreInst.PersistConfig(context.Background()); errCommit != nil {
 				log.Errorf("failed to commit initial git-backed config: %v", errCommit)
 				return

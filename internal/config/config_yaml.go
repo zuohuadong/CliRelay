@@ -171,6 +171,52 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 	return err
 }
 
+// updateNestedScalarYAML returns data with the nested scalar key path like ["a","b"] set to
+// value, preserving comments and positions.
+func updateNestedScalarYAML(data []byte, path []string, value string) ([]byte, error) {
+	var root yaml.Node
+	if errUnmarshal := yaml.Unmarshal(data, &root); errUnmarshal != nil {
+		return nil, errUnmarshal
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return nil, fmt.Errorf("invalid yaml document structure")
+	}
+	// Resolve aliases and merge keys before updating a path. Otherwise replacing
+	// an alias with a mapping drops inherited siblings or mutates a shared anchor.
+	var decoded map[string]any
+	if errDecode := root.Decode(&decoded); errDecode != nil {
+		return nil, errDecode
+	}
+	root.Content[0] = expandConfigAliases(root.Content[0])
+	node := root.Content[0]
+	for i, key := range path {
+		if i == len(path)-1 {
+			v := getOrCreateMapValue(node, key)
+			v.Kind = yaml.ScalarNode
+			v.Tag = "!!str"
+			v.Value = value
+		} else {
+			next := getOrCreateMapValue(node, key)
+			if next.Kind != yaml.MappingNode {
+				next.Kind = yaml.MappingNode
+				next.Tag = "!!map"
+			}
+			node = next
+		}
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if errEncode := enc.Encode(&root); errEncode != nil {
+		_ = enc.Close()
+		return nil, errEncode
+	}
+	if errClose := enc.Close(); errClose != nil {
+		return nil, errClose
+	}
+	return NormalizeCommentIndentation(buf.Bytes()), nil
+}
+
 // NormalizeCommentIndentation removes indentation from standalone YAML comment lines to keep them left aligned.
 func NormalizeCommentIndentation(data []byte) []byte {
 	lines := bytes.Split(data, []byte("\n"))

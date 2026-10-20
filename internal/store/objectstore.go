@@ -17,6 +17,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -412,6 +413,11 @@ func (s *ObjectTokenStore) syncConfigFromBucket(ctx context.Context, example str
 					return fmt.Errorf("object store: create empty config: %w", errWrite)
 				}
 			}
+		}
+		// Seed remote storage with the file the startup load leaves behind, so a
+		// plaintext management secret never reaches it.
+		if errPrepare := config.PrepareConfigFileForUpload(s.configPath); errPrepare != nil {
+			return fmt.Errorf("object store: prepare local config for seeding: %w", errPrepare)
 		}
 		data, errRead := os.ReadFile(s.configPath)
 		if errRead != nil {

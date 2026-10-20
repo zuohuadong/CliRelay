@@ -25,6 +25,11 @@ type modelExecutionOptions struct {
 	ForcedProvider          string
 	AuthSelectionModel      string
 	ProxyURL                string
+	AllowSpeechModel        bool
+}
+
+func isModelExecutionSpeechProtocol(protocol string) bool {
+	return strings.EqualFold(strings.TrimSpace(protocol), "openai-speech")
 }
 
 // ProtocolExecutionRequest describes a route-level model execution request with explicit protocols.

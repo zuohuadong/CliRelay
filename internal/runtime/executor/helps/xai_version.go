@@ -18,8 +18,8 @@ import (
 
 const (
 	// DefaultXAIFallbackClientVersion is the stable Grok CLI version used when npm
-	// registry resolution fails. dist-tag latest is 1.0.46; 1.0.50 is the alpha tag.
-	DefaultXAIFallbackClientVersion = "1.0.46"
+	// registry resolution fails. Keep this above XAIClientVersionServerFloor.
+	DefaultXAIFallbackClientVersion = "1.0.62"
 	// XAIClientVersionServerFloor is the minimum Grok CLI version cli-chat-proxy accepts.
 	// Older clients are rejected with HTTP 426 (#6249).
 	XAIClientVersionServerFloor = "1.0.13"

@@ -17,6 +17,9 @@ func TestGetXAIClientVersionDefault(t *testing.T) {
 	if got := GetXAIClientVersion(); got != DefaultXAIFallbackClientVersion {
 		t.Fatalf("GetXAIClientVersion() = %q, want %q", got, DefaultXAIFallbackClientVersion)
 	}
+	if !acceptableXAIClientVersion(GetXAIClientVersion()) {
+		t.Fatalf("default Grok CLI version %q is below the server floor %s", GetXAIClientVersion(), XAIClientVersionServerFloor)
+	}
 }
 
 func TestFetchXAINPMLatestVersionSuccess(t *testing.T) {

@@ -19,6 +19,7 @@ var (
 
 const (
 	xaiImageHandlerType        = "openai-image"
+	xaiSpeechHandlerType       = "openai-speech"
 	xaiVideoHandlerType        = "openai-video"
 	xaiCustomToolType          = "custom"
 	xaiFunctionToolType        = "function"
@@ -43,6 +44,7 @@ const (
 	xaiVideosEditsPath          = "/videos/edits"
 	xaiVideosExtensionsPath     = "/videos/extensions"
 	xaiVideosPath               = "/videos"
+	xaiTTSPath                  = "/tts"
 	xaiIdempotencyKeyMetaKey    = "idempotency_key"
 	xaiComposerModelPrefix      = "grok-composer-"
 	xaiTokenAuthHeader          = "X-XAI-Token-Auth"

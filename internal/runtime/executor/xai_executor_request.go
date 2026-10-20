@@ -499,6 +499,16 @@ func xaiIsVideoRequest(opts cliproxyexecutor.Options) bool {
 	return opts.SourceFormat.String() == xaiVideoHandlerType
 }
 
+func xaiIsSpeechRequest(opts cliproxyexecutor.Options) bool {
+	return opts.SourceFormat.String() == xaiSpeechHandlerType
+}
+
+// xaiSpeechRequestURL stays on the official API. cli-chat-proxy does not implement /tts,
+// and a 404 there would cool the OAuth auth down as not_found.
+func xaiSpeechRequestURL(auth *cliproxyauth.Auth) string {
+	return strings.TrimSuffix(xaiCompactBaseURL(auth), "/") + xaiTTSPath
+}
+
 func xaiVideoEndpointPath(opts cliproxyexecutor.Options) string {
 	if !xaiIsVideoRequest(opts) {
 		return ""

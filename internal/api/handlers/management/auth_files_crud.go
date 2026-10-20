@@ -188,13 +188,22 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 					full = abs
 				}
 			}
-			if err = os.Remove(full); err == nil {
+			errDelete := func() error {
+				release := h.beginSIWCFileMutation(ctx, full)
+				defer release()
+				if errRemove := os.Remove(full); errRemove != nil {
+					return nil
+				}
 				if errDel := h.deleteTokenRecord(ctx, full); errDel != nil {
-					c.JSON(500, gin.H{"error": errDel.Error()})
-					return
+					return errDel
 				}
 				deleted++
 				h.removeAuth(ctx, full)
+				return nil
+			}()
+			if errDelete != nil {
+				c.JSON(500, gin.H{"error": errDelete.Error()})
+				return
 			}
 		}
 		c.JSON(200, gin.H{"status": "ok", "deleted": deleted})
@@ -301,6 +310,8 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err != nil {
 		return err
 	}
+	release := h.beginSIWCFileMutation(ctx, dst)
+	defer release()
 	written := data
 	if len(auths) > 0 && strings.EqualFold(strings.TrimSpace(auths[0].Provider), "codex") {
 		if backfilled, changed := backfillCodexAccountIDInData(data); changed {
@@ -406,6 +417,8 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 			targetPath = abs
 		}
 	}
+	release := h.beginSIWCFileMutation(ctx, targetPath)
+	defer release()
 	if errRemove := os.Remove(targetPath); errRemove != nil {
 		if os.IsNotExist(errRemove) {
 			return filepath.Base(name), http.StatusNotFound, errAuthFileNotFound

@@ -132,7 +132,10 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			if len(auths) == 0 {
 				return nil, nil
 			}
-			perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
+			perAccountExcluded, errExcluded := ExtractExcludedModelsFromMetadata(metadata)
+			if errExcluded != nil {
+				log.WithError(errExcluded).Warnf("ignoring invalid excluded models in auth file %s", filepath.Base(fullPath))
+			}
 			perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
 			for index, auth := range auths {
 				if auth == nil {
@@ -261,7 +264,10 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 		}
 	}
 
-	perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
+	perAccountExcluded, errExcluded := ExtractExcludedModelsFromMetadata(metadata)
+	if errExcluded != nil {
+		log.WithError(errExcluded).Warnf("ignoring invalid excluded models in auth file %s", filepath.Base(fullPath))
+	}
 	perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
 	a := &coreauth.Auth{
 		ID:       id,
@@ -433,8 +439,55 @@ func extractOAuthModelAliasesFromMetadata(metadata map[string]any) []config.OAut
 	return cfg.OAuthModelAlias["auth"]
 }
 
-// extractExcludedModelsFromMetadata reads per-account excluded models from the OAuth JSON metadata.
-// "excluded_models" is canonical; "excluded-models" remains a legacy alias.
+// ExtractExcludedModelsFromMetadata reads per-account excluded models from the OAuth JSON metadata.
+// "excluded_models" is canonical; "excluded-models" remains a legacy alias. The value must be a
+// string array; a single string is also accepted for older hand-written files and is split on
+// commas, because model IDs never contain commas. Any other type, or a non-string array element,
+// is an error. For non-string elements the valid string entries are still returned with the
+// error, so lenient readers can keep the usable rules while strict writers reject the value.
+func ExtractExcludedModelsFromMetadata(metadata map[string]any) ([]string, error) {
+	if metadata == nil {
+		return nil, nil
+	}
+	key := "excluded_models"
+	raw, ok := metadata[key]
+	if !ok {
+		key = "excluded-models"
+		raw, ok = metadata[key]
+	}
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	var stringSlice []string
+	var errInvalid error
+	switch v := raw.(type) {
+	case string:
+		stringSlice = strings.Split(v, ",")
+	case []string:
+		stringSlice = v
+	case []interface{}:
+		stringSlice = make([]string, 0, len(v))
+		for index, item := range v {
+			s, okString := item.(string)
+			if !okString {
+				if errInvalid == nil {
+					errInvalid = fmt.Errorf("metadata %s[%d] must be a string, got %T", key, index, item)
+				}
+				continue
+			}
+			stringSlice = append(stringSlice, s)
+		}
+	default:
+		return nil, fmt.Errorf("metadata %s must be a string array, got %T", key, raw)
+	}
+	result := make([]string, 0, len(stringSlice))
+	for _, s := range stringSlice {
+		if trimmed := strings.TrimSpace(s); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result, errInvalid
+}
 func extractExcludedModelsFromMetadata(metadata map[string]any) []string {
 	if metadata == nil {
 		return nil

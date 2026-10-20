@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/safemode"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -38,6 +39,34 @@ const (
 	exampleAPIKeyManagementPath = "/management.html"
 	exampleAPIKeyManagementURL  = "/management.html?safe-mode=configure"
 )
+
+// maxRequestBodyBytesMiddleware rejects over-limit request bodies before
+// authentication and routing, and bounds streaming reads for chunked bodies.
+func (s *Server) maxRequestBodyBytesMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil || c == nil || c.Request == nil {
+			c.Next()
+			return
+		}
+		cfg := s.getConfig()
+		if cfg == nil || cfg.MaxRequestBodyBytes <= 0 {
+			c.Next()
+			return
+		}
+		maxBytes := cfg.MaxRequestBodyBytes
+		c.Set(handlers.MaxRequestBodyBytesContextKey, maxBytes)
+		if c.Request.ContentLength > maxBytes {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error": "http: request body too large",
+			})
+			return
+		}
+		if c.Request.Body != nil && c.Request.Body != http.NoBody {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		}
+		c.Next()
+	}
+}
 
 func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {

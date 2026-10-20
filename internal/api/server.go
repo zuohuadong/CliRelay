@@ -156,6 +156,16 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
 	engine.Use(logging.CPATraceIDMiddleware())
+	// Bound request bodies before any middleware (request logging, auth) reads them.
+	// The server instance is created below, so the limit is resolved lazily.
+	var bodyLimitServer *Server
+	engine.Use(func(c *gin.Context) {
+		if bodyLimitServer == nil {
+			c.Next()
+			return
+		}
+		bodyLimitServer.maxRequestBodyBytesMiddleware()(c)
+	})
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
 	}
@@ -241,6 +251,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
 	// subscribe-config heartbeat connection is healthy.
+	bodyLimitServer = s
 	engine.Use(s.homeHeartbeatMiddleware())
 	engine.Use(s.exampleAPIKeySafeModeMiddleware())
 

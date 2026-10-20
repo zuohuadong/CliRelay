@@ -15,6 +15,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/requestbody"
 )
 
+// MaxRequestBodyBytesContextKey stores the configured request body size limit (in bytes) on the Gin context.
+const MaxRequestBodyBytesContextKey = "maxRequestBodyBytes"
+
 // ErrRequestBodyTooLarge indicates that an inbound body exceeds its configured limit.
 var ErrRequestBodyTooLarge = errors.New("request body exceeds configured size limit")
 
@@ -37,10 +40,19 @@ func (e *requestBodyTooLargeError) Unwrap() error {
 	return ErrRequestBodyTooLarge
 }
 
+// StatusCode lets the client error classifier answer 413 for over-limit bodies.
+func (e *requestBodyTooLargeError) StatusCode() int {
+	return http.StatusRequestEntityTooLarge
+}
+
 // ReadRequestBody reads the incoming request body and decodes supported
 // Content-Encoding values before handlers inspect JSON fields.
 func ReadRequestBody(c *gin.Context) ([]byte, error) {
-	return ReadRequestBodyWithLimit(c, 0)
+	maxBytes := int64(0)
+	if c != nil {
+		maxBytes = c.GetInt64(MaxRequestBodyBytesContextKey)
+	}
+	return ReadRequestBodyWithLimit(c, maxBytes)
 }
 
 // ReadRequestBodyWithLimit reads an incoming request body with an optional hard
@@ -50,6 +62,11 @@ func ReadRequestBody(c *gin.Context) ([]byte, error) {
 func ReadRequestBodyWithLimit(c *gin.Context, maxBytes int64) ([]byte, error) {
 	if c == nil || c.Request == nil {
 		return nil, fmt.Errorf("request is nil")
+	}
+	// The global middleware limit is always enforced, even when the caller has a
+	// looser endpoint-specific bound.
+	if globalLimit := c.GetInt64(MaxRequestBodyBytesContextKey); globalLimit > 0 && (maxBytes <= 0 || globalLimit < maxBytes) {
+		maxBytes = globalLimit
 	}
 	if body, ok := requestbody.Canonical(c); ok {
 		return body, nil

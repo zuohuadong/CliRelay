@@ -77,6 +77,16 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 	}()
 
+	// 启动出口端点健康检查循环；该调用曾两次在上游同步冲突中丢失，
+	// 导致 last_checked_at 仅靠面板手动触发刷新，TTL 过后端点全部
+	// 被判定 endpoint_health_stale_or_unhealthy 而拒绝服务。
+	if s.egressService != nil {
+		if errStartEgress := s.egressService.Start(ctx); errStartEgress != nil {
+			return fmt.Errorf("cliproxy: start egress lifecycle: %w", errStartEgress)
+		}
+		log.Info("egress endpoint health check loop started")
+	}
+
 	if !homeEnabled {
 		if errEnsureAuthDir := s.ensureAuthDir(); errEnsureAuthDir != nil {
 			return errEnsureAuthDir
@@ -393,6 +403,17 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 
 		usage.StopDefault()
+
+		if s.egressService != nil {
+			if errCloseEgress := s.egressService.Close(); errCloseEgress != nil && shutdownErr == nil {
+				shutdownErr = errCloseEgress
+			}
+		}
+		if s.videoService != nil {
+			if errCloseVideo := s.videoService.Close(); errCloseVideo != nil && shutdownErr == nil {
+				shutdownErr = errCloseVideo
+			}
+		}
 	})
 	return shutdownErr
 }

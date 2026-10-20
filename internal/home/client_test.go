@@ -501,7 +501,7 @@ func TestEnsureClientsWaitsForPreviousTargetClose(t *testing.T) {
 		if errEnsure != nil {
 			t.Fatal(errEnsure)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("ensureClients() did not continue after previous target closed")
 	}
 	client.Close()

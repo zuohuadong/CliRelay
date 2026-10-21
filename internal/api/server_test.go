@@ -1928,15 +1928,20 @@ func TestVideosRoutesKeepXAINativeAndExposeOpenAIPrefix(t *testing.T) {
 		t.Fatalf("expected /openai/v1/videos create handler, body=%s", openAIRR.Body.String())
 	}
 
-	contentReq := httptest.NewRequest(http.MethodGet, "/openai/v1/videos/video_123/content?variant=thumbnail", nil)
-	contentReq.Header.Set("Authorization", "Bearer test-key")
-	contentRR := httptest.NewRecorder()
-	server.engine.ServeHTTP(contentRR, contentReq)
-	if contentRR.Code != http.StatusBadRequest {
-		t.Fatalf("content status = %d, want %d body=%s", contentRR.Code, http.StatusBadRequest, contentRR.Body.String())
-	}
-	if !strings.Contains(contentRR.Body.String(), "variant") {
-		t.Fatalf("expected /openai/v1/videos content handler, body=%s", contentRR.Body.String())
+	for _, path := range []string{
+		"/openai/v1/videos/video_123/content?variant=thumbnail",
+		"/v1/videos/video_123/content?variant=thumbnail",
+	} {
+		contentReq := httptest.NewRequest(http.MethodGet, path, nil)
+		contentReq.Header.Set("Authorization", "Bearer test-key")
+		contentRR := httptest.NewRecorder()
+		server.engine.ServeHTTP(contentRR, contentReq)
+		if contentRR.Code != http.StatusBadRequest {
+			t.Fatalf("%s status = %d, want %d body=%s", path, contentRR.Code, http.StatusBadRequest, contentRR.Body.String())
+		}
+		if !strings.Contains(contentRR.Body.String(), "variant") {
+			t.Fatalf("expected video content handler for %s, body=%s", path, contentRR.Body.String())
+		}
 	}
 }
 

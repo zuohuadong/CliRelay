@@ -168,8 +168,8 @@ type ProviderPreference struct {
 }
 
 const (
-	DefaultCodexFingerprintUserAgent     = "codex-tui/0.163.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.163.0)"
-	DefaultCodexFingerprintVersion       = "0.163.0"
+	DefaultCodexFingerprintUserAgent     = "codex-tui/0.164.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.164.0)"
+	DefaultCodexFingerprintVersion       = "0.164.0"
 	DefaultCodexFingerprintOriginator    = "codex-tui"
 	DefaultCodexFingerprintWebsocketBeta = "responses_websockets=2026-02-06"
 	DefaultCodexFingerprintSessionMode   = "per-request"

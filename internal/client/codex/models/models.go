@@ -141,9 +141,7 @@ func buildCodexClientModelsWithToolCapabilities(models []map[string]any, provide
 			applyCPAWebSearchCapability(entry, id, webSearchCapabilityForModel, clientVersion)
 			sanitizeCodexClientReasoningMetadata(entry, clientVersion)
 			applyCodexClientVisibilityOverride(entry, id)
-			if optimizeMultiAgentV2 {
-				entry["multi_agent_version"] = "v2"
-			}
+			applyCodexClientMultiAgentVersion(entry, optimizeMultiAgentV2)
 			applyCodexClientDevinDisplayName(entry, id, model, providersForModel)
 			applyCodexClientApplyPatchCapability(entry, id, applyPatchCapabilityForModel)
 			result = append(result, entry)
@@ -577,6 +575,22 @@ func nullCodexClientRequiredOptions(entry map[string]any) {
 	entry["availability_nux"] = nil
 }
 
+// applyCodexClientMultiAgentVersion keeps the advertised catalog consistent
+// with the relay's request rewriting. Codex multi-agent v2 sends tools in the
+// reserved "collaboration" namespace, which the upstream Codex backend rejects
+// unless the relay's optimize-multi-agent-v2 path renames it. When that path is
+// disabled, templates that still carry v2 must be downgraded to v1 so clients
+// keep using the flat spawn_agent/wait_agent tools the upstream accepts.
+func applyCodexClientMultiAgentVersion(entry map[string]any, optimizeMultiAgentV2 bool) {
+	if optimizeMultiAgentV2 {
+		entry["multi_agent_version"] = "v2"
+		return
+	}
+	if stringModelValue(entry, "multi_agent_version") == "v2" {
+		entry["multi_agent_version"] = "v1"
+	}
+}
+
 const codexClientFallbackInstructions = "You are Codex, a coding agent. You and the user share one workspace."
 
 // useCompactCodexClientInstructions replaces cloned template prompts with a short literal.
@@ -699,9 +713,7 @@ func applyCodexClientModelMetadata(entry map[string]any, id string, model map[st
 	entry["display_name"] = displayName
 	entry["description"] = description
 	entry["prefer_websockets"] = false
-	if optimizeMultiAgentV2 {
-		entry["multi_agent_version"] = "v2"
-	}
+	applyCodexClientMultiAgentVersion(entry, optimizeMultiAgentV2)
 	entry["service_tiers"] = []any{}
 	nullCodexClientRequiredOptions(entry)
 

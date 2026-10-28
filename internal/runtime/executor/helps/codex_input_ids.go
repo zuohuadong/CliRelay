@@ -18,9 +18,12 @@ const (
 	codexFunctionCallItemIDPrefix         = "fc"
 	codexCustomToolCallItemIDPrefix       = "ctc"
 	codexCustomToolCallOutputItemIDPrefix = "ctco"
+	codexToolSearchCallItemIDPrefix       = "tsc"
 
 	codexInputItemIDOccupied  uint8 = 1 << 0
 	codexInputItemIDPreserved uint8 = 1 << 1
+	codexInputItemIDSeen      uint8 = 1 << 2
+	codexInputItemIDDuplicate uint8 = 1 << 3
 )
 
 // SanitizeCodexInputItemIDs normalizes supported input item IDs for Codex, removes encrypted
@@ -45,15 +48,17 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 		originalID := itemID.String()
 		id := normalizeCodexInputItemID(item.Get("type").String(), originalID, 0)
 		state := idStates[id]
+		if state&codexInputItemIDSeen != 0 {
+			state |= codexInputItemIDDuplicate
+		}
+		state |= codexInputItemIDSeen
 		if id == originalID {
 			state |= codexInputItemIDPreserved
 		}
 		if len([]rune(id)) <= codexInputItemIDLimit {
 			state |= codexInputItemIDOccupied
 		}
-		if state != 0 {
-			idStates[id] = state
-		}
+		idStates[id] = state
 	}
 
 	var mapped map[string]string
@@ -105,6 +110,7 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 				id = resolveCollision(itemType, originalID, id)
 			} else {
 				normalizedOwners[normalizedKey] = originalID
+
 			}
 			if len([]rune(id)) > codexInputItemIDLimit {
 				mappingKey := itemType + "\x00" + id
@@ -163,6 +169,11 @@ func shortenCodexInputItemID(id string) string {
 }
 
 func normalizeCodexInputItemID(itemType, id string, attempt int) string {
+	if itemType == "tool_search_call" {
+		if after, ok := strings.CutPrefix(id, "ts_"); ok && after != "" {
+			id = codexToolSearchCallItemIDPrefix + "_" + after
+		}
+	}
 	requiredPrefix := ""
 	itemPrefix := codexInputItemIDPrefix(itemType)
 	if itemPrefix != "" && !strings.HasPrefix(id, itemPrefix) {
@@ -192,6 +203,8 @@ func codexInputItemIDPrefix(itemType string) string {
 		return codexCustomToolCallItemIDPrefix
 	case "custom_tool_call_output":
 		return codexCustomToolCallOutputItemIDPrefix
+	case "tool_search_call":
+		return codexToolSearchCallItemIDPrefix
 	default:
 		return ""
 	}

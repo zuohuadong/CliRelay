@@ -58,6 +58,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	}
 	payload = geminiToAntigravity(modelName, payload, projectID, derivedSessionIDs...)
 	payload = util.NormalizeGeminiContentRolesBytes(payload, "request.contents")
+	payload = normalizeAntigravityToolConfig(payload)
 
 	// Cap maxOutputTokens to model's max_completion_tokens from registry
 	if maxOut := gjson.GetBytes(payload, "request.generationConfig.maxOutputTokens"); maxOut.Exists() && maxOut.Type == gjson.Number {
@@ -77,10 +78,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	if antigravityRequestNeedsSchemaSanitization(payload) {
 		payloadStr := sanitizeAntigravityRequestSchemasForModel(string(payload), useAntigravitySchema, isClaudeModel)
 
-		if strings.Contains(modelName, "claude") {
-			updated, _ := sjson.SetBytes([]byte(payloadStr), "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
-			payloadStr = string(updated)
-		} else {
+		if !isClaudeModel {
 			payloadStr, _ = sjson.Delete(payloadStr, "request.generationConfig.maxOutputTokens")
 		}
 
@@ -95,9 +93,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 			payloadLog = append([]byte(nil), payloadStrBytes...)
 		}
 	} else {
-		if strings.Contains(modelName, "claude") {
-			payload, _ = sjson.SetBytes(payload, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
-		} else {
+		if !isClaudeModel {
 			payload, _ = sjson.DeleteBytes(payload, "request.generationConfig.maxOutputTokens")
 		}
 
@@ -164,6 +160,48 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	})
 
 	return httpReq, nil
+}
+
+// Antigravity rejects built-in search/code execution mixed with function
+// declarations, even with includeServerSideToolInvocations. Keep client tools
+// usable for agent requests, as sub2api does for its v1internal gateway.
+func normalizeAntigravityToolConfig(payload []byte) []byte {
+	tools := gjson.GetBytes(payload, "request.tools")
+	hasFunctions := false
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		hasFunctions = len(tool.Get("functionDeclarations").Array()) > 0 ||
+			len(tool.Get("function_declarations").Array()) > 0
+		return !hasFunctions
+	})
+	if hasFunctions {
+		filtered := make([]string, 0, len(tools.Array()))
+		changed := false
+		for _, tool := range tools.Array() {
+			raw := []byte(tool.Raw)
+			for _, key := range []string{"googleSearch", "google_search", "googleSearchRetrieval", "google_search_retrieval", "codeExecution", "code_execution"} {
+				if tool.Get(key).Exists() {
+					raw, _ = sjson.DeleteBytes(raw, key)
+					changed = true
+				}
+			}
+			if len(gjson.ParseBytes(raw).Map()) > 0 {
+				filtered = append(filtered, string(raw))
+			}
+		}
+		if changed {
+			payload, _ = sjson.SetRawBytes(payload, "request.tools", []byte("["+strings.Join(filtered, ",")+"]"))
+		}
+		for _, key := range []string{"includeServerSideToolInvocations", "include_server_side_tool_invocations"} {
+			payload, _ = sjson.DeleteBytes(payload, "request.toolConfig."+key)
+		}
+	}
+	// Reasoning models require toolConfig even when the request has no tools.
+	// Explicit NONE/ANY/AUTO policies must continue to constrain the request.
+	if !gjson.GetBytes(payload, "request.toolConfig.functionCallingConfig.mode").Exists() &&
+		!gjson.GetBytes(payload, "request.toolConfig.function_calling_config.mode").Exists() {
+		payload, _ = sjson.SetBytes(payload, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+	}
+	return payload
 }
 
 // sanitizeAntigravityRequestSchemas cleans the JSON schemas carried by an Antigravity request.

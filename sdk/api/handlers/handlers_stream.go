@@ -8,6 +8,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -564,7 +565,13 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			break
 		}
 		bootstrapRetries++
-		retryResult, retryErr := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+		failedAuthIDs := append([]string(nil), streamResult.FailedAuthIDs...)
+		if streamResult.AuthID != "" {
+			failedAuthIDs = append(failedAuthIDs, streamResult.AuthID)
+		}
+		retryOpts := opts
+		retryOpts.Metadata = coreauth.ExcludeAuthsForRetry(opts.Metadata, failedAuthIDs)
+		retryResult, retryErr := h.AuthManager.ExecuteStream(ctx, providers, req, retryOpts)
 		if retryErr != nil {
 			originalBootstrapErr := executionErrorMessage(bootstrapStreamErr)
 			if isAuthSelectionUnavailable(retryErr) && originalBootstrapErr.StatusCode >= http.StatusInternalServerError {
@@ -578,6 +585,8 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			bootstrapErr = executionErrorMessage(fmt.Errorf("auth manager returned nil stream"))
 			break
 		}
+		streamResult = retryResult
+		opts = retryOpts
 		rawStreamHeaders = cloneHeader(retryResult.Headers)
 		baseStreamHeaders = cloneHeader(retryResult.Headers)
 		streamHeaderInitialized = false

@@ -1921,6 +1921,18 @@ func isRequestScopedError(err error) bool {
 	return ok && requestErr != nil && requestErr.IsRequestScoped()
 }
 
+func isStreamTruncatedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	truncatedErr, ok := errors.AsType[cliproxyexecutor.StreamTruncatedError](err)
+	if ok && truncatedErr != nil && truncatedErr.IsStreamTruncated() {
+		return true
+	}
+	var authErr *Error
+	return errors.As(err, &authErr) && authErr != nil && authErr.Code == streamTruncatedErrorCode
+}
+
 func resultErrorFromError(err error) *Error {
 	if err == nil {
 		return nil
@@ -1936,6 +1948,8 @@ func resultErrorFromError(err error) *Error {
 		resultErr.HTTPStatus = statusCodeFromError(err)
 	}
 	switch {
+	case isStreamTruncatedError(err):
+		resultErr.Code = streamTruncatedErrorCode
 	case isExplicitModelNotFoundError(err, ""):
 		if resultErr.Code == "" || resultErr.Code == requestScopedErrorCode {
 			resultErr.Code = "model_not_found"
@@ -1974,7 +1988,11 @@ func shouldSkipCredentialCooldown(err *Error) bool {
 	if isCapacityOverloadResultError(err) {
 		return true
 	}
-	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientTransportResultError(err)
+	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientTransportResultError(err) || isStreamTruncatedResultError(err)
+}
+
+func isStreamTruncatedResultError(err *Error) bool {
+	return err != nil && err.Code == streamTruncatedErrorCode
 }
 
 // isCapacityOverloadResultError reports whether a result error is a transient

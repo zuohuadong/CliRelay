@@ -7,6 +7,7 @@ import (
 	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 func discardStreamChunks(ch <-chan cliproxyexecutor.StreamChunk) {
@@ -59,6 +60,12 @@ func (e *streamBootstrapError) Unwrap() error {
 		return nil
 	}
 	return e.cause
+}
+
+// IsStreamTruncated preserves the executor's accepted-stream classification
+// across the bootstrap error boundary used by the manager.
+func (e *streamBootstrapError) IsStreamTruncated() bool {
+	return e != nil && isStreamTruncatedError(e.cause)
 }
 
 func (e *streamBootstrapError) Headers() http.Header {
@@ -395,6 +402,15 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			upstreamErr = newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 		}
 		if bootstrapErr != nil {
+			// The upstream accepted the stream and only omitted its terminal
+			// marker. Do not replay or cool the credential: the generation may
+			// already have been submitted and a replay would duplicate it.
+			if isStreamTruncatedError(bootstrapErr) {
+				rerr := resultErrorFromError(bootstrapErr)
+				m.recordExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}, auth, ephemeralResult)
+				discardStreamChunks(streamResult.Chunks)
+				return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
+			}
 			if errCtx := ctx.Err(); errCtx != nil {
 				m.recordCanceledUpstreamCooldown(ctx, auth, provider, resultModel, routeModel, execOpts, bootstrapErr, ephemeralResult, executionSeq)
 				discardStreamChunks(streamResult.Chunks)
@@ -544,7 +560,13 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		}
 
 		if closed && len(buffered) == 0 {
-			emptyErr := markUpstreamExecutionAttemptFromContext(ctx, &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true})
+			emptyCode := "empty_stream"
+			if execOpts.ResponseFormat == sdktranslator.FormatOpenAIResponse {
+				// An accepted OpenAI Responses stream that ends with no terminal
+				// frame is already submitted upstream; do not replay or cool it.
+				emptyCode = streamTruncatedErrorCode
+			}
+			emptyErr := markUpstreamExecutionAttemptFromContext(ctx, &Error{Code: emptyCode, Message: "upstream stream closed before first payload", Retryable: true})
 			currentErr := newStreamBootstrapError(emptyErr, streamResult.Headers)
 			if hasUpstreamExecutionAttempt(emptyErr) {
 				upstreamErr = currentErr

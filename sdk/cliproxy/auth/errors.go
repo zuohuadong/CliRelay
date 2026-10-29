@@ -27,6 +27,13 @@ const ErrorCodeTransientTransport = "transient_transport"
 
 const transientTransportErrorCode = ErrorCodeTransientTransport
 
+// ErrorCodeStreamTruncated marks an accepted upstream stream that ended before
+// its terminal marker. The request was already submitted, so this must not
+// cool or replay the credential.
+const ErrorCodeStreamTruncated = "stream_truncated"
+
+const streamTruncatedErrorCode = ErrorCodeStreamTruncated
+
 // ErrorCodeForceCooldown marks failures that must enforce credential cooldown.
 const ErrorCodeForceCooldown = "force_cooldown"
 
@@ -100,6 +107,11 @@ func (e *Error) StatusCode() int {
 // rather than the selected credential.
 func (e *Error) IsRequestScoped() bool {
 	return e != nil && e.Code == ErrorCodeRequestScoped
+}
+
+// IsStreamTruncated implements the shared executor stream truncation contract.
+func (e *Error) IsStreamTruncated() bool {
+	return e != nil && e.Code == ErrorCodeStreamTruncated
 }
 
 // MarkRequestScoped marks the error as request-scoped in place and returns it.

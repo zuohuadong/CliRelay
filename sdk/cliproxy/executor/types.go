@@ -305,6 +305,11 @@ type StreamResult struct {
 	Headers http.Header
 	// Chunks is the channel of streaming payload units.
 	Chunks <-chan StreamChunk
+	// AuthID identifies the credential serving this stream.
+	AuthID string
+	// FailedAuthIDs identifies credentials that failed while this request was
+	// being routed before the returned stream was handed to the caller.
+	FailedAuthIDs []string
 }
 
 // StatusError represents an error that carries an HTTP-like status code.
@@ -321,4 +326,12 @@ type StatusError interface {
 type RequestScopedError interface {
 	error
 	IsRequestScoped() bool
+}
+
+// StreamTruncatedError identifies a locally synthesized failure for an accepted
+// upstream stream that ended before its terminal marker. The request was already
+// submitted, so auth managers must not cool or replay the credential because of it.
+type StreamTruncatedError interface {
+	error
+	IsStreamTruncated() bool
 }

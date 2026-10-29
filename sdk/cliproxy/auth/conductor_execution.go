@@ -1114,6 +1114,13 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	var lastErr error
 	var upstreamErr error
 	var roundTiming homeRetryRoundTiming
+	failedAuthIDs := make([]string, 0)
+	if exclusions, ok := retryExclusionsFromMetadata(opts.Metadata); ok && !homeMode && pinnedAuthIDFromMetadata(opts.Metadata) == "" {
+		failedAuthIDs = append(failedAuthIDs, exclusions.authIDs...)
+		for _, authID := range exclusions.authIDs {
+			tried[authID] = struct{}{}
+		}
+	}
 	for {
 		allowSameAuthRetry := homeMode && homeSameAuthRetryPending && lastHomeAuthID != "" && homeSameAuthRetries[lastHomeAuthID] == 0
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials && !allowSameAuthRetry {
@@ -1370,6 +1377,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil)
 		if errStream != nil {
+			failedAuthIDs = append(failedAuthIDs, auth.ID)
+			if isStreamTruncatedError(errStream) {
+				return nil, errStream
+			}
 			if hasUpstreamExecutionAttempt(errStream) {
 				upstreamErr = errStream
 			}
@@ -1439,6 +1450,8 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			return wrapHomeStream(ctx, streamResult, selection, releaseAttempt), nil
 		}
+		streamResult.AuthID = auth.ID
+		streamResult.FailedAuthIDs = append([]string(nil), failedAuthIDs...)
 		return streamResult, nil
 	}
 }

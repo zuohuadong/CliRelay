@@ -263,8 +263,8 @@ func TestIssue6825NonStreamTwoTurnSignatureReplay(t *testing.T) {
 			conversation := newIssue6825Conversation(t, fixture.response)
 			opts := cliproxyexecutor.Options{Headers: http.Header{"Session-Id": {t.Name()}}}
 			assistant, first := conversation.call([]byte(issue6825FirstRequest), opts, false, nil)
-			if !strings.HasSuffix(first.path, ":generateContent") {
-				t.Fatalf("first upstream path = %q, want generateContent", first.path)
+			if !strings.HasSuffix(first.path, ":streamGenerateContent") {
+				t.Fatalf("first upstream path = %q, want streamGenerateContent", first.path)
 			}
 			if fixture.wantCallID != "" {
 				if gotID := gjson.GetBytes(assistant, "tool_calls.0.id").String(); gotID != fixture.wantCallID {
@@ -275,8 +275,8 @@ func TestIssue6825NonStreamTwoTurnSignatureReplay(t *testing.T) {
 				assistant, _ = sjson.DeleteBytes(assistant, "reasoning_content")
 			}
 			_, second := conversation.call(issue6825Followup(t, assistant), opts, false, nil)
-			if !strings.HasSuffix(second.path, ":generateContent") {
-				t.Fatalf("second upstream path = %q, want generateContent", second.path)
+			if !strings.HasSuffix(second.path, ":streamGenerateContent") {
+				t.Fatalf("second upstream path = %q, want streamGenerateContent", second.path)
 			}
 			if got := issue6825FirstToolSignature(t, second.body); got != signature {
 				t.Errorf("non-stream historical signature = %q, want %q", got, signature)

@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -95,9 +94,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		return nil, err
 	}
 
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	requestPath := helps.PayloadRequestPath(opts)
-	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "antigravity", from.String(), "request", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "antigravity", "request", originalTranslated, req, opts))
 	translated = e.obfuscateSensitiveWords(translated)
 	translated = sanitizeAntigravityGeminiRequestSignatures(baseModel, translated)
 	translated, _ = sjson.DeleteBytes(translated, "request.stream")
@@ -128,12 +125,12 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		}
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
-	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
-	if errReq != nil {
-		err = errReq
-		return nil, err
+	opener := &antigravityRequestOpener{
+		executor: e, ctx: ctx, auth: auth, token: token, model: baseModel,
+		payload: requestPayload, alt: opts.Alt, baseURL: baseURL, trace: "generate_stream",
+		sessionID: helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata), client: httpClient,
 	}
-	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate_stream").Do(httpReq)
+	httpResp, errDo := opener.open()
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
@@ -200,63 +197,35 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func(resp *http.Response) {
 		defer close(out)
-		defer func() {
-			if errClose := resp.Body.Close(); errClose != nil {
-				log.Errorf("antigravity executor: close response line error: %v", errClose)
-			}
-		}()
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(nil, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
-		var decoder antigravityStreamDecoder
-		var streamErr error
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			payload, decodeErr := decoder.Decode(line)
-			if decodeErr != nil {
-				streamErr = decodeErr
-				break
-			}
-			if payload == nil {
-				continue
-			}
-			line = append([]byte("data: "), payload...)
+		streamErr := opener.readStream(resp, func(payload []byte) error {
+			line := append([]byte("data: "), payload...)
 			if replayAccumulator != nil {
 				replayAccumulator.ObserveSSELine(line)
 			}
-
-			// Filter usage metadata for all models
-			// Only retain usage statistics in the terminal chunk
 			line = helps.FilterSSEUsageMetadata(line)
-
 			payload = helps.JSONPayload(line)
 			if payload == nil {
-				continue
+				return nil
 			}
 			reporter.ObserveResponseModel(payload)
-
 			if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
 				reporter.Publish(ctx, detail)
 			}
-
 			payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, payload)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(payload), &param, claudeInputTokens)
-			for i := range chunks {
+			for _, chunk := range chunks {
 				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
 				case <-ctx.Done():
-					return
+					return ctx.Err()
 				}
 			}
-		}
-		if streamErr == nil {
-			streamErr = scanner.Err()
-		}
-		if streamErr == nil {
-			streamErr = decoder.Finish()
-		}
+			return nil
+		}, func() {
+			replayAccumulator = newAntigravityReasoningReplayAccumulator(replayScope, requestPayload)
+		})
 		if streamErr != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 			reporter.PublishFailure(ctx, streamErr)

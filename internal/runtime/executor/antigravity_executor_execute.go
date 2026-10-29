@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -150,9 +149,7 @@ func (e *AntigravityExecutor) executeViaStreamEndpoint(ctx context.Context, auth
 		return resp, err
 	}
 
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	requestPath := helps.PayloadRequestPath(opts)
-	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "antigravity", from.String(), "request", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "antigravity", "request", originalTranslated, req, opts))
 	translated = e.obfuscateSensitiveWords(translated)
 	translated = sanitizeAntigravityGeminiRequestSignatures(baseModel, translated)
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
@@ -182,13 +179,12 @@ func (e *AntigravityExecutor) executeViaStreamEndpoint(ctx context.Context, auth
 		}
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
-	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
-	if errReq != nil {
-		err = errReq
-		return resp, err
+	opener := &antigravityRequestOpener{
+		executor: e, ctx: ctx, auth: auth, token: token, model: baseModel,
+		payload: requestPayload, alt: opts.Alt, baseURL: baseURL, trace: "generate",
+		sessionID: helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata), client: httpClient,
 	}
-
-	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate").Do(httpReq)
+	httpResp, errDo := opener.open()
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
@@ -252,79 +248,41 @@ func (e *AntigravityExecutor) executeViaStreamEndpoint(ctx context.Context, auth
 		clearAntigravityCreditsFailureState(auth)
 	}
 	replayAccumulator := newAntigravityReasoningReplayAccumulator(replayScope, requestPayload)
-	out := make(chan cliproxyexecutor.StreamChunk)
-	go func(resp *http.Response) {
-		defer close(out)
-		defer func() {
-			if errClose := resp.Body.Close(); errClose != nil {
-				log.Errorf("antigravity executor: close response body error: %v", errClose)
-			}
-		}()
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(nil, streamScannerBuffer)
-		var decoder antigravityStreamDecoder
-		var streamErr error
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			payload, decodeErr := decoder.Decode(line)
-			if decodeErr != nil {
-				streamErr = decodeErr
-				break
-			}
-			if payload == nil {
-				continue
-			}
-			line = append([]byte("data: "), payload...)
-			if replayAccumulator != nil {
-				replayAccumulator.ObserveSSELine(line)
-			}
-
-			// Filter usage metadata for all models
-			// Only retain usage statistics in the terminal chunk
-			line = helps.FilterSSEUsageMetadata(line)
-
-			payload = helps.JSONPayload(line)
-			if payload == nil {
-				continue
-			}
-			reporter.ObserveResponseModel(payload)
-
-			if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
-				reporter.Publish(ctx, detail)
-			}
-
-			out <- cliproxyexecutor.StreamChunk{Payload: payload}
-		}
-		if streamErr == nil {
-			streamErr = scanner.Err()
-		}
-		if streamErr == nil {
-			streamErr = decoder.Finish()
-		}
-		if streamErr != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-			reporter.PublishFailure(ctx, streamErr)
-			out <- cliproxyexecutor.StreamChunk{Err: streamErr}
-		} else {
-			if replayAccumulator != nil {
-				replayAccumulator.Commit(ctx)
-			}
-			reporter.EnsurePublished(ctx)
-		}
-	}(httpResp)
-
 	var buffer bytes.Buffer
-	for chunk := range out {
-		if chunk.Err != nil {
-			return resp, chunk.Err
+	streamErr := opener.readStream(httpResp, func(payload []byte) error {
+		line := append([]byte("data: "), payload...)
+		if replayAccumulator != nil {
+			replayAccumulator.ObserveSSELine(line)
 		}
-		if len(chunk.Payload) > 0 {
-			_, _ = buffer.Write(chunk.Payload)
-			_, _ = buffer.Write([]byte("\n"))
+		line = helps.FilterSSEUsageMetadata(line)
+		payload = helps.JSONPayload(line)
+		if payload == nil {
+			return nil
 		}
+		reporter.ObserveResponseModel(payload)
+		if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
+			reporter.Publish(ctx, detail)
+		}
+		buffer.Write(payload)
+		buffer.WriteByte('\n')
+		return nil
+	}, func() {
+		buffer.Reset()
+		replayAccumulator = newAntigravityReasoningReplayAccumulator(replayScope, requestPayload)
+	})
+	if streamErr != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+		return resp, streamErr
 	}
 	resp = cliproxyexecutor.Response{Payload: e.convertStreamToNonStream(buffer.Bytes())}
+	if replayAccumulator != nil {
+		// A fully collected non-stream candidate is complete even when the
+		// upstream omits finishReason on a tool-call-only response.
+		if gjson.GetBytes(resp.Payload, "response.candidates.0").Exists() {
+			replayAccumulator.terminal = true
+		}
+		replayAccumulator.Commit(ctx)
+	}
 
 	resp.Payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, resp.Payload)
 	reporter.ObserveResponseModel(resp.Payload)

@@ -1,0 +1,179 @@
+import type { ProxyCheckResult, ProxyPoolEntry } from "@code-proxy/api-client/endpoints/proxies";
+import {
+  getActiveCacheTenantId,
+  readTenantBucket,
+  writeTenantBucket,
+} from "@code-proxy/domain";
+
+export type ProxyCheckStateEntry = Partial<ProxyCheckResult> & { checking?: boolean };
+export type ProxyCheckState = Record<string, ProxyCheckStateEntry>;
+
+export type ProxyLatencyTone = "none" | "fast" | "medium" | "slow" | "failed";
+
+/** Tenant-scoped proxy check results (v2). Legacy v1 migrates into the default tenant only. */
+export const PROXIES_CHECK_STATE_CACHE_KEY = "proxiesPage.checkState.v2";
+export const PROXIES_CHECK_STATE_CACHE_KEY_V1 = "proxiesPage.checkState.v1";
+
+const readCachedNumber = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? Math.round(value) : undefined;
+
+export const emptyProxyDraft = (): ProxyPoolEntry => ({
+  id: "",
+  name: "",
+  url: "",
+  enabled: true,
+  description: "",
+});
+
+export const proxyProtocol = (rawUrl: string): string => {
+  const match = rawUrl.trim().match(/^([a-z][a-z0-9+.-]*):\/\//i);
+  return match?.[1]?.toUpperCase() ?? "PROXY";
+};
+
+export const proxyDisplayURL = (entry: ProxyPoolEntry): string => entry.maskedUrl || entry.url;
+
+export const proxyEndpoint = (entry: ProxyPoolEntry): string => {
+  const raw = (entry.maskedUrl || entry.url).trim();
+  try {
+    const url = new URL(raw);
+    const host = url.hostname;
+    const port = url.port;
+    if (host) return port ? `${host}:${port}` : host;
+  } catch {
+    // 兼容不完整但仍可从字符串中取 host 的旧数据。
+  }
+  const withoutProtocol = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  const withoutAuth = withoutProtocol.includes("@")
+    ? (withoutProtocol.split("@").pop() ?? "")
+    : withoutProtocol;
+  return withoutAuth.split(/[/?#]/)[0] || "--";
+};
+
+export const proxyLatencyTone = (result?: ProxyCheckStateEntry): ProxyLatencyTone => {
+  if (!result || typeof result.ok !== "boolean") return "none";
+  if (!result.ok) return "failed";
+  if (typeof result.latencyMs !== "number") return "none";
+  if (result.latencyMs <= 300) return "fast";
+  if (result.latencyMs <= 1000) return "medium";
+  return "slow";
+};
+
+const parseProxyCheckState = (value: unknown): ProxyCheckState | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const next: ProxyCheckState = {};
+  for (const [id, itemValue] of Object.entries(value as Record<string, unknown>)) {
+    if (!id || !itemValue || typeof itemValue !== "object" || Array.isArray(itemValue)) continue;
+    const item = itemValue as Record<string, unknown>;
+    if (typeof item.ok !== "boolean") continue;
+    const statusCode = readCachedNumber(item.statusCode);
+    const latencyMs = readCachedNumber(item.latencyMs);
+    const message = typeof item.message === "string" ? item.message : "";
+    next[id] = {
+      ok: item.ok,
+      ...(typeof statusCode === "number" ? { statusCode } : {}),
+      ...(typeof latencyMs === "number" ? { latencyMs } : {}),
+      ...(message ? { message } : {}),
+    };
+  }
+  return next;
+};
+
+export const readCachedProxyCheckState = (tenantId?: string | null): ProxyCheckState => {
+  return (
+    readTenantBucket({
+      key: PROXIES_CHECK_STATE_CACHE_KEY,
+      kind: "session",
+      tenantId: tenantId ?? getActiveCacheTenantId(),
+      legacyKey: PROXIES_CHECK_STATE_CACHE_KEY_V1,
+      parseBucket: parseProxyCheckState,
+      acceptUnscopedCurrent: true,
+    }) ?? {}
+  );
+};
+
+export const writeCachedProxyCheckState = (
+  state: ProxyCheckState,
+  tenantId?: string | null,
+): void => {
+  // Persist only completed checks (ok is required); drop in-flight "checking" rows.
+  const cache: ProxyCheckState = {};
+  for (const [id, result] of Object.entries(state)) {
+    if (typeof result.ok !== "boolean") continue;
+    cache[id] = {
+      ok: result.ok,
+      ...(typeof result.statusCode === "number" ? { statusCode: result.statusCode } : {}),
+      ...(typeof result.latencyMs === "number" ? { latencyMs: result.latencyMs } : {}),
+      ...(result.message ? { message: result.message } : {}),
+    };
+  }
+  writeTenantBucket({
+    key: PROXIES_CHECK_STATE_CACHE_KEY,
+    kind: "session",
+    tenantId: tenantId ?? getActiveCacheTenantId(),
+    legacyKey: PROXIES_CHECK_STATE_CACHE_KEY_V1,
+    parseBucket: parseProxyCheckState,
+    acceptUnscopedCurrent: true,
+    legacyKeysToRemove: [PROXIES_CHECK_STATE_CACHE_KEY_V1],
+    bucket: cache,
+  });
+};
+
+const proxyIDFromURL = (url: string): string => {
+  const trimmed = (url || "").trim();
+  try {
+    const parsed = new URL(trimmed);
+    const hostPart = `${parsed.hostname}${parsed.port ? `-${parsed.port}` : ""}`
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    if (hostPart) return `proxy-${hostPart}`;
+  } catch {
+    // fall through to hash
+  }
+  if (!trimmed) return `proxy-${Date.now()}`;
+  let hash = 0;
+  for (let i = 0; i < trimmed.length; i += 1) {
+    hash = (Math.imul(31, hash) + trimmed.charCodeAt(i)) | 0;
+  }
+  return `proxy-${(hash >>> 0).toString(16)}`;
+};
+
+/** Stable proxy id from ASCII name; non-ASCII names use host/port so "洛杉矶 ip" ≠ "住宅 ip". */
+export const slugifyProxyID = (name: string, fallback: string): string => {
+  const rawName = (name || "").trim();
+  // CJK / mixed names strip to colliding fragments like "ip"; always key off the URL.
+  if (/[^\x00-\x7F]/.test(rawName)) {
+    return proxyIDFromURL(fallback);
+  }
+  const fromName = rawName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (fromName) return fromName;
+  return proxyIDFromURL(fallback);
+};
+
+/** Keep create ids unique within the current tenant list (editing id excluded). */
+export const uniqueProxyID = (
+  candidate: string,
+  existing: ProxyPoolEntry[],
+  editingID?: string | null,
+): string => {
+  const base = candidate.trim() || `proxy-${Date.now()}`;
+  const used = new Set(
+    existing
+      .map((entry) => entry.id.trim())
+      .filter((id) => id && id !== (editingID ?? "").trim()),
+  );
+  if (!used.has(base)) return base;
+  let n = 2;
+  while (used.has(`${base}-${n}`)) n += 1;
+  return `${base}-${n}`;
+};
+
+export const validateProxyDraft = (draft: ProxyPoolEntry): string | null => {
+  if (!draft.name.trim()) return "name";
+  if (!draft.url.trim()) return "url";
+  if (!/^(https?|socks5):\/\/[^/\s]+/i.test(draft.url.trim())) return "url";
+  return null;
+};

@@ -1,0 +1,1466 @@
+import { expect, test, type Page } from "@playwright/test";
+
+const administratorRole = {
+  id: "r-platform-admin",
+  tenant_id: "t-system",
+  code: "platform_super_admin",
+  name: "Administrator",
+  description: "Built-in administrator role with every platform and tenant permission.",
+  scope: "platform",
+  system_protected: true,
+  permissions: [
+    "platform.tenants.read",
+    "platform.tenants.create",
+    "platform.tenants.update",
+    "platform.menus.read",
+    "platform.menus.update",
+    "tenant.users.read",
+    "tenant.users.create",
+    "tenant.users.update",
+    "tenant.users.assign_roles",
+    "tenant.users.reset_password",
+    "tenant.users.delete",
+    "tenant.roles.read",
+    "tenant.roles.create",
+    "tenant.roles.update",
+    "tenant.roles.delete",
+    "tenant.audit.read",
+    "dashboard.read",
+  ],
+  version: 1,
+};
+
+const principal = {
+  kind: "user_session",
+  user: {
+    id: "u-admin",
+    tenant_id: "t-system",
+    username: "admin",
+    display_name: "Super Administrator",
+    status: "active",
+    must_change_password: false,
+    last_login_at: null,
+    role_ids: [administratorRole.id],
+    role_codes: [administratorRole.code],
+    version: 1,
+    created_at: "",
+    updated_at: "",
+  },
+  home_tenant: {
+    id: "t-system",
+    slug: "system",
+    name: "System Administration",
+    type: "system",
+    status: "active",
+    effective_status: "active",
+    expires_at: null,
+    description: "",
+    version: 1,
+    created_at: "",
+    updated_at: "",
+  },
+  effective_tenant: {
+    id: "t-system",
+    slug: "system",
+    name: "System Administration",
+    type: "system",
+    status: "active",
+    effective_status: "active",
+    expires_at: null,
+    description: "",
+    version: 1,
+    created_at: "",
+    updated_at: "",
+  },
+  roles: [administratorRole],
+  permissions: [
+    "platform.tenants.read",
+    "platform.tenants.create",
+    "platform.tenants.update",
+    "platform.menus.read",
+    "platform.menus.update",
+    "tenant.users.read",
+    "tenant.users.create",
+    "tenant.users.update",
+    "tenant.users.assign_roles",
+    "tenant.users.reset_password",
+    "tenant.users.delete",
+    "tenant.roles.read",
+    "tenant.roles.create",
+    "tenant.roles.update",
+    "tenant.roles.delete",
+    "tenant.audit.read",
+    "dashboard.read",
+  ],
+  platform_admin: true,
+};
+
+const operatorRole = {
+  id: "r-operator",
+  tenant_id: "t-system",
+  code: "operator",
+  name: "Operator",
+  description: "Operates tenant users.",
+  scope: "tenant",
+  system_protected: false,
+  permissions: ["tenant.users.read", "tenant.users.update"],
+  version: 2,
+};
+
+const memberUser = {
+  ...principal.user,
+  id: "u-member",
+  username: "member",
+  display_name: "Member User",
+  role_ids: [operatorRole.id],
+  role_codes: [operatorRole.code],
+  version: 3,
+};
+
+const tenantAdminRole = {
+  ...operatorRole,
+  id: "r-tenant-admin",
+  code: "tenant_admin",
+  name: "Tenant Administrator",
+  system_protected: true,
+  permissions: administratorRole.permissions.filter((permission) =>
+    permission.startsWith("tenant."),
+  ),
+};
+
+const tenantAdminUser = {
+  ...memberUser,
+  id: "u-tenant-admin",
+  username: "tenant-admin",
+  display_name: "Tenant Admin User",
+  role_ids: [tenantAdminRole.id, operatorRole.id],
+  role_codes: [tenantAdminRole.code, operatorRole.code],
+};
+
+const menuItems = [
+  {
+    code: "group.system",
+    parent_code: "",
+    type: "directory",
+    path: "/system",
+    component: "Layout",
+    link_url: "",
+    title: "",
+    badge_type: "",
+    badge_content: "",
+    hide_menu: false,
+    label_key: "shell.nav_group_system",
+    icon: "settings",
+    permission_code: "",
+    sort_order: 60,
+    visible: true,
+    enabled: true,
+    system_protected: true,
+    version: 1,
+  },
+  {
+    code: "system.menus",
+    parent_code: "group.system",
+    type: "menu",
+    path: "/system/menu-management",
+    component: "menu-management",
+    link_url: "",
+    title: "",
+    badge_type: "",
+    badge_content: "",
+    hide_menu: false,
+    label_key: "shell.nav_menu_management",
+    icon: "menu",
+    permission_code: "platform.menus.read",
+    sort_order: 40,
+    visible: true,
+    enabled: true,
+    system_protected: true,
+    version: 1,
+  },
+  {
+    code: "system.config",
+    parent_code: "group.system",
+    type: "menu",
+    path: "/system/config",
+    component: "config",
+    link_url: "",
+    title: "",
+    badge_type: "",
+    badge_content: "",
+    hide_menu: false,
+    label_key: "shell.nav_config",
+    icon: "settings",
+    permission_code: "system.config.read",
+    sort_order: 30,
+    visible: true,
+    enabled: true,
+    system_protected: true,
+    version: 1,
+  },
+];
+
+const roleMenuItems = [
+  {
+    code: "group.governance",
+    parent_code: "",
+    type: "directory",
+    path: "/governance",
+    component: "Layout",
+    link_url: "",
+    title: "",
+    badge_type: "",
+    badge_content: "",
+    hide_menu: false,
+    label_key: "shell.nav_group_governance",
+    icon: "users-round",
+    permission_code: "",
+    sort_order: 50,
+    visible: true,
+    enabled: true,
+    system_protected: true,
+    version: 1,
+  },
+  {
+    code: "governance.users",
+    parent_code: "group.governance",
+    type: "menu",
+    path: "/governance/users",
+    component: "users",
+    link_url: "",
+    title: "",
+    badge_type: "",
+    badge_content: "",
+    hide_menu: false,
+    label_key: "shell.nav_users",
+    icon: "user-round",
+    permission_code: "tenant.users.read",
+    sort_order: 20,
+    visible: true,
+    enabled: true,
+    system_protected: true,
+    version: 1,
+  },
+];
+
+const standardTenant = {
+  ...principal.home_tenant,
+  id: "t-acme",
+  slug: "acme",
+  name: "Acme Team",
+  type: "standard",
+};
+
+async function mockIdentity(
+  page: Page,
+  tenants = [principal.home_tenant],
+  roles = [administratorRole],
+  users = [principal.user],
+  menus = menuItems,
+  principalMenus?: typeof roleMenuItems,
+) {
+  await page.route("**/v0/auth/me", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        principal: principalMenus ? { ...principal, menus: principalMenus } : principal,
+      }),
+    }),
+  );
+  await page.route("**/v0/management/**", (route) => {
+    const path = new URL(route.request().url()).pathname.replace("/v0/management", "");
+    const bodies: Record<string, unknown> = {
+      "/tenants": { items: tenants },
+      "/users": { items: users },
+      "/roles": { items: roles },
+      "/menus": { items: menus },
+      "/permissions": {
+        items: administratorRole.permissions.map((code) => ({
+          code,
+          name: code,
+          scope: code.startsWith("platform.") ? "platform" : "tenant",
+          resource:
+            code.startsWith("tenant.") || code.startsWith("platform.")
+              ? (code.split(".")[1] ?? "")
+              : code.split(".").slice(0, -1).join("_"),
+          action: code.split(".").at(-1),
+          menu_code:
+            code.startsWith("tenant.users.") || code.startsWith("platform.users.")
+              ? "governance.users"
+              : "",
+          sensitive: false,
+        })),
+      },
+      "/audit-logs": { items: [] },
+    };
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(bodies[path] ?? {}),
+    });
+  });
+}
+
+// Layout assertions (touch targets, centering) stay untagged; critical set
+// only needs force-change-password redirect after login.
+test("logs in with username and password without selecting a tenant", async ({ page }) => {
+  await page.route("**/v0/auth/login", async (route) => {
+    const body = route.request().postDataJSON();
+    expect(body).toEqual({
+      username: "admin",
+      password: "correct-password",
+      remember_me: false,
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        access_token: "cps_test",
+        token_type: "Bearer",
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        principal: {
+          ...principal,
+          user: { ...principal.user, must_change_password: true },
+        },
+      }),
+    });
+  });
+  await mockIdentity(page);
+  await page.goto("/#/login");
+  await expect(page.getByLabel(/tenant/i)).toHaveCount(0);
+  await expect(page.locator("svg.lucide-key-round")).toBeVisible();
+  const usernameBox = await page.getByLabel(/username/i).boundingBox();
+  const passwordBox = await page.getByLabel(/^password$/i).boundingBox();
+  expect(usernameBox?.height).toBeGreaterThanOrEqual(44);
+  expect(passwordBox?.height).toBeGreaterThanOrEqual(44);
+  await page.getByLabel(/username/i).fill("admin");
+  await page.getByLabel(/^password$/i).fill("correct-password");
+  await page.getByRole("button", { name: /^login$/i }).click();
+  await expect(page.getByRole("heading", { name: /change password/i })).toBeVisible();
+  await expect(page.locator("main svg.lucide-key-round")).toHaveCount(0);
+  await expect(page.locator("main svg.lucide-eye")).toHaveCount(0);
+  const passwordVisibility = page.getByRole("checkbox", { name: /show passwords/i });
+  await expect(passwordVisibility).toBeVisible();
+  await expect(page.getByLabel(/current password/i)).toHaveAttribute("type", "password");
+  await passwordVisibility.check();
+  await expect(page.getByLabel(/current password/i)).toHaveAttribute("type", "text");
+  await expect(page.getByLabel(/^new password$/i)).toHaveAttribute("type", "text");
+  await expect(page.getByLabel(/confirm new password/i)).toHaveAttribute("type", "text");
+  await expect(page.locator("aside")).toHaveCount(0);
+  await expect(page.locator("header")).toHaveCount(0);
+  await expect
+    .poll(async () => {
+      const passwordCard = await page.locator("main section").boundingBox();
+      const viewport = page.viewportSize();
+      if (!passwordCard || !viewport) return Number.POSITIVE_INFINITY;
+      return Math.abs(passwordCard.x + passwordCard.width / 2 - viewport.width / 2);
+    })
+    .toBeLessThan(12);
+  await expect
+    .poll(async () => {
+      const passwordCard = await page.locator("main section").boundingBox();
+      const viewport = page.viewportSize();
+      if (!passwordCard || !viewport) return Number.POSITIVE_INFINITY;
+      return Math.abs(passwordCard.y + passwordCard.height / 2 - viewport.height / 2);
+    })
+    .toBeLessThan(12);
+  await page.evaluate(() => {
+    window.location.hash = "/dashboard";
+  });
+  await expect(page).toHaveURL(/#\/change-password$/);
+});
+
+test("forces password change after login and blocks dashboard @critical", async ({ page }) => {
+  await page.route("**/v0/auth/login", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        access_token: "cps_test",
+        token_type: "Bearer",
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        principal: {
+          ...principal,
+          user: { ...principal.user, must_change_password: true },
+        },
+      }),
+    });
+  });
+  await mockIdentity(page);
+  await page.goto("/#/login");
+  await page.getByLabel(/username/i).fill("admin");
+  await page.getByLabel(/^password$/i).fill("correct-password");
+  await page.getByRole("button", { name: /^login$/i }).click();
+  await expect(page.getByRole("heading", { name: /change password/i })).toBeVisible();
+  await page.evaluate(() => {
+    window.location.hash = "/dashboard";
+  });
+  await expect(page).toHaveURL(/#\/change-password$/);
+});
+
+test("shows tenant governance routes from server permissions", async ({ page }) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await mockIdentity(page);
+  await page.goto("/#/tenants");
+  await expect(page.getByRole("heading", { name: "Tenants" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New tenant" })).toBeVisible();
+  await expect(page.getByText("System Administration").first()).toBeVisible();
+});
+
+test("uses the localized searchable tenant select with checkmark selection", async ({ page }) => {
+  await page.addInitScript(() => {
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    );
+    localStorage.setItem(
+      "cli-proxy-language",
+      JSON.stringify({ language: "zh-CN", state: { language: "zh-CN" } }),
+    );
+  });
+  await mockIdentity(page, [principal.home_tenant, standardTenant]);
+  await page.goto("/#/tenants");
+
+  const trigger = page.getByRole("combobox", { name: "切换租户" });
+  await expect(trigger).toContainText("系统管理");
+  await expect(trigger).not.toContainText("System Administration");
+  await expect
+    .poll(() => trigger.evaluate((element) => getComputedStyle(element).borderTopWidth))
+    .toBe("0px");
+
+  await trigger.click();
+  const listbox = page.getByRole("listbox", { name: "切换租户" });
+  await expect(listbox.getByPlaceholder("搜索租户")).toBeVisible();
+  const selected = listbox.getByRole("option", { name: "系统管理" });
+  await expect(selected).toHaveAttribute("aria-selected", "true");
+  // Selected option uses a checkmark only — no solid selected background fill.
+  await expect
+    .poll(() =>
+      selected.evaluate((element) => {
+        const bg = getComputedStyle(element).backgroundColor;
+        return bg === "rgba(0, 0, 0, 0)" || bg === "transparent";
+      }),
+    )
+    .toBe(true);
+  await expect(listbox.getByRole("option", { name: "Acme Team" })).toBeVisible();
+});
+
+test("switching tenant remounts the current page and reloads tenant-scoped data @critical", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+
+  let currentTenantId = principal.effective_tenant.id;
+  const acmeRoles = [
+    {
+      ...administratorRole,
+      id: "r-acme-admin",
+      tenant_id: standardTenant.id,
+      code: "tenant_admin",
+      name: "Acme Admin Role",
+      scope: "tenant",
+      system_protected: false,
+    },
+  ];
+
+  await page.route("**/v0/auth/me", (route) => {
+    const tenantHeader = route.request().headers()["x-effective-tenant-id"] ?? "";
+    const effective =
+      tenantHeader === standardTenant.id
+        ? standardTenant
+        : tenantHeader
+          ? { ...principal.effective_tenant, id: tenantHeader }
+          : principal.effective_tenant;
+    currentTenantId = effective.id;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        principal: {
+          ...principal,
+          effective_tenant: effective,
+        },
+      }),
+    });
+  });
+
+  let rolesFetchCount = 0;
+  await page.route("**/v0/management/**", (route) => {
+    const path = new URL(route.request().url()).pathname.replace("/v0/management", "");
+    const tenantHeader = route.request().headers()["x-effective-tenant-id"] ?? "";
+    if (path === "/roles") {
+      rolesFetchCount += 1;
+      const items =
+        tenantHeader === standardTenant.id || currentTenantId === standardTenant.id
+          ? acmeRoles
+          : [administratorRole];
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items }),
+      });
+    }
+    const bodies: Record<string, unknown> = {
+      "/tenants": { items: [principal.home_tenant, standardTenant] },
+      "/users": { items: [principal.user] },
+      "/menus": { items: menuItems },
+      "/permissions": {
+        items: administratorRole.permissions.map((code) => ({
+          code,
+          name: code,
+          scope: code.startsWith("platform.") ? "platform" : "tenant",
+          resource:
+            code.startsWith("tenant.") || code.startsWith("platform.")
+              ? (code.split(".")[1] ?? "")
+              : code.split(".").slice(0, -1).join("_"),
+          action: code.split(".").at(-1),
+          menu_code: "",
+          sensitive: false,
+        })),
+      },
+      "/audit-logs": { items: [] },
+    };
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(bodies[path] ?? {}),
+    });
+  });
+
+  await page.goto("/#/roles");
+  await expect(page.getByRole("heading", { name: /Roles/i })).toBeVisible();
+  // exact: true — sidebar shows "Super Administrator" which would also match /Administrator/.
+  await expect(page.getByText("Administrator", { exact: true })).toBeVisible();
+  const initialRolesFetches = rolesFetchCount;
+  expect(initialRolesFetches).toBeGreaterThan(0);
+
+  const trigger = page.getByRole("combobox", { name: /switch tenant/i });
+  await trigger.click();
+  await page.getByRole("option", { name: "Acme Team" }).click();
+
+  await expect(trigger).toContainText("Acme Team");
+  // tenant_admin is localized via i18n; role.name is only shown for custom codes.
+  await expect(page.getByText("Tenant Administrator")).toBeVisible();
+  await expect(page.getByText("Administrator", { exact: true })).toHaveCount(0);
+  expect(rolesFetchCount).toBeGreaterThan(initialRolesFetches);
+
+  const authSnapshot = await page.evaluate(() => sessionStorage.getItem("code-proxy-admin-auth"));
+  expect(authSnapshot).toBeTruthy();
+  expect(authSnapshot).toContain(standardTenant.id);
+});
+
+test("restores the selected tenant after full page reload @critical", async ({ page }) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+        effectiveTenantId: "t-acme",
+      }),
+    ),
+  );
+
+  const meTenantHeaders: string[] = [];
+  await page.route("**/v0/auth/me", (route) => {
+    const tenantHeader = route.request().headers()["x-effective-tenant-id"] ?? "";
+    meTenantHeaders.push(tenantHeader);
+    const effective = tenantHeader === standardTenant.id ? standardTenant : principal.home_tenant;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        principal: {
+          ...principal,
+          effective_tenant: effective,
+        },
+      }),
+    });
+  });
+
+  // Same management mock shape as the switch-tenant test (path → body map).
+  await page.route("**/v0/management/**", (route) => {
+    const path = new URL(route.request().url()).pathname.replace("/v0/management", "");
+    if (path === "/roles") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items: [administratorRole] }),
+      });
+    }
+    const bodies: Record<string, unknown> = {
+      "/tenants": { items: [principal.home_tenant, standardTenant] },
+      "/users": { items: [principal.user] },
+      "/menus": { items: menuItems },
+      "/permissions": { items: [] },
+      "/audit-logs": { items: [] },
+    };
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(bodies[path] ?? {}),
+    });
+  });
+
+  await page.goto("/#/roles");
+  const trigger = page.getByRole("combobox", { name: /switch tenant/i });
+  // Header must restore the persisted tenant without a home-tenant flash.
+  await expect(trigger).toContainText("Acme Team");
+  // First restore /me must already carry the persisted override.
+  expect(meTenantHeaders.length).toBeGreaterThan(0);
+  expect(meTenantHeaders[0]).toBe(standardTenant.id);
+
+  const snapshotAfterRestore = await page.evaluate(() =>
+    sessionStorage.getItem("code-proxy-admin-auth"),
+  );
+  expect(snapshotAfterRestore).toContain(standardTenant.id);
+});
+
+test("shows tenant row actions including protected system tenant details", async ({ page }) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await mockIdentity(page, [principal.home_tenant, standardTenant]);
+  await page.goto("/#/tenants");
+
+  const systemRow = page.locator('[data-vt-row-key="t-system"]');
+  await expect(systemRow.getByRole("button", { name: "View" })).toBeVisible();
+  await systemRow.getByRole("button", { name: "View" }).click();
+  await expect(page.getByRole("dialog", { name: "System Administration" })).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  const tenantRow = page.locator('[data-vt-row-key="t-acme"]');
+  await expect(tenantRow.getByRole("button", { name: "Edit" })).toBeVisible();
+  await expect(tenantRow.getByRole("button", { name: "Renew" })).toBeVisible();
+  await expect(tenantRow.getByRole("button", { name: "Disable" })).toBeVisible();
+});
+
+test("uses a switch for the two user availability states", async ({ page }) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await mockIdentity(
+    page,
+    [principal.home_tenant],
+    [administratorRole, operatorRole],
+    [principal.user, memberUser],
+  );
+  await page.goto("/#/governance/users");
+
+  const memberRow = page.locator('[data-vt-row-key="u-member"]');
+  await expect(memberRow.getByRole("switch")).toHaveAttribute("aria-checked", "true");
+  await expect(memberRow.getByRole("combobox")).toHaveCount(0);
+  await expect(memberRow.getByRole("button", { name: "Reset password" })).toHaveText("");
+  await expect(memberRow.getByRole("button", { name: "Delete" })).toHaveText("");
+  await expect(memberRow.getByRole("button", { name: "More actions" })).toHaveCount(0);
+  await memberRow.getByRole("switch").click();
+  await expect(page.getByRole("dialog", { name: "Disable user" })).toBeVisible();
+});
+
+test("protects tenant admin role assignment and deletion actions", async ({ page }) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await mockIdentity(
+    page,
+    [principal.home_tenant],
+    [administratorRole, tenantAdminRole, operatorRole],
+    [principal.user, tenantAdminUser, memberUser],
+    menuItems,
+    roleMenuItems,
+  );
+
+  await page.goto("/#/governance/users");
+  const tenantAdminRow = page.locator('[data-vt-row-key="u-tenant-admin"]');
+  await expect(tenantAdminRow.getByRole("button", { name: "Set roles" })).toBeDisabled();
+  await expect(tenantAdminRow.getByRole("button", { name: "Delete" })).toBeDisabled();
+  await expect(tenantAdminRow.getByRole("button", { name: "Reset password" })).toBeEnabled();
+  await expect(tenantAdminRow.getByRole("switch")).toBeEnabled();
+
+  await page.goto("/#/roles");
+  const tenantAdminRoleRow = page.locator('[data-vt-row-key="r-tenant-admin"]');
+  await expect(tenantAdminRoleRow.getByRole("button", { name: "Assign users" })).toBeDisabled();
+
+  const operatorRoleRow = page.locator('[data-vt-row-key="r-operator"]');
+  await operatorRoleRow.getByRole("button", { name: "Assign users" }).click();
+  const dialog = page.getByRole("dialog", { name: "Assign users to Operator" });
+  const tenantAdminCheckbox = dialog.getByRole("checkbox", { name: /Tenant Admin User/ });
+  await expect(tenantAdminCheckbox).toBeChecked();
+  await expect(tenantAdminCheckbox).toBeDisabled();
+});
+
+test("edits role permissions and assigns users from action modals", async ({ page }) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await mockIdentity(
+    page,
+    [principal.home_tenant],
+    [administratorRole, operatorRole],
+    [principal.user, memberUser],
+    menuItems,
+    roleMenuItems,
+  );
+  await page.goto("/#/roles");
+
+  await page.getByRole("button", { name: "New role" }).click();
+  await expect(page.getByRole("dialog", { name: "New role" }).getByLabel("Role code")).toHaveCount(
+    0,
+  );
+  await page.keyboard.press("Escape");
+
+  const roleRow = page.locator('[data-vt-row-key="r-operator"]');
+  const permissionButton = roleRow.getByRole("button", { name: "Edit permissions" });
+  const assignButton = roleRow.getByRole("button", { name: "Assign users" });
+  await expect(permissionButton).toHaveText("");
+  await expect(assignButton).toHaveText("");
+  await permissionButton.click();
+  await expect(page.getByRole("dialog", { name: "Permissions for Operator" })).toBeVisible();
+  const permissionDialog = page.getByRole("dialog");
+  await expect(permissionDialog.getByRole("tree")).toBeVisible();
+  await expect(permissionDialog.getByRole("treeitem", { name: /Users/ })).toBeVisible();
+  await expect(permissionDialog.getByRole("checkbox", { name: "Update Users" })).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await roleRow.getByRole("button", { name: "Assign users" }).click();
+  const dialog = page.getByRole("dialog", { name: "Assign users to Operator" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("Member User", { exact: true })).toBeVisible();
+});
+
+test("manages dynamic menu visibility and ordering", async ({ page }) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await mockIdentity(page);
+  await page.goto("/#/system/menu-management");
+
+  await expect(page.getByRole("heading", { name: "Menu Management", level: 2 })).toBeVisible();
+  const systemGroupRow = page.locator('[data-vt-row-key="group.system"]');
+  await systemGroupRow.getByRole("button", { name: "Collapse" }).click();
+  await expect(page.locator('[data-vt-row-key="system.config"]')).toHaveCount(0);
+  await systemGroupRow.getByRole("button", { name: "Expand", exact: true }).click();
+  const menuRow = page.locator('[data-vt-row-key="system.config"]');
+  await expect(menuRow.getByRole("switch")).toHaveCount(2);
+  await menuRow.getByRole("button", { name: "Adjust order" }).click();
+  await expect(page.getByRole("dialog", { name: "Adjust order" })).toBeVisible();
+});
+
+test("applies server menu visibility and enabled state to navigation and routes @critical", async ({
+  page,
+}) => {
+  const dynamicPrincipal = {
+    ...principal,
+    menus: menuItems.map((menu) =>
+      menu.code === "system.config" ? { ...menu, enabled: false } : menu,
+    ),
+  };
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await page.route("**/v0/auth/me", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ principal: dynamicPrincipal }),
+    }),
+  );
+  await page.route("**/v0/management/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ items: menuItems }),
+    }),
+  );
+
+  await page.goto("/#/system/menu-management");
+  await expect(page.getByText("Menu Management", { exact: true }).last()).toBeVisible();
+  await expect(page.getByText("Tenants", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Dashboard", { exact: true })).toHaveCount(0);
+  await page.goto("/#/system/config");
+  await expect(page.getByRole("heading", { name: "Access denied" })).toBeVisible();
+});
+
+test("shows the built-in administrator role and super administrator account", async ({ page }) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await mockIdentity(page);
+
+  await page.goto("/#/governance/users");
+  const adminRow = page.locator('[data-vt-row-key="u-admin"]');
+  await expect(adminRow).toBeVisible();
+  await expect(adminRow.getByText("Super Administrator", { exact: true })).toBeVisible();
+  await expect(adminRow.getByText("Administrator", { exact: true })).toBeVisible();
+
+  await page.goto("/#/roles");
+  await expect(page.getByRole("cell", { name: /Administrator/ }).first()).toBeVisible();
+  await expect(page.getByText("platform_super_admin", { exact: true }).first()).toBeVisible();
+});
+
+test("creates a tenant without selecting it on the login page", async ({ page }) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await mockIdentity(page);
+  let createBody: Record<string, unknown> | null = null;
+  await page.route("**/v0/management/tenants", async (route) => {
+    if (route.request().method() === "POST") {
+      createBody = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          tenant: { ...principal.home_tenant, id: "tenant-a" },
+          admin: principal.user,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ items: [principal.home_tenant] }),
+    });
+  });
+  await page.goto("/#/tenants");
+  await page.getByRole("button", { name: "New tenant" }).click();
+  await expect(page.getByLabel("Slug", { exact: true })).toHaveCount(0);
+  await page.getByLabel("Name", { exact: true }).fill("Tenant A");
+  await page.getByLabel("Expires at", { exact: true }).fill("2030-01-01T00:00");
+  await page.getByLabel("Admin username", { exact: true }).fill("tenant-admin");
+  await page.getByLabel("Admin display name", { exact: true }).fill("Tenant Admin");
+  await page.getByLabel("Admin password", { exact: true }).fill("Tenant-Password-123");
+  await page.getByLabel("Description", { exact: true }).fill("Primary tenant");
+  await page.getByRole("button", { name: "Create tenant" }).click();
+  await expect.poll(() => createBody).not.toBeNull();
+  expect(createBody).not.toHaveProperty("slug");
+  expect(createBody).toMatchObject({
+    name: "Tenant A",
+    admin_username: "tenant-admin",
+    admin_display_name: "Tenant Admin",
+    admin_password: "Tenant-Password-123",
+    description: "Primary tenant",
+  });
+});
+
+test("users page does not fetch or expose role assignment without role read permission", async ({
+  page,
+}) => {
+  const limitedPrincipal = {
+    ...principal,
+    platform_admin: false,
+    home_tenant: {
+      ...principal.home_tenant,
+      id: "tenant-limited",
+      type: "standard",
+    },
+    effective_tenant: {
+      ...principal.effective_tenant,
+      id: "tenant-limited",
+      type: "standard",
+    },
+    user: {
+      ...principal.user,
+      id: "u-limited",
+      tenant_id: "tenant-limited",
+      username: "manager",
+    },
+    permissions: ["tenant.users.read"],
+  };
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_limited",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await page.route("**/v0/auth/me", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ principal: limitedPrincipal }),
+    }),
+  );
+  let roleRequests = 0;
+  await page.route("**/v0/management/roles", (route) => {
+    roleRequests += 1;
+    return route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: "{}",
+    });
+  });
+  await page.route("**/v0/management/users", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: [
+          {
+            ...limitedPrincipal.user,
+            display_name: "Limited Manager",
+            role_ids: ["role-reader"],
+            role_codes: ["reader"],
+          },
+        ],
+      }),
+    }),
+  );
+
+  await page.goto("/#/governance/users");
+  await expect(page.getByRole("heading", { name: "Users" })).toBeVisible();
+  await expect(page.getByText("Limited Manager")).toBeVisible();
+  await expect(page.getByText("reader")).toBeVisible();
+  await expect(page.getByRole("button", { name: "New user" })).toHaveCount(0);
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  expect(roleRequests).toBe(0);
+});
+
+test("renders role, audit, and password governance pages from server permissions", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await mockIdentity(page);
+
+  await page.goto("/#/roles");
+  await expect(page.getByRole("heading", { name: "Roles" })).toBeVisible();
+  await page.goto("/#/audit-logs");
+  await expect(page.getByRole("heading", { name: "Audit logs" })).toBeVisible();
+  await page.goto("/#/change-password");
+  await expect(page.getByRole("heading", { name: "Change password" })).toBeVisible();
+  await expect(page.locator("aside")).toHaveCount(0);
+  await expect(page.locator("header")).toHaveCount(0);
+});
+
+test("shows an expired tenant message when restoring a rejected session @critical", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_expired",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await page.route("**/v0/auth/me", (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "tenant_expired", message: "tenant expired" },
+      }),
+    }),
+  );
+
+  await page.goto("/#/dashboard");
+  await expect(page).toHaveURL(/#\/login$/);
+  await expect(page.getByText(/tenant has expired/i)).toBeVisible();
+});
+
+test("provider read permission hides tenant write/test controls and system-only Ampcode", async ({
+  page,
+}) => {
+  const providerReader = {
+    ...principal,
+    platform_admin: false,
+    home_tenant: {
+      ...principal.home_tenant,
+      id: "tenant-provider-reader",
+      type: "standard",
+    },
+    effective_tenant: {
+      ...principal.effective_tenant,
+      id: "tenant-provider-reader",
+      type: "standard",
+    },
+    user: {
+      ...principal.user,
+      id: "u-provider-reader",
+      tenant_id: "tenant-provider-reader",
+      username: "provider-reader",
+    },
+    permissions: ["providers.read"],
+  };
+  await page.addInitScript(() => {
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_provider_reader",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    );
+    localStorage.setItem("providers-page:tab", "opencode-go");
+  });
+  await page.route("**/v0/auth/me", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ principal: providerReader }),
+    }),
+  );
+
+  let forbiddenAuxiliaryRequests = 0;
+  await page.route("**/v0/management/**", (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname.replace("/v0/management", "");
+    if (
+      path.startsWith("/usage/") ||
+      path.startsWith("/proxy-pool") ||
+      path.startsWith("/model-path-availability") ||
+      path.endsWith("/usage")
+    ) {
+      forbiddenAuxiliaryRequests += 1;
+    }
+    const bodies: Record<string, unknown> = {
+      "/gemini-api-key": { "gemini-api-key": [] },
+      "/claude-api-key": { "claude-api-key": [] },
+      "/codex-api-key": { "codex-api-key": [] },
+      "/opencode-go-api-key": {
+        "opencode-go-api-key": [
+          {
+            "api-key": "sk-read-only",
+            name: "Read only provider",
+          },
+        ],
+      },
+      "/cline-api-key": { "cline-api-key": [] },
+      "/ollama-cloud-api-key": { "ollama-cloud-api-key": [] },
+      "/vertex-api-key": { "vertex-api-key": [] },
+      "/bedrock-api-key": { "bedrock-api-key": [] },
+      "/openai-compatibility": { "openai-compatibility": [] },
+    };
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(bodies[path] ?? {}),
+    });
+  });
+
+  await page.goto("/#/access/ai-providers/opencode-go/new");
+  await expect(page.getByText("Read only provider", { exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Ampcode" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /add new/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /import json/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /more actions/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /refresh usage/i })).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(forbiddenAuxiliaryRequests).toBe(0);
+});
+
+test("standard tenant redirects the unavailable OAuth excluded tab to tenant-safe aliases", async ({
+  page,
+}) => {
+  const tenantAuthAdmin = {
+    ...principal,
+    platform_admin: false,
+    home_tenant: {
+      ...principal.home_tenant,
+      id: "tenant-auth-admin",
+      type: "standard",
+    },
+    effective_tenant: {
+      ...principal.effective_tenant,
+      id: "tenant-auth-admin",
+      type: "standard",
+    },
+    user: {
+      ...principal.user,
+      id: "u-auth-admin",
+      tenant_id: "tenant-auth-admin",
+      username: "auth-admin",
+    },
+    permissions: ["auth_files.read", "auth_files.oauth"],
+  };
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_auth_admin",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await page.route("**/v0/auth/me", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ principal: tenantAuthAdmin }),
+    }),
+  );
+  let excludedRequests = 0;
+  await page.route("**/v0/management/**", (route) => {
+    const path = new URL(route.request().url()).pathname.replace("/v0/management", "");
+    if (path === "/oauth-excluded-models") excludedRequests += 1;
+    const body =
+      path === "/auth-files"
+        ? { files: [] }
+        : path === "/oauth-model-alias"
+          ? { "oauth-model-alias": {} }
+          : {};
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await page.goto("/#/auth-files?tab=excluded");
+  await expect(page).toHaveURL(/#\/access\/ai-accounts\?tab=excluded$/);
+  await expect(page.getByRole("tab", { name: /model aliases/i })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /excluded models/i })).toHaveCount(0);
+  expect(excludedRequests).toBe(0);
+});
+
+test("keeps tenant override when first /me returns 500 @critical", async ({ page }) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+        effectiveTenantId: "t-acme",
+      }),
+    ),
+  );
+
+  const meTenantHeaders: string[] = [];
+  let meCalls = 0;
+  await page.route("**/v0/auth/me", (route) => {
+    meCalls += 1;
+    const tenantHeader = route.request().headers()["x-effective-tenant-id"] ?? "";
+    meTenantHeaders.push(tenantHeader);
+    // First restore fails with a transient 500; must not fall back to home.
+    return route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "internal", message: "temporary" } }),
+    });
+  });
+  await page.route("**/v0/management/**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: "{}" }),
+  );
+
+  await page.goto("/#/roles");
+  // Auth restore fails → login; override must still be in the snapshot.
+  await expect(page).toHaveURL(/#\/login$/);
+  expect(meCalls).toBeGreaterThan(0);
+  expect(meTenantHeaders[0]).toBe(standardTenant.id);
+  // Must not have retried without the override (that would clear context).
+  expect(meTenantHeaders.every((h) => h === standardTenant.id)).toBe(true);
+
+  const snapshot = await page.evaluate(() => sessionStorage.getItem("code-proxy-admin-auth"));
+  expect(snapshot).toBeTruthy();
+  expect(snapshot).toContain("t-acme");
+  expect(snapshot).toContain("cps_test");
+});
+
+test("falls back to home tenant on tenant_scope_forbidden override @critical", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+        effectiveTenantId: "t-stale",
+      }),
+    ),
+  );
+
+  const meTenantHeaders: string[] = [];
+  await page.route("**/v0/auth/me", (route) => {
+    const tenantHeader = route.request().headers()["x-effective-tenant-id"] ?? "";
+    meTenantHeaders.push(tenantHeader);
+    if (tenantHeader === "t-stale") {
+      return route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "tenant_scope_forbidden", message: "tenant scope forbidden" },
+        }),
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ principal }),
+    });
+  });
+  await page.route("**/v0/management/**", (route) => {
+    const path = new URL(route.request().url()).pathname.replace("/v0/management", "");
+    const bodies: Record<string, unknown> = {
+      "/tenants": { items: [principal.home_tenant, standardTenant] },
+      "/users": { items: [principal.user] },
+      "/roles": { items: [administratorRole] },
+      "/menus": { items: menuItems },
+      "/permissions": { items: [] },
+      "/audit-logs": { items: [] },
+    };
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(bodies[path] ?? {}),
+    });
+  });
+
+  await page.goto("/#/roles");
+  await expect(page.getByRole("heading", { name: /Roles/i })).toBeVisible();
+  expect(meTenantHeaders[0]).toBe("t-stale");
+  expect(meTenantHeaders.some((h) => h === "")).toBe(true);
+
+  const snapshot = await page.evaluate(() => sessionStorage.getItem("code-proxy-admin-auth"));
+  expect(snapshot).toBeTruthy();
+  expect(snapshot).not.toContain("t-stale");
+});
+
+// Dashboard mount under dynamic menus is covered by login-lifecycle @critical.
+// Keep a roles-page shell smoke here so multi-tenant-auth still asserts layout chrome.
+test("renders governance shell from dynamic menus @critical", async ({ page }) => {
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_test",
+        rememberPassword: false,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ),
+  );
+  await mockIdentity(page);
+  await page.goto("/#/roles");
+  await expect(page.getByText(/Something went wrong/i)).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: /Roles/i })).toBeVisible();
+  await expect(page.locator("aside")).toBeVisible();
+  await expect(page.locator("header")).toBeVisible();
+});
+
+// The reported failure, end to end: two tabs open, both hit 401 at once, both
+// try to refresh with the same stored token. Under hard rotation the loser was
+// told its session was revoked and signed out, which is what "it logged me out
+// while I was just using it" looked like from the user's side.
+test("a second tab survives the first tab rotating the refresh token @critical", async ({
+  context,
+}) => {
+  // Idempotent: addInitScript runs on every navigation in every page of the
+  // context, so an unconditional write would keep restoring the pre-rotation
+  // token and mask whether the rotation was persisted at all.
+  const seed = () => {
+    if (localStorage.getItem("code-proxy-admin-auth")) return;
+    localStorage.setItem(
+      "code-proxy-admin-auth",
+      JSON.stringify({
+        apiBase: "http://127.0.0.1:8317",
+        managementKey: "cps_stale",
+        refreshToken: "cpr_adm_shared",
+        rememberPassword: true,
+        expiresAt: Date.now() + 30 * 24 * 3600 * 1000,
+        expiresAtMs: Date.now() - 1000,
+        refreshExpiresAtMs: Date.now() + 7 * 24 * 3600 * 1000,
+        rotationSeq: 1,
+      }),
+    );
+  };
+  await context.addInitScript(seed);
+
+  let refreshCalls = 0;
+  await context.route("**/v0/auth/refresh", async (route) => {
+    refreshCalls += 1;
+    const issued = refreshCalls;
+    // Only the first presentation of the shared token wins; a replay outside the
+    // server's grace window would 401. The client must not need that replay.
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        access_token: `cps_rotated_${issued}`,
+        refresh_token: `cpr_adm_rotated_${issued}`,
+        token_type: "Bearer",
+        expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        refresh_expires_at: new Date(Date.now() + 7 * 24 * 3600_000).toISOString(),
+        principal,
+      }),
+    });
+  });
+  // Keyed on the token rather than a call counter: React StrictMode mounts the
+  // provider twice in dev, so a counter would let the second bootstrap through
+  // without ever exercising the refresh path this test exists to cover.
+  await context.route("**/v0/auth/me", async (route) => {
+    const auth = route.request().headers()["authorization"] ?? "";
+    if (auth.includes("cps_stale")) {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "session_expired", message: "expired" } }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ principal }),
+    });
+  });
+  await context.route("**/v0/management/**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: "{}" }),
+  );
+
+  const first = await context.newPage();
+  const second = await context.newPage();
+  await Promise.all([first.goto("/#/dashboard"), second.goto("/#/dashboard")]);
+
+  // One tab wins the rotation and lands on the dashboard.
+  await expect(first, "first tab was signed out").toHaveURL(/#\/dashboard$/, { timeout: 20_000 });
+
+  // The real invariant for the loser is that its session survives. Asserting on
+  // its URL instead would be flaky for the wrong reason: under parallel test
+  // load a slow refresh can exhaust the retry budget, which parks the tab on the
+  // login route with the session intact and recoverable on reload. What must
+  // never happen — and what did happen before this change — is the stored
+  // session being destroyed because a sibling tab rotated the shared token.
+  await expect
+    .poll(
+      async () => second.evaluate(() => localStorage.getItem("code-proxy-admin-auth")),
+      { timeout: 20_000 },
+    )
+    .not.toBeNull();
+
+  // The winner's snapshot has to be polled, not read once. `toHaveURL` above is not a
+  // synchronisation point for this tab: it already navigated to #/dashboard, so the
+  // assertion is satisfied the moment navigation settles — well before the refresh
+  // round-trip lands and the rotated token is written back. Reading immediately passes
+  // only because the rotation usually wins that race; under load (slow runner, many
+  // parallel requests) it reads back the seeded value and looks like the rotation never
+  // happened. Polling keeps the invariant identical and just stops guessing at timing.
+  await expect
+    .poll(
+      async () => {
+        const raw = await first.evaluate(() => localStorage.getItem("code-proxy-admin-auth"));
+        if (raw === null) return "session-destroyed";
+        return raw.includes("cpr_adm_shared") ? "still-stale" : "rotated";
+      },
+      { timeout: 20_000 },
+    )
+    .toBe("rotated");
+  expect(refreshCalls, "the rotation path was never exercised").toBeGreaterThan(0);
+});

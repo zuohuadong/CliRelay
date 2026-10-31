@@ -1,0 +1,96 @@
+import iconAmp from "@code-proxy/assets/icons/amp.svg";
+import iconAntigravity from "@code-proxy/assets/icons/antigravity.svg";
+import iconClaude from "@code-proxy/assets/icons/claude.svg";
+import iconCline from "@code-proxy/assets/icons/cline.svg";
+import iconCodex from "@code-proxy/assets/icons/codex.svg";
+import iconDeepseek from "@code-proxy/assets/icons/deepseek.svg";
+import iconGemini from "@code-proxy/assets/icons/gemini.svg";
+import iconGlm from "@code-proxy/assets/icons/glm.svg";
+import iconGrok from "@code-proxy/assets/icons/grok.svg";
+import iconHunyuan from "@code-proxy/assets/icons/hunyuan.svg";
+import iconHunyuanDark from "@code-proxy/assets/icons/hunyuan-dark.svg";
+import iconIflow from "@code-proxy/assets/icons/iflow.svg";
+import iconKimiDark from "@code-proxy/assets/icons/kimi-dark.svg";
+import iconKimiLight from "@code-proxy/assets/icons/kimi-light.svg";
+import iconKiro from "@code-proxy/assets/icons/kiro.svg";
+import iconMimo from "@code-proxy/assets/icons/mimo.svg";
+import iconMinimax from "@code-proxy/assets/icons/minimax.svg";
+import iconOllama from "@code-proxy/assets/icons/ollama.svg";
+import iconOpencodeDark from "@code-proxy/assets/icons/opencode-dark.svg";
+import iconOpencodeLight from "@code-proxy/assets/icons/opencode-light.svg";
+import iconOpenaiDark from "@code-proxy/assets/icons/openai-dark.svg";
+import iconOpenaiLight from "@code-proxy/assets/icons/openai-light.svg";
+import iconQwen from "@code-proxy/assets/icons/qwen.svg";
+import iconVertex from "@code-proxy/assets/icons/vertex.svg";
+
+const VENDOR_ICONS: Record<string, { light: string; dark: string }> = {
+  amp: { light: iconAmp, dark: iconAmp },
+  antigravity: { light: iconAntigravity, dark: iconAntigravity },
+  anthropic: { light: iconClaude, dark: iconClaude },
+  claude: { light: iconClaude, dark: iconClaude },
+  cline: { light: iconCline, dark: iconCline },
+  codex: { light: iconCodex, dark: iconCodex },
+  deepseek: { light: iconDeepseek, dark: iconDeepseek },
+  gemini: { light: iconGemini, dark: iconGemini },
+  "gemini-cli": { light: iconGemini, dark: iconGemini },
+  glm: { light: iconGlm, dark: iconGlm },
+  gpt: { light: iconOpenaiLight, dark: iconOpenaiDark },
+  grok: { light: iconGrok, dark: iconGrok },
+  hunyuan: { light: iconHunyuan, dark: iconHunyuanDark },
+  hy3: { light: iconHunyuan, dark: iconHunyuanDark },
+  iflow: { light: iconIflow, dark: iconIflow },
+  kiro: { light: iconKiro, dark: iconKiro },
+  kimi: { light: iconKimiLight, dark: iconKimiDark },
+  mimo: { light: iconMimo, dark: iconMimo },
+  minimax: { light: iconMinimax, dark: iconMinimax },
+  ollama: { light: iconOllama, dark: iconOllama },
+  o1: { light: iconOpenaiLight, dark: iconOpenaiDark },
+  o3: { light: iconOpenaiLight, dark: iconOpenaiDark },
+  o4: { light: iconOpenaiLight, dark: iconOpenaiDark },
+  opencode: { light: iconOpencodeLight, dark: iconOpencodeDark },
+  "opencode-go": { light: iconOpencodeLight, dark: iconOpencodeDark },
+  "opencode_go": { light: iconOpencodeLight, dark: iconOpencodeDark },
+  openai: { light: iconOpenaiLight, dark: iconOpenaiDark },
+  qwen: { light: iconQwen, dark: iconQwen },
+  vertex: { light: iconVertex, dark: iconVertex },
+  xai: { light: iconGrok, dark: iconGrok },
+};
+
+/** Longer / more specific prefixes first so "gemini-cli" beats "gemini". */
+const VENDOR_PREFIXES = Object.keys(VENDOR_ICONS).sort(
+  (a, b) => b.length - a.length,
+);
+
+function getVendorPrefix(modelId: string): string {
+  const lower = modelId.toLowerCase().trim();
+  if (!lower) return "";
+  if (VENDOR_ICONS[lower]) return lower;
+  for (const prefix of VENDOR_PREFIXES) {
+    if (lower.startsWith(prefix)) return prefix;
+  }
+  return "";
+}
+
+/**
+ * 单色黑的 logo（没写 fill，或写的是 currentColor）：通过 <img> 加载时拿不到页面的文字色，
+ * 一律画成黑色，深色界面上几乎看不见。这些在深色下整体反色成白色；彩色 logo 不能反色。
+ */
+const INVERT_IN_DARK = new Set(["cline", "grok", "xai", "mimo", "ollama"]);
+
+export function VendorIcon({ modelId, size = 14 }: { modelId: string; size?: number }) {
+  const prefix = getVendorPrefix(modelId);
+  const icons = prefix ? VENDOR_ICONS[prefix] : null;
+  if (!icons) return null;
+  return (
+    <>
+      <img src={icons.light} alt="" width={size} height={size} className="dark:hidden" />
+      <img
+        src={icons.dark}
+        alt=""
+        width={size}
+        height={size}
+        className={INVERT_IN_DARK.has(prefix) ? "hidden dark:block dark:invert" : "hidden dark:block"}
+      />
+    </>
+  );
+}

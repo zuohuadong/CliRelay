@@ -1,0 +1,1588 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import {
+  portalApi,
+  normalizePeriodSpendingLimits,
+  type EndUser,
+  type EndUserAPIKey,
+  type SavedPortalAccount,
+} from "@code-proxy/api-client";
+import type { LoginFailure } from "@features/login-lock";
+import { describeLoginFailure } from "../login/loginErrors";
+import { useTheme } from "@code-proxy/ui";
+import { Reveal } from "@code-proxy/ui";
+import { Modal } from "@code-proxy/ui";
+import { PageBackground } from "@code-proxy/ui";
+import { SecretRevealModal } from "@code-proxy/ui";
+import type { SearchableCheckboxMultiSelectOption } from "@code-proxy/ui";
+import type { TimeRange } from "@features/monitor-widgets/monitor-constants";
+import { ModelTag } from "@features/model-tags";
+import {
+  OwnedApiKeyQuotaModal,
+  emptyPeriodSpendingDraft,
+  formatQuotaValidationError,
+  limitsToPeriodSpendingDraft,
+  periodSpendingDraftToLimits,
+} from "@features/period-spending";
+import {
+  fetchAvailableModels,
+  fetchPublicChartData,
+  fetchPublicLogs,
+  fetchPublicUsageSummary,
+  type PublicModelItem,
+} from "./api";
+import { toLogRow } from "./toLogRow";
+import { LookupHeader } from "./components/LookupHeader";
+import { PortalChangePasswordModal } from "./components/PortalChangePasswordModal";
+import { PortalDeleteKeyModal } from "./components/PortalDeleteKeyModal";
+import { PortalLoginForm } from "./components/PortalLoginForm";
+import { PortalKeyPeriodQuotaResetModal } from "./components/PortalKeyPeriodQuotaResetModal";
+import { LookupEmptyState } from "./components/LookupEmptyState";
+import { LookupResultsToolbar, type ApiKeyLookupTab } from "./components/LookupResultsToolbar";
+import { ManageKeysTabContent } from "./components/ManageKeysTabContent";
+import { ModelsTabContent } from "./components/ModelsTabContent";
+import { PublicLogsSection } from "./components/PublicLogsSection";
+import { QuickImportTabContent } from "./components/QuickImportTabContent";
+import { UsageTabSection } from "./components/UsageTabSection";
+import { useApiKeyLookupCharts } from "./hooks/useApiKeyLookupCharts";
+import type {
+  ChartDataResponse,
+  PublicLogItem,
+  PublicQuotaScope,
+  PublicUsageLimits,
+} from "./types";
+import {
+  buildRequestLogsColumns,
+  normalizeFilterSelection,
+  RequestLogFilterCount,
+  sortRequestLogKeyOptionsByCount,
+  toFilterParam,
+  toStatusFilterValues,
+  type MultiSelectFilterState,
+  type RequestLogsRow,
+  type StatusFilterValue,
+} from "@features/request-log-viewer";
+import {
+  clearTenantBucketMap,
+  getActiveCacheTenantId,
+  readTenantBucketMapEntry,
+  updateTenantBucketMapEntry,
+} from "@code-proxy/domain";
+
+const DEFAULT_PAGE_SIZE = 50;
+/** Tenant-scoped chart cache (v2). Legacy v1 migrates into the default tenant only. */
+const LOOKUP_CHART_CACHE_STORAGE_KEY = "apiKeyLookup.chartCache.v2";
+const LOOKUP_CHART_CACHE_STORAGE_KEY_V1 = "apiKeyLookup.chartCache.v1";
+const LOOKUP_MODELS_CACHE_STORAGE_KEY = "apiKeyLookup.modelsCache.v3";
+const LOOKUP_MODELS_CACHE_STORAGE_KEY_V2 = "apiKeyLookup.modelsCache.v2";
+const LOOKUP_MODELS_CACHE_STORAGE_KEY_V1 = "apiKeyLookup.modelsCache.v1";
+
+type UsageLookupSubject =
+  | { mode: "portal"; apiKey: ""; cacheKey: string }
+  | { mode: "legacy"; apiKey: string; cacheKey: string };
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isChartDataResponse(value: unknown): value is ChartDataResponse {
+  if (!isRecord(value)) return false;
+  return (
+    Array.isArray(value.daily_series) &&
+    Array.isArray(value.model_distribution) &&
+    isRecord(value.stats)
+  );
+}
+
+const readStoredChartCache = (cacheKey: string): ChartDataResponse | null => {
+  return readTenantBucketMapEntry({
+    key: LOOKUP_CHART_CACHE_STORAGE_KEY,
+    kind: "session",
+    tenantId: getActiveCacheTenantId(),
+    entryKey: cacheKey,
+    legacyKey: LOOKUP_CHART_CACHE_STORAGE_KEY_V1,
+    isEntry: isChartDataResponse,
+  });
+};
+
+const writeStoredChartCache = (cacheKey: string, data: ChartDataResponse): void => {
+  updateTenantBucketMapEntry({
+    key: LOOKUP_CHART_CACHE_STORAGE_KEY,
+    kind: "session",
+    tenantId: getActiveCacheTenantId(),
+    entryKey: cacheKey,
+    entryValue: data,
+    maxEntries: 8,
+    legacyKey: LOOKUP_CHART_CACHE_STORAGE_KEY_V1,
+    legacyKeysToRemove: [LOOKUP_CHART_CACHE_STORAGE_KEY_V1],
+  });
+};
+
+const clearStoredChartCache = (): void => {
+  clearTenantBucketMap({
+    key: LOOKUP_CHART_CACHE_STORAGE_KEY,
+    kind: "session",
+    tenantId: getActiveCacheTenantId(),
+  });
+  try {
+    window.sessionStorage.removeItem(LOOKUP_CHART_CACHE_STORAGE_KEY_V1);
+  } catch {
+    // ignore storage failures
+  }
+};
+
+const isPublicModelItem = (value: unknown): value is PublicModelItem => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as PublicModelItem;
+  return (
+    typeof item.id === "string" &&
+    typeof item.description === "string" &&
+    typeof item.ownedBy === "string" &&
+    Boolean(item.pricing) &&
+    typeof item.pricing === "object" &&
+    Array.isArray(item.inputModalities) &&
+    Array.isArray(item.outputModalities) &&
+    typeof item.supportsVision === "boolean"
+  );
+};
+
+const isPublicModelArray = (value: unknown): value is PublicModelItem[] =>
+  Array.isArray(value) && value.every(isPublicModelItem);
+
+const samePublicModelArray = (left: PublicModelItem[], right: PublicModelItem[]): boolean => {
+  if (left.length !== right.length) return false;
+  return left.every((item, index) => {
+    const other = right[index];
+    return (
+      item.id === other.id &&
+      item.description === other.description &&
+      item.ownedBy === other.ownedBy &&
+      item.supportsVision === other.supportsVision &&
+      item.pricing.mode === other.pricing.mode &&
+      item.pricing.inputPricePerMillion === other.pricing.inputPricePerMillion &&
+      item.pricing.outputPricePerMillion === other.pricing.outputPricePerMillion &&
+      item.pricing.cachedPricePerMillion === other.pricing.cachedPricePerMillion &&
+      item.pricing.cacheReadPricePerMillion === other.pricing.cacheReadPricePerMillion &&
+      item.pricing.cacheWritePricePerMillion === other.pricing.cacheWritePricePerMillion &&
+      item.pricing.pricePerCall === other.pricing.pricePerCall
+    );
+  });
+};
+
+const readStoredModelsCache = (cacheKey: string): PublicModelItem[] | null => {
+  return readTenantBucketMapEntry({
+    key: LOOKUP_MODELS_CACHE_STORAGE_KEY,
+    kind: "session",
+    tenantId: getActiveCacheTenantId(),
+    entryKey: cacheKey,
+    isEntry: isPublicModelArray,
+  });
+};
+
+const writeStoredModelsCache = (cacheKey: string, models: PublicModelItem[]): void => {
+  updateTenantBucketMapEntry({
+    key: LOOKUP_MODELS_CACHE_STORAGE_KEY,
+    kind: "session",
+    tenantId: getActiveCacheTenantId(),
+    entryKey: cacheKey,
+    entryValue: models,
+    maxEntries: 8,
+    legacyKeysToRemove: [LOOKUP_MODELS_CACHE_STORAGE_KEY_V2, LOOKUP_MODELS_CACHE_STORAGE_KEY_V1],
+  });
+};
+
+const extractServerErrorMessage = (raw: unknown): string => {
+  if (raw instanceof Error) return extractServerErrorMessage(raw.message);
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (!text) return "";
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>;
+      const errorValue =
+        typeof record.error === "string"
+          ? record.error
+          : typeof record.message === "string"
+            ? record.message
+            : "";
+      if (errorValue.trim()) return errorValue.trim();
+    }
+  } catch {
+    // ignore JSON parse errors
+  }
+  return text;
+};
+
+const localizeLookupError = (
+  t: (key: string, options?: Record<string, unknown>) => string,
+  raw: unknown,
+  fallbackKey: string,
+): string => {
+  const message = extractServerErrorMessage(raw);
+  const normalized = message.toLowerCase();
+
+  if (!message) return t(fallbackKey);
+
+  if (
+    normalized.includes("invalid api key") ||
+    normalized.includes("invalid apikey") ||
+    normalized.includes("invalid token") ||
+    normalized.includes("unauthorized")
+  ) {
+    return t("apikey_lookup.error_invalid_api_key");
+  }
+
+  if (normalized.includes("missing management key")) {
+    return t("apikey_lookup.error_missing_management_key");
+  }
+  return message;
+};
+
+const readLegacyLookupKeyFromUrl = (): string => {
+  try {
+    return (new URL(window.location.href).searchParams.get("api_key") || "").trim();
+  } catch {
+    return "";
+  }
+};
+
+// ── Page Component ──────────────────────────────────────────────────────────
+
+export function ApiKeyLookupPage() {
+  const { t, i18n } = useTranslation();
+  const {
+    state: { mode },
+  } = useTheme();
+  const isDark = mode === "dark";
+
+  const [compact, setCompact] = useState(() => window.innerWidth < 700);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 699px)");
+    const handler = (e: MediaQueryListEvent) => setCompact(e.matches);
+    setCompact(mq.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  // 向上滚动内容时顶栏自然收起，给 sticky tabs 让出视口；回到顶部附近再展开。
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  useEffect(() => {
+    const HIDE_AFTER = 28;
+    const SHOW_BELOW = 12;
+    let frame = 0;
+    const syncHeader = () => {
+      frame = 0;
+      const y = window.scrollY || document.documentElement.scrollTop || 0;
+      setHeaderCollapsed((prev) => {
+        if (y > HIDE_AFTER) return true;
+        if (y < SHOW_BELOW) return false;
+        return prev;
+      });
+    };
+    const onScroll = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(syncHeader);
+    };
+    syncHeader();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, []);
+
+  const initialLookupKey = useMemo(() => readLegacyLookupKeyFromUrl(), []);
+  const [, setApiKeyInput] = useState(initialLookupKey);
+  const [queriedKey, setQueriedKey] = useState(initialLookupKey);
+  const [operationalKeyId, setOperationalKeyId] = useState("");
+  const [apiKeyName, setApiKeyName] = useState("");
+  const [portalUser, setPortalUser] = useState<EndUser | null>(null);
+  const [portalKeys, setPortalKeys] = useState<EndUserAPIKey[]>([]);
+  const [savedPortalAccounts, setSavedPortalAccounts] = useState<SavedPortalAccount[]>(() =>
+    portalApi.listSavedAccounts(),
+  );
+  const [loginUsername, setLoginUsername] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState<LoginFailure | null>(null);
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [pwdForm, setPwdForm] = useState({ current: "", next: "" });
+  const [pwdError, setPwdError] = useState<string | null>(null);
+  const [secretOnce, setSecretOnce] = useState<string | null>(null);
+  const [createKeyOpen, setCreateKeyOpen] = useState(false);
+  const [portalKeyForm, setPortalKeyForm] = useState({
+    name: "",
+    periods: emptyPeriodSpendingDraft(),
+  });
+  const [editKeyTarget, setEditKeyTarget] = useState<EndUserAPIKey | null>(null);
+  const [portalKeyQuotaError, setPortalKeyQuotaError] = useState("");
+  const [resetSpendingTarget, setResetSpendingTarget] = useState<EndUserAPIKey | null>(null);
+  const [deleteKeyTarget, setDeleteKeyTarget] = useState<EndUserAPIKey | null>(null);
+  const [portalKeysBusy, setPortalKeysBusy] = useState(false);
+  const [portalKeysLoading, setPortalKeysLoading] = useState(false);
+  const portalAccountPeriodLimits = useMemo(
+    () =>
+      normalizePeriodSpendingLimits(
+        portalUser?.["period-spending-limits"],
+        portalUser?.["daily-spending-limit"],
+      ),
+    [portalUser],
+  );
+
+  const usageSubject = useMemo<UsageLookupSubject | null>(() => {
+    if (portalUser) {
+      return { mode: "portal", apiKey: "", cacheKey: `account:${portalUser.id}` };
+    }
+    const apiKey = queriedKey.trim();
+    return apiKey ? { mode: "legacy", apiKey, cacheKey: apiKey } : null;
+  }, [portalUser, queriedKey]);
+  const usageReady = usageSubject !== null;
+  // ponytail: landing first; open login only via CTA / header
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
+
+  const logColumns = useMemo(
+    () =>
+      buildRequestLogsColumns((key) => t(key), undefined, undefined, {
+        identityColumn: "key",
+        hideChannel: true,
+      }),
+    [t],
+  );
+  // ── Tab state ──
+  const [activeTab, setActiveTab] = useState<ApiKeyLookupTab>("usage");
+  const [quickImportReloadToken, setQuickImportReloadToken] = useState(0);
+
+  // ── Logs state (server-side pagination) ──
+  const [rawItems, setRawItems] = useState<PublicLogItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [totalCount, setTotalCount] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [error, setError] = useState<string | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
+
+  // ── Chart state ──
+  const [chartData, setChartData] = useState<ChartDataResponse | null>(null);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [quotaLimits, setQuotaLimits] = useState<PublicUsageLimits | null>(null);
+  const [quotaScopes, setQuotaScopes] = useState<PublicQuotaScope[]>([]);
+  const chartCacheRef = useRef<Record<string, ChartDataResponse>>({});
+  const portalKeySyncIdRef = useRef(0);
+  const chartAbortControllerRef = useRef<AbortController | null>(null);
+  const chartFetchIdRef = useRef(0);
+  const summaryAbortControllerRef = useRef<AbortController | null>(null);
+  const summaryFetchIdRef = useRef(0);
+
+  // ── Models state ──
+  const [availableModels, setAvailableModels] = useState<PublicModelItem[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [modelsSearchFilter, setModelsSearchFilter] = useState("");
+  const modelsCacheRef = useRef<Record<string, PublicModelItem[]>>({});
+
+  // ── Filters ──
+  const [timeRange, setTimeRange] = useState<TimeRange>(7);
+  const [selectedApiKeyIds, setSelectedApiKeyIds] = useState<MultiSelectFilterState<string>>(null);
+  const [selectedModels, setSelectedModels] = useState<MultiSelectFilterState<string>>(null);
+  const [selectedStatuses, setSelectedStatuses] =
+    useState<MultiSelectFilterState<StatusFilterValue>>(null);
+
+  // ── Backend stats + filter options ──
+  const [stats, setStats] = useState<{
+    total: number;
+    success_rate: number;
+    total_tokens: number;
+    total_cost: number;
+  }>({ total: 0, success_rate: 0, total_tokens: 0, total_cost: 0 });
+  const [filterOptions, setFilterOptions] = useState<{
+    api_key_ids: string[];
+    api_key_id_names: Record<string, string>;
+    api_key_id_counts: Record<string, number>;
+    models: string[];
+    statuses: string[];
+  }>({
+    api_key_ids: [],
+    api_key_id_names: {},
+    api_key_id_counts: {},
+    models: [],
+    statuses: ["success", "failed"],
+  });
+
+  const keyOptions = useMemo<SearchableCheckboxMultiSelectOption[]>(() => {
+    const options = (filterOptions.api_key_ids ?? []).map((id) => {
+      const name = filterOptions.api_key_id_names?.[id] || id;
+      return {
+        value: id,
+        label: name,
+        searchText: name,
+        count: filterOptions.api_key_id_counts?.[id] ?? 0,
+      };
+    });
+    return sortRequestLogKeyOptionsByCount(options, i18n.resolvedLanguage).map((option) => ({
+      value: option.value,
+      label: option.label,
+      searchText: option.searchText,
+      trailing: <RequestLogFilterCount count={option.count} />,
+    }));
+  }, [
+    filterOptions.api_key_id_counts,
+    filterOptions.api_key_id_names,
+    filterOptions.api_key_ids,
+    i18n.resolvedLanguage,
+  ]);
+
+  const modelOptions = useMemo<SearchableCheckboxMultiSelectOption[]>(() => {
+    return filterOptions.models.map((model) => ({
+      value: model,
+      label: <ModelTag id={model} size="sm" />,
+      searchText: model,
+    }));
+  }, [filterOptions.models]);
+
+  const statusOptions = useMemo<SearchableCheckboxMultiSelectOption[]>(() => {
+    const statuses =
+      filterOptions.statuses.length > 0 ? filterOptions.statuses : ["success", "failed"];
+    return statuses.map((status) => ({
+      value: status,
+      label:
+        status === "success"
+          ? t("request_logs.status_success")
+          : status === "failed"
+            ? t("request_logs.status_failed")
+            : status,
+      searchText: status,
+    }));
+  }, [filterOptions.statuses, t]);
+
+  const apiKeyIdFilterValues = useMemo(
+    () => keyOptions.map((option) => option.value),
+    [keyOptions],
+  );
+  const modelFilterValues = useMemo(
+    () => modelOptions.map((option) => option.value),
+    [modelOptions],
+  );
+  const statusFilterValues = useMemo<StatusFilterValue[]>(
+    () => toStatusFilterValues(statusOptions.map((option) => option.value)),
+    [statusOptions],
+  );
+
+  const apiKeyIdFilterParam = useMemo(() => toFilterParam(selectedApiKeyIds), [selectedApiKeyIds]);
+  const modelFilterParam = useMemo(() => toFilterParam(selectedModels), [selectedModels]);
+  const statusFilterParam = useMemo(() => toFilterParam(selectedStatuses), [selectedStatuses]);
+
+  const handleApiKeyIdsChange = useCallback(
+    (value: string[]) => {
+      setSelectedApiKeyIds(normalizeFilterSelection(value, apiKeyIdFilterValues));
+    },
+    [apiKeyIdFilterValues],
+  );
+  const handleModelsChange = useCallback(
+    (value: string[]) => {
+      setSelectedModels(normalizeFilterSelection(value, modelFilterValues));
+    },
+    [modelFilterValues],
+  );
+  const handleStatusesChange = useCallback(
+    (value: StatusFilterValue[]) => {
+      setSelectedStatuses(normalizeFilterSelection(value, statusFilterValues));
+    },
+    [statusFilterValues],
+  );
+  const clearApiKeyIdFilter = useCallback(() => setSelectedApiKeyIds(null), []);
+  const clearModelFilter = useCallback(() => setSelectedModels(null), []);
+  const clearStatusFilter = useCallback(() => setSelectedStatuses(null), []);
+
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const fetchIdRef = useRef(0);
+  const paginationInFlightRef = useRef(false);
+  const restoredLookupFetchedRef = useRef(false);
+  const suppressAccountMenuFocusRestoreRef = useRef(false);
+
+  // ================================================================
+  //  Logs fetching (with infinite scroll support)
+  // ================================================================
+
+  const fetchLogs = useCallback(
+    async (subject: UsageLookupSubject, page: number, size?: number) => {
+      if (paginationInFlightRef.current) return;
+      paginationInFlightRef.current = true;
+
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const myFetchId = ++fetchIdRef.current;
+
+      setLoading(true);
+      setError(null);
+
+      try {
+        const resp = await fetchPublicLogs({
+          apiKey: subject.apiKey,
+          portalAccount: subject.mode === "portal",
+          page,
+          size: size ?? pageSize,
+          days: timeRange,
+          apiKeyIds: apiKeyIdFilterParam.values,
+          models: modelFilterParam.values,
+          statuses: statusFilterParam.values,
+          apiKeyIdsEmpty: apiKeyIdFilterParam.matchesNone,
+          modelsEmpty: modelFilterParam.matchesNone,
+          statusesEmpty: statusFilterParam.matchesNone,
+          signal: controller.signal,
+        });
+
+        if (myFetchId !== fetchIdRef.current) return;
+
+        setRawItems(resp.items ?? []);
+        setTotalCount(resp.total ?? 0);
+        setCurrentPage(page);
+        setStats(
+          resp.stats ?? {
+            total: 0,
+            success_rate: 0,
+            total_tokens: 0,
+            total_cost: 0,
+          },
+        );
+        setFilterOptions({
+          api_key_ids: resp.filters?.api_key_ids ?? [],
+          api_key_id_names: resp.filters?.api_key_id_names ?? {},
+          api_key_id_counts: resp.filters?.api_key_id_counts ?? {},
+          models: resp.filters?.models ?? [],
+          statuses: resp.filters?.statuses ?? ["success", "failed"],
+        });
+        setLastUpdatedAt(Date.now());
+        setApiKeyName(resp.api_key_name?.trim() ?? "");
+        setLoginModalOpen(false);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        if (myFetchId !== fetchIdRef.current) return;
+
+        const message = localizeLookupError(t, err, "apikey_lookup.query_failed");
+        setError(message);
+        setRawItems([]);
+        setTotalCount(0);
+        setStats({ total: 0, success_rate: 0, total_tokens: 0, total_cost: 0 });
+      } finally {
+        paginationInFlightRef.current = false;
+        if (myFetchId === fetchIdRef.current) {
+          setLoading(false);
+        }
+      }
+    },
+    [apiKeyIdFilterParam, modelFilterParam, pageSize, statusFilterParam, t, timeRange],
+  );
+
+  // ================================================================
+  //  Chart data fetching (with caching)
+  // ================================================================
+
+  const fetchQuotaLimits = useCallback(async (subject: UsageLookupSubject) => {
+    summaryAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    summaryAbortControllerRef.current = controller;
+    const myFetchId = ++summaryFetchIdRef.current;
+    try {
+      const summary = await fetchPublicUsageSummary({
+        apiKey: subject.apiKey,
+        portalAccount: subject.mode === "portal",
+        signal: controller.signal,
+      });
+      if (myFetchId !== summaryFetchIdRef.current || controller.signal.aborted) return;
+      setQuotaLimits(summary.limits ?? null);
+      setQuotaScopes(summary["quota-scopes"] ?? []);
+    } catch {
+      if (myFetchId !== summaryFetchIdRef.current || controller.signal.aborted) return;
+      setQuotaLimits(null);
+      setQuotaScopes([]);
+    } finally {
+      if (summaryAbortControllerRef.current === controller) {
+        summaryAbortControllerRef.current = null;
+      }
+    }
+  }, []);
+
+  const fetchChartDataFn = useCallback(
+    async (subject: UsageLookupSubject, days: number, options?: { force?: boolean }) => {
+      const cacheKey = `${subject.cacheKey}|${days}`;
+      const cached = options?.force
+        ? null
+        : chartCacheRef.current[cacheKey] || readStoredChartCache(cacheKey);
+      if (cached) {
+        chartCacheRef.current[cacheKey] = cached;
+        const cachedName = cached.api_key_name?.trim() ?? "";
+        if (cachedName) setApiKeyName(cachedName);
+        setChartData(cached);
+        setLoginModalOpen(false);
+      }
+
+      chartAbortControllerRef.current?.abort();
+      const controller = new AbortController();
+      chartAbortControllerRef.current = controller;
+      const myFetchId = ++chartFetchIdRef.current;
+
+      setChartLoading(true);
+      setError(null);
+      void fetchQuotaLimits(subject);
+      try {
+        const data = await fetchPublicChartData({
+          apiKey: subject.apiKey,
+          portalAccount: subject.mode === "portal",
+          days,
+          signal: controller.signal,
+        });
+        if (myFetchId !== chartFetchIdRef.current || controller.signal.aborted) return;
+
+        chartCacheRef.current[cacheKey] = data;
+        writeStoredChartCache(cacheKey, data);
+        const nextName = data.api_key_name?.trim() ?? "";
+        if (nextName) setApiKeyName(nextName);
+        setChartData(data);
+        setLoginModalOpen(false);
+      } catch (err) {
+        if (controller.signal.aborted || myFetchId !== chartFetchIdRef.current) return;
+        if (!cached) {
+          setError(localizeLookupError(t, err, "apikey_lookup.query_failed"));
+        }
+      } finally {
+        if (chartAbortControllerRef.current === controller) {
+          chartAbortControllerRef.current = null;
+        }
+        if (myFetchId === chartFetchIdRef.current && !controller.signal.aborted) {
+          setChartLoading(false);
+        }
+      }
+    },
+    [fetchQuotaLimits, t],
+  );
+
+  // ================================================================
+  //  Derived rows for VirtualTable
+  // ================================================================
+
+  const rows = useMemo<RequestLogsRow[]>(() => rawItems.map((item) => toLogRow(item)), [rawItems]);
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+
+  const handlePageChange = useCallback(
+    (page: number) => {
+      if (!usageSubject) return;
+      const clamped = Math.max(1, Math.min(page, totalPages));
+      fetchLogs(usageSubject, clamped);
+    },
+    [fetchLogs, totalPages, usageSubject],
+  );
+
+  const handlePageSizeChange = useCallback(
+    (newSize: number) => {
+      setPageSize(newSize);
+      if (usageSubject) fetchLogs(usageSubject, 1, newSize);
+    },
+    [fetchLogs, usageSubject],
+  );
+
+  // ================================================================
+  //  Effects
+  // ================================================================
+
+  // Refetch page 1 when filters change for the current account / legacy key subject.
+  useEffect(() => {
+    if (usageSubject && activeTab === "logs") {
+      fetchLogs(usageSubject, 1);
+    }
+  }, [timeRange, selectedApiKeyIds, selectedModels, selectedStatuses]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Models fetching ──
+  const fetchModelsFn = useCallback(
+    async (key: string, options?: { force?: boolean }) => {
+      const trimmedKey = key.trim();
+      if (!trimmedKey) return;
+
+      const cached = options?.force
+        ? null
+        : modelsCacheRef.current[trimmedKey] || readStoredModelsCache(trimmedKey);
+      if (cached) {
+        modelsCacheRef.current[trimmedKey] = cached;
+        setAvailableModels((prev) => (samePublicModelArray(prev, cached) ? prev : cached));
+      }
+
+      setModelsLoading(true);
+      setModelsError(null);
+      try {
+        const models = await fetchAvailableModels(trimmedKey);
+        modelsCacheRef.current[trimmedKey] = models;
+        writeStoredModelsCache(trimmedKey, models);
+        setAvailableModels((prev) => (samePublicModelArray(prev, models) ? prev : models));
+      } catch (err: unknown) {
+        if (!cached) {
+          setModelsError(localizeLookupError(t, err, "apikey_lookup.load_models_failed"));
+        }
+      } finally {
+        setModelsLoading(false);
+      }
+    },
+    [t],
+  );
+
+  // Account usage is bound to portal authentication; models / quick import still use an operational key.
+  useEffect(() => {
+    if (initialLookupKey && !portalUser && !restoredLookupFetchedRef.current) return;
+    if (activeTab === "usage" && usageSubject) {
+      void fetchChartDataFn(usageSubject, timeRange);
+    } else if (activeTab === "models" && queriedKey) {
+      void fetchModelsFn(queriedKey);
+    } else if (activeTab === "logs" && usageSubject) {
+      void fetchQuotaLimits(usageSubject);
+      fetchLogs(usageSubject, 1);
+    }
+  }, [activeTab, usageSubject?.cacheKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (initialLookupKey && !portalUser && !restoredLookupFetchedRef.current) return;
+    if (activeTab === "usage" && usageSubject) {
+      void fetchChartDataFn(usageSubject, timeRange);
+    }
+  }, [timeRange]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!initialLookupKey || portalUser || restoredLookupFetchedRef.current) return;
+
+    restoredLookupFetchedRef.current = true;
+    chartCacheRef.current = {};
+    void fetchChartDataFn(
+      { mode: "legacy", apiKey: initialLookupKey, cacheKey: initialLookupKey },
+      timeRange,
+    );
+  }, [fetchChartDataFn, initialLookupKey, portalUser, timeRange]);
+
+  const handleApiKeyInputChange = useCallback((value: string) => {
+    setApiKeyInput(value);
+    setError(null);
+    if (value.trim()) return;
+
+    abortControllerRef.current?.abort();
+    fetchIdRef.current += 1;
+    paginationInFlightRef.current = false;
+    chartAbortControllerRef.current?.abort();
+    chartFetchIdRef.current += 1;
+    chartCacheRef.current = {};
+    clearStoredChartCache();
+
+    setError(null);
+    setChartLoading(false);
+    setModelsError(null);
+    setModelsSearchFilter("");
+    modelsCacheRef.current = {};
+    setAvailableModels([]);
+    setChartData(null);
+    setQuotaLimits(null);
+    setQuotaScopes([]);
+
+    setRawItems([]);
+    setTotalCount(0);
+    setCurrentPage(1);
+    setLastUpdatedAt(null);
+    setStats({ total: 0, success_rate: 0, total_tokens: 0, total_cost: 0 });
+    setFilterOptions({
+      api_key_ids: [],
+      api_key_id_names: {},
+      api_key_id_counts: {},
+      models: [],
+      statuses: ["success", "failed"],
+    });
+    setSelectedApiKeyIds(null);
+    setSelectedModels(null);
+    setSelectedStatuses(null);
+
+    setQueriedKey("");
+    setOperationalKeyId("");
+    setApiKeyName("");
+  }, []);
+
+  const activateOwnedKey = useCallback(async (keyId: string) => {
+    const secret = await portalApi.keySecret(keyId);
+    const plain = secret.key?.trim();
+    if (!plain) return;
+    setOperationalKeyId(keyId);
+    setApiKeyInput(plain);
+    setQueriedKey(plain);
+    setLoginModalOpen(false);
+  }, []);
+
+  // Avoid landing flash while a stored portal session is still hydrating.
+  const [portalSessionPending, setPortalSessionPending] = useState(() =>
+    Boolean(portalApi.loadSession()?.accessToken),
+  );
+
+  useEffect(() => {
+    const snap = portalApi.loadSession();
+    if (!snap?.accessToken) {
+      setPortalSessionPending(false);
+      return;
+    }
+    let cancelled = false;
+    void portalApi
+      .me()
+      .then(async (res) => {
+        if (cancelled) return;
+        setPortalUser(res.user);
+        setSavedPortalAccounts(portalApi.listSavedAccounts());
+        if (res.user.must_change_password) {
+          setChangePasswordOpen(true);
+          setPortalKeys([]);
+          return;
+        }
+        try {
+          const keys = await portalApi.listKeys();
+          if (cancelled) return;
+          const items = keys.items ?? [];
+          setPortalKeys(items);
+          const firstUsable = items.find((key) => !key.disabled);
+          if (firstUsable) await activateOwnedKey(firstUsable.id);
+        } catch {
+          if (!cancelled) setPortalKeys([]);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        portalApi.clearSession();
+        setSavedPortalAccounts(portalApi.listSavedAccounts());
+      })
+      .finally(() => {
+        if (!cancelled) setPortalSessionPending(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const hydratePortalSession = useCallback(async () => {
+    const res = await portalApi.me();
+    setPortalUser(res.user);
+    setSavedPortalAccounts(portalApi.listSavedAccounts());
+    if (res.user.must_change_password) {
+      setChangePasswordOpen(true);
+      setPortalKeys([]);
+      return;
+    }
+    try {
+      const keys = await portalApi.listKeys();
+      const items = keys.items ?? [];
+      setPortalKeys(items);
+      const firstUsable = items.find((key) => !key.disabled);
+      if (firstUsable) await activateOwnedKey(firstUsable.id);
+    } catch {
+      setPortalKeys([]);
+    }
+  }, [activateOwnedKey]);
+
+  const handlePortalLogin = useCallback(async () => {
+    setLoginBusy(true);
+    setLoginError(null);
+    try {
+      const result = await portalApi.login(loginUsername.trim(), loginPassword, true);
+      setPortalUser(result.user);
+      setSavedPortalAccounts(portalApi.listSavedAccounts());
+      setLoginModalOpen(false);
+      setLoginPassword("");
+      if (result.must_change_password || result.user.must_change_password) {
+        setChangePasswordOpen(true);
+        setPortalKeys([]);
+      } else {
+        const keys = await portalApi.listKeys();
+        const items = keys.items ?? [];
+        setPortalKeys(items);
+        const firstUsable = items.find((key) => !key.disabled);
+        if (firstUsable) await activateOwnedKey(firstUsable.id);
+      }
+    } catch (err) {
+      // 结构化保存：表单据此显示剩余次数、锁定倒计时，并在锁定期间禁用登录按钮。
+      setLoginError(describeLoginFailure(t, err, { username: loginUsername }));
+    } finally {
+      setLoginBusy(false);
+    }
+  }, [activateOwnedKey, loginPassword, loginUsername, t]);
+
+  // Owns the session state the dialog has to update on success, so it stays on
+  // the page rather than moving into the presentational modal.
+  const submitPortalPasswordChange = useCallback(() => {
+    const describe = (err: unknown) => describeLoginFailure(t, err).message;
+
+    setPwdError(null);
+    setPortalKeysBusy(true);
+    void portalApi
+      .changePassword(pwdForm.current, pwdForm.next)
+      .then(async () => {
+        setPortalUser((u) => (u ? { ...u, must_change_password: false } : u));
+        try {
+          const items = (await portalApi.listKeys()).items ?? [];
+          setPortalKeys(items);
+          const firstUsable = items.find((key) => !key.disabled);
+          if (firstUsable) await activateOwnedKey(firstUsable.id);
+          setPwdForm({ current: "", next: "" });
+          setPwdError(null);
+          setChangePasswordOpen(false);
+        } catch (err) {
+          setPortalKeys([]);
+          setPwdError(describe(err));
+        }
+      })
+      .catch((err) => setPwdError(describe(err)))
+      .finally(() => setPortalKeysBusy(false));
+  }, [activateOwnedKey, pwdForm.current, pwdForm.next, t]);
+
+  const handleLogout = useCallback(() => {
+    void portalApi.logout();
+    setPortalUser(null);
+    setPortalKeys([]);
+    setOperationalKeyId("");
+    handleApiKeyInputChange("");
+    setLoginModalOpen(false);
+    setSavedPortalAccounts(portalApi.listSavedAccounts());
+  }, [handleApiKeyInputChange]);
+
+  const handleAddAccount = useCallback(() => {
+    // Keep current session/UI visible; only open login for the next account.
+    // Re-persist active session so it stays in the multi-account vault.
+    const snap = portalApi.loadSession();
+    if (snap?.user?.id) portalApi.client.setSession(snap);
+    setLoginUsername("");
+    setLoginPassword("");
+    setLoginError(null);
+    setLoginModalOpen(true);
+    setSavedPortalAccounts(portalApi.listSavedAccounts());
+  }, []);
+
+  const handleSwitchAccount = useCallback(
+    async (accountKey: string) => {
+      const target = portalApi.switchAccount(accountKey);
+      if (!target) return;
+
+      // Abort in-flight lookups for the previous account, but keep multi-account
+      // chart cache so warm accounts can paint immediately (SWR).
+      abortControllerRef.current?.abort();
+      fetchIdRef.current += 1;
+      paginationInFlightRef.current = false;
+      chartAbortControllerRef.current?.abort();
+      chartFetchIdRef.current += 1;
+      summaryAbortControllerRef.current?.abort();
+      summaryFetchIdRef.current += 1;
+
+      setPortalSessionPending(true);
+      setOperationalKeyId("");
+      setApiKeyInput("");
+      setQueriedKey("");
+      setApiKeyName("");
+      setPortalKeys([]);
+      setError(null);
+      setModelsError(null);
+      setModelsSearchFilter("");
+      modelsCacheRef.current = {};
+      setAvailableModels([]);
+      setRawItems([]);
+      setTotalCount(0);
+      setCurrentPage(1);
+      setLastUpdatedAt(null);
+      setStats({ total: 0, success_rate: 0, total_tokens: 0, total_cost: 0 });
+      setFilterOptions({
+        api_key_ids: [],
+        api_key_id_names: {},
+        api_key_id_counts: {},
+        models: [],
+        statuses: ["success", "failed"],
+      });
+      setSelectedApiKeyIds(null);
+      setSelectedModels(null);
+      setSelectedStatuses(null);
+      setQuotaLimits(null);
+      setQuotaScopes([]);
+
+      // Prefill usage from this account's cache; cold accounts still skeleton.
+      const nextChartKey = `account:${target.user.id}|${timeRange}`;
+      const cached = chartCacheRef.current[nextChartKey] || readStoredChartCache(nextChartKey);
+      if (cached) {
+        chartCacheRef.current[nextChartKey] = cached;
+        setChartData(cached);
+        const cachedName = cached.api_key_name?.trim() ?? "";
+        if (cachedName) setApiKeyName(cachedName);
+      } else {
+        setChartData(null);
+      }
+      setChartLoading(false);
+
+      // Align usageSubject immediately so the effect can revalidate under the new id.
+      setPortalUser({
+        id: target.user.id,
+        tenant_id: "",
+        username: target.user.username,
+        display_name: target.user.display_name,
+        status: "active",
+        must_change_password: false,
+        created_at: "",
+        updated_at: "",
+        version: 0,
+      });
+
+      try {
+        await hydratePortalSession();
+      } catch {
+        portalApi.removeSavedAccount(accountKey);
+        portalApi.clearSession();
+        setPortalUser(null);
+        setChartData(null);
+        setLoginModalOpen(true);
+      } finally {
+        setPortalSessionPending(false);
+        setSavedPortalAccounts(portalApi.listSavedAccounts());
+      }
+    },
+    [hydratePortalSession, timeRange],
+  );
+
+  const refreshPortalKeys = useCallback(async () => {
+    setPortalKeysLoading(true);
+    try {
+      const keys = await portalApi.listKeys();
+      setPortalKeys(keys.items ?? []);
+    } catch {
+      setPortalKeys([]);
+    } finally {
+      setPortalKeysLoading(false);
+    }
+  }, []);
+
+  const syncPortalKeys = useCallback(async () => {
+    const syncId = portalKeySyncIdRef.current + 1;
+    portalKeySyncIdRef.current = syncId;
+    setPortalKeysLoading(true);
+    let listed = false;
+    try {
+      const keys = await portalApi.listKeys();
+      if (syncId !== portalKeySyncIdRef.current) return;
+      listed = true;
+      const items = keys.items ?? [];
+      setPortalKeys(items);
+      const activeKey = items.find((item) => item.id === operationalKeyId && !item.disabled);
+      const nextKey = activeKey ?? items.find((item) => !item.disabled);
+      if (!nextKey) {
+        handleApiKeyInputChange("");
+        return;
+      }
+      const secret = await portalApi.keySecret(nextKey.id);
+      if (syncId !== portalKeySyncIdRef.current) return;
+      const plaintext = secret.key?.trim();
+      if (!plaintext) {
+        handleApiKeyInputChange("");
+        return;
+      }
+      setOperationalKeyId(nextKey.id);
+      setApiKeyInput(plaintext);
+      setQueriedKey(plaintext);
+      setLoginModalOpen(false);
+    } catch {
+      // Once the authoritative key list was loaded, never retain a secret that
+      // could have been revoked by a concurrent management-side mutation.
+      if (syncId === portalKeySyncIdRef.current && listed) handleApiKeyInputChange("");
+    } finally {
+      if (syncId === portalKeySyncIdRef.current) setPortalKeysLoading(false);
+    }
+  }, [handleApiKeyInputChange, operationalKeyId]);
+
+  useEffect(() => {
+    if (activeTab !== "keys" || !portalUser || portalUser.must_change_password) return;
+    void syncPortalKeys();
+  }, [activeTab, portalUser, syncPortalKeys]);
+
+  useEffect(() => {
+    if (!portalUser || portalUser.must_change_password) return;
+    const syncOnFocus = () => void syncPortalKeys();
+    const syncOnVisibility = () => {
+      if (document.visibilityState === "visible") void syncPortalKeys();
+    };
+    window.addEventListener("focus", syncOnFocus);
+    document.addEventListener("visibilitychange", syncOnVisibility);
+    return () => {
+      window.removeEventListener("focus", syncOnFocus);
+      document.removeEventListener("visibilitychange", syncOnVisibility);
+    };
+  }, [portalUser, syncPortalKeys]);
+
+  const handleRefresh = useCallback(() => {
+    if (activeTab === "keys") {
+      void syncPortalKeys();
+      return;
+    }
+    if (activeTab === "usage" && usageSubject) {
+      void fetchChartDataFn(usageSubject, timeRange, { force: true });
+    } else if (activeTab === "models" && queriedKey) {
+      void fetchModelsFn(queriedKey, { force: true });
+    } else if (activeTab === "quickImport" && queriedKey) {
+      setQuickImportReloadToken((value) => value + 1);
+    } else if (activeTab === "logs" && usageSubject) {
+      void fetchQuotaLimits(usageSubject);
+      fetchLogs(usageSubject, 1);
+    }
+  }, [
+    queriedKey,
+    activeTab,
+    timeRange,
+    fetchLogs,
+    fetchChartDataFn,
+    fetchQuotaLimits,
+    fetchModelsFn,
+    syncPortalKeys,
+    usageSubject,
+  ]);
+
+  // Strip legacy sensitive query params from the URL on mount.
+  useEffect(() => {
+    try {
+      window.sessionStorage.removeItem("apiKeyLookup.lastApiKey.v1");
+      const url = new URL(window.location.href);
+      let changed = false;
+      if (url.searchParams.has("api_key")) {
+        url.searchParams.delete("api_key");
+        changed = true;
+      }
+      if (url.searchParams.has("key")) {
+        url.searchParams.delete("key");
+        changed = true;
+      }
+      if (changed) {
+        window.history.replaceState({}, "", url.toString());
+      }
+    } catch {
+      // ignore
+    }
+  }, [initialLookupKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const {
+    chartStats,
+    apiKeyMetric,
+    setApiKeyMetric,
+    apiKeyDistributionData,
+    apiKeyDistributionOption,
+    apiKeyDistributionLegend,
+    modelMetric,
+    setModelMetric,
+    heatmapSeries,
+    dailyLegendSelected,
+    dailySeries,
+    dailyTrendOption,
+    toggleDailyLegend,
+    dailyLegendAvailability,
+    modelDistributionData,
+    modelDistributionOption,
+    modelDistributionLegend,
+  } = useApiKeyLookupCharts({
+    chartData,
+    compact,
+    isDark,
+    t,
+  });
+
+  const lastUpdatedText = useMemo(() => {
+    if (!lastUpdatedAt) return "";
+    const d = new Date(lastUpdatedAt);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }, [lastUpdatedAt]);
+
+  const displayName =
+    portalUser?.display_name ||
+    portalUser?.username ||
+    apiKeyName ||
+    (queriedKey ? t("apikey_lookup.unnamed_key") : "");
+  const extraKeyCount = Math.max(0, portalKeys.length - 1);
+  const switchablePortalAccounts = useMemo(() => {
+    if (!portalUser) return savedPortalAccounts;
+    const currentKey =
+      savedPortalAccounts.find((row) => row.user.id === portalUser.id)?.accountKey ?? "";
+    const currentEntry =
+      savedPortalAccounts.find((row) => row.user.id === portalUser.id) ??
+      ({
+        accountKey: currentKey || `current:${portalUser.id}`,
+        apiBase: "",
+        accessToken: "",
+        refreshToken: "",
+        remember: true,
+        expiresAt: 0,
+        lastUsedAt: Date.now(),
+        user: {
+          id: portalUser.id,
+          username: portalUser.username,
+          display_name: portalUser.display_name || portalUser.username,
+        },
+      } satisfies SavedPortalAccount);
+    const others = savedPortalAccounts.filter((row) => row.user.id !== portalUser.id);
+    return [currentEntry, ...others];
+  }, [portalUser, savedPortalAccounts]);
+
+  // Landing CTA opens login; always allow dismiss (backdrop / Esc / X).
+  // Keep results UI when the add-account login modal is open over an active session.
+  const closeLoginModal = useCallback(() => {
+    setLoginModalOpen(false);
+  }, []);
+
+  // ================================================================
+  //  Render
+  // ================================================================
+
+  const showLanding = !queriedKey && !portalUser && !portalSessionPending && !error;
+
+  return (
+    <PageBackground variant={showLanding ? "landing" : "app"}>
+      <div
+        className={[
+          "relative min-h-dvh pt-14",
+          showLanding ? "" : "bg-canvas",
+        ].join(" ")}
+      >
+        <LookupHeader
+          t={t}
+          showLanding={showLanding}
+          collapsed={headerCollapsed && !showLanding}
+          scrolled={headerCollapsed}
+          hasAccount={Boolean(queriedKey || portalUser)}
+          displayName={displayName}
+          extraKeyCount={extraKeyCount}
+          portalUser={portalUser}
+          switchablePortalAccounts={switchablePortalAccounts}
+          onLogin={() => setLoginModalOpen(true)}
+          onLogout={handleLogout}
+          onAddAccount={handleAddAccount}
+          onChangePassword={() => setChangePasswordOpen(true)}
+          onSwitchAccount={(accountKey) => void handleSwitchAccount(accountKey)}
+          suppressAccountMenuFocusRestoreRef={suppressAccountMenuFocusRestoreRef}
+        />
+
+        <main
+          className={showLanding ? "w-full" : "mx-auto max-w-screen-xl space-y-5 px-4 py-6 sm:px-6"}
+        >
+          {/* Error */}
+          {error && (
+            <div className="rounded-2xl bg-rose-500/10 p-4 text-sm text-rose-700 dark:bg-rose-400/15 dark:text-rose-300">
+              {error}
+            </div>
+          )}
+
+          {/* Results: portal keys tab can show without an activated key */}
+          {(queriedKey || portalUser) && !error && (
+            <>
+              <LookupResultsToolbar
+                t={t}
+                activeTab={activeTab}
+                setActiveTab={setActiveTab}
+                timeRange={timeRange}
+                setTimeRange={setTimeRange}
+                handleRefresh={handleRefresh}
+                loading={loading || portalKeysLoading}
+                chartLoading={chartLoading}
+                modelsLoading={modelsLoading}
+                quotaLimits={quotaLimits}
+                quotaScopes={quotaScopes}
+                showKeysTab={Boolean(portalUser)}
+              />
+
+              {activeTab === "usage" && usageReady ? (
+                <UsageTabSection
+                  t={t}
+                  timeRange={timeRange}
+                  chartStats={chartStats}
+                  chartLoading={chartLoading}
+                  quotaLimits={quotaLimits}
+                  quotaScopes={quotaScopes}
+                  showApiKeyDistribution={Boolean(portalUser)}
+                  apiKeyMetric={apiKeyMetric}
+                  setApiKeyMetric={setApiKeyMetric}
+                  apiKeyDistributionData={apiKeyDistributionData}
+                  apiKeyDistributionOption={apiKeyDistributionOption}
+                  apiKeyDistributionLegend={apiKeyDistributionLegend}
+                  modelMetric={modelMetric}
+                  setModelMetric={setModelMetric}
+                  heatmapSeries={heatmapSeries}
+                  modelDistributionData={modelDistributionData}
+                  modelDistributionOption={modelDistributionOption as Record<string, unknown>}
+                  modelDistributionLegend={modelDistributionLegend}
+                  dailySeries={dailySeries}
+                  dailyTrendOption={dailyTrendOption as Record<string, unknown>}
+                  dailyLegendAvailability={dailyLegendAvailability}
+                  dailyLegendSelected={dailyLegendSelected}
+                  toggleDailyLegend={toggleDailyLegend}
+                />
+              ) : null}
+
+              {activeTab === "keys" && portalUser ? (
+                <Reveal>
+                  <ManageKeysTabContent
+                    t={t}
+                    keys={portalKeys}
+                    busy={portalKeysBusy}
+                    loading={portalKeysLoading}
+                    onRefresh={() => void syncPortalKeys()}
+                    onCreate={() => {
+                      setPortalKeyForm({
+                        name: "",
+                        periods: emptyPeriodSpendingDraft(),
+                      });
+                      setPortalKeyQuotaError("");
+                      setCreateKeyOpen(true);
+                    }}
+                    onRotate={(key) => {
+                      setPortalKeysBusy(true);
+                      void portalApi
+                        .rotateKey(key.id)
+                        .then(async (res) => {
+                          if (res.plaintext_key) {
+                            setSecretOnce(res.plaintext_key);
+                            setOperationalKeyId(key.id);
+                            setApiKeyInput(res.plaintext_key);
+                            setQueriedKey(res.plaintext_key);
+                          }
+                          await refreshPortalKeys();
+                        })
+                        .finally(() => setPortalKeysBusy(false));
+                    }}
+                    onEdit={(key) => {
+                      setEditKeyTarget(key);
+                      setPortalKeyQuotaError("");
+                      setPortalKeyForm({
+                        name: key.name ?? "",
+                        periods: limitsToPeriodSpendingDraft(
+                          normalizePeriodSpendingLimits(
+                            key["period-spending-limits"],
+                            key["daily-spending-limit"],
+                          ),
+                        ),
+                      });
+                    }}
+                    onResetPeriodSpending={setResetSpendingTarget}
+                    onDelete={setDeleteKeyTarget}
+                  />
+                </Reveal>
+              ) : null}
+
+              {activeTab === "logs" && usageReady ? (
+                <PublicLogsSection
+                  t={t}
+                  keyOptions={keyOptions}
+                  modelOptions={modelOptions}
+                  statusOptions={statusOptions}
+                  selectedApiKeyIds={selectedApiKeyIds}
+                  selectedModels={selectedModels}
+                  selectedStatuses={selectedStatuses}
+                  onApiKeyIdsChange={handleApiKeyIdsChange}
+                  onModelsChange={handleModelsChange}
+                  onStatusesChange={handleStatusesChange}
+                  onApiKeyIdsClear={clearApiKeyIdFilter}
+                  onModelsClear={clearModelFilter}
+                  onStatusesClear={clearStatusFilter}
+                  stats={stats}
+                  lastUpdatedText={lastUpdatedText}
+                  loading={loading}
+                  logColumns={logColumns}
+                  rows={rows}
+                  currentPage={currentPage}
+                  totalPages={totalPages}
+                  totalCount={totalCount}
+                  pageSize={pageSize}
+                  onPageChange={handlePageChange}
+                  onPageSizeChange={handlePageSizeChange}
+                />
+              ) : null}
+
+              {activeTab === "models" && queriedKey ? (
+                <Reveal>
+                  <ModelsTabContent
+                    models={availableModels}
+                    loading={modelsLoading}
+                    error={modelsError}
+                    searchFilter={modelsSearchFilter}
+                    onSearchChange={setModelsSearchFilter}
+                  />
+                </Reveal>
+              ) : null}
+
+              {activeTab === "quickImport" && queriedKey ? (
+                <Reveal>
+                  <QuickImportTabContent apiKey={queriedKey} reloadToken={quickImportReloadToken} />
+                </Reveal>
+              ) : null}
+
+              {(activeTab === "models" || activeTab === "quickImport") &&
+              !queriedKey &&
+              portalUser ? (
+                <div className="bg-subtle rounded-2xl px-6 py-12 text-center text-sm text-ink-3">
+                  {t("apikey_lookup.operational_key_required", {
+                    defaultValue:
+                      "请先创建一把可用 Key；模型列表和快速导入需要凭证，用量与日志仍按账号聚合。",
+                  })}
+                </div>
+              ) : null}
+            </>
+          )}
+
+          {showLanding ? <LookupEmptyState t={t} onLogin={() => setLoginModalOpen(true)} /> : null}
+        </main>
+
+        <Modal
+          open={loginModalOpen}
+          title={t("apikey_lookup.login_title", { defaultValue: "账号登录" })}
+          hideHeader
+          size="sm"
+          bodyClassName="!px-7 !py-9 sm:!px-9"
+          bodyHeightClassName="max-h-none"
+          bodyOverflowClassName="overflow-visible"
+          onClose={closeLoginModal}
+        >
+          <PortalLoginForm
+            t={t}
+            username={loginUsername}
+            password={loginPassword}
+            showPassword={showLoginPassword}
+            error={loginError}
+            busy={loginBusy}
+            onUsernameChange={setLoginUsername}
+            onPasswordChange={setLoginPassword}
+            onTogglePassword={() => setShowLoginPassword((value) => !value)}
+            onSubmit={() => void handlePortalLogin()}
+          />
+        </Modal>
+
+        <PortalChangePasswordModal
+          t={t}
+          open={changePasswordOpen}
+          form={pwdForm}
+          setForm={setPwdForm}
+          error={pwdError}
+          busy={portalKeysBusy}
+          forced={Boolean(portalUser?.must_change_password)}
+          onSubmit={submitPortalPasswordChange}
+          onClose={() => setChangePasswordOpen(false)}
+        />
+
+        <PortalDeleteKeyModal
+          t={t}
+          target={deleteKeyTarget}
+          busy={portalKeysBusy}
+          isLastKey={portalKeys.length <= 1}
+          describeError={(err) => localizeLookupError(t, err, "apikey_lookup.delete_key_failed")}
+          onClose={() => setDeleteKeyTarget(null)}
+          onConfirm={async (key) => {
+            setPortalKeysBusy(true);
+            try {
+              await portalApi.deleteKey(key.id);
+              setDeleteKeyTarget(null);
+              const items = (await portalApi.listKeys()).items ?? [];
+              setPortalKeys(items);
+              if (operationalKeyId === key.id) {
+                const next = items.find((item) => !item.disabled);
+                if (next) await activateOwnedKey(next.id);
+                else handleApiKeyInputChange("");
+              }
+            } finally {
+              setPortalKeysBusy(false);
+            }
+          }}
+        />
+
+        <OwnedApiKeyQuotaModal
+          t={t}
+          open={createKeyOpen}
+          mode="create"
+          value={portalKeyForm}
+          accountLimits={portalAccountPeriodLimits}
+          saving={portalKeysBusy}
+          serverError={portalKeyQuotaError}
+          onChange={setPortalKeyForm}
+          onClose={() => {
+            if (portalKeysBusy) return;
+            setCreateKeyOpen(false);
+            setPortalKeyQuotaError("");
+          }}
+          // 名称必填与重名由表单就地校验（existingNames），走到这里时已经通过。
+          existingNames={portalKeys.map((key) => key.name || "")}
+          onSubmit={() => {
+            const name = portalKeyForm.name.trim();
+            const limits = periodSpendingDraftToLimits(portalKeyForm.periods);
+            setPortalKeysBusy(true);
+            setPortalKeyQuotaError("");
+            void portalApi
+              .createKey({
+                name,
+                "daily-spending-limit": limits.day,
+                "period-spending-limits": limits,
+              })
+              .then(async (response) => {
+                if (response.plaintext_key) {
+                  setSecretOnce(response.plaintext_key);
+                  setOperationalKeyId(response.api_key.id);
+                  setApiKeyInput(response.plaintext_key);
+                  setQueriedKey(response.plaintext_key);
+                }
+                setCreateKeyOpen(false);
+                await refreshPortalKeys();
+              })
+              .catch((err) => setPortalKeyQuotaError(formatQuotaValidationError(err, t)))
+              .finally(() => setPortalKeysBusy(false));
+          }}
+        />
+
+        <OwnedApiKeyQuotaModal
+          t={t}
+          open={editKeyTarget !== null}
+          mode="edit"
+          value={portalKeyForm}
+          accountLimits={portalAccountPeriodLimits}
+          saving={portalKeysBusy}
+          serverError={portalKeyQuotaError}
+          onChange={setPortalKeyForm}
+          onClose={() => {
+            if (portalKeysBusy) return;
+            setEditKeyTarget(null);
+            setPortalKeyQuotaError("");
+          }}
+          onSubmit={() => {
+            if (!editKeyTarget) return;
+            const limits = periodSpendingDraftToLimits(portalKeyForm.periods);
+            setPortalKeysBusy(true);
+            setPortalKeyQuotaError("");
+            void portalApi
+              .updateKey(editKeyTarget.id, {
+                name: portalKeyForm.name.trim(),
+                "daily-spending-limit": limits.day,
+                "period-spending-limits": limits,
+              })
+              .then(async () => {
+                setEditKeyTarget(null);
+                await refreshPortalKeys();
+              })
+              .catch((err) => setPortalKeyQuotaError(formatQuotaValidationError(err, t)))
+              .finally(() => setPortalKeysBusy(false));
+          }}
+        />
+
+        <PortalKeyPeriodQuotaResetModal
+          target={resetSpendingTarget} busy={portalKeysBusy}
+          onClose={() => setResetSpendingTarget(null)}
+          onReset={refreshPortalKeys} onBusyChange={setPortalKeysBusy}
+        />
+
+        <SecretRevealModal
+          open={Boolean(secretOnce)}
+          title={t("apikey_lookup.copy_secret", { defaultValue: "请立即复制" })}
+          secret={secretOnce ?? ""}
+          secretLabel={t("apikey_lookup.api_key_label")}
+          warning={t("apikey_lookup.secret_once_warning", {
+            defaultValue: "离开后无法再查看明文 Key，请立即复制保存。",
+          })}
+          onClose={() => setSecretOnce(null)}
+        />
+      </div>
+    </PageBackground>
+  );
+}

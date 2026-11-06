@@ -1,0 +1,1270 @@
+import { authFilesApi, providersApi } from "@code-proxy/api-client";
+import { apiClient } from "@code-proxy/api-client";
+import type {
+  AuthFileItem,
+  OpenAIProvider,
+  ProviderModel,
+  ProviderSimpleConfig,
+} from "@code-proxy/api-client";
+import {
+  getActiveCacheTenantId,
+  matchesModelPattern,
+  normalizeProviderKey,
+  resolveFileType,
+} from "@code-proxy/domain";
+import {
+  getConfiguredAvailabilityCacheVersion,
+  invalidateConfiguredModelAvailability,
+} from "./configuredAvailabilityCache";
+import {
+  addAvailabilityModel,
+  mergeAvailabilityItemList,
+} from "./modelAvailabilityMerge";
+
+export type ModelAvailabilityItem = {
+  id: string;
+  owned_by?: string;
+  description?: string;
+  source?: string;
+  sources?: ModelAvailabilitySource[];
+  enabled?: boolean;
+  pricing?: ModelPricing;
+  inputModalities?: string[];
+  outputModalities?: string[];
+  supportsVision?: boolean;
+};
+
+export type ModelAvailabilitySource = {
+  label: string;
+  modelId?: string;
+  upstreamModelId?: string;
+  provider?: string;
+  channel?: string;
+  clientId?: string;
+  source?: string;
+};
+
+export type ConfiguredModelAvailability = {
+  scoped: boolean;
+  items: ModelAvailabilityItem[];
+  idSet: Set<string>;
+  metadataItems?: ModelAvailabilityItem[];
+  usesMappedOwners?: boolean;
+};
+
+export type ModelPricingMode = "token" | "call";
+
+export interface ModelPricing {
+  mode: ModelPricingMode;
+  inputPricePerMillion: number;
+  outputPricePerMillion: number;
+  cachedPricePerMillion: number;
+  cacheReadPricePerMillion: number;
+  cacheWritePricePerMillion: number;
+  pricePerCall: number;
+}
+
+export interface ModelConfigMetadataItem {
+  id: string;
+  owned_by: string;
+  displayName?: string;
+  description: string;
+  enabled: boolean;
+  source: string;
+  pricing: ModelPricing;
+  inputModalities: string[];
+  outputModalities: string[];
+  supportsVision: boolean;
+  contextLength?: number;
+  maxCompletionTokens?: number;
+  supportedParameters?: string[];
+  reasoning?: unknown;
+  knowledgeCutoff?: string;
+}
+
+export interface ModelPathItem {
+  scope: string;
+  label: string;
+  method: string;
+  path: string;
+  family: string;
+}
+
+export interface ModelPathAvailabilityItem {
+  id: string;
+  owned_by?: string;
+  kind: string;
+  alias: boolean;
+  paths: ModelPathItem[];
+}
+
+export interface ModelPathRouteCapability {
+  label: string;
+  method: string;
+  path: string;
+  family: string;
+}
+
+export interface ModelPathRouteItem {
+  label: string;
+  path: string;
+  group?: string;
+  system: boolean;
+  readOnly: boolean;
+  capabilities: ModelPathRouteCapability[];
+}
+
+export interface ModelPathAvailability {
+  items: ModelPathAvailabilityItem[];
+  routes: ModelPathRouteItem[];
+  idSet: Set<string>;
+}
+
+type ModelDefinition = {
+  id: string;
+  display_name?: string;
+  owned_by?: string;
+};
+
+type AuthGroupOwnerMappingMap = Record<string, string>;
+
+const PROVIDER_CHANNELS = [
+  { key: "gemini", load: () => providersApi.getGeminiKeys() },
+  { key: "claude", load: () => providersApi.getClaudeConfigs() },
+  { key: "codex", load: () => providersApi.getCodexConfigs() },
+  { key: "cline", load: () => providersApi.getClineConfigs() },
+  { key: "opencode-go", load: () => providersApi.getOpenCodeGoConfigs() },
+  { key: "ollama-cloud", load: () => providersApi.getOllamaCloudConfigs() },
+  { key: "commandcode", load: () => providersApi.getCommandCodeConfigs() },
+  { key: "vertex", load: () => providersApi.getVertexConfigs() },
+] as const;
+
+const MODEL_ACCESS_PROVIDER_KEYS = new Set([
+  "cline",
+  "opencode-go",
+  "ollama-cloud",
+  "commandcode",
+]);
+
+const emptyAvailability = (
+  usesMappedOwners = false,
+): ConfiguredModelAvailability => ({
+  scoped: false,
+  items: [],
+  idSet: new Set(),
+  usesMappedOwners,
+});
+
+export const emptyModelPricing = (): ModelPricing => ({
+  mode: "token",
+  inputPricePerMillion: 0,
+  outputPricePerMillion: 0,
+  cachedPricePerMillion: 0,
+  cacheReadPricePerMillion: 0,
+  cacheWritePricePerMillion: 0,
+  pricePerCall: 0,
+});
+
+const normalizeOwnerValue = (value: string): string =>
+  value.trim().replace(/\s+/g, "-").toLowerCase();
+
+const normalizeAuthGroupOwnerMappings = (
+  payload: unknown,
+): AuthGroupOwnerMappingMap => {
+  const record = isRecord(payload) ? payload : {};
+  const rawList = Array.isArray(record.items)
+    ? record.items
+    : Array.isArray(record.data)
+      ? record.data
+      : Array.isArray(payload)
+        ? payload
+        : [];
+
+  const output: AuthGroupOwnerMappingMap = {};
+  for (const item of rawList) {
+    if (!isRecord(item)) continue;
+    const authGroup = normalizeProviderKey(
+      String(item.auth_group ?? item.authGroup ?? ""),
+    );
+    const owner = normalizeOwnerValue(
+      String(item.owner ?? item.owner_value ?? ""),
+    );
+    if (!authGroup || authGroup === "all" || !owner) continue;
+    output[authGroup] = owner;
+  }
+  return output;
+};
+
+const loadAuthGroupOwnerMappingMap =
+  async (): Promise<AuthGroupOwnerMappingMap> => {
+    try {
+      return normalizeAuthGroupOwnerMappings(
+        await apiClient.get("/auth-group-model-owner-mappings"),
+      );
+    } catch {
+      return {};
+    }
+  };
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const asNumber = (value: unknown): number => {
+  const num = Number(value);
+  return Number.isFinite(num) && num >= 0 ? num : 0;
+};
+
+export const normalizeModelPricing = (
+  raw: Record<string, unknown>,
+): ModelPricing => {
+  const pricing = isRecord(raw.pricing) ? raw.pricing : {};
+  const mode: ModelPricingMode =
+    pricing.mode === "call" || raw.pricing_mode === "call" ? "call" : "token";
+
+  return {
+    mode,
+    inputPricePerMillion: asNumber(
+      pricing.input_price_per_million ?? pricing.prompt,
+    ),
+    outputPricePerMillion: asNumber(
+      pricing.output_price_per_million ?? pricing.completion,
+    ),
+    cachedPricePerMillion: asNumber(
+      pricing.cached_price_per_million ?? pricing.cache,
+    ),
+    cacheReadPricePerMillion: asNumber(
+      pricing.cache_read_price_per_million ?? pricing.cacheRead,
+    ),
+    cacheWritePricePerMillion: asNumber(
+      pricing.cache_write_price_per_million ?? pricing.cacheWrite,
+    ),
+    pricePerCall: asNumber(pricing.price_per_call ?? pricing.perCall),
+  };
+};
+
+export const normalizeModelModalities = (raw: unknown): string[] => {
+  let values: unknown[] = [];
+  if (Array.isArray(raw)) {
+    values = raw;
+  } else if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        values = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        values = [];
+      }
+    } else {
+      values = trimmed.split(/[,+|/\s]+/);
+    }
+  }
+
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const value of values) {
+    const modality = String(value ?? "")
+      .trim()
+      .toLowerCase();
+    if (!modality || seen.has(modality)) continue;
+    seen.add(modality);
+    normalized.push(modality);
+  }
+  return normalized;
+};
+
+const normalizeModelSupportsVision = (
+  raw: Record<string, unknown>,
+  inputModalities: string[],
+): boolean => {
+  const explicit = raw.supports_vision ?? raw.supportsVision;
+  if (typeof explicit === "boolean") return explicit;
+  if (typeof explicit === "string") {
+    const value = explicit.trim().toLowerCase();
+    if (["true", "1", "yes"].includes(value)) return true;
+    if (["false", "0", "no"].includes(value)) return false;
+  }
+  return inputModalities.includes("image");
+};
+
+export const normalizeModelConfigMetadata = (
+  item: unknown,
+): ModelConfigMetadataItem | null => {
+  if (!isRecord(item)) return null;
+  const id = String(item.id ?? item.model_id ?? item.name ?? "").trim();
+  if (!id) return null;
+  const inputModalities = normalizeModelModalities(
+    item.input_modalities ?? item.inputModalities,
+  );
+  const outputModalities = normalizeModelModalities(
+    item.output_modalities ?? item.outputModalities,
+  );
+  const contextLength = Number(item.context_length ?? item.contextLength ?? 0);
+  const maxCompletionTokens = Number(
+    item.max_completion_tokens ?? item.maxCompletionTokens ?? 0,
+  );
+  const supportedParameters = normalizeModelModalities(
+    item.supported_parameters ?? item.supportedParameters,
+  );
+  const displayName = String(item.display_name ?? item.displayName ?? "").trim();
+  const knowledgeCutoff = String(
+    item.knowledge_cutoff ?? item.knowledgeCutoff ?? "",
+  ).trim();
+  return {
+    id,
+    owned_by: String(item.owned_by ?? item.owner ?? ""),
+    ...(displayName ? { displayName } : {}),
+    description: String(item.description ?? item.display_name ?? item.displayName ?? ""),
+    enabled: item.enabled === false ? false : true,
+    source: String(item.source ?? ""),
+    pricing: normalizeModelPricing(item),
+    inputModalities,
+    outputModalities,
+    supportsVision: normalizeModelSupportsVision(item, inputModalities),
+    ...(contextLength > 0 ? { contextLength } : {}),
+    ...(maxCompletionTokens > 0 ? { maxCompletionTokens } : {}),
+    ...(supportedParameters.length ? { supportedParameters } : {}),
+    ...(item.reasoning !== undefined && item.reasoning !== null
+      ? { reasoning: item.reasoning }
+      : {}),
+    ...(knowledgeCutoff ? { knowledgeCutoff } : {}),
+  };
+};
+
+export const normalizeModelConfigMetadataRows = (
+  payload: unknown,
+): ModelConfigMetadataItem[] => {
+  const record = isRecord(payload) ? payload : {};
+  const rawList = Array.isArray(record.data)
+    ? record.data
+    : Array.isArray(record.models)
+      ? record.models
+      : Array.isArray(payload)
+        ? payload
+        : [];
+
+  return rawList
+    .map((item) => normalizeModelConfigMetadata(item))
+    .filter((item): item is ModelConfigMetadataItem => Boolean(item))
+    .sort((a, b) => a.id.localeCompare(b.id));
+};
+
+const normalizeModelPath = (item: unknown): ModelPathItem | null => {
+  if (!isRecord(item)) return null;
+  const method = String(item.method ?? "")
+    .trim()
+    .toUpperCase();
+  const path = String(item.path ?? "").trim();
+  if (!method || !path) return null;
+  return {
+    scope: String(item.scope ?? ""),
+    label: String(item.label ?? ""),
+    method,
+    path,
+    family: String(item.family ?? ""),
+  };
+};
+
+const normalizeModelPathCapability = (
+  item: unknown,
+): ModelPathRouteCapability | null => {
+  const normalized = normalizeModelPath(item);
+  if (!normalized) return null;
+  return {
+    label: normalized.label,
+    method: normalized.method,
+    path: normalized.path,
+    family: normalized.family,
+  };
+};
+
+const normalizeModelPathAvailabilityItem = (
+  item: unknown,
+): ModelPathAvailabilityItem | null => {
+  if (!isRecord(item)) return null;
+  const id = String(item.id ?? "").trim();
+  if (!id) return null;
+  const paths = Array.isArray(item.paths)
+    ? item.paths
+        .map((path) => normalizeModelPath(path))
+        .filter((path): path is ModelPathItem => Boolean(path))
+    : [];
+  return {
+    id,
+    owned_by: String(item.owned_by ?? ""),
+    kind: String(item.kind ?? "canonical"),
+    alias: item.alias === true,
+    paths,
+  };
+};
+
+const normalizeModelPathRouteItem = (
+  route: unknown,
+): ModelPathRouteItem | null => {
+  if (!isRecord(route)) return null;
+  const path = String(route.path ?? "").trim();
+  if (!path) return null;
+  const capabilities = Array.isArray(route.capabilities)
+    ? route.capabilities
+        .map((capability) => normalizeModelPathCapability(capability))
+        .filter((capability): capability is ModelPathRouteCapability =>
+          Boolean(capability),
+        )
+    : [];
+  return {
+    label: String(route.label ?? ""),
+    path,
+    group: String(route.group ?? ""),
+    system: route.system === true,
+    readOnly: route.read_only === true || route.readOnly === true,
+    capabilities,
+  };
+};
+
+export const normalizeModelPathAvailability = (
+  payload: unknown,
+): ModelPathAvailability => {
+  const record = isRecord(payload) ? payload : {};
+  const rawItems = Array.isArray(record.data)
+    ? record.data
+    : Array.isArray(payload)
+      ? payload
+      : [];
+  const items = rawItems
+    .map((item) => normalizeModelPathAvailabilityItem(item))
+    .filter((item): item is ModelPathAvailabilityItem => Boolean(item))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  const rawRoutes = Array.isArray(record.routes) ? record.routes : [];
+  const routes = rawRoutes
+    .map((route) => normalizeModelPathRouteItem(route))
+    .filter((route): route is ModelPathRouteItem => Boolean(route));
+
+  return {
+    items,
+    routes,
+    idSet: new Set(items.map((item) => item.id.toLowerCase())),
+  };
+};
+
+const normalizeModelConfigRows = (payload: unknown): ModelAvailabilityItem[] =>
+  normalizeModelConfigMetadataRows(payload);
+
+const buildLibraryModelIndex = (
+  models: ModelAvailabilityItem[],
+): Map<string, ModelAvailabilityItem> =>
+  new Map(models.map((model) => [model.id.toLowerCase(), model]));
+
+const withLibraryModelMetadata = (
+  item: ModelAvailabilityItem,
+  libraryIndex: Map<string, ModelAvailabilityItem>,
+): ModelAvailabilityItem => {
+  const libraryModel = libraryIndex.get(item.id.toLowerCase());
+  if (!libraryModel) return item;
+  return {
+    ...libraryModel,
+    ...item,
+    owned_by: item.owned_by || libraryModel.owned_by,
+    description: item.description || libraryModel.description,
+    pricing: item.pricing ?? libraryModel.pricing,
+    inputModalities: item.inputModalities ?? libraryModel.inputModalities,
+    outputModalities: item.outputModalities ?? libraryModel.outputModalities,
+    supportsVision: item.supportsVision ?? libraryModel.supportsVision,
+  };
+};
+
+const withOptionalPrefix = (id: string, prefix?: string): string[] => {
+  const trimmedId = id.trim();
+  const trimmedPrefix = String(prefix ?? "").trim();
+  if (!trimmedId) return [];
+  if (!trimmedPrefix) return [trimmedId];
+  return [trimmedId, `${trimmedPrefix}/${trimmedId}`];
+};
+
+const providerModelId = (model: ProviderModel): string => {
+  const alias = String(model.alias ?? "").trim();
+  if (alias) return alias;
+  return String(model.name ?? "").trim();
+};
+
+const isExcluded = (modelId: string, excludedModels?: string[]) => {
+  if (!Array.isArray(excludedModels) || excludedModels.length === 0)
+    return false;
+  return excludedModels.some((pattern) =>
+    matchesModelPattern(modelId, pattern),
+  );
+};
+
+const addExplicitProviderModels = (
+  map: Map<string, ModelAvailabilityItem>,
+  models: ProviderModel[] | undefined,
+  provider: string,
+  prefix?: string,
+  excludedModels?: string[],
+) => {
+  if (!Array.isArray(models) || models.length === 0) return;
+  for (const model of models) {
+    const id = providerModelId(model);
+    if (!id || isExcluded(id, excludedModels)) continue;
+    for (const candidate of withOptionalPrefix(id, prefix)) {
+      addAvailabilityModel(map, {
+        id: candidate,
+        owned_by: provider,
+        source: "provider",
+      });
+    }
+  }
+};
+
+const addStaticProviderModels = (
+  map: Map<string, ModelAvailabilityItem>,
+  models: ModelDefinition[],
+  provider: string,
+  prefix?: string,
+  excludedModels?: string[],
+) => {
+  for (const model of models) {
+    const id = String(model.id ?? "").trim();
+    if (!id || isExcluded(id, excludedModels)) continue;
+    for (const candidate of withOptionalPrefix(id, prefix)) {
+      addAvailabilityModel(map, {
+        id: candidate,
+        owned_by: model.owned_by || provider,
+        description: model.display_name,
+        source: "provider",
+      });
+    }
+  }
+};
+
+const hasCredential = (config: ProviderSimpleConfig): boolean =>
+  String(config.apiKey ?? "").trim().length > 0;
+
+const isOpenAIProviderServiceable = (provider: OpenAIProvider): boolean => {
+  if (provider.disabled === true) return false;
+  if (
+    !Array.isArray(provider.apiKeyEntries) ||
+    provider.apiKeyEntries.length === 0
+  )
+    return true;
+  return provider.apiKeyEntries.some(
+    (entry) =>
+      entry.disabled !== true && Boolean(String(entry.apiKey ?? "").trim()),
+  );
+};
+
+const hasDisableAllModelsRule = (excludedModels?: string[]) =>
+  Array.isArray(excludedModels) &&
+  excludedModels.some((model) => String(model ?? "").trim() === "*");
+
+const loadStaticDefinitions = async (
+  provider: string,
+): Promise<ModelDefinition[]> => {
+  try {
+    return await authFilesApi.getModelDefinitions(provider);
+  } catch {
+    return [];
+  }
+};
+
+const loadProviderModelItems = async (): Promise<ModelAvailabilityItem[]> => {
+  const map = new Map<string, ModelAvailabilityItem>();
+
+  await Promise.all(
+    PROVIDER_CHANNELS.map(async ({ key, load }) => {
+      let configs: ProviderSimpleConfig[] = [];
+      try {
+        configs = (await load()).filter(hasCredential);
+      } catch {
+        configs = [];
+      }
+
+      const isModelAccessProvider = MODEL_ACCESS_PROVIDER_KEYS.has(key);
+      const needsStaticModels = configs.some((config) => {
+        if (isModelAccessProvider && config.disabled === true) return false;
+        if (
+          isModelAccessProvider &&
+          hasDisableAllModelsRule(config.excludedModels)
+        )
+          return false;
+        return !Array.isArray(config.models) || config.models.length === 0;
+      });
+      const staticModels = needsStaticModels
+        ? await loadStaticDefinitions(key)
+        : [];
+
+      for (const config of configs) {
+        const disabled = isModelAccessProvider
+          ? config.disabled === true
+          : hasDisableAllModelsRule(config.excludedModels);
+        const excludedModels = isModelAccessProvider
+          ? hasDisableAllModelsRule(config.excludedModels)
+            ? ["*"]
+            : undefined
+          : config.excludedModels;
+        if (disabled) continue;
+        if (Array.isArray(config.models) && config.models.length > 0) {
+          addExplicitProviderModels(
+            map,
+            config.models,
+            key,
+            config.prefix,
+            excludedModels,
+          );
+          continue;
+        }
+        addStaticProviderModels(
+          map,
+          staticModels,
+          key,
+          config.prefix,
+          excludedModels,
+        );
+      }
+    }),
+  );
+
+  let openAIProviders: OpenAIProvider[] = [];
+  try {
+    openAIProviders = (await providersApi.getOpenAIProviders()).filter(
+      isOpenAIProviderServiceable,
+    );
+  } catch {
+    openAIProviders = [];
+  }
+
+  for (const provider of openAIProviders) {
+    addExplicitProviderModels(
+      map,
+      provider.models,
+      provider.name,
+      provider.prefix,
+    );
+  }
+
+  return Array.from(map.values());
+};
+
+const loadAuthFiles = async (): Promise<AuthFileItem[]> => {
+  try {
+    const payload = await authFilesApi.list();
+    return Array.isArray(payload.files) ? payload.files : [];
+  } catch {
+    return [];
+  }
+};
+
+const authFileDisabled = (file: AuthFileItem): boolean => {
+  const value = file.disabled;
+  return value === true || String(value ?? "").toLowerCase() === "true";
+};
+
+const loadAuthFileModelItems = async (
+  authFiles: AuthFileItem[],
+  libraryModels: ModelAvailabilityItem[],
+  ownerByAuthGroup: AuthGroupOwnerMappingMap,
+): Promise<{ items: ModelAvailabilityItem[]; scoped: boolean }> => {
+  const map = new Map<string, ModelAvailabilityItem>();
+  const libraryIndex = buildLibraryModelIndex(libraryModels);
+  const modelsByOwner = new Map<string, ModelAvailabilityItem[]>();
+  const activeAuthFiles = authFiles.filter((file) => !authFileDisabled(file));
+  let scoped = authFiles.length > 0 && activeAuthFiles.length === 0;
+
+  for (const model of libraryModels) {
+    const owner = normalizeOwnerValue(model.owned_by ?? "");
+    if (!owner) continue;
+    const list = modelsByOwner.get(owner) ?? [];
+    list.push(model);
+    modelsByOwner.set(owner, list);
+  }
+
+  await Promise.all(
+    activeAuthFiles.map(async (file) => {
+      const group = normalizeProviderKey(resolveFileType(file));
+      const owner = normalizeOwnerValue(ownerByAuthGroup[group] ?? "");
+      if (owner) {
+        scoped = true;
+        for (const model of modelsByOwner.get(owner) ?? []) {
+          addAvailabilityModel(map, {
+            ...model,
+            source: model.source || "auth-file-owner",
+          });
+        }
+        return;
+      }
+
+      try {
+        const { models: liveModels } = await authFilesApi.getModelsForAuthFile(
+          file.name,
+        );
+        scoped = true;
+        for (const model of liveModels) {
+          addAvailabilityModel(
+            map,
+            withLibraryModelMetadata(
+              {
+                id: model.id,
+                owned_by: model.owned_by,
+                description: model.display_name,
+                source: "auth-file",
+              },
+              libraryIndex,
+            ),
+          );
+        }
+      } catch {
+        // Older backends may not expose per-file model lookup. Keep the caller on its fallback path.
+      }
+    }),
+  );
+
+  return { items: Array.from(map.values()), scoped };
+};
+
+const rootModelPath: ModelPathItem = {
+  scope: "root",
+  label: "models",
+  method: "GET",
+  path: "/v1/models",
+  family: "openai-v1-models",
+};
+
+const augmentPathAvailabilityWithMappedOwners = async (
+  availability: ModelPathAvailability,
+): Promise<ModelPathAvailability> => {
+  const ownerByAuthGroup = await loadAuthGroupOwnerMappingMap();
+  if (Object.keys(ownerByAuthGroup).length === 0) return availability;
+
+  const [authFiles, libraryPayload] = await Promise.all([
+    loadAuthFiles(),
+    apiClient.get("/model-configs?scope=library").catch(() => null),
+  ]);
+  const libraryModels = normalizeModelConfigRows(libraryPayload);
+  const authFileAvailability = await loadAuthFileModelItems(
+    authFiles,
+    libraryModels,
+    ownerByAuthGroup,
+  );
+  if (authFileAvailability.items.length === 0) return availability;
+
+  const itemMap = new Map<string, ModelPathAvailabilityItem>(
+    availability.items.map((item): [string, ModelPathAvailabilityItem] => [
+      item.id.toLowerCase(),
+      { ...item, paths: [...item.paths] },
+    ]),
+  );
+
+  for (const model of authFileAvailability.items) {
+    const key = model.id.toLowerCase();
+    const existing = itemMap.get(key);
+    if (existing) {
+      if (
+        !existing.paths.some(
+          (path) =>
+            path.method === rootModelPath.method &&
+            path.path === rootModelPath.path,
+        )
+      ) {
+        existing.paths = [...existing.paths, rootModelPath];
+      }
+      if (!existing.owned_by && model.owned_by) {
+        existing.owned_by = model.owned_by;
+      }
+      continue;
+    }
+    itemMap.set(key, {
+      id: model.id,
+      owned_by: model.owned_by,
+      kind: "mapped-owner",
+      alias: false,
+      paths: [rootModelPath],
+    });
+  }
+
+  const items = Array.from(itemMap.values()).sort((a, b) =>
+    a.id.localeCompare(b.id),
+  );
+  return {
+    ...availability,
+    items,
+    idSet: new Set(items.map((item) => item.id.toLowerCase())),
+  };
+};
+
+/* ── New backend aggregation endpoint support ── */
+
+const normalizeAvailabilitySources = (
+  value: unknown,
+): ModelAvailabilitySource[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const sources: ModelAvailabilitySource[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const label = String(
+      item.label ?? item.channel ?? item.provider ?? item.client_id ?? "",
+    ).trim();
+    if (!label) continue;
+    const provider = String(item.provider ?? "").trim();
+    const channel = String(item.channel ?? "").trim();
+    const clientId = String(item.client_id ?? item.clientId ?? "").trim();
+    const source = String(item.source ?? "").trim();
+    const modelId = String(item.model_id ?? item.modelId ?? "").trim();
+    const upstreamModelId = String(
+      item.upstream_model_id ?? item.upstreamModelId ?? "",
+    ).trim();
+    const key = [
+      label,
+      provider,
+      channel,
+      clientId,
+      source,
+      modelId,
+      upstreamModelId,
+    ]
+      .join("\x00")
+      .toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sources.push({
+      label,
+      ...(modelId ? { modelId } : {}),
+      ...(upstreamModelId ? { upstreamModelId } : {}),
+      ...(provider ? { provider } : {}),
+      ...(channel ? { channel } : {}),
+      ...(clientId ? { clientId } : {}),
+      ...(source ? { source } : {}),
+    });
+  }
+  return sources.length ? sources : undefined;
+};
+
+const normalizeAvailabilityItem = (
+  raw: unknown,
+): ModelAvailabilityItem | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const id = String(record.id ?? "").trim();
+  if (!id) return null;
+
+  const pricingRecord =
+    record.pricing && typeof record.pricing === "object"
+      ? (record.pricing as Record<string, unknown>)
+      : {};
+  const pricing: ModelPricing = {
+    mode: String(pricingRecord.mode ?? "token") === "call" ? "call" : "token",
+    inputPricePerMillion: asNumber(
+      pricingRecord.input_price_per_million ??
+        pricingRecord.inputPricePerMillion,
+    ),
+    outputPricePerMillion: asNumber(
+      pricingRecord.output_price_per_million ??
+        pricingRecord.outputPricePerMillion,
+    ),
+    cachedPricePerMillion: asNumber(
+      pricingRecord.cached_price_per_million ??
+        pricingRecord.cachedPricePerMillion,
+    ),
+    cacheReadPricePerMillion: asNumber(
+      pricingRecord.cache_read_price_per_million ??
+        pricingRecord.cacheReadPricePerMillion,
+    ),
+    cacheWritePricePerMillion: asNumber(
+      pricingRecord.cache_write_price_per_million ??
+        pricingRecord.cacheWritePricePerMillion,
+    ),
+    pricePerCall: asNumber(
+      pricingRecord.price_per_call ?? pricingRecord.pricePerCall,
+    ),
+  };
+
+  const inputModalities = Array.isArray(record.input_modalities)
+    ? (record.input_modalities as string[])
+    : [];
+  const outputModalities = Array.isArray(record.output_modalities)
+    ? (record.output_modalities as string[])
+    : [];
+  const supportsVision =
+    record.supports_vision === true ||
+    inputModalities.some((m: string) =>
+      ["image", "vision"].includes(m.toLowerCase()),
+    );
+
+  return {
+    id,
+    owned_by: String(record.owned_by ?? ""),
+    description: String(record.description ?? ""),
+    source: String(record.source ?? record.metadata_source ?? ""),
+    sources: normalizeAvailabilitySources(record.sources),
+    enabled: record.enabled !== false,
+    pricing,
+    inputModalities,
+    outputModalities,
+    supportsVision,
+  };
+};
+
+export const normalizeConfiguredModelAvailability = (
+  payload: unknown,
+): ConfiguredModelAvailability => {
+  const record = isRecord(payload) ? payload : {};
+  const rawItems = Array.isArray(record.data)
+    ? record.data
+    : Array.isArray(record.models)
+      ? record.models
+      : Array.isArray(record.items)
+        ? record.items
+        : Array.isArray(payload)
+          ? payload
+          : [];
+  const items = mergeAvailabilityItemList(
+    rawItems
+      .map((item) => normalizeAvailabilityItem(item))
+      .filter((item): item is NonNullable<typeof item> => item !== null),
+  ).sort((a, b) => a.id.localeCompare(b.id));
+
+  const rawMetadata = Array.isArray(record.active_metadata)
+    ? record.active_metadata
+    : [];
+  const metadataItems = rawMetadata
+    .map((item) => normalizeAvailabilityItem(item))
+    .filter((item): item is NonNullable<typeof item> => item !== null)
+    .sort((a, b) => a!.id.localeCompare(b!.id));
+
+  return {
+    scoped:
+      typeof record.scoped === "boolean" ? record.scoped : items.length > 0,
+    items,
+    metadataItems,
+    idSet: new Set(items.map((item) => item.id.toLowerCase())),
+    usesMappedOwners:
+      record.uses_mapped_owners === true || record.usesMappedOwners === true,
+  };
+};
+
+const hasConfiguredAvailabilityPayloadShape = (payload: unknown): boolean => {
+  if (Array.isArray(payload)) return true;
+  if (!isRecord(payload)) return false;
+  return (
+    Array.isArray(payload.data) ||
+    Array.isArray(payload.models) ||
+    Array.isArray(payload.items) ||
+    Array.isArray(payload.active_metadata) ||
+    typeof payload.scoped === "boolean"
+  );
+};
+
+const loadConfiguredAvailabilityEndpoint = async (
+  requestPath: string,
+): Promise<ConfiguredModelAvailability | null> => {
+  const payload = await apiClient.get(requestPath);
+  if (!hasConfiguredAvailabilityPayloadShape(payload)) return null;
+  return normalizeConfiguredModelAvailability(payload);
+};
+
+/* ── In-flight/TTL cache (tenant-scoped) ── */
+
+const CONFIGURED_AVAILABILITY_TTL_MS = 15_000;
+
+type TenantConfiguredAvailabilityCache = {
+  expiresAt: number;
+  version: number;
+  value: ConfiguredModelAvailability;
+};
+
+type TenantConfiguredAvailabilityInFlight = {
+  version: number;
+  promise: Promise<ConfiguredModelAvailability>;
+};
+
+interface GroupAvailabilityCacheEntry {
+  expiresAt: number;
+  cacheVersion: number;
+  promise: Promise<ConfiguredModelAvailability>;
+}
+
+const GROUP_AVAILABILITY_TTL_MS = 15_000;
+
+/** Per-tenant full-catalog cache (no channel-group filter). */
+const configuredAvailabilityByTenant = new Map<string, TenantConfiguredAvailabilityCache>();
+/** Per-tenant in-flight full-catalog request. */
+const configuredAvailabilityInFlightByTenant = new Map<
+  string,
+  TenantConfiguredAvailabilityInFlight
+>();
+/**
+ * Per-tenant channel-group availability cache.
+ * Outer key = tenant id; inner key = sorted allowed groups.
+ */
+const groupAvailabilityByTenant = new Map<string, Map<string, GroupAvailabilityCacheEntry>>();
+
+const tenantCacheKey = () => getActiveCacheTenantId();
+
+export { invalidateConfiguredModelAvailability };
+
+export const loadConfiguredModelAvailability = async (options?: {
+  allowedChannelGroups?: string[];
+  /** Channel-group editor: list every channel-servable model, not only AllowedModels. */
+  ignoreGroupAllowedModels?: boolean;
+}): Promise<ConfiguredModelAvailability> => {
+  const validGroups = (options?.allowedChannelGroups ?? [])
+    .map((g) => String(g ?? "").trim())
+    .filter(Boolean);
+  const ignoreGroupAllowedModels = Boolean(options?.ignoreGroupAllowedModels);
+  const loadFallback = async () =>
+    loadConfiguredModelAvailabilityFallback(
+      await loadAuthGroupOwnerMappingMap(),
+    );
+  const tenantId = tenantCacheKey();
+
+  if (validGroups.length > 0) {
+    // Separate cache keys so editor (ignore) and plaza (enforce) never share.
+    const cacheKey = ignoreGroupAllowedModels
+      ? `${validGroups.join(",")}|ignore_allowed`
+      : validGroups.join(",");
+    const now = Date.now();
+    const cacheVersion = getConfiguredAvailabilityCacheVersion();
+    let tenantGroupCache = groupAvailabilityByTenant.get(tenantId);
+    if (!tenantGroupCache) {
+      tenantGroupCache = new Map();
+      groupAvailabilityByTenant.set(tenantId, tenantGroupCache);
+    }
+    const cached = tenantGroupCache.get(cacheKey);
+    if (
+      cached &&
+      cached.cacheVersion === cacheVersion &&
+      now < cached.expiresAt
+    ) {
+      return cached.promise;
+    }
+    const promise = (async (): Promise<ConfiguredModelAvailability> => {
+      try {
+        const params = new URLSearchParams();
+        params.set("allowed_channel_groups", validGroups.join(","));
+        if (ignoreGroupAllowedModels) {
+          params.set("ignore_group_allowed_models", "1");
+        }
+        const result = await loadConfiguredAvailabilityEndpoint(
+          `/models/configured-availability?${params.toString()}`,
+        );
+        if (!result) return loadFallback();
+        const current = groupAvailabilityByTenant.get(tenantId) ?? new Map();
+        current.set(cacheKey, {
+          expiresAt: Date.now() + GROUP_AVAILABILITY_TTL_MS,
+          cacheVersion,
+          promise: Promise.resolve(result),
+        });
+        groupAvailabilityByTenant.set(tenantId, current);
+        return result;
+      } catch {
+        return loadFallback();
+      }
+    })();
+    tenantGroupCache.set(cacheKey, {
+      expiresAt: now + GROUP_AVAILABILITY_TTL_MS,
+      cacheVersion,
+      promise,
+    });
+    return promise;
+  }
+
+  // Unscoped editor path (e.g. default group): still request full channel set.
+  if (ignoreGroupAllowedModels) {
+    const editorCacheKey = "__ignore_allowed__";
+    const now = Date.now();
+    const cacheVersion = getConfiguredAvailabilityCacheVersion();
+    let tenantGroupCache = groupAvailabilityByTenant.get(tenantId);
+    if (!tenantGroupCache) {
+      tenantGroupCache = new Map();
+      groupAvailabilityByTenant.set(tenantId, tenantGroupCache);
+    }
+    const cached = tenantGroupCache.get(editorCacheKey);
+    if (
+      cached &&
+      cached.cacheVersion === cacheVersion &&
+      now < cached.expiresAt
+    ) {
+      return cached.promise;
+    }
+    const promise = (async (): Promise<ConfiguredModelAvailability> => {
+      try {
+        const result = await loadConfiguredAvailabilityEndpoint(
+          "/models/configured-availability?ignore_group_allowed_models=1",
+        );
+        if (!result) return loadFallback();
+        const current = groupAvailabilityByTenant.get(tenantId) ?? new Map();
+        current.set(editorCacheKey, {
+          expiresAt: Date.now() + GROUP_AVAILABILITY_TTL_MS,
+          cacheVersion,
+          promise: Promise.resolve(result),
+        });
+        groupAvailabilityByTenant.set(tenantId, current);
+        return result;
+      } catch {
+        return loadFallback();
+      }
+    })();
+    tenantGroupCache.set(editorCacheKey, {
+      expiresAt: now + GROUP_AVAILABILITY_TTL_MS,
+      cacheVersion,
+      promise,
+    });
+    return promise;
+  }
+
+  const now = Date.now();
+  const cacheVersion = getConfiguredAvailabilityCacheVersion();
+  const configuredAvailabilityCache = configuredAvailabilityByTenant.get(tenantId);
+  if (
+    configuredAvailabilityCache &&
+    configuredAvailabilityCache.version === cacheVersion &&
+    now < configuredAvailabilityCache.expiresAt
+  ) {
+    return configuredAvailabilityCache.value;
+  }
+  const configuredAvailabilityInFlight =
+    configuredAvailabilityInFlightByTenant.get(tenantId);
+  if (
+    configuredAvailabilityInFlight &&
+    configuredAvailabilityInFlight.version === cacheVersion
+  ) {
+    return configuredAvailabilityInFlight.promise;
+  }
+
+  const promise = (async (): Promise<ConfiguredModelAvailability> => {
+    try {
+      const result = await loadConfiguredAvailabilityEndpoint(
+        "/models/configured-availability",
+      );
+      if (!result) return loadFallback();
+      configuredAvailabilityByTenant.set(tenantId, {
+        expiresAt: Date.now() + CONFIGURED_AVAILABILITY_TTL_MS,
+        version: cacheVersion,
+        value: result,
+      });
+      return result;
+    } catch {
+      // Fallback to old multi-API aggregation for backward compatibility.
+      return loadFallback();
+    }
+  })();
+  configuredAvailabilityInFlightByTenant.set(tenantId, {
+    version: cacheVersion,
+    promise,
+  });
+
+  try {
+    return await promise;
+  } finally {
+    const current = configuredAvailabilityInFlightByTenant.get(tenantId);
+    if (current?.promise === promise) {
+      configuredAvailabilityInFlightByTenant.delete(tenantId);
+    }
+  }
+};
+
+const loadConfiguredModelAvailabilityFallback = async (
+  ownerByAuthGroup?: AuthGroupOwnerMappingMap,
+): Promise<ConfiguredModelAvailability> => {
+  const usesMappedOwners = Object.keys(ownerByAuthGroup ?? {}).length > 0;
+  const [authFiles, libraryPayload, providerItems] = await Promise.all([
+    loadAuthFiles(),
+    apiClient.get("/model-configs?scope=library").catch(() => null),
+    loadProviderModelItems(),
+  ]);
+  const libraryModels = normalizeModelConfigRows(libraryPayload);
+  const authFileAvailability = await loadAuthFileModelItems(
+    authFiles,
+    libraryModels,
+    ownerByAuthGroup ?? (await loadAuthGroupOwnerMappingMap()),
+  );
+  const libraryIndex = buildLibraryModelIndex(libraryModels);
+
+  const map = new Map<string, ModelAvailabilityItem>();
+  for (const item of authFileAvailability.items) addAvailabilityModel(map, item);
+  for (const item of providerItems)
+    addAvailabilityModel(map, withLibraryModelMetadata(item, libraryIndex));
+
+  if (!authFileAvailability.scoped && providerItems.length === 0) {
+    return emptyAvailability(usesMappedOwners);
+  }
+
+  const items = Array.from(map.values()).sort((a, b) =>
+    a.id.localeCompare(b.id),
+  );
+  return {
+    scoped: true,
+    items,
+    idSet: new Set(items.map((item) => item.id.toLowerCase())),
+    usesMappedOwners,
+  };
+};
+
+export const loadModelPathAvailability =
+  async (): Promise<ModelPathAvailability> =>
+    augmentPathAvailabilityWithMappedOwners(
+      normalizeModelPathAvailability(
+        await apiClient.get("/model-path-availability"),
+      ),
+    );
+
+export const filterByConfiguredModelAvailability = <T extends { id: string }>(
+  models: T[],
+  availability: ConfiguredModelAvailability,
+): T[] => {
+  if (!availability.scoped) return models;
+  return models.filter((model) =>
+    availability.idSet.has(model.id.toLowerCase()),
+  );
+};
+
+export const hasModelPricing = (pricing: ModelPricing): boolean => {
+  if (pricing.mode === "call") return pricing.pricePerCall > 0;
+  return (
+    pricing.inputPricePerMillion > 0 ||
+    pricing.outputPricePerMillion > 0 ||
+    pricing.cachedPricePerMillion > 0 ||
+    pricing.cacheReadPricePerMillion > 0 ||
+    pricing.cacheWritePricePerMillion > 0
+  );
+};
+
+export const formatModelPriceAmount = (value: number): string => {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  const rounded = Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 6,
+    minimumFractionDigits: 0,
+    useGrouping: false,
+  }).format(rounded);
+};
+
+export const formatModelPrice = (
+  pricing: ModelPricing,
+  notPricedLabel: string,
+): string => {
+  if (pricing.mode === "call") {
+    return pricing.pricePerCall > 0
+      ? `$${formatModelPriceAmount(pricing.pricePerCall)} / call`
+      : notPricedLabel;
+  }
+
+  if (!hasModelPricing(pricing)) return notPricedLabel;
+  const parts = [
+    `$${formatModelPriceAmount(pricing.inputPricePerMillion)}`,
+    `$${formatModelPriceAmount(pricing.outputPricePerMillion)}`,
+  ];
+  if (pricing.cacheReadPricePerMillion > 0) {
+    parts.push(
+      `Read $${formatModelPriceAmount(pricing.cacheReadPricePerMillion)}`,
+    );
+  } else if (pricing.cachedPricePerMillion > 0) {
+    parts.push(`$${formatModelPriceAmount(pricing.cachedPricePerMillion)}`);
+  }
+  if (pricing.cacheWritePricePerMillion > 0) {
+    parts.push(
+      `Write $${formatModelPriceAmount(pricing.cacheWritePricePerMillion)}`,
+    );
+  }
+  return parts.join(" / ");
+};

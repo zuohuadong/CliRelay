@@ -1,0 +1,123 @@
+import { describe, expect, test, vi, beforeEach } from "vitest";
+
+const postMock = vi.fn();
+const postFormMock = vi.fn();
+const getMock = vi.fn();
+const putMock = vi.fn();
+
+vi.mock("../../client/client", () => ({
+  apiClient: {
+    get: getMock,
+    post: postMock,
+    postForm: postFormMock,
+    put: putMock,
+  },
+}));
+
+describe("imageGenerationApi", () => {
+  beforeEach(() => {
+    getMock.mockReset();
+    postMock.mockReset();
+    postFormMock.mockReset();
+    putMock.mockReset();
+  });
+
+  test("loads image generation size presets", async () => {
+    const { imageGenerationApi } =
+      await import("@code-proxy/api-client/endpoints/image-generation");
+
+    getMock.mockResolvedValue({ sizes: ["1024x1024", "4096x2304"] });
+
+    await imageGenerationApi.getSizePresets();
+
+    expect(getMock).toHaveBeenCalledWith("/image-generation/size-presets");
+  });
+
+  test("updates image generation size presets", async () => {
+    const { imageGenerationApi } =
+      await import("@code-proxy/api-client/endpoints/image-generation");
+
+    putMock.mockResolvedValue({ sizes: ["1024x1024", "4096x2304"] });
+
+    await imageGenerationApi.updateSizePresets(["1024x1024", "4096x2304"]);
+
+    expect(putMock).toHaveBeenCalledWith("/image-generation/size-presets", {
+      sizes: ["1024x1024", "4096x2304"],
+    });
+  });
+
+  test("creates a background task for text generation tests", async () => {
+    const { imageGenerationApi } =
+      await import("@code-proxy/api-client/endpoints/image-generation");
+
+    postMock.mockResolvedValue({ task_id: "task-1", status: "queued" });
+
+    await imageGenerationApi.startTestTask({
+      mode: "generations",
+      model: "gpt-image-2",
+      prompt: "draw a fox",
+    });
+
+    expect(postMock).toHaveBeenCalledWith("/image-generation/test", {
+      model: "gpt-image-2",
+      prompt: "draw a fox",
+    });
+  });
+
+  test("creates a background task for multipart image generation tests", async () => {
+    const { imageGenerationApi } =
+      await import("@code-proxy/api-client/endpoints/image-generation");
+
+    postFormMock.mockResolvedValue({ task_id: "task-2", status: "queued" });
+    const imageFile = new File(["hello"], "ref.png", { type: "image/png" });
+
+    await imageGenerationApi.startTestTask({
+      mode: "edits",
+      model: "gpt-image-2",
+      prompt: "turn it green",
+      images: [imageFile],
+    });
+
+    expect(postFormMock).toHaveBeenCalledWith("/image-generation/test", expect.any(FormData));
+  });
+
+  test("carries a Gemini model's ratio and size tier on a multipart edit", async () => {
+    const { imageGenerationApi } =
+      await import("@code-proxy/api-client/endpoints/image-generation");
+
+    postFormMock.mockResolvedValue({ task_id: "task-3", status: "queued" });
+    await imageGenerationApi.startTestTask({
+      mode: "edits",
+      model: "gemini-3.1-flash-image",
+      prompt: "make it night",
+      aspect_ratio: "9:16",
+      image_size: "2K",
+      images: [new File(["hello"], "ref.png", { type: "image/png" })],
+    });
+
+    const form = postFormMock.mock.calls[0][1] as FormData;
+    expect(form.get("aspect_ratio")).toBe("9:16");
+    expect(form.get("image_size")).toBe("2K");
+    expect(form.get("size")).toBeNull();
+    expect(form.get("quality")).toBeNull();
+  });
+
+  // The poll that sees the task finish downloads every image as base64. A 1 MB
+  // result took about 40s on a ~25 KB/s link, so a 10s ceiling threw away images the
+  // account had already paid for.
+  test("gives the task poll room to download the finished images", async () => {
+    const { imageGenerationApi } =
+      await import("@code-proxy/api-client/endpoints/image-generation");
+
+    getMock.mockResolvedValue({ task_id: "task-1", status: "succeeded" });
+
+    await imageGenerationApi.getTestTask("task-1");
+
+    expect(getMock).toHaveBeenCalledWith(
+      "/image-generation/test/task-1",
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+    const { timeoutMs } = getMock.mock.calls[0][1] as { timeoutMs: number };
+    expect(timeoutMs).toBeGreaterThanOrEqual(5 * 60 * 1000);
+  });
+});

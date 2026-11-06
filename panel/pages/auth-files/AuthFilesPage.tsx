@@ -1,0 +1,1062 @@
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
+import { useOptionalAuth } from "@app/providers/AuthProvider";
+import {
+  useLocalStorage,
+  useSensitiveDataMasking,
+  useToast,
+} from "@code-proxy/ui";
+import { quotaApi, type AuthFileItem } from "@code-proxy/api-client";
+import {
+  proxiesApi,
+  type ProxyPoolEntry,
+} from "@code-proxy/api-client/endpoints/proxies";
+import { LazyAddAccountDialog } from "@features/oauth-login";
+import { AuthFileDetailModal } from "./components/AuthFileDetailModal";
+import { AuthFileTagsModal } from "./components/AuthFileTagsModal";
+import { AuthFilesExcludedTab } from "./components/AuthFilesExcludedTab";
+import { AuthFilesAliasTab } from "./components/AuthFilesAliasTab";
+import { AuthFilesFilesTab } from "./components/AuthFilesFilesTab";
+import { ImportModelsModal } from "./components/ImportModelsModal";
+import { GroupOverviewModal } from "./components/GroupOverviewModal";
+import { useAuthFilesDataState } from "./hooks/useAuthFilesDataState";
+import { useAuthFilesDetailEditors } from "./hooks/useAuthFilesDetailEditors";
+import {
+  useAuthFilesFileActions,
+  type AuthFilesUploadResult,
+} from "./hooks/useAuthFilesFileActions";
+import { useAuthFilesFilesPresentation } from "./hooks/useAuthFilesFilesPresentation";
+import { useAuthFilesListState } from "./hooks/useAuthFilesListState";
+import { useAuthFilesModelOwnerGroups } from "./hooks/useAuthFilesModelOwnerGroups";
+import { useAuthFilesQuotaState } from "./hooks/useAuthFilesQuotaState";
+import { useAuthFilesGroupOverview } from "./hooks/useAuthFilesGroupOverview";
+import { useAuthFilesOAuthConfig } from "./hooks/useAuthFilesOAuthConfig";
+import {
+  consumeCodexResetCredit,
+  resolveQuotaProvider,
+} from "@features/quota-preview/quota-fetch";
+import {
+  alignAuthFilesPageSizeToColumns,
+  AUTH_FILES_CARD_COLUMNS_KEY,
+  AUTH_FILES_FILES_VIEW_MODE_KEY,
+  AUTH_FILES_PAGE_SIZE,
+  AUTH_FILES_PAGE_SIZE_KEY,
+  AUTH_FILE_STATUS_FILTERS,
+  DEFAULT_AUTH_FILES_CARD_COLUMNS,
+  getActiveCacheTenantId,
+  normalizeAuthFilesCardColumns,
+  normalizeAuthIndexValue,
+  normalizeProviderKey,
+  normalizeQuotaAutoRefreshMs,
+  readAuthFilesUiState,
+  resolveAuthFileDisplayName,
+  resolveAuthFileStats,
+  resolveFileType,
+  resolveProviderLabel,
+  writeAuthFilesUiState,
+  type AuthFileStatusFilter,
+  type AuthFilesCardColumns,
+  type FilesViewMode,
+} from "@code-proxy/domain";
+import { AuthFilesConfigModal } from "./components/AuthFilesConfigModal";
+import { WarmupPolicyModal } from "./components/WarmupPolicyModal";
+import {
+  AuthFilesConfirmModal,
+  type AuthFilesConfirmAction,
+} from "./components/AuthFilesConfirmModal";
+import { useAuthFilesWarmup } from "./hooks/useAuthFilesWarmup";
+import { useAddAccountDialogSync } from "./hooks/useAddAccountDialogSync";
+
+export type AuthFilesConfigModalTab = "excluded" | "alias";
+
+export function AuthFilesPage() {
+  const { t } = useTranslation();
+  const { notify } = useToast();
+  const auth = useOptionalAuth();
+  // Account identity fingerprint is auth-file scoped (same as /identity-fingerprint/account
+  // RBAC: auth_files.read/write). Must not use platform system.config.read, or ordinary
+  // tenants never see the Identity tab even though the API allows them.
+  const identityFingerprintEnabled = auth?.can("auth_files.read") ?? true;
+  const canReadProxies = auth?.can("proxies.read") ?? true;
+  const oauthExcludedEnabled = auth?.state.principal
+    ? auth.state.principal.effective_tenant.type === "system"
+    : true;
+  const [searchParams] = useSearchParams();
+
+  const [configModalTab, setConfigModalTab] = useState<AuthFilesConfigModalTab | null>(null);
+  const [configSaving, setConfigSaving] = useState(false);
+  const {
+    isPending,
+    excludedLoading,
+    excluded,
+    excludedDraft,
+    setExcludedDraft,
+    excludedNewProvider,
+    setExcludedNewProvider,
+    excludedUnsupported,
+    aliasLoading,
+    aliasEditing,
+    setAliasEditing,
+    aliasNewChannel,
+    setAliasNewChannel,
+    aliasUnsupported,
+    importOpen,
+    setImportOpen,
+    importChannel,
+    importLoading,
+    importModels,
+    importSearch,
+    setImportSearch,
+    importSelected,
+    setImportSelected,
+    importFilteredModels,
+    refreshExcluded,
+    refreshAlias,
+    deleteExcludedProvider,
+    addExcludedProvider,
+    addAliasChannel,
+    deleteAliasChannel,
+    saveExcludedAll,
+    saveAliasAll,
+    openImport,
+    applyImport,
+  } = useAuthFilesOAuthConfig(
+    !oauthExcludedEnabled && configModalTab === "excluded"
+      ? "alias"
+      : (configModalTab ?? "files"),
+  );
+
+  const {
+    files,
+    setFiles,
+    loading,
+    refreshingAll,
+    usageLoading,
+    usageData,
+    setUsageData,
+    usageIndex,
+    loadAll,
+    refreshFilesForItems,
+  } = useAuthFilesDataState();
+
+  const [confirm, setConfirm] = useState<AuthFilesConfirmAction | null>(null);
+  const [resettingCreditFileName, setResettingCreditFileName] = useState<
+    string | null
+  >(null);
+  const [clearingStatusFileName, setClearingStatusFileName] = useState<
+    string | null
+  >(null);
+
+  const [oauthDialogOpen, setOauthDialogOpen] = useState(false);
+  // File type the list was filtered to when the dialog opened; it preselects that provider.
+  const [addAccountHint, setAddAccountHint] = useState("");
+
+  const [filter, setFilter] = useState("all");
+  const [tagFilter, setTagFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState<AuthFileStatusFilter>("all");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [cardColumnsRaw, setCardColumns] = useLocalStorage<AuthFilesCardColumns>(
+    AUTH_FILES_CARD_COLUMNS_KEY,
+    DEFAULT_AUTH_FILES_CARD_COLUMNS,
+  );
+  const cardColumns = normalizeAuthFilesCardColumns(cardColumnsRaw);
+  const [pageSizeRaw, setPageSize] = useLocalStorage<number>(
+    AUTH_FILES_PAGE_SIZE_KEY,
+    AUTH_FILES_PAGE_SIZE,
+  );
+  const [filesViewMode, setFilesViewMode] = useLocalStorage<FilesViewMode>(
+    AUTH_FILES_FILES_VIEW_MODE_KEY,
+    "cards",
+  );
+  const [masked, setMasked] = useSensitiveDataMasking();
+  // Only the card grid needs a page size divisible by the column count; the
+  // table view keeps whatever the user picked from the standard options.
+  const pageSize =
+    filesViewMode === "cards"
+      ? alignAuthFilesPageSizeToColumns(pageSizeRaw, cardColumns)
+      : pageSizeRaw;
+  const [selectedFileNames, setSelectedFileNames] = useState<string[]>([]);
+  const [proxyPoolEntries, setProxyPoolEntries] = useState<ProxyPoolEntry[]>(
+    [],
+  );
+  const [tagsEditorFileName, setTagsEditorFileName] = useState<string | null>(
+    null,
+  );
+  const [refreshingCurrentPage, setRefreshingCurrentPage] = useState(false);
+  const {
+    warmupPolicyModalOpen,
+    setWarmupPolicyModalOpen,
+    batchWarmupBusy,
+    handleBatchWarmup,
+  } = useAuthFilesWarmup();
+  const isMountedRef = useRef(true);
+  const refreshingFilesAndQuotaRef = useRef(false);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const filesRef = useRef<AuthFileItem[]>(files);
+  const previousConfigModalTabRef = useRef<AuthFilesConfigModalTab | null>(
+    null,
+  );
+
+  useEffect(() => {
+    if (cardColumnsRaw !== cardColumns) setCardColumns(cardColumns);
+  }, [cardColumns, cardColumnsRaw, setCardColumns]);
+
+  useEffect(() => {
+    if (pageSizeRaw !== pageSize) setPageSize(pageSize);
+  }, [pageSize, pageSizeRaw, setPageSize]);
+
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const {
+    detailOpen,
+    setDetailOpen,
+    detailFile,
+    setDetailFile,
+    detailLoading,
+    detailText,
+    detailTab,
+    setDetailTab,
+    detailTrendWindow,
+    setDetailTrendWindow,
+    detailTrend,
+    detailTrendLoading,
+    detailTrendError,
+    identityFingerprintDetail,
+    identityFingerprintLoading,
+    identityFingerprintSaving,
+    identityFingerprintError,
+    selectIdentityFingerprintProfile,
+    useIdentityFingerprintCLIPreferred,
+    deleteIdentityFingerprintProfile,
+    refreshDetailTrend,
+    modelsLoading,
+    modelsFileType,
+    modelsList,
+    modelsError,
+    prefixProxyEditor,
+    setPrefixProxyEditor,
+    channelEditor,
+    setChannelEditor,
+    codexOAuthAdmissionEditor,
+    setCodexOAuthAdmissionEditor,
+    codexImageGenerationBridgeEditor,
+    setCodexImageGenerationBridgeEditor,
+    xaiEndpointEditor,
+    setXAIEndpointEditor,
+    loadModelsForDetail,
+    openDetail,
+    prefixProxyDirty,
+    codexOAuthAdmissionDirty,
+    codexImageGenerationBridgeDirty,
+    xaiEndpointDirty,
+    savePrefixProxy,
+    saveChannelEditor,
+    saveCodexOAuthAdmission,
+    saveCodexImageGenerationBridge,
+    saveXAIEndpoint,
+  } = useAuthFilesDetailEditors(loadAll, setFiles, identityFingerprintEnabled);
+
+  const {
+    modelOwnerGroupsLoading,
+    modelOwnerGroups,
+    modelOwnerByAuthGroup,
+    setModelOwnerForAuthGroup,
+    loadModelOwnerGroups,
+  } = useAuthFilesModelOwnerGroups();
+
+  const {
+    uploading,
+    uploadProgress,
+    deletingAll,
+    batchStatusUpdating,
+    statusUpdating,
+    tagSavingByName,
+    downloadAuthFile,
+    handleDownloadSelection,
+    handleUpload,
+    handleDeleteSelection,
+    handleSetSelectionDisabled,
+    setFileEnabled,
+    saveAuthFileTags,
+  } = useAuthFilesFileActions({
+    loadAll,
+    fileInputRef,
+    detailFile,
+    setDetailFile,
+    setDetailOpen,
+    setFiles,
+    setSelectedFileNames,
+  });
+
+  useEffect(() => {
+    // DashboardLayout remounts on tenant switch; pin to the active cache tenant
+    // so file-group / status / search / page never leak across tenants.
+    const state = readAuthFilesUiState(getActiveCacheTenantId());
+    if (!state) return;
+    if (typeof state.filter === "string") setFilter(state.filter);
+    if (typeof state.tagFilter === "string") setTagFilter(state.tagFilter);
+    if (
+      typeof state.statusFilter === "string" &&
+      AUTH_FILE_STATUS_FILTERS.includes(state.statusFilter)
+    ) {
+      setStatusFilter(state.statusFilter);
+    }
+    if (typeof state.search === "string") setSearch(state.search);
+    if (typeof state.page === "number" && Number.isFinite(state.page))
+      setPage(Math.max(1, Math.round(state.page)));
+  }, []);
+
+  useEffect(() => {
+    const requestedTab = searchParams.get("tab");
+    if (requestedTab === "excluded" || requestedTab === "alias") {
+      setConfigModalTab(
+        requestedTab === "excluded" && !oauthExcludedEnabled
+          ? "alias"
+          : requestedTab,
+      );
+      return;
+    }
+    if (requestedTab === "files") {
+      setConfigModalTab(null);
+    }
+  }, [oauthExcludedEnabled, searchParams]);
+
+  useEffect(() => {
+    if (!canReadProxies) {
+      setProxyPoolEntries([]);
+      return;
+    }
+    void proxiesApi
+      .list()
+      .then(setProxyPoolEntries)
+      .catch(() => setProxyPoolEntries([]));
+  }, [canReadProxies]);
+
+  useEffect(() => {
+    writeAuthFilesUiState(
+      {
+        tab: "files",
+        filter,
+        tagFilter,
+        statusFilter,
+        search,
+        page,
+      },
+      getActiveCacheTenantId(),
+    );
+  }, [filter, page, search, statusFilter, tagFilter]);
+
+  useEffect(() => {
+    void loadModelOwnerGroups();
+  }, [loadModelOwnerGroups]);
+
+  const updateFilter = useCallback((value: string) => {
+    setFilter(value);
+    setPage(1);
+  }, []);
+
+  const updateSearch = useCallback((value: string) => {
+    setSearch(value);
+    setPage(1);
+  }, []);
+
+  const updateTagFilter = useCallback((value: string) => {
+    setTagFilter(value);
+    setPage(1);
+  }, []);
+
+  const updateStatusFilter = useCallback((value: AuthFileStatusFilter) => {
+    setStatusFilter(value);
+    setPage(1);
+  }, []);
+
+  const {
+    providerOptions,
+    filterCounts,
+    customTagOptions,
+    statusFilterCounts,
+    filteredFiles,
+    totalPages,
+    safePage,
+    pageItems,
+    selectableFilteredFiles,
+    selectablePageNames,
+    selectedFileNameSet,
+    selectedCount,
+    allPageSelected,
+    somePageSelected,
+    allFilteredSelected,
+    toggleFileSelection,
+    selectCurrentPage,
+    selectFilteredFiles,
+  } = useAuthFilesListState({
+    files,
+    filter,
+    tagFilter,
+    statusFilter,
+    search,
+    page,
+    pageSize,
+    setPage,
+    selectedFileNames,
+    setSelectedFileNames,
+  });
+
+  useEffect(() => {
+    const normalizedFilter = normalizeProviderKey(filter);
+    if (
+      !normalizedFilter ||
+      normalizedFilter === "all" ||
+      loading ||
+      refreshingAll
+    )
+      return;
+    const filterExists = providerOptions.some(
+      (provider) => normalizeProviderKey(provider) === normalizedFilter,
+    );
+    if (!filterExists) {
+      setFilter("all");
+      setPage(1);
+    }
+  }, [filter, loading, providerOptions, refreshingAll]);
+
+  const {
+    connectivityState,
+    quotaByFileName,
+    nowMs,
+    quotaAutoRefreshMs,
+    setQuotaAutoRefreshMsRaw,
+    resolveQuotaCardSlots,
+    refreshQuota,
+    checkAuthFileConnectivity,
+    forceRefreshPage,
+    runQuotaRefreshBatch,
+    callsByAuthIndex,
+    cycleTotalTokensByAuthIndex,
+    cycleBudgetByAuthIndex,
+    statusUsageReady,
+    statusUsageLoading,
+  } = useAuthFilesQuotaState({
+    tab: "files",
+    pageItems,
+    loading,
+    setFiles,
+    setDetailFile,
+    setUsageDataFromStatus: setUsageData,
+  });
+
+  const refreshQuotaAndCycleUsage = useCallback(
+    async (
+      file: AuthFileItem,
+      provider: NonNullable<ReturnType<typeof resolveQuotaProvider>>,
+    ) => {
+      // Batch status API already embeds lightweight cycle usage; no separate trend force.
+      await refreshQuota(file, provider);
+    },
+    [refreshQuota],
+  );
+
+  const refreshQuotaForFiles = useCallback(
+    async (targetFiles: AuthFileItem[]) => {
+      const targets = targetFiles.flatMap((file) => {
+        const provider = resolveQuotaProvider(file);
+        return provider ? [{ file, provider }] : [];
+      });
+      if (!targets.length) return;
+      await runQuotaRefreshBatch(targets, { showLoading: true });
+    },
+    [runQuotaRefreshBatch],
+  );
+
+  const refreshQuotaForUploadedFiles = useCallback(
+    async (
+      result: AuthFilesUploadResult | null,
+      previousNames: Set<string>,
+    ) => {
+      if (!result) return;
+      const uploadedNames = new Set(result.uploadedNames);
+      const targetFiles = result.files.filter(
+        (file) => uploadedNames.has(file.name) || !previousNames.has(file.name),
+      );
+      await refreshQuotaForFiles(targetFiles);
+    },
+    [refreshQuotaForFiles],
+  );
+
+  const showProviderFiles = useCallback((provider: string) => {
+    setFilter(provider);
+    setTagFilter("");
+    setStatusFilter("all");
+    setSearch("");
+    setPage(1);
+  }, []);
+
+  const {
+    setDialogOpenWithBaseline: setOAuthDialogOpenWithBaseline,
+    refreshAfterAuthorized: refreshAfterOAuthAuthorized,
+    importAuthFiles: importAuthFilesFromDialog,
+  } = useAddAccountDialogSync({
+    filesRef,
+    loadAll,
+    setDialogOpen: setOauthDialogOpen,
+    showProviderFiles,
+    handleUpload,
+    refreshQuotaForUploadedFiles,
+  });
+
+  const handleUploadAndRefreshQuota = useCallback(
+    async (input: FileList | File[] | null) => {
+      const previousNames = new Set(filesRef.current.map((file) => file.name));
+      const result = await handleUpload(input);
+      void refreshQuotaForUploadedFiles(result, previousNames);
+    },
+    [handleUpload, refreshQuotaForUploadedFiles],
+  );
+
+  const openDetailWithQuotaRefresh = useCallback(
+    (file: Parameters<typeof openDetail>[0]) => {
+      const openPromise = openDetail(file);
+      const provider = resolveQuotaProvider(file);
+      if (provider === "codex" || provider === "kimi" || provider === "claude") {
+        void refreshQuota(file, provider)
+          .catch(() => undefined)
+          .finally(() => void refreshDetailTrend(file, { silent: true }));
+      }
+      return openPromise;
+    },
+    [openDetail, refreshDetailTrend, refreshQuota],
+  );
+
+  const requestResetCredit = useCallback(
+    (file: AuthFileItem) => {
+      const count = quotaByFileName[file.name]?.resetCreditCount ?? 0;
+      if (count <= 0) return;
+      setConfirm({ type: "resetCredit", file });
+    },
+    [quotaByFileName],
+  );
+
+  const handleResetCredit = useCallback(
+    async (file: AuthFileItem) => {
+      if (resettingCreditFileName) return;
+      const name = resolveAuthFileDisplayName(file) || file.name;
+      setResettingCreditFileName(file.name);
+      try {
+        await consumeCodexResetCredit(file);
+        await refreshQuota(file, "codex", { showLoading: true });
+        notify({
+          type: "success",
+          message: t("auth_files.reset_credit_success", { name }),
+        });
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error ? err.message : t("common.unknown_error");
+        notify({
+          type: "error",
+          message: t("auth_files.reset_credit_failed", { name, message }),
+        });
+      } finally {
+        setResettingCreditFileName(null);
+      }
+    },
+    [notify, refreshQuota, resettingCreditFileName, t],
+  );
+
+  const clearAuthFileStatus = useCallback(
+    async (file: AuthFileItem) => {
+      if (clearingStatusFileName) return;
+      const name = resolveAuthFileDisplayName(file) || file.name;
+      const authIndex = normalizeAuthIndexValue(
+        file.auth_index ?? file.authIndex,
+      );
+      if (!authIndex) {
+        notify({
+          type: "error",
+          message: t("auth_files.clear_status_failed", {
+            name,
+            message: t("auth_files.trend_missing_auth_index"),
+          }),
+        });
+        return;
+      }
+
+      setClearingStatusFileName(file.name);
+      try {
+        await quotaApi.clearStatus(authIndex);
+        await refreshFilesForItems([file]);
+        notify({
+          type: "success",
+          message: t("auth_files.clear_status_success", { name }),
+        });
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error ? err.message : t("common.unknown_error");
+        notify({
+          type: "error",
+          message: t("auth_files.clear_status_failed", { name, message }),
+        });
+      } finally {
+        setClearingStatusFileName(null);
+      }
+    },
+    [clearingStatusFileName, notify, refreshFilesForItems, t],
+  );
+
+  const refreshFilesAndQuota = useCallback(async () => {
+    if (
+      refreshingFilesAndQuotaRef.current ||
+      loading ||
+      usageLoading ||
+      refreshingAll
+    )
+      return;
+    refreshingFilesAndQuotaRef.current = true;
+    setRefreshingCurrentPage(true);
+    const currentPageItems = pageItems;
+    try {
+      // One batch status job + list refresh. No entity-stats / trend fan-out.
+      await Promise.all([
+        refreshFilesForItems(currentPageItems),
+        forceRefreshPage(),
+      ]);
+    } finally {
+      refreshingFilesAndQuotaRef.current = false;
+      if (isMountedRef.current) {
+        setRefreshingCurrentPage(false);
+      }
+    }
+  }, [
+    forceRefreshPage,
+    loading,
+    pageItems,
+    refreshFilesForItems,
+    refreshingAll,
+    usageLoading,
+  ]);
+
+  const closeConfigModal = useCallback(() => {
+    setConfigModalTab(null);
+  }, []);
+
+  const saveConfigModal = useCallback(async () => {
+    if (!configModalTab || configSaving) return;
+    setConfigSaving(true);
+    try {
+      const saved =
+        configModalTab === "alias"
+          ? await saveAliasAll()
+          : await saveExcludedAll();
+      if (saved) {
+        setConfigModalTab(null);
+      }
+    } finally {
+      setConfigSaving(false);
+    }
+  }, [configModalTab, configSaving, saveAliasAll, saveExcludedAll]);
+
+  useEffect(() => {
+    const previousTab = previousConfigModalTabRef.current;
+    previousConfigModalTabRef.current = configModalTab;
+    if (previousTab === null || configModalTab !== null) return;
+
+    void (async () => {
+      await loadAll();
+      await forceRefreshPage();
+    })();
+  }, [configModalTab, forceRefreshPage, loadAll]);
+
+  // Cycle usage for cards comes from status snapshot; no per-card trend fan-out on open.
+
+  const {
+    groupOverviewOpen,
+    setGroupOverviewOpen,
+    groupOverviewTab,
+    setGroupOverviewTab,
+    groupOverviewLoading,
+    groupTrendLoading,
+    formatAveragePercent,
+    groupOverviewTabs,
+    activeGroupOverview,
+    activeGroupRows,
+    activeGroupTitle,
+    groupOverviewChartOption,
+    refreshGroupOverview,
+    refreshGroupTrend,
+    openGroupOverview,
+  } = useAuthFilesGroupOverview({
+    filter,
+    filteredFiles,
+    providerOptions,
+    quotaByFileName,
+    usageIndex,
+    tab: "files",
+    runQuotaRefreshBatch,
+    resolveQuotaProvider,
+    resolveQuotaCardSlots,
+    resolveAuthFileStats,
+    resolveProviderLabel,
+  });
+
+  const filterChips = useMemo(
+    () => ["all", ...providerOptions],
+    [providerOptions],
+  );
+  const tagsEditorFile = useMemo(
+    () => files.find((file) => file.name === tagsEditorFileName) ?? null,
+    [files, tagsEditorFileName],
+  );
+
+  const normalizedFilter = useMemo(
+    () => normalizeProviderKey(filter),
+    [filter],
+  );
+  const selectedModelOwner =
+    normalizedFilter === "all"
+      ? ""
+      : (modelOwnerByAuthGroup[normalizedFilter] ?? "");
+  const detailModelOwnerValue = detailFile
+    ? (modelOwnerByAuthGroup[
+        normalizeProviderKey(resolveFileType(detailFile))
+      ] ?? "")
+    : "";
+  const detailModelOwnerGroup = detailModelOwnerValue
+    ? (modelOwnerGroups.find(
+        (group) => group.value === detailModelOwnerValue,
+      ) ?? null)
+    : null;
+  const {
+    resolveStickyDisplayPlanType,
+    renderRestrictionBadges,
+    renderClaudeOAuthHealthBadges,
+    renderSubscriptionBadge,
+    renderQuotaBar,
+    renderQuotaErrorBadge,
+    renderFilesViewModeTabs,
+    fileColumns,
+  } = useAuthFilesFilesPresentation({
+    filesViewMode,
+    setFilesViewMode,
+    nowMs,
+    allPageSelected,
+    somePageSelected,
+    selectCurrentPage,
+    selectablePageNames,
+    selectedFileNameSet,
+    toggleFileSelection,
+    connectivityState,
+    checkAuthFileConnectivity,
+    quotaByFileName,
+    resolveQuotaCardSlots,
+    cycleCallsByAuthIndex: callsByAuthIndex,
+    cycleBudgetByAuthIndex,
+    statusUsageReady,
+    statusUsageLoading,
+    refreshQuota,
+    requestResetCredit,
+    resettingCreditFileName,
+    openDetail: openDetailWithQuotaRefresh,
+    downloadAuthFile,
+    openTagsEditor: (file) => setTagsEditorFileName(file.name),
+    statusUpdating,
+    setFileEnabled,
+    usageIndex,
+    masked,
+  });
+
+  return (
+    <div data-page-fill="always" className="flex flex-1 flex-col">
+      <AuthFilesFilesTab
+        fileInputRef={fileInputRef}
+        handleUpload={handleUploadAndRefreshQuota}
+        filterChips={filterChips}
+        filter={filter}
+        setFilter={updateFilter}
+        filterCounts={filterCounts}
+        tagFilter={tagFilter}
+        setTagFilter={updateTagFilter}
+        customTagOptions={customTagOptions}
+        statusFilter={statusFilter}
+        setStatusFilter={updateStatusFilter}
+        statusFilterCounts={statusFilterCounts}
+        modelOwnerGroupsLoading={modelOwnerGroupsLoading}
+        modelOwnerGroups={modelOwnerGroups}
+        selectedModelOwner={selectedModelOwner}
+        setSelectedModelOwner={(owner) =>
+          setModelOwnerForAuthGroup(filter, owner)
+        }
+        search={search}
+        setSearch={updateSearch}
+        loading={loading}
+        files={files}
+        filesLength={files.length}
+        renderFilesViewModeTabs={renderFilesViewModeTabs}
+        quotaAutoRefreshMs={quotaAutoRefreshMs}
+        setQuotaAutoRefreshMsRaw={setQuotaAutoRefreshMsRaw}
+        normalizeQuotaAutoRefreshMs={normalizeQuotaAutoRefreshMs}
+        openGroupOverview={openGroupOverview}
+        groupOverviewLoading={groupOverviewLoading}
+        filteredFiles={filteredFiles}
+        refreshFilesAndQuota={refreshFilesAndQuota}
+        usageLoading={usageLoading}
+        refreshingAll={refreshingAll || refreshingCurrentPage}
+        uploading={uploading}
+        uploadProgress={uploadProgress}
+        setAddAccountHint={setAddAccountHint}
+        setOauthDialogOpen={setOAuthDialogOpenWithBaseline}
+        openConfigModal={() =>
+          setConfigModalTab(oauthExcludedEnabled ? "excluded" : "alias")
+        }
+        selectableFilteredFiles={selectableFilteredFiles}
+        selectedCount={selectedCount}
+        selectCurrentPage={selectCurrentPage}
+        allPageSelected={allPageSelected}
+        selectablePageNames={selectablePageNames}
+        selectFilteredFiles={selectFilteredFiles}
+        allFilteredSelected={allFilteredSelected}
+        setSelectedFileNames={setSelectedFileNames}
+        setConfirm={setConfirm}
+        selectedFileNames={selectedFileNames}
+        deletingAll={deletingAll}
+        batchStatusUpdating={batchStatusUpdating}
+        handleSetSelectionDisabled={handleSetSelectionDisabled}
+        pageItems={pageItems}
+        fileColumns={fileColumns}
+        filesViewMode={filesViewMode}
+        masked={masked}
+        onToggleMask={() => setMasked((prev) => !prev)}
+        cardColumns={cardColumns}
+        setCardColumns={setCardColumns}
+        pageSize={pageSize}
+        setPageSize={setPageSize}
+        selectedFileNameSet={selectedFileNameSet}
+        quotaByFileName={quotaByFileName}
+        cycleCallsByAuthIndex={callsByAuthIndex}
+        cycleTotalTokensByAuthIndex={cycleTotalTokensByAuthIndex}
+        cycleBudgetByAuthIndex={cycleBudgetByAuthIndex}
+        statusUsageLoading={statusUsageLoading}
+        resolveQuotaProvider={resolveQuotaProvider}
+        resolveQuotaCardSlots={resolveQuotaCardSlots}
+        refreshQuota={refreshQuotaAndCycleUsage}
+        requestResetCredit={requestResetCredit}
+        resettingCreditFileName={resettingCreditFileName}
+        clearAuthFileStatus={clearAuthFileStatus}
+        clearingStatusFileName={clearingStatusFileName}
+        setFileEnabled={setFileEnabled}
+        statusUpdating={statusUpdating}
+        usageIndex={usageIndex}
+        resolveAuthFileStats={resolveAuthFileStats}
+        toggleFileSelection={toggleFileSelection}
+        resolveStickyDisplayPlanType={resolveStickyDisplayPlanType}
+        renderRestrictionBadges={renderRestrictionBadges}
+        renderClaudeOAuthHealthBadges={renderClaudeOAuthHealthBadges}
+        renderSubscriptionBadge={renderSubscriptionBadge}
+        renderQuotaBar={renderQuotaBar}
+        renderQuotaErrorBadge={renderQuotaErrorBadge}
+        openTagsEditor={(file) => setTagsEditorFileName(file.name)}
+        openDetail={openDetailWithQuotaRefresh}
+        downloadAuthFile={downloadAuthFile}
+        handleDownloadSelection={handleDownloadSelection}
+        onBatchWarmup={handleBatchWarmup}
+        batchWarmupBusy={batchWarmupBusy}
+        onOpenWarmupPolicy={() => setWarmupPolicyModalOpen(true)}
+        safePage={safePage}
+        totalPages={totalPages}
+        setPage={setPage}
+        usageData={usageData}
+      />
+
+      <AuthFilesConfigModal
+        configModalTab={configModalTab}
+        setConfigModalTab={setConfigModalTab}
+        closeConfigModal={closeConfigModal}
+        saveConfigModal={saveConfigModal}
+        configSaving={configSaving}
+        excludedLoading={excludedLoading}
+        aliasLoading={aliasLoading}
+        isPending={isPending}
+        oauthExcludedEnabled={oauthExcludedEnabled}
+        t={t}
+        excludedContent={
+          <AuthFilesExcludedTab
+            excludedLoading={excludedLoading}
+            isPending={isPending}
+            refreshExcluded={refreshExcluded}
+            excludedUnsupported={excludedUnsupported}
+            excludedNewProvider={excludedNewProvider}
+            setExcludedNewProvider={setExcludedNewProvider}
+            addExcludedProvider={addExcludedProvider}
+            excluded={excluded}
+            excludedDraft={excludedDraft}
+            setExcludedDraft={setExcludedDraft}
+            deleteExcludedProvider={deleteExcludedProvider}
+            showHeading={false}
+          />
+        }
+        aliasContent={
+          <AuthFilesAliasTab
+            aliasLoading={aliasLoading}
+            isPending={isPending}
+            refreshAlias={refreshAlias}
+            aliasUnsupported={aliasUnsupported}
+            aliasNewChannel={aliasNewChannel}
+            setAliasNewChannel={setAliasNewChannel}
+            addAliasChannel={addAliasChannel}
+            aliasEditing={aliasEditing}
+            setAliasEditing={setAliasEditing}
+            openImport={openImport}
+            deleteAliasChannel={deleteAliasChannel}
+            showHeading={false}
+          />
+        }
+      />
+
+      <AuthFileDetailModal
+        open={detailOpen}
+        detailFile={
+          identityFingerprintEnabled || !detailFile
+            ? detailFile
+            : { ...detailFile, identity_fingerprint_summary: undefined }
+        }
+        detailLoading={detailLoading}
+        detailText={detailText}
+        detailTab={detailTab}
+        setDetailOpen={setDetailOpen}
+        setDetailTab={setDetailTab}
+        detailTrendWindow={detailTrendWindow}
+        setDetailTrendWindow={setDetailTrendWindow}
+        detailTrend={detailTrend}
+        detailTrendLoading={detailTrendLoading}
+        detailTrendError={detailTrendError}
+        identityFingerprintDetail={identityFingerprintDetail}
+        identityFingerprintLoading={identityFingerprintLoading}
+        identityFingerprintSaving={identityFingerprintSaving}
+        identityFingerprintError={identityFingerprintError}
+        selectIdentityFingerprintProfile={selectIdentityFingerprintProfile}
+        useIdentityFingerprintCLIPreferred={useIdentityFingerprintCLIPreferred}
+        deleteIdentityFingerprintProfile={deleteIdentityFingerprintProfile}
+        refreshDetailTrend={refreshDetailTrend}
+        loadModelsForDetail={loadModelsForDetail}
+        loadModelOwnerGroups={loadModelOwnerGroups}
+        modelsLoading={modelsLoading}
+        modelsError={modelsError}
+        modelsList={modelsList}
+        modelsFileType={modelsFileType}
+        modelOwnerGroupsLoading={modelOwnerGroupsLoading}
+        mappedModelOwnerGroup={detailModelOwnerGroup}
+        mappedModelOwnerValue={detailModelOwnerValue}
+        excluded={excluded}
+        quotaState={
+          detailFile ? (quotaByFileName[detailFile.name] ?? null) : null
+        }
+        prefixProxyEditor={prefixProxyEditor}
+        setPrefixProxyEditor={setPrefixProxyEditor}
+        prefixProxyDirty={prefixProxyDirty}
+        savePrefixProxy={savePrefixProxy}
+        proxyPoolEntries={proxyPoolEntries}
+        channelEditor={channelEditor}
+        setChannelEditor={setChannelEditor}
+        saveChannelEditor={saveChannelEditor}
+        codexOAuthAdmissionEditor={codexOAuthAdmissionEditor}
+        setCodexOAuthAdmissionEditor={setCodexOAuthAdmissionEditor}
+        codexOAuthAdmissionDirty={codexOAuthAdmissionDirty}
+        saveCodexOAuthAdmission={saveCodexOAuthAdmission}
+        codexImageGenerationBridgeEditor={codexImageGenerationBridgeEditor}
+        setCodexImageGenerationBridgeEditor={setCodexImageGenerationBridgeEditor}
+        codexImageGenerationBridgeDirty={codexImageGenerationBridgeDirty}
+        saveCodexImageGenerationBridge={saveCodexImageGenerationBridge}
+        xaiEndpointEditor={xaiEndpointEditor}
+        setXAIEndpointEditor={setXAIEndpointEditor}
+        xaiEndpointDirty={xaiEndpointDirty}
+        saveXAIEndpoint={saveXAIEndpoint}
+      />
+
+      <ImportModelsModal
+        open={importOpen}
+        importChannel={importChannel}
+        importLoading={importLoading}
+        importModels={importModels}
+        importFilteredModels={importFilteredModels}
+        importSearch={importSearch}
+        setImportSearch={setImportSearch}
+        importSelected={importSelected}
+        setImportSelected={setImportSelected}
+        setImportOpen={setImportOpen}
+        applyImport={applyImport}
+      />
+
+      <AuthFileTagsModal
+        open={tagsEditorFile !== null}
+        file={tagsEditorFile}
+        saving={Boolean(tagsEditorFile && tagSavingByName[tagsEditorFile.name])}
+        onClose={() => setTagsEditorFileName(null)}
+        onSave={saveAuthFileTags}
+      />
+
+      <Suspense fallback={null}>
+        <LazyAddAccountDialog
+          open={oauthDialogOpen}
+          providerHint={addAccountHint}
+          proxyPoolEntries={proxyPoolEntries}
+          apiBase={auth?.state.apiBase}
+          onClose={() => setOauthDialogOpen(false)}
+          onAuthorized={refreshAfterOAuthAuthorized}
+          onImportAuthFiles={importAuthFilesFromDialog}
+        />
+      </Suspense>
+
+      <GroupOverviewModal
+        open={groupOverviewOpen}
+        onClose={() => setGroupOverviewOpen(false)}
+        groupOverviewTab={groupOverviewTab}
+        setGroupOverviewTab={setGroupOverviewTab}
+        groupOverviewTabs={groupOverviewTabs}
+        resolveProviderLabel={resolveProviderLabel}
+        groupOverviewLoading={groupOverviewLoading}
+        groupTrendLoading={groupTrendLoading}
+        refreshGroupOverview={refreshGroupOverview}
+        refreshGroupTrend={refreshGroupTrend}
+        activeGroupTitle={activeGroupTitle}
+        activeGroupRows={activeGroupRows}
+        activeGroupOverview={activeGroupOverview}
+        formatAveragePercent={formatAveragePercent}
+        groupOverviewChartOption={groupOverviewChartOption}
+      />
+
+      <AuthFilesConfirmModal
+        confirm={confirm}
+        resetCreditCount={
+          confirm?.type === "resetCredit"
+            ? (quotaByFileName[confirm.file.name]?.resetCreditCount ?? 0)
+            : 0
+        }
+        busy={confirm?.type === "resetCredit" ? Boolean(resettingCreditFileName) : deletingAll}
+        onClose={() => {
+          if (resettingCreditFileName) return;
+          setConfirm(null);
+        }}
+        onConfirm={(action) => {
+          const done = () => setConfirm(null);
+          if (action.type === "resetCredit") void handleResetCredit(action.file).finally(done);
+          else void handleDeleteSelection(action.names).finally(done);
+        }}
+      />
+
+      <WarmupPolicyModal
+        open={warmupPolicyModalOpen}
+        onClose={() => setWarmupPolicyModalOpen(false)}
+        allFileNames={files.map((f) => f.name)}
+      />
+    </div>
+  );
+}

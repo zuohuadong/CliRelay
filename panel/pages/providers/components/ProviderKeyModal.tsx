@@ -1,0 +1,788 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
+import { useTranslation } from "react-i18next";
+import { AlertCircle, Check } from "lucide-react";
+import { VendorIcon } from "@code-proxy/assets";
+import {
+  apiCallApi,
+  getApiCallErrorMessage,
+  modelsApi,
+} from "@code-proxy/api-client";
+import type { ProxyPoolEntry } from "@code-proxy/api-client/endpoints/proxies";
+import { Button } from "@code-proxy/ui";
+import { Modal } from "@code-proxy/ui";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@code-proxy/ui";
+import { useToast } from "@code-proxy/ui";
+import type { ProviderKeyDraft } from "../providers-helpers";
+import {
+  buildProviderModelsEndpoint,
+  excludedModelsFromText,
+  hasDisableAllModelsRule,
+  normalizeDiscoveredModels,
+} from "../providers-helpers";
+import { keyValueEntriesToRecord } from "../KeyValueInputList";
+import { createEmptyModelEntry, type ModelEntryDraft } from "../ModelInputList";
+import { ProviderKeyStatusBadges } from "./ProviderKeyStatusBadges";
+import { ProviderKeyBasicTab } from "./ProviderKeyBasicTab";
+import { ProviderKeyRequestTab } from "./ProviderKeyRequestTab";
+import { ProviderKeyModelsTab } from "./ProviderKeyModelsTab";
+import {
+  fetchModelAccessCatalog,
+  isModelAllowedForProvider,
+  type ModelAccessProvider,
+} from "../provider-model-access";
+
+type ProviderKeyModalTab = "basic" | "request" | "models";
+
+const isOpenCodeGoVisionModel = (modelId: string): boolean => {
+  const normalized = modelId.trim().toLowerCase();
+  if (!normalized) return false;
+  const baseModel = normalized.includes("/")
+    ? normalized.slice(normalized.lastIndexOf("/") + 1)
+    : normalized;
+  const candidates = [normalized, baseModel];
+  // OpenCode Go and Cline model lists do not expose capability metadata, so keep
+  // the known visual models plus conservative name tokens used by both catalogs.
+  const knownVisionModels = new Set([
+    "qwen3.5-plus",
+    "qwen3.6-plus",
+    "mimo-v2-omni",
+    "mimo-v2.5",
+    "mimo-v2.5-pro",
+  ]);
+  if (candidates.some((candidate) => knownVisionModels.has(candidate)))
+    return true;
+  if (
+    candidates.some(
+      (candidate) =>
+        candidate.includes("vision") ||
+        candidate.includes("multimodal") ||
+        candidate.includes("omni"),
+    )
+  ) {
+    return true;
+  }
+  return candidates.some((candidate) =>
+    candidate.split(/[-_./:]+/).some((token) => token === "vl"),
+  );
+};
+
+interface ProviderKeyModalProps {
+  open: boolean;
+  editKeyIndex: number | null;
+  editKeyTitle: string;
+  editKeyType:
+    | "gemini"
+    | "claude"
+    | "codex"
+    | "opencode-go"
+    | "cline"
+    | "ollama-cloud"
+    | "commandcode"
+    | "vertex"
+    | "bedrock";
+  keyDraft: ProviderKeyDraft;
+  setKeyDraft: Dispatch<SetStateAction<ProviderKeyDraft>>;
+  keyDraftError: string | null;
+  closeKeyEditor: () => void;
+  saveKeyDraft: () => Promise<void>;
+  editKeyEnabled: boolean;
+  editKeyEnabledToggle: (checked: boolean) => void;
+  editKeyHeaderCount: number;
+  editKeyModelCount: number;
+  editKeyExcludedCount: number;
+  proxyPoolEntries: ProxyPoolEntry[];
+  copyText: (text: string) => Promise<void>;
+  maskApiKey: (value: string) => string;
+}
+
+export function ProviderKeyModal({
+  open,
+  editKeyIndex,
+  editKeyTitle,
+  editKeyType,
+  keyDraft,
+  setKeyDraft,
+  keyDraftError,
+  closeKeyEditor,
+  saveKeyDraft,
+  editKeyEnabled,
+  editKeyEnabledToggle,
+  editKeyHeaderCount,
+  editKeyModelCount,
+  editKeyExcludedCount,
+  proxyPoolEntries,
+  copyText,
+  maskApiKey,
+}: ProviderKeyModalProps) {
+  const { t } = useTranslation();
+  const { notify } = useToast();
+  const [modalTab, setModalTab] = useState<ProviderKeyModalTab>("basic");
+  const [openCodeModels, setOpenCodeModels] = useState<
+    { id: string; owned_by?: string }[]
+  >([]);
+  const [openCodeModelsLoading, setOpenCodeModelsLoading] = useState(false);
+  const [openCodeModelsError, setOpenCodeModelsError] = useState<string | null>(
+    null,
+  );
+  const [openCodeModelQuery, setOpenCodeModelQuery] = useState("");
+  // Live /models discovery for Claude & Codex provider keys (issue #492).
+  const [discoveredModels, setDiscoveredModels] = useState<
+    { id: string; owned_by?: string }[]
+  >([]);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoverSelected, setDiscoverSelected] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  const isBedrock = editKeyType === "bedrock";
+  const isOpenCodeGo = editKeyType === "opencode-go";
+  const isCline = editKeyType === "cline";
+  const isOllamaCloud = editKeyType === "ollama-cloud";
+  const isCommandCode = editKeyType === "commandcode";
+  const isModelAccessProvider =
+    isOpenCodeGo || isCline || isOllamaCloud || isCommandCode;
+  const supportsLiveDiscovery =
+    editKeyType === "claude" || editKeyType === "codex";
+  const modelAccessProvider: ModelAccessProvider | null = isCline
+    ? "cline"
+    : isOllamaCloud
+      ? "ollama-cloud"
+      : isOpenCodeGo
+        ? "opencode-go"
+        : isCommandCode
+          ? "commandcode"
+          : null;
+  const showModelsTab = true;
+
+  const [modelConfigs, setModelConfigs] = useState<
+    { id: string; owned_by: string }[]
+  >([]);
+  const [modelConfigsLoading, setModelConfigsLoading] = useState(false);
+  const [selectedModelGroup, setSelectedModelGroup] = useState("");
+
+  const modelGroupOptions = useMemo(() => {
+    const uniqueOwners = Array.from(
+      new Set(modelConfigs.map((m) => m.owned_by).filter(Boolean)),
+    ).sort((a, b) => a.localeCompare(b));
+    return [
+      { value: "", label: t("providers.model_group_placeholder") },
+      ...uniqueOwners.map((owner) => ({ value: owner, label: owner })),
+    ];
+  }, [modelConfigs, t]);
+
+  const loadModelsFromGroup = useCallback(() => {
+    if (!selectedModelGroup) return;
+    const models = modelConfigs.filter(
+      (m) => m.owned_by === selectedModelGroup,
+    );
+    if (!models.length) return;
+
+    const existingNames = new Set(
+      keyDraft.modelEntries
+        .map((e) => e.name.trim().toLowerCase())
+        .filter(Boolean),
+    );
+
+    const newEntries: ModelEntryDraft[] = [];
+    for (const model of models) {
+      const name = model.id.trim();
+      if (!name || existingNames.has(name.toLowerCase())) continue;
+      existingNames.add(name.toLowerCase());
+      newEntries.push({
+        id: `model-${Date.now()}-${Math.random().toString(16).slice(2)}-${name}`,
+        name,
+        alias: "",
+        priorityText: "",
+        testModel: "",
+      });
+    }
+
+    if (newEntries.length === 0) return;
+    setKeyDraft((prev) => ({
+      ...prev,
+      modelEntries: [...prev.modelEntries, ...newEntries],
+    }));
+  }, [selectedModelGroup, modelConfigs, keyDraft.modelEntries, setKeyDraft]);
+
+  useEffect(() => {
+    if (!open) return;
+    setModalTab("basic");
+    setOpenCodeModelQuery("");
+    setSelectedModelGroup("");
+    setDiscoveredModels([]);
+    setDiscoverSelected(new Set());
+    setDiscovering(false);
+  }, [editKeyIndex, editKeyType, open]);
+
+  const discoverModels = useCallback(async () => {
+    if (!supportsLiveDiscovery) return;
+    const providerType = editKeyType === "claude" ? "claude" : "codex";
+    const endpoint = buildProviderModelsEndpoint(
+      providerType,
+      keyDraft.baseUrl,
+    );
+    if (!endpoint) {
+      notify({ type: "info", message: t("providers.fill_base_url_first") });
+      return;
+    }
+
+    setDiscovering(true);
+    setDiscoveredModels([]);
+    setDiscoverSelected(new Set());
+    try {
+      const customHeaders =
+        keyValueEntriesToRecord(keyDraft.headersEntries) ?? {};
+      const headers: Record<string, string> = { ...customHeaders };
+      const apiKey = keyDraft.apiKey.trim();
+
+      if (providerType === "claude") {
+        // Anthropic official + most compatible gateways accept x-api-key.
+        // Also send Authorization for gateways that only accept Bearer.
+        if (apiKey) {
+          if (
+            !Object.keys(headers).some(
+              (key) => key.toLowerCase() === "x-api-key",
+            )
+          ) {
+            headers["x-api-key"] = apiKey;
+          }
+          if (
+            !Object.keys(headers).some(
+              (key) => key.toLowerCase() === "authorization",
+            )
+          ) {
+            headers.Authorization = `Bearer ${apiKey}`;
+          }
+        }
+        if (
+          !Object.keys(headers).some(
+            (key) => key.toLowerCase() === "anthropic-version",
+          )
+        ) {
+          headers["anthropic-version"] = "2023-06-01";
+        }
+        if (
+          !Object.keys(headers).some((key) => key.toLowerCase() === "accept")
+        ) {
+          headers.Accept = "application/json";
+        }
+      } else {
+        // Codex / OpenAI-compatible: Bearer API key.
+        if (
+          apiKey &&
+          !Object.keys(headers).some(
+            (key) => key.toLowerCase() === "authorization",
+          )
+        ) {
+          headers.Authorization = `Bearer ${apiKey}`;
+        }
+        if (
+          !Object.keys(headers).some((key) => key.toLowerCase() === "accept")
+        ) {
+          headers.Accept = "application/json";
+        }
+      }
+
+      const result = await apiCallApi.request({
+        method: "GET",
+        url: endpoint,
+        header: Object.keys(headers).length ? headers : undefined,
+      });
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(getApiCallErrorMessage(result));
+      }
+      const list = normalizeDiscoveredModels(result.body ?? result.bodyText);
+      setDiscoveredModels(list);
+      setDiscoverSelected(new Set(list.map((model) => model.id)));
+      if (list.length === 0) {
+        notify({ type: "info", message: t("providers.no_discovered_models") });
+      }
+    } catch (err: unknown) {
+      notify({
+        type: "error",
+        message:
+          err instanceof Error ? err.message : t("providers.fetch_models_failed"),
+      });
+    } finally {
+      setDiscovering(false);
+    }
+  }, [
+    editKeyType,
+    keyDraft.apiKey,
+    keyDraft.baseUrl,
+    keyDraft.headersEntries,
+    notify,
+    supportsLiveDiscovery,
+    t,
+  ]);
+
+  const applyDiscoveredModels = useCallback(() => {
+    const selected = new Set(discoverSelected);
+    const picked = discoveredModels.filter((model) => selected.has(model.id));
+    if (picked.length === 0) {
+      notify({ type: "info", message: t("providers.no_models_selected") });
+      return;
+    }
+    setKeyDraft((prev) => {
+      const seen = new Set(
+        prev.modelEntries
+          .map((model) => model.name.trim().toLowerCase())
+          .filter(Boolean),
+      );
+      const merged = [...prev.modelEntries];
+      for (const model of picked) {
+        const key = model.id.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push({ ...createEmptyModelEntry(), name: model.id });
+      }
+      return { ...prev, modelEntries: merged };
+    });
+    notify({ type: "success", message: t("providers.models_merged") });
+  }, [discoverSelected, discoveredModels, notify, setKeyDraft, t]);
+
+  useEffect(() => {
+    if (!open || !showModelsTab) return;
+    let cancelled = false;
+    setModelConfigsLoading(true);
+    modelsApi
+      .getModelConfigs("library")
+      .then((items) => {
+        if (cancelled) return;
+        setModelConfigs(
+          items.map((item) => ({ id: item.id, owned_by: item.owned_by })),
+        );
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setModelConfigs([]);
+      })
+      .finally(() => {
+        if (!cancelled) setModelConfigsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, showModelsTab]);
+
+  const fetchOpenCodeModels = useCallback(async () => {
+    if (!modelAccessProvider) return;
+    setOpenCodeModelsLoading(true);
+    setOpenCodeModelsError(null);
+    try {
+      setOpenCodeModels(await fetchModelAccessCatalog(modelAccessProvider));
+    } catch (err: unknown) {
+      setOpenCodeModelsError(
+        err instanceof Error ? err.message : t("providers.fetch_models_failed"),
+      );
+    } finally {
+      setOpenCodeModelsLoading(false);
+    }
+  }, [modelAccessProvider, t]);
+
+  useEffect(() => {
+    if (!open || !isModelAccessProvider) return;
+    void fetchOpenCodeModels();
+  }, [fetchOpenCodeModels, isModelAccessProvider, open]);
+
+  const excludedModels = useMemo(
+    () => excludedModelsFromText(keyDraft.excludedModelsText),
+    [keyDraft.excludedModelsText],
+  );
+  const disableAllModels = hasDisableAllModelsRule(excludedModels);
+  const excludedModelIds = useMemo(() => new Set<string>(), []);
+  const enabledOpenCodeModelIds = useMemo(
+    () =>
+      new Set(
+        keyDraft.modelEntries
+          .map((model) => model.name.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    [keyDraft.modelEntries],
+  );
+  const openCodeModelIds = useMemo(
+    () =>
+      new Set(
+        openCodeModels
+          .map((model) => model.id.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    [openCodeModels],
+  );
+  const isOpenCodeModelAllowed = useCallback(
+    (modelId: string) => {
+      const normalized = modelId.trim().toLowerCase();
+      return (
+        normalized !== "" &&
+        !disableAllModels &&
+        enabledOpenCodeModelIds.has(normalized)
+      );
+    },
+    [disableAllModels, enabledOpenCodeModelIds],
+  );
+  const filteredOpenCodeModels = useMemo(() => {
+    const query = openCodeModelQuery.trim().toLowerCase();
+    if (!query) return openCodeModels;
+    return openCodeModels.filter((model) => {
+      const owner = (model.owned_by ?? "").toLowerCase();
+      return model.id.toLowerCase().includes(query) || owner.includes(query);
+    });
+  }, [openCodeModelQuery, openCodeModels]);
+  const allowedOpenCodeCount = openCodeModels.filter((model) =>
+    isOpenCodeModelAllowed(model.id),
+  ).length;
+  const allOpenCodeModelsAllowed =
+    openCodeModels.length > 0 && allowedOpenCodeCount === openCodeModels.length;
+  const someOpenCodeModelsAllowed =
+    allowedOpenCodeCount > 0 && allowedOpenCodeCount < openCodeModels.length;
+  const openCodeVisionFallbackOptions = useMemo(() => {
+    const optionMap = new Map<string, { value: string; label: string }>();
+    for (const model of openCodeModels) {
+      if (
+        !isOpenCodeGoVisionModel(model.id) ||
+        !isOpenCodeModelAllowed(model.id)
+      )
+        continue;
+      optionMap.set(model.id.toLowerCase(), {
+        value: model.id,
+        label: model.owned_by ? `${model.id} · ${model.owned_by}` : model.id,
+      });
+    }
+    for (const model of modelConfigs) {
+      const id = model.id.trim();
+      if (!id) continue;
+      optionMap.set(id.toLowerCase(), {
+        value: id,
+        label: model.owned_by ? `${id} · ${model.owned_by}` : id,
+      });
+    }
+    const modelOptions = Array.from(optionMap.values()).sort((a, b) =>
+      a.value.localeCompare(b.value),
+    );
+    const currentFallback = keyDraft.visionFallbackModel.trim();
+    const hasCurrentFallback =
+      currentFallback !== "" &&
+      !modelOptions.some(
+        (model) => model.value.toLowerCase() === currentFallback.toLowerCase(),
+      );
+    // Preserve existing configs even when "*" or a catalog refresh makes the model unavailable.
+    const currentFallbackOption = hasCurrentFallback
+      ? [
+          {
+            value: currentFallback,
+            label: t("providers.opencode_go_vision_fallback_unavailable", {
+              model: currentFallback,
+            }),
+          },
+        ]
+      : [];
+    return [
+      { value: "", label: t("providers.opencode_go_vision_fallback_none") },
+      ...currentFallbackOption,
+      ...modelOptions,
+    ];
+  }, [
+    isOpenCodeModelAllowed,
+    keyDraft.visionFallbackModel,
+    modelConfigs,
+    openCodeModels,
+    t,
+  ]);
+
+  const setOpenCodeModelAllowed = useCallback(
+    (modelId: string, allowed: boolean) => {
+      const normalized = modelId.trim().toLowerCase();
+      if (!normalized || !modelAccessProvider) return;
+      setKeyDraft((prev) => {
+        const exists = prev.modelEntries.some(
+          (entry) => entry.name.trim().toLowerCase() === normalized,
+        );
+        const currentExcluded = excludedModelsFromText(prev.excludedModelsText);
+        const baseEntries =
+          allowed && hasDisableAllModelsRule(currentExcluded)
+            ? prev.modelEntries.filter(
+                (entry) =>
+                  !isModelAllowedForProvider(modelAccessProvider, entry.name),
+              )
+            : prev.modelEntries;
+        const existingEntry = prev.modelEntries.find(
+          (entry) => entry.name.trim().toLowerCase() === normalized,
+        );
+        const nextEntries = allowed
+          ? exists &&
+            baseEntries.some(
+              (entry) => entry.name.trim().toLowerCase() === normalized,
+            )
+            ? baseEntries
+            : [
+                ...baseEntries,
+                existingEntry ?? { ...createEmptyModelEntry(), name: modelId },
+              ]
+          : baseEntries.filter(
+              (entry) => entry.name.trim().toLowerCase() !== normalized,
+            );
+        const hasAllowedEntry = nextEntries.some((entry) => {
+          const key = entry.name.trim().toLowerCase();
+          return (
+            key !== "" &&
+            openCodeModelIds.has(key) &&
+            isModelAllowedForProvider(modelAccessProvider, entry.name)
+          );
+        });
+        const nextExcluded = allowed
+          ? currentExcluded.filter((model) => model.trim() !== "*")
+          : hasAllowedEntry
+            ? currentExcluded
+            : ["*"];
+        return {
+          ...prev,
+          excludedModelsText: nextExcluded.join("\n"),
+          modelEntries: nextEntries,
+        };
+      });
+    },
+    [modelAccessProvider, openCodeModelIds, setKeyDraft],
+  );
+
+  const setAllFetchedOpenCodeModelsAllowed = useCallback(
+    (allowed: boolean) => {
+      if (!modelAccessProvider) return;
+      setKeyDraft((prev) => {
+        const currentExcluded = excludedModelsFromText(prev.excludedModelsText);
+        const existingByName = new Map(
+          prev.modelEntries
+            .map((entry) => [entry.name.trim().toLowerCase(), entry] as const)
+            .filter(([name]) => name !== ""),
+        );
+        const preservedEntries = prev.modelEntries.filter(
+          (entry) => !isModelAllowedForProvider(modelAccessProvider, entry.name),
+        );
+        const nextEntries = allowed
+          ? [
+              ...preservedEntries,
+              ...openCodeModels
+                .filter((model) =>
+                  isModelAllowedForProvider(modelAccessProvider, model.id),
+                )
+                .map((model) => {
+                  const key = model.id.trim().toLowerCase();
+                  return (
+                    existingByName.get(key) ?? {
+                      ...createEmptyModelEntry(),
+                      name: model.id,
+                    }
+                  );
+                }),
+            ]
+          : preservedEntries;
+        return {
+          ...prev,
+          excludedModelsText: allowed
+            ? currentExcluded.filter((model) => model.trim() !== "*").join("\n")
+            : "*",
+          modelEntries: nextEntries,
+        };
+      });
+    },
+    [modelAccessProvider, openCodeModels, setKeyDraft],
+  );
+
+  useEffect(() => {
+    if (!open || !modelAccessProvider || openCodeModels.length === 0) return;
+    setKeyDraft((prev) => {
+      if (hasDisableAllModelsRule(excludedModelsFromText(prev.excludedModelsText)))
+        return prev;
+      if (
+        prev.modelEntries.some((entry) =>
+          isModelAllowedForProvider(modelAccessProvider, entry.name),
+        )
+      ) {
+        return prev;
+      }
+      const existingNames = new Set(
+        prev.modelEntries
+          .map((entry) => entry.name.trim().toLowerCase())
+          .filter(Boolean),
+      );
+      const nextEntries = [...prev.modelEntries];
+      for (const model of openCodeModels) {
+        const name = model.id.trim();
+        const key = name.toLowerCase();
+        if (!key || existingNames.has(key)) continue;
+        if (!isModelAllowedForProvider(modelAccessProvider, name)) continue;
+        existingNames.add(key);
+        nextEntries.push({ ...createEmptyModelEntry(), name });
+      }
+      return nextEntries.length === prev.modelEntries.length
+        ? prev
+        : { ...prev, modelEntries: nextEntries };
+    });
+  }, [
+    modelAccessProvider,
+    open,
+    openCodeModels,
+    setKeyDraft,
+  ]);
+  const statusBadges = (
+    <ProviderKeyStatusBadges
+      editKeyEnabled={editKeyEnabled}
+      editKeyHeaderCount={editKeyHeaderCount}
+      editKeyModelCount={editKeyModelCount}
+      editKeyExcludedCount={editKeyExcludedCount}
+      editKeyType={editKeyType}
+      showModelBadges={showModelsTab}
+      authMode={keyDraft.authMode}
+    />
+  );
+
+  return (
+    <Modal
+      open={open}
+      title={
+        editKeyIndex === null
+          ? t("providers.add_config", { type: editKeyTitle })
+          : t("providers.edit_config", { type: editKeyTitle })
+      }
+      description={
+        editKeyType === "vertex"
+          ? t("providers.vertex_config_desc")
+          : isBedrock
+            ? t("providers.bedrock_config_desc")
+            : isCline
+              ? t("providers.cline_config_desc")
+              : isOpenCodeGo
+                ? t("providers.opencode_go_config_desc")
+                : t("providers.generic_config_desc")
+      }
+      onClose={closeKeyEditor}
+      // 图标用这家供应商的 logo，一眼知道在配哪家。
+      icon={<VendorIcon modelId={editKeyType} size={20} />}
+      maxWidth="max-w-4xl"
+      bodyHeightClassName="max-h-[74vh]"
+      bodyClassName="!px-0 !py-0"
+      footerStart={
+        keyDraftError ? (
+          <span role="alert" className="inline-flex items-center gap-1.5 text-sm font-medium text-rose-600 dark:text-rose-400">
+            <AlertCircle size={15} aria-hidden="true" />
+            {keyDraftError}
+          </span>
+        ) : null
+      }
+      footer={
+        <>
+          <Button variant="secondary" onClick={closeKeyEditor}>
+            {t("providers.cancel")}
+          </Button>
+          <Button variant="primary" onClick={() => void saveKeyDraft()}>
+            <Check size={14} />
+            {t("providers.save")}
+          </Button>
+        </>
+      }
+    >
+      <Tabs
+        value={modalTab}
+        onValueChange={(next) => setModalTab(next as ProviderKeyModalTab)}
+      >
+        <div className="sticky top-0 z-20 bg-elevated/95 px-5 py-3 backdrop-blur">
+          <TabsList>
+            <TabsTrigger value="basic">
+              {t("providers.modal_tab_basic")}
+            </TabsTrigger>
+            <TabsTrigger value="request">
+              {t("providers.modal_tab_request")}
+            </TabsTrigger>
+            {showModelsTab ? (
+              <TabsTrigger value="models">
+                {t("providers.modal_tab_models")}
+              </TabsTrigger>
+            ) : null}
+          </TabsList>
+        </div>
+
+        <div className="px-5 py-4">
+          <TabsContent value="basic">
+            <ProviderKeyBasicTab
+              keyDraft={keyDraft}
+              setKeyDraft={setKeyDraft}
+              editKeyType={editKeyType}
+              editKeyEnabled={editKeyEnabled}
+              editKeyEnabledToggle={editKeyEnabledToggle}
+              copyText={copyText}
+              maskApiKey={maskApiKey}
+              statusBadges={statusBadges}
+            />
+          </TabsContent>
+
+          <TabsContent value="request">
+            <ProviderKeyRequestTab
+              keyDraft={keyDraft}
+              setKeyDraft={setKeyDraft}
+              editKeyType={editKeyType}
+              proxyPoolEntries={proxyPoolEntries}
+              isOpenCodeGo={isOpenCodeGo}
+              isCline={isCline}
+              isOllamaCloud={isOllamaCloud}
+              openCodeVisionFallbackOptions={openCodeVisionFallbackOptions}
+              openCodeModelsLoading={openCodeModelsLoading}
+            />
+          </TabsContent>
+
+          {showModelsTab ? (
+            <TabsContent value="models">
+              <ProviderKeyModelsTab
+                isCline={isCline}
+                openCodeModels={openCodeModels}
+                openCodeModelsLoading={openCodeModelsLoading}
+                openCodeModelsError={openCodeModelsError}
+                openCodeModelQuery={openCodeModelQuery}
+                setOpenCodeModelQuery={setOpenCodeModelQuery}
+                filteredOpenCodeModels={filteredOpenCodeModels}
+                allowedOpenCodeCount={allowedOpenCodeCount}
+                allOpenCodeModelsAllowed={allOpenCodeModelsAllowed}
+                someOpenCodeModelsAllowed={someOpenCodeModelsAllowed}
+                excludeAll={disableAllModels}
+                excludedModelIds={excludedModelIds}
+                enabledOpenCodeModelIds={enabledOpenCodeModelIds}
+                fetchOpenCodeModels={fetchOpenCodeModels}
+                setAllFetchedOpenCodeModelsAllowed={
+                  setAllFetchedOpenCodeModelsAllowed
+                }
+                setOpenCodeModelAllowed={setOpenCodeModelAllowed}
+                selectedModelGroup={selectedModelGroup}
+                setSelectedModelGroup={setSelectedModelGroup}
+                modelGroupOptions={modelGroupOptions}
+                modelConfigsLoading={modelConfigsLoading}
+                loadModelsFromGroup={loadModelsFromGroup}
+                editKeyType={editKeyType}
+                keyDraft={keyDraft}
+                setKeyDraft={setKeyDraft}
+                editKeyExcludedCount={editKeyExcludedCount}
+                editKeyEnabledToggle={editKeyEnabledToggle}
+                discovering={discovering}
+                discoverModels={
+                  supportsLiveDiscovery ? discoverModels : undefined
+                }
+                applyDiscoveredModels={
+                  supportsLiveDiscovery ? applyDiscoveredModels : undefined
+                }
+                discoveredModels={discoveredModels}
+                discoverSelected={discoverSelected}
+                setDiscoverSelected={
+                  supportsLiveDiscovery ? setDiscoverSelected : undefined
+                }
+              />
+            </TabsContent>
+          ) : null}
+        </div>
+      </Tabs>
+    </Modal>
+  );
+}

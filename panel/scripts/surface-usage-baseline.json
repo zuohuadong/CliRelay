@@ -1,0 +1,5 @@
+{
+  "comment": "Hand-rolled card surfaces awaiting migration to surface() from @code-proxy/ui. Counts may only shrink — see scripts/check-surface-usage.mjs.",
+  "total": 0,
+  "files": {}
+}

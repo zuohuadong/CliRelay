@@ -326,11 +326,12 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 
 	// Convert tools declarations to the expected format for the Codex API.
 	toolsResult := rootResult.Get("tools")
+	toolChoice := rootResult.Get("tool_choice")
 	hasWebSearchTool := false
 	var toolItems [][]byte
 	if toolsResult.IsArray() {
 		webSearchToolNames := buildClaudeWebSearchToolNameSet(toolsResult)
-		template, _ = sjson.SetRawBytes(template, "tool_choice", convertClaudeToolChoiceToCodex(rootResult.Get("tool_choice"), toolNameMap, webSearchToolNames))
+		template, _ = sjson.SetRawBytes(template, "tool_choice", convertClaudeToolChoiceToCodex(toolChoice, toolNameMap, webSearchToolNames))
 		toolResults := toolsResult.Array()
 		toolItems = make([][]byte, 0, len(toolResults))
 		for i := 0; i < len(toolResults); i++ {
@@ -373,7 +374,7 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 
 	// Default to parallel tool calls unless tool_choice explicitly disables them.
 	parallelToolCalls := true
-	if disableParallelToolUse := rootResult.Get("tool_choice.disable_parallel_tool_use"); disableParallelToolUse.Exists() {
+	if disableParallelToolUse := toolChoice.Get("disable_parallel_tool_use"); disableParallelToolUse.Exists() {
 		parallelToolCalls = !disableParallelToolUse.Bool()
 	}
 

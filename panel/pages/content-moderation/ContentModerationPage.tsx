@@ -1,0 +1,570 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
+import {
+  Activity,
+  FlaskConical,
+  Link2,
+  Pencil,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+  Trash2,
+} from "lucide-react";
+import {
+  contentModerationApi,
+  NO_CONTENT_MODERATION_PROFILE_CAPABILITIES,
+  type ContentModerationProfileCapabilities,
+  type ContentModerationProfileView,
+  type CreateContentModerationProfileInput,
+  type PatchContentModerationProfileInput,
+} from "@code-proxy/api-client";
+import {
+  Button,
+  buttonClassName,
+  COLUMN_WIDTH,
+  Callout,
+  Card,
+  ConfirmModal,
+  DataTable,
+  EmptyState,
+  SettingGroup,
+  SkeletonLines,
+  TABLE_ROW_ACTIONS_STICKY_END_COLUMN,
+  TableRowActions,
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  ToggleSwitch,
+  useToast,
+  type DataTableColumn,
+} from "@code-proxy/ui";
+import { useOptionalAuth } from "@app/providers/AuthProvider";
+import { useConfigCapabilities } from "@features/backend-capabilities";
+import { ModerationChannelPickerModal } from "./components/ModerationChannelPickerModal";
+import { ModerationMetricsModal } from "./components/ModerationMetricsModal";
+import { ModerationTestModal } from "./components/ModerationTestModal";
+import { ProfileEditorModal } from "./components/ProfileEditorModal";
+import { SecretMaskingSwitch } from "./components/SecretMaskingSwitch";
+import { WordPoliciesTab } from "./components/word-rules/WordPoliciesTab";
+
+/**
+ * 页面的三个标签：敏感词（最常用，放第一个）、调用外部审核服务的审核配置、出站密钥脱敏。
+ * 三者互不相干，各占一页，不再把开关和两种规则挤在同一屏。
+ */
+type PageTab = "words" | "profiles" | "masking";
+
+const bindingCount = (profile: ContentModerationProfileView) =>
+  Object.values(profile.binding_counts ?? {}).reduce((sum, count) => sum + (count ?? 0), 0);
+
+const isPatchProfileInput = (
+  input: CreateContentModerationProfileInput | PatchContentModerationProfileInput,
+): input is PatchContentModerationProfileInput => "version" in input;
+
+export function ContentModerationPage() {
+  const { t } = useTranslation();
+  const { notify } = useToast();
+  const auth = useOptionalAuth();
+  const canWrite = auth?.can("content_moderation.write") ?? true;
+  const canTest = auth?.can("content_moderation.test") ?? true;
+  const [profiles, setProfiles] = useState<ContentModerationProfileView[]>([]);
+  const [capabilities, setCapabilities] = useState<ContentModerationProfileCapabilities>(
+    NO_CONTENT_MODERATION_PROFILE_CAPABILITIES,
+  );
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [modeUpdatingId, setModeUpdatingId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorProfile, setEditorProfile] = useState<ContentModerationProfileView | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ContentModerationProfileView | null>(null);
+  const [pickerProfile, setPickerProfile] = useState<ContentModerationProfileView | null>(null);
+  const [testProfile, setTestProfile] = useState<ContentModerationProfileView | null>(null);
+  const [metricsOpen, setMetricsOpen] = useState(false);
+  const [tab, setTab] = useState<PageTab>("words");
+  const [loaded, setLoaded] = useState(false);
+  const [wordsDirty, setWordsDirty] = useState(false);
+  const [pendingTab, setPendingTab] = useState<PageTab | null>(null);
+  // 敏感词规则和密钥脱敏的接口只有新后端才有：后端没声明时不显示对应的标签，也不会去请求它。
+  const wordsAvailable = capabilities.wordGuard;
+  // 后端有新的「隐私脱敏」页时，这里只留一行指过去：设置和记录都在那边，这个开关只管密钥一项。
+  const configCapabilities = useConfigCapabilities();
+  const maskingMoved = configCapabilities.status === "ready" && configCapabilities.capabilities.privacyMasking;
+  const activeTab: PageTab =
+    (tab === "words" && !wordsAvailable) || (tab === "masking" && !capabilities.secretMasking)
+      ? "profiles"
+      : tab;
+
+  // 敏感词页是按需挂载的：切到别的标签会卸载它，连同还没保存的草稿一起丢掉。
+  // 有改动时先确认，和页内切换层级用同一套提示。
+  const requestTab = (next: PageTab) => {
+    if (next === activeTab) return;
+    if (activeTab === "words" && wordsDirty) {
+      setPendingTab(next);
+      return;
+    }
+    setTab(next);
+  };
+
+  const loadProfiles = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await contentModerationApi.listProfiles();
+      setProfiles(list.items);
+      setCapabilities(list.capabilities);
+    } catch (error) {
+      notify({
+        type: "error",
+        message:
+          error instanceof Error ? error.message : t("content_moderation.profiles_load_failed"),
+      });
+    } finally {
+      setLoading(false);
+      // 读失败也算读过：按旧后端的能力显示，至少审核配置那一页能用。
+      setLoaded(true);
+    }
+  }, [notify, t]);
+
+  useEffect(() => {
+    void loadProfiles();
+  }, [loadProfiles]);
+
+  const openCreate = () => {
+    setEditorProfile(null);
+    setEditorOpen(true);
+  };
+
+  const openEdit = (profile: ContentModerationProfileView) => {
+    setEditorProfile(profile);
+    setEditorOpen(true);
+  };
+
+  const saveProfile = async (
+    input: CreateContentModerationProfileInput | PatchContentModerationProfileInput,
+  ) => {
+    setSaving(true);
+    try {
+      let saved: ContentModerationProfileView;
+      if (isPatchProfileInput(input)) {
+        if (!editorProfile) return;
+        saved = await contentModerationApi.patchProfile(editorProfile.id, input);
+      } else {
+        saved = await contentModerationApi.createProfile(input);
+      }
+      setProfiles((current) => {
+        const exists = current.some((profile) => profile.id === saved.id);
+        return exists
+          ? current.map((profile) => (profile.id === saved.id ? saved : profile))
+          : [...current, saved];
+      });
+      setEditorOpen(false);
+      setEditorProfile(null);
+      notify({ type: "success", message: t("content_moderation.profile_saved") });
+    } catch (error) {
+      notify({
+        type: "error",
+        message:
+          error instanceof Error ? error.message : t("content_moderation.profile_save_failed"),
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteProfile = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await contentModerationApi.deleteProfile(deleteTarget.id);
+      setProfiles((current) => current.filter((profile) => profile.id !== deleteTarget.id));
+      setDeleteTarget(null);
+      notify({ type: "success", message: t("content_moderation.profile_deleted") });
+    } catch (error) {
+      notify({
+        type: "error",
+        message:
+          error instanceof Error ? error.message : t("content_moderation.profile_delete_failed"),
+      });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const updateProfileMode = useCallback(
+    async (profile: ContentModerationProfileView, enabled: boolean) => {
+      if (enabled && profile.keyword_mode !== "keyword_only" && !profile.api_key_configured) {
+        notify({
+          type: "error",
+          message: t("content_moderation.enable_api_key_required"),
+        });
+        return;
+      }
+
+      setModeUpdatingId(profile.id);
+      try {
+        const saved = await contentModerationApi.patchProfile(profile.id, {
+          mode: enabled ? "pre_block" : "off",
+          version: profile.version,
+        });
+        setProfiles((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+        notify({ type: "success", message: t("content_moderation.profile_mode_updated") });
+      } catch (error) {
+        notify({
+          type: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : t("content_moderation.profile_mode_update_failed"),
+        });
+        await loadProfiles();
+      } finally {
+        setModeUpdatingId(null);
+      }
+    },
+    [loadProfiles, notify, t],
+  );
+
+  const columns = useMemo<DataTableColumn<ContentModerationProfileView>[]>(
+    () => [
+      {
+        key: "name",
+        label: t("content_moderation.profile_name"),
+        width: COLUMN_WIDTH.badgeGroup,
+        cellClassName: "font-medium text-ink",
+        render: (profile) => profile.name,
+      },
+      {
+        key: "mode",
+        label: t("content_moderation.enabled"),
+        width: COLUMN_WIDTH.toggle,
+        render: (profile) => {
+          const enabled = profile.mode === "pre_block";
+          return (
+            <div className="flex items-center gap-2.5">
+              <ToggleSwitch
+                checked={enabled}
+                disabled={!canWrite || modeUpdatingId !== null}
+                ariaLabel={t("content_moderation.toggle_enabled", { name: profile.name })}
+                onCheckedChange={(next) => void updateProfileMode(profile, next)}
+              />
+              <span className="text-xs text-ink-2">
+                {enabled
+                  ? t("content_moderation.mode_pre_block")
+                  : t("content_moderation.mode_off")}
+              </span>
+            </div>
+          );
+        },
+      },
+      {
+        key: "method",
+        label: t("content_moderation.moderation_method"),
+        width: COLUMN_WIDTH.badgeGroup,
+        cellClassName: "text-ink-2",
+        render: (profile) => t(`content_moderation.keyword_mode_${profile.keyword_mode}`),
+      },
+      {
+        key: "backend",
+        label: t("content_moderation.backend"),
+        width: COLUMN_WIDTH.badgeGroup,
+        render: (profile) => (
+          <span className="rounded-full bg-ink/[0.05] px-2.5 py-1 text-xs font-medium text-ink-2 dark:bg-white/[0.07]">
+            {t(`content_moderation.backend_${profile.backend}`)}
+          </span>
+        ),
+      },
+      {
+        key: "endpoint",
+        label: t("content_moderation.endpoint_model"),
+        width: "w-[240px] min-w-[240px]",
+        render: (profile) => (
+          <div className="min-w-0 text-xs">
+            <p className="truncate font-mono text-ink-2">
+              {profile.base_url}
+            </p>
+            <p className="mt-1 truncate text-ink-3">{profile.model}</p>
+          </div>
+        ),
+      },
+      {
+        key: "apiKey",
+        label: t("content_moderation.api_key"),
+        width: COLUMN_WIDTH.name,
+        render: (profile) =>
+          profile.api_key_configured ? (
+            <span className="font-mono text-xs text-ink-2 colorful:text-emerald-700 colorful:dark:text-emerald-200">
+              {profile.api_key_masked ?? "****"}
+            </span>
+          ) : (
+            <span className="text-xs text-ink-3">{t("content_moderation.not_configured")}</span>
+          ),
+      },
+      {
+        key: "bindings",
+        label: t("content_moderation.bindings"),
+        width: COLUMN_WIDTH.badgeStacked,
+        render: (profile) => (
+          <div className="text-xs text-ink-2">
+            <p>{t("content_moderation.binding_total", { count: bindingCount(profile) })}</p>
+            <p className="mt-1 text-ink-3">
+              {t("content_moderation.binding_breakdown", {
+                auth: profile.binding_counts.auth_file ?? 0,
+                keys: profile.binding_counts.provider_key ?? 0,
+                providers: profile.binding_counts.provider ?? 0,
+              })}
+            </p>
+          </div>
+        ),
+      },
+      {
+        key: "updated",
+        label: t("content_moderation.updated_at"),
+        width: COLUMN_WIDTH.timestamp,
+        render: (profile) => (
+          <span className="text-xs tabular-nums text-ink-2">
+            {new Intl.DateTimeFormat(undefined, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            }).format(new Date(profile.updated_at))}
+          </span>
+        ),
+      },
+      {
+        key: "actions",
+        label: t("content_moderation.actions"),
+        ...TABLE_ROW_ACTIONS_STICKY_END_COLUMN,
+        render: (profile) => (
+          <TableRowActions
+            moreLabel={t("content_moderation.more_actions")}
+            // 常用的放前面平铺（编辑、绑定渠道、测试），查看状态和删除收进「更多」，四个位置放得下、不溢出列宽。
+            actions={[
+              {
+                key: "edit",
+                label: t("content_moderation.edit_profile"),
+                icon: <Pencil size={15} />,
+                onClick: () => openEdit(profile),
+                visible: canWrite,
+              },
+              {
+                key: "channels",
+                label: t("content_moderation.manage_channels"),
+                icon: <Link2 size={15} />,
+                onClick: () => setPickerProfile(profile),
+                visible: canWrite,
+              },
+              {
+                key: "test",
+                label: t("content_moderation.test_profile"),
+                icon: <FlaskConical size={15} />,
+                onClick: () => setTestProfile(profile),
+                visible: canTest,
+              },
+              {
+                key: "metrics",
+                label: t("content_moderation.view_status"),
+                icon: <Activity size={15} />,
+                onClick: () => setMetricsOpen(true),
+              },
+              {
+                key: "delete",
+                label: t("content_moderation.delete_profile"),
+                icon: <Trash2 size={15} />,
+                onClick: () => setDeleteTarget(profile),
+                destructive: true,
+                visible: canWrite,
+              },
+            ]}
+          />
+        ),
+      },
+    ],
+    [canTest, canWrite, modeUpdatingId, t, updateProfileMode],
+  );
+
+  const profilesCard = (
+    /* 外壳内容区就是页面面板：这里是页面分区（flat），不再包一张大卡。 */
+    <Card
+      flat
+      className="md:flex md:min-h-0 md:flex-1 md:flex-col"
+      bodyClassName="md:flex md:min-h-0 md:flex-1 md:flex-col"
+      title={t("content_moderation.title")}
+      description={t("content_moderation.description")}
+      actions={
+        <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void loadProfiles()}
+            disabled={loading}
+          >
+            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+            {t("common.refresh")}
+          </Button>
+          {canWrite ? (
+            <Button size="sm" variant="primary" onClick={openCreate}>
+              <Plus size={14} />
+              {t("content_moderation.create_profile")}
+            </Button>
+          ) : null}
+        </div>
+      }
+      loading={loading}
+    >
+      {profiles.length === 0 ? (
+        <EmptyState
+          title={t("content_moderation.empty_title")}
+          description={t("content_moderation.empty_description")}
+          icon={<ShieldCheck size={32} />}
+        />
+      ) : (
+        <DataTable<ContentModerationProfileView>
+          fill
+          tableId="content-moderation-profiles"
+          rows={profiles}
+          columns={columns}
+          rowKey={(profile) => profile.id}
+          loading={loading}
+          virtualize={false}
+          minWidth="min-w-[1280px]"
+          caption={t("content_moderation.table_caption")}
+          emptyText={t("content_moderation.empty_title")}
+          showAllLoadedMessage={false}
+        />
+      )}
+    </Card>
+  );
+
+  // 各标签的高度模式不同：敏感词在宽屏是左右两栏、各自滚动，窄屏上下堆叠随页面流动；审核配置是
+  // 整页一张表（桌面宽度钉满）；密钥脱敏只是一小段设置，随内容流动。
+  const pageFill = activeTab === "words" ? "lg" : activeTab === "profiles" ? "md" : undefined;
+
+  return (
+    <div data-page-fill={pageFill} className="flex flex-1 flex-col">
+      {wordsAvailable || capabilities.secretMasking ? (
+        <div className="mb-4 shrink-0">
+          <Tabs value={activeTab} size="sm" onValueChange={(next) => requestTab(next as PageTab)}>
+            <TabsList>
+              {wordsAvailable ? (
+                <TabsTrigger value="words">{t("content_moderation.tab_words")}</TabsTrigger>
+              ) : null}
+              <TabsTrigger value="profiles">{t("content_moderation.tab_profiles")}</TabsTrigger>
+              {capabilities.secretMasking ? (
+                <TabsTrigger value="masking">{t("content_moderation.tab_masking")}</TabsTrigger>
+              ) : null}
+            </TabsList>
+          </Tabs>
+        </div>
+      ) : null}
+
+      {!loaded ? (
+        <SkeletonLines rows={6} />
+      ) : activeTab === "words" ? (
+        <WordPoliciesTab
+          canWrite={canWrite}
+          canTest={canTest}
+          portalSupported={capabilities.wordPortal}
+          onDirtyChange={setWordsDirty}
+        />
+      ) : activeTab === "masking" && maskingMoved ? (
+        <Callout
+          tone="neutral"
+          title={t("content_moderation.secret_masking.moved_title")}
+          actions={
+            // 线上 /manage 是 BrowserRouter（basename /manage），本地开发是 HashRouter：手写 href 总有一边
+            // 指错地方（hash 链接在 /manage 下点了不跳），只有路由的 Link 两边都对
+            <Link to="/runtime/privacy-masking" className={buttonClassName({ size: "sm", variant: "secondary" })}>
+              {t("content_moderation.secret_masking.moved_open")}
+            </Link>
+          }
+        >
+          {t("content_moderation.secret_masking.moved_desc")}
+        </Callout>
+      ) : activeTab === "masking" ? (
+        <section className="max-w-3xl space-y-3">
+          <h3 className="text-base font-semibold text-ink">
+            {t("content_moderation.secret_masking.label")}
+          </h3>
+          <p className="text-xs leading-5 text-ink-3">
+            {t("content_moderation.secret_masking.explainer")}
+          </p>
+          <SettingGroup>
+            <div className="px-4 py-3">
+              <SecretMaskingSwitch canWrite={canWrite} />
+            </div>
+          </SettingGroup>
+        </section>
+      ) : (
+        profilesCard
+      )}
+
+      <ProfileEditorModal
+        open={editorOpen}
+        profile={editorProfile}
+        capabilities={capabilities}
+        saving={saving}
+        onClose={() => {
+          if (saving) return;
+          setEditorOpen(false);
+          setEditorProfile(null);
+        }}
+        onSave={saveProfile}
+      />
+
+      <ModerationChannelPickerModal
+        open={pickerProfile !== null}
+        profile={pickerProfile}
+        profiles={profiles}
+        onClose={() => setPickerProfile(null)}
+        onBindingsChanged={() => void loadProfiles()}
+      />
+
+      <ModerationTestModal profile={testProfile} onClose={() => setTestProfile(null)} />
+
+      <ModerationMetricsModal open={metricsOpen} onClose={() => setMetricsOpen(false)} />
+
+      <ConfirmModal
+        open={pendingTab !== null}
+        title={t("content_moderation.words.discard_title")}
+        description={t("content_moderation.words.discard_description")}
+        confirmText={t("content_moderation.words.discard_confirm")}
+        variant="warning"
+        onClose={() => setPendingTab(null)}
+        onConfirm={() => {
+          if (pendingTab) setTab(pendingTab);
+          setPendingTab(null);
+        }}
+      />
+
+      <ConfirmModal
+        open={deleteTarget !== null}
+        title={t("content_moderation.delete_profile_title", { name: deleteTarget?.name ?? "" })}
+        description={t("content_moderation.delete_lead")}
+        subject={
+          deleteTarget ? (
+            <span className="flex min-w-0 items-center justify-between gap-3">
+              <span className="truncate font-medium">{deleteTarget.name}</span>
+              <span className="shrink-0 text-xs text-ink-3">
+                {t(`content_moderation.backend_${deleteTarget.backend}`)} ·{" "}
+                {t(`content_moderation.keyword_mode_${deleteTarget.keyword_mode}`)}
+              </span>
+            </span>
+          ) : null
+        }
+        consequences={[t("content_moderation.delete_consequence_settings")]}
+        confirmText={t("content_moderation.delete_confirm")}
+        busy={deleting}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => void deleteProfile()}
+      >
+        {/* 服务端拒绝删除仍有渠道绑定的配置：提前说清楚，并指向能解绑的地方。 */}
+        {deleteTarget && bindingCount(deleteTarget) > 0 ? (
+          <Callout tone="warning">
+            {t("content_moderation.delete_blocked_bindings", {
+              count: bindingCount(deleteTarget),
+            })}
+          </Callout>
+        ) : null}
+      </ConfirmModal>
+    </div>
+  );
+}

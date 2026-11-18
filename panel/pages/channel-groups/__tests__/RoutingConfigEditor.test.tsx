@@ -1,0 +1,1763 @@
+import { useMemo, useState } from "react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import i18n from "@code-proxy/i18n";
+import type { ChannelGroupChannelDetail } from "@code-proxy/api-client/endpoints/channel-groups";
+import {
+  DEFAULT_VISUAL_VALUES,
+  schedulingFromStrategy,
+  type VisualConfigValues,
+} from "@features/visual-config-editor";
+import { RoutingConfigEditor, type RoutingModelOption } from "@features/routing-config-editor";
+import { ThemeProvider } from "@code-proxy/ui";
+import { ToastProvider } from "@code-proxy/ui";
+
+const toastMocks = vi.hoisted(() => ({
+  info: vi.fn(),
+  success: vi.fn(),
+  warning: vi.fn(),
+  error: vi.fn(),
+}));
+
+// 提示条走 @code-proxy/ui 自己的 toast 仓库（ToastProvider.notify 也调用它）；
+// 只替换 toast 本身，订阅接口保留原实现，Toaster 照常挂载。
+vi.mock("@code-proxy/ui/feedback/toastStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@code-proxy/ui/feedback/toastStore")>()),
+  toast: {
+    info: toastMocks.info,
+    success: toastMocks.success,
+    warning: toastMocks.warning,
+    error: toastMocks.error,
+  },
+}));
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function Harness({
+  initialValues,
+  loadModelsForChannels,
+  modelExclusionsSupported,
+  followUpstreamSupported,
+  streamGuardsSupported,
+  resetAwareSupported,
+  availableChannels = ["Team A Claude", "Main Codex", "Backup Claude"],
+  availableChannelDetails,
+  availableChannelDetailsByGroup,
+  onChange,
+}: {
+  initialValues?: VisualConfigValues;
+  loadModelsForChannels?: (
+    channels: string[],
+    groupName?: string,
+  ) => Promise<Array<string | RoutingModelOption>>;
+  /** Off by default, like a backend that predates the capability. */
+  modelExclusionsSupported?: boolean;
+  /** Off by default, like a backend that predates follow-upstream-models. */
+  followUpstreamSupported?: boolean;
+  /** Off by default, like a backend that predates the stream guards; a name advertises only that one. */
+  streamGuardsSupported?: boolean | "first-token-timeout" | "busy-wait";
+  /** Off by default, like a backend that predates the reset-aware distribution. */
+  resetAwareSupported?: boolean;
+  availableChannels?: string[];
+  availableChannelDetails?: Record<string, ChannelGroupChannelDetail>;
+  availableChannelDetailsByGroup?: Record<string, Record<string, ChannelGroupChannelDetail>>;
+  onChange?: (
+    patch: Partial<VisualConfigValues>,
+    apply: (patch: Partial<VisualConfigValues>) => void,
+  ) => void | boolean | Promise<void | boolean>;
+}) {
+  const [values, setValues] = useState<VisualConfigValues>({
+    ...DEFAULT_VISUAL_VALUES,
+    routingChannelGroups: [],
+    routingPathRoutes: [],
+    ...initialValues,
+  });
+  // Stable like the page's state, so the editor's callbacks are not rebuilt each render.
+  const modelGateSupport = useMemo(
+    () => ({
+      channelGroupExcludedModels: modelExclusionsSupported === true,
+      channelGroupFollowUpstreamModels: followUpstreamSupported === true,
+      channelGroupFirstTokenTimeout:
+        streamGuardsSupported === true || streamGuardsSupported === "first-token-timeout",
+      channelGroupBusyWait: streamGuardsSupported === true || streamGuardsSupported === "busy-wait",
+      channelGroupResetAwareDistribution: resetAwareSupported === true,
+      routingSimulation: false,
+      virtualModels: false,
+    }),
+    [followUpstreamSupported, modelExclusionsSupported, resetAwareSupported, streamGuardsSupported],
+  );
+
+  return (
+    <ThemeProvider>
+      <ToastProvider>
+        <RoutingConfigEditor
+          values={values}
+          modelGateSupport={modelGateSupport}
+          availableChannels={availableChannels}
+          availableChannelDetails={availableChannelDetails}
+          availableChannelDetailsByGroup={availableChannelDetailsByGroup}
+          loadModelsForChannels={loadModelsForChannels}
+          onChange={(patch) => {
+            const apply = (nextPatch: Partial<VisualConfigValues>) => {
+              setValues((prev) => ({ ...prev, ...nextPatch }));
+            };
+            if (onChange) return onChange(patch, apply);
+            apply(patch);
+          }}
+        />
+      </ToastProvider>
+      <div data-testid="group-count">{values.routingChannelGroups.length}</div>
+      <div data-testid="route-count">{values.routingPathRoutes.length}</div>
+      <div data-testid="group-name">{values.routingChannelGroups[0]?.name ?? ""}</div>
+      <div data-testid="group-strategy">{values.routingChannelGroups[0]?.strategy ?? ""}</div>
+      <div data-testid="group-distribution">
+        {values.routingChannelGroups[0]?.scheduling?.distribution ?? ""}
+      </div>
+      <div data-testid="group-sticky">
+        {values.routingChannelGroups[0]?.scheduling?.sticky.enabled ? "on" : "off"}
+      </div>
+      <div data-testid="group-sticky-max">
+        {values.routingChannelGroups[0]?.scheduling?.sticky.maxRequests ?? ""}
+      </div>
+      <div data-testid="channel-name">
+        {values.routingChannelGroups[0]?.channels[0]?.name ?? ""}
+      </div>
+      <div data-testid="channel-priority">
+        {values.routingChannelGroups[0]?.channels[0]?.priority ?? ""}
+      </div>
+      <div data-testid="route-path">{values.routingPathRoutes[0]?.path ?? ""}</div>
+      <div data-testid="allowed-models">
+        {values.routingChannelGroups[0]?.allowedModels?.join(",") ?? ""}
+      </div>
+      <div data-testid="excluded-models">
+        {values.routingChannelGroups[0]?.excludedModels?.join(",") ?? ""}
+      </div>
+      <div data-testid="saved-follow-upstream">
+        {String(values.routingChannelGroups[0]?.followUpstreamModels ?? "")}
+      </div>
+      <div data-testid="saved-first-token-timeout">
+        {String(values.routingChannelGroups[0]?.firstTokenTimeoutSeconds ?? "")}
+      </div>
+      <div data-testid="saved-busy-wait">
+        {String(values.routingChannelGroups[0]?.busyWaitMaxSeconds ?? "")}
+      </div>
+    </ThemeProvider>
+  );
+}
+
+describe("RoutingConfigEditor", () => {
+  beforeEach(() => {
+    toastMocks.info.mockReset();
+    toastMocks.success.mockReset();
+    toastMocks.warning.mockReset();
+    toastMocks.error.mockReset();
+  });
+
+  test("creates a group with searchable channel selection and priority", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.type(screen.getByPlaceholderText("pro"), "team-a");
+    await user.type(screen.getByPlaceholderText("/pro"), "/team-a");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Team A Claude" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+
+    const priorityInput = screen.getByPlaceholderText("1");
+    await user.type(priorityInput, "80");
+    await user.click(screen.getByRole("button", { name: "添加" }));
+
+    expect(screen.getByTestId("group-count")).toHaveTextContent("1");
+    expect(screen.getByTestId("group-name")).toHaveTextContent("team-a");
+    expect(screen.getByTestId("channel-name")).toHaveTextContent("Team A Claude");
+    expect(screen.getByTestId("channel-priority")).toHaveTextContent("80");
+  });
+
+  test("stores the group-scoped routing strategy from the editor modal", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.click(screen.getByRole("combobox", { name: "分配方式" }));
+    await user.click(screen.getByRole("option", { name: "填满一个再换下一个" }));
+    await user.type(screen.getByPlaceholderText("pro"), "team-fill-first");
+    await user.type(screen.getByPlaceholderText("/pro"), "/team-fill-first");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Main Codex" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("button", { name: "添加" }));
+
+    expect(screen.getByTestId("group-strategy")).toHaveTextContent("fill-first");
+  });
+
+  test("stores session-sticky as the group-scoped routing strategy", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.click(screen.getByRole("checkbox", { name: "启用会话粘性" }));
+    await user.type(screen.getByPlaceholderText("pro"), "team-session");
+    await user.type(screen.getByPlaceholderText("/pro"), "/team-session");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Main Codex" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("button", { name: "添加" }));
+
+    expect(screen.getByTestId("group-strategy")).toHaveTextContent("session-sticky");
+  });
+
+  test("shows fill-first as the table scheduling mode for that group", async () => {
+    await i18n.changeLanguage("zh-CN");
+
+    render(
+      <Harness
+        initialValues={{
+          ...DEFAULT_VISUAL_VALUES,
+          routingChannelGroups: [
+            {
+              id: "group-kimicode",
+              name: "kimicode",
+              description: "",
+              strategy: "fill-first",
+              scheduling: schedulingFromStrategy("fill-first"),
+              channels: [
+                { id: "channel-main", name: "Main Codex", priority: "" },
+                { id: "channel-backup", name: "Backup Claude", priority: "" },
+              ],
+              allowedModels: [],
+            },
+          ],
+        }}
+      />,
+    );
+
+    const row = screen.getByRole("row", { name: /kimicode/i });
+    expect(row).toHaveTextContent("填满一个再换下一个");
+  });
+
+  test("shows session-sticky as the table scheduling mode for that group", async () => {
+    await i18n.changeLanguage("zh-CN");
+
+    render(
+      <Harness
+        initialValues={{
+          ...DEFAULT_VISUAL_VALUES,
+          routingChannelGroups: [
+            {
+              id: "group-session",
+              name: "session-pool",
+              description: "",
+              strategy: "session-sticky",
+              scheduling: schedulingFromStrategy("session-sticky"),
+              channels: [
+                { id: "channel-main", name: "Main Codex", priority: "" },
+                { id: "channel-backup", name: "Backup Claude", priority: "" },
+              ],
+              allowedModels: [],
+            },
+          ],
+        }}
+      />,
+    );
+
+    const row = screen.getByRole("row", { name: /session-pool/i });
+    expect(row).toHaveTextContent("会话粘性");
+  });
+
+  test("pins the group actions column to the right edge", async () => {
+    await i18n.changeLanguage("zh-CN");
+
+    render(
+      <Harness
+        initialValues={{
+          ...DEFAULT_VISUAL_VALUES,
+          routingChannelGroups: [
+            {
+              id: "group-sticky-actions",
+              name: "sticky-actions",
+              description: "",
+              strategy: "round-robin",
+              scheduling: schedulingFromStrategy("round-robin"),
+              channels: [{ id: "channel-main", name: "Main Codex", priority: "" }],
+              allowedModels: [],
+            },
+          ],
+        }}
+      />,
+    );
+
+    const actionsHeader = document.querySelector('th[data-vt-column-key="actions"]');
+    const actionsCell = document.querySelector('td[data-vt-column-key="actions"]');
+
+    expect(actionsHeader).toHaveClass("md:sticky", "md:right-[var(--vt-sticky-right)]", "z-[70]");
+    expect(actionsHeader).toHaveStyle({ zIndex: "70" });
+    expect(actionsCell).toHaveClass("md:sticky", "md:right-[var(--vt-sticky-right)]");
+    expect(actionsCell).toHaveStyle({ zIndex: "30" });
+  });
+
+
+  test("defaults model tab selections to every channel-scoped model", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(async (channels: string[]) =>
+      channels.includes("Team A Claude") ? ["claude-sonnet-4-5", "claude-opus-4-5"] : [],
+    );
+
+    render(<Harness loadModelsForChannels={loadModelsForChannels} />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.type(screen.getByPlaceholderText("pro"), "team-models");
+    await user.type(screen.getByPlaceholderText("/pro"), "/team-models");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Team A Claude" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+
+    await user.click(screen.getByRole("tab", { name: "模型列表" }));
+    expect(await screen.findByLabelText("claude-sonnet-4-5")).toBeInTheDocument();
+    expect(loadModelsForChannels).toHaveBeenCalledWith(["Team A Claude"]);
+
+    // All models display as checked (no explicit restriction = all allowed)
+    expect(screen.getByLabelText("claude-opus-4-5")).toBeChecked();
+    expect(screen.getByLabelText("claude-sonnet-4-5")).toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: "添加" }));
+
+    // Empty allowed-models means "no restriction" - no explicit list saved
+    expect(screen.getByTestId("allowed-models")).not.toHaveTextContent(/claude/);
+  });
+
+  test("loads existing group models with the saved group scope", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(async () => ["gpt-5.6", "gpt-5.6-ultra"]);
+
+    render(
+      <Harness
+        initialValues={{
+          ...DEFAULT_VISUAL_VALUES,
+          routingChannelGroups: [
+            {
+              id: "group-codex",
+              name: "deepseekv4flash+chatgpt",
+              description: "",
+              strategy: "round-robin",
+              scheduling: schedulingFromStrategy("round-robin"),
+              allowedModels: [],
+              channels: [{ id: "channel-main-codex", name: "Main Codex", priority: "" }],
+            },
+          ],
+        }}
+        loadModelsForChannels={loadModelsForChannels}
+      />,
+    );
+
+    const row = screen.getByRole("row", { name: /deepseekv4flash\+chatgpt/ });
+    await user.click(within(row).getByRole("button", { name: "编辑分组" }));
+    await user.click(screen.getByRole("tab", { name: "模型列表" }));
+
+    expect(await screen.findByLabelText("gpt-5.6")).toBeInTheDocument();
+    expect(loadModelsForChannels).toHaveBeenCalledWith(
+      ["Main Codex"],
+      "deepseekv4flash+chatgpt",
+    );
+  });
+
+  // The group behind the grok-4.7 report, with whatever model gate a test needs.
+  const xaiPool = (
+    models: { allowedModels?: string[]; excludedModels?: string[] } = {},
+  ): VisualConfigValues => ({
+    ...DEFAULT_VISUAL_VALUES,
+    routingChannelGroups: [
+      {
+        id: "group-xai",
+        name: "xai-pool",
+        description: "",
+        strategy: "round-robin",
+        scheduling: schedulingFromStrategy("round-robin"),
+        allowedModels: models.allowedModels ?? [],
+        excludedModels: models.excludedModels,
+        channels: [{ id: "channel-main-codex", name: "Main Codex", priority: "" }],
+      },
+    ],
+    routingPathRoutes: [
+      {
+        id: "route-xai-pool",
+        path: "/xai-pool",
+        group: "xai-pool",
+        stripPrefix: true,
+        fallback: "none",
+      },
+    ],
+  });
+
+  const editXaiPool = async (user: ReturnType<typeof userEvent.setup>) => {
+    const row = screen.getByRole("row", { name: /xai-pool/ });
+    await user.click(within(row).getByRole("button", { name: "编辑分组" }));
+  };
+
+  const openXaiPoolModels = async (user: ReturnType<typeof userEvent.setup>) => {
+    await editXaiPool(user);
+    await user.click(screen.getByRole("tab", { name: "模型列表" }));
+  };
+
+  const savedLists = () => ({
+    allowed: screen.getByTestId("allowed-models").textContent,
+    excluded: screen.getByTestId("excluded-models").textContent,
+  });
+
+  // Replaces "migrates a saved allow list to exclusions and flags the models it
+  // misses". Converting on load meant that opening the Models tab and saving,
+  // with nothing touched, opened the group to every model the list did not show
+  // and to every model the upstream added later.
+  test("keeps a saved allow list as a fixed list once the model list loads", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(
+      async (): Promise<string[]> => ["grok-4.6", "grok-4.7", "grok-4.7-build-fast"],
+    );
+
+    render(
+      <Harness
+        initialValues={xaiPool({ allowedModels: ["grok-4.6"] })}
+        loadModelsForChannels={loadModelsForChannels}
+        modelExclusionsSupported
+      />,
+    );
+    await openXaiPoolModels(user);
+
+    expect(await screen.findByLabelText("grok-4.7")).not.toBeChecked();
+    expect(screen.getByLabelText("grok-4.6")).toBeChecked();
+    expect(screen.getByRole("switch", { name: "自动允许新模型" })).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(savedLists()).toEqual({ allowed: "grok-4.6", excluded: "" });
+  });
+
+  test("asks before auto-allow turns an allow list into exclusions, and says what that opens", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(
+      async (): Promise<string[]> => ["grok-4.6", "grok-4.7", "grok-4.7-build-fast"],
+    );
+
+    render(
+      <Harness
+        initialValues={xaiPool({ allowedModels: ["grok-4.6"] })}
+        loadModelsForChannels={loadModelsForChannels}
+        modelExclusionsSupported
+      />,
+    );
+    await openXaiPoolModels(user);
+    const toggle = screen.getByRole("switch", { name: "自动允许新模型" });
+    await waitFor(() => expect(toggle).toBeEnabled());
+
+    await user.click(toggle);
+    // Nothing changes until the operator has read what the switch opens up.
+    expect(toggle).not.toBeChecked();
+    const notice = screen.getByTestId("auto-allow-confirm");
+    expect(notice).toHaveTextContent("列表里没显示的");
+    expect(notice).toHaveTextContent("上游以后新增的");
+    expect(notice).toHaveTextContent("当前未勾选的 2 个模型会写入排除名单");
+    await user.click(within(notice).getByRole("button", { name: "取消" }));
+    expect(screen.queryByTestId("auto-allow-confirm")).not.toBeInTheDocument();
+    expect(toggle).not.toBeChecked();
+
+    await user.click(toggle);
+    await user.click(screen.getByRole("button", { name: "确认开启" }));
+    expect(toggle).toBeChecked();
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(savedLists()).toEqual({ allowed: "", excluded: "grok-4.7,grok-4.7-build-fast" });
+  });
+
+  // The 2026-10-28 report: a curated group stopped at the models it was saved
+  // with while the upstream had published another. Following upstream keeps the
+  // list and also admits what Codex discovery lists; what that opens is shown
+  // before anything is saved, since discovery may list models left unchecked.
+  test("follows upstream on a fixed list, showing what that opens first", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(
+      async (): Promise<string[]> => ["grok-4.6", "grok-4.7"],
+    );
+    const values = xaiPool({ allowedModels: ["grok-4.6"] });
+    // grok-4.6 is already on the list, so it is not news.
+    values.routingChannelGroups[0].discoveredModels = ["grok-4.7", "grok-4.6"];
+
+    render(
+      <Harness
+        initialValues={values}
+        loadModelsForChannels={loadModelsForChannels}
+        modelExclusionsSupported
+        followUpstreamSupported
+      />,
+    );
+    await openXaiPoolModels(user);
+
+    const toggle = await screen.findByRole("switch", { name: "跟随上游新模型" });
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByTestId("follow-upstream-models-preview")).toHaveTextContent(
+      "开启后还会放行：grok-4.7",
+    );
+    await user.click(toggle);
+    expect(toggle).toBeChecked();
+    expect(screen.getByTestId("follow-upstream-models-preview")).toHaveTextContent(
+      "现在额外放行：grok-4.7",
+    );
+    expect(screen.getByTestId("model-gate-mode-hint")).toHaveTextContent("外加 Codex");
+    // Neither list changes; only the setting does.
+    expect(screen.getByLabelText("grok-4.7")).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(savedLists()).toEqual({ allowed: "grok-4.6", excluded: "" });
+    expect(screen.getByTestId("saved-follow-upstream")).toHaveTextContent("true");
+  });
+
+  test("saves an untouched group without the setting it never had", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    render(
+      <Harness
+        initialValues={xaiPool({ allowedModels: ["grok-4.6"] })}
+        loadModelsForChannels={vi.fn(async (): Promise<string[]> => ["grok-4.6", "grok-4.7"])}
+        modelExclusionsSupported
+        followUpstreamSupported
+      />,
+    );
+    await openXaiPoolModels(user);
+    expect(await screen.findByRole("switch", { name: "跟随上游新模型" })).not.toBeChecked();
+    // Nothing discovered beyond the list: there is nothing to preview.
+    expect(screen.queryByTestId("follow-upstream-models-preview")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(screen.getByTestId("saved-follow-upstream")).toHaveTextContent("");
+  });
+
+  test("offers no follow-upstream switch to a backend that would drop it", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    render(
+      <Harness
+        initialValues={xaiPool({ allowedModels: ["grok-4.6"] })}
+        loadModelsForChannels={vi.fn(async (): Promise<string[]> => ["grok-4.6"])}
+        modelExclusionsSupported
+      />,
+    );
+    await openXaiPoolModels(user);
+    await screen.findByLabelText("grok-4.6");
+
+    expect(screen.queryByRole("switch", { name: "跟随上游新模型" })).not.toBeInTheDocument();
+  });
+
+  test("hides the follow-upstream switch while auto-allow already takes every new model", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    render(
+      <Harness
+        initialValues={xaiPool({ excludedModels: ["grok-4.7"] })}
+        loadModelsForChannels={vi.fn(async (): Promise<string[]> => ["grok-4.6", "grok-4.7"])}
+        modelExclusionsSupported
+        followUpstreamSupported
+      />,
+    );
+    await openXaiPoolModels(user);
+    expect(await screen.findByRole("switch", { name: "自动允许新模型" })).toBeChecked();
+
+    expect(screen.queryByRole("switch", { name: "跟随上游新模型" })).not.toBeInTheDocument();
+  });
+
+  test("turning off auto-allow saves the checked models as a fixed allow list", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(async (): Promise<string[]> => ["grok-4.6", "grok-4.7"]);
+
+    render(
+      <Harness
+        initialValues={xaiPool()}
+        loadModelsForChannels={loadModelsForChannels}
+        modelExclusionsSupported
+      />,
+    );
+    await openXaiPoolModels(user);
+
+    expect(await screen.findByLabelText("grok-4.6")).toBeChecked();
+    await user.click(screen.getByRole("switch", { name: "自动允许新模型" }));
+    expect(screen.getByTestId("model-gate-mode-hint")).toHaveTextContent(
+      "上游以后新增的模型会被拒绝",
+    );
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(savedLists()).toEqual({ allowed: "grok-4.6,grok-4.7", excluded: "" });
+  });
+
+  // The list is a filtered view: a model whose account is disabled or cooling
+  // down drops out of it. Its exclusion used to be pruned on load, which could
+  // leave the group serving that model, or everything, once it came back.
+  test("shows and keeps exclusions for models the list does not offer", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(
+      async (): Promise<string[]> => ["grok-4.5", "grok-4.6", "grok-4.7"],
+    );
+
+    render(
+      <Harness
+        initialValues={xaiPool({ excludedModels: ["grok-4.5", "grok-imagine-video-1.5"] })}
+        loadModelsForChannels={loadModelsForChannels}
+        modelExclusionsSupported
+      />,
+    );
+    await openXaiPoolModels(user);
+
+    expect(await screen.findByLabelText("grok-4.6")).toBeChecked();
+    const outside = screen.getByTestId("model-rules-outside-list");
+    expect(within(outside).getByText("grok-imagine-video-1.5")).toBeInTheDocument();
+    expect(within(outside).getByText("已排除 · 当前未提供")).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("grok-4.6"));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(savedLists()).toEqual({
+      allowed: "",
+      excluded: "grok-4.5,grok-imagine-video-1.5,grok-4.6",
+    });
+  });
+
+  test("drops an entry the list does not offer only when the operator removes it", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(async (): Promise<string[]> => ["grok-4.5", "grok-4.6"]);
+
+    render(
+      <Harness
+        initialValues={xaiPool({ excludedModels: ["grok-4.5", "grok-imagine-video-1.5"] })}
+        loadModelsForChannels={loadModelsForChannels}
+        modelExclusionsSupported
+      />,
+    );
+    await openXaiPoolModels(user);
+
+    await user.click(await screen.findByRole("button", { name: "移除 grok-imagine-video-1.5" }));
+    expect(screen.queryByTestId("model-rules-outside-list")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(savedLists()).toEqual({ allowed: "", excluded: "grok-4.5" });
+  });
+
+  // Loading used to keep only the exclusions and rewrite the rest, so saving a
+  // group that had both lists, from any tab, dropped its allow list.
+  test("keeps both lists of a group that has them", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(async (): Promise<string[]> => ["grok-4.6", "grok-4.7"]);
+
+    render(
+      <Harness
+        initialValues={xaiPool({
+          allowedModels: ["grok-4.6", "grok-4.7"],
+          excludedModels: ["grok-4.7"],
+        })}
+        loadModelsForChannels={loadModelsForChannels}
+        modelExclusionsSupported
+      />,
+    );
+
+    await editXaiPool(user);
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    expect(savedLists()).toEqual({ allowed: "grok-4.6,grok-4.7", excluded: "grok-4.7" });
+
+    await openXaiPoolModels(user);
+    expect(await screen.findByLabelText("grok-4.6")).toBeChecked();
+    expect(screen.getByLabelText("grok-4.7")).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "自动允许新模型" })).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    expect(savedLists()).toEqual({ allowed: "grok-4.6,grok-4.7", excluded: "grok-4.7" });
+  });
+
+  // Select reports re-picking the current value as a change, and the handler used
+  // to reset the model gate on every change, silently lifting the group's limits.
+  test("keeps the model limits when the match strategy is re-picked or switched", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness initialValues={xaiPool({ allowedModels: ["grok-4.6"] })} />);
+
+    await editXaiPool(user);
+    await user.click(screen.getByRole("combobox", { name: "匹配策略" }));
+    await user.click(screen.getByRole("option", { name: "手动选择渠道" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    expect(savedLists()).toEqual({ allowed: "grok-4.6", excluded: "" });
+
+    await editXaiPool(user);
+    await user.click(screen.getByRole("combobox", { name: "匹配策略" }));
+    await user.click(screen.getByRole("option", { name: "标签匹配" }));
+    await user.click(screen.getByRole("combobox", { name: "匹配策略" }));
+    await user.click(screen.getByRole("option", { name: "手动选择渠道" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    expect(savedLists()).toEqual({ allowed: "grok-4.6", excluded: "" });
+  });
+
+  // The switch rewrites the stored lists from the model list; with no list every
+  // model reads as unchecked.
+  test("keeps the auto-allow switch disabled until the model list has loaded", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const models = deferred<string[]>();
+    const loadModelsForChannels = vi.fn((): Promise<string[]> => models.promise);
+
+    render(
+      <Harness
+        initialValues={xaiPool({ allowedModels: ["grok-4.6"] })}
+        loadModelsForChannels={loadModelsForChannels}
+        modelExclusionsSupported
+      />,
+    );
+    await openXaiPoolModels(user);
+
+    const toggle = screen.getByRole("switch", { name: "自动允许新模型" });
+    expect(toggle).toBeDisabled();
+    models.resolve(["grok-4.6", "grok-4.7"]);
+    await waitFor(() => expect(toggle).toBeEnabled());
+  });
+
+  test("keeps the auto-allow switch disabled when the model list fails to load", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(
+      async (): Promise<string[]> => Promise.reject(new Error("upstream timed out")),
+    );
+
+    render(
+      <Harness
+        initialValues={xaiPool({ allowedModels: ["grok-4.6"] })}
+        loadModelsForChannels={loadModelsForChannels}
+        modelExclusionsSupported
+      />,
+    );
+    await openXaiPoolModels(user);
+
+    expect(await screen.findByText("upstream timed out")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "自动允许新模型" })).toBeDisabled();
+  });
+
+  test("keeps the auto-allow switch disabled when the channels offer no models", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(async (): Promise<string[]> => []);
+
+    render(
+      <Harness
+        initialValues={xaiPool({ allowedModels: ["grok-4.6"] })}
+        loadModelsForChannels={loadModelsForChannels}
+        modelExclusionsSupported
+      />,
+    );
+    await openXaiPoolModels(user);
+
+    expect(await screen.findByText("当前渠道暂无可用模型。")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "自动允许新模型" })).toBeDisabled();
+  });
+
+  // A backend without the capability drops excluded-models on save, so writing
+  // exclusions to it would leave the group serving every model.
+  test("hides auto-allow and saves a fixed list when the backend cannot store exclusions", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(async (): Promise<string[]> => ["grok-4.6", "grok-4.7"]);
+
+    render(<Harness initialValues={xaiPool()} loadModelsForChannels={loadModelsForChannels} />);
+    await openXaiPoolModels(user);
+
+    expect(await screen.findByLabelText("grok-4.7")).toBeChecked();
+    expect(screen.queryByRole("switch", { name: "自动允许新模型" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("model-gate-mode-hint")).toHaveTextContent(
+      "当前后端版本不支持排除名单",
+    );
+    await user.click(screen.getByLabelText("grok-4.7"));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(savedLists()).toEqual({ allowed: "grok-4.6", excluded: "" });
+  });
+
+  test("refuses to save a group with no models when the backend cannot store exclusions", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(async (): Promise<string[]> => ["grok-4.6", "grok-4.7"]);
+
+    render(
+      <Harness
+        initialValues={xaiPool({ allowedModels: ["grok-4.6"] })}
+        loadModelsForChannels={loadModelsForChannels}
+      />,
+    );
+    await openXaiPoolModels(user);
+
+    await user.click(await screen.findByLabelText("grok-4.6"));
+    expect(screen.getByTestId("group-editor-save-button")).toBeDisabled();
+    expect(screen.getByText(/当前后端版本不支持保存「一个模型都不允许」/)).toBeInTheDocument();
+    expect(savedLists()).toEqual({ allowed: "grok-4.6", excluded: "" });
+  });
+
+  test("locks rows a wildcard exclusion covers until the rule itself is removed", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(
+      async (): Promise<string[]> => ["grok-4.6", "grok-imagine-video-1.5"],
+    );
+
+    render(
+      <Harness
+        initialValues={xaiPool({ excludedModels: ["grok-imagine-*"] })}
+        loadModelsForChannels={loadModelsForChannels}
+        modelExclusionsSupported
+      />,
+    );
+    await openXaiPoolModels(user);
+
+    const covered = await screen.findByLabelText("grok-imagine-video-1.5");
+    expect(covered).not.toBeChecked();
+    expect(covered).toBeDisabled();
+    expect(covered).toHaveAttribute("title", expect.stringContaining("grok-imagine-*"));
+
+    await user.click(screen.getByRole("button", { name: "移除 grok-imagine-*" }));
+    expect(screen.getByLabelText("grok-imagine-video-1.5")).toBeChecked();
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    expect(savedLists()).toEqual({ allowed: "", excluded: "" });
+  });
+
+  test("renders channel-scoped models as a checkbox table with descriptions and prices", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(async () => [
+      {
+        id: "claude-sonnet-4-5",
+        owned_by: "anthropic",
+        description: "Fast Claude model",
+        pricing: {
+          mode: "token" as const,
+          inputPricePerMillion: 3,
+          outputPricePerMillion: 15,
+          cachedPricePerMillion: 0.3,
+          cacheReadPricePerMillion: 0,
+          cacheWritePricePerMillion: 0,
+          pricePerCall: 0,
+        },
+      },
+    ]);
+
+    render(<Harness loadModelsForChannels={loadModelsForChannels} />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Team A Claude" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("tab", { name: "模型列表" }));
+
+    expect(await screen.findByRole("table", { name: "允许模型" })).toBeInTheDocument();
+    expect(screen.getByLabelText("claude-sonnet-4-5")).toBeChecked();
+    expect(screen.getByText("Fast Claude model")).toBeInTheDocument();
+    expect(screen.getByText("$3 / $15 / $0.3")).toBeInTheDocument();
+  });
+
+  test("keeps modal body fixed while the basic tab content and model list own scrolling", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(async () => [
+      "claude-sonnet-4-5",
+      "claude-opus-4-5",
+      "gpt-5-codex",
+    ]);
+
+    render(<Harness loadModelsForChannels={loadModelsForChannels} />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Team A Claude" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+
+    const modalBody = screen.getByTestId("group-editor-modal-body");
+    expect(modalBody).toHaveClass("h-[560px]");
+    expect(modalBody).toHaveClass("max-h-[calc(100vh-8rem)]");
+    expect(modalBody).toHaveClass("overflow-hidden");
+    expect(modalBody).toHaveClass("flex");
+    expect(modalBody).toHaveClass("flex-col");
+
+    const tabShell = screen.getByTestId("group-editor-tabs-shell");
+    expect(tabShell).toHaveClass("flex");
+    expect(tabShell).toHaveClass("flex-col");
+
+    const tabViewport = screen.getByTestId("group-editor-tab-viewport");
+    expect(tabViewport).toHaveClass("flex-1");
+    expect(tabViewport).not.toHaveClass("overflow-hidden");
+    expect(screen.getByText("分配方式")).toBeInTheDocument();
+
+    const basicScrollArea = screen.getByTestId("group-editor-basic-scroll-area");
+    const basicScrollViewport = basicScrollArea.querySelector("[data-scroll-area-viewport]");
+    const basicScrollContent = basicScrollArea.querySelector("[data-scroll-area-content]");
+    expect(basicScrollArea).toHaveClass("-mr-5");
+    expect(basicScrollViewport).not.toBeNull();
+    expect(basicScrollContent).not.toBeNull();
+    expect(basicScrollViewport!).toHaveClass("table-scrollbar");
+    expect(basicScrollViewport!).toHaveAttribute("data-scrollbar-visibility", "always");
+    expect(basicScrollContent!).toHaveClass("space-y-5", "pr-5");
+
+    await user.click(screen.getByRole("tab", { name: "模型列表" }));
+    expect(await screen.findByTestId("group-editor-model-list")).toHaveClass("-mx-5");
+    expect(screen.getByTestId("group-editor-model-list-content")).toHaveClass("px-5");
+    expect(
+      screen.getByRole("table", { name: "允许模型" }).closest("[data-vt-scroll-content]"),
+    ).not.toHaveClass("pr-5");
+    expect(screen.getByRole("table", { name: "允许模型" })).toBeInTheDocument();
+    expect(screen.getByRole("tablist")).toBeInTheDocument();
+  });
+
+  test("renders the basic tab channel table without an internal table scroll container", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Team A Claude" }));
+    await user.click(screen.getByRole("option", { name: "Main Codex" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+
+    const channelTable = screen.getByRole("table", { name: "选择渠道" });
+    const tableShell = channelTable.closest("[data-vt-natural-flow]") as HTMLDivElement | null;
+
+    expect(tableShell).not.toBeNull();
+    expect(tableShell).toHaveClass("h-auto");
+    expect(tableShell).toHaveClass("min-h-0");
+    expect(tableShell).not.toHaveClass("h-[248px]");
+    expect(tableShell!.querySelector(".table-scrollbar")).toBeNull();
+    expect(tableShell!.querySelector("[data-vt-scrollbar]")).toBeNull();
+  });
+
+  test("keeps the model list table visible while channel models are loading", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(
+      () => new Promise<Array<string | RoutingModelOption>>(() => {}),
+    );
+
+    render(<Harness loadModelsForChannels={loadModelsForChannels} />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Team A Claude" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("tab", { name: "模型列表" }));
+
+    expect(screen.getByTestId("group-editor-model-list")).toHaveClass("-mx-5");
+    expect(screen.getByTestId("group-editor-model-list-content")).toHaveClass("px-5");
+    expect(screen.getByRole("table", { name: "允许模型" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("加载中");
+    expect(screen.getByRole("status")).toHaveClass("sr-only");
+  });
+
+  test("sets path routes directly inside group editor", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.type(screen.getByPlaceholderText("pro"), "team-a");
+    await user.type(screen.getByPlaceholderText("/pro"), "/team-a");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Main Codex" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("button", { name: "添加" }));
+
+    expect(screen.getByTestId("route-count")).toHaveTextContent("1");
+    expect(screen.getByTestId("route-path")).toHaveTextContent("/team-a");
+  });
+
+  test("normalizes a full access URL into the saved route path", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.type(screen.getByPlaceholderText("pro"), "team-url");
+    await user.type(
+      screen.getByPlaceholderText("/pro"),
+      "https://relay.example.test/openai/team-url",
+    );
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Main Codex" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("button", { name: "添加" }));
+
+    expect(screen.getByTestId("route-count")).toHaveTextContent("1");
+    expect(screen.getByTestId("route-path")).toHaveTextContent("/openai/team-url");
+  });
+
+  test("supports selecting and deselecting filtered channels from the dropdown header", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.type(screen.getByPlaceholderText("pro"), "team-b");
+    await user.type(screen.getByPlaceholderText("/pro"), "/team-b");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.type(screen.getByPlaceholderText("搜索渠道名称"), "Claude");
+    await user.click(screen.getByRole("button", { name: /全选当前结果/ }));
+
+    expect(screen.getAllByText("Team A Claude").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Backup Claude").length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: /取消全选当前结果/ }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+
+    expect(screen.getByText("还没有加入任何渠道。")).toBeInTheDocument();
+  });
+
+  test("requires a path before saving the group", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.type(screen.getByPlaceholderText("pro"), "team-c");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Main Codex" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+
+    expect(screen.getByText("请填写路径。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "添加" })).toBeDisabled();
+  });
+
+  test("shows the system root route capabilities instead of model counts", async () => {
+    await i18n.changeLanguage("zh-CN");
+
+    render(<Harness />);
+
+    expect(screen.queryByText("模型数")).not.toBeInTheDocument();
+    expect(screen.queryByText("可用能力")).not.toBeInTheDocument();
+    const row = screen.getByRole("row", { name: /系统默认/ });
+    expect(row).toHaveTextContent("/");
+    expect(row).toHaveTextContent("默认调度池");
+    expect(row).toHaveTextContent("按权重分配");
+    expect(screen.queryByText("系统内置，只读")).not.toBeInTheDocument();
+    expect(screen.queryByText("models")).not.toBeInTheDocument();
+    expect(screen.queryByText("chat")).not.toBeInTheDocument();
+    expect(screen.queryByText("images")).not.toBeInTheDocument();
+  });
+
+  test("keeps the system root route in the table without a delete action", async () => {
+    await i18n.changeLanguage("zh-CN");
+
+    render(<Harness />);
+
+    const row = screen.getByRole("row", { name: /系统默认/ });
+    expect(row).toHaveTextContent("/");
+    expect(within(row).getByRole("button", { name: "编辑分组" })).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: "删除分组" })).not.toBeInTheDocument();
+  });
+
+  test("updates the system root route scheduling strategy", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    const row = screen.getByRole("row", { name: /系统默认/ });
+    await user.click(within(row).getByRole("button", { name: "编辑分组" }));
+
+    expect(screen.getByRole("tab", { name: "基础配置" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await user.click(screen.getByRole("checkbox", { name: "启用会话粘性" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(screen.getByTestId("group-name")).toHaveTextContent("default");
+    expect(screen.getByTestId("group-strategy")).toHaveTextContent("session-sticky");
+    expect(screen.getByRole("row", { name: /系统默认/ })).toHaveTextContent("会话粘性");
+  });
+
+  test("shows save button loading until async onChange resolves, then closes", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const pending = deferred<void>();
+
+    render(
+      <Harness
+        onChange={async (patch, apply) => {
+          apply(patch);
+          await pending.promise;
+        }}
+      />,
+    );
+
+    const row = screen.getByRole("row", { name: /系统默认/ });
+    await user.click(within(row).getByRole("button", { name: "编辑分组" }));
+    await user.click(screen.getByRole("checkbox", { name: "启用会话粘性" }));
+    await user.click(screen.getByTestId("group-editor-save-button"));
+
+    const saveButton = screen.getByTestId("group-editor-save-button");
+    expect(saveButton).toBeDisabled();
+    expect(saveButton).toHaveAttribute("aria-busy", "true");
+    expect(saveButton).toHaveTextContent("保存中...");
+    expect(saveButton.querySelector("svg")).toHaveClass("animate-spin");
+    // Spinner+label are Fragment-wrapped; Button must keep text sizing (not icon-only square).
+    expect(saveButton.className).toMatch(/\bpx-4\b/);
+    expect(saveButton.className).not.toMatch(/\bw-9\b/);
+    expect(screen.getByTestId("group-editor-modal-body")).toBeInTheDocument();
+
+    pending.resolve();
+    await waitFor(() => {
+      expect(screen.queryByTestId("group-editor-modal-body")).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId("group-strategy")).toHaveTextContent("session-sticky");
+  });
+
+  test("keeps the group editor open when async onChange reports failure", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(
+      <Harness
+        onChange={async () => {
+          await Promise.resolve();
+          return false;
+        }}
+      />,
+    );
+
+    const row = screen.getByRole("row", { name: /系统默认/ });
+    await user.click(within(row).getByRole("button", { name: "编辑分组" }));
+    await user.click(screen.getByRole("checkbox", { name: "启用会话粘性" }));
+    await user.click(screen.getByTestId("group-editor-save-button"));
+
+    await waitFor(() => {
+      const saveButton = screen.getByTestId("group-editor-save-button");
+      expect(saveButton).not.toBeDisabled();
+      expect(saveButton).toHaveTextContent("保存");
+    });
+    // Failure path must not close the modal or clear the save button loading forever.
+    expect(screen.getByTestId("group-editor-modal-body")).toBeInTheDocument();
+    // Parent rejected without applying the patch, so external state stays unchanged.
+    expect(screen.getByTestId("group-strategy")).toHaveTextContent("");
+  });
+
+  test("explains default pool scope and isolation behavior with tooltips", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.hover(screen.getByLabelText(/这里不是访问路径/));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "默认可用表示请求没有命中自定义路径时",
+    );
+    await user.unhover(screen.getByLabelText(/这里不是访问路径/));
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.hover(screen.getByLabelText(/开启后，这个分组只会在请求命中自己的分组路径/));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "API Key 显式允许该分组时被使用",
+    );
+  });
+
+  test("updates model permissions for the system root route", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+    const loadModelsForChannels = vi.fn(async (channels: string[], groupName?: string) =>
+      channels.length === 0 && groupName === "default"
+        ? ["gpt-root-allowed", "gpt-root-hidden"]
+        : [],
+    );
+
+    render(<Harness loadModelsForChannels={loadModelsForChannels} modelExclusionsSupported />);
+
+    const row = screen.getByRole("row", { name: /系统默认/ });
+    await user.click(within(row).getByRole("button", { name: "编辑分组" }));
+    await user.click(screen.getByRole("tab", { name: "模型列表" }));
+
+    expect(await screen.findByLabelText("gpt-root-allowed")).toBeChecked();
+    await user.click(screen.getByLabelText("gpt-root-hidden"));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(loadModelsForChannels).toHaveBeenCalledWith([], "default");
+    // Unchecking one model must be saved as an exclusion, not as a snapshot of
+    // today's allow list — an allow list would reject every model the upstream
+    // adds later.
+    expect(screen.getByTestId("allowed-models")).toHaveTextContent("");
+    expect(screen.getByTestId("excluded-models")).toHaveTextContent("gpt-root-hidden");
+  });
+
+  test("rejects the system root path for custom groups", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.type(screen.getByPlaceholderText("pro"), "team-root");
+    await user.type(screen.getByPlaceholderText("/pro"), "/");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Main Codex" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+
+    expect(screen.getByText("访问路径不能使用系统默认根路径 /。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "添加" })).toBeDisabled();
+  });
+
+  test("rejects invalid paths that contain empty segments", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.type(screen.getByPlaceholderText("pro"), "team-invalid");
+    await user.type(screen.getByPlaceholderText("/pro"), "https://relay.example.test/openai//pro");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Main Codex" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+
+    expect(
+      screen.getByText("路径格式不正确，请填写域名后的路径，例如 /pro 或 /openai/pro。"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "添加" })).toBeDisabled();
+  });
+
+  test("requires confirmation before deleting a channel group and its routes", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(
+      <Harness
+        initialValues={{
+          ...DEFAULT_VISUAL_VALUES,
+          routingChannelGroups: [
+            {
+              id: "group-team-a",
+              name: "team-a",
+              description: "Team A group",
+              strategy: "round-robin",
+              scheduling: schedulingFromStrategy("round-robin"),
+              allowedModels: [],
+              channels: [{ id: "channel-main-codex", name: "Main Codex", priority: "" }],
+            },
+          ],
+          routingPathRoutes: [
+            {
+              id: "route-team-a",
+              path: "/team-a",
+              group: "team-a",
+              stripPrefix: true,
+              fallback: "none",
+            },
+          ],
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "删除分组" }));
+
+    expect(screen.getByRole("dialog", { name: "删除渠道分组" })).toBeInTheDocument();
+    expect(screen.getByText(/删除渠道分组 team-a/)).toBeInTheDocument();
+    expect(screen.getByTestId("group-count")).toHaveTextContent("1");
+    expect(screen.getByTestId("route-count")).toHaveTextContent("1");
+
+    await user.click(screen.getByRole("button", { name: "取消" }));
+
+    expect(screen.getByTestId("group-count")).toHaveTextContent("1");
+    expect(screen.getByTestId("route-count")).toHaveTextContent("1");
+
+    await user.click(screen.getByRole("button", { name: "删除分组" }));
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    expect(screen.getByTestId("group-count")).toHaveTextContent("0");
+    expect(screen.getByTestId("route-count")).toHaveTextContent("0");
+  });
+
+  test("shows only invalid in the status column and opens a reason dialog for stale channels", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(
+      <Harness
+        initialValues={{
+          ...DEFAULT_VISUAL_VALUES,
+          routingChannelGroups: [
+            {
+              id: "group-stale",
+              name: "legacy",
+              description: "历史分组",
+              strategy: "round-robin",
+              scheduling: schedulingFromStrategy("round-robin"),
+              allowedModels: [],
+              channels: [
+                { id: "channel-stale", name: "Legacy Claude", priority: "90" },
+                { id: "channel-valid", name: "Main Codex", priority: "" },
+              ],
+            },
+          ],
+          routingPathRoutes: [
+            {
+              id: "route-stale",
+              path: "/legacy",
+              group: "legacy",
+              stripPrefix: true,
+              fallback: "none",
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText("异常")).toBeInTheDocument();
+    expect(screen.queryByText("1 个已删除渠道")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /异常/ }));
+
+    const dialog = screen.getByRole("dialog", { name: "分组异常原因" });
+    expect(within(dialog).getByText("该分组包含已删除渠道")).toBeInTheDocument();
+    expect(within(dialog).getByText("1 个已删除渠道")).toBeInTheDocument();
+    expect(within(dialog).getByText("Legacy Claude")).toBeInTheDocument();
+    expect(within(dialog).getByText("已删除")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "编辑分组" })).not.toBeInTheDocument();
+    expect(toastMocks.warning).not.toHaveBeenCalled();
+  });
+
+  test("shows disabled auth-file channels as disabled instead of deleted", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(
+      <Harness
+        availableChannels={["Main Codex", "GptPlus8"]}
+        availableChannelDetails={{
+          "main codex": {
+            name: "Main Codex",
+            source: "codex",
+            default_tags: [],
+            custom_tags: [],
+            hidden_default_tags: [],
+            display_tags: ["codex"],
+          },
+          gptplus8: {
+            name: "GptPlus8",
+            source: "codex",
+            disabled: true,
+            default_tags: [],
+            custom_tags: [],
+            hidden_default_tags: [],
+            display_tags: ["codex"],
+          },
+        }}
+        initialValues={{
+          ...DEFAULT_VISUAL_VALUES,
+          routingChannelGroups: [
+            {
+              id: "group-mixed",
+              name: "chatgpt-mix",
+              description: "pro 和 plus 账号池的混合池",
+              strategy: "round-robin",
+              scheduling: schedulingFromStrategy("round-robin"),
+              allowedModels: [],
+              channels: [
+                { id: "channel-deleted", name: "GptPlus6", priority: "20" },
+                { id: "channel-disabled", name: "GptPlus8", priority: "" },
+                { id: "channel-valid", name: "Main Codex", priority: "" },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /异常/ }));
+
+    const dialog = screen.getByRole("dialog", { name: "分组异常原因" });
+    expect(within(dialog).getByText("1 个已删除渠道")).toBeInTheDocument();
+    expect(within(dialog).getByText("GptPlus6")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "查看并清理" }));
+
+    expect(screen.getAllByText("GptPlus8").length).toBeGreaterThan(0);
+    const disabledRow = screen.getByRole("row", { name: /GptPlus8/ });
+    expect(within(disabledRow).getByText("已禁用")).toBeInTheDocument();
+    expect(within(disabledRow).queryByText("已删除")).not.toBeInTheDocument();
+  });
+
+  test("uses group-scoped channel details for duplicate channel names", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(
+      <Harness
+        availableChannels={["Shared Codex"]}
+        availableChannelDetails={{
+          "shared codex": {
+            name: "Shared Codex",
+            source: "codex",
+            disabled: true,
+            default_tags: [],
+            custom_tags: [],
+            hidden_default_tags: [],
+            display_tags: ["codex"],
+          },
+        }}
+        availableChannelDetailsByGroup={{
+          "active-pool": {
+            "shared codex": {
+              name: "Shared Codex",
+              source: "codex",
+              disabled: false,
+              default_tags: [],
+              custom_tags: [],
+              hidden_default_tags: [],
+              display_tags: ["codex"],
+            },
+          },
+          "disabled-pool": {
+            "shared codex": {
+              name: "Shared Codex",
+              source: "codex",
+              disabled: true,
+              default_tags: [],
+              custom_tags: [],
+              hidden_default_tags: [],
+              display_tags: ["codex"],
+            },
+          },
+        }}
+        initialValues={{
+          ...DEFAULT_VISUAL_VALUES,
+          routingChannelGroups: [
+            {
+              id: "group-active",
+              name: "active-pool",
+              description: "",
+              strategy: "round-robin",
+              scheduling: schedulingFromStrategy("round-robin"),
+              allowedModels: [],
+              channels: [{ id: "channel-active", name: "Shared Codex", priority: "" }],
+            },
+            {
+              id: "group-disabled",
+              name: "disabled-pool",
+              description: "",
+              strategy: "round-robin",
+              scheduling: schedulingFromStrategy("round-robin"),
+              allowedModels: [],
+              channels: [{ id: "channel-disabled", name: "Shared Codex", priority: "" }],
+            },
+          ],
+        }}
+      />,
+    );
+
+    const activeGroupRow = screen.getByRole("row", { name: /active-pool/ });
+    await user.click(within(activeGroupRow).getByRole("button", { name: "编辑分组" }));
+
+    const dialog = screen.getByRole("dialog", { name: "编辑分组" });
+    const activeChannelRow = within(dialog).getByRole("row", { name: /Shared Codex/ });
+    expect(within(activeChannelRow).queryByText("已禁用")).not.toBeInTheDocument();
+  });
+});
+
+describe("RoutingConfigEditor scheduling", () => {
+  const defaultPoolDetails = {
+    default: {
+      "main codex": { name: "Main Codex" },
+      "backup claude": { name: "Backup Claude" },
+    },
+  } as Record<string, Record<string, ChannelGroupChannelDetail>>;
+
+  // The whole point of the new model: an operator can keep conversations pinned
+  // *and* still choose how new ones are spread. The old enum made these two
+  // settings mutually exclusive.
+  test("combines session stickiness with a distribution instead of replacing it", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.click(screen.getByRole("combobox", { name: "分配方式" }));
+    await user.click(screen.getByRole("option", { name: "最少负载优先" }));
+    await user.click(screen.getByRole("checkbox", { name: "启用会话粘性" }));
+    await user.type(screen.getByPlaceholderText("pro"), "team-mixed");
+    await user.type(screen.getByPlaceholderText("/pro"), "/team-mixed");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Main Codex" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("button", { name: "添加" }));
+
+    expect(screen.getByTestId("group-distribution")).toHaveTextContent("least-load");
+    expect(screen.getByTestId("group-sticky")).toHaveTextContent("on");
+    // The legacy mirror stays coherent for a backend that predates the block.
+    expect(screen.getByTestId("group-strategy")).toHaveTextContent("session-sticky");
+  });
+
+  test("persists the sticky request bound so one session cannot hold an account forever", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.click(screen.getByRole("checkbox", { name: "启用会话粘性" }));
+    await user.type(screen.getByRole("textbox", { name: "单会话请求上限" }), "50");
+    await user.type(screen.getByPlaceholderText("pro"), "team-bounded");
+    await user.type(screen.getByPlaceholderText("/pro"), "/team-bounded");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Main Codex" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("button", { name: "添加" }));
+
+    expect(screen.getByTestId("group-sticky-max")).toHaveTextContent("50");
+  });
+
+  // The root path used to expose a single strategy dropdown and nothing else,
+  // so there was no way to weight the accounts it schedules across.
+  test("exposes the root path members so their weights can be configured", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness availableChannelDetailsByGroup={defaultPoolDetails} />);
+
+    const row = screen.getByRole("row", { name: /系统默认/ });
+    await user.click(within(row).getByRole("button", { name: "编辑分组" }));
+
+    const memberTable = screen.getByRole("table", { name: /默认调度池成员/ });
+    expect(within(memberTable).getByText("Main Codex")).toBeInTheDocument();
+    expect(within(memberTable).getByText("Backup Claude")).toBeInTheDocument();
+
+    const weightInputs = within(memberTable).getAllByPlaceholderText("1");
+    await user.type(weightInputs[0], "3");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("group-name")).toHaveTextContent("default");
+    });
+    expect(screen.getByTestId("channel-priority")).toHaveTextContent("3");
+  });
+
+  // An older backend reads an unknown distribution as weighted, so the choice
+  // only appears once the backend says it accepts it.
+  test("offers the reset-aware distribution only on a backend that accepts it", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    const { unmount } = render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.click(screen.getByRole("combobox", { name: "分配方式" }));
+    expect(screen.queryByRole("option", { name: /按重置时间/ })).not.toBeInTheDocument();
+    unmount();
+
+    render(<Harness resetAwareSupported />);
+    await user.click(screen.getByRole("button", { name: "新增分组" }));
+    await user.click(screen.getByRole("combobox", { name: "分配方式" }));
+    await user.click(screen.getByRole("option", { name: /按重置时间/ }));
+    expect(screen.getByText(/优先用额度最先重置的账号/)).toBeInTheDocument();
+    await user.type(screen.getByPlaceholderText("pro"), "team-smart");
+    await user.type(screen.getByPlaceholderText("/pro"), "/team-smart");
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("option", { name: "Main Codex" }));
+    await user.click(screen.getByRole("combobox", { name: "选择渠道" }));
+    await user.click(screen.getByRole("button", { name: "添加" }));
+
+    expect(screen.getByTestId("group-distribution")).toHaveTextContent("reset-aware");
+    // The legacy mirror matches the backend's: one account answers until spent.
+    expect(screen.getByTestId("group-strategy")).toHaveTextContent("fill-first");
+  });
+
+  test("offers the root path the same distribution choices as any other group", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const user = userEvent.setup();
+
+    render(<Harness availableChannelDetailsByGroup={defaultPoolDetails} />);
+
+    const row = screen.getByRole("row", { name: /系统默认/ });
+    await user.click(within(row).getByRole("button", { name: "编辑分组" }));
+    await user.click(screen.getByRole("combobox", { name: "分配方式" }));
+    await user.click(screen.getByRole("option", { name: "最少负载优先" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("group-distribution")).toHaveTextContent("least-load");
+    });
+  });
+
+  describe("stream guards", () => {
+    const TIMEOUT = "首 token 超时（秒）";
+    const BUSY_WAIT = "全员繁忙等待上限（秒）";
+
+    const editDefaultGroup = async (user: ReturnType<typeof userEvent.setup>) => {
+      const row = screen.getByRole("row", { name: /系统默认/ });
+      await user.click(within(row).getByRole("button", { name: "编辑分组" }));
+    };
+
+    const teamPool = (guards: {
+      firstTokenTimeoutSeconds?: number;
+      busyWaitMaxSeconds?: number;
+    }): VisualConfigValues => ({
+      ...DEFAULT_VISUAL_VALUES,
+      routingChannelGroups: [
+        {
+          id: "group-team",
+          name: "team-pool",
+          description: "",
+          strategy: "round-robin",
+          scheduling: schedulingFromStrategy("round-robin"),
+          allowedModels: ["gpt-6.1-sol"],
+          channels: [{ id: "channel-main-codex", name: "Main Codex", priority: "" }],
+          ...guards,
+        },
+      ],
+      routingPathRoutes: [
+        { id: "route-team", path: "/team-pool", group: "team-pool", stripPrefix: true, fallback: "none" },
+      ],
+    });
+
+    const editTeamPool = async (user: ReturnType<typeof userEvent.setup>) => {
+      const row = screen.getByRole("row", { name: /team-pool/ });
+      await user.click(within(row).getByRole("button", { name: "编辑分组" }));
+    };
+
+    // An older backend neither stores nor enforces them; the panel must look
+    // exactly as it did before for it.
+    test("offers the stream guards only to a backend that enforces them", async () => {
+      await i18n.changeLanguage("zh-CN");
+      const user = userEvent.setup();
+      const { unmount } = render(<Harness />);
+      await editDefaultGroup(user);
+      expect(screen.queryByRole("textbox", { name: TIMEOUT })).not.toBeInTheDocument();
+      expect(screen.queryByRole("textbox", { name: BUSY_WAIT })).not.toBeInTheDocument();
+      unmount();
+
+      render(<Harness streamGuardsSupported />);
+      await editDefaultGroup(user);
+      expect(screen.getByRole("textbox", { name: TIMEOUT })).toHaveValue("");
+      // Waiting is opt-in, so an empty field has to read as off, not as a number.
+      expect(screen.getByRole("textbox", { name: BUSY_WAIT })).toHaveAttribute("placeholder", "关闭");
+    });
+
+    // Waiting is opt-in, and a non-streaming client sees nothing while it
+    // happens, so the field has to say both before anyone turns it on.
+    test("says that waiting is opt-in and silent for non-streaming requests", async () => {
+      await i18n.changeLanguage("zh-CN");
+      const user = userEvent.setup();
+      render(<Harness streamGuardsSupported />);
+      await editDefaultGroup(user);
+      const hint = screen.getByText(/^未设置时关闭/);
+      expect(hint).toHaveTextContent("每个请求最多等待两次");
+      expect(hint).toHaveTextContent("非流式请求以及图片、视频提交会静默等待");
+    });
+
+    // Each capability unlocks its own field: a backend could ship one first.
+    test.each<["first-token-timeout" | "busy-wait", string, string]>([
+      ["first-token-timeout", TIMEOUT, BUSY_WAIT],
+      ["busy-wait", BUSY_WAIT, TIMEOUT],
+    ])("offers only the %s field when only that is advertised", async (capability, shown, hidden) => {
+      await i18n.changeLanguage("zh-CN");
+      const user = userEvent.setup();
+      render(<Harness streamGuardsSupported={capability} />);
+      await editDefaultGroup(user);
+      expect(screen.getByRole("textbox", { name: shown })).toBeInTheDocument();
+      expect(screen.queryByRole("textbox", { name: hidden })).not.toBeInTheDocument();
+    });
+
+    // Unset and 0 are both off, but the stored form keeps them apart.
+    test("saves the default group's guards, telling unset apart from 0", async () => {
+      await i18n.changeLanguage("zh-CN");
+      const user = userEvent.setup();
+      render(<Harness streamGuardsSupported />);
+
+      await editDefaultGroup(user);
+      await user.type(screen.getByRole("textbox", { name: TIMEOUT }), "30");
+      await user.type(screen.getByRole("textbox", { name: BUSY_WAIT }), "0");
+      await user.click(screen.getByRole("button", { name: "保存" }));
+      expect(screen.getByTestId("saved-first-token-timeout")).toHaveTextContent("30");
+      expect(screen.getByTestId("saved-busy-wait")).toHaveTextContent("0");
+
+      await editDefaultGroup(user);
+      expect(screen.getByRole("textbox", { name: TIMEOUT })).toHaveValue("30");
+      expect(screen.getByRole("textbox", { name: BUSY_WAIT })).toHaveValue("0");
+      await user.clear(screen.getByRole("textbox", { name: TIMEOUT }));
+      await user.clear(screen.getByRole("textbox", { name: BUSY_WAIT }));
+      await user.click(screen.getByRole("button", { name: "保存" }));
+      expect(screen.getByTestId("saved-first-token-timeout")).toBeEmptyDOMElement();
+      expect(screen.getByTestId("saved-busy-wait")).toBeEmptyDOMElement();
+    });
+
+    const TIMEOUT_INVALID = "首 token 超时须留空（关闭）或填 5–300 之间的整数秒。";
+    const BUSY_WAIT_INVALID = "全员繁忙等待上限须留空（关闭）或填 0–240 之间的整数秒。";
+    // The backend answers these with a 400; the editor says why before saving.
+    test.each<[string, string, string, string]>([
+      [TIMEOUT, "4", "5", TIMEOUT_INVALID],
+      [TIMEOUT, "301", "300", TIMEOUT_INVALID],
+      [BUSY_WAIT, "241", "240", BUSY_WAIT_INVALID],
+    ])("refuses %s = %s but accepts %s", async (field, rejected, accepted, message) => {
+      await i18n.changeLanguage("zh-CN");
+      const user = userEvent.setup();
+      render(<Harness initialValues={teamPool({})} streamGuardsSupported />);
+
+      await editTeamPool(user);
+      const input = screen.getByRole("textbox", { name: field });
+      await user.type(input, rejected);
+      expect(screen.getByText(message)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+
+      await user.clear(input);
+      await user.type(input, accepted);
+      expect(screen.queryByText(message)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "保存" })).toBeEnabled();
+    });
+
+    test("accepts only digits", async () => {
+      await i18n.changeLanguage("zh-CN");
+      const user = userEvent.setup();
+      render(<Harness streamGuardsSupported />);
+      await editDefaultGroup(user);
+      await user.type(screen.getByRole("textbox", { name: BUSY_WAIT }), "-1.5s");
+      expect(screen.getByRole("textbox", { name: BUSY_WAIT })).toHaveValue("15");
+    });
+
+    // Routing is saved whole: a group saved where the fields are not shown
+    // keeps what it had instead of being reset.
+    test("keeps stored guards when saving a group where they are not shown", async () => {
+      await i18n.changeLanguage("zh-CN");
+      const user = userEvent.setup();
+      render(
+        <Harness
+          initialValues={teamPool({ firstTokenTimeoutSeconds: 20, busyWaitMaxSeconds: 0 })}
+        />,
+      );
+
+      await editTeamPool(user);
+      expect(screen.queryByRole("textbox", { name: TIMEOUT })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "保存" }));
+      expect(screen.getByTestId("saved-first-token-timeout")).toHaveTextContent("20");
+      expect(screen.getByTestId("saved-busy-wait")).toHaveTextContent("0");
+    });
+  });
+});

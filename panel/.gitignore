@@ -12,16 +12,8 @@ playwright-report/
 .sisyphus/
 .agentflow/
 .helloagents/
-progress.md
-tasks.md
-servers.local.md
-.mailbox/
-.agents/state/
-.agents/automations/
-AGENTS.md
-CLAUDE.md
-.zed/CONVENTIONS.md
-.agents/goal-forge/runs/
-CODEBUDDY.md
-.agents/docs/
-HERMES.md
+output/playwright/
+.playwright-cli/
+
+# Local-only screenshot helper (hardcoded absolute paths, dev preview only)
+packages/ui/src/feedback/screenshot.mjs

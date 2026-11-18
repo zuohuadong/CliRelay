@@ -1,0 +1,391 @@
+package auth
+
+import (
+	"context"
+	"time"
+
+	log "github.com/sirupsen/logrus"
+)
+
+type refreshService struct {
+	manager *Manager
+}
+
+func newRefreshService(manager *Manager) refreshService {
+	return refreshService{manager: manager}
+}
+
+// checkRefreshes is kept as a package-level Manager method for compatibility
+// with older in-package callers and tests. The refresh service owns the
+// implementation so the background loop and explicit checks share one path.
+func (m *Manager) checkRefreshes(ctx context.Context) {
+	newRefreshService(m).checkRefreshes(ctx)
+}
+
+func (m *Manager) recoverRotatedRefreshToken(ctx context.Context, id string, used *Auth, now time.Time, refreshErr error) bool {
+	return newRefreshService(m).recoverRotatedRefreshToken(ctx, id, used, now, refreshErr)
+}
+
+func (s refreshService) startAutoRefresh(parent context.Context, interval time.Duration) {
+	if s.manager == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = refreshCheckInterval
+	}
+	if s.manager.refreshCancel != nil {
+		s.manager.refreshCancel()
+		s.manager.refreshCancel = nil
+	}
+	ctx, cancel := context.WithCancel(parent)
+	s.manager.refreshCancel = cancel
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		s.checkRefreshes(ctx)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.checkRefreshes(ctx)
+			}
+		}
+	}()
+}
+
+func (s refreshService) stopAutoRefresh() {
+	if s.manager == nil {
+		return
+	}
+	if s.manager.refreshCancel != nil {
+		s.manager.refreshCancel()
+		s.manager.refreshCancel = nil
+	}
+}
+
+func (s refreshService) checkRefreshes(ctx context.Context) {
+	if s.manager == nil {
+		return
+	}
+	now := time.Now()
+	snapshot := s.snapshotAuths()
+	for _, auth := range snapshot {
+		typ, _ := auth.AccountInfo()
+		if typ == "api_key" {
+			continue
+		}
+		if !s.shouldRefresh(auth, now) {
+			continue
+		}
+		log.Debugf("checking refresh for %s, %s, %s", auth.Provider, auth.ID, typ)
+
+		if exec := s.manager.executorForTenant(auth.TenantID, auth.Provider); exec == nil {
+			continue
+		}
+		if !s.markRefreshPending(auth.ID, now) {
+			continue
+		}
+		s.manager.refreshInflight.Add(1)
+		go func(id string) {
+			defer s.manager.refreshInflight.Done()
+			s.refreshAuthWithLimit(ctx, id)
+		}(auth.ID)
+	}
+	s.manager.checkQuotaRecoveries(ctx, snapshot, now)
+}
+
+func (s refreshService) refreshAuthWithLimit(ctx context.Context, id string) {
+	if s.manager == nil {
+		return
+	}
+	if s.manager.refreshSemaphore == nil {
+		s.refreshAuth(ctx, id)
+		return
+	}
+	select {
+	case s.manager.refreshSemaphore <- struct{}{}:
+		defer func() { <-s.manager.refreshSemaphore }()
+	case <-ctx.Done():
+		return
+	}
+	s.refreshAuth(ctx, id)
+}
+
+func (s refreshService) snapshotAuths() []*Auth {
+	if s.manager == nil {
+		return nil
+	}
+	s.manager.mu.RLock()
+	defer s.manager.mu.RUnlock()
+	out := make([]*Auth, 0, len(s.manager.auths))
+	for _, auth := range s.manager.auths {
+		out = append(out, auth.Clone())
+	}
+	return out
+}
+
+func (s refreshService) shouldRefresh(auth *Auth, now time.Time) bool {
+	if auth == nil {
+		return false
+	}
+	if auth.Disabled || auth.Status == StatusDisabled {
+		return false
+	}
+	if !auth.NextRefreshAfter.IsZero() && now.Before(auth.NextRefreshAfter) {
+		return false
+	}
+	if evaluator, ok := auth.Runtime.(RefreshEvaluator); ok && evaluator != nil {
+		return evaluator.ShouldRefresh(now, auth)
+	}
+	if claudeOAuthRefreshPending(auth) {
+		return true
+	}
+	if codexOAuthRefreshPending(auth) {
+		return true
+	}
+
+	lastRefresh := auth.LastRefreshedAt
+	if lastRefresh.IsZero() {
+		if ts, ok := authLastRefreshTimestamp(auth); ok {
+			lastRefresh = ts
+		}
+	}
+
+	expiry, hasExpiry := auth.ExpirationTime()
+
+	if interval := authPreferredInterval(auth); interval > 0 {
+		if hasExpiry && !expiry.IsZero() {
+			if !expiry.After(now) {
+				return true
+			}
+			if expiry.Sub(now) <= interval {
+				return true
+			}
+		}
+		if lastRefresh.IsZero() {
+			return true
+		}
+		return now.Sub(lastRefresh) >= interval
+	}
+
+	lead := ProviderRefreshLead(auth.Provider, auth.Runtime)
+	if lead == nil {
+		return false
+	}
+	if *lead <= 0 {
+		if hasExpiry && !expiry.IsZero() {
+			return now.After(expiry)
+		}
+		return false
+	}
+	if hasExpiry && !expiry.IsZero() {
+		return time.Until(expiry) <= *lead
+	}
+	if !lastRefresh.IsZero() {
+		return now.Sub(lastRefresh) >= *lead
+	}
+	return true
+}
+
+func (s refreshService) markRefreshPending(id string, now time.Time) bool {
+	if s.manager == nil {
+		return false
+	}
+	s.manager.mu.Lock()
+	defer s.manager.mu.Unlock()
+	auth, ok := s.manager.auths[id]
+	if !ok || auth == nil {
+		return false
+	}
+	if !auth.NextRefreshAfter.IsZero() && now.Before(auth.NextRefreshAfter) {
+		return false
+	}
+	auth.NextRefreshAfter = now.Add(refreshPendingBackoff)
+	s.manager.auths[id] = auth
+	return true
+}
+
+func (s refreshService) refreshAuth(ctx context.Context, id string) {
+	if s.manager == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	auth, exec := s.currentAuthAndExecutor(id)
+	if auth == nil || exec == nil {
+		return
+	}
+	claim := s.claimBackgroundRefresh(ctx, auth)
+	if !claim.proceed {
+		return
+	}
+	defer claim.done()
+	if ctx.Err() != nil {
+		// Stopping before the refresh token was spent: the next process
+		// refreshes it.
+		log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)
+		return
+	}
+	// From here on the refresh token may be spent, and most providers rotate
+	// it: the replacement exists only in the response. Shutdown cancels ctx,
+	// so the exchange and the write that keeps its result run on a context
+	// that does not follow it. Cutting either short after the upstream rotated
+	// left the credential with a retired token (refresh_token_reused on the
+	// next try) and the account needing a new login.
+	work, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshWorkTimeout)
+	defer cancel()
+	auth = claim.auth
+	cloned := auth.Clone()
+	before := s.manager.refreshBaseline(cloned)
+	updated, err := exec.Refresh(work, cloned)
+	log.Debugf("refreshed %s, %s, %v", auth.Provider, auth.ID, err)
+	store, cancelStore := context.WithTimeout(context.WithoutCancel(ctx), refreshStoreTimeout)
+	defer cancelStore()
+	now := time.Now()
+	if err != nil {
+		s.applyRefreshFailure(store, id, auth, cloned, now, err)
+		return
+	}
+	s.applyRefreshSuccess(store, auth, cloned, updated, now, before)
+}
+
+// WaitForRefreshes waits until the refreshes the auto-refresh loop started
+// have finished and stored their result, or until ctx ends. Call it after
+// StopAutoRefresh during shutdown, so a process does not exit holding the only
+// copy of a rotated refresh token.
+func (m *Manager) WaitForRefreshes(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		m.refreshInflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s refreshService) currentAuthAndExecutor(id string) (*Auth, ProviderExecutor) {
+	if s.manager == nil {
+		return nil, nil
+	}
+	s.manager.mu.RLock()
+	defer s.manager.mu.RUnlock()
+	auth := s.manager.auths[id]
+	if auth == nil {
+		return nil, nil
+	}
+	return auth, s.manager.executorForTenantLocked(auth.TenantID, auth.Provider)
+}
+
+func (s refreshService) applyRefreshFailure(ctx context.Context, id string, auth *Auth, cloned *Auth, now time.Time, err error) {
+	permanent := IsPermanentAuthError(err)
+	if permanent {
+		log.Warnf("permanent refresh failure for %s (%s): %v", auth.ID, auth.Provider, err)
+		if supportsRefreshTokenRaceRecovery(cloned) && s.recoverRotatedRefreshToken(ctx, id, cloned, now, err) {
+			return
+		}
+	}
+	s.manager.mu.Lock()
+	if current := s.manager.auths[id]; current != nil {
+		current.NextRefreshAfter = now.Add(refreshFailureBackoff)
+		current.LastError = &Error{Message: err.Error()}
+		if permanent {
+			if supportsRefreshTokenRaceRecovery(current) && canKeepRefreshFailureActive(current, now) {
+				current.Status = StatusActive
+				current.StatusMessage = ""
+			} else {
+				current.Status = StatusError
+				current.StatusMessage = err.Error()
+			}
+		}
+		current.UpdatedAt = now
+		s.manager.auths[id] = current
+	}
+	s.manager.mu.Unlock()
+}
+
+func (s refreshService) applyRefreshSuccess(ctx context.Context, auth *Auth, cloned *Auth, updated *Auth, now time.Time, before MetadataSnapshot) {
+	if updated == nil {
+		updated = cloned
+	}
+	if updated.Runtime == nil && auth != nil {
+		updated.Runtime = auth.Runtime
+	}
+	updated.LastRefreshedAt = now
+	updated.NextRefreshAfter = time.Time{}
+	updated.LastError = nil
+	updated.UpdatedAt = now
+	markClaudeOAuthHealthRefreshSuccessLocked(updated, now)
+	markCodexOAuthHealthRefreshSuccessLocked(updated, now)
+	s.manager.persistRefreshResult(ctx, updated, before)
+}
+
+func (s refreshService) recoverRotatedRefreshToken(ctx context.Context, id string, used *Auth, now time.Time, refreshErr error) bool {
+	if s.manager == nil {
+		return false
+	}
+	usedRefreshToken := authRefreshToken(used)
+	if usedRefreshToken == "" {
+		return false
+	}
+
+	latest := s.findAuthWithDifferentRefreshToken(id, usedRefreshToken)
+	if latest == nil {
+		if item, err := s.manager.persistedAuthByID(ctx, id); err == nil {
+			if latestRefreshToken := authRefreshToken(item); item != nil && latestRefreshToken != "" && latestRefreshToken != usedRefreshToken {
+				latest = item.Clone()
+			}
+		} else if s.manager.store != nil {
+			log.Debugf("failed to re-read auth store after refresh failure for %s: %v", id, err)
+		}
+	}
+	if latest == nil {
+		return false
+	}
+
+	s.manager.mu.Lock()
+	if current := s.manager.auths[id]; current != nil {
+		if currentRefreshToken := authRefreshToken(current); currentRefreshToken != "" && currentRefreshToken != usedRefreshToken {
+			latest = current.Clone()
+		} else {
+			preserveRuntimeFields(latest, current)
+		}
+	} else {
+		s.manager.mu.Unlock()
+		return false
+	}
+	applyRecoveredRefreshState(latest, now, refreshErr)
+	latest.UpdatedAt = now
+	latest.EnsureIndex()
+	s.manager.auths[id] = latest.Clone()
+	s.manager.mu.Unlock()
+
+	log.Infof("recovered refresh failure for %s by loading rotated refresh token", id)
+	s.manager.hook.OnAuthUpdated(ctx, latest.Clone())
+	return true
+}
+
+func (s refreshService) findAuthWithDifferentRefreshToken(id string, usedRefreshToken string) *Auth {
+	if s.manager == nil {
+		return nil
+	}
+	s.manager.mu.RLock()
+	defer s.manager.mu.RUnlock()
+	current := s.manager.auths[id]
+	if current == nil {
+		return nil
+	}
+	currentRefreshToken := authRefreshToken(current)
+	if currentRefreshToken == "" || currentRefreshToken == usedRefreshToken {
+		return nil
+	}
+	return current.Clone()
+}

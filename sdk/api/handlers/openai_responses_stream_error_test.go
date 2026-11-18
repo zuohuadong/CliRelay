@@ -1,10 +1,11 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/MoeForge/moego/json"
 )
 
 func TestBuildOpenAIResponsesStreamErrorChunk(t *testing.T) {
@@ -28,26 +29,6 @@ func TestBuildOpenAIResponsesStreamErrorChunk(t *testing.T) {
 	}
 	if payload["sequence_number"] != float64(0) {
 		t.Fatalf("sequence_number = %v, want %v", payload["sequence_number"], 0)
-	}
-	if payload["status"] != float64(http.StatusInternalServerError) {
-		t.Fatalf("status = %v, want %v", payload["status"], http.StatusInternalServerError)
-	}
-	errorPayload, ok := payload["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing nested error object: %#v", payload["error"])
-	}
-	if errorPayload["code"] != "internal_server_error" {
-		t.Fatalf("error.code = %v, want %q", errorPayload["code"], "internal_server_error")
-	}
-	if errorPayload["type"] != "server_error" {
-		t.Fatalf("error.type = %v, want %q", errorPayload["type"], "server_error")
-	}
-	if errorPayload["message"] != "unexpected EOF" {
-		t.Fatalf("error.message = %v, want %q", errorPayload["message"], "unexpected EOF")
-	}
-	headers, ok := payload["headers"].(map[string]any)
-	if !ok || headers["Content-Type"] != "application/json" {
-		t.Fatalf("headers = %#v, want Content-Type application/json", payload["headers"])
 	}
 }
 
@@ -166,170 +147,6 @@ func TestBuildOpenAIResponsesStreamErrorChunkPrioritizesPayloadSequenceNumber(t 
 	}
 }
 
-func TestBuildOpenAIResponsesStreamErrorChunkPreservesPlainAuthUnavailable(t *testing.T) {
-	chunk := BuildOpenAIResponsesStreamErrorChunk(
-		http.StatusServiceUnavailable,
-		"auth_unavailable: no auth available (providers=astron-code, model=deepseek-v4-pro)",
-		0,
-	)
-	var payload map[string]any
-	if err := json.Unmarshal(chunk, &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if payload["code"] != "auth_unavailable" {
-		t.Fatalf("code = %v, want %q", payload["code"], "auth_unavailable")
-	}
-	if payload["status"] != float64(http.StatusServiceUnavailable) {
-		t.Fatalf("status = %v, want %v", payload["status"], http.StatusServiceUnavailable)
-	}
-	errorPayload, ok := payload["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing nested error object: %#v", payload["error"])
-	}
-	if errorPayload["type"] != "authentication_error" {
-		t.Fatalf("error.type = %v, want %q", errorPayload["type"], "authentication_error")
-	}
-}
-
-func TestBuildOpenAIResponsesStreamErrorChunkNormalizesContextTooLarge(t *testing.T) {
-	chunk := BuildOpenAIResponsesStreamErrorChunk(
-		http.StatusRequestEntityTooLarge,
-		`{"error":{"message":"request policy glm-5.1-large-request-guard blocked upstream model glm-5.1 via provider bigmodel-coding: request_bytes 706275 exceeds max-request-bytes 600000","type":"invalid_request_error","code":"context_length_exceeded"}}`,
-		0,
-	)
-	var payload map[string]any
-	if err := json.Unmarshal(chunk, &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if payload["type"] != "error" {
-		t.Fatalf("type = %v, want %q", payload["type"], "error")
-	}
-	if payload["code"] != "context_too_large" {
-		t.Fatalf("code = %v, want %q", payload["code"], "context_too_large")
-	}
-	if payload["status"] != float64(http.StatusRequestEntityTooLarge) {
-		t.Fatalf("status = %v, want %v", payload["status"], http.StatusRequestEntityTooLarge)
-	}
-	errorPayload, ok := payload["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing nested error object: %#v", payload["error"])
-	}
-	// 嵌套 error 体按上游契约原样保留（见 PreservesNestedError），
-	// 归一化只作用于顶层 code；此处不再断言嵌套 code 被改写。
-	if errorPayload["type"] != "invalid_request_error" {
-		t.Fatalf("error.type = %v, want %q", errorPayload["type"], "invalid_request_error")
-	}
-}
-
-func TestBuildOpenAIResponsesResponseFailedChunkUsesCodexContextCode(t *testing.T) {
-	chunk := BuildOpenAIResponsesResponseFailedChunk(
-		http.StatusRequestEntityTooLarge,
-		`{"error":{"message":"request policy glm-5.1-large-request-guard blocked upstream model glm-5.1 via provider bigmodel-coding: request_bytes 706275 exceeds max-request-bytes 600000","type":"invalid_request_error","code":"context_length_exceeded"}}`,
-		0,
-	)
-	var payload map[string]any
-	if err := json.Unmarshal(chunk, &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if payload["type"] != "response.failed" {
-		t.Fatalf("type = %v, want %q", payload["type"], "response.failed")
-	}
-	response, ok := payload["response"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing response object: %#v", payload["response"])
-	}
-	if response["status"] != "failed" {
-		t.Fatalf("response.status = %v, want failed", response["status"])
-	}
-	errorPayload, ok := response["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing response.error object: %#v", response["error"])
-	}
-	if errorPayload["code"] != "context_length_exceeded" {
-		t.Fatalf("response.error.code = %v, want context_length_exceeded", errorPayload["code"])
-	}
-	if errorPayload["type"] != "invalid_request_error" {
-		t.Fatalf("response.error.type = %v, want invalid_request_error", errorPayload["type"])
-	}
-}
-
-func TestBuildOpenAIResponsesResponseFailedChunkClassifiesRequestScopedItemNotFound(t *testing.T) {
-	chunk := BuildOpenAIResponsesResponseFailedChunk(http.StatusNotFound, requestScopedItemNotFoundErrorMessage, 0)
-	var payload map[string]any
-	if err := json.Unmarshal(chunk, &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	response, ok := payload["response"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing response object: %#v", payload["response"])
-	}
-	errorPayload, ok := response["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing response.error object: %#v", response["error"])
-	}
-	if got := errorPayload["code"]; got != "item_not_found" {
-		t.Fatalf("response.error.code = %v, want item_not_found", got)
-	}
-	if got := errorPayload["type"]; got != "invalid_request_error" {
-		t.Fatalf("response.error.type = %v, want invalid_request_error", got)
-	}
-}
-
-func TestBuildOpenAIResponsesResponseFailedChunkRecognizesCodexContextWindowText(t *testing.T) {
-	errText := "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."
-	if !IsOpenAIResponsesContextWindowError(http.StatusInternalServerError, errText) {
-		t.Fatalf("expected Codex context window text to be recognized")
-	}
-	chunk := BuildOpenAIResponsesResponseFailedChunk(http.StatusInternalServerError, errText, 0)
-	var payload map[string]any
-	if err := json.Unmarshal(chunk, &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	response, ok := payload["response"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing response object: %#v", payload["response"])
-	}
-	errorPayload, ok := response["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing response.error object: %#v", response["error"])
-	}
-	if errorPayload["code"] != "context_length_exceeded" {
-		t.Fatalf("response.error.code = %v, want context_length_exceeded", errorPayload["code"])
-	}
-	if errorPayload["type"] != "invalid_request_error" {
-		t.Fatalf("response.error.type = %v, want invalid_request_error", errorPayload["type"])
-	}
-	if errorPayload["message"] != errText {
-		t.Fatalf("response.error.message = %v, want %q", errorPayload["message"], errText)
-	}
-}
-
-func TestBuildOpenAIResponsesStreamErrorChunkPreservesUpstreamUnavailableContextDiagnostics(t *testing.T) {
-	errText := `{"error":{"message":"upstream_model_unavailable: no executable upstream model available (provider=astron-code, model=deepseek-v4-pro, request_bytes=121, candidates=xopdeepseekv4pro,astron-code-latest, candidate_context_lengths=astron-code-latest:500000)","type":"server_error","code":"internal_server_error"}}`
-	if IsOpenAIResponsesContextWindowError(http.StatusServiceUnavailable, errText) {
-		t.Fatalf("upstream model availability diagnostics must not be treated as context window overflow")
-	}
-
-	chunk := BuildOpenAIResponsesStreamErrorChunk(http.StatusServiceUnavailable, errText, 0)
-	var payload map[string]any
-	if err := json.Unmarshal(chunk, &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if payload["code"] != "internal_server_error" {
-		t.Fatalf("code = %v, want internal_server_error", payload["code"])
-	}
-	errorPayload, ok := payload["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing nested error object: %#v", payload["error"])
-	}
-	if errorPayload["type"] != "server_error" {
-		t.Fatalf("error.type = %v, want server_error", errorPayload["type"])
-	}
-	if errorPayload["code"] != "internal_server_error" {
-		t.Fatalf("error.code = %v, want internal_server_error", errorPayload["code"])
-	}
-}
-
 func TestBuildOpenAIResponsesStreamFailedChunkPreservesNestedError(t *testing.T) {
 	chunk := BuildOpenAIResponsesStreamFailedChunk(
 		http.StatusBadRequest,
@@ -409,5 +226,188 @@ func TestBuildOpenAIResponsesStreamErrorChunkPreservesLargeIntPrecision(t *testi
 	}
 	if strings.Contains(failedRaw, "9007199254740992") {
 		t.Fatalf("large integer was corrupted by float64 in failed chunk: %s", failedRaw)
+	}
+}
+
+func TestBuildOpenAIResponsesStreamErrorChunkRequestTimeoutIsServerError(t *testing.T) {
+	chunk := BuildOpenAIResponsesStreamErrorChunk(http.StatusRequestTimeout, "stream disconnected before completion", 0)
+	var payload struct {
+		Type           string         `json:"type"`
+		Error          map[string]any `json:"error"`
+		SequenceNumber int            `json:"sequence_number"`
+	}
+	if errUnmarshal := json.Unmarshal(chunk, &payload); errUnmarshal != nil {
+		t.Fatalf("unmarshal: %v", errUnmarshal)
+	}
+	if payload.Type != "error" {
+		t.Fatalf("type = %q, want %q", payload.Type, "error")
+	}
+	if got := payload.Error["code"]; got != "request_timeout" {
+		t.Fatalf("error.code = %v, want %q", got, "request_timeout")
+	}
+	if got := payload.Error["type"]; got != "server_error" {
+		t.Fatalf("error.type = %v, want %q", got, "server_error")
+	}
+
+	failedChunk := BuildOpenAIResponsesStreamFailedChunk(http.StatusRequestTimeout, "stream disconnected before completion", 0)
+	var failedPayload struct {
+		Type     string `json:"type"`
+		Response struct {
+			Status string         `json:"status"`
+			Error  map[string]any `json:"error"`
+		} `json:"response"`
+	}
+	if errUnmarshal := json.Unmarshal(failedChunk, &failedPayload); errUnmarshal != nil {
+		t.Fatalf("unmarshal: %v", errUnmarshal)
+	}
+	if got := failedPayload.Response.Error["code"]; got != "request_timeout" {
+		t.Fatalf("failed.response.error.code = %v, want %q", got, "request_timeout")
+	}
+	if got := failedPayload.Response.Error["type"]; got != "server_error" {
+		t.Fatalf("failed.response.error.type = %v, want %q", got, "server_error")
+	}
+}
+
+func TestBuildOpenAIResponsesStreamChunksMapAnthropicPromptTooLongToContextLengthExceeded(t *testing.T) {
+	errText := `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}`
+
+	chunk := BuildOpenAIResponsesStreamErrorChunk(http.StatusBadRequest, errText, 0)
+	var payload struct {
+		Type  string         `json:"type"`
+		Error map[string]any `json:"error"`
+	}
+	if errUnmarshal := json.Unmarshal(chunk, &payload); errUnmarshal != nil {
+		t.Fatalf("unmarshal error chunk: %v", errUnmarshal)
+	}
+	if got := payload.Error["code"]; got != "context_length_exceeded" {
+		t.Fatalf("error.code = %v, want %q; raw=%s", got, "context_length_exceeded", string(chunk))
+	}
+	if got := payload.Error["type"]; got != "invalid_request_error" {
+		t.Fatalf("error.type = %v, want %q", got, "invalid_request_error")
+	}
+	if got := payload.Error["message"]; got != "prompt is too long: 210000 tokens > 200000 maximum" {
+		t.Fatalf("error.message = %v", got)
+	}
+
+	failedChunk := BuildOpenAIResponsesStreamFailedChunk(http.StatusBadRequest, errText, 0)
+	var failedPayload struct {
+		Type     string `json:"type"`
+		Response struct {
+			Status string         `json:"status"`
+			Error  map[string]any `json:"error"`
+		} `json:"response"`
+	}
+	if errUnmarshal := json.Unmarshal(failedChunk, &failedPayload); errUnmarshal != nil {
+		t.Fatalf("unmarshal failed chunk: %v", errUnmarshal)
+	}
+	if got := failedPayload.Response.Error["code"]; got != "context_length_exceeded" {
+		t.Fatalf("failed.response.error.code = %v, want %q; raw=%s", got, "context_length_exceeded", string(failedChunk))
+	}
+	if got := failedPayload.Response.Error["type"]; got != "invalid_request_error" {
+		t.Fatalf("failed.response.error.type = %v, want %q", got, "invalid_request_error")
+	}
+
+	// Existing code must be preserved.
+	withCode := BuildOpenAIResponsesStreamFailedChunk(
+		http.StatusBadRequest,
+		`{"type":"error","error":{"type":"invalid_request_error","code":"custom_code","message":"prompt is too long: 210000 tokens > 200000 maximum"}}`,
+		0,
+	)
+	var withCodePayload struct {
+		Response struct {
+			Error map[string]any `json:"error"`
+		} `json:"response"`
+	}
+	if errUnmarshal := json.Unmarshal(withCode, &withCodePayload); errUnmarshal != nil {
+		t.Fatalf("unmarshal withCode chunk: %v", errUnmarshal)
+	}
+	if got := withCodePayload.Response.Error["code"]; got != "custom_code" {
+		t.Fatalf("failed.response.error.code with existing code = %v, want %q", got, "custom_code")
+	}
+
+	// Unrelated invalid_request_error without a code remains unchanged.
+	otherErr := BuildOpenAIResponsesStreamFailedChunk(
+		http.StatusBadRequest,
+		`{"type":"error","error":{"type":"invalid_request_error","message":"messages.0.content: Field required"}}`,
+		0,
+	)
+	var otherPayload struct {
+		Response struct {
+			Error map[string]any `json:"error"`
+		} `json:"response"`
+	}
+	if errUnmarshal := json.Unmarshal(otherErr, &otherPayload); errUnmarshal != nil {
+		t.Fatalf("unmarshal otherErr chunk: %v", errUnmarshal)
+	}
+	if _, hasCode := otherPayload.Response.Error["code"]; hasCode {
+		t.Fatalf("unrelated invalid_request_error unexpectedly gained code: %v", otherPayload.Response.Error)
+	}
+}
+
+func TestBuildOpenAIResponsesStreamErrorChunk_BodyErrorLayoutAndBlankPolicyFallback(t *testing.T) {
+	bodyWrapped := BuildOpenAIResponsesStreamErrorChunk(
+		http.StatusBadRequest,
+		`{"type":"error","body":{"error":{"code":"bio_policy","message":"   "}},"sequence_number":9}`,
+		1,
+	)
+	var chunk openAIResponsesStreamErrorChunk
+	if err := json.Unmarshal(bodyWrapped, &chunk); err != nil {
+		t.Fatalf("unmarshal error chunk: %v (%s)", err, bodyWrapped)
+	}
+	if chunk.SequenceNumber != 9 {
+		t.Fatalf("sequence_number = %d, want 9", chunk.SequenceNumber)
+	}
+	if chunk.Error["code"] != "bio_policy" {
+		t.Fatalf("error.code = %v, want bio_policy", chunk.Error["code"])
+	}
+	if chunk.Error["message"] != "This content was flagged for possible biological risk." {
+		t.Fatalf("error.message = %v, want official bio_policy fallback", chunk.Error["message"])
+	}
+
+	genericPolicy := BuildOpenAIResponsesStreamErrorChunk(
+		http.StatusBadRequest,
+		`{"error":{"code":"content_policy_violation","message":"   "}}`,
+		2,
+	)
+	var genericChunk openAIResponsesStreamErrorChunk
+	if err := json.Unmarshal(genericPolicy, &genericChunk); err != nil {
+		t.Fatalf("unmarshal generic policy chunk: %v", err)
+	}
+	if genericChunk.Error["message"] != "content_policy_violation" {
+		t.Fatalf("error.message = %v, want content_policy_violation", genericChunk.Error["message"])
+	}
+
+	scalarBody := BuildOpenAIResponsesStreamErrorChunk(
+		http.StatusServiceUnavailable,
+		`{"type":"error","body":{"error":"model is at capacity"},"sequence_number":4}`,
+		0,
+	)
+	var scalarChunk openAIResponsesStreamErrorChunk
+	if err := json.Unmarshal(scalarBody, &scalarChunk); err != nil {
+		t.Fatalf("unmarshal scalar body chunk: %v", err)
+	}
+	if scalarChunk.SequenceNumber != 4 {
+		t.Fatalf("sequence_number = %d, want 4", scalarChunk.SequenceNumber)
+	}
+	if scalarChunk.Error["message"] != "model is at capacity" {
+		t.Fatalf("error.message = %v, want scalar message", scalarChunk.Error["message"])
+	}
+
+	scalarFailed := BuildOpenAIResponsesStreamFailedChunk(
+		http.StatusServiceUnavailable,
+		`{"error":"model is at capacity","sequence_number":6}`,
+		0,
+	)
+	var failedPayload struct {
+		SequenceNumber int `json:"sequence_number"`
+		Response       struct {
+			Error map[string]any `json:"error"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(scalarFailed, &failedPayload); err != nil {
+		t.Fatalf("unmarshal scalar failed chunk: %v", err)
+	}
+	if failedPayload.SequenceNumber != 6 || failedPayload.Response.Error["message"] != "model is at capacity" {
+		t.Fatalf("unexpected scalar failed payload: %+v", failedPayload)
 	}
 }

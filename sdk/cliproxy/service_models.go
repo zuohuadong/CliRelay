@@ -2,8 +2,6 @@ package cliproxy
 
 import (
 	"context"
-	"encoding/json"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +9,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
@@ -70,13 +69,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	provider := strings.ToLower(strings.TrimSpace(a.Provider))
 	compatProviderKey, compatDisplayName, compatDetected := openAICompatInfoFromAuth(a)
 	if compatDetected {
-		// Providers with a dedicated executor keep their native provider key so
-		// model registration and selection use the same identifier.
-		if dedicated, okDedicated := dedicatedOpenAICompatProviderKey(compatProviderKey, compatDisplayName, a.Provider); okDedicated {
-			provider = dedicated
-		} else {
-			provider = "openai-compatibility"
-		}
+		provider = "openai-compatibility"
 	}
 	excluded := oauthExcludedModelsForConfig(cfg, provider, authKind)
 	// The "excluded_models" attribute holds only the credential's own exclusions.
@@ -204,28 +197,6 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			}
 		}
 		models = applyExcludedModels(models, excluded)
-	case "opencode-go":
-		models = registry.GetOpenCodeGoModels()
-		if entry := resolveConfigOpenCodeGoKeyForConfig(cfg, a); entry != nil {
-			if len(entry.Models) > 0 {
-				models = buildOpenCodeGoConfigModels(entry)
-			}
-			if authKind == "apikey" {
-				excluded = entry.ExcludedModels
-			}
-		}
-		models = applyExcludedModels(models, excluded)
-	case "bedrock":
-		models = registry.GetBedrockModels()
-		if entry := resolveConfigBedrockKeyForConfig(cfg, a); entry != nil {
-			if len(entry.Models) > 0 {
-				models = buildBedrockConfigModels(entry)
-			}
-			if authKind == "apikey" {
-				excluded = entry.ExcludedModels
-			}
-		}
-		models = applyExcludedModels(models, excluded)
 	case "devin":
 		models = registry.GetDevinModels()
 		models = applyExcludedModels(models, excluded)
@@ -335,20 +306,6 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				}
 			}
 			if isCompatAuth {
-				// Credential metadata may carry its own model catalog (plugin or
-				// imported credentials); prefer it over the config entry catalog.
-				models = buildOpenAICompatibilityAuthMetadataModels(a, compatName)
-				if len(models) > 0 {
-					models = applyModelOverrides(cfg, providerKey, authKind, models)
-					if providerKey == "" {
-						providerKey = "openai-compatibility"
-					}
-					models = s.appendPluginModels(providerKey, models, nil)
-					if len(models) > 0 {
-						published = s.registerResolvedModelsForAuthFenced(a, fence, providerKey, applyModelPrefixes(models, a.Prefix, cfg.ForceModelPrefix))
-						return published
-					}
-				}
 				models = s.appendPluginModels(providerKey, nil, nil)
 				if len(models) > 0 {
 					published = s.registerResolvedModelsForAuthFenced(a, fence, providerKey, applyModelPrefixes(models, a.Prefix, cfg.ForceModelPrefix))
@@ -363,17 +320,10 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	if ctx.Err() != nil {
 		return true
 	}
-	allowed := s.oauthAllowedModels(provider, authKind)
-	models = applyAllowedModels(models, allowed)
-	models = applyModelOverrides(cfg, provider, authKind, models)
+	models = applyOAuthModelAliasForAuth(cfg, provider, authKind, a.Attributes, models)
 	if ctx.Err() != nil {
 		return true
 	}
-	models = applyOAuthModelAliasForAuthAllowed(cfg, provider, authKind, a.Attributes, models, allowed)
-	if ctx.Err() != nil {
-		return true
-	}
-	models = applyModelOverrides(cfg, provider, authKind, models)
 	key := provider
 	if key == "" {
 		key = strings.ToLower(strings.TrimSpace(a.Provider))
@@ -792,6 +742,9 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 		if clone.MetadataModelID == "" {
 			clone.MetadataModelID = baseID
 		}
+		if clone.Name != "" {
+			clone.Name = rewriteModelInfoName(clone.Name, baseID, clone.ID)
+		}
 		clone.ExplicitThinking = model.ExplicitThinking
 		clone.ExplicitInputModalities = model.ExplicitInputModalities
 		addModel(&clone)
@@ -846,8 +799,6 @@ func matchWildcard(pattern, value string) bool {
 type modelEntry interface {
 	GetName() string
 	GetAlias() string
-	GetDisplayName() string
-	GetThinking() *registry.ThinkingSupport
 }
 
 type modelMaxContextLengthEntry interface {
@@ -867,7 +818,10 @@ func buildConfiguredModelInfo(model modelEntry, ownedBy, modelType string, creat
 	if alias == "" {
 		return nil
 	}
-	displayName := strings.TrimSpace(model.GetDisplayName())
+	displayName := ""
+	if displayEntry, ok := any(model).(interface{ GetDisplayName() string }); ok {
+		displayName = strings.TrimSpace(displayEntry.GetDisplayName())
+	}
 	if displayName == "" {
 		displayName = fallbackDisplayName
 	}
@@ -911,15 +865,13 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		modelType := "openai-compatibility"
 		if model.Image {
 			modelType = registry.OpenAIImageModelType
-		} else if model.Video {
-			modelType = registry.OpenAIVideoModelType
 		}
 		info := buildConfiguredModelInfo(model, compat.Name, modelType, now, strings.TrimSpace(model.Alias), false)
 		if info == nil {
 			continue
 		}
 		thinkingSupport := model.Thinking
-		if thinkingSupport == nil && !model.Image && !model.Video {
+		if thinkingSupport == nil && !model.Image {
 			thinkingSupport = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
 		}
 		if model.Thinking != nil {
@@ -979,10 +931,16 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType, metadataCha
 			continue
 		}
 		seen[key] = struct{}{}
-		if model.GetThinking() != nil {
+		var configuredThinking *registry.ThinkingSupport
+		if thinkingEntry, ok := any(model).(interface {
+			GetThinking() *registry.ThinkingSupport
+		}); ok {
+			configuredThinking = thinkingEntry.GetThinking()
+		}
+		if configuredThinking != nil {
 			info.ExplicitThinking = true
 		}
-		if resolved := modelconfig.ResolveModelInfo(name, modelType, model.GetThinking()); resolved.Thinking != nil {
+		if resolved := modelconfig.ResolveModelInfo(name, modelType, configuredThinking); resolved.Thinking != nil {
 			info.Thinking = resolved.Thinking
 		}
 		if staticInfo := registry.LookupStaticModelInfoByChannel(name, metadataChannel); staticInfo != nil && staticInfo.NativeCapabilities != nil {
@@ -997,7 +955,33 @@ func buildVertexCompatConfigModels(entry *config.VertexCompatKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return buildConfigModels(entry.Models, "google", "vertex", "vertex")
+	models := buildConfigModels(entry.Models, "google", "vertex", "vertex")
+	for _, info := range models {
+		for _, configured := range entry.Models {
+			name := strings.TrimSpace(configured.Name)
+			id := strings.TrimSpace(configured.Alias)
+			if id == "" {
+				id = name
+			}
+			if !strings.EqualFold(info.ID, id) {
+				continue
+			}
+			if publisher, model, ok := strings.Cut(helps.NormalizeVertexOpenAPIModel(name), "/"); ok && strings.TrimSpace(publisher) != "" && strings.TrimSpace(model) != "" && !strings.EqualFold(strings.TrimSpace(publisher), "google") {
+				info.OwnedBy = strings.TrimSpace(publisher)
+			}
+			openAPI := helps.IsVertexOpenAPIModel(name)
+			if configured.OpenAPI != nil {
+				openAPI = *configured.OpenAPI
+			} else if entry.OpenAPI != nil {
+				openAPI = *entry.OpenAPI
+			}
+			if openAPI && info.Thinking == nil {
+				info.Thinking = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
+			}
+			break
+		}
+	}
+	return models
 }
 
 func appendVertexServiceAccountModels(cfg *config.Config, a *coreauth.Auth, baseModels []*ModelInfo) []*ModelInfo {
@@ -1078,7 +1062,7 @@ func appendVertexServiceAccountModels(cfg *config.Config, a *coreauth.Auth, base
 	out = append(out, baseModels...)
 	for _, name := range extraNames {
 		ownedBy := "google"
-		if publisher, _, ok := strings.Cut(name, "/"); ok && strings.TrimSpace(publisher) != "" {
+		if publisher, _, ok := strings.Cut(helps.NormalizeVertexOpenAPIModel(name), "/"); ok && strings.TrimSpace(publisher) != "" {
 			ownedBy = strings.TrimSpace(publisher)
 		}
 		info := &ModelInfo{
@@ -1190,7 +1174,7 @@ func rewriteModelInfoName(name, oldID, newID string) string {
 	if oldID == "" || newID == "" {
 		return name
 	}
-	if strings.EqualFold(oldID, newID) {
+	if oldID == newID {
 		return name
 	}
 	if strings.EqualFold(trimmed, oldID) {
@@ -1211,7 +1195,18 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 }
 
 func applyOAuthModelAliasForAuth(cfg *config.Config, provider, authKind string, attributes map[string]string, models []*ModelInfo) []*ModelInfo {
-	return applyOAuthModelAliasForAuthAllowed(cfg, provider, authKind, attributes, models, nil)
+	if len(models) == 0 {
+		return models
+	}
+	channel := coreauth.OAuthModelAliasChannel(provider, authKind)
+	if channel == "" {
+		return models
+	}
+	aliases := oauthModelAliasesForAuth(cfg, channel, attributes)
+	if len(aliases) == 0 {
+		return models
+	}
+	return applyOAuthModelAliasEntries(aliases, models)
 }
 
 func oauthModelAliasesForAuth(cfg *config.Config, channel string, attributes map[string]string) []config.OAuthModelAlias {
@@ -1247,7 +1242,7 @@ func oauthModelAliasesForAuth(cfg *config.Config, channel string, attributes map
 	return out
 }
 
-func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*ModelInfo, allowed []string) []*ModelInfo {
+func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*ModelInfo) []*ModelInfo {
 	type aliasEntry struct {
 		alias       string
 		displayName string
@@ -1261,7 +1256,7 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 		if name == "" || alias == "" {
 			continue
 		}
-		if strings.EqualFold(name, alias) {
+		if name == alias {
 			continue
 		}
 		key := strings.ToLower(name)
@@ -1277,7 +1272,6 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 
 	out := make([]*ModelInfo, 0, len(models))
 	seen := make(map[string]struct{}, len(models))
-	matchedSources := make(map[string]struct{}, len(forward))
 	for _, model := range models {
 		if model == nil {
 			continue
@@ -1289,14 +1283,13 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 		key := strings.ToLower(id)
 		entries := forward[key]
 		if len(entries) == 0 {
-			if _, exists := seen[key]; exists {
+			if _, exists := seen[id]; exists {
 				continue
 			}
-			seen[key] = struct{}{}
+			seen[id] = struct{}{}
 			out = append(out, model)
 			continue
 		}
-		matchedSources[key] = struct{}{}
 
 		keepOriginal := false
 		for _, entry := range entries {
@@ -1306,8 +1299,8 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 			}
 		}
 		if keepOriginal {
-			if _, exists := seen[key]; !exists {
-				seen[key] = struct{}{}
+			if _, exists := seen[id]; !exists {
+				seen[id] = struct{}{}
 				out = append(out, model)
 			}
 		}
@@ -1318,14 +1311,13 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 			if mappedID == "" {
 				continue
 			}
-			if strings.EqualFold(mappedID, id) {
+			if mappedID == id {
 				continue
 			}
-			aliasKey := strings.ToLower(mappedID)
-			if _, exists := seen[aliasKey]; exists {
+			if _, exists := seen[mappedID]; exists {
 				continue
 			}
-			seen[aliasKey] = struct{}{}
+			seen[mappedID] = struct{}{}
 			clone := cloneModelInfoForCatalogRoute(model)
 			clone.ID = mappedID
 			if model.MetadataModelID != "" {
@@ -1346,54 +1338,10 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 		}
 
 		if !keepOriginal && !addedAlias {
-			if _, exists := seen[key]; exists {
+			if _, exists := seen[id]; exists {
 				continue
 			}
-			seen[key] = struct{}{}
-			out = append(out, model)
-		}
-	}
-	allowedPatterns := normalizeModelPatterns(allowed)
-	for sourceKey, entries := range forward {
-		if _, matched := matchedSources[sourceKey]; matched {
-			continue
-		}
-		var staticInfo *registry.ModelInfo
-		for _, entry := range entries {
-			mappedID := strings.TrimSpace(entry.alias)
-			if mappedID == "" {
-				continue
-			}
-			if len(allowedPatterns) > 0 && !modelIDMatchesPatterns(mappedID, allowedPatterns) {
-				continue
-			}
-			aliasKey := strings.ToLower(mappedID)
-			if _, exists := seen[aliasKey]; exists {
-				continue
-			}
-			seen[aliasKey] = struct{}{}
-			// 源模型不在当前账号目录时（如 alias 配置先于目录更新），仍按
-			// 源模型 ID 从静态目录补全显示名与元数据，避免别名模型裸露。
-			if staticInfo == nil {
-				staticInfo = registry.LookupStaticModelInfo(sourceKey)
-			}
-			model := &ModelInfo{ID: mappedID, Object: "model", Name: "models/" + mappedID, Version: mappedID}
-			if staticInfo != nil {
-				model.DisplayName = staticInfo.DisplayName
-				model.Description = staticInfo.Description
-				model.OwnedBy = staticInfo.OwnedBy
-				model.Type = staticInfo.Type
-				model.Thinking = staticInfo.Thinking
-				if staticInfo.ContextLength > 0 {
-					model.ContextLength = staticInfo.ContextLength
-				}
-				if staticInfo.MaxCompletionTokens > 0 {
-					model.MaxCompletionTokens = staticInfo.MaxCompletionTokens
-				}
-			}
-			if entry.displayName != "" {
-				model.DisplayName = entry.displayName
-			}
+			seen[id] = struct{}{}
 			out = append(out, model)
 		}
 	}
@@ -1444,426 +1392,6 @@ func applyOAuthSettingEntries(settings []config.OAuthModelSetting, models []*Mod
 		} else {
 			out = append(out, model)
 		}
-	}
-	return out
-}
-
-// ---- fork-local model registration helpers ----
-
-func (s *Service) oauthAllowedModels(provider, authKind string) []string {
-	cfg := s.cfg
-	if cfg == nil {
-		return nil
-	}
-	authKindKey := strings.ToLower(strings.TrimSpace(authKind))
-	providerKey := strings.ToLower(strings.TrimSpace(provider))
-	if authKindKey == "apikey" {
-		return nil
-	}
-	return cfg.OAuthAllowedModels[providerKey]
-}
-
-func applyAllowedModels(models []*ModelInfo, allowed []string) []*ModelInfo {
-	if len(models) == 0 {
-		return models
-	}
-	patterns := normalizeModelPatterns(allowed)
-	if len(patterns) == 0 {
-		return models
-	}
-
-	filtered := make([]*ModelInfo, 0, len(models))
-	for _, model := range models {
-		if model == nil {
-			continue
-		}
-		if modelIDMatchesPatterns(model.ID, patterns) {
-			filtered = append(filtered, model)
-		}
-	}
-	return filtered
-}
-
-func openAICompatibilityHasEnabledAPIKey(entry *config.OpenAICompatibility) bool {
-	if entry == nil {
-		return false
-	}
-	for i := range entry.APIKeyEntries {
-		if !entry.APIKeyEntries[i].Disabled && strings.TrimSpace(entry.APIKeyEntries[i].APIKey) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func (s *Service) resolveConfigOpenCodeGoKey(auth *coreauth.Auth) *config.OpenCodeGoKey {
-	return resolveConfigOpenCodeGoKeyForConfig(s.currentConfig(), auth)
-}
-
-func resolveConfigOpenCodeGoKeyForConfig(cfg *config.Config, auth *coreauth.Auth) *config.OpenCodeGoKey {
-	if auth == nil || cfg == nil {
-		return nil
-	}
-	var attrKey, attrBase string
-	if auth.Attributes != nil {
-		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
-		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
-	}
-	for i := range cfg.OpenCodeGoKey {
-		entry := &cfg.OpenCodeGoKey[i]
-		cfgKey := strings.TrimSpace(entry.APIKey)
-		cfgBase := strings.TrimSpace(entry.BaseURL)
-		if attrKey != "" && strings.EqualFold(cfgKey, attrKey) {
-			if cfgBase == "" || strings.EqualFold(cfgBase, attrBase) {
-				return entry
-			}
-			continue
-		}
-		if attrKey == "" && attrBase != "" && strings.EqualFold(cfgBase, attrBase) {
-			return entry
-		}
-	}
-	return nil
-}
-
-func buildOpenAICompatibilityAuthMetadataModels(auth *coreauth.Auth, compatName string) []*ModelInfo {
-	if auth == nil || auth.Metadata == nil {
-		return nil
-	}
-	rawModels, ok := auth.Metadata["models"]
-	if !ok {
-		return nil
-	}
-	models := normalizeOpenAICompatibilityMetadataModels(rawModels)
-	if len(models) == 0 {
-		return nil
-	}
-	compatName = strings.TrimSpace(compatName)
-	if compatName == "" && auth.Attributes != nil {
-		compatName = strings.TrimSpace(auth.Attributes["compat_name"])
-	}
-	if compatName == "" {
-		compatName = strings.TrimSpace(auth.Label)
-	}
-	return buildOpenAICompatibilityConfigModels(&config.OpenAICompatibility{Name: compatName, Models: models})
-}
-
-func modelIDMatchesPatterns(modelID string, patterns []string) bool {
-	if len(patterns) == 0 {
-		return true
-	}
-	modelID = strings.ToLower(strings.TrimSpace(modelID))
-	if modelID == "" {
-		return false
-	}
-	for _, pattern := range patterns {
-		if matchWildcard(pattern, modelID) {
-			return true
-		}
-	}
-	return false
-}
-
-func buildOpenCodeGoConfigModels(entry *config.OpenCodeGoKey) []*ModelInfo {
-	if entry == nil || len(entry.Models) == 0 {
-		return nil
-	}
-	return buildSimpleConfigModels(entry.Models, "opencode", "opencode-go")
-}
-
-func (s *Service) registerDedicatedOpenAICompatibilityMetadataModels(auth *coreauth.Auth, provider string) bool {
-	if auth == nil || auth.Metadata == nil {
-		return false
-	}
-	if _, ok := auth.Metadata["models"]; !ok {
-		return false
-	}
-	models := buildOpenAICompatibilityAuthMetadataModels(auth, provider)
-	if len(models) == 0 {
-		GlobalModelRegistry().UnregisterClient(auth.ID)
-		return true
-	}
-	forceModelPrefix := s != nil && s.cfg != nil && s.cfg.ForceModelPrefix
-	s.registerResolvedModelsForAuthFenced(auth, newModelRegistrationFence(auth, s.currentConfig()), provider, applyModelPrefixes(models, auth.Prefix, forceModelPrefix))
-	return true
-}
-
-func matchBedrockAttrs(cfgRegion, attrRegion, cfgBase, attrBase string) bool {
-	if cfgRegion != "" && attrRegion != "" && !strings.EqualFold(cfgRegion, attrRegion) {
-		return false
-	}
-	return cfgBase == "" || attrBase == "" || strings.EqualFold(cfgBase, attrBase)
-}
-
-func buildBedrockConfigModels(entry *config.BedrockKey) []*ModelInfo {
-	if entry == nil || len(entry.Models) == 0 {
-		return nil
-	}
-	return buildSimpleConfigModels(entry.Models, "anthropic", "bedrock")
-}
-
-func applyModelOverrides(cfg *config.Config, provider, authKind string, models []*ModelInfo) []*ModelInfo {
-	if cfg == nil || len(cfg.ModelOverrides) == 0 || len(models) == 0 {
-		return models
-	}
-	providerKey := strings.ToLower(strings.TrimSpace(provider))
-	channel := coreauth.OAuthModelAliasChannel(providerKey, authKind)
-	if channel == "" {
-		channel = providerKey
-	}
-
-	out := make([]*ModelInfo, 0, len(models))
-	changed := false
-	for _, model := range models {
-		if model == nil {
-			continue
-		}
-		applied := false
-		clone := *model
-		for i := range cfg.ModelOverrides {
-			override := cfg.ModelOverrides[i]
-			if !modelOverrideMatches(override, providerKey, channel, model) {
-				continue
-			}
-			if override.ContextLength > 0 {
-				clone.ContextLength = override.ContextLength
-			}
-			if override.MaxCompletionTokens > 0 {
-				clone.MaxCompletionTokens = override.MaxCompletionTokens
-			}
-			if override.Priority > 0 {
-				clone.Priority = override.Priority
-			}
-			applied = true
-		}
-		if applied {
-			modelCopy := clone
-			out = append(out, &modelCopy)
-			changed = true
-			continue
-		}
-		out = append(out, model)
-	}
-	if !changed {
-		return models
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		left := 0
-		right := 0
-		if out[i] != nil {
-			left = out[i].Priority
-		}
-		if out[j] != nil {
-			right = out[j].Priority
-		}
-		return left > right
-	})
-	return out
-}
-
-func normalizeModelPatterns(items []string) []string {
-	if len(items) == 0 {
-		return nil
-	}
-	patterns := make([]string, 0, len(items))
-	for _, item := range items {
-		if trimmed := strings.TrimSpace(item); trimmed != "" {
-			patterns = append(patterns, strings.ToLower(trimmed))
-		}
-	}
-	if len(patterns) == 0 {
-		return nil
-	}
-	return patterns
-}
-
-func compactOpenAICompatibilityMetadataModels(models []config.OpenAICompatibilityModel) []config.OpenAICompatibilityModel {
-	out := make([]config.OpenAICompatibilityModel, 0, len(models))
-	for _, model := range models {
-		model.Name = strings.TrimSpace(model.Name)
-		model.Alias = strings.TrimSpace(model.Alias)
-		if model.Name == "" {
-			model.Name = model.Alias
-		}
-		if model.Alias == "" {
-			model.Alias = model.Name
-		}
-		if model.Name != "" {
-			out = append(out, model)
-		}
-	}
-	return out
-}
-
-func modelOverrideMatches(override config.ModelOverride, provider, channel string, model *ModelInfo) bool {
-	if model == nil {
-		return false
-	}
-	if override.Channel != "" && !strings.EqualFold(override.Channel, channel) {
-		return false
-	}
-	if override.Provider != "" && !strings.EqualFold(override.Provider, provider) {
-		return false
-	}
-	target := strings.TrimSpace(override.Model)
-	if target == "" {
-		return false
-	}
-	return modelIDMatchesOverride(model.ID, target) ||
-		modelIDMatchesOverride(model.DisplayName, target) ||
-		modelIDMatchesOverride(model.Name, target)
-}
-
-func applyOAuthModelAliasForAuthAllowed(cfg *config.Config, provider, authKind string, attributes map[string]string, models []*ModelInfo, allowed []string) []*ModelInfo {
-	if len(models) == 0 {
-		return models
-	}
-	channel := coreauth.OAuthModelAliasChannel(provider, authKind)
-	if channel == "" {
-		return models
-	}
-	aliases := oauthModelAliasesForAuth(cfg, channel, attributes)
-	for _, defaultAlias := range coreauth.OAuthModelAliasDefaults(channel) {
-		for _, model := range models {
-			if model != nil && strings.EqualFold(strings.TrimSpace(model.ID), strings.TrimSpace(defaultAlias.Name)) {
-				aliases = append(aliases, defaultAlias)
-				break
-			}
-		}
-	}
-	if len(aliases) == 0 {
-		return models
-	}
-	return applyOAuthModelAliasEntries(aliases, models, allowed)
-}
-
-func modelIDMatchesOverride(value, target string) bool {
-	value = strings.TrimSpace(value)
-	target = strings.TrimSpace(target)
-	if value == "" || target == "" {
-		return false
-	}
-	if strings.EqualFold(value, target) {
-		return true
-	}
-	return strings.HasPrefix(value, "models/") && strings.EqualFold(strings.TrimPrefix(value, "models/"), target)
-}
-
-func (s *Service) resolveConfigBedrockKey(auth *coreauth.Auth) *config.BedrockKey {
-	return resolveConfigBedrockKeyForConfig(s.currentConfig(), auth)
-}
-
-func resolveConfigBedrockKeyForConfig(cfg *config.Config, auth *coreauth.Auth) *config.BedrockKey {
-	if auth == nil || cfg == nil {
-		return nil
-	}
-	var attrAPIKey, attrAccessKey, attrRegion, attrBase string
-	if auth.Attributes != nil {
-		attrAPIKey = strings.TrimSpace(auth.Attributes["api_key"])
-		attrAccessKey = strings.TrimSpace(auth.Attributes["access_key_id"])
-		attrRegion = strings.TrimSpace(auth.Attributes["region"])
-		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
-	}
-	for i := range cfg.BedrockKey {
-		entry := &cfg.BedrockKey[i]
-		cfgAPIKey := strings.TrimSpace(entry.APIKey)
-		cfgAccessKey := strings.TrimSpace(entry.AccessKeyID)
-		cfgRegion := strings.TrimSpace(entry.Region)
-		cfgBase := strings.TrimSpace(entry.BaseURL)
-		if cfgAPIKey != "" && attrAPIKey != "" && strings.EqualFold(cfgAPIKey, attrAPIKey) && matchBedrockAttrs(cfgRegion, attrRegion, cfgBase, attrBase) {
-			return entry
-		}
-		if cfgAccessKey != "" && attrAccessKey != "" && strings.EqualFold(cfgAccessKey, attrAccessKey) && matchBedrockAttrs(cfgRegion, attrRegion, cfgBase, attrBase) {
-			return entry
-		}
-	}
-	return nil
-}
-
-func normalizeOpenAICompatibilityMetadataModels(raw any) []config.OpenAICompatibilityModel {
-	switch typed := raw.(type) {
-	case []config.OpenAICompatibilityModel:
-		return compactOpenAICompatibilityMetadataModels(typed)
-	case []string:
-		models := make([]config.OpenAICompatibilityModel, 0, len(typed))
-		for _, model := range typed {
-			model = strings.TrimSpace(model)
-			if model != "" {
-				models = append(models, config.OpenAICompatibilityModel{Name: model, Alias: model})
-			}
-		}
-		return models
-	case []any:
-		models := make([]config.OpenAICompatibilityModel, 0, len(typed))
-		for _, item := range typed {
-			switch value := item.(type) {
-			case string:
-				model := strings.TrimSpace(value)
-				if model != "" {
-					models = append(models, config.OpenAICompatibilityModel{Name: model, Alias: model})
-				}
-			default:
-				encoded, err := json.Marshal(value)
-				if err != nil {
-					continue
-				}
-				var model config.OpenAICompatibilityModel
-				if json.Unmarshal(encoded, &model) == nil {
-					models = append(models, model)
-				}
-			}
-		}
-		return compactOpenAICompatibilityMetadataModels(models)
-	default:
-		encoded, err := json.Marshal(raw)
-		if err != nil {
-			return nil
-		}
-		var models []config.OpenAICompatibilityModel
-		if json.Unmarshal(encoded, &models) == nil {
-			return compactOpenAICompatibilityMetadataModels(models)
-		}
-		var ids []string
-		if json.Unmarshal(encoded, &ids) != nil {
-			return nil
-		}
-		return normalizeOpenAICompatibilityMetadataModels(ids)
-	}
-}
-
-type simpleModelEntry interface {
-	GetName() string
-	GetAlias() string
-	GetDisplayName() string
-}
-
-func buildSimpleConfigModels[T simpleModelEntry](models []T, ownedBy, modelType string) []*ModelInfo {
-	now := time.Now().Unix()
-	out := make([]*ModelInfo, 0, len(models))
-	seen := make(map[string]struct{}, len(models))
-	for i := range models {
-		name := strings.TrimSpace(models[i].GetName())
-		alias := strings.TrimSpace(models[i].GetAlias())
-		if alias == "" {
-			alias = name
-		}
-		if alias == "" {
-			continue
-		}
-		key := strings.ToLower(alias)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		displayName := strings.TrimSpace(models[i].GetDisplayName())
-		if displayName == "" {
-			displayName = name
-		}
-		info := &ModelInfo{ID: alias, Object: "model", Created: now, OwnedBy: ownedBy, Type: modelType, DisplayName: displayName, UserDefined: true}
-		if resolved := modelconfig.ResolveModelInfo(name, modelType, nil); resolved.Thinking != nil {
-			info.Thinking = resolved.Thinking
-		}
-		out = append(out, info)
 	}
 	return out
 }

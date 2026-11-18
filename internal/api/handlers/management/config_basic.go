@@ -1,18 +1,26 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/bodyutil"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/runtimeconfig"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
@@ -28,20 +36,261 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		c.JSON(200, gin.H{})
 		return
 	}
-	c.JSON(200, new(*h.cfg))
+	tenantID := effectiveTenantID(c)
+	if tenantID == identity.SystemTenantID {
+		c.JSON(200, newConfigResponse(sanitizeConfigForAPI(h.cfg), h.cfg.RuntimeSettingState().Versions()))
+		return
+	}
+	runtimeCfg := usage.BuildTenantRuntimeConfig(h.cfg, tenantID)
+	tenantView := &config.Config{
+		Routing:              runtimeCfg.Routing,
+		ProxyPool:            runtimeCfg.ProxyPool,
+		GeminiKey:            runtimeCfg.GeminiKey,
+		CodexKey:             runtimeCfg.CodexKey,
+		ClaudeKey:            runtimeCfg.ClaudeKey,
+		BedrockKey:           runtimeCfg.BedrockKey,
+		OpenCodeGoKey:        runtimeCfg.OpenCodeGoKey,
+		ClineKey:             runtimeCfg.ClineKey,
+		OllamaCloudKey:       runtimeCfg.OllamaCloudKey,
+		CommandCodeKey:       runtimeCfg.CommandCodeKey,
+		OpenAICompatibility:  runtimeCfg.OpenAICompatibility,
+		VertexCompatAPIKey:   runtimeCfg.VertexCompatAPIKey,
+		ClaudeHeaderDefaults: runtimeCfg.ClaudeHeaderDefaults,
+		KimiHeaderDefaults:   runtimeCfg.KimiHeaderDefaults,
+		CodexOAuthAdmission:  runtimeCfg.CodexOAuthAdmission,
+		OAuthExcludedModels:  runtimeCfg.OAuthExcludedModels,
+		OAuthModelAlias:      runtimeCfg.OAuthModelAlias,
+		Payload:              runtimeCfg.Payload,
+	}
+	// Platform super-admins often switch into a business tenant for ops. The
+	// tenant-scoped provider view must not leak other tenants' secrets, but
+	// process-global runtime toggles (request-log, logging-to-file, …) still
+	// apply to the host. Omitting them made the management UI default those
+	// booleans to false while the process kept writing full request files.
+	if principal, ok := principalFromContext(c); ok && principal.PlatformAdmin {
+		copyProcessGlobalRuntimeToggles(h.cfg, tenantView)
+	}
+	c.JSON(200, newConfigResponse(sanitizeConfigForAPI(tenantView), runtimeCfg.RuntimeSettingState().Versions()))
+}
+
+// copyProcessGlobalRuntimeToggles copies host-wide runtime switches that the
+// config panel reads/writes. Provider credentials stay tenant-scoped.
+func copyProcessGlobalRuntimeToggles(src, dst *config.Config) {
+	if src == nil || dst == nil {
+		return
+	}
+	dst.SDKConfig.RequestLog = src.SDKConfig.RequestLog
+	dst.SDKConfig.RequestLogStorage = src.SDKConfig.RequestLogStorage
+	dst.Debug = src.Debug
+	dst.LoggingToFile = src.LoggingToFile
+	dst.LogsMaxTotalSizeMB = src.LogsMaxTotalSizeMB
+	dst.ErrorLogsMaxFiles = src.ErrorLogsMaxFiles
+	dst.UsageStatisticsEnabled = src.UsageStatisticsEnabled
+	dst.SystemStatsCacheSeconds = src.SystemStatsCacheSeconds
+	dst.SystemStatsWebSocketMaxAgeSeconds = src.SystemStatsWebSocketMaxAgeSeconds
+	dst.WebsocketAuth = src.WebsocketAuth
+	dst.RequestRetry = src.RequestRetry
+	dst.MaxRetryInterval = src.MaxRetryInterval
+	dst.QuotaExceeded = src.QuotaExceeded
+	dst.ForceModelPrefix = src.ForceModelPrefix
+	dst.ProxyURL = src.ProxyURL
+}
+
+// maskKey masks an API key / secret, preserving first 6 and last 4 characters.
+func maskKey(key string) string {
+	if key == "" {
+		return ""
+	}
+	if len(key) <= 12 {
+		return "****"
+	}
+	return key[:6] + "****" + key[len(key)-4:]
+}
+
+// maskName masks a person's or channel's name, keeping the first rune + "***".
+func maskName(name string) string {
+	if name == "" {
+		return ""
+	}
+	runes := []rune(name)
+	if len(runes) <= 1 {
+		return "***"
+	}
+	return string(runes[0:1]) + "***"
+}
+
+// maskBaseURL masks a URL, preserving the scheme + host but replacing the path with /***.
+func maskBaseURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return "***"
+	}
+	return u.Scheme + "://" + u.Host + "/***"
+}
+
+// sanitizeConfigForAPI creates a sanitized copy of the config suitable for the management API.
+// It masks provider API keys, Redis passwords, user names, provider URLs/models, and other sensitive fields.
+func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
+	// Deep copy via JSON round-trip to avoid mutating the live config.
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return cfg // fallback to original on error
+	}
+	var copy config.Config
+	if err := json.Unmarshal(data, &copy); err != nil {
+		return cfg
+	}
+
+	// ── Infrastructure ──────────────────────────────────────────────────────
+
+	// Mask Redis password and address
+	if copy.Redis.Password != "" {
+		copy.Redis.Password = "***"
+	}
+	if copy.Redis.Addr != "" {
+		copy.Redis.Addr = "***"
+	}
+
+	// Mask pprof address
+	copy.Pprof.Addr = "***"
+
+	// Mask TLS cert/key paths
+	if copy.TLS.Cert != "" {
+		copy.TLS.Cert = "***"
+	}
+	if copy.TLS.Key != "" {
+		copy.TLS.Key = "***"
+	}
+
+	// ── Provider channels ──────────────────────────────────────────────────
+
+	// Mask Gemini API keys, names, URLs, and models
+	for i := range copy.GeminiKey {
+		copy.GeminiKey[i].APIKey = maskKey(copy.GeminiKey[i].APIKey)
+		copy.GeminiKey[i].Name = maskName(copy.GeminiKey[i].Name)
+		copy.GeminiKey[i].BaseURL = maskBaseURL(copy.GeminiKey[i].BaseURL)
+		copy.GeminiKey[i].ProxyURL = maskBaseURL(copy.GeminiKey[i].ProxyURL)
+		copy.GeminiKey[i].Models = nil
+		copy.GeminiKey[i].ExcludedModels = nil
+	}
+
+	// Mask Claude API keys, names, URLs, and models
+	for i := range copy.ClaudeKey {
+		copy.ClaudeKey[i].APIKey = maskKey(copy.ClaudeKey[i].APIKey)
+		copy.ClaudeKey[i].Name = maskName(copy.ClaudeKey[i].Name)
+		copy.ClaudeKey[i].BaseURL = maskBaseURL(copy.ClaudeKey[i].BaseURL)
+		copy.ClaudeKey[i].ProxyURL = maskBaseURL(copy.ClaudeKey[i].ProxyURL)
+		copy.ClaudeKey[i].Models = nil
+		copy.ClaudeKey[i].ExcludedModels = nil
+	}
+
+	// Mask Codex API keys, names, URLs, and models
+	for i := range copy.CodexKey {
+		copy.CodexKey[i].APIKey = maskKey(copy.CodexKey[i].APIKey)
+		copy.CodexKey[i].Name = maskName(copy.CodexKey[i].Name)
+		copy.CodexKey[i].BaseURL = maskBaseURL(copy.CodexKey[i].BaseURL)
+		copy.CodexKey[i].ProxyURL = maskBaseURL(copy.CodexKey[i].ProxyURL)
+		copy.CodexKey[i].Models = nil
+		copy.CodexKey[i].ExcludedModels = nil
+	}
+
+	// Mask OpenCode Go API keys, names, proxy URLs, and exclusions
+	for i := range copy.OpenCodeGoKey {
+		copy.OpenCodeGoKey[i].APIKey = maskKey(copy.OpenCodeGoKey[i].APIKey)
+		copy.OpenCodeGoKey[i].Name = maskName(copy.OpenCodeGoKey[i].Name)
+		copy.OpenCodeGoKey[i].ProxyURL = maskBaseURL(copy.OpenCodeGoKey[i].ProxyURL)
+		copy.OpenCodeGoKey[i].ExcludedModels = nil
+	}
+
+	// Mask Cline API keys, names, URLs, and exclusions
+	for i := range copy.ClineKey {
+		copy.ClineKey[i].APIKey = maskKey(copy.ClineKey[i].APIKey)
+		copy.ClineKey[i].Name = maskName(copy.ClineKey[i].Name)
+		copy.ClineKey[i].BaseURL = maskBaseURL(copy.ClineKey[i].BaseURL)
+		copy.ClineKey[i].ProxyURL = maskBaseURL(copy.ClineKey[i].ProxyURL)
+		copy.ClineKey[i].AuthCookie = maskKey(copy.ClineKey[i].AuthCookie)
+		copy.ClineKey[i].ExcludedModels = nil
+	}
+
+	// Mask Ollama Cloud API keys, names, URLs, and exclusions
+	for i := range copy.OllamaCloudKey {
+		copy.OllamaCloudKey[i].APIKey = maskKey(copy.OllamaCloudKey[i].APIKey)
+		copy.OllamaCloudKey[i].Name = maskName(copy.OllamaCloudKey[i].Name)
+		copy.OllamaCloudKey[i].BaseURL = maskBaseURL(copy.OllamaCloudKey[i].BaseURL)
+		copy.OllamaCloudKey[i].ProxyURL = maskBaseURL(copy.OllamaCloudKey[i].ProxyURL)
+		copy.OllamaCloudKey[i].AuthCookie = maskKey(copy.OllamaCloudKey[i].AuthCookie)
+		copy.OllamaCloudKey[i].ExcludedModels = nil
+	}
+
+	// Mask Command Code API keys, names, URLs, and exclusions
+	for i := range copy.CommandCodeKey {
+		copy.CommandCodeKey[i].APIKey = maskKey(copy.CommandCodeKey[i].APIKey)
+		copy.CommandCodeKey[i].Name = maskName(copy.CommandCodeKey[i].Name)
+		copy.CommandCodeKey[i].BaseURL = maskBaseURL(copy.CommandCodeKey[i].BaseURL)
+		copy.CommandCodeKey[i].ProxyURL = maskBaseURL(copy.CommandCodeKey[i].ProxyURL)
+		copy.CommandCodeKey[i].ExcludedModels = nil
+	}
+
+	// Mask OpenAI compatibility API keys, names, URLs, and models
+	for i := range copy.OpenAICompatibility {
+		copy.OpenAICompatibility[i].Name = maskName(copy.OpenAICompatibility[i].Name)
+		copy.OpenAICompatibility[i].BaseURL = maskBaseURL(copy.OpenAICompatibility[i].BaseURL)
+		copy.OpenAICompatibility[i].Models = nil
+		for j := range copy.OpenAICompatibility[i].APIKeyEntries {
+			copy.OpenAICompatibility[i].APIKeyEntries[j].APIKey = maskKey(copy.OpenAICompatibility[i].APIKeyEntries[j].APIKey)
+			copy.OpenAICompatibility[i].APIKeyEntries[j].ProxyURL = maskBaseURL(copy.OpenAICompatibility[i].APIKeyEntries[j].ProxyURL)
+		}
+	}
+
+	// Mask Vertex API keys, URLs, and models
+	for i := range copy.VertexCompatAPIKey {
+		copy.VertexCompatAPIKey[i].APIKey = maskKey(copy.VertexCompatAPIKey[i].APIKey)
+		copy.VertexCompatAPIKey[i].BaseURL = maskBaseURL(copy.VertexCompatAPIKey[i].BaseURL)
+		copy.VertexCompatAPIKey[i].ProxyURL = maskBaseURL(copy.VertexCompatAPIKey[i].ProxyURL)
+		copy.VertexCompatAPIKey[i].Models = nil
+	}
+
+	// ── Amp module ──────────────────────────────────────────────────────────
+
+	copy.AmpCode.UpstreamURL = maskBaseURL(copy.AmpCode.UpstreamURL)
+	copy.AmpCode.UpstreamAPIKey = maskKey(copy.AmpCode.UpstreamAPIKey)
+	for i := range copy.AmpCode.UpstreamAPIKeys {
+		copy.AmpCode.UpstreamAPIKeys[i].UpstreamAPIKey = maskKey(copy.AmpCode.UpstreamAPIKeys[i].UpstreamAPIKey)
+	}
+	copy.AmpCode.ModelMappings = nil
+
+	// ── User-facing API keys ────────────────────────────────────────────────
+
+	for i := range copy.APIKeys {
+		copy.APIKeys[i] = maskKey(copy.APIKeys[i])
+	}
+	for i := range copy.APIKeyEntries {
+		copy.APIKeyEntries[i].Key = maskKey(copy.APIKeyEntries[i].Key)
+		copy.APIKeyEntries[i].Name = maskName(copy.APIKeyEntries[i].Name)
+	}
+
+	// ── OAuth model alias & excluded models (internal mapping, no reason to expose) ──
+	copy.OAuthModelAlias = nil
+	copy.OAuthExcludedModels = nil
+
+	// ── Global proxy URL ────────────────────────────────────────────────────
+	copy.ProxyURL = maskBaseURL(copy.ProxyURL)
+	for i := range copy.ProxyPool {
+		copy.ProxyPool[i].URL = maskProxyPoolURL(copy.ProxyPool[i].URL)
+	}
+
+	return &copy
 }
 
 type releaseInfo struct {
-	TagName string `json:"tag_name"`
-	Name    string `json:"name"`
-}
-
-func setLatestReleaseRequestHeaders(req *http.Request) {
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", latestReleaseUserAgent)
-	if token := util.ResolveGitHubToken(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	TagName     string    `json:"tag_name"`
+	Name        string    `json:"name"`
+	Body        string    `json:"body"`
+	HTMLURL     string    `json:"html_url"`
+	PublishedAt time.Time `json:"published_at"`
 }
 
 // GetLatestVersion returns the latest release version from GitHub without downloading assets.
@@ -53,6 +302,10 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 	}
 	if proxyURL != "" {
 		sdkCfg := &sdkconfig.SDKConfig{ProxyURL: proxyURL}
+		if h != nil && h.cfg != nil {
+			sdkCfg.InsecureSkipVerify = h.cfg.InsecureSkipVerify
+			sdkCfg.CACert = h.cfg.CACert
+		}
 		util.SetProxy(sdkCfg, client)
 	}
 
@@ -61,7 +314,8 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "request_create_failed", "message": err.Error()})
 		return
 	}
-	setLatestReleaseRequestHeaders(req)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", latestReleaseUserAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -98,26 +352,23 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"latest-version": version})
 }
 
+// WriteConfig replaces config.yaml with data. It shares the atomic write and the
+// process-wide write lock with every other config.yaml writer; an in-place truncating
+// write here could splice the file against a concurrent save.
 func WriteConfig(path string, data []byte) error {
-	data = config.NormalizeCommentIndentation(data)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	if _, errWrite := f.Write(data); errWrite != nil {
-		_ = f.Close()
-		return errWrite
-	}
-	if errSync := f.Sync(); errSync != nil {
-		_ = f.Close()
-		return errSync
-	}
-	return f.Close()
+	normalized := config.NormalizeCommentIndentation(data)
+	return config.WithConfigFileWriteLock(func() error {
+		return config.WriteYAMLFileAtomic(path, normalized)
+	})
 }
 
 func (h *Handler) PutConfigYAML(c *gin.Context) {
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := bodyutil.ReadRequestBody(c, bodyutil.ConfigYAMLBodyLimit)
 	if err != nil {
+		if bodyutil.IsTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large", "message": "request body exceeds limit"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": "cannot read request body"})
 		return
 	}
@@ -148,25 +399,96 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 	defer func() {
 		_ = os.Remove(tempFile)
 	}()
-	_, err = config.LoadConfigOptional(tempFile, false)
+	validated, err := config.LoadConfigOptional(tempFile, false)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
+	// Ahead of the routing checks: a database-owned section is rejected
+	// whether or not it is valid, and the operator learns where to edit it.
+	if h.rejectDatabaseOwnedSectionChanges(c, validated, body) {
+		return
+	}
+	var auths []*coreauth.Auth
+	if h != nil && h.authManager != nil {
+		auths = h.authManager.List()
+	}
+	if err = validateRoutingAndAPIKeyRestrictions(&cfg, auths); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
+		return
+	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if WriteConfig(h.configFilePath, body) != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": "failed to write config"})
+	// Store the runtime settings the YAML spells out before writing the file,
+	// all in one transaction. The database owns them: the reload after this
+	// save, the watcher and a restart all apply the stored value and strip the
+	// key from config.yaml, so a value that failed to store would be gone while
+	// the save reported success. Failing here rejects the save instead, with
+	// the database and config.yaml untouched. A client hanging up must not
+	// cancel the write mid-commit, where it may be stored all the same.
+	stored, err := settingsstore.PersistRuntimeSettingsFromYAML(context.WithoutCancel(c.Request.Context()), validated, body)
+	if err != nil {
+		h.mu.Unlock()
+		log.WithError(err).Warn("management: config.yaml save rejected: storing its runtime settings failed")
+		writeConfigSaveError(c, "config.yaml was not saved: failed to store its runtime settings", err)
+		return
+	}
+	if errWrite := WriteConfig(h.configFilePath, body); errWrite != nil {
+		live, mutated := h.adoptStoredRuntimeSettingsLocked(validated, stored)
+		h.mu.Unlock()
+		log.WithError(errWrite).WithField("stored_runtime_settings", stored).Error("management: failed to write config.yaml")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": withStoredRuntimeSettings("failed to write config", stored)})
+		if mutated != nil {
+			mutated(live)
+		}
 		return
 	}
 	// Reload into handler to keep memory in sync
 	newCfg, err := config.LoadConfig(h.configFilePath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "reload_failed", "message": err.Error()})
+		live, mutated := h.adoptStoredRuntimeSettingsLocked(validated, stored)
+		h.mu.Unlock()
+		log.WithError(err).WithField("stored_runtime_settings", stored).Error("management: failed to reload config.yaml after writing it")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "reload_failed", "message": withStoredRuntimeSettings(err.Error(), stored)})
+		if mutated != nil {
+			mutated(live)
+		}
 		return
 	}
+	settingsstore.SyncReloadedConfigAfterYAMLSave(newCfg, h.configFilePath)
 	h.cfg = newCfg
+	mutated := h.onConfigMutated
+	h.mu.Unlock()
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})
+	if mutated != nil {
+		mutated(newCfg)
+	}
+}
+
+// adoptStoredRuntimeSettingsLocked is for a config.yaml save that stored keys
+// from src but then failed to write or reload the file. The other nodes apply
+// the stored values from the event the write published; a node never receives
+// its own events, so the keys are copied into this node's live config, as a
+// successful settings write does, instead of waiting for some later reload.
+// It returns the live config and the hook to notify, both nil when nothing was
+// stored. h.mu must be held.
+func (h *Handler) adoptStoredRuntimeSettingsLocked(src *config.Config, keys []string) (*config.Config, func(*config.Config)) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	if h.cfg == nil {
+		h.cfg = &config.Config{}
+	}
+	settingsstore.AdoptKeys(h.cfg, src, keys...)
+	return h.cfg, h.onConfigMutated
+}
+
+// withStoredRuntimeSettings tells the operator of a failed config.yaml save
+// which of its settings took effect regardless.
+func withStoredRuntimeSettings(message string, stored []string) string {
+	if len(stored) == 0 {
+		return message
+	}
+	return message + "; its runtime settings were stored and are in effect: " + strings.Join(stored, ", ")
 }
 
 // GetConfigYAML returns the raw config.yaml file bytes without re-encoding.
@@ -189,28 +511,32 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 }
 
 // Debug
-func (h *Handler) GetDebug(c *gin.Context) { c.JSON(200, gin.H{"debug": h.cfg.Debug}) }
-func (h *Handler) PutDebug(c *gin.Context) { h.updateBoolField(c, func(v bool) { h.cfg.Debug = v }) }
+func (h *Handler) GetDebug(c *gin.Context) {
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingDebug, gin.H{"debug": h.cfg.Debug})
+}
+func (h *Handler) PutDebug(c *gin.Context) {
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.Debug = v })
+}
 
 // UsageStatisticsEnabled
 func (h *Handler) GetUsageStatisticsEnabled(c *gin.Context) {
-	c.JSON(200, gin.H{"usage-statistics-enabled": h.cfg.UsageStatisticsEnabled})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingUsageStatistics, gin.H{"usage-statistics-enabled": h.cfg.UsageStatisticsEnabled})
 }
 func (h *Handler) PutUsageStatisticsEnabled(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.UsageStatisticsEnabled = v })
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.UsageStatisticsEnabled = v })
 }
 
 // UsageStatisticsEnabled
 func (h *Handler) GetLoggingToFile(c *gin.Context) {
-	c.JSON(200, gin.H{"logging-to-file": h.cfg.LoggingToFile})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingLoggingToFile, gin.H{"logging-to-file": h.cfg.LoggingToFile})
 }
 func (h *Handler) PutLoggingToFile(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.LoggingToFile = v })
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.LoggingToFile = v })
 }
 
 // LogsMaxTotalSizeMB
 func (h *Handler) GetLogsMaxTotalSizeMB(c *gin.Context) {
-	c.JSON(200, gin.H{"logs-max-total-size-mb": h.cfg.LogsMaxTotalSizeMB})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingLogsMaxTotalSizeMB, gin.H{"logs-max-total-size-mb": h.cfg.LogsMaxTotalSizeMB})
 }
 func (h *Handler) PutLogsMaxTotalSizeMB(c *gin.Context) {
 	var body struct {
@@ -224,13 +550,12 @@ func (h *Handler) PutLogsMaxTotalSizeMB(c *gin.Context) {
 	if value < 0 {
 		value = 0
 	}
-	h.cfg.LogsMaxTotalSizeMB = value
-	h.persist(c)
+	h.mutateSystemConfig(c, func(cfg *config.Config) error { cfg.LogsMaxTotalSizeMB = value; return nil })
 }
 
 // ErrorLogsMaxFiles
 func (h *Handler) GetErrorLogsMaxFiles(c *gin.Context) {
-	c.JSON(200, gin.H{"error-logs-max-files": h.cfg.ErrorLogsMaxFiles})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingErrorLogsMaxFiles, gin.H{"error-logs-max-files": h.cfg.ErrorLogsMaxFiles})
 }
 func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
 	var body struct {
@@ -244,119 +569,55 @@ func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
 	if value < 0 {
 		value = 10
 	}
-	h.cfg.ErrorLogsMaxFiles = value
-	h.persist(c)
+	h.mutateSystemConfig(c, func(cfg *config.Config) error { cfg.ErrorLogsMaxFiles = value; return nil })
 }
 
 // Request log
-func (h *Handler) GetRequestLog(c *gin.Context) { c.JSON(200, gin.H{"request-log": h.cfg.RequestLog}) }
+func (h *Handler) GetRequestLog(c *gin.Context) {
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingRequestLog, gin.H{"request-log": h.cfg.RequestLog})
+}
 func (h *Handler) PutRequestLog(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.RequestLog = v })
-}
-
-func (h *Handler) GetRequestLogBody(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"enabled": h.cfg.SDKConfig.RequestLogBodyEnabled()})
-}
-
-func (h *Handler) PutRequestLogBody(c *gin.Context) {
-	var body struct {
-		Value         *bool `json:"value"`
-		ClearExisting bool  `json:"clear_existing"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	if !*body.Value && !body.ClearExisting {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "confirmation_required", "message": "clear_existing must be true when disabling request log body storage"})
-		return
-	}
-	value := *body.Value
-	h.cfg.RequestLogBody = &value
-	h.persist(c)
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.RequestLog = v })
 }
 
 // Websocket auth
 func (h *Handler) GetWebsocketAuth(c *gin.Context) {
-	c.JSON(200, gin.H{"ws-auth": h.cfg.WebsocketAuth})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingWebsocketAuth, gin.H{"ws-auth": h.cfg.WebsocketAuth})
 }
 func (h *Handler) PutWebsocketAuth(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.WebsocketAuth = v })
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.WebsocketAuth = v })
 }
 
 // Request retry
 func (h *Handler) GetRequestRetry(c *gin.Context) {
-	c.JSON(200, gin.H{"request-retry": h.cfg.RequestRetry})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingRequestRetry, gin.H{"request-retry": h.cfg.RequestRetry})
 }
 func (h *Handler) PutRequestRetry(c *gin.Context) {
-	h.updateIntField(c, func(v int) { h.cfg.RequestRetry = v })
-}
-
-// BillingMultipliers
-func (h *Handler) GetBillingMultipliers(c *gin.Context) {
-	multipliers := make(map[string]float64, len(h.cfg.BillingMultipliers))
-	for channel, multiplier := range h.cfg.BillingMultipliers {
-		normalized := strings.ToLower(strings.TrimSpace(channel))
-		if normalized == "" || multiplier <= 0 {
-			continue
-		}
-		multipliers[normalized] = multiplier
-	}
-	c.JSON(200, gin.H{"billing-multipliers": multipliers})
-}
-
-func (h *Handler) PutBillingMultipliers(c *gin.Context) {
-	var body struct {
-		Value map[string]float64 `json:"value"`
-	}
-	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-
-	next := make(map[string]float64, len(body.Value))
-	for channel, multiplier := range body.Value {
-		normalized := strings.ToLower(strings.TrimSpace(channel))
-		if normalized == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "channel name is required"})
-			return
-		}
-		if multiplier <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "billing multiplier must be greater than 0"})
-			return
-		}
-		next[normalized] = multiplier
-	}
-	if len(next) == 0 {
-		h.cfg.BillingMultipliers = nil
-	} else {
-		h.cfg.BillingMultipliers = next
-	}
-	h.persist(c)
+	h.updateIntField(c, func(cfg *config.Config, v int) { cfg.RequestRetry = v })
 }
 
 // Max retry credentials
 func (h *Handler) GetMaxRetryCredentials(c *gin.Context) {
-	c.JSON(200, gin.H{"max-retry-credentials": h.cfg.MaxRetryCredentials})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingMaxRetryCredentials, gin.H{"max-retry-credentials": h.cfg.MaxRetryCredentials})
 }
 func (h *Handler) PutMaxRetryCredentials(c *gin.Context) {
-	h.updateIntField(c, func(v int) { h.cfg.MaxRetryCredentials = v })
+	h.updateIntField(c, func(cfg *config.Config, v int) { cfg.MaxRetryCredentials = v })
 }
 
 // Max retry interval
 func (h *Handler) GetMaxRetryInterval(c *gin.Context) {
-	c.JSON(200, gin.H{"max-retry-interval": h.cfg.MaxRetryInterval})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingMaxRetryInterval, gin.H{"max-retry-interval": h.cfg.MaxRetryInterval})
 }
 func (h *Handler) PutMaxRetryInterval(c *gin.Context) {
-	h.updateIntField(c, func(v int) { h.cfg.MaxRetryInterval = v })
+	h.updateIntField(c, func(cfg *config.Config, v int) { cfg.MaxRetryInterval = v })
 }
 
 // ForceModelPrefix
 func (h *Handler) GetForceModelPrefix(c *gin.Context) {
-	c.JSON(200, gin.H{"force-model-prefix": h.cfg.ForceModelPrefix})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingForceModelPrefix, gin.H{"force-model-prefix": h.cfg.ForceModelPrefix})
 }
 func (h *Handler) PutForceModelPrefix(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.ForceModelPrefix = v })
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.ForceModelPrefix = v })
 }
 
 func normalizeRoutingStrategy(strategy string) (string, bool) {
@@ -364,8 +625,8 @@ func normalizeRoutingStrategy(strategy string) (string, bool) {
 	switch normalized {
 	case "", "round-robin", "roundrobin", "rr":
 		return "round-robin", true
-	case "weighted-round-robin", "weightedroundrobin", "wrr":
-		return "weighted-round-robin", true
+	case "session-sticky", "sessionsticky", "sticky", "ss":
+		return "session-sticky", true
 	case "fill-first", "fillfirst", "ff":
 		return "fill-first", true
 	default:
@@ -375,6 +636,8 @@ func normalizeRoutingStrategy(strategy string) (string, bool) {
 
 // RoutingStrategy
 func (h *Handler) GetRoutingStrategy(c *gin.Context) {
+	_, version := usage.GetRoutingConfigWithVersionForTenant(identity.SystemTenantID)
+	setVersionHeader(c, version)
 	strategy, ok := normalizeRoutingStrategy(h.cfg.Routing.Strategy)
 	if !ok {
 		c.JSON(200, gin.H{"strategy": strings.TrimSpace(h.cfg.Routing.Strategy)})
@@ -395,16 +658,16 @@ func (h *Handler) PutRoutingStrategy(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid strategy"})
 		return
 	}
-	h.cfg.Routing.Strategy = normalized
-	h.persist(c)
+	h.putRoutingStrategy(c, normalized)
 }
 
 // Proxy URL
-func (h *Handler) GetProxyURL(c *gin.Context) { c.JSON(200, gin.H{"proxy-url": h.cfg.ProxyURL}) }
+func (h *Handler) GetProxyURL(c *gin.Context) {
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingProxyURL, gin.H{"proxy-url": h.cfg.ProxyURL})
+}
 func (h *Handler) PutProxyURL(c *gin.Context) {
-	h.updateStringField(c, func(v string) { h.cfg.ProxyURL = v })
+	h.updateStringField(c, func(cfg *config.Config, v string) { cfg.ProxyURL = v })
 }
 func (h *Handler) DeleteProxyURL(c *gin.Context) {
-	h.cfg.ProxyURL = ""
-	h.persist(c)
+	h.mutateSystemConfig(c, func(cfg *config.Config) error { cfg.ProxyURL = ""; return nil })
 }

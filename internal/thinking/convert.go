@@ -54,7 +54,10 @@ const (
 	// ThresholdMedium is the upper bound for "medium" level (1025-8192)
 	ThresholdMedium = 8192
 	// ThresholdHigh is the upper bound for "high" level (8193-24576)
-	ThresholdHigh = 24576
+	ThresholdHigh  = 24576
+	ThresholdXHigh = BudgetMax - 1
+	// BudgetMax is the budget represented by the max effort level.
+	BudgetMax = 128000
 )
 
 // ConvertBudgetToLevel converts a budget value to the nearest thinking level.
@@ -91,9 +94,36 @@ func ConvertBudgetToLevel(budget int) (string, bool) {
 		return string(LevelMedium), true
 	case budget <= ThresholdHigh:
 		return string(LevelHigh), true
-	default:
+	case budget <= ThresholdXHigh:
 		return string(LevelXHigh), true
+	default:
+		return string(LevelMax), true
 	}
+}
+
+// LevelAbove reports whether effort is strictly above the configured ceiling.
+func LevelAbove(level, ceiling ThinkingLevel) bool {
+	rank := func(v ThinkingLevel) int {
+		switch strings.ToLower(strings.TrimSpace(string(v))) {
+		case "none":
+			return 0
+		case "minimal":
+			return 1
+		case "low":
+			return 2
+		case "medium":
+			return 3
+		case "high":
+			return 4
+		case "xhigh":
+			return 5
+		case "max":
+			return 6
+		default:
+			return -1
+		}
+	}
+	return rank(level) > rank(ceiling)
 }
 
 // HasLevel reports whether the given target level exists in the levels slice.

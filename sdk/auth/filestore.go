@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
+	"github.com/MoeForge/moego/json"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -106,8 +105,6 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		return "", fmt.Errorf("auth filestore: create dir failed: %w", err)
 	}
 
-	cliproxyauth.SyncPersistedDisabled(auth)
-
 	// metadataSetter is a private interface for TokenStorage implementations that support metadata injection.
 	type metadataSetter interface {
 		SetMetadata(map[string]any)
@@ -120,6 +117,10 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	} else {
 		switch {
 		case auth.Storage != nil:
+			if auth.Metadata == nil {
+				auth.Metadata = make(map[string]any)
+			}
+			auth.Metadata["disabled"] = auth.Disabled
 			if setter, ok := auth.Storage.(metadataSetter); ok {
 				setter.SetMetadata(auth.Metadata)
 			}
@@ -134,16 +135,25 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 			}
 			if existing, errRead := os.ReadFile(path); errRead == nil {
 				if jsonEqual(existing, raw) {
-					if errMode := misc.TightenCredentialFilePermissions(path); errMode != nil {
-						return "", fmt.Errorf("auth filestore: tighten existing file permissions: %w", errMode)
-					}
 					break
 				}
-			} else if !os.IsNotExist(errRead) {
+				file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+				if errOpen != nil {
+					return "", fmt.Errorf("auth filestore: open existing failed: %w", errOpen)
+				}
+				if _, errWrite := file.Write(raw); errWrite != nil {
+					_ = file.Close()
+					return "", fmt.Errorf("auth filestore: write existing failed: %w", errWrite)
+				}
+				if errClose := file.Close(); errClose != nil {
+					return "", fmt.Errorf("auth filestore: close existing failed: %w", errClose)
+				}
+			} else if os.IsNotExist(errRead) {
+				if errWrite := os.WriteFile(path, raw, 0o600); errWrite != nil {
+					return "", fmt.Errorf("auth filestore: write file failed: %w", errWrite)
+				}
+			} else {
 				return "", fmt.Errorf("auth filestore: read existing failed: %w", errRead)
-			}
-			if errWrite := misc.WriteCredentialFileAtomic(path, raw); errWrite != nil {
-				return "", fmt.Errorf("auth filestore: write file failed: %w", errWrite)
 			}
 		default:
 			return "", fmt.Errorf("auth filestore: nothing to persist for %s", auth.ID)
@@ -308,9 +318,6 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 	if provider == "" {
 		provider = "unknown"
 	}
-	// Antigravity project discovery is intentionally not performed here: cold
-	// start file loading must not issue outbound network requests. The executor
-	// resolves project_id lazily on the first request instead.
 	info, errStat = os.Stat(path)
 	if errStat != nil {
 		return nil, fmt.Errorf("stat file: %w", errStat)
@@ -357,7 +364,6 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 		auth.Attributes["email"] = email
 	}
 	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
-	cliproxyauth.RestorePersistedDisabled(auth)
 	return []*cliproxyauth.Auth{auth}, nil
 }
 

@@ -1,326 +1,397 @@
-# CLI Proxy API
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go">
+  <img src="https://img.shields.io/badge/PostgreSQL-15+-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL">
+  <img src="https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge" alt="License">
+  <img src="https://img.shields.io/github/stars/kittors/CliRelay?style=for-the-badge&color=f59e0b" alt="Stars">
+  <img src="https://img.shields.io/github/v/release/kittors/CliRelay?style=for-the-badge&color=8b5cf6" alt="Release">
+</p>
 
-English | [中文](README_CN.md) | [日本語](README_JA.md)
+<h1 align="center">CliRelay</h1>
 
-If you want to use CLIProxyAPI on your desktop, we recommend our [EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) desktop client. It provides a graphical configuration UI, automatic updates, system tray integration, and one-click start/stop for the CLIProxyAPI service.
+<p align="center">
+  <strong>A self-hosted gateway that puts your AI coding subscriptions and API keys behind one endpoint — with a multi-tenant control panel to run it.</strong>
+</p>
 
-CLIProxyAPI is a proxy server that provides OpenAI/Gemini/Claude/Codex/Grok compatible API interfaces for CLI.
+<p align="center">
+  Route Claude Code, Codex, Gemini CLI and any OpenAI-compatible client through the accounts you already pay for.<br/>
+  See every request, cap every key, and fail over automatically when an account runs dry.
+</p>
 
-You can access the following providers locally and with multiple CLI accounts through any OpenAI (including Responses), Gemini (including Interactions), or Claude-compatible client or SDK.
+<p align="center">
+  English | <a href="README_CN.md">中文</a>
+</p>
 
-<table>
-<tbody>
-    <tr>
-        <th align="center" width="100">Provider</th>
-        <th align="center">Description</th>
-    </tr>
-    <tr>
-        <td align="center"><a href="https://www.kimi.com/code/?aff=cliproxyapi"><img src="./assets/logo/kimi.svg" alt="Kimi" width="28" height="28" /></a></td>
-        <td>Kimi series models (Kimi K3, Kimi K2.7 Code, etc.). <a href="https://platform.kimi.ai/docs/guide/kimi-k3-quickstart">Kimi K3</a> is Moonshot AI’s most capable model and the world’s first open 3T-class model. With 2.8 trillion parameters, native vision, and a 1-million-token context window, K3 is built for long-horizon coding, knowledge work, and reasoning. CLIProxyAPI supports Kimi through OAuth or compatible API interfaces. Try a <strong>Kimi Code plan</strong> (<a href="https://www.kimi.com/code?aff=cliproxyapi">中文站</a> | <a href="https://www.kimi.ai/code?aff=cliproxyapi">Global</a>), or get an <strong>API key</strong> from the Kimi Open Platform (<a href="https://platform.kimi.com?track_id=track-f15622e7182046baa22ca35e006e13a7&aff=cliproxyapi">中文站</a> | <a href="https://platform.kimi.ai?track_id=track-8a28e4b291d84f62af2fccc3e7a21cb3&aff=cliproxyapi">Global</a>). Thanks to Kimi for supporting CLIProxyAPI and the open-source community!</td>
-    </tr>
-    <tr>
-        <td align="center"><a href="https://platform.openai.com/docs/guide/gpt-5.6"><img src="./assets/logo/openai.svg" alt="OpenAI" width="28" height="28" /></a></td>
-        <td>OpenAI GPT series models (GPT 5.6, GPT 5.5, etc.). GPT-5.6 sets a new quality and efficiency baseline for complex production workflows. GPT-5.6 is especially token-efficient and improves frontend aesthetics, including layout, visual hierarchy, and design judgment.</td>
-    </tr>
-    <tr>
-        <td align="center"><a href="https://www.anthropic.com/claude/fable"><img src="./assets/logo/claude.svg" alt="Anthropic" width="28" height="28" /></a></td>
-        <td>Anthropic Claude series models (Claude Fable, Claude Opus, Claude Sonnet, etc.). Claude Fable 5 is Anthropic's most capable widely released model, built for the most demanding reasoning and long-horizon agentic work.</td>
-    </tr>
-    <tr>
-        <td align="center"><a href="https://antigravity.google/"><img src="./assets/logo/antigravity.svg" alt="Antigravity" width="28" height="28" /></a></td>
-        <td>Google Gemini series models (Gemini 3.5 Flash, Gemini 3.1 Pro, etc.). Gemini 3.5 Flash provides sustained frontier-level intelligence optimized for real-world tasks at a higher speed and lower cost. Designed for the agentic era, it excels at sub-agent deployment, multi-step workflows, and long-horizon tasks at scale. This model is particularly effective for rapid agentic loops involving complex coding cycles and iterations.</td>
-    </tr>
-    <tr>
-        <td align="center"><a href="https://x.ai/grok"><img src="./assets/logo/xai.svg" alt="xAI" width="28" height="28" /></a></td>
-        <td>xAI Grok series models (Grok 4.5, Grok Composer 2.5 Fast, etc.). Grok 4.5 is SpaceXAI's frontier model built for coding, agentic tasks, and knowledge work. It was trained in SpaceXAI's data centers in Memphis with new datasets spanning science, engineering, and math.</td>
-    </tr>
-</tbody>
-</table>
+<p align="center">
+  <a href="https://help.router-for.me/">Docs</a> ·
+  <a href="https://github.com/kittors/codeProxy">Control panel</a> ·
+  <a href="https://github.com/kittors/CliRelay/releases">Releases</a> ·
+  <a href="https://github.com/kittors/CliRelay/issues">Report a bug</a>
+</p>
 
-
-## Sponsor
-
-[![https://www.packyapi.com/register?aff=cliproxyapi](./assets/packycode-en.png)](https://www.packyapi.com/register?aff=cliproxyapi)
-
-Thanks to PackyCode for sponsoring this project!
-
-PackyCode is a reliable and efficient API relay service provider, offering relay services for Claude Code, Codex, Gemini, and more.
-
-PackyCode provides special discounts for our software users: register using <a href="https://www.packyapi.com/register?aff=cliproxyapi">this link</a> and enter the "cliproxyapi" promo code during recharge to get 10% off.
+<p align="center">
+  <img src="docs/images/readme-showcase/monitor-center.png" width="100%" alt="CliRelay monitor center: health score, live traffic and golden-signal tiles" />
+</p>
 
 ---
 
-<table>
-<tbody>
-<tr>
-<td width="180"><a href="https://www.aicodemirror.ai/register?invitecode=TJNAIF"><img src="./assets/aicodemirror.png" alt="AICodeMirror" width="150"></a></td>
-<td>Thanks to AICodeMirror for sponsoring this project! AICodeMirror provides official high-stability relay services for Claude Code / Codex / Gemini, with enterprise-grade concurrency, fast invoicing, and 24/7 dedicated technical support. Claude Code / Codex / Gemini official channels at 38% / 2% / 9% of original price, with extra discounts on top-ups! AICodeMirror offers special benefits for CLIProxyAPI users: register via <a href="https://www.aicodemirror.ai/register?invitecode=TJNAIF">this link</a> to enjoy 20% off your first top-up, and enterprise customers can get up to 25% off!</td>
-</tr>
-<tr>
-<td width="180"><a href="https://apikey.fan/register?aff=CLIProxyAPI"><img src="./assets/apikey.png" alt="APIKEY.FUN" width="150"></a></td>
-<td>Thanks to APIKEY.FUN for sponsoring this project! APIKEY.FUN is a professional enterprise-grade AI relay platform dedicated to providing stable, efficient, and low-cost AI model API access for enterprises and individual developers. The platform supports popular mainstream models such as Claude, OpenAI, and Gemini, with prices as low as 7% of the official price. Register through this project's <a href="https://apikey.fan/register?aff=CLIProxyAPI">exclusive link</a> to enjoy a special <b>permanent 5% top-up discount</b>.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://t.me/CyberWlD/218"><img src="./assets/cyberpay.jpg" alt="CyberPay" width="150"></a></td>
-<td>CyberPay was founded in 2021. We are committed to providing stable, efficient, and secure payment settlement solutions for AI industry merchants. Working with us helps your website platform solve Alipay and WeChat payment collection needs. We support business cooperation for selling GPT, Gemini, Claude, and Codex accounts, relay platforms, and other related services, helping merchants address payment collection challenges. <a href="https://t.me/CyberWlD/218">Contact us</a> to start your path to growth.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://api.fenno.ai/s/Cvf0"><img src="./assets/fennoai.png" alt="FennoAI" width="150"></a></td>
-<td>FennoAI is a stable and efficient API relay service provider, currently focused on Codex relay services. It is compatible with OpenAI and Anthropic protocols and can flexibly integrate with mainstream coding tools such as Codex, Claude Code, and OpenCode. It can reliably support enterprise-grade demand of hundreds of billions of tokens per day, with B2B settlement and invoicing available for both domestic and overseas entities. FennoAI offers an exclusive benefit for CLIProxyAPI users: purchase a subscription through the <a href="https://api.fenno.ai/s/Cvf0">exclusive link</a> and receive $50 worth of Coding Plan credits for just $1.99. Referral rewards are also available: earn up to 20% commission when invited friends make a purchase. The more friends you invite, the greater the rewards.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://s.qiniu.com/7zUJri"><img src="./assets/qiniucloud.png" alt="Qiniu Cloud AI" width="150"></a></td>
-<td>Thanks to <a href="https://s.qiniu.com/7zUJri">Qiniu Cloud AI</a> for sponsoring this project! Qiniu Cloud AI is an enterprise-grade large-model MaaS platform under Qiniu Cloud (02567.HK). It provides one-stop access to 150+ mainstream global models, is compatible with protocols from major global model providers, and covers full-modal processing capabilities for text, image, audio, video, and files. It serves more than 1.69 million enterprise and developer users. Exclusive benefits: enterprise users can claim 12 million free tokens, and invite friends to earn up to tens of billions of tokens.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://cubence.com/signup?code=CLIPROXYAPI&source=cpa"><img src="./assets/cubence.png" alt="Cubence" width="150"></a></td>
-<td>Thanks to Cubence for sponsoring this project! Cubence is a reliable and efficient API relay service provider, offering relay services for Claude Code, Codex, Gemini, and more. Cubence provides special discounts for our software users: register using <a href="https://cubence.com/signup?code=CLIPROXYAPI&source=cpa">this link</a> and enter the "CLIPROXYAPI" promo code during recharge to get 10% off.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://bestproxy.com/?keyword=ayh7otlb"><img src="./assets/bestproxy.png" alt="Bestproxy" width="150"></a></td>
-<td>Bestproxy provides high-purity residential IPs with dedicated one-IP-per-account support. 🟡Residential Proxy - &#36;0.5/GB；🟡Static Residential Proxy - Starting at &#36;3/IP；🟡Unlimited Residential Proxy - Starting at &#36;67/Day.  ✅<a href="https://bestproxy.com/?keyword=ayh7otlb">Get Free Trial.</a></td>
-</tr>
-<tr>
-<td width="180"><a href="https://go.apimart.ai/gh-cliproxyapi"><img src="./assets/apimart-en.png" alt="APIMart" width="150"></a></td>
-<td>Thanks to APIMart for sponsoring this project! APIMart is a low-cost API platform for AI image &amp; video generation — GPT-Image-2 from &#36;0.006/image, 160+ images per dollar. One async API covers both image and video: submit a task, get an ID, fetch results via polling or callback. Batch tens of thousands of images without timeouts, switch models without changing code. Pay-as-you-go with no monthly fee — <a href="https://go.apimart.ai/gh-cliproxyapi">sign up here</a> to get started.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.axisnow.io/zh"><img src="./assets/axisnow.png" alt="AxisNow" width="150"></a></td>
-<td>Protect and accelerate websites and APIs while optimizing access from both mainland China and the rest of the world. Extend acceleration and security to native and mobile apps through client SDKs — <b>self-hosted private CDN | subscription-based DDoS-protected CDN | independently controlled, flexibly composable CDN networks.</b></td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.swiftproxy.net/?code=PR67S9A95"><img src="./assets/swiftproxy.png" alt="Swiftproxy" width="150"></a></td>
-<td>Swiftproxy provides 90M+ clean residential IPs across 220+ locations, supporting HTTP(S)/SOCKS5, IP rotation, Sticky Sessions, and precise location targeting. It helps AI API tools and automation workflows access online services reliably from different locations, making it ideal for API requests, web access, data collection, and location-based testing. Residential proxies from &#36;0.7/GB. Free testing is available, with 10% off using code PROXY90. <a href="https://www.swiftproxy.net/?code=PR67S9A95">Try Swiftproxy Now</a></td>
-</tr>
-<tr>
-<td width="180"><a href="https://aiberm.com?ref=cpa"><img src="./assets/aiberm.png" alt="Aiberm" width="150"></a></td>
-<td>This project is sponsored by Aiberm — a unified, discounted AI API for developers. One endpoint for Claude, GPT, Grok, DeepSeek, GLM, Kimi, and MiniMax: 85–90% off Claude, 90% off GPT, and 80% off Grok. Image generation included, with GPT Image 2 and Nano Banana. <a href="https://aiberm.com?ref=cpa">Visit Aiberm</a>.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.rapidproxy.io/?code=KHM9B6E6M"><img src="./assets/rapidproxy.png" alt="RapidProxy" width="150"></a></td>
-<td><a href="https://www.rapidproxy.io/?code=KHM9B6E6M">RapidProxy</a> is a high-performance proxy provider built for automation and multi-account operations, offering clean residential proxies and native static ISP IPs. With 90M+ residential IPs worldwide, smart rotation, stable sessions, and high-concurrency support, RapidProxy is ideal for web scraping, browser automation, social media account management, e-commerce operations, bulk account registration, and more. Residential proxies start at just &#36;0.55/GB, with traffic that never expires. Use code RAPID10 for 10% off, and <a href="https://www.rapidproxy.io/?code=KHM9B6E6M">start your free trial today.</a></td>
-</tr>
-</tbody>
-</table>
+## Contents
 
-## Overview
+- [What is CliRelay?](#what-is-clirelay)
+- [Highlights](#highlights)
+- [How a request flows](#how-a-request-flows)
+- [A tour of the control panel](#a-tour-of-the-control-panel)
+- [Supported providers](#supported-providers)
+- [Quick start](#quick-start)
+- [Connect your tools](#connect-your-tools)
+- [Configuration essentials](#configuration-essentials)
+- [Deployment options](#deployment-options)
+- [Architecture](#architecture)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License and acknowledgements](#license-and-acknowledgements)
 
-- OpenAI/Gemini/Claude/Grok compatible API endpoints for CLI models
-- OpenAI Codex support (GPT models) via OAuth login
-- Claude Code support via OAuth login
-- Grok Build support via OAuth login
-- Streaming, non-streaming, and WebSocket responses where supported
-- Function calling/tools support
-- Multimodal input support (text and images)
-- Multiple accounts with round-robin load balancing (Gemini, OpenAI, Claude, Grok)
-- Simple CLI authentication flows (Gemini, OpenAI, Claude, Grok)
-- Generative Language API Key support
-- AI Studio Build multi-account load balancing
-- Claude Code multi-account load balancing
-- OpenAI Codex multi-account load balancing
-- Grok Build multi-account load balancing
-- OpenAI-compatible upstream providers via config (e.g., OpenRouter)
-- Reusable Go SDK for embedding the proxy (see `docs/sdk-usage.md`)
+## What is CliRelay?
 
-## Getting Started
+> **A heavily extended fork of [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)**, rebuilt around a production management layer, a web control panel and day-2 operations.
 
-CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
+CliRelay turns AI CLI subscriptions, OAuth credentials, provider API keys and OpenAI-compatible upstreams into **one managed API layer**. Clients talk to a single endpoint using the OpenAI, Anthropic or Gemini protocol; CliRelay authenticates them with its own client keys, picks a healthy upstream account, translates the request when needed, and records what happened.
 
-## Management API
+It is built to be **run by a team**. Tenants keep their accounts, keys and data apart; users get roles with fine-grained permissions; every security-sensitive change lands in an audit log; and portal accounts let end users hold several API keys and check their own usage without asking an admin.
 
-see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
+PostgreSQL 15+ is the source of truth for runtime data. Redis 7+ holds caches, locks, rate limits, queues and other rebuildable state.
 
-## Management Panel Assets
+## Highlights
 
-The backend only hosts `/manage` and syncs panel release assets. Configure
-`remote-management.panel-github-repository` to choose the panel repository, keep
-`remote-management.disable-control-panel` set to `false` to serve the panel, and
-set `remote-management.disable-auto-update-panel` to `true` only when you want to
-stop periodic background panel asset sync.
+| | |
+| :-- | :-- |
+| 🔌 **One endpoint, every provider** | Claude, Codex, Gemini CLI, Antigravity, Vertex, Bedrock, xAI/Grok, Qwen, Kimi, iFlow, OpenCode Go, ClinePass, Ollama Cloud, Command Code and any OpenAI-compatible upstream behind `http://your-host:8317`, speaking OpenAI Chat / Responses, Anthropic Messages and Gemini. |
+| 🧭 **Routing that survives bad days** | Channel groups and custom paths decide where traffic may go; round-robin, fill-first and session-sticky scheduling spread it; cooldowns and automatic failover move it off exhausted or failing accounts. |
+| 📈 **See everything** | A monitor center with a health score, per-minute live traffic, P50–P99 latency and time to first token, failure analysis and a portal user → model → channel traffic flow, plus a searchable log of every request with tokens, latency and cost. |
+| 💳 **Control spend** | Client keys grouped under portal accounts, reusable permission profiles, daily / period / lifetime quotas, RPM and TPM limits, per-model pricing and one-click period resets. |
+| 🏛️ **Built for teams** | Tenants, users, roles, `resource.action` permissions, a curated menu per tenant and an audit trail for security-sensitive changes. |
+| 🖥️ **Operate from the browser** | A `/manage` control panel to add accounts with guided sign-in or credential import, edit config visually, manage models and pricing, and check for updates — in English, Simplified Chinese and Russian. |
 
-This fork defaults to [zuohuadong/codeProxy](https://github.com/zuohuadong/codeProxy)
-and supports `panel-dist.zip` release bundles. Endpoints backed by v7 runtime
-state are served directly; features that only exist in the older dev/v6 line
-return empty read models or explicit `unsupported` errors until they are ported.
+## How a request flows
 
-## Usage Statistics
+```mermaid
+flowchart LR
+    subgraph clients["Your tools"]
+        cc["Claude Code"]
+        cx["Codex CLI"]
+        gc["Gemini CLI"]
+        oa["Any OpenAI-compatible client"]
+    end
 
-Since v6.10.0, CLIProxyAPI and [CPAMC](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) no longer ship built-in usage statistics. If you need usage statistics, use:
+    subgraph relay["CliRelay :8317"]
+        auth["Client key<br/>portal account · permission profile"]
+        quota["Quotas & rate limits"]
+        route["Channel group routing<br/>scheduling · cooldown · failover"]
+        exec["Provider executors<br/>protocol translation"]
+        auth --> quota --> route --> exec
+    end
 
-### [CPA Usage Keeper](https://github.com/Willxup/cpa-usage-keeper)
+    subgraph upstreams["Upstream accounts"]
+        oauth["OAuth accounts<br/>Claude · Codex · Gemini · Antigravity · Grok · Qwen · Kimi · iFlow"]
+        keys["Provider keys<br/>OpenAI-compatible · Vertex · Bedrock · OpenCode Go · ClinePass · Ollama Cloud"]
+    end
 
-Standalone persistence and visualization service for CLIProxyAPI, with periodic data sync, SQLite storage, aggregate APIs, and a built-in dashboard for usage and statistics.
+    clients --> auth
+    exec --> oauth
+    exec --> keys
+    relay -. "request logs, usage rollups" .-> pg[("PostgreSQL")]
+    relay -. "cache, locks, limits" .-> rd[("Redis")]
+```
 
-### [CPA-Manager-Plus](https://github.com/seakee/CPA-Manager-Plus)
+1. **Authenticate.** A client key resolves to its portal account and permission profile, which decide the allowed channel groups, models and quotas.
+2. **Admit.** Daily, period and lifetime spending, request quotas, RPM, TPM and concurrency are checked before anything reaches an upstream — for HTTP and for Responses WebSocket turns alike.
+3. **Route.** The request goes to a healthy channel (an AI account or a provider key) inside the allowed groups, following the scheduling strategy; failures cool the channel down and fail over to the next one.
+4. **Translate and record.** The executor speaks the upstream's protocol, streams the answer back, and writes a request log row and usage rollups that power the dashboards.
 
-Full CLIProxyAPI management center with request-level monitoring and cost estimates. CPA-Manager tracks collected requests by account, model, channel, latency, status, and token usage; estimates cost with editable model prices and one-click LiteLLM price sync; persists events in SQLite; and provides Codex account-pool operations with batch inspection, quota detection, unhealthy account discovery, cleanup suggestions, and one-click execution for day-to-day multi-account maintenance.
+## A tour of the control panel
 
-## SDK Docs
+The control panel ([kittors/codeProxy](https://github.com/kittors/codeProxy)) is served by CliRelay at `/manage`. The screenshots below follow its own navigation and were taken from a live deployment; names, keys, addresses and accounts are replaced with sample values.
 
-- Video generation: [docs/video-generation.md](docs/video-generation.md)
-- Usage: [docs/sdk-usage.md](docs/sdk-usage.md)
-- Advanced (executors & translators): [docs/sdk-advanced.md](docs/sdk-advanced.md)
-- Access: [docs/sdk-access.md](docs/sdk-access.md)
-- Watcher: [docs/sdk-watcher.md](docs/sdk-watcher.md)
-- Custom Provider Example: `examples/custom-provider`
+### Observability
+
+| Monitor center — traffic and reliability over time | Monitor center — rankings, traffic flow and active hours |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/monitor-center-trends.png" width="100%" alt="Traffic and reliability trend, latency distribution and failure analysis" /> | <img src="docs/images/readme-showcase/monitor-center-flow.png" width="100%" alt="Channel health, portal user ranking, traffic flow and weekday-hour heatmap" /> |
+
+| Dashboard | Request logs |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/dashboard.png" width="100%" alt="Dashboard with request, token, cost and cache KPIs and a live system monitor" /> | <img src="docs/images/readme-showcase/request-logs.png" width="100%" alt="Request log table with channel, user, cache and token columns" /> |
+
+- **Monitor center** answers four questions at a glance: is it healthy, is it slow, what is failing, and where is traffic going.
+  - The health score combines success rate, the share of traffic on failing channels and P95 latency against the previous period, and explains each check.
+  - Six tiles cover requests, success rate, P95 latency, time to first token, tokens with cache hit rate, and cost — each with a period-over-period change and a sparkline.
+  - Below them: a trend view, the latency distribution (P50 / P90 / P95 / P99), failures by channel, model or portal user, model / channel / user rankings, a traffic-flow diagram and a weekday × hour heatmap. Click any row to filter the whole page.
+- **Dashboard** summarises requests, success rate, tokens, cost, failures and cache ratio for today, 7 or 30 days, next to a live system monitor (CPU, memory, disk, database and log storage).
+  - **Server nodes** puts every node on one screen: a compact card each with CPU (running and stolen by the hypervisor), memory, the fullest disk, the slot's quota and throttling, traffic, egress and the database and Redis round trips. Anything off — steal, a filling disk, a slow dependency, a fallen-back shared Redis, an offline node — colours its card; the details, every disk with inodes and time-to-full included, open in place.
+  - Next to them, a **Database** card: connections against the limit, size, WAL, replication slots and the archive connection, long and idle transactions, lock waits, cache hit ratio and transaction ID age, read by the leader every 30 s, plus the database host's CPU and disks from `clirelay-hostagent` (see [multi-instance deployment §4.10](docs/multi-instance-deployment.md#410-node-disk-and-database-monitoring)).
+- **Request logs** list every call with its channel, portal user and key, cache / input / output tokens, latency and cost. Filter by user, model, channel and status, and open the request and response bodies when body storage is enabled.
+
+<details>
+<summary><b>More monitor-center views</b></summary>
+
+| Model performance, channel health and portal users | Dark theme |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/monitor-center-rankings.png" width="100%" alt="Model performance table with latency, first token, speed, tokens and cost" /> | <img src="docs/images/readme-showcase/monitor-center-dark.png" width="100%" alt="Monitor center in the dark theme" /> |
+
+</details>
+
+### Access and credentials
+
+| Add an AI account | Import credentials you already hold |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/add-ai-account.png" width="100%" alt="Add AI account dialog grouped by browser sign-in, device code and credential import" /> | <img src="docs/images/readme-showcase/credential-import.png" width="100%" alt="Refresh token import with risk notice, steps and bulk paste" /> |
+
+| AI accounts | AI providers |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/ai-accounts.png" width="100%" alt="AI account cards with plan badges, success rate and quota windows" /> | <img src="docs/images/readme-showcase/ai-providers.png" width="100%" alt="Provider key cards grouped by upstream type" /> |
+
+| Portal accounts | Portal account permissions |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/portal-accounts.png" width="100%" alt="Portal accounts with keys, permission profile, quota and spend" /> | <img src="docs/images/readme-showcase/portal-account-permissions.png" width="100%" alt="Reusable permission profiles with channel groups, quotas and system prompts" /> |
+
+| Content moderation | CC Switch config |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/content-moderation.png" width="100%" alt="Moderation profiles bound to accounts, keys or provider defaults" /> | <img src="docs/images/readme-showcase/cc-switch-config.png" width="100%" alt="CC Switch presets per client with model and channel group" /> |
+
+- **Add AI account** groups every way in by what you will do — sign in with a browser, enter a device code, or import a credential — and walks through the steps that provider actually has, including which address to copy back and why the landing page does not load.
+- **Credential import** turns a held credential (Claude session key, Codex or Antigravity refresh token, Grok SSO cookie) into an account. It explains where to find each one and what handing it over means, accepts many at once, and retries failed rows on their own.
+- **AI accounts** show each OAuth account with its plan, quota windows, success rate and subscription expiry; **AI providers** hold API-key upstreams with base URL, headers, proxy binding and per-key model lists.
+- **Z.ai Coding Plan quotas** are probed for OpenAI-compatible providers whose base URL is `https://api.z.ai/api/coding/paas/v4` or `https://open.bigmodel.cn/api/coding/paas/v4`. The account-status API reports the plan, remaining five-hour/weekly quota and upstream reset times using the existing server-side refresh schedule. No special provider name is required. Ordinary pay-as-you-go endpoints are not probed.
+- **Portal accounts** own one or more client keys and share a quota; **permission profiles** bundle channel groups, models, limits and an optional system prompt so a new user is set up in one pick.
+- **Content moderation** profiles can be tested against sample text and bound to accounts, keys or a provider default; **CC Switch config** builds one-click import presets for Claude Code and Codex.
+
+### Models and routing
+
+| Model plaza | Model catalog |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/model-plaza.png" width="100%" alt="Model plaza cards with capabilities, sources and per-million pricing" /> | <img src="docs/images/readme-showcase/model-catalog.png" width="100%" alt="Model catalog with owner, capabilities, billing and price" /> |
+
+| Channel groups | Outbound proxies |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/channel-groups.png" width="100%" alt="Channel groups with health, members and scheduling" /> | <img src="docs/images/readme-showcase/outbound-proxies.png" width="100%" alt="Reusable outbound proxy pool with latency probes" /> |
+
+- **Model plaza** shows every model the current tenant can reach, with capabilities, the channels that serve it and its price per million tokens.
+- **Model catalog** is where models, owners, capabilities and pricing are maintained, with an optional OpenRouter sync and a built-in model test.
+- **Channel groups** decide which channels a key may use and how traffic is spread inside the group; groups can follow new upstream models automatically.
+- **Outbound proxies** are defined once and bound to the accounts or provider keys that need a fixed egress IP.
+
+### Organization
+
+| Tenants | Users |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/tenants.png" width="100%" alt="Tenant list with status, expiry and version" /> | <img src="docs/images/readme-showcase/users.png" width="100%" alt="Users inside the effective tenant with roles and last sign-in" /> |
+
+| Roles and permissions | Audit logs |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/roles-permissions.png" width="100%" alt="Built-in and custom roles with permission counts" /> | <img src="docs/images/readme-showcase/audit-logs.png" width="100%" alt="Audit trail of security-sensitive changes with actor, action and result" /> |
+
+- **Tenants** carry their own accounts, keys, routing and data, with a lease period; administrators switch the effective tenant from the header.
+- **Roles** grant `resource.action` permissions such as `providers.test` or `models.write`, which decide the pages, buttons and API calls each user gets.
+- **Audit logs** record who changed what, from where, and whether it succeeded.
+
+### System
+
+| Visual config editor | System info |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/config-visual-editor.png" width="100%" alt="Config page with group tabs, section chips and the low-resource profile" /> | <img src="docs/images/readme-showcase/system-info.png" width="100%" alt="System info with endpoints, versions and the update check" /> |
+
+| Menu management | Sign-in |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/menu-management.png" width="100%" alt="Menu visibility, ordering and required permission per entry" /> | <img src="docs/images/readme-showcase/login.png" width="100%" alt="Sign-in page" /> |
+
+- **Config** edits the running configuration through grouped forms with inline validation, or as YAML in the source editor; a recommended low-resource profile tunes small hosts in one click.
+- **System info** shows the API and management endpoints, backend and panel versions, and checks for updates.
+- **Menu management** curates which entries a tenant sees and which permission each requires.
+
+## Supported providers
+
+| Provider / channel | How it connects | Notes |
+| :-- | :-- | :-- |
+| Anthropic Claude | OAuth (browser or code page), session-key import, API key | Claude Code and Claude-compatible clients; Messages and Responses entrypoints |
+| OpenAI Codex | OAuth, refresh-token import, API key | Responses over HTTP and WebSocket, image generation bridge |
+| Google Gemini | OAuth (Gemini CLI), API key | Gemini CLI and AI Studio style flows |
+| Antigravity | OAuth, refresh-token import | Gemini and Claude model families, quota warmup |
+| Vertex AI | Service-account JSON, API key | Custom base URL, headers, aliases and exclusions |
+| AWS Bedrock | API key or SigV4 | Region-aware Bedrock Runtime with Claude model mappings |
+| xAI / Grok | OAuth, SSO-cookie import | Grok CLI identity and quota metadata |
+| Qwen | Device code | Qwen Code style sign-in |
+| Kimi | Device code | Kimi CLI identity headers |
+| iFlow | OAuth, cookie | iFlow and related model families |
+| OpenCode Go | API key | Usage windows read with the same key; vision fallback model |
+| ClinePass | API key | OpenAI-compatible routing with model-access control |
+| Ollama Cloud | API key | OpenAI-compatible routing with model-access control |
+| Command Code | API key | Plan usage windows and model access |
+| OpenAI-compatible upstreams | API key | OpenRouter and any service that speaks Chat Completions |
+| Amp | Upstream key and model mappings | Amp CLI and IDE integration |
+
+## Quick start
+
+Docker Compose is the recommended installation. It starts CliRelay, PostgreSQL 15, Redis 7 and the updater sidecar.
+
+```bash
+git clone https://github.com/kittors/CliRelay.git
+cd CliRelay
+# Linux bind mounts need write access for the non-root container user:
+# sudo chown -R 10001:10001 auths logs data
+docker compose up -d
+```
+
+On the first start, the `clirelay-init` service creates `.env` and `config.yaml` if they are missing and generates the secrets it needs (`CLIRELAY_ADMIN_PASSWORD`, `CLIRELAY_POSTGRES_PASSWORD`, `CLIRELAY_UPDATER_TOKEN`). Existing non-empty values are kept.
+
+| What | Where |
+| :-- | :-- |
+| API endpoint | `http://localhost:8317` |
+| Control panel | `http://localhost:8317/manage` — sign in as `admin` with `CLIRELAY_ADMIN_PASSWORD` from `.env` |
+| Logs | `docker compose logs -f cli-proxy-api` |
+| Restart / stop | `docker compose restart cli-proxy-api` / `docker compose down` |
+| Terminal UI | `docker compose exec cli-proxy-api ./cli-proxy-api -tui` |
+
+Then, in the control panel:
+
+1. **Add an upstream** — *AI Accounts → Add AI account* to sign in with a subscription or import a credential, or *AI Providers* for an API key.
+2. **Create a client key** — *Portal Accounts → Create user*; each portal account holds one or more keys. A fresh install ships with no client key and rejects client requests until you create one; the `your-api-key-*` values in `config.example.yaml` are placeholders that are always rejected.
+3. **Point your tools at CliRelay** — see below.
+
+> [!NOTE]
+> The container runs as `10001:10001`; `config.yaml` must be readable by it, and writable if you want to save config from the panel. If a Synology/DSM shared-folder ACL blocks the entrypoint's `chown`, fix ownership on the host and restart `cli-proxy-api`. If you pre-set `CLIRELAY_ADMIN_PASSWORD`, use at least 12 characters with an upper-case letter, a lower-case letter and a symbol; a weaker value is replaced on the next start.
+
+## Connect your tools
+
+Use a client key created in the panel wherever a tool expects an API key.
+
+**Claude Code**
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8317
+export ANTHROPIC_AUTH_TOKEN=sk-your-client-key
+claude
+```
+
+**Codex CLI** (`~/.codex/config.toml`)
+
+```toml
+model_provider = "clirelay"
+
+[model_providers.clirelay]
+name = "openai"
+base_url = "http://localhost:8317/v1"
+requires_openai_auth = true
+```
+
+**Any OpenAI-compatible client**
+
+```bash
+curl http://localhost:8317/v1/chat/completions \
+  -H "Authorization: Bearer sk-your-client-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-5.5", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+> [!TIP]
+> *CC Switch Config* in the panel builds a one-click import link for Claude Code and Codex, with the model mapping and channel group already filled in.
+
+Full client guides: [help.router-for.me](https://help.router-for.me/).
+
+## Configuration essentials
+
+Everything below can be changed in the panel's **Config** page or in `config.yaml`.
+
+| Setting | What it controls |
+| :-- | :-- |
+| `port`, `host` | Where the API and panel listen (default `8317`, all interfaces). |
+| `remote-management` | Whether the management API accepts non-local callers, whether `/manage` is served, and which repository the panel updates from (`panel-github-repository`, default `kittors/codeProxy`). |
+| `routing.strategy` | Default scheduling inside a group: `round-robin`, `fill-first` or `session-sticky`. |
+| `request-retry`, `max-retry-interval`, `quota-exceeded` | How many times a failed request is retried and what happens when an account's quota runs out. |
+| `proxy-url`, proxy pool | Global and per-account outbound proxies. |
+| `request-log-storage` | Whether full request / response bodies are kept, for how long and up to what size. Off by default; metadata and request details are always recorded. |
+| `auto-update` | Update checks and the channel they follow (`main` by default, `dev` for preview builds). |
+| `cors-allow-origins` | Browser and extension origins allowed to call the API. |
+
+```yaml
+# Keep full bodies for 7 days, capped at 2 GB
+request-log-storage:
+  store-content: true
+  content-retention-days: 7
+  max-total-size-mb: 2048
+
+# Follow dev builds, or turn update checks off
+auto-update:
+  enabled: true
+  channel: dev
+```
+
+Config and credential storage can also live in PostgreSQL, Git or an S3-compatible object store instead of local files, selected through environment-based bootstrap settings.
+
+## Deployment options
+
+| Setup | When to use it | Guide |
+| :-- | :-- | :-- |
+| Single node, Docker Compose | Personal use, small teams, NAS | [Quick start](#quick-start) · [Production checklist](docs/production-checklist.md) |
+| Behind nginx or another reverse proxy | Public HTTPS, custom domain | [Reverse proxy (Chinese)](docs/reverse-proxy_CN.md) |
+| Several nodes on one shared PostgreSQL | Spreading traffic, automatic failover, rolling deploys | [Multi-instance deployment](docs/multi-instance-deployment.md) · [Node bootstrap (Chinese)](docs/multi-instance-node-bootstrap_CN.md) |
+
+Online updates run through the updater sidecar: the panel shows the target version, each stage as it happens, and the result, and reconnects on its own if the API restarts during the update.
+
+## Architecture
+
+```text
+CliRelay/
+├── cmd/server/               # Binary entry point and CLI modes
+├── internal/api/             # HTTP server, management routes, middleware
+├── internal/auth/            # Provider OAuth, cookie and device-code flows
+├── internal/runtime/         # Executors per provider, scheduling, cooldown
+├── internal/translator/      # OpenAI ⇄ Anthropic ⇄ Gemini ⇄ Responses translation
+├── internal/identity/        # Tenants, users, roles, permissions, menus, audit logs
+├── internal/usage/           # Request logs, rollups, monitor endpoints, retention
+├── internal/config/          # Config parsing, defaults, migrations
+├── internal/store/           # Local, Git, PostgreSQL and object-store persistence
+├── internal/managementasset/ # /manage panel hosting and asset sync
+├── internal/tui/             # Terminal management UI
+├── sdk/                      # Embeddable Go SDK, handlers and executors
+├── deploy/                   # Cluster building blocks and deploy scripts
+└── docker-compose.yml        # Default container deployment
+```
+
+| Layer | Technology |
+| :-- | :-- |
+| Runtime | Go 1.26, Gin, Docker Compose |
+| Data | PostgreSQL 15+ via Ent, Redis 7+ for rebuildable state |
+| Proxy core | OpenAI Chat Completions and Responses, Anthropic Messages, Gemini; SSE and WebSocket |
+| Operations | `/manage` web panel, Bubble Tea terminal UI, updater sidecar |
+
+## Documentation
+
+| Document | Description |
+| :-- | :-- |
+| [Getting started](https://help.router-for.me/) | Installation and client setup guides |
+| [Management API](https://help.router-for.me/management/api) | REST reference for the management endpoints |
+| [Amp CLI](https://help.router-for.me/agent-client/amp-cli.html) | Using Amp CLI and IDE extensions with CliRelay |
+| [Production checklist](docs/production-checklist.md) | Shared gateways and NAS installations |
+| [PostgreSQL / Redis runtime](docs/postgres-redis-migration.md) | Runtime data stack setup and validation |
+| [Multi-instance deployment](docs/multi-instance-deployment.md) | Several nodes on one PostgreSQL: failover, switchover, rolling deploys |
+| [SDK usage](docs/sdk-usage.md) · [advanced](docs/sdk-advanced.md) · [access](docs/sdk-access.md) · [watcher](docs/sdk-watcher.md) | Embedding the proxy in Go applications |
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+```bash
+git clone https://github.com/kittors/CliRelay.git
+cd CliRelay
+git fetch origin
+git switch -c feature/your-change origin/dev
+# make your change, then
+git push origin feature/your-change   # and open a pull request against dev
+```
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+Please target pull requests at `dev`, not `main`; `main` is updated by releases. See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch and merge workflow.
 
-## Who is with us?
+## License and acknowledgements
 
-Those projects are based on CLIProxyAPI:
+CliRelay is released under the [MIT License](LICENSE).
 
-### [vibeproxy](https://github.com/automazeio/vibeproxy)
+It stands on the core proxy logic of **[router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)**. Our thanks to the original project and all its contributors — their foundation made it possible to build the management layer, request logging, quota control and the control panel on top.
 
-Native macOS menu bar app to use your Claude Code & ChatGPT subscriptions with AI coding tools - no API keys needed
-
-### [Subtitle Translator](https://github.com/VjayC/SRT-Subtitle-Translator-Validator)
-
-A cross-platform desktop and web app to translate and validate SRT subtitles using your existing LLM subscriptions (Gemini, ChatGPT, Claude, etc.) via CLIProxyAPI - no API keys needed.
-
-### [CCS (Claude Code Switch)](https://github.com/kaitranntt/ccs)
-
-CLI wrapper for instant switching between multiple Claude accounts and alternative models (Gemini, Codex, Antigravity) via CLIProxyAPI OAuth - no API keys needed
-
-### [Quotio](https://github.com/nguyenphutrong/quotio)
-
-Native macOS menu bar app that unifies Claude, Gemini, OpenAI, and Antigravity subscriptions with real-time quota tracking and smart auto-failover for AI coding tools like Claude Code, OpenCode, and Droid - no API keys needed.
-
-### [ProxyPilot](https://github.com/Finesssee/ProxyPilot)
-
-Windows-native CLIProxyAPI fork with TUI, system tray, and multi-provider OAuth for AI coding tools - no API keys needed.
-
-### [Claude Proxy VSCode](https://github.com/uzhao/claude-proxy-vscode)
-
-VSCode extension for quick switching between Claude Code models, featuring integrated CLIProxyAPI as its backend with automatic background lifecycle management.
-
-### [ZeroLimit](https://github.com/0xtbug/zero-limit)
-
-Windows desktop app built with Tauri + React for monitoring AI coding assistant quotas via CLIProxyAPI. Track usage across Gemini, Claude, OpenAI Codex, and Antigravity accounts with real-time dashboard, system tray integration, and one-click proxy control - no API keys needed.
-
-### [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X)
-
-A lightweight web admin panel for CLIProxyAPI with health checks, resource monitoring, real-time logs, request statistics and pricing display. Supports one-click installation and systemd service.
-
-### [CLIProxyAPI Tray](https://github.com/kitephp/CLIProxyAPI_Tray)
-
-A Windows tray application implemented using PowerShell scripts, without relying on any third-party libraries. The main features include: automatic creation of shortcuts, silent running, password management, channel switching (Main / Plus), and automatic downloading and updating.
-
-### [霖君](https://github.com/wangdabaoqq/LinJun)
-
-霖君 is a cross-platform desktop application for managing AI programming assistants, supporting macOS, Windows, and Linux systems. Unified management of Claude Code, Gemini, OpenAI Codex, and other AI coding tools, with local proxy for multi-account quota tracking and one-click configuration.
-
-### [CLIProxyAPI Dashboard](https://github.com/itsmylife44/cliproxyapi-dashboard)
-
-A modern web-based management dashboard for CLIProxyAPI built with Next.js, React, and PostgreSQL. Features real-time log streaming, structured configuration editing, API key management, OAuth provider integration for Claude/Gemini/Codex, usage analytics, container management, and config sync with OpenCode via companion plugin - no manual YAML editing needed.
-
-### [All API Hub](https://github.com/qixing-jk/all-api-hub)
-
-Browser extension for one-stop management of New API-compatible relay site accounts, featuring balance and usage dashboards, auto check-in, one-click key export to common apps, in-page API availability testing, and channel/model sync and redirection. It integrates with CLIProxyAPI through the Management API for one-click provider import and config sync.
-
-### [Shadow AI](https://github.com/HEUDavid/shadow-ai)
-
-Shadow AI is an AI assistant tool designed specifically for restricted environments. It provides a stealthy operation
-mode without windows or traces, and enables cross-device AI Q&A interaction and control via the local area network (
-LAN). Essentially, it is an automated collaboration layer of "screen/audio capture + AI inference + low-friction delivery",
-helping users to immersively use AI assistants across applications on controlled devices or in restricted environments.
-
-### [ProxyPal](https://github.com/buddingnewinsights/proxypal)
-
-Cross-platform desktop app (macOS, Windows, Linux) wrapping CLIProxyAPI with a native GUI. Connects Claude, ChatGPT, Gemini, GitHub Copilot, and custom OpenAI-compatible endpoints with usage analytics, request monitoring, and auto-configuration for popular coding tools - no API keys needed.
-
-### [CLIProxyAPI Quota Inspector](https://github.com/AllenReder/CLIProxyAPI-Quota-Inspector)
-
-Ready-to-use cross-platform quota inspector for CLIProxyAPI, supporting per-account codex 5h/7d quota windows, plan-based sorting, status coloring, and multi-account summary analytics.
-
-### [CLIProxy Pool Watch](https://github.com/murasame612/CLIProxyPoolWidget)
-
-Native macOS SwiftUI app for monitoring ChatGPT/Codex account quotas in CLIProxyAPI pools. Displays account availability, Plus-base capacity, 5-hour and weekly quota bars, plan weights, and restore forecasts through the Management API.
-
-### [Panopticon](https://github.com/eltmon/panopticon-cli)
-
-Multi-agent orchestration for AI coding assistants. Runs CLIProxyAPI as a local sidecar so its agents can drive GPT models through a ChatGPT subscription, pointing Claude Code at an Anthropic-compatible endpoint with no OpenAI API key required.
-
-### [Tunnel Agent](https://github.com/Villoh/tunnel-agent)
-
-Windows desktop UI that manages CLIProxyAPI and Perplexity WebUI Scraper from a single interface, inspired by Quotio and VibeProxy. Connect OAuth providers (Claude, Gemini, Codex, Kimi, Antigravity), custom API keys, and Perplexity session accounts, then point any coding agent at the local endpoint.
-
-### [Quotio Desktop](https://github.com/xiaocoss/quotio-desktop)
-
-Cross-platform (Tauri) port of Quotio for Windows, macOS and Linux. Manages a pool of AI accounts (Codex, Claude Code, GitHub Copilot, Gemini, Antigravity, Kiro, Cursor, Trae, GLM) through CLIProxyAPI, with per-account 5-hour/weekly quota bars, Codex rate-limit reset credits with one-click reset, smart scheduling, usage statistics, and multi-instance Codex — no API keys needed.
-
-### [Universal Chat Provider](https://github.com/maxdewald/vscode-universal-chat-provider)
-
-VS Code extension that brings your Claude, ChatGPT/Codex, Antigravity, Grok, and Kimi subscriptions into GitHub Copilot Chat as native language models — and can power your Git commit messages, chat titles, and summaries too. Runs CLIProxyAPI in a fully managed background lifecycle (download, verify, supervise) shared across all windows, so it's zero-setup. No API keys needed, just OAuth.
-
-### [CPA-Tray-Powershell](https://github.com/ztzpro/CPA-Tray-Powershell.git)
-
-A PowerShell-based Windows system tray launcher for CLIProxyAPI. It supports running in the background without a console window, opening the management page, keeping the backend running after the management window closes, and reopening the page from the tray. It also supports checking for CLIProxyAPI updates on startup, SHA-256 verification with rollback, one-click CLIProxyAPI restart and update, PID-validated process management, and safe service shutdown.
-
-### [Grok Search MCP](https://github.com/MapleMapleCat/Grok_Search_Mcp)
-
-An HTTP-only Model Context Protocol server that uses a CLIProxyAPI deployment to provide Grok-powered real-time web search, X/Twitter search, and model discovery to MCP clients. It adds MCP transport, client API-key management, quotas, usage tracking, and a web administration panel.
-
-### [AIUsage](https://github.com/sylearn/AIUsage)
-
-Native macOS SwiftUI dashboard for AI subscriptions and coding proxies. It manages official CLIProxyAPI releases end to end (download, verify, supervise, update, and roll back), unifies OAuth accounts and live models, and connects one gateway to Codex, Claude Code/Science, OpenCode, or OpenAI/Anthropic/Gemini clients, with optional LAN access.
-
-### [Claude Dialects](https://github.com/stefandevo/claude-dialects)
-
-Run multiple native-feeling Claude Code commands, each powered by a different model (Codex, GLM, Kimi, Gemini, Grok, MiniMax, DeepSeek, Cursor, Copilot, Claude). Every dialect launches the real Claude Code interface with its own isolated config, history, ports, and an embedded CLIProxyAPI instance linked through the Go SDK — no separate proxy install. macOS only. Learn more at [claude-dialects.cc](https://claude-dialects.cc/).
-
-### [WebBrain](https://github.com/webbrain-one/webbrain)
-
-Browser agent that can connect to CLIProxyAPI's local OpenAI-compatible endpoint as a model provider. See WebBrain's independent [setup, security, and account-risk guide](https://webbrain.one/docs/easy-cli-proxy/) for using CLIProxyAPI through EasyCLIProxyAPI.
-
-### [Infinitus](https://github.com/deathemperor/infinitus)
-
-Native macOS menu bar app that runs a fleet of Claude accounts through CLIProxyAPI's Management API (claude-swap and 9Router too): 5h / 7d / per-model quota gauges, switch / hold / star from the popup, a run-rate forecast of when each window runs out, and an iPhone companion that mirrors it all - no API keys needed.
-
-### [PiCloud](https://github.com/cookerpapa/pi-cloud)
-
-Self-hosted coding-agent platform built on the Pi SDK, with a web UI, concurrent subagents, and CubeSandbox KVM workspaces. Uses CLIProxyAPI as its provider gateway, keeping provider credentials outside the guest workspaces.
-
-### [cc-status-line](https://github.com/kinka/cc-status-line)
-
-Claude Code status line for CLIProxyAPI: per-account Codex / Grok / Antigravity / Claude quotas (5h / 7d / weekly) and reset countdown for the current instance. Picks the CPA instance from `ANTHROPIC_BASE_URL` and reads quotas through the Management API.
-
-### [CLIProxy Quota Tray](https://github.com/ZYHUO/CLIProxy-Quota-Tray)
-
-Cross-platform Electron tray dashboard for CLIProxyAPI. Shows the real OAuth quota windows per account across ChatGPT/Codex, Claude, Gemini/Antigravity, Grok, Kimi and Cursor, estimates usage-queue cost, and tracks OpenAI/Claude service status. Dark terminal-style UI; runs on Windows and Linux.
-
-> [!NOTE]  
-> If you developed a project based on CLIProxyAPI, please open a PR to add it to this list.
-
-## More choices
-
-Those projects are ports of CLIProxyAPI or inspired by it:
-
-### [9Router](https://github.com/decolua/9router)
-
-A Next.js implementation inspired by CLIProxyAPI, easy to install and use, built from scratch with format translation (OpenAI/Claude/Gemini/Ollama), combo system with auto-fallback, multi-account management with exponential backoff, a Next.js web dashboard, and support for CLI tools (Cursor, Claude Code, Cline, RooCode) - no API keys needed.
-
-### [OmniRoute](https://github.com/diegosouzapw/OmniRoute)
-
-Never stop coding. Smart routing to FREE & low-cost AI models with automatic fallback.
-
-OmniRoute is an AI gateway for multi-provider LLMs: an OpenAI-compatible endpoint with smart routing, load balancing, retries, and fallbacks. Add policies, rate limits, caching, and observability for reliable, cost-aware inference.
-
-### [Codex Switch](https://github.com/9ycrooked/CodexSwitch)
-
-This is a tool built with Tauri 2 + Vue 3 for managing multiple OpenAI Codex desktop accounts. Switch between saved ChatGPT/Codex certification profiles, check 5-hour and weekly quota usage in real time, verify token health, view active account details, and import or save auth.json files without manual copying.
-
-> [!NOTE]  
-> If you have developed a port of CLIProxyAPI or a project inspired by it, please open a PR to add it to this list.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Privacy masking (`internal/privacymask`) is ported from **[yetone/magpie](https://github.com/yetone/magpie)**: its rules for finding keys, tokens, passwords and personal data, its placeholders and the way it puts values back in replies. Thank you to magpie's author and contributors; the ported files keep magpie's MIT copyright notice ([internal/privacymask/MAGPIE_LICENSE](internal/privacymask/MAGPIE_LICENSE)).

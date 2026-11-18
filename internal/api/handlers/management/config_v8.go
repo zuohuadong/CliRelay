@@ -1,14 +1,13 @@
 package management
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -20,6 +19,11 @@ const ConfigV8ContextKey = "management.config-v8"
 
 // ConfigV8 serves the persisted configuration using v8 names. GET is a view;
 // only a successful configuration mutation migrates the stored document.
+//
+// Reads return an ETag holding the SHA-256 of the on-disk config bytes.
+// Writes honour an optional If-Match against that token, so a client can
+// detect that another writer saved after its read (412) instead of silently
+// overwriting the change. Without If-Match, writes stay unconditional.
 func (h *Handler) ConfigV8(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -52,6 +56,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	}
 	yamlRequest := strings.HasSuffix(c.FullPath(), "/config.yaml")
 	if c.Request.Method == http.MethodGet {
+		config.ProjectV8ConfigAliases(root, strings.Join(parts, "."))
 		if !yamlRequest {
 			if servers := configV8Node(root, v8ICEServersPath); servers != nil && servers.Kind == yaml.SequenceNode {
 				for _, server := range servers.Content {
@@ -59,6 +64,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 					deleteConfigV8Path(server, []string{"credential"})
 				}
 			}
+			h.injectV8APIKeyAuthIndexesLocked(root, data)
 		}
 		value := configV8Node(root, parts)
 		if value == nil {
@@ -80,6 +86,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		return
 	}
 	before := cloneConfigV8Node(root)
+	config.ProjectV8ConfigAliases(root, strings.Join(parts, "."))
 	if c.Request.Method == http.MethodDelete {
 		if len(parts) == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot_delete_config"})
@@ -104,9 +111,16 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body"})
 			return
 		}
+		stripAPIKeysAuthIndexesFromUpdate(parts, &update)
 		if len(parts) == 0 && update.Content[0].Kind != yaml.MappingNode {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "config_must_be_object"})
 			return
+		}
+		if len(parts) == 0 {
+			if err = config.NormalizeV8ConfigAliases(update.Content[0]); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
+				return
+			}
 		}
 		// Paths identify YAML keys, never array indexes. Lists are replaced whole.
 		dst := root
@@ -125,8 +139,17 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		if c.Request.Method == http.MethodPatch {
 			mergeConfigV8Patch(dst, update.Content[0])
 		} else {
+			if dst.Kind == yaml.ScalarNode && update.Content[0].Kind == yaml.ScalarNode {
+				update.Content[0].HeadComment = dst.HeadComment
+				update.Content[0].LineComment = dst.LineComment
+				update.Content[0].FootComment = dst.FootComment
+			}
 			*dst = *update.Content[0]
 		}
+	}
+	if err = config.NormalizeV8ConfigAliases(root); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
+		return
 	}
 	if !yamlRequest && c.Request.Method != http.MethodDelete {
 		preserveV8TURNSecrets(root, before)
@@ -147,6 +170,8 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 			return
 		}
 	}
+	stripAPIKeysAuthIndexesFromRoot(root)
+	config.NormalizeCollectionNodeStyles(root)
 	data, err = yaml.Marshal(&doc)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
@@ -161,51 +186,39 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
-	// Prepare the normalized document before touching the live configuration.
-	tmp, err := os.CreateTemp(filepath.Dir(h.configFilePath), ".config-v8-*.yaml")
+	data, _, err = config.NormalizeConfigLayout(data, true)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	var errWrite error
-	if _, errWrite = tmp.Write(data); errWrite == nil {
-		errWrite = tmp.Sync()
-	}
-	errClose := tmp.Close()
-	if errWrite == nil {
-		errWrite = errClose
-	}
-	// DELETE already has a normalized, validated document and its runtime snapshot.
-	// Persist that tree without projecting the typed config back onto it: the
-	// general saver materializes absent defaults and can change explicit nulls,
-	// empty maps, and opaque plugin settings. PUT/PATCH retain their saver behavior.
-	if errWrite == nil && c.Request.Method != http.MethodDelete {
-		errWrite = config.SaveConfigPreserveComments(tmpPath, next, true)
-	}
-	if errWrite == nil {
-		data, errWrite = os.ReadFile(tmpPath)
-	}
-
-	if errWrite == nil {
-		// Preserve the destination inode: the standard Docker deployment mounts
-		// config.yaml as a single file, which cannot be replaced with rename.
-		errWrite = WriteConfig(h.configFilePath, data)
-	}
-	if errWrite != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": errWrite.Error()})
+	// Save the validated canonical tree directly: projecting runtime defaults
+	// back onto it loses explicit nulls, empty maps, and opaque plugin settings.
+	// WriteConfig retains the inode of a mounted configuration file.
+	if err = WriteConfig(h.configFilePath, data); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": err.Error()})
 		return
 	}
 	// Runtime-only ownership state is never sourced from an uploaded YAML document.
 	next.Home = h.cfg.Home
 	// WriteConfig may normalize the bytes, so report the version actually on
 	// disk. If it cannot be read back, omit the ETag instead of guessing one.
+	// Like Home, SourceHash keeps its runtime owner and is published by the
+	// reload, so it is not overwritten on next here.
 	if saved, errSaved := os.ReadFile(h.configFilePath); errSaved == nil {
-		next.SourceHash = config.ComputeSourceHash(saved)
-		c.Header("ETag", configV8ETag(next.SourceHash))
+		c.Header("ETag", configV8ETag(config.ComputeSourceHash(saved)))
+	}
+	prevSecretHash := ""
+	if h.cfg != nil {
+		prevSecretHash = h.cfg.RemoteManagement.SecretKey
 	}
 	h.cfg = next
+	nextSecretHash := ""
+	if next != nil {
+		nextSecretHash = next.RemoteManagement.SecretKey
+	}
+	if prevSecretHash != nextSecretHash {
+		h.authCache.invalidate()
+	}
 	snapshot := h.reloadSnapshotConfigLocked()
 	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "config-version": 8})
@@ -357,6 +370,12 @@ func cloneConfigV8Node(node *yaml.Node) *yaml.Node {
 // inherit the group value. DELETE is the explicit field-removal operation.
 func mergeConfigV8Patch(dst, src *yaml.Node) {
 	if dst.Kind != yaml.MappingNode || src.Kind != yaml.MappingNode {
+		if dst.Kind == yaml.ScalarNode && src.Kind == yaml.ScalarNode {
+			copy := *src
+			copy.HeadComment, copy.LineComment, copy.FootComment = dst.HeadComment, dst.LineComment, dst.FootComment
+			*dst = copy
+			return
+		}
 		*dst = *src
 		return
 	}

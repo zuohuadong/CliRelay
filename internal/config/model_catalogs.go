@@ -1,6 +1,11 @@
 package config
 
-import "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+// ModelCatalogs names optional local catalog files. Empty paths use the
+// embedded defaults shipped with the binary.
+type ModelCatalogs struct {
+	Catalog      string `yaml:"catalog,omitempty" json:"catalog,omitempty"`
+	CodexCatalog string `yaml:"codex-catalog,omitempty" json:"codex-catalog,omitempty"`
+	DevinCatalog string `yaml:"devin-catalog,omitempty" json:"devin-catalog,omitempty"`
+}
 
-// ModelCatalogs selects optional sources for the process-wide model catalogs.
-type ModelCatalogs = registry.CatalogSources
+func (m ModelCatalogs) Validate() error { return nil }

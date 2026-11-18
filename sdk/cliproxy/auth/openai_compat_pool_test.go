@@ -7,12 +7,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/tidwall/gjson"
 )
 
 const openAICompatPoolProviderKey = "openai-compatible-pool"
@@ -129,77 +127,6 @@ func (e *openAICompatPoolExecutor) StreamModels() []string {
 	out := make([]string, len(e.streamModels))
 	copy(out, e.streamModels)
 	return out
-}
-
-func TestOpenAICompatAliasPoolStreamFallsThroughAfterInitialModelError(t *testing.T) {
-	const (
-		provider = internalconfig.DefaultAstronCodeProviderName
-		alias    = "deepseek-v4-pro"
-		first    = "xopdeepseekv4flash"
-		second   = "xopdeepseekv4pro"
-	)
-
-	manager := NewManager(nil, nil, nil)
-	manager.SetConfig(&internalconfig.Config{
-		AstronCodeAPIKey: []internalconfig.OpenAICompatibility{{
-			Name:             provider,
-			ResponseEndpoint: true,
-			APIKeyEntries:    []internalconfig.OpenAICompatibilityAPIKey{{APIKey: "astron-key"}},
-			Models: []internalconfig.OpenAICompatibilityModel{
-				{Name: first, Alias: alias},
-				{Name: second, Alias: alias},
-			},
-		}},
-	})
-
-	executor := &openAICompatPoolExecutor{
-		id: provider,
-		streamFirstErrors: map[string]error{
-			first: &Error{Code: "upstream_error", Message: "temporary upstream failure", HTTPStatus: http.StatusServiceUnavailable},
-		},
-	}
-	manager.RegisterExecutor(executor)
-
-	auth := &Auth{
-		ID:       "astron-alias-pool-auth",
-		Provider: provider,
-		Status:   StatusActive,
-		Attributes: map[string]string{
-			"api_key":      "astron-key",
-			"provider_key": provider,
-			"compat_name":  provider,
-		},
-	}
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatalf("register auth: %v", err)
-	}
-
-	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(auth.ID, provider, []*registry.ModelInfo{{ID: alias}, {ID: first}, {ID: second}})
-	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
-	manager.RefreshSchedulerEntry(auth.ID)
-
-	stream, err := manager.ExecuteStream(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
-	if err != nil {
-		t.Fatalf("ExecuteStream() error = %v", err)
-	}
-	if stream == nil || stream.Chunks == nil {
-		t.Fatalf("ExecuteStream() returned nil stream")
-	}
-
-	var got []byte
-	for chunk := range stream.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("unexpected stream chunk error: %v", chunk.Err)
-		}
-		got = append(got, chunk.Payload...)
-	}
-	if string(got) != second {
-		t.Fatalf("stream payload = %q, want %q", string(got), second)
-	}
-	if models := executor.StreamModels(); len(models) != 2 || models[0] != first || models[1] != second {
-		t.Fatalf("stream models = %v, want [%s %s]", models, first, second)
-	}
 }
 
 type authScopedOpenAICompatPoolExecutor struct {
@@ -414,126 +341,6 @@ func TestManagerExecute_OpenAICompatAliasPoolForceMappingRotatesAndRewritesRespo
 		if payloads[i] != wantPayloads[i] {
 			t.Fatalf("payload %d = %s, want %s", i, payloads[i], wantPayloads[i])
 		}
-	}
-}
-
-func TestManagerExecute_OpenAICompatAliasRewritesResponseModelByDefault(t *testing.T) {
-	alias := "deepseek-v4-pro"
-	upstreamModel := "xopdeepseekv4pro"
-	executor := &openAICompatPoolExecutor{
-		id: openAICompatPoolProviderKey,
-		executePayloads: map[string][]byte{
-			upstreamModel: []byte(`{"id":"chatcmpl-live","object":"chat.completion","model":"xopdeepseekv4pro","choices":[]}`),
-		},
-	}
-	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
-		{Name: upstreamModel, Alias: alias},
-	}, executor)
-
-	resp, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-
-	got := string(resp.Payload)
-	if !strings.Contains(got, `"model":"`+alias+`"`) {
-		t.Fatalf("payload = %s, want response model rewritten to alias %q", got, alias)
-	}
-	if strings.Contains(got, upstreamModel) {
-		t.Fatalf("payload leaked upstream model %q: %s", upstreamModel, got)
-	}
-}
-
-func TestManagerExecuteStream_OpenAICompatAliasRewritesResponseModelByDefault(t *testing.T) {
-	alias := "deepseek-v4-pro"
-	upstreamModel := "xopdeepseekv4pro"
-	executor := &openAICompatPoolExecutor{
-		id: openAICompatPoolProviderKey,
-		streamPayloads: map[string][]cliproxyexecutor.StreamChunk{
-			upstreamModel: {{
-				Payload: []byte(`{"id":"chatcmpl-live","object":"chat.completion.chunk","model":"xopdeepseekv4pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]},"finish_reason":null}]}`),
-			}},
-		},
-	}
-	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
-		{Name: upstreamModel, Alias: alias},
-	}, executor)
-
-	streamResult, err := m.ExecuteStream(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
-	if err != nil {
-		t.Fatalf("execute stream: %v", err)
-	}
-
-	got := readOpenAICompatStreamPayload(t, streamResult)
-	if !strings.Contains(got, `"model":"`+alias+`"`) {
-		t.Fatalf("stream payload = %s, want response model rewritten to alias %q", got, alias)
-	}
-	if strings.Contains(got, upstreamModel) {
-		t.Fatalf("stream payload leaked upstream model %q: %s", upstreamModel, got)
-	}
-	toolCall := gjson.Parse(got).Get("choices.0.delta.tool_calls.0.function")
-	if toolCall.Get("name").String() != "get_weather" || toolCall.Get("arguments").String() != `{"city":"北京"}` {
-		t.Fatalf("stream payload corrupted tool call fields: %s", got)
-	}
-}
-
-func TestManagerExecute_OpenAICompatAliasPoolRewritesAfterSameNameCandidate(t *testing.T) {
-	alias := "public-model"
-	alternate := "alternate-upstream"
-	executor := &openAICompatPoolExecutor{
-		id: openAICompatPoolProviderKey,
-		executePayloads: map[string][]byte{
-			alias:     []byte(`{"model":"public-model"}`),
-			alternate: []byte(`{"model":"alternate-upstream"}`),
-		},
-	}
-	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
-		{Name: alias, Alias: alias},
-		{Name: alternate, Alias: alias},
-	}, executor)
-
-	for i := 0; i < 2; i++ {
-		resp, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
-		if err != nil {
-			t.Fatalf("execute %d: %v", i, err)
-		}
-		if got := gjson.GetBytes(resp.Payload, "model").String(); got != alias {
-			t.Fatalf("response %d model = %q, want %q", i, got, alias)
-		}
-	}
-
-	if got := executor.ExecuteModels(); len(got) != 2 || got[0] != alias || got[1] != alternate {
-		t.Fatalf("execute models = %v, want [%s %s]", got, alias, alternate)
-	}
-}
-
-func TestManagerExecuteStream_OpenAICompatAliasPoolRewritesAfterSameNameCandidate(t *testing.T) {
-	alias := "public-model"
-	alternate := "alternate-upstream"
-	executor := &openAICompatPoolExecutor{
-		id: openAICompatPoolProviderKey,
-		streamPayloads: map[string][]cliproxyexecutor.StreamChunk{
-			alias:     {{Payload: []byte(`{"model":"public-model"}`)}},
-			alternate: {{Payload: []byte(`{"model":"alternate-upstream"}`)}},
-		},
-	}
-	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
-		{Name: alias, Alias: alias},
-		{Name: alternate, Alias: alias},
-	}, executor)
-
-	for i := 0; i < 2; i++ {
-		streamResult, err := m.ExecuteStream(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
-		if err != nil {
-			t.Fatalf("execute stream %d: %v", i, err)
-		}
-		if got := gjson.Get(readOpenAICompatStreamPayload(t, streamResult), "model").String(); got != alias {
-			t.Fatalf("stream response %d model = %q, want %q", i, got, alias)
-		}
-	}
-
-	if got := executor.StreamModels(); len(got) != 2 || got[0] != alias || got[1] != alternate {
-		t.Fatalf("stream models = %v, want [%s %s]", got, alias, alternate)
 	}
 }
 
@@ -816,54 +623,6 @@ func TestManagerExecute_OpenAICompatAliasPoolSkipsSuspendedUpstreamOnLaterReques
 		if got[i] != want[i] {
 			t.Fatalf("execute call %d model = %q, want %q", i, got[i], want[i])
 		}
-	}
-}
-
-func TestManagerExecute_OpenAICompatAliasPoolAllCandidatesCoolingReportsModelCooldown(t *testing.T) {
-	alias := "deepseek-v4-pro"
-	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}
-	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
-		{Name: "xopdeepseekv4pro", Alias: alias},
-		{Name: "astron-code-latest", Alias: alias, ContextLength: 500000},
-	}, executor)
-
-	auth, ok := m.GetByID("pool-auth-" + t.Name())
-	if !ok || auth == nil {
-		t.Fatalf("expected test auth to be registered")
-	}
-	next := time.Now().Add(5 * time.Minute)
-	auth.ModelStates = map[string]*ModelState{
-		"xopdeepseekv4pro": {
-			Status:         StatusError,
-			Unavailable:    true,
-			NextRetryAfter: next,
-			Quota:          QuotaState{Exceeded: true, NextRecoverAt: next},
-		},
-		"astron-code-latest": {
-			Status:         StatusError,
-			Unavailable:    true,
-			NextRetryAfter: next,
-			Quota:          QuotaState{Exceeded: true, NextRecoverAt: next},
-		},
-	}
-	if _, err := m.Update(context.Background(), auth); err != nil {
-		t.Fatalf("update auth: %v", err)
-	}
-
-	_, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{
-		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: int64(121)},
-	})
-	if err == nil {
-		t.Fatalf("execute error = nil, want model cooldown")
-	}
-	if got := statusCodeFromError(err); got != http.StatusTooManyRequests {
-		t.Fatalf("execute status = %d, want %d; err=%v", got, http.StatusTooManyRequests, err)
-	}
-	if !strings.Contains(err.Error(), `"code":"model_cooldown"`) {
-		t.Fatalf("execute error = %v, want model_cooldown", err)
-	}
-	if got := executor.ExecuteModels(); len(got) != 0 {
-		t.Fatalf("execute models = %v, want no calls while all pool candidates are cooling", got)
 	}
 }
 

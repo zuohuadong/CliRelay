@@ -1,359 +1,466 @@
 package management
 
 import (
-	"crypto/sha256"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"golang.org/x/crypto/bcrypt"
 )
 
-func TestAuthenticateManagementKeyCachesSuccessfulBcryptVerification(t *testing.T) {
-	now := time.Unix(1_000, 0)
-	verifyCalls := 0
-	h := &Handler{
-		cfg: &config.Config{
-			RemoteManagement: config.RemoteManagement{
-				AllowRemote: true,
-				SecretKey:   "hash-a",
-			},
-		},
-		failedAttempts: make(map[string]*attemptInfo),
-		managementPasswordVerifier: func(hash, password []byte) error {
-			verifyCalls++
-			if string(hash) == "hash-a" && string(password) == "secret-a" {
-				return nil
-			}
-			return errors.New("password mismatch")
-		},
-		managementAuthCacheTTL: time.Minute,
-		managementAuthCacheNow: func() time.Time {
-			return now
-		},
-	}
-
-	for i := 0; i < 4; i++ {
-		allowed, statusCode, errMsg := h.AuthenticateManagementKey("203.0.113.10", false, "secret-a")
-		if !allowed {
-			t.Fatalf("request %d rejected: status=%d message=%q", i+1, statusCode, errMsg)
-		}
-	}
-	if verifyCalls != 1 {
-		t.Fatalf("bcrypt verifier calls = %d, want 1 for repeated valid credential", verifyCalls)
-	}
-
-	allowed, statusCode, _ := h.AuthenticateManagementKey("203.0.113.10", false, "wrong-secret")
-	if allowed || statusCode != http.StatusUnauthorized {
-		t.Fatalf("wrong credential result = allowed:%t status:%d", allowed, statusCode)
-	}
-	if verifyCalls != 2 {
-		t.Fatalf("failed credential must not reuse success cache, verifier calls = %d", verifyCalls)
-	}
-
-	now = now.Add(2 * time.Minute)
-	allowed, statusCode, errMsg := h.AuthenticateManagementKey("203.0.113.10", false, "secret-a")
-	if !allowed {
-		t.Fatalf("valid credential after expiry rejected: status=%d message=%q", statusCode, errMsg)
-	}
-	if verifyCalls != 3 {
-		t.Fatalf("expired cache verifier calls = %d, want 3", verifyCalls)
-	}
+func TestHandlerCloseIsIdempotent(t *testing.T) {
+	h := NewHandlerWithoutConfigFilePath(nil, nil)
+	h.Close()
+	h.Close()
 }
 
-func TestAuthenticateManagementKeyCoalescesConcurrentBcryptVerification(t *testing.T) {
-	var verifyCalls atomic.Int32
-	started := make(chan struct{})
-	release := make(chan struct{})
-	h := &Handler{
-		cfg: &config.Config{
-			RemoteManagement: config.RemoteManagement{
-				AllowRemote: true,
-				SecretKey:   "hash-a",
-			},
-		},
-		failedAttempts: make(map[string]*attemptInfo),
-		managementPasswordVerifier: func(hash, password []byte) error {
-			if verifyCalls.Add(1) == 1 {
-				close(started)
-			}
-			<-release
-			if string(hash) == "hash-a" && string(password) == "secret-a" {
-				return nil
-			}
-			return errors.New("password mismatch")
-		},
+func TestMiddlewareAllowsValidKeyAfterRemoteIPIsBanned(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const managementKey = "correct-management-key"
+	hashed, err := bcrypt.GenerateFromPassword([]byte(managementKey), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("failed to hash test management key: %v", err)
 	}
 
-	const callers = 8
-	results := make(chan bool, callers)
-	for i := 0; i < callers; i++ {
-		go func() {
-			allowed, _, _ := h.AuthenticateManagementKey("203.0.113.10", false, "secret-a")
-			results <- allowed
-		}()
-	}
-	<-started
-	time.Sleep(25 * time.Millisecond)
-	close(release)
-	for i := 0; i < callers; i++ {
-		if !<-results {
-			t.Fatalf("caller %d was rejected", i+1)
-		}
-	}
-	if got := verifyCalls.Load(); got != 1 {
-		t.Fatalf("concurrent bcrypt verifier calls = %d, want 1", got)
-	}
-}
-
-func TestAuthenticateManagementKeyRejectsInFlightVerificationAfterSecretRotation(t *testing.T) {
-	started := make(chan struct{})
-	release := make(chan struct{})
-	h := &Handler{
-		cfg: &config.Config{
-			RemoteManagement: config.RemoteManagement{
-				AllowRemote: true,
-				SecretKey:   "hash-a",
-			},
-		},
-		failedAttempts: make(map[string]*attemptInfo),
-		managementPasswordVerifier: func(hash, password []byte) error {
-			if string(hash) == "hash-a" {
-				close(started)
-				<-release
-			}
-			if string(hash) == "hash-a" && string(password) == "secret-a" {
-				return nil
-			}
-			return errors.New("password mismatch")
-		},
-	}
-
-	result := make(chan bool, 1)
-	go func() {
-		allowed, _, _ := h.AuthenticateManagementKey("203.0.113.10", false, "secret-a")
-		result <- allowed
-	}()
-	<-started
-	h.SetConfig(&config.Config{
+	h := NewHandlerWithoutConfigFilePath(&config.Config{
 		RemoteManagement: config.RemoteManagement{
 			AllowRemote: true,
-			SecretKey:   "hash-b",
+			SecretKey:   string(hashed),
 		},
-	})
-	close(release)
-	if <-result {
-		t.Fatal("old management secret succeeded after SetConfig rotated the key")
-	}
-}
+	}, nil)
+	defer h.Close()
 
-func TestAuthenticateManagementKeyClassifiesShareCredential(t *testing.T) {
-	h := &Handler{
-		cfg: &config.Config{RemoteManagement: config.RemoteManagement{
-			AllowRemote: true,
-			ShareToken:  "share-secret",
-		}},
-		failedAttempts: make(map[string]*attemptInfo),
-		envSecret:      "admin-secret",
-	}
+	// Hold the ban open for the whole test rather than sleeping it out. Arming it
+	// costs ten bcrypt comparisons, and under -race those run an order of
+	// magnitude slower, so any block short enough to keep the test fast also
+	// expires mid-setup and silently turns the X1 assertion into a no-op. The
+	// expiry half is driven by expireArmedBlocks instead of wall-clock time.
+	policies := defaultThrottlePolicies()
+	held := policies[scopeManagementKey]
+	held.Backoff = []time.Duration{time.Hour}
+	policies[scopeManagementKey] = held
+	h.loginThrottle.setPolicies(policies)
 
-	allowed, _, message, credentialClass := h.authenticateManagementKey("203.0.113.10", false, "share-secret")
-	if !allowed || message != "" || credentialClass != managementAuthClassShare {
-		t.Fatalf("share credential = allowed:%t message:%q class:%q", allowed, message, credentialClass)
-	}
-}
-
-func TestAuthenticateManagementKeyPrefersAdminWhenCredentialsMatch(t *testing.T) {
-	h := &Handler{
-		cfg: &config.Config{RemoteManagement: config.RemoteManagement{
-			AllowRemote: true,
-			ShareToken:  "same-secret",
-		}},
-		failedAttempts: make(map[string]*attemptInfo),
-		envSecret:      "same-secret",
-	}
-
-	allowed, _, message, credentialClass := h.authenticateManagementKey("203.0.113.10", false, "same-secret")
-	if !allowed || message != "" || credentialClass != managementAuthClassAdmin {
-		t.Fatalf("matching credential = allowed:%t message:%q class:%q", allowed, message, credentialClass)
-	}
-}
-
-func TestManagementAuthCacheUsesProcessSecretAndPurgesExpiredEntries(t *testing.T) {
-	now := time.Unix(3_000, 0)
-	left := &Handler{
-		managementAuthCacheTTL: time.Minute,
-		managementAuthCacheNow: func() time.Time {
-			return now
-		},
-	}
-	right := &Handler{}
-	leftKey, leftOK := left.managementAuthCacheDigest(7, "hash-a", "human-password")
-	rightKey, rightOK := right.managementAuthCacheDigest(7, "hash-a", "human-password")
-	if !leftOK || !rightOK {
-		t.Fatal("failed to initialize process-secret cache digest")
-	}
-	if leftKey == rightKey {
-		t.Fatal("independent handlers produced the same management auth cache digest")
-	}
-	fastDigest := sha256.Sum256([]byte("hash-a\x00human-password"))
-	if leftKey == fastDigest {
-		t.Fatal("management auth cache digest must not be an unkeyed SHA-256 password verifier")
-	}
-
-	for i := 0; i < managementAuthCacheMaxEntries+8; i++ {
-		key, ok := left.managementAuthCacheDigest(7, "hash-a", fmt.Sprintf("secret-%d", i))
-		if !ok {
-			t.Fatal("failed to derive bounded cache key")
-		}
-		left.storeManagementAuthCache(key)
-	}
-	left.managementAuthCacheMu.Lock()
-	cacheLen := len(left.managementAuthCache)
-	left.managementAuthCacheMu.Unlock()
-	if cacheLen > managementAuthCacheMaxEntries {
-		t.Fatalf("management auth cache entries = %d, want at most %d", cacheLen, managementAuthCacheMaxEntries)
-	}
-
-	now = now.Add(2 * time.Minute)
-	left.purgeExpiredManagementAuthCache()
-	left.managementAuthCacheMu.Lock()
-	cacheLen = len(left.managementAuthCache)
-	left.managementAuthCacheMu.Unlock()
-	if cacheLen != 0 {
-		t.Fatalf("expired management auth cache entries retained = %d", cacheLen)
-	}
-}
-
-func TestAuthenticateManagementKey_CorrectKeyBypassesBan(t *testing.T) {
-	h := &Handler{
-		cfg:            &config.Config{},
-		failedAttempts: make(map[string]*attemptInfo),
-		envSecret:      "test-secret",
-	}
-
-	for i := 0; i < 5; i++ {
-		allowed, statusCode, errMsg := h.AuthenticateManagementKey("127.0.0.1", true, "wrong-secret")
-		if allowed {
-			t.Fatalf("expected auth to be denied at attempt %d", i+1)
-		}
-		if statusCode != http.StatusUnauthorized || errMsg != "invalid management key" {
-			t.Fatalf("unexpected auth failure at attempt %d: status=%d msg=%q", i+1, statusCode, errMsg)
-		}
-	}
-
-	allowed, statusCode, errMsg := h.AuthenticateManagementKey("127.0.0.1", true, "test-secret")
-	if !allowed {
-		t.Fatalf("expected correct key to bypass ban: status=%d msg=%q", statusCode, errMsg)
-	}
-}
-
-func TestAuthenticateManagementKey_WrongKeyAfterBanIsBlocked(t *testing.T) {
-	h := &Handler{
-		cfg: &config.Config{
-			RemoteManagement: config.RemoteManagement{AllowRemote: true},
-		},
-		failedAttempts: make(map[string]*attemptInfo),
-		envSecret:      "test-secret",
-	}
-
-	for i := 0; i < 5; i++ {
-		h.AuthenticateManagementKey("1.2.3.4", false, "wrong-secret")
-		time.Sleep(1100 * time.Millisecond)
-	}
-
-	allowed, statusCode, errMsg := h.AuthenticateManagementKey("1.2.3.4", false, "still-wrong")
-	if allowed {
-		t.Fatalf("expected wrong key to be blocked after ban")
-	}
-	if statusCode != http.StatusForbidden {
-		t.Fatalf("expected forbidden status while banned, got %d: %q", statusCode, errMsg)
-	}
-	if !strings.HasPrefix(errMsg, "IP banned due to too many failed attempts. Try again in") {
-		t.Fatalf("unexpected banned message: %q", errMsg)
-	}
-
-	allowed, _, _ = h.AuthenticateManagementKey("1.2.3.4", false, "test-secret")
-	if !allowed {
-		t.Fatalf("expected correct key to bypass ban")
-	}
-}
-
-func TestAuthenticateManagementKey_ConcurrentFailuresDeduplicated(t *testing.T) {
-	h := &Handler{
-		cfg: &config.Config{
-			RemoteManagement: config.RemoteManagement{AllowRemote: true},
-		},
-		failedAttempts: make(map[string]*attemptInfo),
-		envSecret:      "test-secret",
-	}
-
-	for i := 0; i < 10; i++ {
-		h.AuthenticateManagementKey("1.2.3.4", false, "wrong-secret")
-	}
-
-	ai := h.failedAttempts["1.2.3.4"]
-	if ai == nil {
-		t.Fatal("expected attempt info for IP")
-	}
-	if ai.count >= 5 {
-		t.Fatalf("expected deduplication to prevent ban trigger, got count=%d", ai.count)
-	}
-	if !ai.blockedUntil.IsZero() {
-		t.Fatalf("expected no ban due to deduplication, but ban is set until %v", ai.blockedUntil)
-	}
-}
-
-func TestMiddlewareSetsSupportPluginHeader(t *testing.T) {
-
-	h := &Handler{
-		cfg:            &config.Config{},
-		failedAttempts: make(map[string]*attemptInfo),
-		envSecret:      "test-secret",
-	}
-	middleware := h.Middleware()
-
-	t.Run("invalid key", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(rec)
-		c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
-		c.Request.RemoteAddr = "127.0.0.1:12345"
-		c.Request.Header.Set("X-Management-Key", "wrong-secret")
-
-		middleware(c)
-
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
-		}
-		if got := rec.Header().Get("X-CPA-SUPPORT-PLUGIN"); got != pluginhost.SupportPluginHeaderValue() {
-			t.Fatalf("X-CPA-SUPPORT-PLUGIN = %q, want %q", got, pluginhost.SupportPluginHeaderValue())
-		}
+	router := gin.New()
+	router.Use(h.Middleware())
+	router.GET("/v0/management/ping", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
 	})
 
-	t.Run("valid key", func(t *testing.T) {
-		engine := gin.New()
-		engine.GET("/v0/management/config", middleware, func(c *gin.Context) {
-			c.Status(http.StatusOK)
-		})
-
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
-		req.RemoteAddr = "127.0.0.1:12345"
-		req.Header.Set("X-Management-Key", "test-secret")
-		engine.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	// Missing key attempts land in scopeUnauthenticated, which never hard-blocks
+	// (B2), so arming the scopeManagementKey ban requires actual wrong-credential
+	// attempts, not empty ones. defaultManagementKeyFailureLimit is 10, and the
+	// Nth failure itself trips the block, so only 9 attempts come back 401.
+	for i := 0; i < 9; i++ {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+		req.RemoteAddr = "203.0.113.10:4321"
+		req.Header.Set("Authorization", "Bearer wrong-key")
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("wrong-key attempt %d status = %d, want %d; body=%s", i+1, rr.Code, http.StatusUnauthorized, rr.Body.String())
 		}
-		if got := rec.Header().Get("X-CPA-SUPPORT-PLUGIN"); got != pluginhost.SupportPluginHeaderValue() {
-			t.Fatalf("X-CPA-SUPPORT-PLUGIN = %q, want %q", got, pluginhost.SupportPluginHeaderValue())
+	}
+
+	rrBanned := httptest.NewRecorder()
+	reqBanned := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+	reqBanned.RemoteAddr = "203.0.113.10:4321"
+	reqBanned.Header.Set("Authorization", "Bearer wrong-key")
+	router.ServeHTTP(rrBanned, reqBanned)
+	if rrBanned.Code != http.StatusForbidden {
+		t.Fatalf("banned wrong-key status = %d, want %d; body=%s", rrBanned.Code, http.StatusForbidden, rrBanned.Body.String())
+	}
+	if !strings.Contains(rrBanned.Body.String(), "IP banned") {
+		t.Fatalf("expected IP banned response, got %s", rrBanned.Body.String())
+	}
+
+	// X1: the ban precheck runs before any credential comparison, so even the
+	// correct key is rejected while the block is still active.
+	rrDuringBan := httptest.NewRecorder()
+	reqDuringBan := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+	reqDuringBan.RemoteAddr = "203.0.113.10:4321"
+	reqDuringBan.Header.Set("Authorization", "Bearer "+managementKey)
+	router.ServeHTTP(rrDuringBan, reqDuringBan)
+	if rrDuringBan.Code != http.StatusForbidden {
+		t.Fatalf("valid-key status during active ban = %d, want %d (ban precheck must precede credential comparison); body=%s", rrDuringBan.Code, http.StatusForbidden, rrDuringBan.Body.String())
+	}
+
+	expireArmedBlocks(h.loginThrottle)
+
+	rrValid := httptest.NewRecorder()
+	reqValid := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+	reqValid.RemoteAddr = "203.0.113.10:4321"
+	reqValid.Header.Set("Authorization", "Bearer "+managementKey)
+	router.ServeHTTP(rrValid, reqValid)
+	if rrValid.Code != http.StatusOK {
+		t.Fatalf("valid-key status after ban expired = %d, want %d; body=%s", rrValid.Code, http.StatusOK, rrValid.Body.String())
+	}
+
+	rrAfterClear := httptest.NewRecorder()
+	reqAfterClear := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+	reqAfterClear.RemoteAddr = "203.0.113.10:4321"
+	router.ServeHTTP(rrAfterClear, reqAfterClear)
+	if rrAfterClear.Code != http.StatusUnauthorized {
+		t.Fatalf("missing-key status after valid key cleared ban = %d, want %d; body=%s", rrAfterClear.Code, http.StatusUnauthorized, rrAfterClear.Body.String())
+	}
+}
+
+func TestMiddlewareAllowsLocalPasswordWithoutRemoteSecret(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	h.SetLocalPassword("local-management-password")
+	defer h.Close()
+
+	router := gin.New()
+	router.Use(h.Middleware())
+	router.GET("/v0/management/ping", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+	req.RemoteAddr = "127.0.0.1:4321"
+	req.Header.Set("Authorization", "Bearer local-management-password")
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("local-password status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+}
+
+func TestMiddlewareRejectsQueryTokenOnNormalHTTPRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const managementKey = "correct-management-key"
+	hashed, err := bcrypt.GenerateFromPassword([]byte(managementKey), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("failed to hash test management key: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{
+		RemoteManagement: config.RemoteManagement{
+			AllowRemote: true,
+			SecretKey:   string(hashed),
+		},
+	}, nil)
+	defer h.Close()
+
+	router := gin.New()
+	router.Use(h.Middleware())
+	router.GET("/v0/management/ping", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/ping?token="+managementKey, nil)
+	req.RemoteAddr = "203.0.113.20:4321"
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "missing management key") {
+		t.Fatalf("expected query token to be ignored on normal route, got body=%s", rr.Body.String())
+	}
+}
+
+func TestMiddlewareAllowsQueryTokenOnlyForSystemStatsWebSocket(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const managementKey = "correct-management-key"
+	hashed, err := bcrypt.GenerateFromPassword([]byte(managementKey), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("failed to hash test management key: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{
+		RemoteManagement: config.RemoteManagement{
+			AllowRemote: true,
+			SecretKey:   string(hashed),
+		},
+	}, nil)
+	defer h.Close()
+
+	router := gin.New()
+	router.Use(h.Middleware())
+	router.GET("/v0/management/system-stats/ws", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/system-stats/ws?token="+managementKey, nil)
+	req.RemoteAddr = "203.0.113.21:4321"
+	req.Header.Set("Upgrade", "websocket")
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+}
+
+func TestMiddlewareRoutesQuerySessionTokenForSystemStatsWebSocket(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const managementKey = "correct-management-key"
+	hashed, err := bcrypt.GenerateFromPassword([]byte(managementKey), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("failed to hash test management key: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{
+		RemoteManagement: config.RemoteManagement{
+			AllowRemote: true,
+			SecretKey:   string(hashed),
+		},
+	}, nil)
+	defer h.Close()
+
+	router := gin.New()
+	router.Use(h.Middleware())
+	router.GET("/v0/management/system-stats/ws", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	// cps_* query tokens must enter the identity-session path, not bcrypt management-key
+	// comparison. Without an identity service this surfaces as identity_unavailable (503),
+	// not invalid management key (401).
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/system-stats/ws?token=cps_test-session-token", nil)
+	req.RemoteAddr = "203.0.113.22:4321"
+	req.Header.Set("Upgrade", "websocket")
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "identity_unavailable") {
+		t.Fatalf("expected session-token routing into identity auth, got body=%s", rr.Body.String())
+	}
+}
+
+func TestMiddlewareIgnoresQuerySessionTokenOnNormalHTTP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const managementKey = "correct-management-key"
+	hashed, err := bcrypt.GenerateFromPassword([]byte(managementKey), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("failed to hash test management key: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{
+		RemoteManagement: config.RemoteManagement{
+			AllowRemote: true,
+			SecretKey:   string(hashed),
+		},
+	}, nil)
+	defer h.Close()
+
+	router := gin.New()
+	router.Use(h.Middleware())
+	router.GET("/v0/management/system-stats", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/system-stats?token=cps_test-session-token", nil)
+	req.RemoteAddr = "203.0.113.23:4321"
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "missing management key") {
+		t.Fatalf("expected query session token ignored on normal HTTP, got body=%s", rr.Body.String())
+	}
+}
+
+// newDefaultTrustProxyRouter mirrors the production engine for a deployment that left
+// trusted-proxies empty (the shipped default): configureTrustedProxies calls
+// SetTrustedProxies(nil), which makes gin's ClientIP fall back to RemoteAddr. That
+// fallback is what turned a same-host reverse proxy into a local-origin bypass.
+func newDefaultTrustProxyRouter(t *testing.T, h *Handler) *gin.Engine {
+	t.Helper()
+	router := gin.New()
+	if err := router.SetTrustedProxies(nil); err != nil {
+		t.Fatalf("SetTrustedProxies(nil): %v", err)
+	}
+	router.Use(h.Middleware())
+	router.GET("/v0/management/ping", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+	return router
+}
+
+// Same root cause as issue #517, on the management surface: with trusted-proxies unset
+// gin's ClientIP falls back to RemoteAddr, so a same-host reverse proxy made every
+// external request look local — which skipped the allow-remote gate entirely.
+func TestMiddlewareRejectsRelayedRequestWhenRemoteDisabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const managementKey = "correct-management-key"
+	hashed, err := bcrypt.GenerateFromPassword([]byte(managementKey), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("failed to hash test management key: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{
+		RemoteManagement: config.RemoteManagement{
+			AllowRemote: false,
+			SecretKey:   string(hashed),
+		},
+	}, nil)
+	defer h.Close()
+
+	router := newDefaultTrustProxyRouter(t, h)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+	// The proxy is the TCP peer; the real client is external.
+	req.RemoteAddr = "127.0.0.1:4321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.42")
+	req.Header.Set("Authorization", "Bearer "+managementKey)
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("relayed request status = %d, want %d; body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "remote management disabled") {
+		t.Fatalf("expected remote-management rejection, got body=%s", rr.Body.String())
+	}
+	// The hint must name a way out, otherwise operators just see a broken panel.
+	if !strings.Contains(rr.Body.String(), "trusted-proxies") {
+		t.Fatalf("expected remediation hint naming trusted-proxies, got body=%s", rr.Body.String())
+	}
+}
+
+// The local-password path is reachable without any remote secret, so it must not be
+// exposed to relayed requests.
+func TestMiddlewareRejectsRelayedRequestUsingLocalPassword(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	h.SetLocalPassword("local-management-password")
+	defer h.Close()
+
+	router := newDefaultTrustProxyRouter(t, h)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+	req.RemoteAddr = "127.0.0.1:4321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.42")
+	req.Header.Set("Authorization", "Bearer local-management-password")
+	router.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusOK {
+		t.Fatalf("relayed request authenticated with the local password; body=%s", rr.Body.String())
+	}
+}
+
+// Relayed requests must also be subject to the per-IP login throttle that the
+// localClient shortcut used to skip.
+func TestMiddlewareThrottlesRelayedFailedAttempts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	hashed, err := bcrypt.GenerateFromPassword([]byte("correct-management-key"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("failed to hash test management key: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{
+		RemoteManagement: config.RemoteManagement{
+			AllowRemote: true,
+			SecretKey:   string(hashed),
+		},
+	}, nil)
+	defer h.Close()
+
+	router := newDefaultTrustProxyRouter(t, h)
+
+	newRelayedRequest := func() *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+		req.RemoteAddr = "127.0.0.1:4321"
+		req.Header.Set("X-Forwarded-For", "203.0.113.42")
+		req.Header.Set("Authorization", "Bearer wrong-key")
+		return req
+	}
+
+	// The relayed key is Shared (untrusted proxy), so applySharedKeyDowngrade forces
+	// HardBlock=false: it must be rate-limited (429), never hard-banned (403).
+	var throttled bool
+	for i := 0; i < 15; i++ {
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, newRelayedRequest())
+		if rr.Code == http.StatusForbidden {
+			t.Fatalf("relayed (shared-key) attempt %d hard-banned with 403; want soft 429 only, body=%s", i+1, rr.Body.String())
+		}
+		if rr.Code == http.StatusTooManyRequests && strings.Contains(rr.Body.String(), "too_many_requests") {
+			throttled = true
+			break
+		}
+	}
+	if !throttled {
+		t.Fatal("relayed brute-force attempts were never throttled")
+	}
+}
+
+// A genuine local client (no relay headers) must keep working unchanged.
+func TestMiddlewareAllowsDirectLoopbackLocalPassword(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	h.SetLocalPassword("local-management-password")
+	defer h.Close()
+
+	router := newDefaultTrustProxyRouter(t, h)
+
+	for _, remoteAddr := range []string{"127.0.0.1:4321", "[::1]:4321"} {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+		req.RemoteAddr = remoteAddr
+		req.Header.Set("Authorization", "Bearer local-management-password")
+		router.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("direct loopback %s status = %d, want %d; body=%s", remoteAddr, rr.Code, http.StatusOK, rr.Body.String())
+		}
+	}
+}
+
+func TestResolveSessionToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("bearer session token", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/system-stats", nil)
+		c.Request.Header.Set("Authorization", "Bearer cps_from_header")
+		if got := resolveSessionToken(c); got != "cps_from_header" {
+			t.Fatalf("resolveSessionToken = %q, want cps_from_header", got)
+		}
+	})
+
+	t.Run("websocket query session token", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/system-stats/ws?token=cps_from_query", nil)
+		c.Request.Header.Set("Upgrade", "websocket")
+		c.Params = nil
+		// FullPath is empty in unit tests; shouldReadManagementTokenFromQuery falls back to URL.Path.
+		if got := resolveSessionToken(c); got != "cps_from_query" {
+			t.Fatalf("resolveSessionToken = %q, want cps_from_query", got)
+		}
+	})
+
+	t.Run("non-session query token ignored for session resolution", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/system-stats/ws?token=mgmt-key", nil)
+		c.Request.Header.Set("Upgrade", "websocket")
+		if got := resolveSessionToken(c); got != "" {
+			t.Fatalf("resolveSessionToken = %q, want empty", got)
 		}
 	})
 }

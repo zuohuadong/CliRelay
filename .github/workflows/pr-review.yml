@@ -1,0 +1,45 @@
+name: PR review agent
+
+# Opt-in only: no auto-review on pull_request open/push.
+# Trigger via PR comment (/bot review) or Actions → workflow_dispatch.
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request &&
+          github.event.comment.user.type != 'Bot' &&
+          (
+            contains(github.event.comment.body, '/bot') ||
+            contains(github.event.comment.body, '/triagebot') ||
+            contains(github.event.comment.body, '/reviewbot')
+          )
+        )
+      }}
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL || vars.OPENAI_BASE_URL }}
+      OPENAI_MODEL: ${{ secrets.OPENAI_MODEL || vars.OPENAI_MODEL || 'grok-4.5' }}
+      REVIEW_PR_NUMBER: ${{ github.event.inputs.pr_number || '' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Run PR review agent
+        run: python3 scripts/pr_review_agent.py

@@ -42,20 +42,7 @@ func (w *Watcher) scheduleConfigReload() {
 	})
 }
 
-// ReloadConfigIfChanged runs the same config reload path used by filesystem events.
-func (w *Watcher) ReloadConfigIfChanged() {
-	if w == nil {
-		return
-	}
-	w.reloadConfigIfChanged()
-}
-
 func (w *Watcher) reloadConfigIfChanged() {
-	// File events and post-save reloads may arrive together; an older read must
-	// not apply after a newer one.
-	w.configApplyMu.Lock()
-	defer w.configApplyMu.Unlock()
-
 	data, err := os.ReadFile(w.configPath)
 	if err != nil {
 		log.Errorf("failed to read config file for hash check: %v", err)
@@ -76,20 +63,37 @@ func (w *Watcher) reloadConfigIfChanged() {
 		log.Debugf("config file content unchanged (hash match), skipping reload")
 		return
 	}
+	if config.WrittenByThisProcess(w.configPath, sum) {
+		// A management save or cleanup of this process wrote the file and has
+		// applied the change already; a second full reload would only rebuild
+		// every executor again. Mirrored stores still get the new content.
+		log.Debugf("config file change was written by this process, skipping reload")
+		w.clientsMutex.Lock()
+		w.lastConfigHash = newHash
+		w.clientsMutex.Unlock()
+		w.persistConfigAsync()
+		return
+	}
+	config.ForgetSelfWrites(w.configPath)
 	log.Infof("config file changed, reloading: %s", w.configPath)
 	if w.reloadConfig() {
-		// Record the bytes the reload actually parsed, not the change-check read or a
-		// later re-read: a write landing between them must not count as applied. A
-		// write-back during load only costs one extra reload.
-		w.clientsMutex.Lock()
-		appliedHash := newHash
-		if w.config != nil && w.config.SourceHash != "" {
-			appliedHash = w.config.SourceHash
+		finalHash := newHash
+		if updatedData, errRead := os.ReadFile(w.configPath); errRead == nil && len(updatedData) > 0 {
+			sumUpdated := sha256.Sum256(updatedData)
+			finalHash = hex.EncodeToString(sumUpdated[:])
+		} else if errRead != nil {
+			log.WithError(errRead).Debug("failed to compute updated config hash after reload")
 		}
-		w.lastConfigHash = appliedHash
+		w.clientsMutex.Lock()
+		w.lastConfigHash = finalHash
 		w.clientsMutex.Unlock()
 		w.persistConfigAsync()
 	}
+}
+
+// ReloadConfigIfChanged reloads the watched config when its content changed.
+func (w *Watcher) ReloadConfigIfChanged() {
+	w.reloadConfigIfChanged()
 }
 
 func (w *Watcher) reloadConfig() bool {
@@ -132,9 +136,9 @@ func (w *Watcher) reloadConfig() bool {
 	if oldConfig != nil {
 		details := diff.BuildConfigChangeDetails(oldConfig, newConfig)
 		if len(details) > 0 {
-			log.Info("config changes detected:")
+			log.Debugf("config changes detected:")
 			for _, d := range details {
-				log.Infof("  %s", d)
+				log.Debugf("  %s", d)
 			}
 		} else {
 			log.Debugf("no material config field changes detected")
@@ -142,8 +146,7 @@ func (w *Watcher) reloadConfig() bool {
 	}
 
 	authDirChanged := oldConfig == nil || oldConfig.AuthDir != newConfig.AuthDir
-	retryConfigChanged := oldConfig != nil && (oldConfig.RequestRetry != newConfig.RequestRetry || oldConfig.MaxRetryInterval != newConfig.MaxRetryInterval || oldConfig.MaxRetryCredentials != newConfig.MaxRetryCredentials)
-	forceAuthRefresh := oldConfig != nil && (oldConfig.ForceModelPrefix != newConfig.ForceModelPrefix || !reflect.DeepEqual(oldConfig.OAuthModelAlias, newConfig.OAuthModelAlias) || !reflect.DeepEqual(oldConfig.OAuthSettings, newConfig.OAuthSettings) || retryConfigChanged)
+	forceAuthRefresh := oldConfig != nil && (oldConfig.ForceModelPrefix != newConfig.ForceModelPrefix || !reflect.DeepEqual(oldConfig.OAuthModelAlias, newConfig.OAuthModelAlias))
 
 	log.Infof("config successfully reloaded, triggering client reload")
 	w.reloadClients(authDirChanged, affectedOAuthProviders, forceAuthRefresh)

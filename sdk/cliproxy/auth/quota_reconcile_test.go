@@ -2,154 +2,574 @@ package auth
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
+
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-type quotaProbeTestExecutor struct {
-	schedulerProviderTestExecutor
-	result *QuotaProbeResult
-	err    error
+type quotaProbeExecutorStub struct {
+	id    string
+	probe func(context.Context, *Auth) (*QuotaProbeResult, error)
 }
 
-func (e quotaProbeTestExecutor) Identifier() string { return "codex" }
-
-func (e quotaProbeTestExecutor) ProbeQuotaRecovery(ctx context.Context, auth *Auth) (*QuotaProbeResult, error) {
-	return e.result, e.err
+func (s *quotaProbeExecutorStub) Identifier() string {
+	if s.id == "" {
+		return "codex"
+	}
+	return s.id
 }
 
-func TestShouldProbeQuotaRequiresActiveCooldownAndProber(t *testing.T) {
-	now := time.Now()
-	m := NewManager(nil, nil, nil)
-
-	auth := quotaProbeTestAuth(now)
-	if m.shouldProbeQuota(auth, now) {
-		t.Fatal("expected no probe without executor")
-	}
-
-	m.RegisterExecutor(quotaProbeTestExecutor{})
-	if !m.shouldProbeQuota(auth, now) {
-		t.Fatal("expected probe for quota-blocked auth with prober")
-	}
-
-	m.quotaProbeAfter[auth.ID] = now.Add(time.Minute)
-	if m.shouldProbeQuota(auth, now) {
-		t.Fatal("expected scheduled probe delay to be respected")
-	}
-
-	auth.Disabled = true
-	if m.shouldProbeQuota(auth, now.Add(2*time.Minute)) {
-		t.Fatal("expected disabled auth to be skipped")
-	}
+func (s *quotaProbeExecutorStub) Execute(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
 }
 
-func TestNextQuotaProbeTimeUsesRecoverWindowFraction(t *testing.T) {
-	now := time.Now()
-	auth := quotaProbeTestAuth(now)
-
-	next := nextQuotaProbeTime(auth, now)
-	min := now.Add(14 * time.Minute)
-	max := now.Add(16 * time.Minute)
-	if next.Before(min) || next.After(max) {
-		t.Fatalf("nextQuotaProbeTime = %s, want about 15m after now", next.Sub(now))
-	}
-
-	auth.ModelStates["gpt-5"].NextRetryAfter = now.Add(2 * time.Minute)
-	auth.ModelStates["gpt-5"].Quota.NextRecoverAt = now.Add(2 * time.Minute)
-	next = nextQuotaProbeTime(auth, now)
-	if next.Before(now.Add(quotaProbeMinInterval)) || next.After(now.Add(quotaProbeMinInterval+time.Second)) {
-		t.Fatalf("short cooldown should clamp to min interval, got %s", next.Sub(now))
-	}
+func (s *quotaProbeExecutorStub) ExecuteStream(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	return nil, nil
 }
 
-func TestApplyQuotaProbeResultRecoveredModel(t *testing.T) {
-	now := time.Now()
-	auth := quotaProbeTestAuth(now)
-	auth.Status = StatusError
-	auth.StatusMessage = "quota"
+func (s *quotaProbeExecutorStub) Refresh(context.Context, *Auth) (*Auth, error) { return nil, nil }
 
-	changed, models := applyQuotaProbeResult(auth, &QuotaProbeResult{Recovered: true}, now)
-	if !changed {
-		t.Fatal("expected recovered probe to change auth state")
-	}
-	if len(models) != 1 || models[0] != "gpt-5" {
-		t.Fatalf("recovered models = %#v, want gpt-5", models)
-	}
-	state := auth.ModelStates["gpt-5"]
-	if state.Unavailable || state.Quota.Exceeded || !state.NextRetryAfter.IsZero() {
-		t.Fatalf("model state was not cleared: %#v", state)
-	}
-	if auth.Status != StatusActive || auth.StatusMessage != "" {
-		t.Fatalf("auth status not restored: status=%s message=%q", auth.Status, auth.StatusMessage)
-	}
+func (s *quotaProbeExecutorStub) CountTokens(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
 }
 
-func TestApplyQuotaProbeResultUpdatesRecoverAt(t *testing.T) {
-	now := time.Now()
-	auth := quotaProbeTestAuth(now)
-	nextRecover := now.Add(10 * time.Minute)
-
-	changed, models := applyQuotaProbeResult(auth, &QuotaProbeResult{
-		Recovered:     false,
-		NextRecoverAt: nextRecover,
-	}, now)
-	if !changed {
-		t.Fatal("expected next recover update to change state")
-	}
-	if len(models) != 0 {
-		t.Fatalf("recovered models = %#v, want none", models)
-	}
-	state := auth.ModelStates["gpt-5"]
-	if !state.Unavailable || !state.Quota.Exceeded {
-		t.Fatal("quota-blocked model should stay unavailable")
-	}
-	if !state.NextRetryAfter.Equal(nextRecover) || !state.Quota.NextRecoverAt.Equal(nextRecover) {
-		t.Fatalf("recover timestamp not updated: next=%s quota=%s", state.NextRetryAfter, state.Quota.NextRecoverAt)
-	}
+func (s *quotaProbeExecutorStub) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
 }
 
-func TestProbeQuotaRecoverySchedulesAfterUnrecoveredProbe(t *testing.T) {
-	now := time.Now()
-	m := NewManager(nil, nil, nil)
-	m.RegisterExecutor(quotaProbeTestExecutor{result: &QuotaProbeResult{
-		Recovered:     false,
-		NextRecoverAt: now.Add(30 * time.Minute),
-	}})
-	auth := quotaProbeTestAuth(now)
-	m.auths[auth.ID] = auth
-
-	changed, err := m.probeQuotaRecovery(context.Background(), auth.ID, true)
-	if err != nil {
-		t.Fatalf("probeQuotaRecovery returned error: %v", err)
-	}
-	if !changed {
-		t.Fatal("expected probe to update recover timestamp")
-	}
-	if next := m.quotaProbeAfter[auth.ID]; next.IsZero() || next.Before(now) {
-		t.Fatalf("expected next probe schedule, got %s", next)
-	}
+func (s *quotaProbeExecutorStub) ProbeQuotaRecovery(ctx context.Context, auth *Auth) (*QuotaProbeResult, error) {
+	return s.probe(ctx, auth)
 }
 
-func quotaProbeTestAuth(now time.Time) *Auth {
-	return &Auth{
-		ID:       "auth-1",
-		Provider: "codex",
-		Metadata: map[string]any{
-			"access_token": "tok",
-			"account_id":   "acct",
+func TestManagerReconcileQuota_ClearsRecoveredModelCooldown(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	manager.RegisterExecutor(&quotaProbeExecutorStub{
+		id: "codex",
+		probe: func(context.Context, *Auth) (*QuotaProbeResult, error) {
+			return &QuotaProbeResult{Recovered: true}, nil
+		},
+	})
+
+	next := time.Now().Add(30 * time.Minute)
+	auth := &Auth{
+		ID:          "codex-auth",
+		Provider:    "codex",
+		Status:      StatusError,
+		Unavailable: true,
+		Quota: QuotaState{
+			Exceeded:         true,
+			RecoveryRequired: true,
+			Reason:           "quota",
+			NextRecoverAt:    next,
 		},
 		ModelStates: map[string]*ModelState{
-			"gpt-5": {
-				Unavailable:    true,
+			"gpt-5-codex": {
 				Status:         StatusError,
-				StatusMessage:  "quota",
-				NextRetryAfter: now.Add(time.Hour),
+				StatusMessage:  "quota exhausted",
+				Unavailable:    true,
+				NextRetryAfter: next,
+				LastError:      &Error{Message: "quota exhausted", HTTPStatus: http.StatusTooManyRequests},
 				Quota: QuotaState{
-					Exceeded:      true,
-					Reason:        "quota",
-					NextRecoverAt: now.Add(time.Hour),
+					Exceeded:         true,
+					RecoveryRequired: true,
+					Reason:           "quota",
+					NextRecoverAt:    next,
 				},
 			},
 		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	changed, err := manager.ReconcileQuota(context.Background(), auth.ID)
+	if err != nil {
+		t.Fatalf("ReconcileQuota() error = %v", err)
+	}
+	if !changed {
+		t.Fatalf("ReconcileQuota() changed = false, want true")
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("GetByID() missing auth")
+	}
+	state := updated.ModelStates["gpt-5-codex"]
+	if state == nil {
+		t.Fatalf("expected model state to exist")
+	}
+	if state.Unavailable {
+		t.Fatalf("state.Unavailable = true, want false")
+	}
+	if state.Quota.Exceeded {
+		t.Fatalf("state.Quota.Exceeded = true, want false")
+	}
+	if !state.NextRetryAfter.IsZero() {
+		t.Fatalf("state.NextRetryAfter = %v, want zero", state.NextRetryAfter)
+	}
+	if updated.Unavailable {
+		t.Fatalf("auth.Unavailable = true, want false")
+	}
+	if updated.Quota.Exceeded {
+		t.Fatalf("auth.Quota.Exceeded = true, want false")
+	}
+	if updated.Status != StatusActive {
+		t.Fatalf("auth.Status = %q, want %q", updated.Status, StatusActive)
+	}
+}
+
+func TestApplyQuotaProbeResult_NotRecoveredWithoutResetKeepsWindowGate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	auth := &Auth{
+		ID:          "xai-auth",
+		Provider:    "xai",
+		Status:      StatusError,
+		Unavailable: true,
+		Quota: QuotaState{
+			Exceeded:         true,
+			RecoveryRequired: true,
+			Reason:           "quota",
+			Window:           "week",
+			WindowMinutes:    10080,
+			NextRecoverAt:    now.Add(-time.Hour),
+		},
+		NextRetryAfter: now.Add(-time.Hour),
+		ModelStates: map[string]*ModelState{
+			"grok-4.5": {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: now.Add(-time.Hour),
+				Quota: QuotaState{
+					Exceeded:         true,
+					RecoveryRequired: true,
+					Reason:           "quota",
+					Window:           "week",
+					WindowMinutes:    10080,
+					NextRecoverAt:    now.Add(-time.Hour),
+				},
+			},
+		},
+	}
+
+	applyQuotaProbeResult(auth, &QuotaProbeResult{Recovered: false}, now)
+	blocked, _, _ := isAuthBlockedForModel(auth, "grok-4.5", now)
+	if !blocked {
+		t.Fatal("not-recovered zero-reset probe released the credential")
+	}
+	if !authHasActiveQuotaCooldown(auth, now) {
+		t.Fatal("window gate no longer schedules recovery probes")
+	}
+	if next := nextQuotaProbeTime(auth, now); !next.After(now) || next.After(now.Add(2*quotaProbeMinInterval)) {
+		t.Fatalf("nextQuotaProbeTime() = %v, want prompt follow-up probe", next)
+	}
+}
+
+func TestManagerReconcileQuota_UpdatesModelRecoverAt(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	manager.RegisterExecutor(&quotaProbeExecutorStub{
+		id: "gemini-cli",
+		probe: func(context.Context, *Auth) (*QuotaProbeResult, error) {
+			next := time.Now().Add(10 * time.Minute).Round(time.Second)
+			return &QuotaProbeResult{
+				Models: map[string]QuotaProbeModelResult{
+					"gemini-2.5-pro": {
+						Recovered:     false,
+						NextRecoverAt: next,
+					},
+				},
+			}, nil
+		},
+	})
+
+	oldNext := time.Now().Add(2 * time.Hour)
+	auth := &Auth{
+		ID:       "gemini-auth",
+		Provider: "gemini-cli",
+		Status:   StatusError,
+		ModelStates: map[string]*ModelState{
+			"gemini-2.5-pro(high)": {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: oldNext,
+				Quota: QuotaState{
+					Exceeded:      true,
+					Reason:        "quota",
+					NextRecoverAt: oldNext,
+				},
+			},
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	changed, err := manager.ReconcileQuota(context.Background(), auth.ID)
+	if err != nil {
+		t.Fatalf("ReconcileQuota() error = %v", err)
+	}
+	if !changed {
+		t.Fatalf("ReconcileQuota() changed = false, want true")
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("GetByID() missing auth")
+	}
+	state := updated.ModelStates["gemini-2.5-pro(high)"]
+	if state == nil {
+		t.Fatalf("expected model state to exist")
+	}
+	if !state.Unavailable {
+		t.Fatalf("state.Unavailable = false, want true")
+	}
+	if !state.Quota.Exceeded {
+		t.Fatalf("state.Quota.Exceeded = false, want true")
+	}
+	if !state.NextRetryAfter.Equal(state.Quota.NextRecoverAt) {
+		t.Fatalf("state.NextRetryAfter = %v, want %v", state.NextRetryAfter, state.Quota.NextRecoverAt)
+	}
+	if !state.NextRetryAfter.Before(oldNext) {
+		t.Fatalf("state.NextRetryAfter = %v, want earlier than %v", state.NextRetryAfter, oldNext)
+	}
+}
+
+func TestManagerClearQuotaStatus_ClearsAuthAndModelRuntimeQuota(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	next := time.Now().Add(30 * time.Minute)
+	auth := &Auth{
+		ID:             "codex-auth",
+		Provider:       "codex",
+		Status:         StatusError,
+		StatusMessage:  "quota exhausted",
+		Unavailable:    true,
+		NextRetryAfter: next,
+		LastError:      &Error{Message: "quota exhausted", HTTPStatus: http.StatusTooManyRequests},
+		Quota: QuotaState{
+			Exceeded:      true,
+			Reason:        "quota",
+			NextRecoverAt: next,
+		},
+		ModelStates: map[string]*ModelState{
+			"gpt-5-codex": {
+				Status:         StatusError,
+				StatusMessage:  "quota exhausted",
+				Unavailable:    true,
+				NextRetryAfter: next,
+				LastError:      &Error{Message: "quota exhausted", HTTPStatus: http.StatusTooManyRequests},
+				Quota: QuotaState{
+					Exceeded:      true,
+					Reason:        "quota",
+					NextRecoverAt: next,
+				},
+			},
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	changed, err := manager.ClearQuotaStatus(context.Background(), auth.ID)
+	if err != nil {
+		t.Fatalf("ClearQuotaStatus() error = %v", err)
+	}
+	if !changed {
+		t.Fatalf("ClearQuotaStatus() changed = false, want true")
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("GetByID() missing auth")
+	}
+	if updated.Status != StatusActive {
+		t.Fatalf("auth.Status = %q, want %q", updated.Status, StatusActive)
+	}
+	if updated.StatusMessage != "" || updated.Unavailable || !updated.NextRetryAfter.IsZero() || updated.LastError != nil || updated.Quota != (QuotaState{}) {
+		t.Fatalf("auth quota runtime state was not cleared: %#v", updated)
+	}
+	state := updated.ModelStates["gpt-5-codex"]
+	if state == nil {
+		t.Fatalf("expected model state")
+	}
+	if state.Status != StatusActive {
+		t.Fatalf("state.Status = %q, want %q", state.Status, StatusActive)
+	}
+	if state.StatusMessage != "" || state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{}) {
+		t.Fatalf("model quota runtime state was not cleared: %#v", state)
+	}
+}
+
+func TestManagerClearQuotaStatus_ClearsUnauthorizedWithoutQuotaState(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	now := time.Now()
+	auth := &Auth{
+		ID:               "xai-auth",
+		Provider:         "xai",
+		Status:           StatusError,
+		LastError:        &Error{HTTPStatus: http.StatusUnauthorized},
+		NextRefreshAfter: now.Add(10 * time.Minute),
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	changed, err := manager.ClearQuotaStatus(context.Background(), auth.ID)
+	if err != nil {
+		t.Fatalf("ClearQuotaStatus() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("ClearQuotaStatus() changed = false, want true for auth-level 401")
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("GetByID() missing auth")
+	}
+	if updated.Status != StatusActive || updated.StatusMessage != "" || updated.LastError != nil {
+		t.Fatalf("auth error state was not cleared: %#v", updated)
+	}
+	if updated.Unavailable || !updated.NextRetryAfter.IsZero() || !updated.NextRefreshAfter.IsZero() || updated.Quota != (QuotaState{}) {
+		t.Fatalf("auth retry state was not cleared: %#v", updated)
+	}
+	if blocked, reason, next := isAuthBlockedForModel(updated, "grok-4.5", time.Now()); blocked {
+		t.Fatalf("auth remains blocked after manual clear: reason=%v next=%v", reason, next)
+	}
+}
+
+func TestManagerClearQuotaStatus_ClearsModelUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	next := time.Now().Add(30 * time.Minute)
+	auth := &Auth{
+		ID:             "xai-model-auth",
+		Provider:       "xai",
+		Status:         StatusError,
+		Unavailable:    true,
+		NextRetryAfter: next,
+		LastError:      &Error{HTTPStatus: http.StatusUnauthorized},
+		ModelStates: map[string]*ModelState{
+			"grok-4.5": {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: next,
+				LastError:      &Error{HTTPStatus: http.StatusUnauthorized},
+			},
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	changed, err := manager.ClearQuotaStatus(context.Background(), auth.ID)
+	if err != nil {
+		t.Fatalf("ClearQuotaStatus() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("ClearQuotaStatus() changed = false, want true for model-level 401")
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("GetByID() missing auth")
+	}
+	state := updated.ModelStates["grok-4.5"]
+	if state == nil {
+		t.Fatal("model state missing")
+	}
+	if state.Status != StatusActive || state.StatusMessage != "" || state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{}) {
+		t.Fatalf("model 401 state was not cleared: %#v", state)
+	}
+	if blocked, reason, retryAt := isAuthBlockedForModel(updated, "grok-4.5", time.Now()); blocked {
+		t.Fatalf("model remains blocked after manual clear: reason=%v next=%v", reason, retryAt)
+	}
+}
+
+func TestManagerClearQuotaStatus_ClearsClaudeOAuthSchedulingMetadata(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	now := time.Now()
+	auth := &Auth{
+		ID:             "claude-oauth",
+		Provider:       "claude",
+		Status:         StatusActive,
+		StatusMessage:  claudeOAuthRefreshPendingMessage,
+		Unavailable:    true,
+		NextRetryAfter: now.Add(claudeOAuth401Cooldown),
+		LastError:      &Error{HTTPStatus: http.StatusUnauthorized, Message: "invalid oauth token"},
+		Metadata: map[string]any{
+			"type":          "claude",
+			"access_token":  "access-token",
+			"refresh_token": "refresh-token",
+			ClaudeOAuthHealthMetadataKey: map[string]any{
+				"status":                         claudeOAuthHealthStatusRefreshPending,
+				"temporary_unschedulable_until":  formatClaudeOAuthHealthTime(now.Add(claudeOAuth401Cooldown)),
+				"temporary_unschedulable_reason": claudeOAuthReasonOAuth401,
+				"last_401_at":                    formatClaudeOAuthHealthTime(now),
+			},
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	changed, err := manager.ClearQuotaStatus(context.Background(), auth.ID)
+	if err != nil {
+		t.Fatalf("ClearQuotaStatus() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("ClearQuotaStatus() changed = false, want true for Claude OAuth metadata")
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("GetByID() missing auth")
+	}
+	health := cloneClaudeOAuthHealth(updated)
+	if health["status"] != claudeOAuthHealthStatusActive {
+		t.Fatalf("claude_oauth_health status = %#v, want active", health["status"])
+	}
+	if _, ok := health["temporary_unschedulable_until"]; ok {
+		t.Fatalf("temporary_unschedulable_until survived clear: %#v", health)
+	}
+	if _, ok := health["temporary_unschedulable_reason"]; ok {
+		t.Fatalf("temporary_unschedulable_reason survived clear: %#v", health)
+	}
+	if health["last_401_at"] == nil {
+		t.Fatalf("historical diagnostics were removed: %#v", health)
+	}
+	if claudeOAuthRefreshPending(updated) {
+		t.Fatalf("Claude OAuth refresh-pending side state still blocks scheduling: %#v", health)
+	}
+}
+
+func TestManagerClearQuotaStatus_PreservesStatusDisabled(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	next := time.Now().Add(30 * time.Minute)
+	auth := &Auth{
+		ID:               "disabled-auth",
+		Provider:         "codex",
+		Status:           StatusDisabled,
+		StatusMessage:    "manually disabled",
+		Disabled:         true,
+		Unavailable:      true,
+		NextRetryAfter:   next,
+		NextRefreshAfter: next,
+		LastError:        &Error{Message: "quota exhausted", HTTPStatus: http.StatusTooManyRequests},
+		Quota: QuotaState{
+			Exceeded:      true,
+			Reason:        "quota",
+			NextRecoverAt: next,
+		},
+		ModelStates: map[string]*ModelState{
+			"gpt-5-codex": {
+				Status:         StatusDisabled,
+				StatusMessage:  "model disabled",
+				Unavailable:    true,
+				NextRetryAfter: next,
+				LastError:      &Error{Message: "quota exhausted", HTTPStatus: http.StatusTooManyRequests},
+				Quota: QuotaState{
+					Exceeded:      true,
+					Reason:        "quota",
+					NextRecoverAt: next,
+				},
+			},
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	changed, err := manager.ClearQuotaStatus(context.Background(), auth.ID)
+	if err != nil {
+		t.Fatalf("ClearQuotaStatus() error = %v", err)
+	}
+	if !changed {
+		t.Fatalf("ClearQuotaStatus() changed = false, want true")
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("GetByID() missing auth")
+	}
+	if !updated.Disabled || updated.Status != StatusDisabled || updated.StatusMessage != "manually disabled" {
+		t.Fatalf("disabled auth status changed: disabled=%v status=%q message=%q", updated.Disabled, updated.Status, updated.StatusMessage)
+	}
+	if updated.Unavailable || !updated.NextRetryAfter.IsZero() || !updated.NextRefreshAfter.IsZero() || updated.LastError != nil || updated.Quota != (QuotaState{}) {
+		t.Fatalf("disabled auth quota runtime state was not cleared: %#v", updated)
+	}
+	state := updated.ModelStates["gpt-5-codex"]
+	if state == nil {
+		t.Fatalf("expected model state")
+	}
+	if state.Status != StatusDisabled || state.StatusMessage != "model disabled" {
+		t.Fatalf("disabled model status changed: status=%q message=%q", state.Status, state.StatusMessage)
+	}
+	if state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{}) {
+		t.Fatalf("disabled model quota runtime state was not cleared: %#v", state)
+	}
+}
+
+// A week-exhausted credential whose recovery probe can never succeed (xAI
+// API-key mode rejects the Grok Build billing probe) must still leave the gate
+// once the real quota window elapses, instead of being blacklisted forever.
+func TestWeekExhaustedGateExpiresWhenProbeNeverConfirms(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	auth := &Auth{ID: "xai-api-key", Provider: "xai", Status: StatusActive}
+	applyAuthFailureState(auth, &Error{
+		Message:            `{"error":"Grok Build usage balance exhausted"}`,
+		HTTPStatus:         http.StatusPaymentRequired,
+		QuotaWindow:        "week",
+		QuotaWindowMinutes: 10080,
+	}, nil, now)
+
+	if blocked, _, _ := isAuthBlockedForModel(auth, "grok-4.5", now.Add(6*time.Hour)); !blocked {
+		t.Fatal("blocked = false at +6h, want the gate to outlast the old short cooldown")
+	}
+	if blocked, _, _ := isAuthBlockedForModel(auth, "grok-4.5", now.Add(8*24*time.Hour)); blocked {
+		t.Fatal("blocked = true past the quota window, want the credential back in rotation")
+	}
+}
+
+// disable_cooling is an explicit operator override and must also disable the
+// probe-confirmed gate, otherwise it silently stops working for weekly quota.
+func TestWeekExhaustedGateHonoursDisableCooling(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	auth := &Auth{
+		ID:       "xai-no-cooling",
+		Provider: "xai",
+		Status:   StatusActive,
+		Metadata: map[string]any{"disable_cooling": true},
+	}
+	applyAuthFailureState(auth, &Error{
+		Message:            `{"error":"Grok Build usage balance exhausted"}`,
+		HTTPStatus:         http.StatusPaymentRequired,
+		QuotaWindow:        "week",
+		QuotaWindowMinutes: 10080,
+	}, nil, now)
+
+	if auth.Quota.RecoveryRequired {
+		t.Fatal("RecoveryRequired = true, want disable_cooling to suppress the gate")
+	}
+	if blocked, _, _ := isAuthBlockedForModel(auth, "grok-4.5", now.Add(time.Minute)); blocked {
+		t.Fatal("blocked = true, want disable_cooling to keep the credential selectable")
 	}
 }

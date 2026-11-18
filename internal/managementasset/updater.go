@@ -6,20 +6,21 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/githubauth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpfetch"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
@@ -28,18 +29,15 @@ import (
 )
 
 const (
-	defaultManagementReleaseURL  = "https://api.github.com/repos/zuohuadong/codeProxy/releases/latest"
+	defaultManagementReleaseURL  = "https://api.github.com/repos/kittors/codeProxy/releases/latest"
 	defaultManagementFallbackURL = "https://cpamc.router-for.me/"
 	managementAssetName          = "management.html"
-	panelDistAssetName           = "panel-dist.zip"
-	panelEntryName               = "manage.html"
-	panelDigestMarkerName        = ".panel-dist.sha256"
-	localPanelMarkerName         = ".local-panel-sha256"
-	httpUserAgent                = "CLIProxyAPI-management-syncer"
+	panelDistZipName             = "panel-dist.zip"
+	panelVersionFile             = ".panel-version"
+	httpUserAgent                = "CLIProxyAPI-management-updater"
 	managementSyncMinInterval    = 30 * time.Second
 	updateCheckInterval          = 3 * time.Hour
-	maxAssetDownloadSize         = 50 << 20  // 50 MB safety limit for management asset downloads
-	maxExtractedPanelSize        = 200 << 20 // 200 MB safety limit for expanded panel assets
+	maxAssetDownloadSize         = 50 << 20 // 10 MB safety limit for management asset downloads
 )
 
 // ManagementFileName exposes the control panel asset filename.
@@ -63,24 +61,31 @@ func SetCurrentConfig(cfg *config.Config) {
 	currentConfigPtr.Store(cfg)
 }
 
-// StartPanelAssetSyncer launches a background goroutine that periodically ensures the management asset is up to date.
+// StartAutoUpdater launches a background goroutine that periodically ensures the management asset is up to date.
 // It respects the disable-control-panel flag on every iteration and supports hot-reloaded configurations.
-func StartPanelAssetSyncer(ctx context.Context, configFilePath string) {
+func StartAutoUpdater(ctx context.Context, configFilePath string) {
 	configFilePath = strings.TrimSpace(configFilePath)
 	if configFilePath == "" {
-		log.Debug("management asset syncer skipped: empty config path")
+		log.Debug("management asset auto-updater skipped: empty config path")
 		return
 	}
 
 	schedulerConfigPath.Store(configFilePath)
 
 	schedulerOnce.Do(func() {
-		go runPanelAssetSyncer(ctx)
+		// 管理面板自动更新器是 managementasset 包级后台任务：
+		// - owner: 全局 schedulerOnce / 当前配置快照
+		// - 取消条件: 调用方传入的 ctx 结束（通常是服务 shutdown）
+		// - 超时策略: 每次网络请求由 HTTP client timeout 控制
+		// - 清理方式: runAutoUpdater 在 ctx.Done 后退出 ticker 循环
+		go runAutoUpdater(ctx)
 	})
 }
 
-func runPanelAssetSyncer(ctx context.Context) {
+func runAutoUpdater(ctx context.Context) {
 	if ctx == nil {
+		// 调用方未提供服务级 context 时，退化为包级根 context。
+		// 该模式仅用于非嵌入式调用；正常服务模式应传入可取消的 service/shutdown context。
 		ctx = context.Background()
 	}
 
@@ -150,7 +155,7 @@ type releaseResponse struct {
 func StaticDir(configFilePath string) string {
 	if override := strings.TrimSpace(os.Getenv("MANAGEMENT_STATIC_PATH")); override != "" {
 		cleaned := filepath.Clean(override)
-		if isPanelEntryFile(cleaned) {
+		if strings.EqualFold(filepath.Base(cleaned), managementAssetName) {
 			return filepath.Dir(cleaned)
 		}
 		return cleaned
@@ -180,280 +185,27 @@ func StaticDir(configFilePath string) string {
 func FilePath(configFilePath string) string {
 	if override := strings.TrimSpace(os.Getenv("MANAGEMENT_STATIC_PATH")); override != "" {
 		cleaned := filepath.Clean(override)
-		if isPanelEntryFile(cleaned) {
+		if strings.EqualFold(filepath.Base(cleaned), managementAssetName) {
 			return cleaned
 		}
-		return panelEntryPath(cleaned)
+		return filepath.Join(cleaned, ManagementFileName)
 	}
 
 	dir := StaticDir(configFilePath)
 	if dir == "" {
 		return ""
 	}
-	return panelEntryPath(dir)
+	return filepath.Join(dir, ManagementFileName)
 }
 
-func isPanelEntryFile(path string) bool {
-	base := filepath.Base(filepath.Clean(path))
-	return strings.EqualFold(base, managementAssetName) || strings.EqualFold(base, panelEntryName)
-}
-
-func panelEntryPath(staticDir string) string {
-	staticDir = strings.TrimSpace(staticDir)
-	if staticDir == "" {
-		return ""
-	}
-
-	managedEntry := filepath.Join(staticDir, panelEntryName)
-	if _, err := os.Stat(managedEntry); err == nil {
-		return managedEntry
-	}
-	return filepath.Join(staticDir, managementAssetName)
-}
-
-func panelEntryExists(staticDir string) bool {
-	for _, fileName := range []string{panelEntryName, managementAssetName} {
-		info, err := os.Stat(filepath.Join(staticDir, fileName))
-		if err == nil && !info.IsDir() {
-			return true
-		}
-	}
-	return false
-}
-
-func panelDistInstalled(staticDir string) bool {
-	info, err := os.Stat(filepath.Join(staticDir, panelEntryName))
-	return err == nil && !info.IsDir()
-}
-
-func localAssetHash(staticDir string, assetName string) string {
-	if strings.EqualFold(assetName, panelDistAssetName) {
-		data, err := os.ReadFile(filepath.Join(staticDir, panelDigestMarkerName))
-		if err != nil {
-			return ""
-		}
-		return strings.TrimSpace(string(data))
-	}
-
-	localHash, err := fileSHA256(filepath.Join(staticDir, managementAssetName))
-	if err != nil {
-		return ""
-	}
-	return localHash
-}
-
-// AssetPath resolves a path inside the managed control panel asset directory.
-func AssetPath(configFilePath string, relativePath string) (string, bool) {
-	dir := StaticDir(configFilePath)
-	if strings.TrimSpace(dir) == "" {
-		return "", false
-	}
-
-	relativePath = strings.ReplaceAll(relativePath, "\\", "/")
-	relativePath = strings.TrimPrefix(relativePath, "/")
-	if strings.TrimSpace(relativePath) == "" {
-		return FilePath(configFilePath), true
-	}
-	if hasParentPathSegment(relativePath) {
-		return "", false
-	}
-
-	cleanedRel := path.Clean("/" + relativePath)
-	if cleanedRel == "/" {
-		return FilePath(configFilePath), true
-	}
-	cleanedRel = strings.TrimPrefix(cleanedRel, "/")
-	if cleanedRel == "." || cleanedRel == ".." || strings.HasPrefix(cleanedRel, "../") {
-		return "", false
-	}
-
-	target := filepath.Join(dir, filepath.FromSlash(cleanedRel))
-	rootAbs, errRoot := filepath.Abs(dir)
-	targetAbs, errTarget := filepath.Abs(target)
-	if errRoot != nil || errTarget != nil {
-		return "", false
-	}
-	if targetAbs != rootAbs && !strings.HasPrefix(targetAbs, rootAbs+string(os.PathSeparator)) {
-		return "", false
-	}
-	return target, true
-}
-
-// localPanelDistDir resolves a bundled or local panel build output directory.
-// It checks Docker image bundle paths first, then panel/dist near the executable and working directory.
-func localPanelDistDir(staticDir string) string {
-	candidates := []string{}
-
-	if exe, err := os.Executable(); err == nil {
-		exeDir := filepath.Dir(exe)
-		candidates = append(candidates,
-			filepath.Join(exeDir, "static"),
-			filepath.Join(exeDir, "panel", "dist"),
-		)
-	}
-
-	if wd, err := os.Getwd(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(wd, "static"),
-			filepath.Join(wd, "panel", "dist"),
-		)
-	}
-
-	candidates = append(candidates, "/app/panel-dist", "/CLIProxyAPI/static")
-
-	staticAbs, errStaticAbs := filepath.Abs(staticDir)
-	for _, dir := range candidates {
-		if staticAbs != "" && errStaticAbs == nil {
-			if dirAbs, err := filepath.Abs(dir); err == nil && dirAbs == staticAbs {
-				continue
-			}
-		}
-		entry := filepath.Join(dir, panelEntryName)
-		if info, err := os.Stat(entry); err == nil && !info.IsDir() {
-			return dir
-		}
-	}
-
-	return ""
-}
-
-// syncLocalPanelBuild checks for a local panel/dist build output and syncs it to the static directory.
-// Returns true if a local build was synced (meaning no remote download is needed).
-func syncLocalPanelBuild(staticDir string) bool {
-	distDir := localPanelDistDir(staticDir)
-	if distDir == "" {
-		return false
-	}
-
-	localHash, err := dirSHA256(distDir)
-	if err != nil {
-		return false
-	}
-
-	markerPath := filepath.Join(staticDir, localPanelMarkerName)
-	existingHash, _ := os.ReadFile(markerPath)
-	if strings.TrimSpace(string(existingHash)) == localHash {
-		log.Debug("local panel build is already synced")
-		return panelEntryExists(staticDir)
-	}
-
-	if errMkdir := os.MkdirAll(staticDir, 0o755); errMkdir != nil {
-		log.WithError(errMkdir).Warn("failed to prepare static directory for local panel sync")
-		return false
-	}
-
-	entries, err := os.ReadDir(distDir)
-	if err != nil {
-		log.WithError(err).Warn("failed to read local panel dist directory")
-		return false
-	}
-
-	for _, entry := range entries {
-		src := filepath.Join(distDir, entry.Name())
-		dst := filepath.Join(staticDir, entry.Name())
-		if err := os.RemoveAll(dst); err != nil {
-			log.WithError(err).Warnf("failed to remove stale static entry %s", entry.Name())
-			return false
-		}
-		if entry.IsDir() {
-			if err := copyDir(src, dst); err != nil {
-				log.WithError(err).Warnf("failed to copy local panel directory %s", entry.Name())
-				return false
-			}
-		} else if entry.Type().IsRegular() {
-			if err := copyFile(src, dst); err != nil {
-				log.WithError(err).Warnf("failed to copy local panel file %s", entry.Name())
-				return false
-			}
-		}
-	}
-
-	if err := atomicWriteFile(markerPath, []byte(localHash+"\n")); err != nil {
-		log.WithError(err).Warn("failed to persist local panel digest marker")
-	}
-
-	log.Info("local panel build synced successfully")
-	return true
-}
-
-func copyDir(src, dst string) error {
-	if err := os.MkdirAll(dst, 0o755); err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		srcPath := filepath.Join(src, entry.Name())
-		dstPath := filepath.Join(dst, entry.Name())
-		if entry.IsDir() {
-			if err := copyDir(srcPath, dstPath); err != nil {
-				return err
-			}
-		} else if entry.Type().IsRegular() {
-			if err := copyFile(srcPath, dstPath); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = out.Close() }()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Close()
-}
-
-func dirSHA256(dir string) (string, error) {
-	h := sha256.New()
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		rel, err := filepath.Rel(dir, path)
-		if err != nil {
-			return err
-		}
-		h.Write([]byte(rel))
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = f.Close() }()
-		if _, err := io.Copy(h, f); err != nil {
-			return err
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// EnsureLatestManagementHTML checks the latest management panel asset and updates the local copy when needed.
-// It prefers the SPA zip bundle (panel-dist.zip) and falls back to the single management.html asset.
+// EnsureLatestManagementHTML checks the latest management panel assets and updates the local copy when needed.
+// It first tries to download a full SPA zip bundle (panel-dist.zip) from the release.
+// If no zip is found, it falls back to downloading the single management.html file.
 // It coalesces concurrent sync attempts and returns whether the asset exists after the sync attempt.
 func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL string, panelRepository string) bool {
 	if ctx == nil {
+		// 这里的同步既可能来自请求路径，也可能来自后台调度器。
+		// 若调用方没有提供 context，则退化为根 context，由内部 HTTP timeout 负责边界。
 		ctx = context.Background()
 	}
 
@@ -462,11 +214,6 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		log.Debug("management asset sync skipped: empty static directory")
 		return false
 	}
-
-	if synced := syncLocalPanelBuild(staticDir); synced {
-		return true
-	}
-
 	localPath := filepath.Join(staticDir, managementAssetName)
 
 	_, _, _ = sfGroup.Do(localPath, func() (interface{}, error) {
@@ -485,8 +232,6 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		lastUpdateCheckTime = now
 		lastUpdateCheckMu.Unlock()
 
-		localFileMissing := !panelEntryExists(staticDir)
-
 		if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll != nil {
 			log.WithError(errMkdirAll).Warn("failed to prepare static directory for management asset")
 			return nil, nil
@@ -495,7 +240,30 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		releaseURL := resolveReleaseURL(panelRepository)
 		client := newHTTPClient(proxyURL)
 
-		asset, remoteHash, err := fetchLatestAsset(ctx, client, releaseURL)
+		// Try SPA zip-based update first (panel-dist.zip).
+		if trySPAZipUpdate(ctx, client, staticDir, releaseURL) {
+			return nil, nil
+		}
+
+		// Fallback: single-file management.html download.
+		localFileMissing := false
+		if _, errStat := os.Stat(localPath); errStat != nil {
+			if errors.Is(errStat, os.ErrNotExist) {
+				localFileMissing = true
+			} else {
+				log.WithError(errStat).Debug("failed to stat local management asset")
+			}
+		}
+
+		localHash, err := fileSHA256(localPath)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				log.WithError(err).Debug("failed to read local management asset hash")
+			}
+			localHash = ""
+		}
+
+		asset, remoteHash, err := fetchReleaseAssetByName(ctx, client, releaseURL, managementAssetName)
 		if err != nil {
 			if localFileMissing {
 				log.WithError(err).Warn("failed to fetch latest management release information, trying fallback page")
@@ -508,12 +276,9 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			return nil, nil
 		}
 
-		localHash := localAssetHash(staticDir, asset.Name)
 		if remoteHash != "" && localHash != "" && strings.EqualFold(remoteHash, localHash) {
-			if !strings.EqualFold(asset.Name, panelDistAssetName) || panelDistInstalled(staticDir) {
-				log.Debug("management asset is already up to date")
-				return nil, nil
-			}
+			log.Debug("management asset is already up to date")
+			return nil, nil
 		}
 
 		data, downloadedHash, err := downloadAsset(ctx, client, asset.BrowserDownloadURL)
@@ -534,27 +299,113 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			return nil, nil
 		}
 
-		if strings.EqualFold(asset.Name, panelDistAssetName) {
-			if err = extractPanelDist(data, staticDir); err != nil {
-				log.WithError(err).Warn("failed to extract management panel distribution")
-				return nil, nil
-			}
-			if err = atomicWriteFile(filepath.Join(staticDir, panelDigestMarkerName), []byte(downloadedHash+"\n")); err != nil {
-				log.WithError(err).Warn("failed to persist management panel distribution digest")
-				return nil, nil
-			}
-		} else {
-			if err = atomicWriteFile(localPath, data); err != nil {
-				log.WithError(err).Warn("failed to update management asset on disk")
-				return nil, nil
-			}
+		if err = atomicWriteFile(localPath, data); err != nil {
+			log.WithError(err).Warn("failed to update management asset on disk")
+			return nil, nil
 		}
 
-		log.Infof("management asset synced successfully (hash=%s)", downloadedHash)
+		log.Infof("management asset updated successfully (hash=%s)", downloadedHash)
 		return nil, nil
 	})
 
-	return panelEntryExists(staticDir)
+	// Check if SPA panel exists (manage.html) or single-file (management.html).
+	manageHTML := filepath.Join(staticDir, "manage.html")
+	if _, errStat := os.Stat(manageHTML); errStat == nil {
+		return true
+	}
+	_, err := os.Stat(localPath)
+	return err == nil
+}
+
+// trySPAZipUpdate attempts to download and extract a panel-dist.zip from the release.
+// Returns true if the SPA panel was successfully installed or is already up to date.
+func trySPAZipUpdate(ctx context.Context, client *http.Client, staticDir string, releaseURL string) bool {
+	asset, remoteHash, err := fetchReleaseAssetByName(ctx, client, releaseURL, panelDistZipName)
+	if err != nil {
+		log.WithError(err).Debug("no panel-dist.zip in release, falling back to single-file")
+		return false
+	}
+
+	// Check version file to see if we already have this version.
+	versionFilePath := filepath.Join(staticDir, panelVersionFile)
+	if localVersion, errRead := os.ReadFile(versionFilePath); errRead == nil {
+		local := strings.TrimSpace(string(localVersion))
+		if remoteHash != "" && local != "" && strings.EqualFold(local, remoteHash) {
+			log.Debug("management SPA panel is already up to date")
+			return true
+		}
+	}
+
+	// Download zip.
+	data, downloadedHash, err := downloadAsset(ctx, client, asset.BrowserDownloadURL)
+	if err != nil {
+		log.WithError(err).Warn("failed to download management panel zip")
+		return false
+	}
+
+	if remoteHash != "" && !strings.EqualFold(remoteHash, downloadedHash) {
+		log.Warnf("remote digest mismatch for panel zip: expected %s got %s", remoteHash, downloadedHash)
+	}
+
+	// Extract to staticDir.
+	if errExtract := extractZipToDir(data, staticDir); errExtract != nil {
+		log.WithError(errExtract).Warn("failed to extract management panel zip")
+		return false
+	}
+
+	// Save version hash for future comparisons.
+	saveHash := downloadedHash
+	if remoteHash != "" {
+		saveHash = remoteHash
+	}
+	_ = os.WriteFile(versionFilePath, []byte(saveHash), 0o644)
+
+	log.Infof("management SPA panel updated successfully (hash=%s)", downloadedHash)
+	return true
+}
+
+// extractZipToDir extracts a zip archive into the target directory.
+// It safely handles path traversal by rejecting entries with ".." components.
+func extractZipToDir(zipData []byte, targetDir string) error {
+	reader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		return fmt.Errorf("open zip: %w", err)
+	}
+
+	for _, file := range reader.File {
+		cleanName := filepath.Clean(file.Name)
+		if strings.Contains(cleanName, "..") || filepath.IsAbs(cleanName) {
+			log.Warnf("skipping unsafe zip entry: %s", file.Name)
+			continue
+		}
+
+		targetPath := filepath.Join(targetDir, cleanName)
+
+		if file.FileInfo().IsDir() {
+			_ = os.MkdirAll(targetPath, 0o755)
+			continue
+		}
+
+		// Create parent directories.
+		_ = os.MkdirAll(filepath.Dir(targetPath), 0o755)
+
+		rc, errOpen := file.Open()
+		if errOpen != nil {
+			return fmt.Errorf("open zip entry %s: %w", file.Name, errOpen)
+		}
+
+		entryData, errRead := io.ReadAll(rc)
+		_ = rc.Close()
+		if errRead != nil {
+			return fmt.Errorf("read zip entry %s: %w", file.Name, errRead)
+		}
+
+		if errWrite := atomicWriteFile(targetPath, entryData); errWrite != nil {
+			return fmt.Errorf("write %s: %w", cleanName, errWrite)
+		}
+	}
+
+	return nil
 }
 
 func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
@@ -565,149 +416,15 @@ func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, loca
 	}
 
 	log.Warnf("management asset downloaded from fallback URL without digest verification (hash=%s) — "+
-		"keep disable-auto-update-panel set to false to enable verified GitHub panel asset sync", downloadedHash)
+		"enable verified GitHub updates by keeping disable-auto-update-panel set to false", downloadedHash)
 
 	if err = atomicWriteFile(localPath, data); err != nil {
 		log.WithError(err).Warn("failed to persist fallback management control panel page")
 		return false
 	}
 
-	log.Infof("management asset synced from fallback page successfully (hash=%s)", downloadedHash)
+	log.Infof("management asset updated from fallback page successfully (hash=%s)", downloadedHash)
 	return true
-}
-
-func extractPanelDist(data []byte, staticDir string) error {
-	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return fmt.Errorf("open panel distribution archive: %w", err)
-	}
-
-	parentDir := filepath.Dir(staticDir)
-	if err = os.MkdirAll(parentDir, 0o755); err != nil {
-		return fmt.Errorf("prepare panel distribution temp parent: %w", err)
-	}
-
-	tempDir, err := os.MkdirTemp(parentDir, ".panel-dist-*")
-	if err != nil {
-		return fmt.Errorf("create panel distribution temp directory: %w", err)
-	}
-	defer func() {
-		_ = os.RemoveAll(tempDir)
-	}()
-
-	var extractedSize uint64
-	for _, file := range reader.File {
-		relativePath, ok := cleanArchivePath(file.Name)
-		if !ok {
-			return fmt.Errorf("unsafe panel distribution path %q", file.Name)
-		}
-		if relativePath == "" {
-			continue
-		}
-
-		targetPath := filepath.Join(tempDir, filepath.FromSlash(relativePath))
-		info := file.FileInfo()
-		if info.IsDir() {
-			if err = os.MkdirAll(targetPath, 0o755); err != nil {
-				return fmt.Errorf("create panel distribution directory %s: %w", relativePath, err)
-			}
-			continue
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("unsupported panel distribution entry %s", relativePath)
-		}
-
-		extractedSize += file.UncompressedSize64
-		if extractedSize > maxExtractedPanelSize {
-			return fmt.Errorf("panel distribution exceeds maximum expanded size of %d bytes", maxExtractedPanelSize)
-		}
-
-		if err = os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-			return fmt.Errorf("create panel distribution parent for %s: %w", relativePath, err)
-		}
-
-		if err = extractArchiveFile(file, targetPath); err != nil {
-			return err
-		}
-	}
-
-	if _, err = os.Stat(filepath.Join(tempDir, panelEntryName)); err != nil {
-		return fmt.Errorf("panel distribution missing %s: %w", panelEntryName, err)
-	}
-
-	if err = os.MkdirAll(staticDir, 0o755); err != nil {
-		return fmt.Errorf("prepare panel static directory: %w", err)
-	}
-
-	entries, err := os.ReadDir(tempDir)
-	if err != nil {
-		return fmt.Errorf("read extracted panel distribution: %w", err)
-	}
-	for _, entry := range entries {
-		sourcePath := filepath.Join(tempDir, entry.Name())
-		targetPath := filepath.Join(staticDir, entry.Name())
-		if err = os.RemoveAll(targetPath); err != nil {
-			return fmt.Errorf("remove stale panel distribution entry %s: %w", entry.Name(), err)
-		}
-		if err = os.Rename(sourcePath, targetPath); err != nil {
-			return fmt.Errorf("install panel distribution entry %s: %w", entry.Name(), err)
-		}
-	}
-
-	return nil
-}
-
-func cleanArchivePath(fileName string) (string, bool) {
-	fileName = strings.ReplaceAll(fileName, "\\", "/")
-	if strings.Contains(fileName, "\x00") || strings.HasPrefix(fileName, "/") {
-		return "", false
-	}
-	if hasParentPathSegment(fileName) {
-		return "", false
-	}
-
-	cleaned := path.Clean(fileName)
-	if cleaned == "." {
-		return "", true
-	}
-	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
-		return "", false
-	}
-	return cleaned, true
-}
-
-func hasParentPathSegment(fileName string) bool {
-	for _, part := range strings.Split(fileName, "/") {
-		if part == ".." {
-			return true
-		}
-	}
-	return false
-}
-
-func extractArchiveFile(file *zip.File, targetPath string) error {
-	source, err := file.Open()
-	if err != nil {
-		return fmt.Errorf("open panel distribution file %s: %w", file.Name, err)
-	}
-	defer func() {
-		_ = source.Close()
-	}()
-
-	target, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return fmt.Errorf("create panel distribution file %s: %w", file.Name, err)
-	}
-
-	_, copyErr := io.Copy(target, source)
-	closeErr := target.Close()
-	if copyErr != nil {
-		return fmt.Errorf("write panel distribution file %s: %w", file.Name, copyErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close panel distribution file %s: %w", file.Name, closeErr)
-	}
-	return nil
 }
 
 func resolveReleaseURL(repo string) string {
@@ -742,7 +459,8 @@ func resolveReleaseURL(repo string) string {
 	return defaultManagementReleaseURL
 }
 
-func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL string) (*releaseAsset, string, error) {
+// fetchReleaseAssetByName looks for an asset with the given name in the latest GitHub release.
+func fetchReleaseAssetByName(ctx context.Context, client *http.Client, releaseURL string, assetName string) (*releaseAsset, string, error) {
 	if strings.TrimSpace(releaseURL) == "" {
 		releaseURL = defaultManagementReleaseURL
 	}
@@ -751,7 +469,7 @@ func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL strin
 		"Accept":     "application/vnd.github+json",
 		"User-Agent": httpUserAgent,
 	}
-	if token := util.ResolveGitHubToken(); token != "" {
+	if token := githubauth.TokenForURL(releaseURL); token != "" {
 		headers["Authorization"] = "Bearer " + token
 	}
 
@@ -765,17 +483,21 @@ func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL strin
 		return nil, "", fmt.Errorf("decode release response: %w", err)
 	}
 
-	for _, assetName := range []string{panelDistAssetName, managementAssetName} {
-		for i := range release.Assets {
-			asset := &release.Assets[i]
-			if strings.EqualFold(asset.Name, assetName) {
-				remoteHash := parseDigest(asset.Digest)
-				return asset, remoteHash, nil
-			}
+	for i := range release.Assets {
+		asset := &release.Assets[i]
+		if strings.EqualFold(asset.Name, assetName) {
+			remoteHash := parseDigest(asset.Digest)
+			return asset, remoteHash, nil
 		}
 	}
 
-	return nil, "", fmt.Errorf("management asset %s or %s not found in latest release", panelDistAssetName, managementAssetName)
+	return nil, "", fmt.Errorf("asset %s not found in latest release", assetName)
+}
+
+// fetchLatestAsset preserves the historical helper used by updater tests and
+// callers that only need the management.html release asset.
+func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL string) (*releaseAsset, string, error) {
+	return fetchReleaseAssetByName(ctx, client, releaseURL, managementAssetName)
 }
 
 func downloadAsset(ctx context.Context, client *http.Client, downloadURL string) ([]byte, string, error) {

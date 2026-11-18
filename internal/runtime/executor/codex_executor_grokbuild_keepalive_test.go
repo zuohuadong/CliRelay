@@ -255,7 +255,6 @@ func TestCodexExecutorExecuteStream_NonGrokClientKeepsVerbatim(t *testing.T) {
 	}
 
 	var fullOutput bytes.Buffer
-	var streamErr error
 	timeout := time.After(3 * time.Second)
 	done := false
 	for !done {
@@ -266,8 +265,7 @@ func TestCodexExecutorExecuteStream_NonGrokClientKeepsVerbatim(t *testing.T) {
 				break
 			}
 			if chunk.Err != nil {
-				streamErr = chunk.Err
-				continue
+				t.Fatalf("unexpected chunk error: %v", chunk.Err)
 			}
 			fullOutput.Write(chunk.Payload)
 		case <-timeout:
@@ -278,14 +276,5 @@ func TestCodexExecutorExecuteStream_NonGrokClientKeepsVerbatim(t *testing.T) {
 	outputStr := fullOutput.String()
 	if !strings.Contains(outputStr, `{"type":"keepalive"`) && !strings.Contains(outputStr, "event: keepalive") {
 		t.Fatalf("expected verbatim keepalive for non-Grok client, got:\n%s", outputStr)
-	}
-	if streamErr == nil {
-		t.Fatal("expected non-Grok keepalive stream with empty completion to be rejected")
-	}
-	if got := statusCodeFromTestError(t, streamErr); got != http.StatusBadGateway {
-		t.Fatalf("status code = %d, want %d", got, http.StatusBadGateway)
-	}
-	if !strings.Contains(streamErr.Error(), "empty stream response") {
-		t.Fatalf("stream error = %v, want empty stream response", streamErr)
 	}
 }

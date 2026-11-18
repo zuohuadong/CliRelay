@@ -11,15 +11,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 const (
 	// DefaultXAIFallbackClientVersion is the stable Grok CLI version used when npm
-	// registry resolution fails. Keep this above XAIClientVersionServerFloor.
-	DefaultXAIFallbackClientVersion = "1.0.62"
+	// registry resolution fails. dist-tag latest is 1.0.46; 1.0.50 is the alpha tag.
+	DefaultXAIFallbackClientVersion = "1.0.46"
 	// XAIClientVersionServerFloor is the minimum Grok CLI version cli-chat-proxy accepts.
 	// Older clients are rejected with HTTP 426 (#6249).
 	XAIClientVersionServerFloor = "1.0.13"
@@ -153,7 +153,7 @@ func FetchXAINPMLatestVersion(ctx context.Context, client *http.Client) (string,
 		return "", fmt.Errorf("read npm registry response: %w", errRead)
 	}
 
-	version := strings.TrimSpace(gjson.GetBytes(body, "version").String())
+	version := strings.Clone(strings.TrimSpace(ojson.GetBytesNoCopy(body, "version").String()))
 	if version == "" {
 		return "", errors.New("version not found in npm response")
 	}

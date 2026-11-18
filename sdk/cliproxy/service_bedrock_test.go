@@ -2,69 +2,61 @@ package cliproxy
 
 import (
 	"context"
-	"strings"
 	"testing"
 
-	internalregistry "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
-func TestRegisterModelsForAuth_BedrockRegistersDefaultModels(t *testing.T) {
-	service := &Service{cfg: &config.Config{}}
+func TestEnsureExecutorsForAuth_BedrockBindsBedrockExecutor(t *testing.T) {
+	service := &Service{
+		cfg:         &config.Config{},
+		coreManager: coreauth.NewManager(nil, nil, nil),
+	}
 	auth := &coreauth.Auth{
-		ID:       "bedrock-default-models",
+		ID:       "bedrock-auth",
 		Provider: "bedrock",
 		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"auth_kind":     "api_key",
-			"api_key":       "bedrock-key",
-			"access_key_id": "bedrock-access",
-			"region":        "us-east-1",
-		},
 	}
 
-	registry := internalregistry.GetGlobalRegistry()
-	registry.UnregisterClient(auth.ID)
-	t.Cleanup(func() {
-		registry.UnregisterClient(auth.ID)
-	})
+	service.ensureExecutorsForAuth(auth)
 
-	service.registerModelsForAuth(context.Background(), auth)
-
-	models := registry.GetModelsForClient(auth.ID)
-	if len(models) == 0 {
-		t.Fatal("expected Bedrock models to be registered")
+	exec, ok := service.coreManager.Executor("bedrock")
+	if !ok || exec == nil {
+		t.Fatal("expected bedrock executor after bind")
 	}
-	if !bedrockHasModelID(models, "claude-sonnet-4-5") {
-		t.Fatalf("claude-sonnet-4-5 not registered; got %+v", models)
+	if exec.Identifier() != "bedrock" {
+		t.Fatalf("executor identifier = %q, want bedrock", exec.Identifier())
 	}
 }
 
-func TestRegisterModelsForAuth_BedrockUsesExplicitModels(t *testing.T) {
-	service := &Service{cfg: &config.Config{
-		BedrockKey: []config.BedrockKey{{
-			AuthMode: "api-key",
-			APIKey:   "bedrock-key-explicit",
-			Region:   "us-east-1",
-			Models: []config.BedrockModel{
-				{Name: "anthropic.claude-3-5-sonnet-20240620-v1:0", Alias: "custom-bedrock-sonnet"},
+func TestRegisterModelsForAuth_BedrockConfigModels(t *testing.T) {
+	service := &Service{
+		cfg: &config.Config{
+			BedrockKey: []config.BedrockKey{
+				{
+					AuthMode: "api-key",
+					APIKey:   "br-key",
+					Models: []config.BedrockModel{
+						{Name: "claude-sonnet-4-5", Alias: "aws-sonnet"},
+						{Name: "claude-opus-4-5", Alias: "aws-opus"},
+					},
+					ExcludedModels: []string{"aws-opus"},
+				},
 			},
-			ExcludedModels: []string{"custom-excluded"},
-		}},
-	}}
+		},
+	}
 	auth := &coreauth.Auth{
-		ID:       "bedrock-explicit-models",
+		ID:       "bedrock-auth-models",
 		Provider: "bedrock",
 		Status:   coreauth.StatusActive,
 		Attributes: map[string]string{
-			"auth_kind": "api_key",
-			"api_key":   "bedrock-key-explicit",
-			"region":    "us-east-1",
+			"auth_kind": "apikey",
+			"api_key":   "br-key",
 		},
 	}
 
-	registry := internalregistry.GetGlobalRegistry()
+	registry := GlobalModelRegistry()
 	registry.UnregisterClient(auth.ID)
 	t.Cleanup(func() {
 		registry.UnregisterClient(auth.ID)
@@ -72,23 +64,72 @@ func TestRegisterModelsForAuth_BedrockUsesExplicitModels(t *testing.T) {
 
 	service.registerModelsForAuth(context.Background(), auth)
 
-	models := registry.GetModelsForClient(auth.ID)
+	models := registry.GetAvailableModelsByProvider("bedrock")
 	if len(models) != 1 {
-		t.Fatalf("registered Bedrock explicit models = %d, want 1: %+v", len(models), models)
+		t.Fatalf("expected 1 registered bedrock model after exclusion, got %d: %+v", len(models), models)
 	}
-	if !bedrockHasModelID(models, "custom-bedrock-sonnet") {
-		t.Fatalf("custom-bedrock-sonnet not registered; got %+v", models)
+	if models[0].ID != "aws-sonnet" {
+		t.Fatalf("registered model id = %q, want aws-sonnet", models[0].ID)
 	}
-	if bedrockHasModelID(models, "claude-sonnet-4-5") {
-		t.Fatalf("default model should not be registered when explicit models are configured; got %+v", models)
+	if models[0].OwnedBy != "aws" || models[0].Type != "bedrock" {
+		t.Fatalf("unexpected model ownership/type: %+v", models[0])
 	}
 }
 
-func bedrockHasModelID(models []*ModelInfo, want string) bool {
-	for _, model := range models {
-		if model != nil && strings.EqualFold(strings.TrimSpace(model.ID), want) {
-			return true
+// A Bedrock key may list a model by its Bedrock id. Its thinking capabilities
+// are those of the catalog entry for the Anthropic id behind it; without them
+// a budget is passed to a model that only takes adaptive thinking.
+func TestLookupBedrockStaticModelThinkingResolvesBedrockIDs(t *testing.T) {
+	for _, name := range []string{
+		"claude-opus-4-7",
+		"us.anthropic.claude-opus-4-7-v1",
+		"global.anthropic.claude-opus-4-7-v1:0",
+		"arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-4-7-v1",
+	} {
+		if got := lookupBedrockStaticModelThinking(name); got == nil || got.Adaptive == nil {
+			t.Errorf("lookupBedrockStaticModelThinking(%q) = %+v, want claude-opus-4-7's adaptive-only thinking", name, got)
 		}
 	}
-	return false
+	if got := lookupBedrockStaticModelThinking("us.anthropic.claude-sonnet-4-5-20250929-v1:0"); got == nil || got.Adaptive != nil {
+		t.Errorf("claude-sonnet-4-5 thinking = %+v, want budget thinking", got)
+	}
+	for _, name := range []string{"meta.llama3-70b-instruct-v1:0", "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/a1b2c3"} {
+		if got := lookupBedrockStaticModelThinking(name); got != nil {
+			t.Errorf("lookupBedrockStaticModelThinking(%q) = %+v, want nil", name, got)
+		}
+	}
+}
+
+func TestRegisterModelsForAuth_BedrockIDsGetCatalogThinking(t *testing.T) {
+	service := &Service{
+		cfg: &config.Config{
+			BedrockKey: []config.BedrockKey{{
+				AuthMode: "api-key",
+				APIKey:   "br-ids-key",
+				Models:   []config.BedrockModel{{Name: "us.anthropic.claude-opus-4-7-v1", Alias: "aws-opus-47"}},
+			}},
+		},
+	}
+	auth := &coreauth.Auth{
+		ID:         "bedrock-auth-bedrock-ids",
+		Provider:   "bedrock",
+		Status:     coreauth.StatusActive,
+		Attributes: map[string]string{"auth_kind": "apikey", "api_key": "br-ids-key"},
+	}
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() { registry.UnregisterClient(auth.ID) })
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	for _, model := range registry.GetAvailableModelsByProvider("bedrock") {
+		if model.ID != "aws-opus-47" {
+			continue
+		}
+		if model.Thinking == nil || model.Thinking.Adaptive == nil {
+			t.Fatalf("aws-opus-47 thinking = %+v, want claude-opus-4-7's adaptive-only thinking", model.Thinking)
+		}
+		return
+	}
+	t.Fatal("aws-opus-47 not registered")
 }

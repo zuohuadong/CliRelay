@@ -71,6 +71,9 @@ func FilterUpstreamHeaders(src http.Header) http.Header {
 		if _, scoped := connectionScoped[canonicalKey]; scoped {
 			continue
 		}
+		if isProviderFingerprintHeader(canonicalKey) {
+			continue
+		}
 		// Strip headers injected by known AI gateway proxies to avoid
 		// Claude Code client-side gateway detection.
 		lowerKey := strings.ToLower(key)
@@ -90,6 +93,15 @@ func FilterUpstreamHeaders(src http.Header) http.Header {
 		return nil
 	}
 	return dst
+}
+
+func isProviderFingerprintHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "x-codex-active-limit", "x-openai-proxy-wasm", "cf-ray", "server-timing":
+		return true
+	default:
+		return false
+	}
 }
 
 func connectionScopedHeaders(src http.Header) map[string]struct{} {

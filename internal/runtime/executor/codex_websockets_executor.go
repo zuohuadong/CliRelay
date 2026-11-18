@@ -9,12 +9,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/egress"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 // CodexWebsocketsExecutor executes Codex Responses requests using a WebSocket transport.
@@ -25,18 +24,14 @@ type CodexWebsocketsExecutor struct {
 	*CodexExecutor
 
 	store *codexWebsocketSessionStore
+
+	// Set before execution by concurrency tests; never mutated during a session.
+	duplexStateObserver func(event string, ready bool)
 }
 
 func NewCodexWebsocketsExecutor(cfg *config.Config) *CodexWebsocketsExecutor {
 	return &CodexWebsocketsExecutor{
 		CodexExecutor: NewCodexExecutor(cfg),
-		store:         globalCodexWebsocketSessionStore,
-	}
-}
-
-func NewCodexWebsocketsExecutorWithEgress(cfg *config.Config, resolver egress.Resolver) *CodexWebsocketsExecutor {
-	return &CodexWebsocketsExecutor{
-		CodexExecutor: NewCodexExecutorWithEgress(cfg, resolver),
 		store:         globalCodexWebsocketSessionStore,
 	}
 }
@@ -55,13 +50,6 @@ func NewCodexAutoExecutor(cfg *config.Config) *CodexAutoExecutor {
 	return &CodexAutoExecutor{
 		httpExec: NewCodexExecutor(cfg),
 		wsExec:   NewCodexWebsocketsExecutor(cfg),
-	}
-}
-
-func NewCodexAutoExecutorWithEgress(cfg *config.Config, resolver egress.Resolver) *CodexAutoExecutor {
-	return &CodexAutoExecutor{
-		httpExec: NewCodexExecutorWithEgress(cfg, resolver),
-		wsExec:   NewCodexWebsocketsExecutorWithEgress(cfg, resolver),
 	}
 }
 
@@ -117,13 +105,6 @@ func (e *CodexAutoExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth
 		return nil, fmt.Errorf("codex auto executor: http executor is nil")
 	}
 	return e.httpExec.Refresh(ctx, auth)
-}
-
-func (e *CodexAutoExecutor) RenewAgentIdentityTask(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
-	if e == nil || e.httpExec == nil {
-		return nil, fmt.Errorf("codex auto executor: http executor is nil")
-	}
-	return e.httpExec.RenewAgentIdentityTask(ctx, auth)
 }
 
 func (e *CodexAutoExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -249,9 +230,17 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
 		return cliproxyexecutor.ErrNoActiveUpstreamWebsocket
 	}
 	sess.activeMu.Lock()
-	_, alreadyTerminal := sess.terminalResponseIDs[gjson.GetBytes(payload, "response_id").String()]
+	targetID := ojson.GetBytesNoCopy(payload, "response_id").String()
+	_, alreadyTerminal := sess.terminalResponseIDs[targetID]
 	alreadyTerminal = alreadyTerminal && sess.responseStateConn == conn
-	active := sess.activeConn == conn && sess.activeCh != nil
+	// activeResponseID/Terminal track the running response at read-loop
+	// granularity: only its own id forwards while it runs, and its terminal
+	// event closes the window before teardown clears the channel. Before
+	// response.created the id is unknown, so the live channel alone
+	// authorizes forwarding and upstream validates the frame.
+	liveChannel := sess.activeConn == conn && sess.activeCh != nil
+	active := liveChannel && !sess.activeResponseTerminal &&
+		(sess.activeResponseID == "" || sess.activeResponseID == targetID)
 	var disconnectErr error
 	if sess.terminalConn == conn {
 		disconnectErr = sess.terminalErr
@@ -269,8 +258,14 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
 	}
 	// A retained socket from an earlier turn is not the current upstream.
 	// HTTP turns must fall through to local cancellation instead.
-	if !active {
+	if !liveChannel {
 		return cliproxyexecutor.ErrNoActiveUpstreamWebsocket
+	}
+	// The socket owns this turn, but the frame does not target its running
+	// response. Reject outright: a local HTTP fallback would fabricate an
+	// incomplete event and cancel the healthy websocket turn.
+	if !active {
+		return cliproxyexecutor.ErrUpstreamWebsocketInterruptRejected
 	}
 	if !authEnabled {
 		return fmt.Errorf("websocket credential is no longer enabled")

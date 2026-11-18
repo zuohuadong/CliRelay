@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,13 +21,12 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 	if auth == nil {
 		return nil, statusErr{code: http.StatusInternalServerError, msg: "xai executor: auth is nil"}
 	}
-	usingAPI := xaiUsingAPI(auth)
 	refreshToken := xaiMetadataString(auth.Metadata, "refresh_token")
 	if refreshToken == "" {
 		return auth, nil
 	}
 	tokenEndpoint := xaiMetadataString(auth.Metadata, "token_endpoint")
-	svc := xaiauth.NewXAIAuthWithProxyURL(e.cfg, helps.ResolveAuthProxyURL(e.cfg, auth))
+	svc := xaiauth.NewXAIAuthWithProxyURL(e.cfg, auth.ProxyURL)
 	td, err := svc.RefreshTokens(ctx, refreshToken, tokenEndpoint)
 	if err != nil {
 		return nil, err
@@ -38,7 +36,6 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 	}
 	auth.Metadata["type"] = "xai"
 	auth.Metadata["auth_kind"] = "oauth"
-	auth.Metadata[xaiUsingAPIAttr] = usingAPI
 	auth.Metadata["access_token"] = td.AccessToken
 	if td.RefreshToken != "" {
 		auth.Metadata["refresh_token"] = td.RefreshToken
@@ -72,7 +69,6 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 		auth.Attributes = make(map[string]string)
 	}
 	auth.Attributes["auth_kind"] = "oauth"
-	auth.Attributes[xaiUsingAPIAttr] = strconv.FormatBool(usingAPI)
 	if strings.TrimSpace(auth.Attributes["base_url"]) == "" {
 		auth.Attributes["base_url"] = xaiauth.DefaultAPIBaseURL
 	}

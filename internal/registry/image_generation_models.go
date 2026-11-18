@@ -1,0 +1,267 @@
+package registry
+
+import "strings"
+
+// Image-generation model classification.
+//
+// This used to be spelled out at each call site — a `modelID == "gpt-image-2"`
+// branch when seeding model configs, a `HasPrefix(modelID, "gpt-image-")` branch
+// when syncing pricing. Adding a provider meant finding every one of those
+// branches, and missing one produced a model that generates images but is billed
+// per token, or that never surfaces an image capability in the panel.
+//
+// The classification lives here instead, next to the static model definitions it
+// describes, so a new image model is one entry rather than a hunt.
+
+// imageGenerationModelDefaults describes an image-generation model's billing and
+// modality shape.
+type imageGenerationModelDefaults struct {
+	// PricePerCall is the per-invocation price. Image models are billed per call
+	// rather than per token, which is why they need an explicit pricing mode.
+	PricePerCall float64
+	Description  string
+}
+
+// imageGenerationModels maps a model ID to its defaults. IDs are lower-cased.
+var imageGenerationModels = map[string]imageGenerationModelDefaults{
+	"gpt-image-2": {
+		PricePerCall: 0.04,
+		Description:  "Image generation model billed per invocation",
+	},
+	// OpenAI prices the 2.5 pair per token rather than per image ($5/M text in,
+	// $8/M image in, $30/M image out) and states its token rates match GPT Image 2.
+	// Per-call is the only mode this struct expresses, so they inherit the 2 rate:
+	// on the subscription channel the request is billed against the plan anyway, and
+	// on any channel that later serves 2.5 natively the upstream response carries a
+	// real usage block for reporting to use.
+	"gpt-image-2.5-flare": {
+		PricePerCall: 0.04,
+		Description:  "GPT Image 2.5 Flare, billed per invocation",
+	},
+	"gpt-image-2.5-sunburst": {
+		PricePerCall: 0.04,
+		Description:  "GPT Image 2.5 Sunburst, billed per invocation",
+	},
+	// Grok Imagine. These two ids are what api.x.ai actually serves; earlier
+	// revisions also listed grok-imagine-image-pro and grok-2-image-1212, taken
+	// from a third-party model list and never present in the live catalog, so
+	// selecting them could only ever fail.
+	//
+	// Pricing is left at zero because xAI bills these against the subscription
+	// rather than at a published per-image rate; an invented number would show up
+	// as real spend in usage reporting.
+	"grok-imagine-image": {
+		Description: "Grok Imagine image generation, billed per invocation",
+	},
+	"grok-imagine-image-quality": {
+		Description: "Grok Imagine Quality image generation, billed per invocation",
+	},
+	// MiniMax publishes $0.0035/image: https://platform.minimax.io/docs/guides/pricing-paygo#image
+	// The public images handler splits n into single-image executor calls.
+	"image-01": {
+		PricePerCall: 0.0035,
+		Description:  "MiniMax image generation, billed per invocation",
+	},
+}
+
+// imageGenerationModelPrefixes covers families that version faster than this list
+// can be updated. A new gpt-image-* release is still billed per call on day one.
+var imageGenerationModelPrefixes = []string{
+	"gpt-image-",
+	"grok-imagine-image",
+}
+
+// IsImageGenerationModel reports whether a model produces images rather than text.
+//
+// Gemini image models are deliberately not counted: chat endpoints serve them and
+// upstream bills them per token. See gemini_image_models.go for how they still
+// reach /v1/images/*.
+func IsImageGenerationModel(modelID string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(modelID))
+	if normalized == "" {
+		return false
+	}
+	if _, ok := imageGenerationModels[normalized]; ok {
+		return true
+	}
+	for _, prefix := range imageGenerationModelPrefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// ImageGenerationModelDefaults returns the per-call price and description for an
+// image model. The second result is false for models that are not image models, and
+// for image models matched only by prefix, which have no published price here.
+func ImageGenerationModelDefaults(modelID string) (float64, string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(modelID))
+	defaults, ok := imageGenerationModels[normalized]
+	if !ok {
+		return 0, "", false
+	}
+	return defaults.PricePerCall, defaults.Description, true
+}
+
+// ImageGenerationOutputModalities is the output modality set every image model
+// carries. Returned as a fresh slice so callers can mutate it safely.
+func ImageGenerationOutputModalities() []string {
+	return []string{"image"}
+}
+
+// ImageGenerationInputModalities lists what an image model accepts.
+//
+// This stays text-only even for models whose edit endpoint takes reference images.
+// The modality set describes the primary generation call and drives catalog
+// filtering; widening it to "image" would reclassify existing models as
+// image-to-image in the panel. Edit capability is a separate question, answered by
+// SupportsImageEditing, which is what the UI uses to decide whether to offer a
+// reference-image control.
+func ImageGenerationInputModalities(string) []string {
+	return []string{"text"}
+}
+
+// Provider identifiers for image-generation models. The management console needs
+// to know which credential pool can serve a given image model; without this it
+// pinned every request to codex, which is what kept Grok models unreachable.
+const (
+	ImageProviderCodex       = "codex"
+	ImageProviderXAI         = "xai"
+	ImageProviderMiniMax     = "minimax"
+	ImageProviderAntigravity = "antigravity"
+)
+
+// ImageGenerationProvider returns the credential provider that serves a model on
+// the /v1/images/* endpoints, or "" when no provider does.
+//
+// Gemini image models are the one dynamic case: they answer only while an
+// Antigravity credential serves them. See gemini_image_models.go.
+func ImageGenerationProvider(modelID string) string {
+	normalized := strings.ToLower(strings.TrimSpace(modelID))
+	switch {
+	case strings.HasPrefix(normalized, "gpt-image-"):
+		return ImageProviderCodex
+	case strings.HasPrefix(normalized, "grok-"):
+		if IsImageGenerationModel(normalized) {
+			return ImageProviderXAI
+		}
+		return ""
+	case normalized == "image-01":
+		return ImageProviderMiniMax
+	case IsGeminiImageModel(normalized):
+		return geminiImageGenerationProvider(normalized)
+	default:
+		return ""
+	}
+}
+
+// ImageGenerationModel describes a selectable image model for the console.
+//
+// AspectRatios and ImageSizes are set for models whose output shape is chosen by
+// ratio and size tier rather than by a WIDTHxHEIGHT size. The console renders those
+// two pickers instead of the size and quality ones when they are present.
+type ImageGenerationModel struct {
+	ID           string   `json:"id"`
+	Provider     string   `json:"provider"`
+	DisplayName  string   `json:"display_name,omitempty"`
+	Description  string   `json:"description,omitempty"`
+	SupportsEdit bool     `json:"supports_edit"`
+	PricePerCall float64  `json:"price_per_call,omitempty"`
+	AspectRatios []string `json:"aspect_ratios,omitempty"`
+	ImageSizes   []string `json:"image_sizes,omitempty"`
+}
+
+// ListImageGenerationModels enumerates the image models this build knows about,
+// derived from the static catalog so a newly registered model needs no second edit
+// here to become selectable.
+func ListImageGenerationModels() []ImageGenerationModel {
+	seen := make(map[string]struct{})
+	models := make([]ImageGenerationModel, 0, 4)
+
+	appendModel := func(info *ModelInfo) {
+		if info == nil || !IsImageGenerationModel(info.ID) {
+			return
+		}
+		if _, ok := seen[info.ID]; ok {
+			return
+		}
+		provider := ImageGenerationProvider(info.ID)
+		if provider == "" {
+			return
+		}
+		seen[info.ID] = struct{}{}
+		price, description, _ := ImageGenerationModelDefaults(info.ID)
+		if strings.TrimSpace(info.Description) != "" {
+			description = info.Description
+		}
+		models = append(models, ImageGenerationModel{
+			ID:           info.ID,
+			Provider:     provider,
+			DisplayName:  info.DisplayName,
+			Description:  description,
+			SupportsEdit: SupportsImageEditing(info.ID),
+			PricePerCall: price,
+		})
+	}
+
+	for _, info := range GetOpenAIModels() {
+		appendModel(info)
+	}
+	for _, info := range GetXAIModels() {
+		appendModel(info)
+	}
+	for _, info := range GetMiniMaxModels() {
+		appendModel(info)
+	}
+	// Gemini image models have no static definition: Antigravity lists them per
+	// credential, so they come from the live registry instead.
+	for _, model := range listGeminiImageGenerationModels() {
+		if _, ok := seen[model.ID]; ok {
+			continue
+		}
+		seen[model.ID] = struct{}{}
+		models = append(models, model)
+	}
+	return models
+}
+
+// ListImageGenerationModelsForProvider narrows the catalog to one credential
+// pool. The Codex bridge uses it to offer the image models a Codex account can
+// actually reach, derived from the same catalog as everything else so a newly
+// registered gpt-image release becomes selectable without a second edit here.
+func ListImageGenerationModelsForProvider(provider string) []ImageGenerationModel {
+	normalized := strings.ToLower(strings.TrimSpace(provider))
+	if normalized == "" {
+		return nil
+	}
+	models := make([]ImageGenerationModel, 0, 4)
+	for _, model := range ListImageGenerationModels() {
+		if strings.EqualFold(model.Provider, normalized) {
+			models = append(models, model)
+		}
+	}
+	return models
+}
+
+// SupportsImageEditing reports whether a model accepts reference images through the
+// /images/edits endpoint, as opposed to text-to-image only.
+func SupportsImageEditing(modelID string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(modelID))
+	switch {
+	case strings.HasPrefix(normalized, "gpt-image-"):
+		return true
+	case strings.HasPrefix(normalized, "grok-imagine-image"):
+		return true
+	// Gemini image models edit by taking the reference frames as inline parts of
+	// the same generateContent call.
+	case IsGeminiImageModel(normalized):
+		return true
+	// image-01 is text-to-image here. The reference-image form of these models is
+	// a separate upstream request shape rather than a variant of the generation
+	// call, so claiming edit support would offer the console a control this build
+	// cannot serve yet.
+	default:
+		return false
+	}
+}

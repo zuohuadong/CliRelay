@@ -2,18 +2,18 @@ package executor
 
 import (
 	"context"
-	"encoding/base64"
+	"github.com/MoeForge/moego/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func validCodexReasoningEncryptedContentForTest() string {
@@ -32,7 +32,7 @@ func newCodexSignatureTestAuth(serverURL string) *cliproxyauth.Auth {
 	}}
 }
 
-func TestCodexExecutorDropsUnreplayableReasoningItemsFromFinalRequest(t *testing.T) {
+func TestCodexExecutorDropsInvalidReasoningEncryptedContentFromFinalRequest(t *testing.T) {
 	validEncryptedContent := validCodexReasoningEncryptedContentForTest()
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,22 +63,27 @@ func TestCodexExecutorDropsUnreplayableReasoningItemsFromFinalRequest(t *testing
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	input := gjson.GetBytes(gotBody, "input").Array()
-	if len(input) != 2 {
-		t.Fatalf("input length = %d, want 2 after dropping unreplayable reasoning items; body=%s", len(input), string(gotBody))
+	if ojson.GetBytes(gotBody, "input.0.encrypted_content").Exists() {
+		t.Fatalf("invalid reasoning encrypted_content exists, want removed; body=%s", string(gotBody))
 	}
-	if got := input[0].Get("id").String(); got != "rs_good" {
-		t.Fatalf("input[0].id = %q, want rs_good; body=%s", got, string(gotBody))
+	if ojson.GetBytes(gotBody, "input.0.id").Exists() {
+		t.Fatalf("invalid reasoning id should be stripped under store=false default; body=%s", string(gotBody))
 	}
-	if got := input[0].Get("encrypted_content").String(); got != validEncryptedContent {
+	if ojson.GetBytes(gotBody, "input.1.encrypted_content").Exists() {
+		t.Fatalf("non-string reasoning encrypted_content exists, want removed; body=%s", string(gotBody))
+	}
+	if ojson.GetBytes(gotBody, "input.1.id").Exists() {
+		t.Fatalf("non-string reasoning id should be stripped under store=false default; body=%s", string(gotBody))
+	}
+	if got := ojson.GetBytes(gotBody, "input.2.encrypted_content").String(); got != validEncryptedContent {
 		t.Fatalf("valid reasoning encrypted_content = %q, want preserved", got)
 	}
-	if got := input[1].Get("encrypted_content").String(); got != "leave-message-alone" {
+	if got := ojson.GetBytes(gotBody, "input.3.encrypted_content").String(); got != "leave-message-alone" {
 		t.Fatalf("non-reasoning encrypted_content = %q, want untouched", got)
 	}
 }
 
-func TestCodexExecutorExecuteStreamDropsUnreplayableReasoningItemsFromFinalRequest(t *testing.T) {
+func TestCodexExecutorExecuteStreamDropsInvalidReasoningEncryptedContentFromFinalRequest(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, errRead := io.ReadAll(r.Body)
@@ -104,54 +109,12 @@ func TestCodexExecutorExecuteStreamDropsUnreplayableReasoningItemsFromFinalReque
 	}
 	for range result.Chunks {
 	}
-	if input := gjson.GetBytes(gotBody, "input").Array(); len(input) != 0 {
-		t.Fatalf("input length = %d, want 0 after dropping unreplayable stream reasoning item; body=%s", len(input), string(gotBody))
+	if ojson.GetBytes(gotBody, "input.0.encrypted_content").Exists() {
+		t.Fatalf("invalid stream reasoning encrypted_content exists, want removed; body=%s", string(gotBody))
 	}
 }
 
-func TestCodexExecutorExecuteStreamDropsUnreplayableSyntheticReasoningItem(t *testing.T) {
-	var gotBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, errRead := io.ReadAll(r.Body)
-		if errRead != nil {
-			t.Fatalf("read body: %v", errRead)
-		}
-		gotBody = body
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"background\":false,\"error\":null}}\n\n"))
-	}))
-	defer server.Close()
-
-	executor := NewCodexExecutor(&config.Config{})
-	result, err := executor.ExecuteStream(context.Background(), newCodexSignatureTestAuth(server.URL), cliproxyexecutor.Request{
-		Model: "gpt-5.6-sol",
-		Payload: []byte(`{"model":"gpt-5.6-sol","stream":true,"store":false,"input":[` +
-			`{"id":"rs_resp_foreign_0","type":"reasoning","encrypted_content":"","summary":[{"type":"summary_text","text":"foreign reasoning"}]},` +
-			`{"role":"user","content":"continue"}` +
-			`]}`),
-	}, cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FromString("openai-response"),
-		Stream:       true,
-	})
-	if err != nil {
-		t.Fatalf("ExecuteStream error: %v", err)
-	}
-	for range result.Chunks {
-	}
-
-	input := gjson.GetBytes(gotBody, "input").Array()
-	if len(input) != 1 {
-		t.Fatalf("input length = %d, want 1 after dropping synthetic reasoning item; body=%s", len(input), string(gotBody))
-	}
-	if got := input[0].Get("role").String(); got != "user" {
-		t.Fatalf("input[0].role = %q, want user; body=%s", got, string(gotBody))
-	}
-	if got := input[0].Get("content").String(); got != "continue" {
-		t.Fatalf("input[0].content = %q, want continue; body=%s", got, string(gotBody))
-	}
-}
-
-func TestCodexExecutorCompactDropsUnreplayableReasoningItemsFromFinalRequest(t *testing.T) {
+func TestCodexExecutorCompactDropsInvalidReasoningEncryptedContentFromFinalRequest(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, errRead := io.ReadAll(r.Body)
@@ -176,8 +139,8 @@ func TestCodexExecutorCompactDropsUnreplayableReasoningItemsFromFinalRequest(t *
 	if err != nil {
 		t.Fatalf("Execute compact error: %v", err)
 	}
-	if input := gjson.GetBytes(gotBody, "input").Array(); len(input) != 0 {
-		t.Fatalf("input length = %d, want 0 after dropping unreplayable compact reasoning item; body=%s", len(input), string(gotBody))
+	if ojson.GetBytes(gotBody, "input.0.encrypted_content").Exists() {
+		t.Fatalf("invalid compact reasoning encrypted_content exists, want removed; body=%s", string(gotBody))
 	}
 }
 
@@ -235,7 +198,7 @@ func TestCodexExecutorPreservesReasoningTextForCompatModelInResponsesRequest(t *
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	reasoningItem := gjson.GetBytes(gotBody, "input.0")
+	reasoningItem := ojson.GetBytes(gotBody, "input.0")
 	if !reasoningItem.Exists() || reasoningItem.Get("type").String() != "reasoning" {
 		t.Fatalf("expected reasoning item at input.0, got: %s", string(gotBody))
 	}
@@ -303,7 +266,7 @@ func TestCodexExecutorExecuteStreamPreservesReasoningTextForCompatModelInRespons
 	for range streamResult.Chunks {
 	}
 
-	reasoningItem := gjson.GetBytes(gotBody, "input.0")
+	reasoningItem := ojson.GetBytes(gotBody, "input.0")
 	if !reasoningItem.Exists() || reasoningItem.Get("type").String() != "reasoning" {
 		t.Fatalf("expected reasoning item at input.0, got: %s", string(gotBody))
 	}
@@ -370,7 +333,7 @@ func TestCodexExecutorCompactPreservesReasoningTextForCompatModelInResponsesRequ
 		t.Fatalf("Execute compact error: %v", err)
 	}
 
-	reasoningItem := gjson.GetBytes(gotBody, "input.0")
+	reasoningItem := ojson.GetBytes(gotBody, "input.0")
 	if !reasoningItem.Exists() || reasoningItem.Get("type").String() != "reasoning" {
 		t.Fatalf("expected reasoning item at input.0, got: %s", string(gotBody))
 	}
@@ -438,11 +401,11 @@ func TestCodexExecutorHonorsAuthoritativeResolvedModelInfoIsCompatFalse(t *testi
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	content := gjson.GetBytes(gotBody, "input.0.content")
+	content := ojson.GetBytes(gotBody, "input.0.content")
 	if !content.Exists() || !content.IsArray() || len(content.Array()) != 0 {
 		t.Fatalf("content should be cleared to [] when authoritative IsCompat is false; body=%s", string(gotBody))
 	}
-	if gotSummary := gjson.GetBytes(gotBody, "input.0.summary.0.text").String(); gotSummary != "should be promoted and cleared" {
+	if gotSummary := ojson.GetBytes(gotBody, "input.0.summary.0.text").String(); gotSummary != "should be promoted and cleared" {
 		t.Fatalf("summary should have promoted reasoning_text; body=%s", string(gotBody))
 	}
 }
@@ -509,7 +472,7 @@ func TestCodexExecutorDisambiguatesConfigIndex(t *testing.T) {
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	content := gjson.GetBytes(gotBody, "input.0.content")
+	content := ojson.GetBytes(gotBody, "input.0.content")
 	if !content.Exists() || !content.IsArray() || len(content.Array()) == 0 {
 		t.Fatalf("expected index 1 (IsCompat:true) to preserve content; body=%s", string(gotBody))
 	}

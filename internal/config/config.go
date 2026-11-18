@@ -4,46 +4,105 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
+import (
+	"strings"
+	"time"
+)
+
+const (
+	DefaultMainAPIReadTimeout         = 2 * time.Minute
+	DefaultSystemStatsWebSocketMaxAge = 5 * time.Minute
+	MinSystemStatsWebSocketMaxAge     = time.Minute
+	MaxSystemStatsWebSocketMaxAge     = time.Hour
+)
+
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
-	// Models selects optional catalog sources independently for each catalog.
-	Models ModelCatalogs `yaml:"models" json:"models"`
-
 	SDKConfig `yaml:",inline"`
+	// Models configures optional on-disk model catalogs used by the runtime.
+	Models  ModelCatalogs `yaml:"models,omitempty" json:"models,omitempty"`
+	KVStore KVStoreConfig `yaml:"kv-store,omitempty" json:"kv-store,omitempty"`
+	// Home stores runtime-only control-plane settings supplied by the Home launcher.
+	Home HomeConfig `yaml:"-" json:"-"`
+	// ProxyPoolPublisher fences shared proxy transport snapshots by runtime owner.
+	ProxyPoolPublisher uint64 `yaml:"-" json:"-"`
+	// ProxyPoolGeneration fences obsolete proxy transport snapshots after reload.
+	ProxyPoolGeneration uint64 `yaml:"-" json:"-"`
+	// Plugins configures dynamic plugin discovery and per-plugin settings.
+	Plugins PluginsConfig `yaml:"plugins" json:"plugins"`
+	// Discovery configures local network service advertising.
+	Discovery DiscoveryConfig `yaml:"discovery" json:"discovery"`
+	// CredentialConcurrency contains Home-managed credential lifecycle settings.
+	CredentialConcurrency CredentialConcurrencyConfig `yaml:"credential-concurrency" json:"credential-concurrency"`
+	// CredentialInFlight configures credential observation snapshots.
+	CredentialInFlight CredentialInFlightConfig `yaml:"credential-in-flight" json:"credential-in-flight"`
 	// Host is the network host/interface on which the API server will bind.
 	// Default is empty ("") to bind all interfaces (IPv4 + IPv6). Use "127.0.0.1" or "localhost" for local-only access.
 	Host string `yaml:"host" json:"-"`
 	// Port is the network port on which the API server will listen.
 	Port int `yaml:"port" json:"-"`
 
-	// GitHubToken is the global token for GitHub requests, taking precedence over GITHUB_TOKEN.
-	GitHubToken string `yaml:"github-token" json:"-"`
+	// MainAPIReadTimeoutSeconds controls how long the main API server may spend reading
+	// request headers and body from downstream clients before timing out.
+	// When unset or <= 0, DefaultMainAPIReadTimeout is used.
+	MainAPIReadTimeoutSeconds int `yaml:"main-api-read-timeout-seconds,omitempty" json:"main-api-read-timeout-seconds,omitempty"`
 
-	// TrustedProxies lists the IPs or CIDRs allowed to provide forwarded client IP headers.
-	// The server applies this list at startup; changing it requires a restart.
-	TrustedProxies []string `yaml:"trusted-proxies" json:"trusted-proxies"`
+	// RequestBody controls request-body limits for public model API endpoints.
+	RequestBody RequestBodyConfig `yaml:"request-body,omitempty" json:"request-body,omitempty"`
+
+	// ServerResponseCompression controls compression of downstream HTTP responses.
+	ServerResponseCompression ResponseCompressionConfig `yaml:"server-response-compression,omitempty" json:"server-response-compression,omitempty"`
+
+	// Timezone configures the project's timezone (IANA name, e.g. "Asia/Shanghai").
+	// It affects "today" boundaries and day-based aggregation in monitoring/usage pages.
+	// When empty, the process local timezone (time.Local) is used.
+	Timezone string `yaml:"timezone,omitempty" json:"timezone,omitempty"`
+
+	// Postgres config controls the runtime primary database.
+	Postgres PostgresConfig `yaml:"postgres" json:"-"`
+
+	// Redis config controls the Redis connection for usage persistence.
+	Redis RedisConfig `yaml:"redis" json:"redis"`
+
+	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained.
+	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds,omitempty" json:"redis-usage-queue-retention-seconds,omitempty"`
+
+	// Cluster config controls multi-instance deployment. Disabled by default.
+	Cluster ClusterConfig `yaml:"cluster,omitempty" json:"cluster,omitempty"`
+
+	// DBResilience controls how a short database outage is ridden out.
+	DBResilience DBResilienceConfig `yaml:"db-resilience,omitempty" json:"db-resilience,omitempty"`
 
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 
-	// Home config is runtime-only and is populated from -home-jwt.
-	Home HomeConfig `yaml:"-" json:"-"`
+	// CORSAllowOrigins defines the explicit browser origins allowed to call API routes cross-origin.
+	// Leave empty to disable cross-origin browser access by default.
+	// Entries are exact origin matches, except chrome-extension://* / chrome-extension:*
+	// which allow any real chrome-extension://<id> Origin.
+	CORSAllowOrigins []string `yaml:"cors-allow-origins" json:"cors-allow-origins"`
 
-	// SourceHash is runtime-only: the SHA-256 of the config file bytes this config was
-	// parsed from, or empty when the config was not loaded from a file.
-	SourceHash string `yaml:"-" json:"-"`
-
-	// CredentialConcurrency contains Home-authoritative credential lifecycle settings.
-	CredentialConcurrency CredentialConcurrencyConfig `yaml:"credential-concurrency" json:"credential-concurrency"`
-
-	// CredentialInFlight configures credential observation snapshots.
-	CredentialInFlight CredentialInFlightConfig `yaml:"credential-in-flight" json:"credential-in-flight"`
+	// TrustedProxies lists reverse proxy IPs or CIDRs whose forwarding headers may be trusted.
+	// Leave empty to ignore X-Forwarded-For/X-Real-IP and use the direct peer address.
+	TrustedProxies []string `yaml:"trusted-proxies,omitempty" json:"trusted-proxies,omitempty"`
 
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
 
-	// Plugins configures dynamic plugin discovery and per-plugin settings.
-	Plugins PluginsConfig `yaml:"plugins" json:"plugins"`
+	// Codex configures provider-wide Codex request behavior.
+	Codex CodexConfig `yaml:"codex" json:"codex"`
+
+	// AutoUpdate controls Docker-first update checks and updater sidecar integration.
+	AutoUpdate AutoUpdateConfig `yaml:"auto-update" json:"auto-update"`
+
+	// OAuthClients stores optional OAuth client credentials used by provider login flows.
+	// When empty, the runtime may fall back to environment variables (see oauth_clients.go).
+	OAuthClients OAuthClients `yaml:"oauth-clients" json:"-"`
+
+	// OAuthUserAgent sets the User-Agent header for OAuth HTTP requests.
+	// Some providers may reject the default Go HTTP client User-Agent.
+	// When empty, a browser-like default is used.
+	OAuthUserAgent string `yaml:"oauth-user-agent" json:"oauth-user-agent"`
 
 	// AuthDir is the directory where authentication token files are stored.
 	AuthDir string `yaml:"auth-dir" json:"-"`
@@ -54,83 +113,76 @@ type Config struct {
 	// Pprof config controls the optional pprof HTTP debug server.
 	Pprof PprofConfig `yaml:"pprof" json:"pprof"`
 
-	// Discovery configures local network mDNS / DNS-SD service advertising.
-	Discovery DiscoveryConfig `yaml:"discovery" json:"discovery"`
-
-	// CommercialMode disables high-overhead request logging and HTTP middleware features to minimize per-request memory usage.
+	// CommercialMode disables high-overhead HTTP middleware features to minimize per-request memory usage.
 	CommercialMode bool `yaml:"commercial-mode" json:"commercial-mode"`
 
 	// LoggingToFile controls whether application logs are written to rotating files or stdout.
 	LoggingToFile bool `yaml:"logging-to-file" json:"logging-to-file"`
 
 	// LogsMaxTotalSizeMB limits the total size (in MB) of log files under the logs directory.
-	// When exceeded, the oldest log files are deleted until within the limit. Set to 0 to disable.
+	// When exceeded, the oldest log files are deleted until within the limit. Default is 512. Set to 0 to disable.
 	LogsMaxTotalSizeMB int `yaml:"logs-max-total-size-mb" json:"logs-max-total-size-mb"`
 
 	// ErrorLogsMaxFiles limits the number of error log files retained when request logging is disabled.
 	// When exceeded, the oldest error log files are deleted. Default is 10. Set to 0 to disable cleanup.
 	ErrorLogsMaxFiles int `yaml:"error-logs-max-files" json:"error-logs-max-files"`
 
-	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
+	// UsageStatisticsEnabled toggles in-memory usage aggregation; request log
+	// metadata is still persisted so monitoring/history pages keep working.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
-	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained
-	// in memory for Management API consumers.
-	// Default: 60. Max: 3600.
-	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds" json:"redis-usage-queue-retention-seconds"`
+	// SystemStatsCacheSeconds controls how long expensive management system-stat
+	// fields (database sizes, log directory walk, latency aggregation) are cached.
+	// Lightweight CPU, memory, network and concurrency values remain live.
+	SystemStatsCacheSeconds int `yaml:"system-stats-cache-seconds" json:"system-stats-cache-seconds"`
 
-	// DisableCooling disables auth/model cooldown scheduling when true unless a credential or provider overrides it.
+	// SystemStatsWebSocketMaxAgeSeconds rotates management monitoring WebSockets
+	// so old nginx workers are not pinned indefinitely across reloads. It does not
+	// apply to public model streaming endpoints.
+	SystemStatsWebSocketMaxAgeSeconds int `yaml:"system-stats-websocket-max-age-seconds" json:"system-stats-websocket-max-age-seconds"`
+
+	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
-	// SaveCooldownStatus persists runtime cooldown status next to auth files when true.
+	// SaveCooldownStatus persists runtime cooldown status next to auth files.
 	SaveCooldownStatus bool `yaml:"save-cooldown-status" json:"save-cooldown-status"`
 
-	// TransientErrorCooldownSeconds controls cooldowns for transient upstream errors (408/500/502/503/504/520-526).
-	// 0 keeps the legacy default cooldown. Negative values disable these cooldowns.
+	// TransientErrorCooldownSeconds controls cooldowns for transient upstream errors.
 	TransientErrorCooldownSeconds int `yaml:"transient-error-cooldown-seconds" json:"transient-error-cooldown-seconds"`
 
-	// AuthAutoRefreshWorkers overrides the size of the core auth auto-refresh and manual refresh-all worker pool.
-	// When <= 0, the default worker count is used.
+	// RequestRetry defines the retry times when the request failed.
+	RequestRetry int `yaml:"request-retry" json:"request-retry"`
+	// MaxRetryCredentials limits the number of credentials tried in each retry round.
+	MaxRetryCredentials int `yaml:"max-retry-credentials" json:"max-retry-credentials"`
+	// MaxRetryInterval defines the maximum wait time in seconds before retrying a cooled-down credential.
+	MaxRetryInterval int `yaml:"max-retry-interval" json:"max-retry-interval"`
+
+	// AuthAutoRefreshWorkers overrides the size of the auth refresh worker pool.
+	// Values <= 0 use the built-in default.
 	AuthAutoRefreshWorkers int `yaml:"auth-auto-refresh-workers" json:"auth-auto-refresh-workers"`
 
-	// RequestRetry defines the number of additional credential retry rounds after
-	// the first round has exhausted its eligible credentials.
-	RequestRetry int `yaml:"request-retry" json:"request-retry"`
-	// CapacitySameAccountRetries defines how many times a transient upstream
-	// capacity rejection may be retried on the selected credential before failover.
-	// Nil leaves provider-specific defaults in effect; 0 disables same-account retries.
-	CapacitySameAccountRetries *int `yaml:"capacity-same-account-retries,omitempty" json:"capacity-same-account-retries,omitempty"`
-	// MaxRetryCredentials defines the maximum number of different credentials to
-	// try in each credential retry round.
-	// Set to 0 or a negative value to keep trying all available credentials (legacy behavior).
-	MaxRetryCredentials int `yaml:"max-retry-credentials" json:"max-retry-credentials"`
-	// MaxRetryInterval defines the maximum positive cooldown wait, in seconds,
-	// allowed before starting another credential retry round. A non-positive value
-	// forbids positive cooldown waits; it does not disable same-round credential
-	// failover or immediate additional rounds allowed by RequestRetry.
-	MaxRetryInterval int `yaml:"max-retry-interval" json:"max-retry-interval"`
+	// AccountConcurrency controls how requests queue for AI accounts that are at
+	// their per-account concurrency limit.
+	AccountConcurrency AccountConcurrencyConfig `yaml:"account-concurrency,omitempty" json:"account-concurrency,omitempty"`
 
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
+
+	// Antigravity configures provider-wide Antigravity request behavior.
+	Antigravity AntigravityConfig `yaml:"antigravity" json:"antigravity"`
+	// AntigravitySignatureCacheEnabled controls the process-wide signature cache.
+	AntigravitySignatureCacheEnabled *bool `yaml:"antigravity-signature-cache-enabled,omitempty" json:"antigravity-signature-cache-enabled,omitempty"`
+	// AntigravitySignatureBypassStrict controls strict validation of cached signatures.
+	AntigravitySignatureBypassStrict *bool `yaml:"antigravity-signature-bypass-strict,omitempty" json:"antigravity-signature-bypass-strict,omitempty"`
+
+	// Devin configures provider-wide Devin request behavior.
+	Devin DevinConfig `yaml:"devin" json:"devin"`
 
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
-
-	// AntigravitySignatureCacheEnabled controls whether signature cache validation is enabled for thinking blocks.
-	// When true (default), cached signatures are preferred and validated.
-	// When false, client signatures are used directly after normalization (bypass mode).
-	AntigravitySignatureCacheEnabled *bool `yaml:"antigravity-signature-cache-enabled,omitempty" json:"antigravity-signature-cache-enabled,omitempty"`
-
-	AntigravitySignatureBypassStrict *bool `yaml:"antigravity-signature-bypass-strict,omitempty" json:"antigravity-signature-bypass-strict,omitempty"`
-
-	// Antigravity configures provider-wide Antigravity request behavior.
-	Antigravity AntigravityConfig `yaml:"antigravity" json:"antigravity"`
-
-	// Devin configures provider-wide Devin request behavior.
-	Devin DevinConfig `yaml:"devin" json:"devin"`
 
 	// GeminiKey defines Gemini API key configurations with optional routing overrides.
 	GeminiKey []GeminiKey `yaml:"gemini-api-key" json:"gemini-api-key"`
@@ -141,87 +193,83 @@ type Config struct {
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
 
-	// XAIKey defines xAI API key configurations using the same structure as Codex API keys.
+	// XAIKey defines xAI API key configurations using the Codex-compatible shape.
 	XAIKey []XAIKey `yaml:"xai-api-key" json:"xai-api-key"`
-
-	// MetaKey defines Meta API key configurations using the same structure as Codex API keys.
-	MetaKey []MetaKey `yaml:"meta-api-key" json:"meta-api-key"`
 
 	// XAI configures provider-wide xAI request behavior.
 	XAI XAIConfig `yaml:"xai" json:"xai"`
 
-	// Codex configures provider-wide Codex request behavior.
-	Codex CodexConfig `yaml:"codex" json:"codex"`
+	// MetaKey defines Meta API key configurations using the Codex-compatible shape.
+	MetaKey []MetaKey `yaml:"meta-api-key" json:"meta-api-key"`
 
-	// CodexHeaderDefaults configures fallback headers for Codex OAuth model requests.
-	// These are used only when the client does not send its own headers.
-	CodexHeaderDefaults CodexHeaderDefaults `yaml:"codex-header-defaults" json:"codex-header-defaults"`
+	// ClaudeKey defines a list of Claude API key configurations as specified in the YAML configuration file.
+	ClaudeKey []ClaudeKey `yaml:"claude-api-key" json:"claude-api-key"`
 
 	// Claude configures provider-wide Claude request behavior.
 	Claude ClaudeConfig `yaml:"claude" json:"claude"`
 
-	// ClaudeKey defines a list of Claude API key configurations as specified in the YAML configuration file.
-	ClaudeKey []ClaudeKey `yaml:"claude-api-key" json:"claude-api-key"`
+	// BedrockKey defines AWS Bedrock Runtime credential configurations.
+	BedrockKey []BedrockKey `yaml:"bedrock-api-key" json:"bedrock-api-key"`
+
+	// OpenCodeGoKey defines OpenCode Go plan API key configurations.
+	OpenCodeGoKey []OpenCodeGoKey `yaml:"opencode-go-api-key" json:"opencode-go-api-key"`
+
+	// ClineKey defines ClinePass API key configurations.
+	ClineKey []ClineKey `yaml:"cline-api-key" json:"cline-api-key"`
+
+	// OllamaCloudKey defines Ollama Cloud API key configurations.
+	OllamaCloudKey []OllamaCloudKey `yaml:"ollama-cloud-api-key" json:"ollama-cloud-api-key"`
+
+	// CommandCodeKey defines Command Code Provider API key configurations.
+	CommandCodeKey []CommandCodeKey `yaml:"commandcode-api-key" json:"commandcode-api-key"`
+
+	// OAuthRequestScopedErrors defines per-provider request-scoped error rules
+	// applied to OAuth/file-backed credentials.
+	OAuthRequestScopedErrors map[string][]RequestScopedErrorRule `yaml:"oauth-request-scoped-errors,omitempty" json:"oauth-request-scoped-errors,omitempty"`
+
+	// OAuthSettings defines per-channel model settings applied to OAuth-backed credentials.
+	OAuthSettings map[string][]OAuthModelSetting `yaml:"oauth-settings,omitempty" json:"oauth-settings,omitempty"`
 
 	// ClaudeHeaderDefaults configures default header values for Claude API requests.
 	// These are used as fallbacks when the client does not send its own headers.
 	ClaudeHeaderDefaults ClaudeHeaderDefaults `yaml:"claude-header-defaults" json:"claude-header-defaults"`
 
-	// KimiHeaderDefaults configures the client identity headers sent to Kimi.
+	// CodexHeaderDefaults configures fallback header values for Codex requests.
+	CodexHeaderDefaults CodexHeaderDefaults `yaml:"codex-header-defaults" json:"codex-header-defaults"`
+
+	// DisableClaudeCloakMode globally disables Claude request cloaking when true.
+	DisableClaudeCloakMode bool `yaml:"disable-claude-cloak-mode" json:"disable-claude-cloak-mode"`
+
+	// KimiHeaderDefaults configures default header values for Kimi API requests.
+	// These control how requests appear in the Kimi console (e.g., User-Agent as source).
 	KimiHeaderDefaults KimiHeaderDefaults `yaml:"kimi-header-defaults" json:"kimi-header-defaults"`
 
 	// IdentityFingerprint controls provider-specific upstream identity headers.
 	IdentityFingerprint IdentityFingerprintConfig `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
 
-	// MCPProxy exposes configured MCP upstream servers through the authenticated /mcp gateway.
-	MCPProxy MCPProxyConfig `yaml:"mcp-proxy,omitempty" json:"mcp-proxy,omitempty"`
+	// CodexOAuthAdmission controls global fixed allowed-client presets for Codex OAuth accounts.
+	CodexOAuthAdmission CodexOAuthAdmissionConfig `yaml:"codex-oauth-admission,omitempty" json:"codex-oauth-admission,omitempty"`
 
-	// EgressNetwork configures fail-closed, per-Codex-OAuth outbound endpoints.
-	EgressNetwork EgressNetworkConfig `yaml:"egress-network,omitempty" json:"egress-network,omitempty"`
+	// CodexImageBaseModel overrides the chat model that carries the image_generation
+	// tool for /v1/images requests. Empty resolves from the live Codex manifest, which
+	// is the only thing that knows what the account may actually call.
+	CodexImageBaseModel string `yaml:"codex-image-base-model,omitempty" json:"codex-image-base-model,omitempty"`
 
-	// BillingMultipliers maps channel/provider names to customer-facing cost multipliers.
-	BillingMultipliers map[string]float64 `yaml:"billing-multipliers,omitempty" json:"billing-multipliers,omitempty"`
+	// CodexRequestZstd controls whether POST /responses bodies sent to the ChatGPT
+	// Codex backend are zstd-compressed, as the official Codex client does. Nil
+	// means on; set false to send plain JSON. See CodexRequestZstdEnabled.
+	CodexRequestZstd *bool `yaml:"codex-request-zstd,omitempty" json:"codex-request-zstd,omitempty"`
 
-	// BedrockKey defines AWS Bedrock Runtime credential configurations.
-	BedrockKey []BedrockKey `yaml:"bedrock-api-key" json:"bedrock-api-key"`
+	// ProxyPool stores reusable outbound proxies that can be referenced by providers and auth files.
+	ProxyPool []ProxyPoolEntry `yaml:"proxy-pool,omitempty" json:"proxy-pool,omitempty"`
 
-	// BigModelCodingAPIKey defines Zhipu Coding Plan API key configurations.
-	BigModelCodingAPIKey []OpenAICompatibility `yaml:"bigmodel-coding,omitempty" json:"bigmodel-coding,omitempty"`
+	// ProxyWarmup configures proactive upstream connection warming for fixed proxy hosts.
+	// When enabled, the server establishes and maintains idle TLS/HTTP2 connections
+	// to common upstream AI API hosts through the fixed residential proxy.
+	ProxyWarmup ProxyWarmConfig `yaml:"proxy-warmup,omitempty" json:"proxy-warmup,omitempty"`
 
-	// BigModelCodingAPIKeyLegacy accepts the older top-level key name.
-	BigModelCodingAPIKeyLegacy []OpenAICompatibility `yaml:"bigmodel-coding-api-key,omitempty" json:"bigmodel-coding-api-key,omitempty"`
-
-	// AstronCodeAPIKey defines iFlytek Astron Coding Plan configurations.
-	AstronCodeAPIKey []OpenAICompatibility `yaml:"astron-code,omitempty" json:"astron-code,omitempty"`
-
-	// AgnesAPIKey defines Sapiens Agnes multi-modal provider configurations.
-	AgnesAPIKey []OpenAICompatibility `yaml:"agnes,omitempty" json:"agnes,omitempty"`
-
-	// OpenCodeGoKey defines OpenCode Go API key configurations.
-	OpenCodeGoKey []OpenCodeGoKey `yaml:"opencode-go-api-key,omitempty" json:"opencode-go-api-key,omitempty"`
-
-	// AmpCode contains Amp CLI upstream configuration, management restrictions, and model mappings.
-	AmpCode AmpCode `yaml:"ampcode" json:"ampcode"`
-
-	// OAuthUserAgent sets the User-Agent header for OAuth HTTP requests.
-	OAuthUserAgent string `yaml:"oauth-user-agent" json:"oauth-user-agent"`
-
-	// ModelOverrides define generic metadata overrides for client-visible model IDs.
-	ModelOverrides []ModelOverride `yaml:"model-overrides,omitempty" json:"model-overrides,omitempty"`
-
-	// RequestPolicies define request-size and routing guards evaluated before upstream execution.
-	RequestPolicies []RequestPolicy `yaml:"request-policies,omitempty" json:"request-policies,omitempty"`
-
-	// ProviderPreferences define model-scoped upstream provider priority overrides.
-	ProviderPreferences []ProviderPreference `yaml:"provider-preferences,omitempty" json:"provider-preferences,omitempty"`
-
-	// DisableClaudeCloakMode globally disables Claude request cloaking when true.
-	// Cloaking disguises requests as the official Claude Code CLI and replaces the
-	// system prompt. When true, every Claude credential defaults to no cloaking
-	// ("never"); a specific credential can still re-enable or override it via its own
-	// cloak settings (the per claude-api-key "cloak" block, or a "cloak_mode" value in
-	// the auth/OAuth token file). Default false preserves the per-client "auto" behavior.
-	DisableClaudeCloakMode bool `yaml:"disable-claude-cloak-mode" json:"disable-claude-cloak-mode"`
+	// AccountStatusRefresh configures the server-side periodic quota probe.
+	AccountStatusRefresh AccountStatusRefreshConfig `yaml:"account-status-refresh,omitempty" json:"account-status-refresh,omitempty"`
 
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
@@ -230,32 +278,291 @@ type Config struct {
 	// Used for services that use Vertex AI-style paths but with simple API key authentication.
 	VertexCompatAPIKey []VertexCompatKey `yaml:"vertex-api-key" json:"vertex-api-key"`
 
+	// AmpCode contains Amp CLI upstream configuration, management restrictions, and model mappings.
+	AmpCode AmpCode `yaml:"ampcode" json:"ampcode"`
+
 	// OAuthExcludedModels defines per-provider global model exclusions applied to OAuth/file-backed auth entries.
 	OAuthExcludedModels map[string][]string `yaml:"oauth-excluded-models,omitempty" json:"oauth-excluded-models,omitempty"`
 
-	// OAuthAllowedModels defines per-provider global model allowlists applied to OAuth/file-backed auth entries.
-	// Empty/omitted keeps the current catalog; a non-empty list keeps only matching models.
-	OAuthAllowedModels map[string][]string `yaml:"oauth-allowed-models,omitempty" json:"oauth-allowed-models,omitempty"`
-
 	// OAuthModelAlias defines global model name aliases for OAuth/file-backed auth channels.
 	// These aliases affect both model listing and model routing for supported channels:
-	// vertex, aistudio, antigravity, claude, codex, kimi, xai, meta.
+	// gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, xai, iflow, kimi.
 	//
 	// NOTE: This does not apply to existing per-credential model alias features under:
-	// gemini-api-key, interactions-api-key, codex-api-key, xai-api-key, meta-api-key, claude-api-key, openai-compatibility, and vertex-api-key.
+	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
 	OAuthModelAlias map[string][]OAuthModelAlias `yaml:"oauth-model-alias,omitempty" json:"oauth-model-alias,omitempty"`
-
-	// OAuthRequestScopedErrors defines per-provider request-scoped error rules applied to OAuth/file-backed auth entries.
-	// Supported channels include: vertex, aistudio, antigravity, claude, codex, kimi, xai, meta, and OAuth plugin provider keys.
-	//
-	// NOTE: This applies only to OAuth credentials and does not affect per-credential request-scoped-errors under *-api-key.
-	OAuthRequestScopedErrors map[string][]RequestScopedErrorRule `yaml:"oauth-request-scoped-errors,omitempty" json:"oauth-request-scoped-errors,omitempty"`
-
-	// OAuthSettings defines per-channel model settings (such as max-context-length) applied to OAuth/file-backed auth entries.
-	OAuthSettings map[string][]OAuthModelSetting `yaml:"oauth-settings,omitempty" json:"oauth-settings,omitempty"`
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
 	legacyMigrationPending bool `yaml:"-" json:"-"`
+
+	// runtimeSettings records the runtime_settings rows this config was loaded
+	// from; see RuntimeSettingState.
+	runtimeSettings *RuntimeSettingState `yaml:"-" json:"-"`
+}
+
+func (cfg *Config) MainAPIReadTimeout() time.Duration {
+	if cfg == nil || cfg.MainAPIReadTimeoutSeconds <= 0 {
+		return DefaultMainAPIReadTimeout
+	}
+	return time.Duration(cfg.MainAPIReadTimeoutSeconds) * time.Second
+}
+
+func (cfg *Config) SystemStatsWebSocketMaxAge() time.Duration {
+	if cfg == nil || cfg.SystemStatsWebSocketMaxAgeSeconds <= 0 {
+		return DefaultSystemStatsWebSocketMaxAge
+	}
+	age := time.Duration(cfg.SystemStatsWebSocketMaxAgeSeconds) * time.Second
+	if age < MinSystemStatsWebSocketMaxAge {
+		return MinSystemStatsWebSocketMaxAge
+	}
+	if age > MaxSystemStatsWebSocketMaxAge {
+		return MaxSystemStatsWebSocketMaxAge
+	}
+	return age
+}
+
+// RequestBodyConfig controls public model API request-body handling.
+type RequestBodyConfig struct {
+	// ModelMaxMB is the maximum decoded request body size for model endpoints.
+	// Management and upload endpoints keep their narrower endpoint-specific limits.
+	ModelMaxMB int `yaml:"model-max-mb,omitempty" json:"model-max-mb,omitempty"`
+	// DiskThresholdMB is the decoded body size above which reusable request
+	// bodies spill to a temporary file instead of staying cached in memory.
+	DiskThresholdMB int `yaml:"disk-threshold-mb,omitempty" json:"disk-threshold-mb,omitempty"`
+	// CacheDir optionally overrides the dedicated request-body temp file directory.
+	// When empty, the runtime uses the OS temp directory under a CliRelay-specific subdirectory.
+	CacheDir string `yaml:"cache-dir,omitempty" json:"cache-dir,omitempty"`
+}
+
+// ModelRequestBodyLimitBytes returns the decoded body limit for model endpoints.
+func (cfg *Config) ModelRequestBodyLimitBytes() int64 {
+	maxMB := DefaultModelRequestBodyMB
+	if cfg != nil && cfg.RequestBody.ModelMaxMB > 0 {
+		maxMB = cfg.RequestBody.ModelMaxMB
+	}
+	return int64(maxMB) << 20
+}
+
+// RequestBodyDiskThresholdBytes returns the memory threshold for reusable body storage.
+func (cfg *Config) RequestBodyDiskThresholdBytes() int64 {
+	thresholdMB := DefaultRequestBodyDiskThresholdMB
+	if cfg != nil && cfg.RequestBody.DiskThresholdMB > 0 {
+		thresholdMB = cfg.RequestBody.DiskThresholdMB
+	}
+	return int64(thresholdMB) << 20
+}
+
+// RequestBodyCacheDir returns the optional request-body temp cache directory.
+func (cfg *Config) RequestBodyCacheDir() string {
+	if cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.RequestBody.CacheDir)
+}
+
+// ClaudeHeaderDefaults configures default header values injected into Claude API requests
+// when the client does not send them. Update these when Claude Code releases a new version.
+type ClaudeHeaderDefaults struct {
+	UserAgent              string   `yaml:"user-agent" json:"user-agent"`
+	PackageVersion         string   `yaml:"package-version" json:"package-version"`
+	RuntimeVersion         string   `yaml:"runtime-version" json:"runtime-version"`
+	OS                     string   `yaml:"os" json:"os"`
+	Arch                   string   `yaml:"arch" json:"arch"`
+	Timeout                string   `yaml:"timeout" json:"timeout"`
+	Timezone               string   `yaml:"timezone" json:"timezone"`
+	StabilizeDeviceProfile *bool    `yaml:"stabilize-device-profile,omitempty" json:"stabilize-device-profile,omitempty"`
+	NativeEntrypoints      []string `yaml:"native-entrypoints,omitempty" json:"native-entrypoints,omitempty"`
+	AnthropicBetaStrip     []string `yaml:"anthropic-beta-strip,omitempty" json:"anthropic-beta-strip,omitempty"`
+	AnthropicBetaAppend    []string `yaml:"anthropic-beta-append,omitempty" json:"anthropic-beta-append,omitempty"`
+	InjectDiagnostics      *bool    `yaml:"inject-diagnostics,omitempty" json:"inject-diagnostics,omitempty"`
+	ClientRequestID        string   `yaml:"client-request-id,omitempty" json:"client-request-id,omitempty"`
+}
+
+// CodexHeaderDefaults configures fallback header values injected into Codex requests.
+type CodexHeaderDefaults struct {
+	UserAgent    string `yaml:"user-agent" json:"user-agent"`
+	BetaFeatures string `yaml:"beta-features" json:"beta-features"`
+}
+
+const (
+	ClaudeClientRequestIDOn          = "on"
+	ClaudeClientRequestIDOff         = "off"
+	ClaudeClientRequestIDPassthrough = "passthrough"
+)
+
+// KimiHeaderDefaults configures default header values for Kimi API requests.
+// These headers identify the client to the Kimi API and affect how requests
+// appear in the Kimi console (e.g., User-Agent shows as the source).
+type KimiHeaderDefaults struct {
+	UserAgent string `yaml:"user-agent" json:"user-agent"`
+	Platform  string `yaml:"platform" json:"platform"`
+	Version   string `yaml:"version" json:"version"`
+}
+
+// ProxyWarmConfig controls proactive upstream connection warming for fixed proxy hosts.
+// Warming establishes idle TLS/HTTP2 connections through the proxy before real requests arrive.
+type ProxyWarmConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// ProxyID references a proxy-pool entry to warm. It takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+	// ProxyURL warms this explicit proxy when ProxyID is empty.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	// StartupDelaySeconds waits this long after server start before beginning warmup.
+	StartupDelaySeconds int `yaml:"startup-delay-seconds,omitempty" json:"startup-delay-seconds,omitempty"`
+	// IntervalSeconds is the base interval between warmup rounds for active hosts.
+	IntervalSeconds int `yaml:"interval-seconds,omitempty" json:"interval-seconds,omitempty"`
+	// IntervalJitterSeconds adds random jitter to warmup interval to avoid fixed patterns.
+	IntervalJitterSeconds int `yaml:"interval-jitter-seconds,omitempty" json:"interval-jitter-seconds,omitempty"`
+	// TimeoutSeconds per individual warmup request.
+	TimeoutSeconds int `yaml:"timeout-seconds,omitempty" json:"timeout-seconds,omitempty"`
+	// InactiveTTLMinutes removes a host from warmup if unused for this long.
+	InactiveTTLMinutes int `yaml:"inactive-ttl-minutes,omitempty" json:"inactive-ttl-minutes,omitempty"`
+	// MaxHostsPerProxy limits the number of concurrently warmed hosts.
+	MaxHostsPerProxy int `yaml:"max-hosts-per-proxy,omitempty" json:"max-hosts-per-proxy,omitempty"`
+	// AllowedHostSuffixes restricts warming to matching host suffixes (e.g. chatgpt.com).
+	AllowedHostSuffixes []string `yaml:"allowed-host-suffixes,omitempty" json:"allowed-host-suffixes,omitempty"`
+	// Targets lists the specific URLs to warm for each host.
+	Targets []ProxyWarmTarget `yaml:"targets,omitempty" json:"targets,omitempty"`
+}
+
+// ProxyWarmTarget defines a single warmup request target.
+type ProxyWarmTarget struct {
+	Host   string `yaml:"host" json:"host"`
+	URL    string `yaml:"url" json:"url"`
+	Method string `yaml:"method" json:"method"`
+}
+
+// AccountStatusRefreshConfig controls the server-side periodic quota probe.
+//
+// Quota snapshots used to advance only while someone had the accounts panel
+// open, because the panel was the only thing that ever asked for a refresh.
+// That is fine for consumption the proxy itself produces — the request that
+// spends the quota is the request that updates it — but not for accounts whose
+// allowance is also spent elsewhere: a Grok subscription burned down by Grok
+// Chat on the web looked untouched here until a human happened to look.
+type AccountStatusRefreshConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// IntervalMinutes is how often each account is re-probed. The per-account
+	// min-gap and in-flight dedupe in the status service still apply, so a panel
+	// refresh landing near a scheduled one costs no extra upstream calls.
+	IntervalMinutes int `yaml:"interval-minutes,omitempty" json:"interval-minutes,omitempty"`
+	// StartupDelaySeconds waits this long after start before the first round, so
+	// boot does not fire one upstream probe per credential at once.
+	StartupDelaySeconds int `yaml:"startup-delay-seconds,omitempty" json:"startup-delay-seconds,omitempty"`
+}
+
+func defaultAccountStatusRefreshConfig() AccountStatusRefreshConfig {
+	return AccountStatusRefreshConfig{
+		Enabled: true,
+		// Matches the quota snapshot heartbeat: probing faster than that writes
+		// no new history point unless the percentage actually moved.
+		IntervalMinutes:     15,
+		StartupDelaySeconds: 60,
+	}
+}
+
+// SanitizeAccountStatusRefresh fills unset fields with defaults and rejects
+// intervals short enough to hammer upstream billing endpoints.
+func (cfg *Config) SanitizeAccountStatusRefresh() {
+	if cfg == nil {
+		return
+	}
+	defaults := defaultAccountStatusRefreshConfig()
+	refresh := cfg.AccountStatusRefresh
+	if refresh.IntervalMinutes <= 0 {
+		refresh.IntervalMinutes = defaults.IntervalMinutes
+	}
+	if refresh.IntervalMinutes < 5 {
+		refresh.IntervalMinutes = 5
+	}
+	// Unset and negative both take the default: starting every credential's probe
+	// in the same instant as boot is a burst nobody asked for, and a YAML int has
+	// no way to say "zero on purpose".
+	if refresh.StartupDelaySeconds <= 0 {
+		refresh.StartupDelaySeconds = defaults.StartupDelaySeconds
+	}
+	cfg.AccountStatusRefresh = refresh
+}
+
+func defaultProxyWarmConfig() ProxyWarmConfig {
+	return ProxyWarmConfig{
+		Enabled:               false,
+		StartupDelaySeconds:   15,
+		IntervalSeconds:       60,
+		IntervalJitterSeconds: 15,
+		TimeoutSeconds:        5,
+		InactiveTTLMinutes:    10,
+		MaxHostsPerProxy:      8,
+		AllowedHostSuffixes: []string{
+			"chatgpt.com",
+			"openai.com",
+			"oaistatic.com",
+			"oaiusercontent.com",
+		},
+		Targets: []ProxyWarmTarget{
+			{Host: "chatgpt.com", URL: "https://chatgpt.com/robots.txt", Method: "GET"},
+			{Host: "api.openai.com", URL: "https://api.openai.com/", Method: "HEAD"},
+			{Host: "chat.openai.com", URL: "https://chat.openai.com/", Method: "HEAD"},
+		},
+	}
+}
+
+func (cfg *Config) SanitizeProxyWarmup() {
+	if cfg == nil {
+		return
+	}
+	defaults := defaultProxyWarmConfig()
+	warm := cfg.ProxyWarmup
+	warm.ProxyID = strings.TrimSpace(warm.ProxyID)
+	warm.ProxyURL = strings.TrimSpace(warm.ProxyURL)
+	if warm.StartupDelaySeconds <= 0 {
+		warm.StartupDelaySeconds = defaults.StartupDelaySeconds
+	}
+	if warm.IntervalSeconds <= 0 {
+		warm.IntervalSeconds = defaults.IntervalSeconds
+	}
+	if warm.IntervalJitterSeconds < 0 {
+		warm.IntervalJitterSeconds = 0
+	}
+	if warm.TimeoutSeconds <= 0 {
+		warm.TimeoutSeconds = defaults.TimeoutSeconds
+	}
+	if warm.InactiveTTLMinutes <= 0 {
+		warm.InactiveTTLMinutes = defaults.InactiveTTLMinutes
+	}
+	if warm.MaxHostsPerProxy <= 0 {
+		warm.MaxHostsPerProxy = defaults.MaxHostsPerProxy
+	}
+	if len(warm.AllowedHostSuffixes) == 0 {
+		warm.AllowedHostSuffixes = defaults.AllowedHostSuffixes
+	} else {
+		out := make([]string, 0, len(warm.AllowedHostSuffixes))
+		for _, suffix := range warm.AllowedHostSuffixes {
+			if trimmed := strings.ToLower(strings.TrimSpace(suffix)); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		warm.AllowedHostSuffixes = out
+	}
+	if len(warm.Targets) == 0 {
+		warm.Targets = defaults.Targets
+	} else {
+		out := make([]ProxyWarmTarget, 0, len(warm.Targets))
+		for _, target := range warm.Targets {
+			target.Host = strings.ToLower(strings.TrimSpace(target.Host))
+			target.URL = strings.TrimSpace(target.URL)
+			target.Method = strings.ToUpper(strings.TrimSpace(target.Method))
+			if target.Method == "" {
+				target.Method = "HEAD"
+			}
+			if target.Host == "" || target.URL == "" {
+				continue
+			}
+			out = append(out, target)
+		}
+		warm.Targets = out
+	}
+	cfg.ProxyWarmup = warm
 }

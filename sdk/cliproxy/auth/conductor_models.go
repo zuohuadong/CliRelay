@@ -2,6 +2,8 @@ package auth
 
 import (
 	"bytes"
+	"context"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -60,14 +62,8 @@ func isConfiguredOpenAICompatAuth(auth *Auth) bool {
 	if strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") {
 		return true
 	}
-	if _, ok := dedicatedOpenAICompatibleProviderKey(auth.Provider); ok {
-		return true
-	}
 	if auth.Attributes == nil {
 		return false
-	}
-	if _, ok := dedicatedOpenAICompatibleProviderKey(auth.Attributes["provider_key"]); ok {
-		return true
 	}
 	return strings.TrimSpace(auth.Attributes["compat_name"]) != ""
 }
@@ -78,37 +74,13 @@ func openAICompatProviderKey(auth *Auth) string {
 	}
 	if auth.Attributes != nil {
 		if providerKey := strings.TrimSpace(auth.Attributes["provider_key"]); providerKey != "" {
-			if dedicatedKey, ok := dedicatedOpenAICompatibleProviderKey(providerKey); ok {
-				return dedicatedKey
-			}
 			return util.OpenAICompatibleProviderKey(providerKey)
 		}
 		if compatName := strings.TrimSpace(auth.Attributes["compat_name"]); compatName != "" {
-			if dedicatedKey, ok := dedicatedOpenAICompatibleProviderKey(compatName); ok {
-				return dedicatedKey
-			}
 			return util.OpenAICompatibleProviderKey(compatName)
 		}
 	}
-	if dedicatedKey, ok := dedicatedOpenAICompatibleProviderKey(auth.Provider); ok {
-		return dedicatedKey
-	}
 	return util.OpenAICompatibleProviderKey(auth.Provider)
-}
-
-func dedicatedOpenAICompatibleProviderKey(name string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case internalconfig.DefaultBigModelCodingProviderName:
-		return internalconfig.DefaultBigModelCodingProviderName, true
-	case internalconfig.DefaultAstronCodeProviderName:
-		return internalconfig.DefaultAstronCodeProviderName, true
-	case internalconfig.DefaultAgnesProviderName, "agnes-ai":
-		return internalconfig.DefaultAgnesProviderName, true
-	case "opencode-go":
-		return "opencode-go", true
-	default:
-		return "", false
-	}
 }
 
 func openAICompatModelPoolKey(auth *Auth, requestedModel string) string {
@@ -213,24 +185,6 @@ func (m *Manager) executionModelCandidates(auth *Auth, routeModel string) []stri
 	return []string{resolved}
 }
 
-func (m *Manager) executionModelCandidatesForCapacityCheck(auth *Auth, routeModel string) []string {
-	if auth != nil && auth.Attributes != nil {
-		if homeModel := strings.TrimSpace(auth.Attributes[homeUpstreamModelAttributeKey]); homeModel != "" {
-			return []string{homeModel}
-		}
-	}
-	requestedModel := rewriteModelForAuth(routeModel, auth)
-	requestedModel = m.applyOAuthModelAlias(auth, requestedModel)
-	if pool := m.resolveOpenAICompatUpstreamModelPool(auth, requestedModel); len(pool) > 0 {
-		return pool
-	}
-	resolved := m.applyAPIKeyModelAlias(auth, requestedModel)
-	if strings.TrimSpace(resolved) == "" {
-		resolved = requestedModel
-	}
-	return []string{resolved}
-}
-
 // ResolveExecutionModel returns the credential-aware upstream model used by
 // normal execution. It strips auth prefixes, applies configured aliases, and
 // prefers Home-dispatched upstream models when present.
@@ -283,38 +237,98 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 	}
 
 	state := existingModelState(auth, targetKey)
-	isSuspended := auth.Disabled || auth.Status == StatusDisabled
-	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
-		isSuspended = true
-	}
-	isQuotaExceeded := false
-	var suspendReason string
-	if state != nil {
-		if state.Status == StatusDisabled || state.Unavailable || (!state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now)) {
+	authDisabled := auth.Disabled || auth.Status == StatusDisabled
+	stateDisabled := state != nil && state.Status == StatusDisabled
+	terminalUnauthorized := hasUnauthorizedAuthFailure(auth)
+	openEnded := authDisabled || stateDisabled || terminalUnauthorized
+	isSuspended := openEnded
+
+	var credQuotaUntil time.Time
+	credQuotaSuspended := false
+	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" {
+		if auth.Quota.NextRecoverAt.IsZero() {
 			isSuspended = true
+			credQuotaSuspended = true
+			openEnded = true
+		} else if auth.Quota.NextRecoverAt.After(now) {
+			isSuspended = true
+			credQuotaSuspended = true
+			credQuotaUntil = auth.Quota.NextRecoverAt
+		}
+	}
+
+	isQuotaExceeded := false
+	stateSuspended := false
+	var stateUntil time.Time
+	if state != nil {
+		if stateDisabled {
+			stateSuspended = true
+		} else if blocked, _, retryAfter := availabilityBlock(state.Unavailable, state.Quota.Exceeded, state.NextRetryAfter, state.Quota.NextRecoverAt, now); blocked {
+			isSuspended = true
+			stateSuspended = true
+			if retryAfter.IsZero() {
+				openEnded = true
+			} else {
+				stateUntil = retryAfter
+			}
 		}
 		if state.Quota.Exceeded && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now)) {
 			isQuotaExceeded = true
 		}
-		if isSuspended {
-			suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
-		}
 	}
-	if len(auth.ModelStates) == 0 && auth.Unavailable && auth.NextRetryAfter.After(now) {
+
+	var authFallbackUntil time.Time
+	if len(auth.ModelStates) == 0 {
 		// With no per-model states, scheduling falls back to the credential-wide
 		// cooldown (isAuthBlockedForModel); the projection must agree with it.
 		// When states exist, unmatched models stay schedulable by design, so the
 		// credential-wide fields must not suspend them here either.
-		isSuspended = true
+		if blocked, _, retryAfter := availabilityBlock(auth.Unavailable, auth.Quota.Exceeded, auth.NextRetryAfter, auth.Quota.NextRecoverAt, now); blocked {
+			isSuspended = true
+			if retryAfter.IsZero() {
+				openEnded = true
+			} else {
+				authFallbackUntil = retryAfter
+			}
+		}
 	}
-	if isSuspended && suspendReason == "" {
-		suspendReason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
+
+	var suspendReason string
+	var suspendUntil time.Time
+	if isSuspended {
+		switch {
+		case authDisabled || stateDisabled:
+			suspendReason = "disabled"
+		case terminalUnauthorized:
+			suspendReason = cooldownReason(auth.StatusMessage, QuotaState{}, auth.LastError)
+			if suspendReason == "" {
+				suspendReason = "unauthorized"
+			}
+		case stateSuspended:
+			suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
+			suspendUntil = stateUntil
+			if credQuotaSuspended && (strings.EqualFold(suspendReason, "quota") || strings.EqualFold(suspendReason, "credential_quota")) && credQuotaUntil.After(suspendUntil) {
+				suspendUntil = credQuotaUntil
+			}
+		default:
+			suspendUntil = authFallbackUntil
+			if credQuotaUntil.After(suspendUntil) {
+				suspendUntil = credQuotaUntil
+			}
+		}
+		if suspendReason == "" {
+			suspendReason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
+		}
+	}
+	if openEnded || !isSuspended {
+		suspendUntil = time.Time{}
 	}
 
 	return registry.ClientModelProjection{
 		ModelID:       targetModel,
 		Suspended:     isSuspended,
 		SuspendReason: suspendReason,
+		SuspendUntil:  suspendUntil,
 		QuotaExceeded: isQuotaExceeded,
 	}
 }
@@ -330,7 +344,7 @@ func (m *Manager) stateModelForExecution(auth *Auth, routeModel, upstreamModel s
 	}
 	stateModel := executionResultModel(routeModel, upstreamModel, pooled)
 	selectionModel := m.selectionModelForAuth(auth, routeModel)
-	if canonicalModelKey(selectionModel) == canonicalModelKey(upstreamModel) && strings.TrimSpace(selectionModel) != "" {
+	if sameCanonicalModelKey(selectionModel, upstreamModel) && strings.TrimSpace(selectionModel) != "" {
 		return strings.TrimSpace(upstreamModel)
 	}
 	return stateModel
@@ -348,18 +362,19 @@ func executionResultModel(routeModel, upstreamModel string, pooled bool) string 
 	return strings.TrimSpace(upstreamModel)
 }
 
-func (m *Manager) filterExecutionModels(cfg *internalconfig.Config, auth *Auth, routeModel string, candidates []string, pooled bool, opts cliproxyexecutor.Options) []string {
+func (m *Manager) filterExecutionModels(auth *Auth, routeModel string, candidates []string, pooled bool) []string {
+	return m.filterExecutionModelsForRequest(nil, auth, routeModel, candidates, pooled)
+}
+
+func (m *Manager) filterExecutionModelsForRequest(ctx context.Context, auth *Auth, routeModel string, candidates []string, pooled bool, clientHeaders ...http.Header) []string {
 	if len(candidates) == 0 {
 		return nil
 	}
 	now := time.Now()
 	out := make([]string, 0, len(candidates))
 	for _, upstreamModel := range candidates {
-		if !requestFitsConfiguredModelContext(cfg, auth, opts, upstreamModel) {
-			continue
-		}
 		stateModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
-		blocked, _, _ := isAuthBlockedForModel(auth, stateModel, now)
+		blocked, _, _ := isAuthBlockedForModelForRequest(ctx, auth, stateModel, now, clientHeaders...)
 		if blocked {
 			continue
 		}
@@ -368,16 +383,19 @@ func (m *Manager) filterExecutionModels(cfg *internalconfig.Config, auth *Auth, 
 	return out
 }
 
-func (m *Manager) preparedExecutionModels(auth *Auth, routeModel string, opts cliproxyexecutor.Options) ([]string, bool) {
+func (m *Manager) preparedExecutionModels(auth *Auth, routeModel string) ([]string, bool) {
 	candidates := m.executionModelCandidates(auth, routeModel)
 	pooled := len(candidates) > 1
-	cfg := m.loadAPIKeyModelRouting().config
-	return m.filterExecutionModels(cfg, auth, routeModel, candidates, pooled, opts), pooled
+	return m.filterExecutionModels(auth, routeModel, candidates, pooled), pooled
 }
 
-func (m *Manager) preparedExecutionModelsWithAlias(auth *Auth, routeModel string, opts cliproxyexecutor.Options) ([]string, []string, bool, OAuthModelAliasResult, *apiKeyModelRoutingSnapshot) {
+func (m *Manager) preparedExecutionModelsWithAlias(auth *Auth, routeModel string) ([]string, bool, OAuthModelAliasResult, *apiKeyModelRoutingSnapshot) {
+	return m.preparedExecutionModelsWithAliasForRequest(nil, auth, routeModel)
+}
+
+func (m *Manager) preparedExecutionModelsWithAliasForRequest(ctx context.Context, auth *Auth, routeModel string, clientHeaders ...http.Header) ([]string, bool, OAuthModelAliasResult, *apiKeyModelRoutingSnapshot) {
 	candidates, pooled, aliasResult, routing := m.executionModelCandidatesWithAlias(auth, routeModel)
-	return m.filterExecutionModels(routing.config, auth, routeModel, candidates, pooled, opts), candidates, pooled, aliasResult, routing
+	return m.filterExecutionModelsForRequest(ctx, auth, routeModel, candidates, pooled, clientHeaders...), pooled, aliasResult, routing
 }
 
 func (m *Manager) executionModelCandidatesWithAlias(auth *Auth, routeModel string) ([]string, bool, OAuthModelAliasResult, *apiKeyModelRoutingSnapshot) {
@@ -488,38 +506,9 @@ func resolveAPIKeyModelAliasWithResult(cfg *internalconfig.Config, auth *Auth, r
 	}
 	result := resolveModelAliasResultFromConfigModels(requestedModel, models)
 	if strings.TrimSpace(result.UpstreamModel) == "" {
-		result.UpstreamModel = requestedModel
-	}
-	if isConfiguredOpenAICompatAuth(auth) && !result.ForceMapping && !modelAliasPoolHasExplicitForceMapping(requestedModel, models) && modelAliasPoolRequiresResponseRewrite(requestedModel, models) {
-		result.ForceMapping = true
-		if strings.TrimSpace(result.OriginalAlias) == "" {
-			result.OriginalAlias = requestedModel
-		}
+		return OAuthModelAliasResult{UpstreamModel: requestedModel}
 	}
 	return result
-}
-
-func modelAliasPoolRequiresResponseRewrite(requestedModel string, models []modelAliasEntry) bool {
-	requestedModel = strings.TrimSpace(requestedModel)
-	for _, candidate := range resolveModelAliasPoolFromConfigModels(requestedModel, models) {
-		if !strings.EqualFold(strings.TrimSpace(candidate), requestedModel) {
-			return true
-		}
-	}
-	return false
-}
-
-func modelAliasPoolHasExplicitForceMapping(requestedModel string, models []modelAliasEntry) bool {
-	requestedModel = strings.TrimSpace(requestedModel)
-	for _, model := range models {
-		if !model.GetForceMapping() {
-			continue
-		}
-		if len(resolveModelAliasPoolFromConfigModels(requestedModel, []modelAliasEntry{model})) > 0 {
-			return true
-		}
-	}
-	return false
 }
 
 func configuredModelAliasEntries(cfg *internalconfig.Config, auth *Auth) []modelAliasEntry {
@@ -564,7 +553,7 @@ func configuredModelAliasEntries(cfg *internalconfig.Config, auth *Auth) []model
 			providerKey = strings.TrimSpace(auth.Attributes["provider_key"])
 			compatName = strings.TrimSpace(auth.Attributes["compat_name"])
 		}
-		if isConfiguredOpenAICompatAuth(auth) {
+		if compatName != "" || strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") {
 			if entry := resolveOpenAICompatConfigForAuth(cfg, auth, providerKey, compatName); entry != nil {
 				models = asModelAliasEntries(entry.Models)
 			}
@@ -591,12 +580,7 @@ func resolveModelAliasResultForUpstream(cfg *internalconfig.Config, auth *Auth, 
 	if len(filtered) == 0 {
 		return OAuthModelAliasResult{}
 	}
-	result := resolveModelAliasResultFromConfigModels(requestedModel, filtered)
-	if isConfiguredOpenAICompatAuth(auth) && !result.ForceMapping && !modelAliasPoolHasExplicitForceMapping(requestedModel, models) && modelAliasPoolRequiresResponseRewrite(requestedModel, filtered) {
-		result.ForceMapping = true
-		result.OriginalAlias = requestedModel
-	}
-	return result
+	return resolveModelAliasResultFromConfigModels(requestedModel, filtered)
 }
 
 func resolveAttemptAliasResult(routing *apiKeyModelRoutingSnapshot, auth *Auth, routeModel, upstreamModel string, fallback OAuthModelAliasResult) OAuthModelAliasResult {
@@ -615,7 +599,7 @@ func resolveAttemptAliasResult(routing *apiKeyModelRoutingSnapshot, auth *Auth, 
 }
 
 func (m *Manager) prepareExecutionModels(auth *Auth, routeModel string) []string {
-	models, _ := m.preparedExecutionModels(auth, routeModel, cliproxyexecutor.Options{})
+	models, _ := m.preparedExecutionModels(auth, routeModel)
 	return models
 }
 
@@ -628,10 +612,6 @@ func rewriteForceMappedResponse(resp *cliproxyexecutor.Response, aliasResult OAu
 
 func rewriteForceMappedStreamChunk(rewriter *StreamRewriter, payload []byte) []byte {
 	if rewriter == nil || len(payload) == 0 {
-		return payload
-	}
-	trimmed := bytes.TrimSpace(payload)
-	if len(trimmed) > 0 && trimmed[0] != '{' && trimmed[0] != '[' && !bytes.HasPrefix(trimmed, []byte("data:")) {
 		return payload
 	}
 	rewritten := rewriter.RewriteChunk(payload)
@@ -734,7 +714,7 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 				providerKey = strings.TrimSpace(auth.Attributes["provider_key"])
 				compatName = strings.TrimSpace(auth.Attributes["compat_name"])
 			}
-			if isConfiguredOpenAICompatAuth(auth) {
+			if compatName != "" || strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") {
 				if entry := resolveOpenAICompatConfigForAuth(cfg, auth, providerKey, compatName); entry != nil {
 					compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 				}
@@ -1025,7 +1005,7 @@ func resolveUpstreamModelForOpenAICompatAPIKey(cfg *internalconfig.Config, auth 
 		providerKey = strings.TrimSpace(auth.Attributes["provider_key"])
 		compatName = strings.TrimSpace(auth.Attributes["compat_name"])
 	}
-	if !isConfiguredOpenAICompatAuth(auth) {
+	if compatName == "" && !strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") {
 		return ""
 	}
 	entry := resolveOpenAICompatConfigForAuth(cfg, auth, providerKey, compatName)
@@ -1067,22 +1047,6 @@ func resolveOpenAICompatConfig(cfg *internalconfig.Config, providerKey, compatNa
 	if v := strings.TrimSpace(authProvider); v != "" {
 		candidates = append(candidates, v)
 	}
-	for _, candidate := range candidates {
-		switch {
-		case strings.EqualFold(candidate, internalconfig.DefaultBigModelCodingProviderName):
-			if entry := resolveBigModelCodingConfig(cfg); entry != nil {
-				return entry
-			}
-		case strings.EqualFold(candidate, internalconfig.DefaultAstronCodeProviderName):
-			if entry := resolveAstronCodeConfig(cfg); entry != nil {
-				return entry
-			}
-		case strings.EqualFold(candidate, internalconfig.DefaultAgnesProviderName), strings.EqualFold(candidate, "agnes-ai"):
-			if entry := resolveAgnesConfig(cfg); entry != nil {
-				return entry
-			}
-		}
-	}
 	for i := range cfg.OpenAICompatibility {
 		compat := &cfg.OpenAICompatibility[i]
 		if compat.Disabled {
@@ -1092,42 +1056,6 @@ func resolveOpenAICompatConfig(cfg *internalconfig.Config, providerKey, compatNa
 			if candidate != "" && strings.EqualFold(strings.TrimSpace(candidate), compat.Name) {
 				return compat
 			}
-		}
-	}
-	return nil
-}
-
-func resolveBigModelCodingConfig(cfg *internalconfig.Config) *internalconfig.OpenAICompatibility {
-	if cfg == nil {
-		return nil
-	}
-	for i := range cfg.BigModelCodingAPIKey {
-		if !cfg.BigModelCodingAPIKey[i].Disabled {
-			return &cfg.BigModelCodingAPIKey[i]
-		}
-	}
-	return nil
-}
-
-func resolveAstronCodeConfig(cfg *internalconfig.Config) *internalconfig.OpenAICompatibility {
-	if cfg == nil {
-		return nil
-	}
-	for i := range cfg.AstronCodeAPIKey {
-		if !cfg.AstronCodeAPIKey[i].Disabled {
-			return &cfg.AstronCodeAPIKey[i]
-		}
-	}
-	return nil
-}
-
-func resolveAgnesConfig(cfg *internalconfig.Config) *internalconfig.OpenAICompatibility {
-	if cfg == nil {
-		return nil
-	}
-	for i := range cfg.AgnesAPIKey {
-		if !cfg.AgnesAPIKey[i].Disabled {
-			return &cfg.AgnesAPIKey[i]
 		}
 	}
 	return nil

@@ -1,0 +1,633 @@
+package config
+
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+
+// ClaudeKey represents the configuration for a Claude API key,
+// including the API key itself and an optional base URL for the API endpoint.
+type ClaudeKey struct {
+	// ID is the immutable persistent UUID used by channel bindings.
+	ID string `yaml:"id,omitempty" json:"id,omitempty"`
+
+	// APIKey is the authentication key for accessing Claude API services.
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Weight controls proportional selection under weighted round robin.
+	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
+
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// Prefix optionally namespaces models for this credential (e.g., "teamA/claude-sonnet-4").
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// BaseURL is the base URL for the Claude API endpoint.
+	// If empty, the default Claude API URL will be used.
+	BaseURL string `yaml:"base-url" json:"base-url"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// ConnectionPool configures upstream connection reuse for this credential.
+	ConnectionPool *ProxyConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
+
+	// Models defines upstream model names and aliases for request routing.
+	Models []ClaudeModel `yaml:"models" json:"models"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// RequestScopedErrors overrides OAuth request error classification for this key.
+	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+
+	// Cloak configures request cloaking for non-Claude-Code clients.
+	Cloak *CloakConfig `yaml:"cloak,omitempty" json:"cloak,omitempty"`
+
+	// SkipAnthropicProcessing disables Anthropic-specific request processing
+	// (cloaking, cache_control injection, tool prefix, thinking constraints).
+	// Enable this when the base URL points to a third-party Claude-compatible API.
+	// Default: false (Anthropic processing enabled).
+	SkipAnthropicProcessing bool `yaml:"skip-anthropic-processing,omitempty" json:"skip-anthropic-processing,omitempty"`
+
+	// RebuildMidSystemMessage moves mid-conversation system messages into the top-level system field.
+	RebuildMidSystemMessage bool `yaml:"rebuild-mid-system-message,omitempty" json:"rebuild-mid-system-message,omitempty"`
+
+	// NativeToolSearch trusts a custom base URL with Anthropic native tool search.
+	NativeToolSearch bool `yaml:"native-tool-search,omitempty" json:"native-tool-search,omitempty"`
+	// ExperimentalCCHSigning enables the experimental Claude Code signing path.
+	ExperimentalCCHSigning bool `yaml:"experimental-cch-signing,omitempty" json:"experimental-cch-signing,omitempty"`
+	// FingerprintProfile selects the Claude Code request fingerprint for this credential.
+	FingerprintProfile string `yaml:"fingerprint-profile,omitempty" json:"fingerprint-profile,omitempty"`
+	// RequestRetry optionally overrides the global retry count for this credential.
+	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+}
+
+func (k ClaudeKey) GetAPIKey() string   { return k.APIKey }
+func (k ClaudeKey) GetBaseURL() string  { return k.BaseURL }
+func (k ClaudeKey) GetPrefix() string   { return k.Prefix }
+func (k ClaudeKey) GetProxyURL() string { return k.ProxyURL }
+
+// ClaudeModel describes a mapping between an alias and the actual upstream model name.
+type ClaudeModel struct {
+	// Name is the upstream model identifier used when issuing requests.
+	Name string `yaml:"name" json:"name"`
+
+	// Alias is the client-facing model name that maps to Name.
+	Alias        string                    `yaml:"alias" json:"alias"`
+	DisplayName  string                    `yaml:"display-name,omitempty" json:"display-name,omitempty"`
+	ForceMapping bool                      `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+	IsCompat     bool                      `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
+	Thinking     *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+}
+
+func (m ClaudeModel) GetName() string                        { return m.Name }
+func (m ClaudeModel) GetAlias() string                       { return m.Alias }
+func (m ClaudeModel) GetForceMapping() bool                  { return m.ForceMapping }
+func (m ClaudeModel) GetIsCompat() bool                      { return m.IsCompat }
+func (m ClaudeModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
+
+// CodexKey represents the configuration for a Codex API key,
+// including the API key itself and an optional base URL for the API endpoint.
+type CodexKey struct {
+	// ID is the immutable persistent UUID used by channel bindings.
+	ID string `yaml:"id,omitempty" json:"id,omitempty"`
+
+	// APIKey is the authentication key for accessing Codex API services.
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Weight controls proportional selection under weighted round robin.
+	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
+
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// DisableCodexCloaking optionally overrides the provider-wide Codex cloaking setting.
+	DisableCodexCloaking *bool `yaml:"disable-codex-cloaking,omitempty" json:"disable-codex-cloaking,omitempty"`
+
+	// Prefix optionally namespaces models for this credential (e.g., "teamA/gpt-5-codex").
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// BaseURL is the base URL for the Codex API endpoint.
+	// If empty, the default Codex API URL will be used.
+	BaseURL string `yaml:"base-url" json:"base-url"`
+
+	// Websockets enables the Responses API websocket transport for this credential.
+	Websockets bool `yaml:"websockets,omitempty" json:"websockets,omitempty"`
+
+	// AlphaSearch explicitly opts this credential into Codex's optional search endpoint.
+	// Keep disabled unless the configured upstream supports that endpoint.
+	AlphaSearch bool `yaml:"alpha-search,omitempty" json:"alpha-search,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// ConnectionPool configures upstream connection reuse for this credential.
+	ConnectionPool *ProxyConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
+
+	// Models defines upstream model names and aliases for request routing.
+	Models []CodexModel `yaml:"models" json:"models"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// RequestScopedErrors overrides OAuth request error classification for this key.
+	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+
+	// RequestRetry optionally overrides the global retry count for this credential.
+	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+}
+
+func (k CodexKey) GetAPIKey() string   { return k.APIKey }
+func (k CodexKey) GetBaseURL() string  { return k.BaseURL }
+func (k CodexKey) GetPrefix() string   { return k.Prefix }
+func (k CodexKey) GetProxyURL() string { return k.ProxyURL }
+
+// CodexModel describes a mapping between an alias and the actual upstream model name.
+type CodexModel struct {
+	// Name is the upstream model identifier used when issuing requests.
+	Name string `yaml:"name" json:"name"`
+
+	// Alias is the client-facing model name that maps to Name.
+	Alias                      string                    `yaml:"alias" json:"alias"`
+	DisplayName                string                    `yaml:"display-name,omitempty" json:"display-name,omitempty"`
+	ForceMapping               bool                      `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+	IsCompat                   bool                      `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
+	SupportConfigurationUpdate bool                      `yaml:"support-configuration-update,omitempty" json:"support-configuration-update,omitempty"`
+	Thinking                   *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+}
+
+func (m CodexModel) GetName() string                        { return m.Name }
+func (m CodexModel) GetAlias() string                       { return m.Alias }
+func (m CodexModel) GetForceMapping() bool                  { return m.ForceMapping }
+func (m CodexModel) GetIsCompat() bool                      { return m.IsCompat }
+func (m CodexModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
+
+// GeminiKey represents the configuration for a Gemini API key,
+// including optional overrides for upstream base URL, proxy routing, and headers.
+type GeminiKey struct {
+	// ID is the immutable persistent UUID used by channel bindings.
+	ID string `yaml:"id,omitempty" json:"id,omitempty"`
+
+	// APIKey is the authentication key for accessing Gemini API services.
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Weight controls proportional selection under weighted round robin.
+	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
+
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// Prefix optionally namespaces models for this credential (e.g., "teamA/gemini-3-pro-preview").
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// BaseURL optionally overrides the Gemini API endpoint.
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+
+	// ProxyURL optionally overrides the global proxy for this API key.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// ConnectionPool configures upstream connection reuse for this credential.
+	ConnectionPool *ProxyConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
+
+	// Models defines upstream model names and aliases for request routing.
+	Models []GeminiModel `yaml:"models,omitempty" json:"models,omitempty"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// RequestScopedErrors overrides OAuth request error classification for this key.
+	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+
+	// RequestRetry optionally overrides the global retry count for this credential.
+	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+}
+
+func (k GeminiKey) GetAPIKey() string   { return k.APIKey }
+func (k GeminiKey) GetBaseURL() string  { return k.BaseURL }
+func (k GeminiKey) GetPrefix() string   { return k.Prefix }
+func (k GeminiKey) GetProxyURL() string { return k.ProxyURL }
+
+// GeminiModel describes a mapping between an alias and the actual upstream model name.
+type GeminiModel struct {
+	// Name is the upstream model identifier used when issuing requests.
+	Name string `yaml:"name" json:"name"`
+
+	// Alias is the client-facing model name that maps to Name.
+	Alias        string                    `yaml:"alias" json:"alias"`
+	DisplayName  string                    `yaml:"display-name,omitempty" json:"display-name,omitempty"`
+	ForceMapping bool                      `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+	IsCompat     bool                      `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
+	Thinking     *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+}
+
+func (m GeminiModel) GetName() string                        { return m.Name }
+func (m GeminiModel) GetAlias() string                       { return m.Alias }
+func (m GeminiModel) GetForceMapping() bool                  { return m.ForceMapping }
+func (m GeminiModel) GetIsCompat() bool                      { return m.IsCompat }
+func (m GeminiModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
+
+// OpenAICompatibility represents the configuration for OpenAI API compatibility
+// with external providers, allowing model aliases to be routed through OpenAI API format.
+type OpenAICompatibility struct {
+	// ID is the immutable persistent UUID used by channel bindings.
+	ID string `yaml:"id,omitempty" json:"id,omitempty"`
+
+	// Name is the identifier for this OpenAI compatibility configuration.
+	Name string `yaml:"name" json:"name"`
+
+	// Disabled marks this provider as inactive while preserving its configuration.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
+	// Priority controls selection preference when multiple providers or credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Weight controls proportional selection under weighted round robin.
+	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
+
+	// DisableCooling overrides the global disable-cooling switch for every API
+	// key of this provider: true keeps a 429 or 5xx from taking a key out of
+	// rotation, false keeps cooldowns on even while the global switch is off,
+	// and leaving it unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// Prefix optionally namespaces model aliases for this provider (e.g., "teamA/kimi-k2").
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// BaseURL is the base URL for the external OpenAI-compatible API endpoint.
+	BaseURL string `yaml:"base-url" json:"base-url"`
+
+	// APIKeyEntries defines API keys with optional per-key proxy configuration.
+	APIKeyEntries []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
+
+	// ConnectionPool is the provider-group default for upstream connection reuse.
+	ConnectionPool *ProxyConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
+
+	// Models defines the model configurations including aliases for routing.
+	Models []OpenAICompatibilityModel `yaml:"models" json:"models"`
+
+	// Headers optionally adds extra HTTP headers for requests sent to this provider.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// SupportPromptCacheKey enables derived prompt_cache_key injection for supported requests.
+	SupportPromptCacheKey bool `yaml:"support-prompt-cache-key,omitempty" json:"support-prompt-cache-key,omitempty"`
+
+	// RequestScopedErrors overrides request error classification for this provider.
+	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+
+	// RequestRetry optionally overrides the global retry count for this provider.
+	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+
+	// CodexToolBridge appends the Codex Desktop Computer Use and Browser plugin
+	// tool definitions (mcp__computer_use__* and mcp__node_repl__js) to every
+	// request sent through this provider that already declares tools. The list
+	// is fixed rather than taken from the request, so leave it off unless Codex
+	// Desktop uses those plugins through this upstream. Default: false.
+	CodexToolBridge bool `yaml:"codex-tool-bridge,omitempty" json:"codex-tool-bridge,omitempty"`
+}
+
+// OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.
+type OpenAICompatibilityAPIKey struct {
+	// ID is the immutable persistent UUID used by channel bindings.
+	ID string `yaml:"id,omitempty" json:"id,omitempty"`
+
+	// APIKey is the authentication key for accessing the external API services.
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Disabled marks this API key entry as inactive while preserving the config.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
+	// Weight controls proportional selection under weighted round robin.
+	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// ConnectionPool configures upstream connection reuse for this key.
+	ConnectionPool *ProxyConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
+}
+
+// OpenAICompatibilityModel represents a model configuration for OpenAI compatibility,
+// including the actual model name and its alias for API routing.
+type OpenAICompatibilityModel struct {
+	// Name is the actual model name used by the external provider.
+	Name string `yaml:"name" json:"name"`
+
+	// Alias is the model name alias that clients will use to reference this model.
+	Alias                  string                    `yaml:"alias" json:"alias"`
+	DisplayName            string                    `yaml:"display-name,omitempty" json:"display-name,omitempty"`
+	Image                  bool                      `yaml:"image,omitempty" json:"image,omitempty"`
+	ForceMapping           bool                      `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+	IsCompat               bool                      `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
+	UseMaxCompletionTokens any                       `yaml:"use-max-completion-tokens,omitempty" json:"use-max-completion-tokens,omitempty"`
+	InputModalities        []string                  `yaml:"input-modalities,omitempty" json:"input-modalities,omitempty"`
+	OutputModalities       []string                  `yaml:"output-modalities,omitempty" json:"output-modalities,omitempty"`
+	Thinking               *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+}
+
+func (m OpenAICompatibilityModel) GetName() string                        { return m.Name }
+func (m OpenAICompatibilityModel) GetAlias() string                       { return m.Alias }
+func (m OpenAICompatibilityModel) GetDisplayName() string                 { return m.DisplayName }
+func (m OpenAICompatibilityModel) GetForceMapping() bool                  { return m.ForceMapping }
+func (m OpenAICompatibilityModel) GetIsCompat() bool                      { return m.IsCompat }
+func (m OpenAICompatibilityModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
+
+// OpenCodeGoKey represents an OpenCode Go plan API key.
+// The upstream endpoint is fixed to https://opencode.ai/zen/go/v1.
+type OpenCodeGoKey struct {
+	// ID is the immutable persistent UUID used by channel bindings.
+	ID string `yaml:"id,omitempty" json:"id,omitempty"`
+
+	// APIKey is the authentication key for OpenCode Go.
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Disabled prevents this credential from serving requests without changing its model allowlist.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// Prefix optionally namespaces models for this credential.
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// Models defines the OpenCode Go model IDs explicitly enabled for this key.
+	Models []OpenCodeGoModel `yaml:"models,omitempty" json:"models,omitempty"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// VisionFallbackModel is used for image requests whose requested model lacks vision support.
+	VisionFallbackModel string `yaml:"vision-fallback-model,omitempty" json:"vision-fallback-model,omitempty"`
+
+	// CodexToolBridge appends the Codex Desktop Computer Use and Browser plugin
+	// tool definitions to every request sent with this key that already declares
+	// tools. See OpenAICompatibility.CodexToolBridge. Default: false.
+	CodexToolBridge bool `yaml:"codex-tool-bridge,omitempty" json:"codex-tool-bridge,omitempty"`
+}
+
+// OpenCodeGoModel describes a model explicitly enabled for OpenCode Go routing.
+type OpenCodeGoModel struct {
+	Name  string `yaml:"name" json:"name"`
+	Alias string `yaml:"alias,omitempty" json:"alias,omitempty"`
+}
+
+func (m OpenCodeGoModel) GetName() string  { return m.Name }
+func (m OpenCodeGoModel) GetAlias() string { return m.Alias }
+
+const DefaultClineBaseURL = "https://api.cline.bot/api/v1"
+
+// ClineKey represents a ClinePass OpenAI-compatible API key.
+type ClineKey struct {
+	// ID is the immutable persistent UUID used by channel bindings.
+	ID string `yaml:"id,omitempty" json:"id,omitempty"`
+
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Disabled prevents this credential from serving requests without changing its model allowlist.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// Prefix optionally namespaces models for this credential.
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// BaseURL is the OpenAI-compatible base URL. Defaults to DefaultClineBaseURL.
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// Models defines upstream Cline model IDs and optional client-facing aliases.
+	Models []ClineModel `yaml:"models,omitempty" json:"models,omitempty"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// VisionFallbackModel is used for image requests whose requested model lacks vision support.
+	VisionFallbackModel string `yaml:"vision-fallback-model,omitempty" json:"vision-fallback-model,omitempty"`
+
+	// AuthCookie stores the Cline dashboard cookie used for usage checks.
+	AuthCookie string `yaml:"-" json:"auth-cookie,omitempty"`
+}
+
+type ClineModel struct {
+	Name  string `yaml:"name" json:"name"`
+	Alias string `yaml:"alias,omitempty" json:"alias,omitempty"`
+}
+
+func (m ClineModel) GetName() string  { return m.Name }
+func (m ClineModel) GetAlias() string { return m.Alias }
+
+const DefaultOllamaCloudBaseURL = "https://ollama.com"
+
+// OllamaCloudKey represents an Ollama Cloud API key.
+type OllamaCloudKey struct {
+	// ID is the immutable persistent UUID used by channel bindings.
+	ID string `yaml:"id,omitempty" json:"id,omitempty"`
+
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Disabled prevents this credential from serving requests without changing its model allowlist.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// Prefix optionally namespaces models for this credential.
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// BaseURL is the Ollama API host. Defaults to DefaultOllamaCloudBaseURL.
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// Models defines upstream Ollama model IDs and optional client-facing aliases.
+	Models []OllamaCloudModel `yaml:"models,omitempty" json:"models,omitempty"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// VisionFallbackModel is used for image requests whose requested model lacks vision support.
+	VisionFallbackModel string `yaml:"vision-fallback-model,omitempty" json:"vision-fallback-model,omitempty"`
+
+	// AuthCookie stores the Ollama dashboard cookie used for usage checks.
+	AuthCookie string `yaml:"-" json:"auth-cookie,omitempty"`
+}
+
+func (k OllamaCloudKey) GetAPIKey() string  { return k.APIKey }
+func (k OllamaCloudKey) GetBaseURL() string { return k.BaseURL }
+
+type OllamaCloudModel struct {
+	Name  string `yaml:"name" json:"name"`
+	Alias string `yaml:"alias,omitempty" json:"alias,omitempty"`
+}
+
+func (m OllamaCloudModel) GetName() string  { return m.Name }
+func (m OllamaCloudModel) GetAlias() string { return m.Alias }
+
+// DefaultCommandCodeBaseURL is Command Code's documented Provider API. Note that
+// the plan tier is an entitlement rather than a credential concern: accounts on
+// the $1 "Go" plan mint a valid key but still receive 403 upgrade_required here,
+// because that plan excludes API access. Every other plan (GOAT and above) works.
+const DefaultCommandCodeBaseURL = "https://api.commandcode.ai/provider/v1"
+
+// CommandCodeKey represents a Command Code OpenAI-compatible API key.
+type CommandCodeKey struct {
+	// ID is the immutable persistent UUID used by channel bindings.
+	ID string `yaml:"id,omitempty" json:"id,omitempty"`
+
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Disabled prevents this credential from serving requests without changing its model allowlist.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// Prefix optionally namespaces models for this credential.
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// BaseURL is the OpenAI-compatible base URL. Defaults to DefaultCommandCodeBaseURL.
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// Models defines upstream Command Code model IDs and optional client-facing aliases.
+	Models []CommandCodeModel `yaml:"models,omitempty" json:"models,omitempty"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// VisionFallbackModel is used for image requests whose requested model lacks vision support.
+	VisionFallbackModel string `yaml:"vision-fallback-model,omitempty" json:"vision-fallback-model,omitempty"`
+}
+
+func (k CommandCodeKey) GetAPIKey() string  { return k.APIKey }
+func (k CommandCodeKey) GetBaseURL() string { return k.BaseURL }
+
+// CommandCodeModel describes a model explicitly enabled for Command Code routing.
+type CommandCodeModel struct {
+	Name  string `yaml:"name" json:"name"`
+	Alias string `yaml:"alias,omitempty" json:"alias,omitempty"`
+}
+
+func (m CommandCodeModel) GetName() string  { return m.Name }
+func (m CommandCodeModel) GetAlias() string { return m.Alias }

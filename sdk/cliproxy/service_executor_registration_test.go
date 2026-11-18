@@ -90,7 +90,6 @@ func TestRegisterAvailableExecutors(t *testing.T) {
 		"kimi-ai",
 		"kimi.ai",
 		"xai",
-		"agnes",
 		"openai-compatibility",
 		"plugin-provider",
 	}
@@ -179,73 +178,6 @@ func TestRegisterExecutorForAuth_OpenAICompatUsesNamespacedProviderKey(t *testin
 				t.Fatalf("compat executor type = %T, want *executor.OpenAICompatExecutor", compatExecutor)
 			}
 		})
-	}
-}
-
-func TestRegisterExecutorForAuth_DedicatedOpenAICompatKeepsNativeProviderKey(t *testing.T) {
-	service := &Service{
-		cfg:         &config.Config{},
-		coreManager: coreauth.NewManager(nil, nil, nil),
-	}
-
-	service.registerExecutorsForAuths([]*coreauth.Auth{
-		{
-			ID:       "bigmodel-config-auth",
-			Provider: "bigmodel-coding",
-			Attributes: map[string]string{
-				"compat_name":  "bigmodel-coding",
-				"provider_key": "bigmodel-coding",
-			},
-		},
-		{
-			ID:       "astron-config-auth",
-			Provider: "astron-code",
-			Attributes: map[string]string{
-				"compat_name":  "astron-code",
-				"provider_key": "astron-code",
-			},
-		},
-		{
-			ID:       "agnes-config-auth",
-			Provider: "agnes",
-			Attributes: map[string]string{
-				"compat_name":  "agnes",
-				"provider_key": "agnes",
-			},
-		},
-	}, true)
-
-	bigModelExecutor, okBigModel := service.coreManager.Executor("bigmodel-coding")
-	if !okBigModel {
-		t.Fatal("expected native bigmodel-coding executor")
-	}
-	if _, ok := bigModelExecutor.(*runtimeexecutor.BigModelCodingExecutor); !ok {
-		t.Fatalf("bigmodel executor type = %T, want *executor.BigModelCodingExecutor", bigModelExecutor)
-	}
-	if _, ok := service.coreManager.Executor("openai-compatible-bigmodel-coding"); ok {
-		t.Fatal("did not expect generic openai-compatible-bigmodel-coding executor")
-	}
-
-	astronExecutor, okAstron := service.coreManager.Executor("astron-code")
-	if !okAstron {
-		t.Fatal("expected native astron-code executor")
-	}
-	if _, ok := astronExecutor.(*runtimeexecutor.AstronCodeExecutor); !ok {
-		t.Fatalf("astron executor type = %T, want *executor.AstronCodeExecutor", astronExecutor)
-	}
-	if _, ok := service.coreManager.Executor("openai-compatible-astron-code"); ok {
-		t.Fatal("did not expect generic openai-compatible-astron-code executor")
-	}
-
-	agnesExecutor, okAgnes := service.coreManager.Executor("agnes")
-	if !okAgnes {
-		t.Fatal("expected dedicated agnes executor")
-	}
-	if _, ok := agnesExecutor.(*runtimeexecutor.OpenAICompatExecutor); !ok {
-		t.Fatalf("agnes executor type = %T, want *executor.OpenAICompatExecutor", agnesExecutor)
-	}
-	if _, ok := service.coreManager.Executor("openai-compatible-agnes"); ok {
-		t.Fatal("did not expect generic openai-compatible-agnes executor")
 	}
 }
 

@@ -2,8 +2,6 @@ package xai
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -24,6 +24,30 @@ type XAIAuth struct {
 }
 
 var xaiRefreshGroup singleflight.Group
+
+func BuildAuthorizeURL(params AuthorizeURLParams) (string, error) {
+	endpoint, err := ValidateOAuthEndpoint(params.AuthorizationEndpoint, "authorization_endpoint")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(params.RedirectURI) == "" || strings.TrimSpace(params.CodeChallenge) == "" ||
+		strings.TrimSpace(params.State) == "" || strings.TrimSpace(params.Nonce) == "" {
+		return "", fmt.Errorf("xai authorize URL: redirect URI, code challenge, state, and nonce are required")
+	}
+	values := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {"b1a00492-073a-47ea-816f-4c329264a828"},
+		"redirect_uri":          {strings.TrimSpace(params.RedirectURI)},
+		"scope":                 {Scope},
+		"code_challenge":        {strings.TrimSpace(params.CodeChallenge)},
+		"code_challenge_method": {"S256"},
+		"state":                 {strings.TrimSpace(params.State)},
+		"nonce":                 {strings.TrimSpace(params.Nonce)},
+		"plan":                  {"generic"},
+		"referrer":              {"cli-proxy-api"},
+	}
+	return endpoint + "?" + values.Encode(), nil
+}
 
 // NewXAIAuth creates an xAI OAuth helper using config proxy settings.
 func NewXAIAuth(cfg *config.Config) *XAIAuth {
@@ -91,11 +115,19 @@ func (a *XAIAuth) Discover(ctx context.Context) (*Discovery, error) {
 		return nil, fmt.Errorf("xai discovery failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var payload struct {
+		AuthorizationEndpoint       string `json:"authorization_endpoint"`
 		DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint"`
 		TokenEndpoint               string `json:"token_endpoint"`
 	}
 	if err = json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("xai discovery: parse response: %w", err)
+	}
+	authorizationEndpoint := strings.TrimSpace(payload.AuthorizationEndpoint)
+	if authorizationEndpoint != "" {
+		authorizationEndpoint, err = ValidateOAuthEndpoint(authorizationEndpoint, "authorization_endpoint")
+		if err != nil {
+			return nil, err
+		}
 	}
 	deviceAuthorizationEndpoint, err := ValidateOAuthEndpoint(payload.DeviceAuthorizationEndpoint, "device_authorization_endpoint")
 	if err != nil {
@@ -106,8 +138,44 @@ func (a *XAIAuth) Discover(ctx context.Context) (*Discovery, error) {
 		return nil, err
 	}
 	return &Discovery{
+		AuthorizationEndpoint:       authorizationEndpoint,
 		DeviceAuthorizationEndpoint: deviceAuthorizationEndpoint,
 		TokenEndpoint:               tokenEndpoint,
+	}, nil
+}
+
+// ExchangeCodeForTokens exchanges an xAI authorization code using PKCE.
+func (a *XAIAuth) ExchangeCodeForTokens(ctx context.Context, code, redirectURI string, pkceCodes *PKCECodes, tokenEndpoint string) (*AuthBundle, error) {
+	if pkceCodes == nil {
+		return nil, fmt.Errorf("xai token exchange: PKCE codes are required")
+	}
+	if strings.TrimSpace(code) == "" || strings.TrimSpace(redirectURI) == "" {
+		return nil, fmt.Errorf("xai token exchange: code and redirect URI are required")
+	}
+	if strings.TrimSpace(tokenEndpoint) == "" {
+		discovery, err := a.Discover(ctx)
+		if err != nil {
+			return nil, err
+		}
+		tokenEndpoint = discovery.TokenEndpoint
+	}
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {strings.TrimSpace(code)},
+		"redirect_uri":  {strings.TrimSpace(redirectURI)},
+		"client_id":     {ClientID},
+		"code_verifier": {pkceCodes.CodeVerifier},
+	}
+	tokenData, err := a.postTokenForm(ctx, tokenEndpoint, form)
+	if err != nil {
+		return nil, err
+	}
+	return &AuthBundle{
+		TokenData:     *tokenData,
+		LastRefresh:   time.Now().UTC().Format(time.RFC3339),
+		BaseURL:       DefaultAPIBaseURL,
+		RedirectURI:   strings.TrimSpace(redirectURI),
+		TokenEndpoint: strings.TrimSpace(tokenEndpoint),
 	}, nil
 }
 
@@ -466,9 +534,8 @@ func parseJWTIdentity(token string) (email string, subject string) {
 	if len(parts) < 2 {
 		return "", ""
 	}
-	payload := parts[1]
-	payload += strings.Repeat("=", (4-len(payload)%4)%4)
-	raw, err := base64.URLEncoding.DecodeString(payload)
+	payload := strings.TrimRight(parts[1], "=")
+	raw, err := base64.RawURLEncoding.DecodeString(payload)
 	if err != nil {
 		return "", ""
 	}

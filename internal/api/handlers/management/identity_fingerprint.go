@@ -1,63 +1,81 @@
 package management
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identityfingerprint"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 type identityFingerprintResponse struct {
-	IdentityFingerprint config.IdentityFingerprintConfig `json:"identity-fingerprint"`
-	Defaults            config.IdentityFingerprintConfig `json:"defaults"`
+	IdentityFingerprint config.IdentityFingerprintConfig                      `json:"identity-fingerprint"`
+	Defaults            config.IdentityFingerprintConfig                      `json:"defaults"`
+	Learned             map[string][]identityfingerprint.LearnedRecord        `json:"learned"`
+	Effective           map[string][]identityfingerprint.EffectiveFingerprint `json:"effective"`
+	Status              map[string]identityFingerprintProviderStatus          `json:"status"`
+	Version             int64                                                 `json:"version"`
+}
+
+type identityFingerprintProviderStatus struct {
+	Enabled      bool `json:"enabled"`
+	LearnedCount int  `json:"learned_count"`
 }
 
 func (h *Handler) GetIdentityFingerprint(c *gin.Context) {
-	h.mu.Lock()
-	current := config.IdentityFingerprintConfig{}
-	if h.cfg != nil {
-		current = h.cfg.IdentityFingerprint
-	}
-	h.mu.Unlock()
-
-	current.Codex = config.NormalizeCodexIdentityFingerprint(current.Codex)
-	current.Claude = config.NormalizeClaudeIdentityFingerprint(current.Claude)
+	current := h.currentIdentityFingerprintConfig()
+	learned, effective := h.identityFingerprintState(current)
 	c.JSON(http.StatusOK, identityFingerprintResponse{
 		IdentityFingerprint: current,
-		Defaults: config.IdentityFingerprintConfig{
-			Codex:  config.DefaultCodexIdentityFingerprint(),
-			Claude: config.DefaultClaudeIdentityFingerprint(),
+		Version:             h.liveSettingVersion(settingsstore.RuntimeSettingIdentityFingerprint),
+		Defaults:            config.DefaultIdentityFingerprintConfig(),
+		Learned:             learned,
+		Effective:           effective,
+		Status: map[string]identityFingerprintProviderStatus{
+			"claude":      {Enabled: current.Claude.Enabled, LearnedCount: len(learned["claude"])},
+			"codex":       {Enabled: current.Codex.Enabled, LearnedCount: len(learned["codex"])},
+			"gemini":      {Enabled: current.Gemini.Enabled, LearnedCount: len(learned["gemini"])},
+			"xai":         {Enabled: current.XAI.Enabled, LearnedCount: len(learned["xai"])},
+			"kimi":        {Enabled: current.Kimi.Enabled, LearnedCount: len(learned["kimi"])},
+			"antigravity": {Enabled: current.Antigravity.Enabled, LearnedCount: len(learned["antigravity"])},
 		},
 	})
 }
 
 func (h *Handler) PutIdentityFingerprint(c *gin.Context) {
-	h.updateIdentityFingerprint(c, false)
-}
-
-func (h *Handler) PatchIdentityFingerprint(c *gin.Context) {
-	h.updateIdentityFingerprint(c, true)
-}
-
-func (h *Handler) updateIdentityFingerprint(c *gin.Context, merge bool) {
-	body, err := h.decodeIdentityFingerprintRequest(c, merge)
-	if err != nil {
+	var body config.IdentityFingerprintConfig
+	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
 
-	body.Codex = config.NormalizeCodexIdentityFingerprint(body.Codex)
-	body.Claude = config.NormalizeClaudeIdentityFingerprint(body.Claude)
+	body = config.NormalizeIdentityFingerprintConfig(body)
 	if err := validateCodexIdentityFingerprint(body.Codex); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	if err := validateClaudeIdentityFingerprint(body.Claude); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateGeminiIdentityFingerprint(body.Gemini); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateXAIIdentityFingerprint(body.XAI); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateKimiIdentityFingerprint(body.Kimi); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateAntigravityIdentityFingerprint(body.Antigravity); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -68,74 +86,102 @@ func (h *Handler) updateIdentityFingerprint(c *gin.Context, merge bool) {
 		body.Claude.SessionID = uuid.NewString()
 	}
 
-	h.mu.Lock()
-	if h.cfg == nil {
-		h.cfg = &config.Config{}
-	}
-	h.cfg.IdentityFingerprint = body
-	h.mu.Unlock()
-
-	h.persist(c)
+	// Identity fingerprints are a system-wide setting whatever tenant the
+	// operator is viewing, as before.
+	h.mutateSystemConfig(c, func(cfg *config.Config) error {
+		cfg.IdentityFingerprint = body
+		return nil
+	})
 }
 
-func (h *Handler) decodeIdentityFingerprintRequest(c *gin.Context, merge bool) (config.IdentityFingerprintConfig, error) {
-	var body config.IdentityFingerprintConfig
-	if merge {
-		h.mu.Lock()
-		if h.cfg != nil {
-			body = h.cfg.IdentityFingerprint
-		}
-		h.mu.Unlock()
-	}
-
-	raw, err := io.ReadAll(c.Request.Body)
+func (h *Handler) GetCodexFingerprintRecommendations(c *gin.Context) {
+	result, err := usage.QueryCodexFingerprintRecommendations(usage.CodexFingerprintRecommendationQuery{
+		Days:  intQueryDefault(c, "days", 7),
+		Limit: intQueryDefault(c, "limit", 200),
+	})
 	if err != nil {
-		return body, err
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
+	c.JSON(http.StatusOK, result)
+}
 
-	source := raw
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &top); err != nil {
-		return body, err
+func (h *Handler) DeleteIdentityFingerprintLearned(c *gin.Context) {
+	provider := identityfingerprint.Provider(strings.TrimSpace(c.Query("provider")))
+	accountKey := strings.TrimSpace(c.Query("account_key"))
+	if provider == "" || accountKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider and account_key are required"})
+		return
 	}
-	if nested, ok := top["identity-fingerprint"]; ok {
-		source = nested
-		if err := json.Unmarshal(nested, &top); err != nil {
-			return body, err
-		}
-	} else if nested, ok := top["identityFingerprint"]; ok {
-		source = nested
-		if err := json.Unmarshal(nested, &top); err != nil {
-			return body, err
-		}
+	deleted, err := usage.DeleteIdentityFingerprint(provider, accountKey)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
+	c.JSON(http.StatusOK, gin.H{"deleted": deleted})
+}
 
-	var hasProvider bool
-	if rawCodex, ok := top["codex"]; ok {
-		if err := json.Unmarshal(rawCodex, &body.Codex); err != nil {
-			return body, err
-		}
-		hasProvider = true
+func (h *Handler) identityFingerprintState(current config.IdentityFingerprintConfig) (map[string][]identityfingerprint.LearnedRecord, map[string][]identityfingerprint.EffectiveFingerprint) {
+	learned := map[string][]identityfingerprint.LearnedRecord{
+		"claude":      {},
+		"codex":       {},
+		"gemini":      {},
+		"xai":         {},
+		"kimi":        {},
+		"antigravity": {},
 	}
-	if rawClaude, ok := top["claude"]; ok {
-		if err := json.Unmarshal(rawClaude, &body.Claude); err != nil {
-			return body, err
-		}
-		hasProvider = true
+	effective := map[string][]identityfingerprint.EffectiveFingerprint{
+		"claude":      {},
+		"codex":       {},
+		"gemini":      {},
+		"xai":         {},
+		"kimi":        {},
+		"antigravity": {},
 	}
-	if !hasProvider {
-		if err := json.Unmarshal(source, &body); err != nil {
-			return body, err
+	for _, provider := range []identityfingerprint.Provider{identityfingerprint.ProviderClaude, identityfingerprint.ProviderCodex, identityfingerprint.ProviderGemini, identityfingerprint.ProviderXAI, identityfingerprint.ProviderKimi, identityfingerprint.ProviderAntigravity} {
+		records, err := usage.ListIdentityFingerprints(provider, 200)
+		if err != nil {
+			continue
+		}
+		key := string(provider)
+		learned[key] = records
+		for i := range records {
+			record := records[i]
+			switch provider {
+			case identityfingerprint.ProviderClaude:
+				_, eff := identityfingerprint.ResolveClaude(current.Claude, &record)
+				effective[key] = append(effective[key], eff)
+			case identityfingerprint.ProviderCodex:
+				_, eff := identityfingerprint.ResolveCodexProfile(current.Codex, &record)
+				effective[key] = append(effective[key], eff)
+			case identityfingerprint.ProviderGemini:
+				_, eff := identityfingerprint.ResolveGemini(current.Gemini, &record)
+				effective[key] = append(effective[key], eff)
+			case identityfingerprint.ProviderXAI:
+				_, eff := identityfingerprint.ResolveXAI(current.XAI, &record)
+				effective[key] = append(effective[key], eff)
+			case identityfingerprint.ProviderKimi:
+				_, eff := identityfingerprint.ResolveKimi(current.Kimi, &record)
+				effective[key] = append(effective[key], eff)
+			case identityfingerprint.ProviderAntigravity:
+				_, eff := identityfingerprint.ResolveAntigravity(current.Antigravity, &record)
+				effective[key] = append(effective[key], eff)
+			}
 		}
 	}
-	return body, nil
+	return learned, effective
 }
 
 func validateCodexIdentityFingerprint(fp config.CodexIdentityFingerprintConfig) error {
 	if containsHeaderLineBreak(fp.UserAgent) || containsHeaderLineBreak(fp.Version) ||
 		containsHeaderLineBreak(fp.Originator) || containsHeaderLineBreak(fp.WebsocketBeta) ||
-		containsHeaderLineBreak(fp.SessionID) {
+		containsHeaderLineBreak(fp.BetaFeatures) || containsHeaderLineBreak(fp.SessionID) {
 		return fmt.Errorf("identity fingerprint fields must not contain line breaks")
+	}
+	if fp.Enabled {
+		if _, _, ok := identityfingerprint.CodexProfileKey(fp.UserAgent, fp.Originator); !ok {
+			return fmt.Errorf("codex user-agent and originator must identify the same supported client profile")
+		}
 	}
 	for key, value := range fp.CustomHeaders {
 		key = strings.TrimSpace(key)
@@ -183,6 +229,106 @@ func validateClaudeIdentityFingerprint(fp config.ClaudeIdentityFingerprintConfig
 	return nil
 }
 
+func validateGeminiIdentityFingerprint(fp config.GeminiIdentityFingerprintConfig) error {
+	if containsHeaderLineBreak(fp.UserAgent) || containsHeaderLineBreak(fp.APIClient) ||
+		containsHeaderLineBreak(fp.ClientMetadata) {
+		return fmt.Errorf("identity fingerprint fields must not contain line breaks")
+	}
+	for key, value := range fp.CustomHeaders {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" {
+			return fmt.Errorf("custom header name cannot be empty")
+		}
+		if !isHTTPHeaderToken(key) {
+			return fmt.Errorf("invalid custom header name: %s", key)
+		}
+		if isIdentityFingerprintBlockedHeader(key) || isGeminiIdentityFingerprintBlockedHeader(key) {
+			return fmt.Errorf("custom header %s is managed by the system", key)
+		}
+		if containsHeaderLineBreak(value) {
+			return fmt.Errorf("custom header %s must not contain line breaks", key)
+		}
+	}
+	return nil
+}
+
+func validateXAIIdentityFingerprint(fp config.XAIIdentityFingerprintConfig) error {
+	if containsHeaderLineBreak(fp.UserAgent) ||
+		containsHeaderLineBreak(fp.ClientIdentifier) ||
+		containsHeaderLineBreak(fp.ClientVersion) ||
+		containsHeaderLineBreak(fp.GrokConversationID) {
+		return fmt.Errorf("identity fingerprint fields must not contain line breaks")
+	}
+	for key, value := range fp.CustomHeaders {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" {
+			return fmt.Errorf("custom header name cannot be empty")
+		}
+		if !isHTTPHeaderToken(key) {
+			return fmt.Errorf("invalid custom header name: %s", key)
+		}
+		if isIdentityFingerprintBlockedHeader(key) || isXAIIdentityFingerprintBlockedHeader(key) {
+			return fmt.Errorf("custom header %s is managed by the system", key)
+		}
+		if containsHeaderLineBreak(value) {
+			return fmt.Errorf("custom header %s must not contain line breaks", key)
+		}
+	}
+	return nil
+}
+
+func validateKimiIdentityFingerprint(fp config.KimiIdentityFingerprintConfig) error {
+	if containsHeaderLineBreak(fp.UserAgent) ||
+		containsHeaderLineBreak(fp.Platform) ||
+		containsHeaderLineBreak(fp.Version) ||
+		containsHeaderLineBreak(fp.DeviceName) ||
+		containsHeaderLineBreak(fp.DeviceModel) {
+		return fmt.Errorf("identity fingerprint fields must not contain line breaks")
+	}
+	for key, value := range fp.CustomHeaders {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" {
+			return fmt.Errorf("custom header name cannot be empty")
+		}
+		if !isHTTPHeaderToken(key) {
+			return fmt.Errorf("invalid custom header name: %s", key)
+		}
+		if isIdentityFingerprintBlockedHeader(key) || isKimiIdentityFingerprintBlockedHeader(key) {
+			return fmt.Errorf("custom header %s is managed by the system", key)
+		}
+		if containsHeaderLineBreak(value) {
+			return fmt.Errorf("custom header %s must not contain line breaks", key)
+		}
+	}
+	return nil
+}
+
+func validateAntigravityIdentityFingerprint(fp config.AntigravityIdentityFingerprintConfig) error {
+	if containsHeaderLineBreak(fp.UserAgent) || containsHeaderLineBreak(fp.Version) {
+		return fmt.Errorf("identity fingerprint fields must not contain line breaks")
+	}
+	for key, value := range fp.CustomHeaders {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" {
+			return fmt.Errorf("custom header name cannot be empty")
+		}
+		if !isHTTPHeaderToken(key) {
+			return fmt.Errorf("invalid custom header name: %s", key)
+		}
+		if isIdentityFingerprintBlockedHeader(key) {
+			return fmt.Errorf("custom header %s is managed by the system", key)
+		}
+		if containsHeaderLineBreak(value) {
+			return fmt.Errorf("custom header %s must not contain line breaks", key)
+		}
+	}
+	return nil
+}
+
 func containsHeaderLineBreak(value string) bool {
 	return strings.ContainsAny(value, "\r\n")
 }
@@ -190,7 +336,7 @@ func containsHeaderLineBreak(value string) bool {
 func isIdentityFingerprintBlockedHeader(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "authorization", "content-type", "accept", "connection", "chatgpt-account-id",
-		"user-agent", "version", "session_id", "session-id", "originator", "openai-beta":
+		"user-agent", "version", "session_id", "session-id", "originator", "openai-beta", "x-codex-beta-features":
 		return true
 	default:
 		return false
@@ -205,6 +351,36 @@ func isClaudeIdentityFingerprintBlockedHeader(key string) bool {
 	switch key {
 	case "x-api-key", "anthropic-beta", "anthropic-version", "anthropic-dangerous-direct-browser-access",
 		"x-app", "x-client-request-id", "x-claude-code-session-id":
+		return true
+	default:
+		return false
+	}
+}
+
+func isGeminiIdentityFingerprintBlockedHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "x-goog-api-client", "client-metadata":
+		return true
+	default:
+		return false
+	}
+}
+
+func isXAIIdentityFingerprintBlockedHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "x-grok-client-identifier", "x-grok-client-version", "x-grok-client-mode", "x-grok-conv-id":
+		return true
+	default:
+		return false
+	}
+}
+
+// isKimiIdentityFingerprintBlockedHeader covers the headers the kimi fingerprint
+// owns. The device id is included even though it has no preset: it is resolved
+// per account, and a custom header would override every account with one value.
+func isKimiIdentityFingerprintBlockedHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "x-msh-platform", "x-msh-version", "x-msh-device-name", "x-msh-device-model", "x-msh-device-id":
 		return true
 	default:
 		return false

@@ -1,12 +1,12 @@
 package api
 
 import (
-	"crypto/subtle"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -38,7 +38,7 @@ func (s *Server) handleKeepAlive(c *gin.Context) {
 		if provided == "" {
 			provided = strings.TrimSpace(c.GetHeader("X-Local-Password"))
 		}
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(s.localPassword)) != 1 {
+		if !util.ConstantTimeStringEqual(provided, s.localPassword) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid password"})
 			return
 		}

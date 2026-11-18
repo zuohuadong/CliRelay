@@ -1,170 +1,214 @@
 package management
 
 import (
-	"context"
+	"fmt"
 	"net/http"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	managementauthfiles "github.com/router-for-me/CLIProxyAPI/v8/internal/management/authfiles"
+	apikeysettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	log "github.com/sirupsen/logrus"
 )
 
-func (h *Handler) GetDashboardSummary(c *gin.Context) {
-	filters := usageFiltersFromQuery(c)
-	payload, err := h.loadUsageAggregateWithTTL(
-		c.Request.Context(),
-		usageAggregateDashboard,
-		filters,
-		dashboardSummaryCacheTTL,
-		func(ctx context.Context) (gin.H, error) {
-			return h.buildDashboardSummary(ctx, filters), nil
-		},
-	)
-	if err != nil {
-		if c.Request.Context().Err() == nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build dashboard summary"})
-		}
-		return
-	}
-	c.JSON(http.StatusOK, payload)
+// dashboardSummaryCacheTTL absorbs multi-tab and 5–20s frontend poll storms so
+// request_logs aggregation is not re-run on every refresh. Counts (API keys /
+// auth files) stay live; only KPI + trends payloads are cached.
+const dashboardSummaryCacheTTL = 15 * time.Second
+
+type dashboardSummaryUsageCache struct {
+	kpi             usage.DashboardKPI
+	trends          usage.DashboardTrends
+	throughputScope string
 }
 
-func (h *Handler) buildDashboardSummary(requestContext context.Context, filters usageFilters) gin.H {
+// GetDashboardSummary is a lightweight endpoint that returns only the
+// counts and KPIs needed by the frontend dashboard page, avoiding
+// the transfer of the full usage / config payloads.
+//
+// GET /v0/management/dashboard-summary?days=7
+//
+// Platform super-admins receive throughput_series aggregated across every
+// tenant (meta.throughput_scope = "all_tenants"); ordinary tenants stay scoped.
+func (h *Handler) GetDashboardSummary(c *gin.Context) {
 	cfg := h.cfg
+	tenantID := effectiveTenantID(c)
+	principal, hasPrincipal := principalFromContext(c)
+	allTenantThroughput := hasPrincipal && principal.PlatformAdmin
+
+	// ── Provider key counts ──
 	geminiCount := 0
 	claudeCount := 0
 	codexCount := 0
 	vertexCount := 0
 	openaiCount := 0
-	bigmodelCount := 0
-	astronCodeCount := 0
-	agnesCount := 0
-	iflowCount := 0
-	if cfg != nil {
+	authFileCount := 0
+	apiKeyCount := 0
+
+	if cfg != nil && tenantID == identity.SystemTenantID {
 		geminiCount = len(cfg.GeminiKey)
 		claudeCount = len(cfg.ClaudeKey)
 		codexCount = len(cfg.CodexKey)
 		vertexCount = len(cfg.VertexCompatAPIKey)
 		openaiCount = len(cfg.OpenAICompatibility)
-		cfg.MigrateBigModelCodingFromOpenAICompatibility()
-		cfg.SanitizeBigModelCoding()
-		bigmodelCount = len(cfg.BigModelCodingAPIKey)
-		cfg.MigrateAstronCodeFromOpenAICompatibility()
-		cfg.SanitizeAstronCode()
-		astronCodeCount = len(cfg.AstronCodeAPIKey)
-		cfg.MigrateAgnesFromOpenAICompatibility()
-		cfg.SanitizeAgnes()
-		agnesCount = len(cfg.AgnesAPIKey)
 	}
+	apiKeyCount = len(apikeysettings.NewService(nil, apikeysettings.WithTenantID(tenantID)).ListRows())
 
-	iflowAuthCount := 0
 	if h.authManager != nil {
-		for _, auth := range h.authManager.List() {
-			if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "iflow") {
-				iflowAuthCount++
-			}
+		authFileCount = len(managementauthfiles.ListEntries(h.authManager.ListForTenant(tenantID), managementauthfiles.EntryOptions{
+			OnStatError: func(path string, err error) {
+				log.WithError(err).Warnf("failed to stat auth file %s", path)
+			},
+		}))
+	}
+
+	providerTotal := geminiCount + claudeCount + codexCount + vertexCount + openaiCount
+	if tenantID != identity.SystemTenantID {
+		providerTotal = authFileCount
+	}
+
+	// ── Usage KPIs (persists across restarts) ──
+	daysStr := c.DefaultQuery("days", "7")
+	days := 7
+	if v, err := parsePositiveInt(daysStr); err == nil && v > 0 {
+		days = v
+	}
+
+	scopeKey := "tenant"
+	if allTenantThroughput {
+		scopeKey = "all_tenants"
+	}
+	cacheKey := "dashboard-summary:" + tenantID + ":" + strconv.Itoa(days) + ":" + scopeKey
+
+	var (
+		kpi             usage.DashboardKPI
+		trends          usage.DashboardTrends
+		throughputScope string
+		fromCache       bool
+	)
+	if cached, ok := h.getDashboardSummaryCache(cacheKey); ok {
+		if payload, ok := cached.(dashboardSummaryUsageCache); ok {
+			kpi = payload.kpi
+			trends = payload.trends
+			throughputScope = payload.throughputScope
+			fromCache = true
 		}
 	}
-	iflowCount = iflowAuthCount
-
-	authFileCount := 0
-	if h.authManager != nil {
-		for _, auth := range h.authManager.List() {
-			if h.buildAuthFileEntry(auth) != nil {
-				authFileCount++
+	if !fromCache {
+		kpi, _ = usage.QueryDashboardKPIForTenant(tenantID, days)
+		trends, _ = usage.QueryDashboardTrendsForTenant(tenantID, days)
+		throughputScope = "tenant"
+		if allTenantThroughput {
+			if series, err := usage.QueryDashboardThroughputAcrossTenants(); err == nil {
+				trends.ThroughputSeries = series
+				throughputScope = "all_tenants"
+			}
+			tenantNames := make(map[string]string)
+			if service := h.identity(); service != nil {
+				if tenants, tErr := service.ListTenants(c.Request.Context()); tErr == nil {
+					for _, t := range tenants {
+						name := t.Name
+						if name == "" {
+							name = t.Slug
+						}
+						tenantNames[t.ID] = name
+					}
+				}
+			}
+			if items, bErr := usage.QueryDashboardTenantBreakdownThroughput(tenantNames); bErr == nil {
+				trends.Tenants = items
 			}
 		}
+		h.setDashboardSummaryCache(cacheKey, dashboardSummaryUsageCache{
+			kpi:             kpi,
+			trends:          trends,
+			throughputScope: throughputScope,
+		})
 	}
 
-	// API key count from the usage DB
-	apiKeyCount := 0
-	if keys := usage.ListAPIKeys(); keys != nil {
-		apiKeyCount = len(keys)
-	}
-
-	totals := usageTotals{}
-	requestVolume := []gin.H{}
-	successRateTrend := []gin.H{}
-	totalTokensTrend := []gin.H{}
-	totalCostTrend := []gin.H{}
-	failedRequestsTrend := []gin.H{}
-	throughputSeries := []gin.H{}
-	if db, ok := h.usageDB(); ok {
-		defer func() { _ = db.Close() }()
-		totals = queryUsageTotalsContext(requestContext, db, filters)
-		for _, point := range queryUsageDailySeriesContext(requestContext, db, filters) {
-			requests := int64FromGinValue(point["requests"])
-			failed := int64FromGinValue(point["failed_requests"])
-			successRate := float64(0)
-			if requests > 0 {
-				successRate = float64(requests-failed) / float64(requests) * 100
-			}
-			label := point["date"]
-			requestVolume = append(requestVolume, gin.H{"date": label, "label": label, "value": requests, "requests": requests})
-			successRateTrend = append(successRateTrend, gin.H{"date": label, "label": label, "value": successRate, "success_rate": successRate})
-			totalTokensTrend = append(totalTokensTrend, gin.H{"date": label, "label": label, "value": point["total_tokens"], "total_tokens": point["total_tokens"]})
-			totalCostTrend = append(totalCostTrend, gin.H{"date": label, "label": label, "value": point["total_cost"], "total_cost": point["total_cost"]})
-			failedRequestsTrend = append(failedRequestsTrend, gin.H{"date": label, "label": label, "value": failed, "failed_requests": failed})
-		}
-		throughputSeries = queryUsageHourlyThroughputContext(requestContext, db, filters)
-	}
-	successRate := float64(0)
-	if totals.Total > 0 {
-		successRate = float64(totals.Success) / float64(totals.Total) * 100
-	}
-
-	return gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"kpi": gin.H{
-			"total_requests":   totals.Total,
-			"success_requests": totals.Success,
-			"failed_requests":  totals.Failed,
-			"success_rate":     successRate,
-			"input_tokens":     totals.InputTokens,
-			"output_tokens":    totals.OutputTokens,
-			"reasoning_tokens": totals.ReasoningTokens,
-			"cached_tokens":    totals.CachedTokens,
-			"total_tokens":     totals.TotalTokens,
-			"total_cost":       totals.TotalCost,
+			"total_requests":   kpi.TotalRequests,
+			"success_requests": kpi.SuccessRequests,
+			"failed_requests":  kpi.FailedRequests,
+			"success_rate":     kpi.SuccessRate,
+			"input_tokens":     kpi.InputTokens,
+			"output_tokens":    kpi.OutputTokens,
+			"reasoning_tokens": kpi.ReasoningTokens,
+			"cached_tokens":    kpi.CachedTokens,
+			"total_tokens":     kpi.TotalTokens,
+			"total_cost":       kpi.TotalCost,
+			"cache_rate":       kpi.CacheRate,
+			// Null when no request in the window reported its cache use.
+			"cache_hit_rate":     kpi.CacheHitRate,
+			"cache_read_tokens":  kpi.CacheReadTokens,
+			"cache_write_tokens": kpi.CacheWriteTokens,
 		},
 		"counts": gin.H{
 			"api_keys":         apiKeyCount,
-			"providers_total":  geminiCount + claudeCount + codexCount + vertexCount + openaiCount + bigmodelCount + astronCodeCount + agnesCount + iflowCount,
+			"providers_total":  providerTotal,
 			"gemini_keys":      geminiCount,
 			"claude_keys":      claudeCount,
 			"codex_keys":       codexCount,
 			"vertex_keys":      vertexCount,
 			"openai_providers": openaiCount,
-			"bigmodel_keys":    bigmodelCount,
-			"astron_code_keys": astronCodeCount,
-			"agnes_keys":       agnesCount,
-			"iflow_keys":       iflowCount,
 			"auth_files":       authFileCount,
 		},
-		"trends": gin.H{
-			"request_volume":    requestVolume,
-			"success_rate":      successRateTrend,
-			"total_tokens":      totalTokensTrend,
-			"total_cost":        totalCostTrend,
-			"failed_requests":   failedRequestsTrend,
-			"throughput_series": throughputSeries,
-		},
+		"trends": trends,
 		"meta": gin.H{
-			"generated_at": time.Now().UTC().Format(time.RFC3339),
+			"generated_at":     time.Now().UTC().Format(time.RFC3339),
+			"throughput_scope": throughputScope,
 		},
-		"days": filters.Days,
-	}
+		"days": days,
+	})
 }
 
-func int64FromGinValue(value any) int64 {
-	switch typed := value.(type) {
-	case int64:
-		return typed
-	case int:
-		return int64(typed)
-	case float64:
-		return int64(typed)
-	default:
-		return 0
+func (h *Handler) getDashboardSummaryCache(key string) (any, bool) {
+	if h == nil {
+		return nil, false
 	}
+	h.trendCacheMu.Lock()
+	defer h.trendCacheMu.Unlock()
+	entry, ok := h.trendCache[key]
+	if !ok || time.Now().After(entry.expiresAt) {
+		if ok {
+			delete(h.trendCache, key)
+		}
+		return nil, false
+	}
+	return entry.payload, true
+}
+
+func (h *Handler) setDashboardSummaryCache(key string, payload any) {
+	if h == nil || payload == nil {
+		return
+	}
+	h.trendCacheMu.Lock()
+	defer h.trendCacheMu.Unlock()
+	if h.trendCache == nil {
+		h.trendCache = make(map[string]trendCacheEntry)
+	}
+	now := time.Now()
+	const maxEntries = 256
+	for k, entry := range h.trendCache {
+		if now.After(entry.expiresAt) {
+			delete(h.trendCache, k)
+		}
+	}
+	if len(h.trendCache) >= maxEntries {
+		for k := range h.trendCache {
+			delete(h.trendCache, k)
+			break
+		}
+	}
+	h.trendCache[key] = trendCacheEntry{expiresAt: now.Add(dashboardSummaryCacheTTL), payload: payload}
+}
+
+func parsePositiveInt(s string) (int, error) {
+	var v int
+	_, err := fmt.Sscanf(s, "%d", &v)
+	return v, err
 }

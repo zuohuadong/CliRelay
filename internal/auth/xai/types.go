@@ -18,7 +18,10 @@ const (
 	// ClientID is the public xAI Grok CLI OAuth client ID.
 	ClientID = "b1a00492-073a-47ea-816f-4c329264a828"
 	// Scope is the OAuth scope set required for xAI API access.
-	Scope = "openid profile email offline_access grok-cli:access api:access"
+	Scope        = "openid profile email offline_access grok-cli:access api:access"
+	RedirectHost = "127.0.0.1"
+	CallbackPort = 56121
+	RedirectPath = "/callback"
 	// DeviceCodeGrantType is the OAuth2 device authorization grant type (RFC 8628).
 	DeviceCodeGrantType = "urn:ietf:params:oauth:grant-type:device_code"
 	// defaultPollInterval is used when the device endpoint omits interval.
@@ -38,8 +41,17 @@ func RefreshLead() time.Duration {
 
 // Discovery contains OAuth endpoints resolved from xAI OIDC discovery.
 type Discovery struct {
+	AuthorizationEndpoint       string `json:"authorization_endpoint"`
 	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint"`
 	TokenEndpoint               string `json:"token_endpoint"`
+}
+
+type AuthorizeURLParams struct {
+	AuthorizationEndpoint string
+	RedirectURI           string
+	CodeChallenge         string
+	State                 string
+	Nonce                 string
 }
 
 // DeviceCodeResponse represents xAI's device authorization response.

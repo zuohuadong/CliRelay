@@ -1,0 +1,377 @@
+package identityfingerprint
+
+import (
+	"strings"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+)
+
+func ResolveClaude(cfg config.ClaudeIdentityFingerprintConfig, learned *LearnedRecord) (config.ClaudeIdentityFingerprintConfig, EffectiveFingerprint) {
+	clean := config.CleanClaudeIdentityFingerprint(cfg)
+	defaults := config.DefaultClaudeIdentityFingerprint()
+	fields := make(map[string]FieldValue)
+	pick := func(field, preset, learnedValue, defaultValue string) string {
+		value, source := pickField(preset, learnedValue, defaultValue)
+		fields[field] = FieldValue{Value: value, Source: source}
+		return value
+	}
+
+	cliVersion := pick(FieldClaudeCLIVersion, clean.CLIVersion, learnedFieldOrVersion(learned, FieldClaudeCLIVersion), defaults.CLIVersion)
+	entrypoint := pick(FieldClaudeEntrypoint, clean.Entrypoint, learnedField(learned, FieldClaudeEntrypoint), defaults.Entrypoint)
+	userAgentDefault := config.BuildClaudeFingerprintUserAgent(cliVersion, entrypoint)
+	userAgent := pick(FieldUserAgent, clean.UserAgent, learnedField(learned, FieldUserAgent), userAgentDefault)
+	anthropicBeta := pick(FieldClaudeAnthropicBeta, clean.AnthropicBeta, learnedField(learned, FieldClaudeAnthropicBeta), defaults.AnthropicBeta)
+	stainlessPackage := pick(FieldClaudeStainlessPackage, clean.StainlessPackageVersion, learnedField(learned, FieldClaudeStainlessPackage), defaults.StainlessPackageVersion)
+	stainlessRuntime := pick(FieldClaudeStainlessRuntime, clean.StainlessRuntimeVersion, learnedField(learned, FieldClaudeStainlessRuntime), defaults.StainlessRuntimeVersion)
+	stainlessTimeout := pick(FieldClaudeStainlessTimeout, clean.StainlessTimeout, learnedField(learned, FieldClaudeStainlessTimeout), defaults.StainlessTimeout)
+
+	sessionMode := clean.SessionMode
+	if sessionMode == "" {
+		sessionMode = defaults.SessionMode
+	}
+	resolved := config.ClaudeIdentityFingerprintConfig{
+		Enabled:                 clean.Enabled,
+		CLIVersion:              cliVersion,
+		Entrypoint:              entrypoint,
+		UserAgent:               userAgent,
+		AnthropicBeta:           anthropicBeta,
+		StainlessPackageVersion: stainlessPackage,
+		StainlessRuntimeVersion: stainlessRuntime,
+		StainlessTimeout:        stainlessTimeout,
+		SessionMode:             sessionMode,
+		SessionID:               clean.SessionID,
+		DeviceID:                clean.DeviceID,
+		CustomHeaders:           clean.CustomHeaders,
+	}
+	effective := effective(ProviderClaude, clean.Enabled, learned, fields)
+	effective.Version = cliVersion
+	return resolved, effective
+}
+
+func ResolveCodex(cfg config.CodexIdentityFingerprintConfig, learned *LearnedRecord) (config.CodexIdentityFingerprintConfig, EffectiveFingerprint) {
+	clean := config.CleanCodexIdentityFingerprint(cfg)
+	defaults := config.DefaultCodexIdentityFingerprint()
+	fields := make(map[string]FieldValue)
+	pick := func(field, preset, learnedValue, defaultValue string) string {
+		value, source := pickField(preset, learnedValue, defaultValue)
+		fields[field] = FieldValue{Value: value, Source: source}
+		return value
+	}
+
+	userAgent := pick(FieldUserAgent, clean.UserAgent, learnedField(learned, FieldUserAgent), defaults.UserAgent)
+	version := pick(FieldCodexVersion, clean.Version, learnedFieldOrVersion(learned, FieldCodexVersion), defaults.Version)
+	originator := pick(FieldCodexOriginator, clean.Originator, learnedField(learned, FieldCodexOriginator), defaults.Originator)
+	websocketBeta := pick(FieldCodexWebsocketBeta, clean.WebsocketBeta, learnedField(learned, FieldCodexWebsocketBeta), defaults.WebsocketBeta)
+	betaFeatures := pick(FieldCodexBetaFeatures, clean.BetaFeatures, learnedField(learned, FieldCodexBetaFeatures), defaults.BetaFeatures)
+
+	sessionMode := clean.SessionMode
+	if sessionMode == "" {
+		sessionMode = defaults.SessionMode
+	}
+	resolved := config.CodexIdentityFingerprintConfig{
+		Enabled:       clean.Enabled,
+		UserAgent:     userAgent,
+		Version:       version,
+		Originator:    originator,
+		WebsocketBeta: websocketBeta,
+		BetaFeatures:  betaFeatures,
+		SessionMode:   sessionMode,
+		SessionID:     clean.SessionID,
+		CustomHeaders: clean.CustomHeaders,
+	}
+	effective := effective(ProviderCodex, clean.Enabled, learned, fields)
+	effective.Version = version
+	return resolved, effective
+}
+
+// ResolveCodexProfile resolves product identity fields from one selected profile only.
+// Session and custom-header settings remain account-global, but UA/Originator/Version/Beta
+// are never filled from another profile or a global product preset.
+func ResolveCodexSafeFallback(cfg config.CodexIdentityFingerprintConfig) (config.CodexIdentityFingerprintConfig, EffectiveFingerprint) {
+	clean := config.CleanCodexIdentityFingerprint(cfg)
+	resolved, effective := ResolveCodex(cfg, nil)
+	profileKey, family, ok := CodexProfileKey(clean.UserAgent, clean.Originator)
+	if !ok {
+		// Invalid or cross-product account presets must not become an outbound
+		// identity bundle. Fall back to one coherent builtin profile while keeping
+		// session and non-identity custom settings.
+		resolved, effective = ResolveCodex(config.CodexIdentityFingerprintConfig{
+			Enabled:       clean.Enabled,
+			SessionMode:   clean.SessionMode,
+			SessionID:     clean.SessionID,
+			CustomHeaders: clean.CustomHeaders,
+		}, nil)
+		profileKey, family, _ = CodexProfileKey(resolved.UserAgent, resolved.Originator)
+	}
+	effective.ProfileKey = profileKey
+	effective.ProfileFamily = family
+	effective.ClientProduct = profileKey
+	effective.ClientVariant = resolved.Originator
+	return resolved, effective
+}
+
+func ResolveCodexProfile(cfg config.CodexIdentityFingerprintConfig, profile *LearnedRecord) (config.CodexIdentityFingerprintConfig, EffectiveFingerprint) {
+	clean := config.CleanCodexIdentityFingerprint(cfg)
+	defaults := config.DefaultCodexIdentityFingerprint()
+	fields := make(map[string]FieldValue)
+	profileField := func(field string) string {
+		value := learnedField(profile, field)
+		if value != "" {
+			fields[field] = FieldValue{Value: value, Source: FieldSourceLearned}
+		}
+		return value
+	}
+
+	version := profileField(FieldCodexVersion)
+	if version == "" && profile != nil {
+		version = strings.TrimSpace(profile.Version)
+		if version != "" {
+			fields[FieldCodexVersion] = FieldValue{Value: version, Source: FieldSourceLearned}
+		}
+	}
+	sessionMode := clean.SessionMode
+	if sessionMode == "" {
+		sessionMode = defaults.SessionMode
+	}
+	resolved := config.CodexIdentityFingerprintConfig{
+		Enabled:       clean.Enabled,
+		UserAgent:     profileField(FieldUserAgent),
+		Version:       version,
+		Originator:    profileField(FieldCodexOriginator),
+		WebsocketBeta: profileField(FieldCodexWebsocketBeta),
+		BetaFeatures:  profileField(FieldCodexBetaFeatures),
+		SessionMode:   sessionMode,
+		SessionID:     clean.SessionID,
+		CustomHeaders: clean.CustomHeaders,
+	}
+	effective := effective(ProviderCodex, clean.Enabled, profile, fields)
+	effective.Version = version
+	return resolved, effective
+}
+
+func ResolveGemini(cfg config.GeminiIdentityFingerprintConfig, learned *LearnedRecord) (config.GeminiIdentityFingerprintConfig, EffectiveFingerprint) {
+	clean := config.CleanGeminiIdentityFingerprint(cfg)
+	defaults := config.DefaultGeminiIdentityFingerprint()
+	fields := make(map[string]FieldValue)
+	pick := func(field, preset, learnedValue, defaultValue string) string {
+		value, source := pickField(preset, learnedValue, defaultValue)
+		fields[field] = FieldValue{Value: value, Source: source}
+		return value
+	}
+
+	resolved := config.GeminiIdentityFingerprintConfig{
+		Enabled:        clean.Enabled,
+		UserAgent:      pick(FieldUserAgent, clean.UserAgent, learnedField(learned, FieldUserAgent), defaults.UserAgent),
+		APIClient:      pick(FieldGeminiAPIClient, clean.APIClient, learnedField(learned, FieldGeminiAPIClient), defaults.APIClient),
+		ClientMetadata: pick(FieldGeminiClientMetadata, clean.ClientMetadata, learnedField(learned, FieldGeminiClientMetadata), defaults.ClientMetadata),
+		CustomHeaders:  clean.CustomHeaders,
+	}
+	return resolved, effective(ProviderGemini, clean.Enabled, learned, fields)
+}
+
+func ResolveXAI(cfg config.XAIIdentityFingerprintConfig, learned *LearnedRecord) (config.XAIIdentityFingerprintConfig, EffectiveFingerprint) {
+	clean := config.CleanXAIIdentityFingerprint(cfg)
+	defaults := config.DefaultXAIIdentityFingerprint()
+	bundle := coherentXAIBundle(learned, defaults.ClientVersion)
+	fields := make(map[string]FieldValue)
+	pick := func(field, preset, learnedValue, defaultValue string) string {
+		value, source := pickField(preset, learnedValue, defaultValue)
+		fields[field] = FieldValue{Value: value, Source: source}
+		return value
+	}
+
+	resolved := config.XAIIdentityFingerprintConfig{
+		Enabled:            clean.Enabled,
+		UserAgent:          pick(FieldUserAgent, clean.UserAgent, bundle[FieldUserAgent], defaults.UserAgent),
+		ClientIdentifier:   pick(FieldXAIClientIdentifier, clean.ClientIdentifier, bundle[FieldXAIClientIdentifier], defaults.ClientIdentifier),
+		ClientVersion:      pick(FieldXAIClientVersion, clean.ClientVersion, bundle[FieldXAIClientVersion], defaults.ClientVersion),
+		GrokConversationID: strings.TrimSpace(clean.GrokConversationID),
+		CustomHeaders:      clean.CustomHeaders,
+	}
+	// The mode is learned only, like Kimi's device id: it is part of the
+	// bundle it came with, so it goes out with that bundle and never alone.
+	if mode := bundle[FieldXAIClientMode]; mode != "" {
+		fields[FieldXAIClientMode] = FieldValue{Value: mode, Source: FieldSourceLearned}
+	}
+	effective := effective(ProviderXAI, clean.Enabled, learned, fields)
+	if value := strings.TrimSpace(resolved.ClientVersion); value != "" {
+		effective.Version = value
+	}
+	return resolved, effective
+}
+
+// ResolveKimi merges the operator preset, the learned kimi-cli observation and
+// the builtin template into the identity sent to the Kimi coding gateway.
+//
+// Device name, model and id have no builtin fallback: an empty result means the
+// executor keeps its host-derived value, which is the pre-fingerprint behaviour.
+// The device id is learned but deliberately not presettable — one id configured
+// globally would make every account look like the same machine, which is the
+// opposite of what the learned value achieves.
+func ResolveKimi(cfg config.KimiIdentityFingerprintConfig, learned *LearnedRecord) (config.KimiIdentityFingerprintConfig, EffectiveFingerprint) {
+	clean := config.CleanKimiIdentityFingerprint(cfg)
+	defaults := config.DefaultKimiIdentityFingerprint()
+	fields := make(map[string]FieldValue)
+	pick := func(field, preset, learnedValue, defaultValue string) string {
+		value, source := pickField(preset, learnedValue, defaultValue)
+		fields[field] = FieldValue{Value: value, Source: source}
+		return value
+	}
+
+	resolved := config.KimiIdentityFingerprintConfig{
+		Enabled:       clean.Enabled,
+		UserAgent:     pick(FieldUserAgent, clean.UserAgent, learnedField(learned, FieldUserAgent), defaults.UserAgent),
+		Platform:      pick(FieldKimiPlatform, clean.Platform, learnedField(learned, FieldKimiPlatform), defaults.Platform),
+		Version:       pick(FieldKimiVersion, clean.Version, learnedFieldOrVersion(learned, FieldKimiVersion), defaults.Version),
+		DeviceName:    pick(FieldKimiDeviceName, clean.DeviceName, learnedField(learned, FieldKimiDeviceName), ""),
+		DeviceModel:   pick(FieldKimiDeviceModel, clean.DeviceModel, learnedField(learned, FieldKimiDeviceModel), ""),
+		CustomHeaders: clean.CustomHeaders,
+	}
+	if deviceID := learnedField(learned, FieldKimiDeviceID); deviceID != "" {
+		fields[FieldKimiDeviceID] = FieldValue{Value: deviceID, Source: FieldSourceLearned}
+	}
+	effective := effective(ProviderKimi, clean.Enabled, learned, fields)
+	if value := strings.TrimSpace(resolved.Version); value != "" {
+		effective.Version = value
+	}
+	return resolved, effective
+}
+
+// KimiLearnedDeviceID returns the device id observed from a real kimi-cli, or an
+// empty string. It is not part of the resolved config because it never comes from
+// operator presets or builtin defaults.
+func KimiLearnedDeviceID(learned *LearnedRecord) string {
+	return learnedField(learned, FieldKimiDeviceID)
+}
+
+// ResolveAntigravity blends the operator config with learned Antigravity observations.
+func ResolveAntigravity(cfg config.AntigravityIdentityFingerprintConfig, learned *LearnedRecord) (config.AntigravityIdentityFingerprintConfig, EffectiveFingerprint) {
+	// A learned record only counts while its User-Agent still identifies the
+	// Antigravity client. Records written before the observation guard was
+	// tightened hold whatever the calling SDK sent, and applying one of those
+	// costs the account every request. Storage purges them at startup; this
+	// guard covers the copies already cached in memory, and any that a restored
+	// backup or an older peer writes back later.
+	if !IsAntigravityClientUserAgent(learnedField(learned, FieldUserAgent)) {
+		learned = nil
+	}
+	clean := config.CleanAntigravityIdentityFingerprint(cfg)
+	defaults := config.DefaultAntigravityIdentityFingerprint()
+	fields := make(map[string]FieldValue, 4)
+
+	pick := func(field, preset, learnedValue, defaultValue string) string {
+		value, source := pickField(preset, learnedValue, defaultValue)
+		fields[field] = FieldValue{Value: value, Source: source}
+		return value
+	}
+
+	resolved := config.AntigravityIdentityFingerprintConfig{
+		Enabled:       clean.Enabled,
+		UserAgent:     pick(FieldUserAgent, clean.UserAgent, learnedField(learned, FieldUserAgent), defaults.UserAgent),
+		Version:       pick(FieldAntigravityVersion, clean.Version, learnedFieldOrVersion(learned, FieldAntigravityVersion), defaults.Version),
+		CustomHeaders: clean.CustomHeaders,
+	}
+	effective := effective(ProviderAntigravity, clean.Enabled, learned, fields)
+	if value := strings.TrimSpace(resolved.Version); value != "" {
+		effective.Version = value
+	}
+	return resolved, effective
+}
+
+// XAIClientMode is the learned x-grok-client-mode the resolved identity goes
+// out with, or "" when its bundle carried none.
+func XAIClientMode(effective EffectiveFingerprint) string {
+	return strings.TrimSpace(effective.Fields[FieldXAIClientMode].Value)
+}
+
+// coherentXAIBundle is the learned Grok client identity as one bundle, or nil
+// when there is none to replay.
+//
+// The User-Agent anchors it: the version is the one the User-Agent names, and
+// the identifier one of the products it lists. A record merged field by field
+// before 2026-11-09 can hold grok-shell/1.0.77's User-Agent beside the
+// identifier and version of an earlier grok-pager 1.0.70; read through here it
+// goes out as the one client its User-Agent names. A learned mode stays only
+// while the identifier and version it was learned with do.
+//
+// A bundle older than floor is not replayed at all. cli-chat-proxy answers an
+// outdated client with 426 ("Your Grok CLI version (…) is outdated"), which is
+// why the chat path used to overwrite the version with the builtin one; the
+// builtin default is the newest version known to be accepted, so an older
+// learned client gives way to it whole instead of being half-replaced.
+func coherentXAIBundle(learned *LearnedRecord, floor string) map[string]string {
+	ua := learnedField(learned, FieldUserAgent)
+	products := xaiUserAgentProducts(ua)
+	if len(products) == 0 {
+		return nil
+	}
+	version := products[0].version
+	if strings.TrimSpace(floor) != "" && isNewerVersion(floor, version) {
+		return nil
+	}
+	learnedIdentifier := learnedField(learned, FieldXAIClientIdentifier)
+	identifier := products[0].name
+	for _, product := range products {
+		if learnedIdentifier != "" && strings.EqualFold(product.name, learnedIdentifier) {
+			identifier = learnedIdentifier
+			break
+		}
+	}
+	bundle := map[string]string{
+		FieldUserAgent:           ua,
+		FieldXAIClientIdentifier: identifier,
+		FieldXAIClientVersion:    version,
+	}
+	if identifier == learnedIdentifier && learnedField(learned, FieldXAIClientVersion) == version {
+		if mode := learnedField(learned, FieldXAIClientMode); mode != "" {
+			bundle[FieldXAIClientMode] = mode
+		}
+	}
+	return bundle
+}
+
+func pickField(preset, learned, fallback string) (string, FieldSource) {
+	if value := strings.TrimSpace(learned); value != "" {
+		return value, FieldSourceLearned
+	}
+	if value := strings.TrimSpace(preset); value != "" {
+		return value, FieldSourcePreset
+	}
+	return strings.TrimSpace(fallback), FieldSourceBuiltinDefault
+}
+
+func learnedField(record *LearnedRecord, field string) string {
+	if record == nil || len(record.Fields) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(record.Fields[field])
+}
+
+func learnedFieldOrVersion(record *LearnedRecord, field string) string {
+	if value := learnedField(record, field); value != "" {
+		return value
+	}
+	if record == nil {
+		return ""
+	}
+	return strings.TrimSpace(record.Version)
+}
+
+func effective(provider Provider, enabled bool, learned *LearnedRecord, fields map[string]FieldValue) EffectiveFingerprint {
+	out := EffectiveFingerprint{
+		Provider: provider,
+		Enabled:  enabled,
+		Fields:   fields,
+	}
+	if learned != nil {
+		out.AccountKey = learned.AccountKey
+		out.ProfileKey = learned.ProfileKey
+		out.ProfileFamily = learned.ProfileFamily
+		out.ClientVariant = learned.ClientVariant
+		out.AuthSubjectID = learned.AuthSubjectID
+		out.ClientProduct = learned.ClientProduct
+		out.Version = learned.Version
+		out.Learned = cloneRecord(learned)
+	}
+	return out
+}

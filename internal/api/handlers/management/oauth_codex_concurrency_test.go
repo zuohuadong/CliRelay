@@ -2,23 +2,21 @@ package management
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
-	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/json"
+
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/egress"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 type fakeCodexOAuthService struct{}
@@ -35,7 +33,6 @@ func (f *fakeCodexOAuthService) ExchangeCodeForTokens(ctx context.Context, code 
 			AccessToken:  "access-" + code,
 			RefreshToken: "refresh-" + code,
 			Email:        "codex-" + code + "@example.test",
-			AccountID:    "acct-" + code,
 			Expire:       now.Add(time.Hour).Format(time.RFC3339),
 		},
 		LastRefresh: now.Format(time.RFC3339),
@@ -61,48 +58,20 @@ func (f *fakeCodexOAuthService) CreateTokenStorage(bundle *codex.CodexAuthBundle
 
 func TestRequestCodexTokenCompletionKeepsConcurrentSessionPending(t *testing.T) {
 	originalNewCodexOAuthService := newCodexOAuthService
-	newCodexOAuthService = func(cfg *config.Config, _ *http.Client) codexOAuthService {
+	newCodexOAuthService = func(cfg *config.Config) codexOAuthService {
 		return &fakeCodexOAuthService{}
 	}
 	defer func() {
 		newCodexOAuthService = originalNewCodexOAuthService
 	}()
 
-	tempDir := t.TempDir()
-	authDir := filepath.Join(tempDir, "auths")
-	proxyServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	defer proxyServer.Close()
-	host, portText, _ := net.SplitHostPort(strings.TrimPrefix(proxyServer.URL, "http://"))
-	port, _ := strconv.Atoi(portText)
-	cfg := &config.Config{AuthDir: authDir, EgressNetwork: config.EgressNetworkConfig{Enabled: true}}
-	service, err := egress.NewService(cfg, filepath.Join(tempDir, "usage.db"))
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-	defer service.Close()
-	endpoint, err := service.CreateEndpoint(context.Background(), egress.Endpoint{Name: "test", Protocol: egress.ProtocolHTTP, Host: host, Port: port, Enabled: true, ExpectedPublicIP: "198.51.100.17"})
-	if err != nil {
-		t.Fatalf("CreateEndpoint() error = %v", err)
-	}
-	endpoint, err = service.Store().UpdateEndpointCheck(context.Background(), endpoint.ID, endpoint.ExpectedPublicIP, egress.EndpointStatusHealthy, "", 1, time.Now())
-	if err != nil {
-		t.Fatalf("UpdateEndpointCheck() error = %v", err)
-	}
-	handler := NewHandlerWithoutConfigFilePath(cfg, nil)
-	handler.SetEgressService(service)
+	authDir := filepath.Join(t.TempDir(), "auths")
+	handler := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
 	router := gin.New()
 	router.GET("/codex-auth-url", handler.RequestCodexToken)
-	secondEndpoint, err := service.CreateEndpoint(context.Background(), egress.Endpoint{Name: "test-2", Protocol: egress.ProtocolHTTP, Host: host, Port: port, Enabled: true, ExpectedPublicIP: "198.51.100.18"})
-	if err != nil {
-		t.Fatalf("CreateEndpoint(second) error = %v", err)
-	}
-	secondEndpoint, err = service.Store().UpdateEndpointCheck(context.Background(), secondEndpoint.ID, secondEndpoint.ExpectedPublicIP, egress.EndpointStatusHealthy, "", 1, time.Now())
-	if err != nil {
-		t.Fatalf("UpdateEndpointCheck(second) error = %v", err)
-	}
 
-	firstState := requestCodexTokenState(t, router, endpoint.ID)
-	secondState := requestCodexTokenState(t, router, secondEndpoint.ID)
+	firstState := requestCodexTokenState(t, router)
+	secondState := requestCodexTokenState(t, router)
 	defer CompleteOAuthSession(firstState)
 	defer CompleteOAuthSession(secondState)
 
@@ -116,60 +85,10 @@ func TestRequestCodexTokenCompletionKeepsConcurrentSessionPending(t *testing.T) 
 	}
 }
 
-func TestRequestCodexTokenReservesEndpointAcrossPendingSessions(t *testing.T) {
-	originalNewCodexOAuthService := newCodexOAuthService
-	newCodexOAuthService = func(_ *config.Config, _ *http.Client) codexOAuthService { return &fakeCodexOAuthService{} }
-	defer func() { newCodexOAuthService = originalNewCodexOAuthService }()
-
-	handler, _, endpoint, _ := newCodexOAuthEgressFlow(t)
-	router := gin.New()
-	router.GET("/codex-auth-url", handler.RequestCodexToken)
-	firstState := requestCodexTokenState(t, router, endpoint.ID)
-	defer CompleteOAuthSession(firstState)
-
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/codex-auth-url?egress_id="+endpoint.ID, nil))
-	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"code":"egress_endpoint_in_use"`) {
-		t.Fatalf("reserved endpoint status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-	SetOAuthSessionError(firstState, "test failure releases reservation")
-	thirdState := requestCodexTokenState(t, router, endpoint.ID)
-	defer CompleteOAuthSession(thirdState)
-}
-
-func TestRequestCodexTokenRejectsAlreadyBoundEndpoint(t *testing.T) {
-	handler, service, endpoint, _ := newCodexOAuthEgressFlow(t)
-	identity, _ := egress.StableIdentity("acct-already-bound")
-	if err := service.PutBinding(context.Background(), egress.Binding{Identity: identity, EndpointID: endpoint.ID}); err != nil {
-		t.Fatal(err)
-	}
-	router := gin.New()
-	router.GET("/codex-auth-url", handler.RequestCodexToken)
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/codex-auth-url?egress_id="+endpoint.ID, nil))
-	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"code":"egress_endpoint_in_use"`) {
-		t.Fatalf("bound endpoint status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestOAuthEndpointReservationExpiresWithSession(t *testing.T) {
-	store := newOAuthSessionStore(time.Millisecond)
-	if err := store.RegisterBuiltinWithEndpointReservation("state-1", "codex", "endpoint-1", nil); err != nil {
-		t.Fatalf("register first reservation: %v", err)
-	}
-	if err := store.RegisterBuiltinWithEndpointReservation("state-2", "codex", "endpoint-1", nil); !errors.Is(err, errOAuthEndpointReserved) {
-		t.Fatalf("expected endpoint reservation conflict, got %v", err)
-	}
-	time.Sleep(5 * time.Millisecond)
-	if err := store.RegisterBuiltinWithEndpointReservation("state-3", "codex", "endpoint-1", nil); err != nil {
-		t.Fatalf("expected expired reservation to be released, got %v", err)
-	}
-}
-
-func requestCodexTokenState(t *testing.T, router http.Handler, endpointID string) string {
+func requestCodexTokenState(t *testing.T, router http.Handler) string {
 	t.Helper()
 
-	req := httptest.NewRequest(http.MethodGet, "/codex-auth-url?egress_id="+endpointID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/codex-auth-url", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -215,9 +134,7 @@ func makeOAuthTestJWT(planType string) string {
 	}
 	payloadBytes, _ := json.Marshal(claimsMap)
 	claims := base64.RawURLEncoding.EncodeToString(payloadBytes)
-	// A non-empty signature keeps the token acceptable to the strict compact
-	// serialization checks in ParseJWTToken.
-	return header + "." + claims + ".signature"
+	return header + "." + claims + "."
 }
 
 type fakeCustomPlanCodexOAuthService struct {
@@ -236,7 +153,6 @@ func (f *fakeCustomPlanCodexOAuthService) ExchangeCodeForTokens(ctx context.Cont
 			IDToken:      idToken,
 			AccessToken:  "access-" + code,
 			RefreshToken: "refresh-" + code,
-			AccountID:    "acct-" + code,
 			Email:        "oauth-user@example.test",
 			PlanType:     f.planType,
 			Expire:       now.Add(time.Hour).Format(time.RFC3339),
@@ -283,18 +199,19 @@ func TestRequestCodexToken_PlanTypeSavedToAuthFile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			originalNewCodexOAuthService := newCodexOAuthService
-			newCodexOAuthService = func(_ *config.Config, _ *http.Client) codexOAuthService {
+			newCodexOAuthService = func(cfg *config.Config) codexOAuthService {
 				return &fakeCustomPlanCodexOAuthService{planType: tt.claimPlan}
 			}
 			defer func() {
 				newCodexOAuthService = originalNewCodexOAuthService
 			}()
 
-			handler, _, endpoint, authDir := newCodexOAuthEgressFlow(t)
+			authDir := filepath.Join(t.TempDir(), "auths")
+			handler := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
 			router := gin.New()
 			router.GET("/codex-auth-url", handler.RequestCodexToken)
 
-			state := requestCodexTokenState(t, router, endpoint.ID)
+			state := requestCodexTokenState(t, router)
 			defer CompleteOAuthSession(state)
 
 			if _, errWrite := WriteOAuthCallbackFileForPendingSession(authDir, "codex", state, "test-code", ""); errWrite != nil {
@@ -333,5 +250,104 @@ func TestRequestCodexToken_PlanTypeSavedToAuthFile(t *testing.T) {
 				t.Errorf("saved auth file plan_type = %v, want %q", got, tt.wantPlanJSON)
 			}
 		})
+	}
+}
+
+type signalingCodexOAuthService struct {
+	fakeCodexOAuthService
+	onExchange func()
+}
+
+func (s *signalingCodexOAuthService) ExchangeCodeForTokens(ctx context.Context, code string, pkceCodes *codex.PKCECodes) (*codex.CodexAuthBundle, error) {
+	bundle, err := s.fakeCodexOAuthService.ExchangeCodeForTokens(ctx, code, pkceCodes)
+	if s.onExchange != nil {
+		s.onExchange()
+	}
+	return bundle, err
+}
+
+func TestRequestCodexTokenLoginDoesNotRaceConfigV8Save(t *testing.T) {
+	exchangeDone := make(chan struct{})
+	originalNewCodexOAuthService := newCodexOAuthService
+	newCodexOAuthService = func(cfg *config.Config) codexOAuthService {
+		return &signalingCodexOAuthService{
+			onExchange: func() {
+				close(exchangeDone)
+			},
+		}
+	}
+	defer func() {
+		newCodexOAuthService = originalNewCodexOAuthService
+	}()
+
+	authDir := t.TempDir()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if errWrite := os.WriteFile(path, []byte("auth-dir: "+authDir+"\nrequest-retry: 3\n"), 0o600); errWrite != nil {
+		t.Fatalf("write config: %v", errWrite)
+	}
+	cfg, errLoad := config.LoadConfig(path)
+	if errLoad != nil {
+		t.Fatalf("load config: %v", errLoad)
+	}
+	persistedDone := make(chan struct{})
+	handler := NewHandler(cfg, path, nil)
+	handler.SetPostAuthPersistHook(func(ctx context.Context, auth *coreauth.Auth) error {
+		close(persistedDone)
+		return nil
+	})
+	router := gin.New()
+	router.GET("/codex-auth-url", handler.RequestCodexToken)
+	router.GET("/anthropic-auth-url", handler.RequestAnthropicToken)
+	router.GET("/antigravity-auth-url", handler.RequestAntigravityToken)
+	router.PUT("/v8/management/config/*path", handler.ConfigV8)
+
+	saveRetry := func(val string) {
+		t.Helper()
+		save := httptest.NewRecorder()
+		router.ServeHTTP(save, httptest.NewRequest(http.MethodPut, "/v8/management/config/routing/retry/request-retry", strings.NewReader(val)))
+		if save.Code != http.StatusOK {
+			t.Fatalf("config save status=%d body=%s", save.Code, save.Body.String())
+		}
+	}
+
+	for _, endpoint := range []string{"/anthropic-auth-url", "/antigravity-auth-url"} {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, endpoint, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", endpoint, w.Code, w.Body.String())
+		}
+		var payload struct {
+			State string `json:"state"`
+		}
+		if errDecode := json.Unmarshal(w.Body.Bytes(), &payload); errDecode != nil {
+			t.Fatalf("decode %s response: %v", endpoint, errDecode)
+		}
+		saveRetry(`1`)
+		CancelOAuthSession(payload.State)
+	}
+
+	// The login goroutine outlives the response, so this save runs concurrently with it.
+	state := requestCodexTokenState(t, router)
+	defer CompleteOAuthSession(state)
+	saveRetry(`0`)
+
+	if _, errWrite := WriteOAuthCallbackFileForPendingSession(authDir, "codex", state, "race-code", ""); errWrite != nil {
+		t.Fatalf("write callback file: %v", errWrite)
+	}
+	select {
+	case <-exchangeDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for codex token exchange")
+	}
+	saveRetry(`2`)
+	select {
+	case <-persistedDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for post-auth persist hook")
+	}
+	waitForOAuthSessionDone(t, state)
+	_, status, _, _, completed, ok := GetOAuthSessionDetails(state)
+	if !ok || !completed || status != "" {
+		t.Fatalf("expected completed codex session without error, got ok=%v completed=%v status=%q", ok, completed, status)
 	}
 }

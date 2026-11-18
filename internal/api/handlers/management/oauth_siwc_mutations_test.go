@@ -2,12 +2,12 @@ package management
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/MoeForge/moego/json"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
@@ -79,6 +79,7 @@ func TestSIWCFileMutationScopeAndValidation(t *testing.T) {
 		body   any
 		status int
 	}{
+		{"/credentials?name=codex.json", map[string]any{"excluded_models": 123}, http.StatusBadRequest},
 		{"/credentials?name=other.json", f.auth.Metadata, http.StatusOK},
 		{"/legacy?name=codex.json", f.auth.Metadata, http.StatusOK},
 	} {

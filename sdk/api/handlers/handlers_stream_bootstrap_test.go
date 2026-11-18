@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
@@ -364,7 +364,7 @@ func TestExecuteStreamWithAuthManager_RetriesBeforeFirstByte(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		PassthroughHeaders: true,
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 1,
+			BootstrapRetries: func() *int { v := 1; return &v }(),
 		},
 	}, manager)
 	dataChan, upstreamHeaders, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
@@ -417,7 +417,7 @@ func TestExecuteStreamWithAuthManager_ResolvesBootstrapRetryHeadersBeforeReturn(
 		registry.GetGlobalRegistry().UnregisterClient(auth2.ID)
 	})
 
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{PassthroughHeaders: true, Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 1}}, manager)
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{PassthroughHeaders: true, Streaming: sdkconfig.StreamingConfig{BootstrapRetries: func() *int { v := 1; return &v }()}}, manager)
 	type streamResult struct {
 		dataChan        <-chan []byte
 		upstreamHeaders http.Header
@@ -510,7 +510,7 @@ func registerBootstrapExecutor(t *testing.T, executor *bootstrapStreamExecutor) 
 		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
 		registry.GetGlobalRegistry().UnregisterClient(authRetry.ID)
 	})
-	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 1}}, manager), manager
+	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: func() *int { v := 1; return &v }()}}, manager), manager
 }
 
 func TestExecuteStreamWithAuthManager_RetriesAfterDroppedBootstrapPayload(t *testing.T) {
@@ -753,7 +753,7 @@ func TestExecuteStreamWithAuthManager_HomeBootstrapFailureDoesNotRedispatch(t *t
 	registry.SetReleaseSink(releaseSink.MarkDirty)
 	dispatcher := &handlerAccountedHomeDispatcher{}
 	manager.PublishHomeDispatch(dispatcher, registry, 1)
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 1}}, manager)
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: func() *int { v := 1; return &v }()}}, manager)
 	handler.SetPluginHost(&handlerInterceptorTestHost{interceptStreamChunk: func(_ context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
 		return pluginapi.StreamChunkInterceptResponse{Body: cloneBytes(req.Body), DropChunk: string(req.Body) == "drop"}
 	}})
@@ -828,7 +828,7 @@ func TestExecuteStreamWithAuthManager_HeaderPassthroughDisabledByDefault(t *test
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 1,
+			BootstrapRetries: func() *int { v := 1; return &v }(),
 		},
 	}, manager)
 	dataChan, upstreamHeaders, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
@@ -888,7 +888,7 @@ func TestExecuteStreamWithAuthManager_DoesNotRetryAfterFirstByte(t *testing.T) {
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 1,
+			BootstrapRetries: func() *int { v := 1; return &v }(),
 		},
 	}, manager)
 	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
@@ -946,7 +946,7 @@ func TestExecuteStreamWithAuthManager_EnrichesBootstrapRetryAuthUnavailableError
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 1,
+			BootstrapRetries: func() *int { v := 1; return &v }(),
 		},
 	}, manager)
 	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
@@ -1127,7 +1127,7 @@ func TestExecuteStreamWithAuthManager_PinnedAuthKeepsSameUpstream(t *testing.T) 
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 1,
+			BootstrapRetries: func() *int { v := 1; return &v }(),
 		},
 	}, manager)
 	ctx := WithPinnedAuthID(context.Background(), "auth1")
@@ -1187,7 +1187,7 @@ func TestExecuteStreamWithAuthManager_SelectedAuthCallbackReceivesAuthID(t *test
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 0,
+			BootstrapRetries: func() *int { v := 0; return &v }(),
 		},
 	}, manager)
 

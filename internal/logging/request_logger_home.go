@@ -3,14 +3,13 @@ package logging
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 )
-
-const maxBufferedResponseBodyBytes = 2 * 1024 * 1024
 
 type homeRequestLogClient interface {
 	HeartbeatOK() bool
@@ -89,34 +88,29 @@ type homeStreamingLogWriter struct {
 
 	requestHeaders map[string][]string
 	requestBody    []byte
-	bodyEnabled    bool
 
 	chunkChan chan []byte
 	doneChan  chan struct{}
 
-	responseStatus   int
-	statusWritten    bool
-	responseHeaders  map[string][]string
-	responseBody     bytes.Buffer
-	apiRequest       []byte
-	apiResponse      []byte
-	apiWebsocketTime []byte
-	requestID        string
-	apiResponseTS    time.Time
-	firstChunkTS     time.Time
+	responseStatus    int
+	statusWritten     bool
+	responseHeaders   map[string][]string
+	responseBody      bytes.Buffer
+	apiRequest        []byte
+	apiResponse       []byte
+	apiWebsocketTime  []byte
+	apiResponseErrors []*interfaces.ErrorMessage
+	requestID         string
+	apiResponseTS     time.Time
+	firstChunkTS      time.Time
 }
 
-func newHomeStreamingLogWriter(url, method string, headers map[string][]string, body []byte, requestID string, retainBody ...bool) *homeStreamingLogWriter {
+func newHomeStreamingLogWriter(url, method string, headers map[string][]string, body []byte, requestID string) *homeStreamingLogWriter {
 	requestHeaders := make(map[string][]string, len(headers))
 	for key, values := range headers {
 		headerValues := make([]string, len(values))
 		copy(headerValues, values)
 		requestHeaders[key] = headerValues
-	}
-
-	bodyEnabled := true
-	if len(retainBody) > 0 {
-		bodyEnabled = retainBody[0]
 	}
 
 	writer := &homeStreamingLogWriter{
@@ -125,7 +119,6 @@ func newHomeStreamingLogWriter(url, method string, headers map[string][]string, 
 		timestamp:      time.Now(),
 		requestHeaders: requestHeaders,
 		requestBody:    append([]byte(nil), body...),
-		bodyEnabled:    bodyEnabled,
 		requestID:      strings.TrimSpace(requestID),
 		chunkChan:      make(chan []byte, 100),
 		doneChan:       make(chan struct{}),
@@ -141,14 +134,12 @@ func (w *homeStreamingLogWriter) asyncWriter() {
 		if len(chunk) == 0 {
 			continue
 		}
-		if w.responseBody.Len()+len(chunk) <= maxBufferedResponseBodyBytes {
-			_, _ = w.responseBody.Write(chunk)
-		}
+		_, _ = w.responseBody.Write(chunk)
 	}
 }
 
 func (w *homeStreamingLogWriter) WriteChunkAsync(chunk []byte) {
-	if w == nil || !w.bodyEnabled || w.chunkChan == nil || len(chunk) == 0 {
+	if w == nil || w.chunkChan == nil || len(chunk) == 0 {
 		return
 	}
 	select {
@@ -175,35 +166,34 @@ func (w *homeStreamingLogWriter) WriteStatus(status int, headers map[string][]st
 }
 
 func (w *homeStreamingLogWriter) WriteAPIRequest(apiRequest []byte) error {
-	if w == nil || !w.bodyEnabled || len(apiRequest) == 0 {
+	if w == nil || len(apiRequest) == 0 {
 		return nil
-	}
-	if len(apiRequest) > maxBufferedResponseBodyBytes {
-		apiRequest = apiRequest[:maxBufferedResponseBodyBytes]
 	}
 	w.apiRequest = bytes.Clone(apiRequest)
 	return nil
 }
 
 func (w *homeStreamingLogWriter) WriteAPIResponse(apiResponse []byte) error {
-	if w == nil || !w.bodyEnabled || len(apiResponse) == 0 {
+	if w == nil || len(apiResponse) == 0 {
 		return nil
-	}
-	if len(apiResponse) > maxBufferedResponseBodyBytes {
-		apiResponse = apiResponse[:maxBufferedResponseBodyBytes]
 	}
 	w.apiResponse = bytes.Clone(apiResponse)
 	return nil
 }
 
 func (w *homeStreamingLogWriter) WriteAPIWebsocketTimeline(apiWebsocketTimeline []byte) error {
-	if w == nil || !w.bodyEnabled || len(apiWebsocketTimeline) == 0 {
+	if w == nil || len(apiWebsocketTimeline) == 0 {
 		return nil
 	}
-	if len(apiWebsocketTimeline) > maxBufferedResponseBodyBytes {
-		apiWebsocketTimeline = apiWebsocketTimeline[:maxBufferedResponseBodyBytes]
-	}
 	w.apiWebsocketTime = bytes.Clone(apiWebsocketTimeline)
+	return nil
+}
+
+func (w *homeStreamingLogWriter) WriteAPIResponseErrors(errors []*interfaces.ErrorMessage) error {
+	if w == nil || len(errors) == 0 {
+		return nil
+	}
+	w.apiResponseErrors = append([]*interfaces.ErrorMessage(nil), errors...)
 	return nil
 }
 
@@ -217,20 +207,16 @@ func (w *homeStreamingLogWriter) SetFirstChunkTimestamp(timestamp time.Time) {
 	}
 }
 
-func (w *homeStreamingLogWriter) closeChunkWriter() {
-	if w == nil || w.chunkChan == nil {
-		return
-	}
-	close(w.chunkChan)
-	<-w.doneChan
-	w.chunkChan = nil
-}
-
 func (w *homeStreamingLogWriter) Close() error {
 	if w == nil {
 		return nil
 	}
-	w.closeChunkWriter()
+
+	if w.chunkChan != nil {
+		close(w.chunkChan)
+		<-w.doneChan
+		w.chunkChan = nil
+	}
 
 	client := currentHomeRequestLogClient()
 	if client == nil || !client.HeartbeatOK() {
@@ -238,29 +224,27 @@ func (w *homeStreamingLogWriter) Close() error {
 	}
 
 	responsePayload := w.responseBody.Bytes()
+	apiErrors, diagnostics := splitResponseDiagnostics(w.apiResponseErrors)
 
 	var buf bytes.Buffer
 	upstreamTransport := inferUpstreamTransport(w.apiRequest, nil, w.apiResponse, nil, w.apiWebsocketTime, nil, nil)
-	if errWrite := writeRequestInfoWithBody(&buf, w.url, w.method, w.requestHeaders, w.requestBody, "", w.timestamp, "http", upstreamTransport, w.bodyEnabled); errWrite != nil {
+	if errWrite := writeRequestInfoWithBody(&buf, w.url, w.method, w.requestHeaders, w.requestBody, "", w.timestamp, "http", upstreamTransport, true); errWrite != nil {
 		return errWrite
 	}
-	if !w.bodyEnabled {
-		if errWrite := writeResponseSection(&buf, w.responseStatus, w.statusWritten, w.responseHeaders, nil, nil, true); errWrite != nil {
-			return errWrite
-		}
-	} else {
-		if errWrite := writeAPISection(&buf, "=== API WEBSOCKET TIMELINE ===\n", "=== API WEBSOCKET TIMELINE", w.apiWebsocketTime, time.Time{}); errWrite != nil {
-			return errWrite
-		}
-		if errWrite := writeAPISection(&buf, "=== API REQUEST ===\n", "=== API REQUEST", w.apiRequest, time.Time{}); errWrite != nil {
-			return errWrite
-		}
-		if errWrite := writeAPISection(&buf, "=== API RESPONSE ===\n", "=== API RESPONSE", w.apiResponse, w.apiResponseTS); errWrite != nil {
-			return errWrite
-		}
-		if errWrite := writeResponseSection(&buf, w.responseStatus, w.statusWritten, w.responseHeaders, bytes.NewReader(responsePayload), nil, false); errWrite != nil {
-			return errWrite
-		}
+	if errWrite := writeAPISection(&buf, "=== API WEBSOCKET TIMELINE ===\n", "=== API WEBSOCKET TIMELINE", w.apiWebsocketTime, time.Time{}); errWrite != nil {
+		return errWrite
+	}
+	if errWrite := writeAPISection(&buf, "=== API REQUEST ===\n", "=== API REQUEST", w.apiRequest, time.Time{}); errWrite != nil {
+		return errWrite
+	}
+	if errWrite := writeAPIErrorResponses(&buf, apiErrors); errWrite != nil {
+		return errWrite
+	}
+	if errWrite := writeAPISection(&buf, "=== API RESPONSE ===\n", "=== API RESPONSE", w.apiResponse, w.apiResponseTS); errWrite != nil {
+		return errWrite
+	}
+	if errWrite := writeResponseSection(&buf, w.responseStatus, w.statusWritten, w.responseHeaders, bytes.NewReader(responsePayload), nil, false, diagnostics); errWrite != nil {
+		return errWrite
 	}
 
 	payload := homeRequestLogPayload{
@@ -273,4 +257,16 @@ func (w *homeStreamingLogWriter) Close() error {
 		return errMarshal
 	}
 	return client.RPushRequestLog(context.Background(), raw)
+}
+
+func (w *homeStreamingLogWriter) Discard() error {
+	if w == nil {
+		return nil
+	}
+	if w.chunkChan != nil {
+		close(w.chunkChan)
+		<-w.doneChan
+		w.chunkChan = nil
+	}
+	return nil
 }

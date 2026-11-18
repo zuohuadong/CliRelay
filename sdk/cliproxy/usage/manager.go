@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -26,18 +27,31 @@ type Record struct {
 	// RequestID uniquely identifies this specific model execution instance (UUID v4).
 	RequestID string
 	// TraceID identifies the parent inbound HTTP request when available (8-character hex).
-	TraceID  string
-	Provider string
+	TraceID string
+	// SelectionID identifies the scheduler selection decision that produced this usage record when available.
+	SelectionID string
+	// HomeSelection carries deferred accounting for reused Home dispatches.
+	HomeSelection *HomeSelection
+	Provider      string
 	// BaseURL stores the configured upstream base URL when available.
 	BaseURL string
 	// ExecutorType stores the concrete executor type that handled the request.
-	ExecutorType string
-	Model        string
-	Alias        string
-	APIKey       string
-	// IsNativeKey reports whether the client API key belongs to this proxy.
+	ExecutorType  string
+	Model         string
+	ThinkingLevel string
+	UpstreamModel string
+	// UpstreamResponseModel is the model declared by the upstream response.
+	UpstreamResponseModel string
+	VisionFallbackModel   string
+	Alias                 string
+	APIKey                string
+	APIKeyID              string
+	APIKeyName            string
+	AuthSubjectID         string
+	ChannelName           string
+	// IsNativeKey reports whether the client API key was authenticated by CPA's native config provider.
 	IsNativeKey bool
-	// AccessProvider stores the client authentication provider identifier.
+	// AccessProvider identifies the client request authentication provider (e.g. "config-inline" or plugin ID).
 	AccessProvider  string
 	SessionID       string
 	ParentSessionID string
@@ -47,17 +61,28 @@ type Record struct {
 	AccessTokenSHA256 string
 	AuthType          string
 	Source            string
+	// GuardKind identifies the loop protection check that ended this request.
+	GuardKind string
+	// TrustedTenantID is set only by authenticated internal execution paths.
+	TrustedTenantID string
+	// IdempotencyKey identifies this record for exactly-once persistence.
+	IdempotencyKey string
 	// ReasoningEffort stores the translated upstream thinking level for request event logs.
 	ReasoningEffort string
 	// ServiceTier stores the client-requested service tier.
 	ServiceTier string
+	// EffectiveServiceTier stores the tier in the final outbound request after
+	// protocol translation and payload defaults or overrides.
+	EffectiveServiceTier string
 	// RequestServiceTier is a deprecated input-only alias retained for existing
 	// plugin callers. It is normalized into ServiceTier and never emitted.
 	RequestServiceTier string
 	// ResponseServiceTier stores the final tier reported by the upstream response.
 	ResponseServiceTier string
 	// ResponseModel stores the model name reported by the upstream response, empty when unknown.
-	ResponseModel string
+	ResponseModel  string
+	ResponseStatus int
+	APIIdentifier  string
 	// Generate reports whether the client requested actual generation.
 	// nil or true means generation is enabled; only an explicit false disables generation.
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.
@@ -67,30 +92,93 @@ type Record struct {
 	RequestedAt time.Time
 	Latency     time.Duration
 	TTFT        time.Duration
-	Failed      bool
-	Fail        Failure
-	Detail      Detail
+	// LatencyMs and FirstTokenMs are millisecond compatibility fields used by
+	// observability consumers that do not retain time.Duration values.
+	LatencyMs    int64
+	FirstTokenMs int64
+	Streaming    bool
+	Failed       bool
+	Fail         Failure
+	Detail       Detail
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
-	ResponseHeaders http.Header
+	ResponseHeaders   http.Header
+	InputContent      string
+	OutputContent     string
+	DetailContent     string
+	InputContentPath  string
+	OutputContentPath string
+	DetailContentPath string
 }
+
+// FailureStreamTruncatedCode marks a locally synthesized failure for an
+// accepted upstream stream that ended without its terminal frame.
+const FailureStreamTruncatedCode = "stream_truncated"
+
+// FailureRequestScopedCode marks failures belonging to the request rather than
+// the selected credential, including local capability validation failures.
+const FailureRequestScopedCode = "request_scoped"
+
+// FailureForceCooldownCode marks failures matched by a request-scoped error rule
+// configured with a cooldown action (stop-and-cooldown or continue-and-cooldown).
+const FailureForceCooldownCode = "force_cooldown"
 
 // Failure holds HTTP failure metadata for an upstream request attempt.
 type Failure struct {
 	StatusCode int
 	Body       string
+	// Code carries structured failure classification (e.g. FailureStreamTruncatedCode)
+	// across usage sinks so downstream schedulers do not treat locally
+	// synthesized statuses as received upstream refusals.
+	Code string
 }
 
-// Detail holds the token usage breakdown.
+// Detail holds the token and structured usage breakdown captured from an upstream response.
 type Detail struct {
-	InputTokens         int64
-	OutputTokens        int64
-	ReasoningTokens     int64
-	CachedTokens        int64
-	CacheReadTokens     int64
-	CacheCreationTokens int64
+	InputTokens              int64
+	OutputTokens             int64
+	ReasoningTokens          int64
+	CachedTokens             int64
+	CacheReadTokens          int64
+	CacheCreationTokens      int64
+	CacheWriteTokens         int64
+	CacheReadIncludedInInput bool
+	// CacheReported is true when the upstream reported cache accounting.
+	CacheReported bool
+	// CacheWrite1hTokens is the part of CacheWriteTokens written to Anthropic's one-hour cache.
+	CacheWrite1hTokens  int64
 	TotalTokens         int64
 	TokenBreakdown      TokenBreakdown
 	ResponseServiceTier string
+
+	CacheCreation5mTokens    *int64
+	CacheCreation30mTokens   *int64
+	CacheCreation1hTokens    *int64
+	CacheCreation12hTokens   *int64
+	TextInputTokens          *int64
+	ImageInputTokens         *int64
+	AudioInputTokens         *int64
+	VideoInputTokens         *int64
+	FileInputTokens          *int64
+	CachedTextTokens         *int64
+	CachedImageTokens        *int64
+	CachedAudioTokens        *int64
+	TextOutputTokens         *int64
+	ImageOutputTokens        *int64
+	AudioOutputTokens        *int64
+	AcceptedPredictionTokens *int64
+	RejectedPredictionTokens *int64
+	CacheDetails             *CacheDetails
+	WebSearchRequests        *int64
+	ImageCount               *int64
+	RequestedImageDetails    *ImageDetails
+	ImageDetails             *ImageDetails
+	MediaCounts              *MediaCounts
+	ToolUsageDetails         *ToolUsageDetails
+	Iterations               *[]IterationUsage
+	CostDetails              *CostDetails
+	Speed                    string
+	InferenceGeo             string
+	UpstreamServiceTier      string
 }
 
 type requestedModelAliasContextKey struct{}
@@ -98,11 +186,30 @@ type reasoningEffortContextKey struct{}
 type serviceTierContextKey struct{}
 type generateContextKey struct{}
 type streamContextKey struct{}
+type executionRequestIDContextKey struct{}
+type executionTraceIDContextKey struct{}
+type selectionIDContextKey struct{}
 type apiKeyContextKey struct{}
 type accessProviderContextKey struct{}
 type isNativeKeyContextKey struct{}
-type executionRequestIDContextKey struct{}
-type executionTraceIDContextKey struct{}
+type capturedIdentityContextKey struct{}
+
+type capturedIdentityHolder struct {
+	mu             sync.RWMutex
+	apiKey         string
+	accessProvider string
+	isNativeKey    bool
+	hasNativeKey   bool
+}
+
+// NewIdempotencyKey returns a fresh record key. UUIDv7 keeps persisted keys
+// roughly ordered by creation time while retaining UUIDv4 fallback behavior.
+func NewIdempotencyKey() string {
+	if key, err := uuid.NewV7(); err == nil {
+		return key.String()
+	}
+	return uuid.NewString()
+}
 
 // WithExecutionRequestID attaches a specific execution instance request ID to the context.
 func WithExecutionRequestID(ctx context.Context, requestID string) context.Context {
@@ -140,6 +247,30 @@ func TraceIDFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// WithSelectionID attaches the scheduler selection ID for the selected credential to the context.
+func WithSelectionID(ctx context.Context, selectionID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, selectionIDContextKey{}, strings.TrimSpace(selectionID))
+}
+
+// SelectionIDFromContext retrieves the scheduler selection ID from the context.
+func SelectionIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	raw := ctx.Value(selectionIDContextKey{})
+	switch value := raw.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []byte:
+		return strings.TrimSpace(string(value))
+	default:
+		return ""
+	}
 }
 
 // WithRequestedModelAlias stores the client-requested model name for usage sinks.
@@ -290,7 +421,19 @@ func WithAccessProvider(ctx context.Context, provider string) context.Context {
 	if provider == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, accessProviderContextKey{}, provider)
+	ctx = context.WithValue(ctx, accessProviderContextKey{}, provider)
+	if holder, ok := ctx.Value(capturedIdentityContextKey{}).(*capturedIdentityHolder); ok && holder != nil {
+		holder.mu.RLock()
+		cloned := &capturedIdentityHolder{
+			apiKey:         holder.apiKey,
+			accessProvider: provider,
+			isNativeKey:    holder.isNativeKey,
+			hasNativeKey:   holder.hasNativeKey,
+		}
+		holder.mu.RUnlock()
+		ctx = context.WithValue(ctx, capturedIdentityContextKey{}, cloned)
+	}
+	return ctx
 }
 
 // WithAPIKey stores the client API key for usage sinks.
@@ -302,22 +445,103 @@ func WithAPIKey(ctx context.Context, apiKey string) context.Context {
 	if apiKey == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, apiKeyContextKey{}, apiKey)
+	ctx = context.WithValue(ctx, apiKeyContextKey{}, apiKey)
+	if holder, ok := ctx.Value(capturedIdentityContextKey{}).(*capturedIdentityHolder); ok && holder != nil {
+		holder.mu.RLock()
+		cloned := &capturedIdentityHolder{
+			apiKey:         apiKey,
+			accessProvider: holder.accessProvider,
+			isNativeKey:    holder.isNativeKey,
+			hasNativeKey:   holder.hasNativeKey,
+		}
+		holder.mu.RUnlock()
+		ctx = context.WithValue(ctx, capturedIdentityContextKey{}, cloned)
+	}
+	return ctx
 }
 
-// APIKeyFromContext returns the client API key stored in ctx or gin.Context.
-func APIKeyFromContext(ctx context.Context) string {
+// WithCapturedIdentity stores an authoritative snapshot of the request's usage identity
+// (including empty values) so later asynchronous calls do not read a reused gin.Context.
+func WithCapturedIdentity(ctx context.Context, apiKey, accessProvider string, isNativeKey ...bool) context.Context {
 	if ctx == nil {
-		return ""
+		ctx = context.Background()
 	}
-	raw := ctx.Value(apiKeyContextKey{})
-	switch value := raw.(type) {
-	case string:
-		return strings.TrimSpace(value)
-	case []byte:
-		return strings.TrimSpace(string(value))
+	holder := &capturedIdentityHolder{
+		apiKey:         strings.TrimSpace(apiKey),
+		accessProvider: strings.TrimSpace(accessProvider),
 	}
-	if ginCtx, ok := ctx.Value("gin").(interface{ Get(string) (any, bool) }); ok && ginCtx != nil {
+	if len(isNativeKey) > 0 {
+		holder.isNativeKey = isNativeKey[0]
+		holder.hasNativeKey = true
+	}
+	return context.WithValue(ctx, capturedIdentityContextKey{}, holder)
+}
+
+// CaptureIdentity snapshots the current request's usage identity into ctx while the
+// HTTP handler is active so post-handler goroutines never read a reused gin.Context.
+func CaptureIdentity(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	if HasCapturedIdentity(ctx) {
+		return ctx
+	}
+	apiKey := apiKeyFromGinContext(ctx)
+	if apiKey == "" {
+		apiKey = APIKeyFromContext(ctx)
+	}
+	accessProvider := AccessProviderFromContext(ctx)
+	if isNative, ok := IsNativeKeyFromContext(ctx); ok {
+		return WithCapturedIdentity(ctx, apiKey, accessProvider, isNative)
+	}
+	if accessProvider != "" {
+		return WithCapturedIdentity(ctx, apiKey, accessProvider, IsNativeAccessProvider(accessProvider))
+	}
+	return WithCapturedIdentity(ctx, apiKey, accessProvider)
+}
+
+// HasCapturedIdentity reports whether ctx holds a captured usage identity snapshot.
+func HasCapturedIdentity(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	holder, ok := ctx.Value(capturedIdentityContextKey{}).(*capturedIdentityHolder)
+	return ok && holder != nil
+}
+
+// SetCapturedAPIKey updates the captured API key in ctx when an identity snapshot holder exists.
+func SetCapturedAPIKey(ctx context.Context, apiKey string) {
+	if ctx == nil {
+		return
+	}
+	if holder, ok := ctx.Value(capturedIdentityContextKey{}).(*capturedIdentityHolder); ok && holder != nil {
+		holder.mu.Lock()
+		holder.apiKey = strings.TrimSpace(apiKey)
+		holder.mu.Unlock()
+	}
+}
+
+func contextValueGetter(ctx context.Context) interface{ Get(string) (any, bool) } {
+	if ctx == nil {
+		return nil
+	}
+	raw := ctx.Value("gin")
+	if raw == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(raw)
+	if rv.Kind() == reflect.Ptr && rv.IsNil() {
+		return nil
+	}
+	getter, ok := raw.(interface{ Get(string) (any, bool) })
+	if !ok {
+		return nil
+	}
+	return getter
+}
+
+func apiKeyFromGinContext(ctx context.Context) string {
+	if ginCtx := contextValueGetter(ctx); ginCtx != nil {
 		if v, exists := ginCtx.Get("userApiKey"); exists {
 			switch value := v.(type) {
 			case string:
@@ -332,10 +556,37 @@ func APIKeyFromContext(ctx context.Context) string {
 	return ""
 }
 
+// APIKeyFromContext returns the client API key stored in ctx or gin.Context.
+func APIKeyFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if holder, ok := ctx.Value(capturedIdentityContextKey{}).(*capturedIdentityHolder); ok && holder != nil {
+		holder.mu.RLock()
+		key := holder.apiKey
+		holder.mu.RUnlock()
+		return key
+	}
+	raw := ctx.Value(apiKeyContextKey{})
+	switch value := raw.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []byte:
+		return strings.TrimSpace(string(value))
+	}
+	return apiKeyFromGinContext(ctx)
+}
+
 // AccessProviderFromContext returns the client authentication provider stored in ctx.
 func AccessProviderFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
+	}
+	if holder, ok := ctx.Value(capturedIdentityContextKey{}).(*capturedIdentityHolder); ok && holder != nil {
+		holder.mu.RLock()
+		provider := holder.accessProvider
+		holder.mu.RUnlock()
+		return provider
 	}
 	raw := ctx.Value(accessProviderContextKey{})
 	switch value := raw.(type) {
@@ -344,7 +595,7 @@ func AccessProviderFromContext(ctx context.Context) string {
 	case []byte:
 		return strings.TrimSpace(string(value))
 	}
-	if ginCtx, ok := ctx.Value("gin").(interface{ Get(string) (any, bool) }); ok && ginCtx != nil {
+	if ginCtx := contextValueGetter(ctx); ginCtx != nil {
 		if v, exists := ginCtx.Get("accessProvider"); exists {
 			switch value := v.(type) {
 			case string:
@@ -362,13 +613,33 @@ func WithIsNativeKey(ctx context.Context, isNative bool) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithValue(ctx, isNativeKeyContextKey{}, isNative)
+	ctx = context.WithValue(ctx, isNativeKeyContextKey{}, isNative)
+	if holder, ok := ctx.Value(capturedIdentityContextKey{}).(*capturedIdentityHolder); ok && holder != nil {
+		holder.mu.RLock()
+		cloned := &capturedIdentityHolder{
+			apiKey:         holder.apiKey,
+			accessProvider: holder.accessProvider,
+			isNativeKey:    isNative,
+			hasNativeKey:   true,
+		}
+		holder.mu.RUnlock()
+		ctx = context.WithValue(ctx, capturedIdentityContextKey{}, cloned)
+	}
+	return ctx
 }
 
 // IsNativeKeyFromContext returns whether the client API key is native to CPA if explicitly set in ctx.
 func IsNativeKeyFromContext(ctx context.Context) (bool, bool) {
 	if ctx == nil {
 		return false, false
+	}
+	if holder, ok := ctx.Value(capturedIdentityContextKey{}).(*capturedIdentityHolder); ok && holder != nil {
+		holder.mu.RLock()
+		isNative, hasNative := holder.isNativeKey, holder.hasNativeKey
+		holder.mu.RUnlock()
+		if hasNative {
+			return isNative, true
+		}
 	}
 	raw := ctx.Value(isNativeKeyContextKey{})
 	if value, ok := raw.(bool); ok {
@@ -402,6 +673,13 @@ type Plugin interface {
 	HandleUsage(ctx context.Context, record Record)
 }
 
+// OverflowHandler receives records that cannot be admitted after the manager
+// has stopped. The callback must be quick and non-blocking.
+type OverflowHandler func(Record) bool
+
+// PublishObserver receives each admitted record before plugin dispatch.
+type PublishObserver func(Record)
+
 type queueItem struct {
 	ctx    context.Context
 	record Record
@@ -409,12 +687,19 @@ type queueItem struct {
 
 // Manager maintains a queue of usage records and delivers them to registered plugins.
 type Manager struct {
-	cancel context.CancelFunc
+	once     sync.Once
+	stopOnce sync.Once
+	cancel   context.CancelFunc
 
-	mu     sync.Mutex
-	cond   *sync.Cond
-	queue  []queueItem
-	closed bool
+	mu               sync.Mutex
+	cond             *sync.Cond
+	queue            []queueItem
+	closed           bool
+	paused           bool
+	activePublishers int
+	dispatching      bool
+	overflow         OverflowHandler
+	observer         PublishObserver
 
 	pluginsMu sync.RWMutex
 	plugins   []Plugin
@@ -433,18 +718,14 @@ func (m *Manager) Start(ctx context.Context) {
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.closed && m.cancel != nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	m.closed = false
-	var workerCtx context.Context
-	workerCtx, m.cancel = context.WithCancel(ctx)
-	go m.run(workerCtx)
+	m.once.Do(func() {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		var workerCtx context.Context
+		workerCtx, m.cancel = context.WithCancel(ctx)
+		go m.run(workerCtx)
+	})
 }
 
 // Stop stops the dispatcher and drains the queue.
@@ -452,19 +733,69 @@ func (m *Manager) Stop() {
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	if m.closed || m.cancel == nil {
+	m.stopOnce.Do(func() {
+		if m.cancel != nil {
+			m.cancel()
+		}
+		m.mu.Lock()
+		m.closed = true
 		m.mu.Unlock()
+		m.cond.Broadcast()
+	})
+}
+
+// SetOverflowHandler installs a callback for records published after Stop.
+func (m *Manager) SetOverflowHandler(fn OverflowHandler) {
+	if m == nil {
 		return
 	}
-	cancel := m.cancel
-	m.cancel = nil
-	m.closed = true
-	m.cond.Broadcast()
+	m.mu.Lock()
+	m.overflow = fn
 	m.mu.Unlock()
-	if cancel != nil {
-		cancel()
+}
+
+// SetPublishObserver installs a lightweight callback invoked before plugins.
+func (m *Manager) SetPublishObserver(fn PublishObserver) {
+	if m == nil {
+		return
 	}
+	m.mu.Lock()
+	m.observer = fn
+	m.mu.Unlock()
+}
+
+// Wait waits until the manager has no admitted publications, queued records,
+// or active plugin dispatch.
+func (m *Manager) Wait(ctx context.Context) bool {
+	if m == nil {
+		return true
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		m.mu.Lock()
+		done := m.activePublishers == 0 && !m.dispatching && len(m.queue) == 0
+		m.mu.Unlock()
+		if done {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+// Pending returns the number of queued records awaiting dispatch.
+func (m *Manager) Pending() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.queue)
 }
 
 // Register appends a plugin to the delivery list.
@@ -507,6 +838,8 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	if m == nil {
 		return
 	}
+	m.beginPublish()
+	defer m.endPublish()
 	if strings.TrimSpace(record.RequestID) == "" {
 		if reqID := ExecutionRequestIDFromContext(ctx); reqID != "" {
 			record.RequestID = reqID
@@ -514,23 +847,56 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 			record.RequestID = uuid.NewString()
 		}
 	}
+	if strings.TrimSpace(record.IdempotencyKey) == "" {
+		record.IdempotencyKey = NewIdempotencyKey()
+	}
 	if strings.TrimSpace(record.TraceID) == "" {
-		if traceID := TraceIDFromContext(ctx); traceID != "" {
-			record.TraceID = traceID
-		} else if traceID := internallogging.GetRequestID(ctx); traceID != "" {
-			record.TraceID = traceID
+		if trID := TraceIDFromContext(ctx); trID != "" {
+			record.TraceID = trID
+		} else if trID := internallogging.GetRequestID(ctx); trID != "" {
+			record.TraceID = trID
 		}
 	}
+	if record.HomeSelection == nil {
+		record.HomeSelection = HomeSelectionFromContext(ctx)
+	}
+	if strings.TrimSpace(record.SelectionID) == "" {
+		if selID := SelectionIDFromContext(ctx); selID != "" {
+			record.SelectionID = selID
+		}
+	}
+	if strings.TrimSpace(record.APIKey) == "" {
+		if key := APIKeyFromContext(ctx); key != "" {
+			record.APIKey = key
+		}
+	}
+	if strings.TrimSpace(record.AccessProvider) == "" {
+		if provider := AccessProviderFromContext(ctx); provider != "" {
+			record.AccessProvider = provider
+		}
+	}
+	if !record.IsNativeKey {
+		if nativeExplicit, ok := IsNativeKeyFromContext(ctx); ok {
+			record.IsNativeKey = nativeExplicit
+		} else if record.AccessProvider != "" {
+			record.IsNativeKey = IsNativeAccessProvider(record.AccessProvider)
+		}
+	}
+	ctx = WithCapturedIdentity(ctx, record.APIKey, record.AccessProvider, record.IsNativeKey)
+	// ensure worker is running even if Start was not called explicitly
+	m.Start(context.Background())
 	m.mu.Lock()
-	if m.closed || m.cancel == nil {
-		m.closed = false
-		var workerCtx context.Context
-		workerCtx, m.cancel = context.WithCancel(context.Background())
-		go m.run(workerCtx)
+	if m.closed {
+		overflow := m.overflow
+		m.mu.Unlock()
+		if overflow != nil {
+			overflow(record)
+		}
+		return
 	}
 	m.queue = append(m.queue, queueItem{ctx: ctx, record: record})
-	m.cond.Signal()
 	m.mu.Unlock()
+	m.cond.Signal()
 }
 
 func (m *Manager) run(ctx context.Context) {
@@ -544,13 +910,32 @@ func (m *Manager) run(ctx context.Context) {
 			return
 		}
 		item := m.queue[0]
+		m.queue[0] = queueItem{}
 		m.queue = m.queue[1:]
+		m.dispatching = true
 		m.mu.Unlock()
 		m.dispatch(item)
+		m.mu.Lock()
+		m.dispatching = false
+		m.cond.Broadcast()
+		m.mu.Unlock()
 	}
 }
 
 func (m *Manager) dispatch(item queueItem) {
+	m.mu.Lock()
+	observer := m.observer
+	m.mu.Unlock()
+	if observer != nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Errorf("usage: publish observer panic recovered: %v", r)
+				}
+			}()
+			observer(item.record)
+		}()
+	}
 	m.pluginsMu.RLock()
 	plugins := make([]Plugin, len(m.plugins))
 	copy(plugins, m.plugins)
@@ -589,8 +974,20 @@ func RegisterNamedPlugin(name string, plugin Plugin) { DefaultManager().Register
 // PublishRecord publishes a record using the default manager.
 func PublishRecord(ctx context.Context, record Record) { DefaultManager().Publish(ctx, record) }
 
+// SetPublishObserver installs an observer on the default manager.
+func SetPublishObserver(fn PublishObserver) { DefaultManager().SetPublishObserver(fn) }
+
 // StartDefault starts the default manager's dispatcher.
 func StartDefault(ctx context.Context) { DefaultManager().Start(ctx) }
 
 // StopDefault stops the default manager's dispatcher.
 func StopDefault() { DefaultManager().Stop() }
+
+// SetOverflowHandler installs fn on the default manager.
+func SetOverflowHandler(fn OverflowHandler) { DefaultManager().SetOverflowHandler(fn) }
+
+// WaitDefault waits for the default manager to become quiescent.
+func WaitDefault(ctx context.Context) bool { return DefaultManager().Wait(ctx) }
+
+// PendingDefault returns the default manager queue depth.
+func PendingDefault() int { return DefaultManager().Pending() }

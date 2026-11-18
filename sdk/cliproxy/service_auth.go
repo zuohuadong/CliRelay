@@ -438,9 +438,11 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 				auth.Metadata[antigravityPersistedHintsMetaKey] = persistedHints
 			}
 		}
-		if !existing.Disabled && existing.Status != coreauth.StatusDisabled && !auth.Disabled && auth.Status != coreauth.StatusDisabled {
-			auth.LastRefreshedAt = existing.LastRefreshedAt
-			auth.NextRefreshAfter = existing.NextRefreshAfter
+		if !auth.HasFileSnapshot() && !existing.Disabled && existing.Status != coreauth.StatusDisabled && !auth.Disabled && auth.Status != coreauth.StatusDisabled {
+			if !coreauth.CredentialsChanged(existing, auth) {
+				auth.LastRefreshedAt = existing.LastRefreshedAt
+				auth.NextRefreshAfter = existing.NextRefreshAfter
+			}
 			if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
 				auth.ModelStates = existing.ModelStates
 			}
@@ -449,8 +451,13 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 		var updated *coreauth.Auth
 		updated, err = s.coreManager.Update(ctx, auth)
 		if err == nil && updated != nil {
-			if updated.Generation == existing.Generation {
+			if auth.HasFileSnapshot() || updated.Generation == existing.Generation {
 				log.Debugf("skipping stale auth update for %s: incoming snapshot did not advance generation (gen=%d)", auth.ID, existing.Generation)
+				if auth.HasFileSnapshot() {
+					if w := s.currentWatcher(); w != nil {
+						w.RereadDiscardedFileSnapshot(auth)
+					}
+				}
 				return updated
 			}
 			auth = updated
@@ -723,9 +730,6 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 			if providerKey == "" {
 				providerKey = compatName
 			}
-			if dedicated, okDedicated := dedicatedOpenAICompatProviderKey(providerKey, compatName, a.Provider); okDedicated {
-				return dedicated, compatName, true
-			}
 			return util.OpenAICompatibleProviderKey(providerKey), compatName, true
 		}
 	}
@@ -735,31 +739,7 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 		if providerKey == "" {
 			providerKey = "openai-compatibility"
 		}
-		if dedicated, okDedicated := dedicatedOpenAICompatProviderKey(providerKey, compatName); okDedicated {
-			return dedicated, compatName, true
-		}
 		return util.OpenAICompatibleProviderKey(providerKey), compatName, true
 	}
-	if dedicated, okDedicated := dedicatedOpenAICompatProviderKey(a.Provider); okDedicated {
-		return dedicated, dedicated, true
-	}
 	return "", "", false
-}
-
-// dedicatedOpenAICompatProviderKey keeps fork-owned providers on their native
-// provider key instead of the generic openai-compatible- prefix.
-func dedicatedOpenAICompatProviderKey(values ...string) (string, bool) {
-	for _, value := range values {
-		switch strings.ToLower(strings.TrimSpace(value)) {
-		case "bigmodel-coding":
-			return "bigmodel-coding", true
-		case "astron-code":
-			return "astron-code", true
-		case "agnes", "agnes-ai":
-			return "agnes", true
-		case "opencode-go":
-			return "opencode-go", true
-		}
-	}
-	return "", false
 }

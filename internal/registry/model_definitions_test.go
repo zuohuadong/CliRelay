@@ -1,371 +1,89 @@
 package registry
 
-import (
-	"encoding/json"
-	"strings"
-	"testing"
-)
+import "testing"
 
-func TestCodexConfigurationUpdateCapability(t *testing.T) {
-	for _, tier := range []struct {
-		name    string
-		models  func() []*ModelInfo
-		capable []string
-	}{
-		{name: "free", models: GetCodexFreeModels, capable: []string{"gpt-6-luna"}},
-		{name: "team", models: GetCodexTeamModels, capable: []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}},
-		{name: "plus", models: GetCodexPlusModels, capable: []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}},
-		{name: "pro", models: GetCodexProModels, capable: []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}},
-	} {
-		t.Run(tier.name, func(t *testing.T) {
-			byID := make(map[string]*ModelInfo)
-			for _, info := range tier.models() {
-				if info != nil {
-					byID[info.ID] = info
-				}
-			}
-			for _, id := range append([]string{"gpt-5.5"}, tier.capable...) {
-				info := byID[id]
-				if info == nil {
-					t.Errorf("%s is missing", id)
-					continue
-				}
-				want := id != "gpt-5.5"
-				if info.SupportConfigurationUpdate != want {
-					t.Errorf("%s configuration_update = %v, want %v", id, info.SupportConfigurationUpdate, want)
-				}
-				if cloned := cloneModelInfo(info); cloned.SupportConfigurationUpdate != want {
-					t.Errorf("%s clone configuration_update = %v, want %v", id, cloned.SupportConfigurationUpdate, want)
-				}
-				raw, errMarshal := json.Marshal(info)
-				if errMarshal != nil {
-					t.Fatal(errMarshal)
-				}
-				if strings.Contains(string(raw), "support_configuration_update") || strings.Contains(string(raw), "SupportConfigurationUpdate") {
-					t.Errorf("%s exposed configuration_update capability: %s", id, raw)
-				}
-			}
-		})
-	}
-
-	for _, tt := range []struct {
-		name string
-		raw  string
-		want bool
-	}{
-		{name: "true", raw: `{"id":"test","support_configuration_update":true}`, want: true},
-		{name: "false", raw: `{"id":"test","support_configuration_update":false}`},
-		{name: "absent", raw: `{"id":"test"}`},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			info := ModelInfo{SupportConfigurationUpdate: true}
-			if errUnmarshal := json.Unmarshal([]byte(tt.raw), &info); errUnmarshal != nil {
-				t.Fatal(errUnmarshal)
-			}
-			if info.SupportConfigurationUpdate != tt.want {
-				t.Errorf("capability = %v, want %v", info.SupportConfigurationUpdate, tt.want)
-			}
-		})
-	}
-}
-
-func TestGetStaticModelDefinitionsByChannelSupportsGeminiInteractions(t *testing.T) {
-	models := GetStaticModelDefinitionsByChannel("gemini-interactions")
-	if len(models) == 0 {
-		t.Fatal("GetStaticModelDefinitionsByChannel(gemini-interactions) returned no models")
-	}
-}
-
-func TestGetStaticModelDefinitionsByChannelSupportsKimiAndKimiAI(t *testing.T) {
-	for _, channel := range []string{"kimi", "kimi-ai", "kimi.ai", "kimi.com"} {
-		models := GetStaticModelDefinitionsByChannel(channel)
-		if len(models) == 0 {
-			t.Fatalf("GetStaticModelDefinitionsByChannel(%s) returned no models", channel)
-		}
-	}
-}
-
-func TestModelOverrideHeadersFromEmbeddedModels(t *testing.T) {
-	const wantUA = "codex-tui/0.165.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.165.0)"
-	got := ModelOverrideHeaders("gpt-5.6-luna")
-	if got == nil {
-		t.Fatal("ModelOverrideHeaders(gpt-5.6-luna) = nil, want headers")
-	}
-	if got["user-agent"] != wantUA {
-		t.Fatalf("user-agent = %q, want %q", got["user-agent"], wantUA)
-	}
-	if got := ModelOverrideHeaders("gpt-5.4"); got != nil {
-		t.Fatalf("ModelOverrideHeaders(gpt-5.4) = %#v, want nil", got)
-	}
-}
-
-func TestGeminiVertexModelsUseFlashLiteReleaseID(t *testing.T) {
-	const releaseID = "gemini-3.1-flash-lite"
-	const previewID = releaseID + "-preview"
-
-	for _, model := range GetGeminiVertexModels() {
-		if model == nil {
-			continue
-		}
-		if model.ID == previewID {
-			t.Fatalf("Vertex model ID = %q, want release ID %q", model.ID, releaseID)
-		}
-		if model.ID == releaseID {
-			return
-		}
-	}
-
-	t.Fatalf("Vertex models do not contain %q", releaseID)
-}
-
-func TestWithXAIBuiltinsIncludesImage20(t *testing.T) {
-	models := WithXAIBuiltins(nil)
-	for _, model := range models {
-		if model != nil && model.ID == xaiBuiltinImage20ModelID {
-			if model.Created != 1786060800 {
-				t.Fatalf("created = %d, want 1786060800 (2026-08-07)", model.Created)
-			}
-			return
-		}
-	}
-	t.Fatalf("expected xAI builtin model %s", xaiBuiltinImage20ModelID)
-}
-
-func TestWithXAIBuiltinsIncludesSpeechModels(t *testing.T) {
-	models := WithXAIBuiltins(nil)
-	found := map[string]*ModelInfo{}
-	for _, model := range models {
-		if model == nil {
-			continue
-		}
-		if model.ID == xaiBuiltinSpeechModelID || model.ID == xaiBuiltinSpeechVoiceModelID {
-			found[model.ID] = model
-		}
-	}
-	for _, id := range []string{xaiBuiltinSpeechModelID, xaiBuiltinSpeechVoiceModelID} {
-		model := found[id]
-		if model == nil {
-			t.Fatalf("expected xAI builtin model %s", id)
-		}
-		if model.OwnedBy != "xai" || model.Type != "xai" {
-			t.Fatalf("%s owned_by/type = %s/%s, want xai/xai", id, model.OwnedBy, model.Type)
-		}
-	}
-}
-
-func TestWithXAIBuiltinsIncludesVideo15GAAndPreviewAlias(t *testing.T) {
-	models := WithXAIBuiltins(nil)
-	foundGA := false
-	foundPreviewAlias := false
-
-	for _, model := range models {
-		if model == nil {
-			continue
-		}
-		if model.ID == xaiBuiltinVideoModelID || model.ID == xaiBuiltinVideo15ModelID || model.ID == xaiBuiltinVideo15PreviewID {
-			// Video builtins must be marked as OpenAI-compatible video models so the
-			// video MCP model list and the panel video page can discover them.
-			if model.Type != OpenAIVideoModelType {
-				t.Fatalf("%s type = %q, want %q", model.ID, model.Type, OpenAIVideoModelType)
-			}
-		}
-		if model.ID == xaiBuiltinVideo15ModelID {
-			foundGA = true
-		}
-		if model.ID == xaiBuiltinVideo15PreviewID {
-			foundPreviewAlias = true
-		}
-	}
-
-	if !foundGA {
-		t.Fatalf("expected xAI builtin model %s", xaiBuiltinVideo15ModelID)
-	}
-	if !foundPreviewAlias {
-		t.Fatalf("expected xAI builtin compatibility alias %s", xaiBuiltinVideo15PreviewID)
-	}
-}
-
-func TestGetBedrockModelsFallsBackWhenCatalogSectionIsEmpty(t *testing.T) {
-	modelsCatalogStore.mu.Lock()
-	previous := modelsCatalogStore.data
-	modelsCatalogStore.data = &staticModelsJSON{}
-	modelsCatalogStore.mu.Unlock()
-	t.Cleanup(func() {
-		modelsCatalogStore.mu.Lock()
-		modelsCatalogStore.data = previous
-		modelsCatalogStore.mu.Unlock()
-	})
-
-	models := GetBedrockModels()
-	if !hasModelInfoID(models, "claude-sonnet-4-5") {
-		t.Fatalf("expected fallback Bedrock model, got %+v", models)
-	}
-	models[0].ID = "mutated"
-	if hasModelInfoID(GetBedrockModels(), "mutated") {
-		t.Fatal("fallback Bedrock models should be cloned")
-	}
-}
-
-func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing.T) {
-	registryRef := GetGlobalRegistry()
-	registryRef.RegisterClient("test-antigravity-websearch-route", "antigravity", []*ModelInfo{
-		{ID: "gemini-route-test"},
-		{ID: "gemini-web-search-test", SupportsWebSearch: true},
-	})
-	registryRef.RegisterClient("test-gemini-websearch-route", "gemini", []*ModelInfo{
-		{ID: "gemini-cross-provider-route"},
-		{ID: "gemini-cross-provider-search", SupportsWebSearch: true},
-	})
-	t.Cleanup(func() {
-		registryRef.UnregisterClient("test-antigravity-websearch-route")
-		registryRef.UnregisterClient("test-gemini-websearch-route")
-	})
-
-	if got := AntigravityWebSearchModelFor("gemini-route-test"); got != "" {
-		t.Fatalf("route model without web search support should not get fallback model, got %q", got)
-	}
-	if got := AntigravityWebSearchModelFor("gemini-route-test(high)"); got != "" {
-		t.Fatalf("suffix route model without web search support should not get fallback model, got %q", got)
-	}
-	if got := AntigravityWebSearchModelFor("gemini-web-search-test"); got != "gemini-web-search-test" {
-		t.Fatalf("AntigravityWebSearchModelFor capable model = %q, want itself", got)
-	}
-	if got := AntigravityWebSearchModelFor("gemini-cross-provider-route"); got != "" {
-		t.Fatalf("cross-provider model should not get Antigravity web search model, got %q", got)
-	}
-	if got := AntigravityWebSearchModelFor("unknown-model"); got != "" {
-		t.Fatalf("unknown model should not get Antigravity web search model, got %q", got)
-	}
-}
-
-func TestWithCodexBuiltinsIncludesImage25Models(t *testing.T) {
-	models := WithCodexBuiltins(nil)
-	expectedModels := map[string]string{
-		"gpt-image-2.5-flare":    "GPT Image 2.5 Flare",
-		"gpt-image-2.5-sunburst": "GPT Image 2.5 Sunburst",
-		"gpt-image-2.5":          "GPT Image 2.5",
-	}
-
-	found := make(map[string]*ModelInfo)
+func TestCodexStaticModelsIncludeCurrentCodexModels(t *testing.T) {
+	models := GetStaticModelDefinitionsByChannel("codex")
+	modelIDs := make(map[string]bool, len(models))
 	for _, model := range models {
 		if model != nil {
-			if _, ok := expectedModels[model.ID]; ok {
-				found[model.ID] = model
-			}
+			modelIDs[model.ID] = true
 		}
 	}
 
-	for id, wantDisplayName := range expectedModels {
-		model, ok := found[id]
-		if !ok {
-			t.Fatalf("expected builtin model %s in WithCodexBuiltins", id)
+	for _, id := range []string{"gpt-6-astra", "gpt-6-astra-pro", "gpt-5.6-sol", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-image-2", "codex-auto-review"} {
+		if !modelIDs[id] {
+			t.Fatalf("expected codex static models to include %q", id)
 		}
-		if model.DisplayName != wantDisplayName {
-			t.Errorf("model %s DisplayName = %q, want %q", id, model.DisplayName, wantDisplayName)
+		if LookupStaticModelInfo(id) == nil {
+			t.Fatalf("expected LookupStaticModelInfo to find %q", id)
 		}
-		if model.Object != "model" {
-			t.Errorf("model %s Object = %q, want model", id, model.Object)
+	}
+
+	// Retired upstream: no client_version of the Codex manifest serves the 5.4
+	// family any more, and offering it only produced "model is not supported when
+	// using Codex with a ChatGPT account" at request time.
+	for _, id := range []string{"gpt-5.4", "gpt-5.4-mini"} {
+		if modelIDs[id] {
+			t.Fatalf("expected codex static models to exclude retired %q", id)
 		}
-		if model.OwnedBy != "openai" {
-			t.Errorf("model %s OwnedBy = %q, want openai", id, model.OwnedBy)
+		if LookupStaticModelInfo(id) != nil {
+			t.Fatalf("expected LookupStaticModelInfo to exclude retired %q", id)
 		}
-		if model.Type != "openai" {
-			t.Errorf("model %s Type = %q, want openai", id, model.Type)
-		}
-		if model.Version != id {
-			t.Errorf("model %s Version = %q, want %q", id, model.Version, id)
-		}
-		if model.Created != 1704067200 {
-			t.Errorf("model %s Created = %d, want 1704067200", id, model.Created)
-		}
+	}
+
+	if modelIDs["gptimage-2"] {
+		t.Fatalf("expected codex static models to exclude removed Cherry alias gptimage-2")
+	}
+	if LookupStaticModelInfo("gptimage-2") != nil {
+		t.Fatalf("expected LookupStaticModelInfo to exclude removed Cherry alias gptimage-2")
 	}
 }
 
-func TestGetDevinModelsFallback(t *testing.T) {
-	devinModels := GetDevinModels()
-	if len(devinModels) == 0 {
-		t.Fatal("GetDevinModels() returned empty list")
-	}
-
-	foundSWE2 := false
-	foundFable := false
-	foundGemini38 := false
-	foundGrok46 := false
-	foundDeepSeekV4Flash := false
-	foundDeepSeekV41Flash := false
-	for _, m := range devinModels {
-		if m != nil && m.ID == "devin/swe-2" {
-			foundSWE2 = true
-			if m.Type != "devin" {
-				t.Errorf("devin/swe-2 Type = %q, want devin", m.Type)
-			}
-		}
-		if m != nil && m.ID == "devin/claude-fable-5-1" {
-			foundFable = true
-		}
-		if m != nil && m.ID == "devin/gemini-3-8-flash" {
-			foundGemini38 = true
-			if m.OwnedBy != "google" {
-				t.Errorf("devin/gemini-3-8-flash OwnedBy = %q, want google", m.OwnedBy)
-			}
-		}
-		if m != nil && m.ID == "devin/grok-4-6" {
-			foundGrok46 = true
-			if m.OwnedBy != "xai" {
-				t.Errorf("devin/grok-4-6 OwnedBy = %q, want xai", m.OwnedBy)
-			}
-		}
-		if m != nil && m.ID == "devin/deepseek-v4-flash" {
-			foundDeepSeekV4Flash = true
-			if m.OwnedBy != "deepseek" {
-				t.Errorf("devin/deepseek-v4-flash OwnedBy = %q, want deepseek", m.OwnedBy)
-			}
-		}
-		if m != nil && m.ID == "devin/deepseek-v4-1-flash" {
-			foundDeepSeekV41Flash = true
-			if m.OwnedBy != "deepseek" {
-				t.Errorf("devin/deepseek-v4-1-flash OwnedBy = %q, want deepseek", m.OwnedBy)
-			}
-		}
-	}
-	if !foundSWE2 {
-		t.Error("expected devin/swe-2 in GetDevinModels()")
-	}
-	if !foundFable {
-		t.Error("expected devin/claude-fable-5-1 in GetDevinModels()")
-	}
-	if !foundGemini38 {
-		t.Error("expected devin/gemini-3-8-flash in GetDevinModels()")
-	}
-	if !foundGrok46 {
-		t.Error("expected devin/grok-4-6 in GetDevinModels()")
-	}
-	if !foundDeepSeekV4Flash {
-		t.Error("expected devin/deepseek-v4-flash in GetDevinModels()")
-	}
-	if !foundDeepSeekV41Flash {
-		t.Error("expected devin/deepseek-v4-1-flash in GetDevinModels()")
-	}
-
-	byChannel := GetStaticModelDefinitionsByChannel("devin")
-	if len(byChannel) == 0 {
-		t.Fatal("GetStaticModelDefinitionsByChannel(\"devin\") returned empty list")
-	}
-
-	info := LookupStaticModelInfo("devin/swe-2")
-	if info == nil {
-		t.Fatal("LookupStaticModelInfo(\"devin/swe-2\") = nil, want valid model")
-	}
-	if info.DisplayName != "SWE-2" {
-		t.Errorf("info.DisplayName = %q, want SWE-2", info.DisplayName)
-	}
-}
-
-func hasModelInfoID(models []*ModelInfo, id string) bool {
+func TestClaudeStaticModelsIncludeCurrentMaxModels(t *testing.T) {
+	models := GetStaticModelDefinitionsByChannel("claude")
+	modelIDs := make(map[string]bool, len(models))
 	for _, model := range models {
-		if model != nil && model.ID == id {
-			return true
+		if model != nil {
+			modelIDs[model.ID] = true
 		}
 	}
-	return false
+
+	for _, id := range []string{"claude-opus-4-6", "claude-opus-4-7"} {
+		if !modelIDs[id] {
+			t.Fatalf("expected claude static models to include %q", id)
+		}
+		if LookupStaticModelInfo(id) == nil {
+			t.Fatalf("expected LookupStaticModelInfo to find %q", id)
+		}
+	}
+}
+
+func TestClineStaticModelsUseClinePassIDs(t *testing.T) {
+	models := GetStaticModelDefinitionsByChannel("cline")
+	modelIDs := make(map[string]bool, len(models))
+	for _, model := range models {
+		if model != nil {
+			modelIDs[model.ID] = true
+			if model.OwnedBy != "cline" || model.Type != "cline" {
+				t.Fatalf("unexpected cline model metadata: %+v", model)
+			}
+		}
+	}
+
+	for _, id := range []string{"cline-pass/glm-5.2", "cline-pass/kimi-k2.7-code", "cline-pass/minimax-m3"} {
+		if !modelIDs[id] {
+			t.Fatalf("expected cline static models to include %q", id)
+		}
+		if LookupStaticModelInfo(id) == nil {
+			t.Fatalf("expected LookupStaticModelInfo to find %q", id)
+		}
+	}
+
+	if modelIDs["glm-5.2"] {
+		t.Fatalf("expected cline static models to use cline-pass-prefixed IDs")
+	}
+	if info := LookupStaticModelInfo("glm-5.2"); info != nil && info.Type == "cline" {
+		t.Fatalf("expected bare model ID glm-5.2 not to resolve as cline")
+	}
 }

@@ -1,147 +1,259 @@
 package vision
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
-// ImageEntry represents a stored image reference in the context registry
-type ImageEntry struct {
-	ID        string    `json:"id"`
-	DataURL   string    `json:"data_url,omitempty"`
-	URL       string    `json:"url,omitempty"`
-	MimeType  string    `json:"mime_type,omitempty"`
-	AddedAt   time.Time `json:"added_at"`
-	TurnIndex int       `json:"turn_index"`
+// GlobalRegistry manages all session stores with resource limits and GC.
+type GlobalRegistry struct {
+	mu       sync.RWMutex
+	sessions map[SessionKey]*SessionStore
+	config   GlobalConfig
+	done     chan struct{}
+	sfGroup  singleflight.Group
 }
 
-// ContextRegistry tracks images across conversation turns
-type ContextRegistry struct {
-	mu            sync.RWMutex
-	entries       map[string][]ImageEntry // keyed by conversation/session ID
-	maxAge        time.Duration
-	maxPerSession int
+var global *GlobalRegistry
+var globalOnce sync.Once
+
+// GetGlobal returns the singleton global registry.
+func GetGlobal() *GlobalRegistry {
+	globalOnce.Do(func() {
+		global = newGlobalRegistry(DefaultGlobalConfig())
+	})
+	return global
 }
 
-// NewContextRegistry creates a new image context registry
-func NewContextRegistry() *ContextRegistry {
-	return &ContextRegistry{
-		entries:       make(map[string][]ImageEntry),
-		maxAge:        30 * time.Minute,
-		maxPerSession: 20,
+func newGlobalRegistry(cfg GlobalConfig) *GlobalRegistry {
+	r := &GlobalRegistry{
+		sessions: make(map[SessionKey]*SessionStore),
+		config:   cfg,
+		done:     make(chan struct{}),
 	}
+	go r.gcLoop()
+	return r
 }
 
-// Register adds an image to the context registry for a given session
-func (r *ContextRegistry) Register(sessionID string, entry ImageEntry) {
-	if r == nil || sessionID == "" {
-		return
-	}
+// GetOrCreateSession returns the session store for the given key, creating one if needed.
+func (r *GlobalRegistry) GetOrCreateSession(key SessionKey) *SessionStore {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	entry.AddedAt = time.Now()
-	entries := r.entries[sessionID]
-	entries = append(entries, entry)
-
-	// Enforce max per session
-	if len(entries) > r.maxPerSession {
-		entries = entries[len(entries)-r.maxPerSession:]
-	}
-	r.entries[sessionID] = entries
-}
-
-// Lookup retrieves all images for a session
-func (r *ContextRegistry) Lookup(sessionID string) []ImageEntry {
-	if r == nil || sessionID == "" {
-		return nil
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	entries := r.entries[sessionID]
-	if len(entries) == 0 {
-		return nil
+	if s, ok := r.sessions[key]; ok {
+		return s
 	}
 
-	// Filter out expired entries
-	result := make([]ImageEntry, 0, len(entries))
+	// Check global limit
+	if len(r.sessions) >= r.config.MaxSessions {
+		r.evictOldestSession()
+	}
+
 	now := time.Now()
-	for _, e := range entries {
-		if now.Sub(e.AddedAt) < r.maxAge {
-			result = append(result, e)
-		}
+	s := &SessionStore{
+		entries:   make(map[ImageHash]*ImageEntry),
+		updatedAt: now,
 	}
-	return result
+	r.sessions[key] = s
+	return s
 }
 
-// LookupByIndex retrieves images from a specific turn index
-func (r *ContextRegistry) LookupByIndex(sessionID string, turnIndex int) []ImageEntry {
-	if r == nil || sessionID == "" {
-		return nil
-	}
+// GetSession returns an existing session store, or nil if not found.
+func (r *GlobalRegistry) GetSession(key SessionKey) *SessionStore {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.sessions[key]
+}
 
-	var result []ImageEntry
-	for _, e := range r.entries[sessionID] {
-		if e.TurnIndex == turnIndex {
-			result = append(result, e)
+// evictOldestSession removes the least recently used session.
+func (r *GlobalRegistry) evictOldestSession() {
+	var oldestKey SessionKey
+	var oldestTime time.Time
+	first := true
+	for key, s := range r.sessions {
+		s.mu.RLock()
+		t := s.updatedAt
+		s.mu.RUnlock()
+		if first || t.Before(oldestTime) {
+			oldestKey = key
+			oldestTime = t
+			first = false
 		}
 	}
-	return result
+	if oldestKey != "" {
+		delete(r.sessions, oldestKey)
+	}
 }
 
-// Clear removes all entries for a session
-func (r *ContextRegistry) Clear(sessionID string) {
-	if r == nil {
-		return
+func (r *GlobalRegistry) gcLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			r.gc()
+		case <-r.done:
+			return
+		}
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.entries, sessionID)
 }
 
-// PurgeExpired removes all expired entries across all sessions
-func (r *ContextRegistry) PurgeExpired() {
-	if r == nil {
-		return
-	}
+func (r *GlobalRegistry) gc() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	now := time.Now()
-	for sessionID, entries := range r.entries {
-		valid := make([]ImageEntry, 0, len(entries))
-		for _, e := range entries {
-			if now.Sub(e.AddedAt) < r.maxAge {
-				valid = append(valid, e)
+	ttl := r.config.SessionTTL
+	for key, s := range r.sessions {
+		s.mu.RLock()
+		idle := now.Sub(s.updatedAt)
+		s.mu.RUnlock()
+		if idle > ttl {
+			delete(r.sessions, key)
+		}
+	}
+}
+
+// Stop terminates the GC goroutine.
+func (r *GlobalRegistry) Stop() {
+	close(r.done)
+}
+
+// Stats returns basic metrics about the registry.
+func (r *GlobalRegistry) Stats() (sessions, entries int) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	sessions = len(r.sessions)
+	for _, s := range r.sessions {
+		s.mu.RLock()
+		entries += len(s.entries)
+		s.mu.RUnlock()
+	}
+	return
+}
+
+// --- SessionStore methods ---
+
+// ComputeHash returns the SHA256 hex of base64 image data.
+func ComputeHash(data string) ImageHash {
+	h := sha256.Sum256([]byte(data))
+	return ImageHash(fmt.Sprintf("%x", h))
+}
+
+// NextOrdinal returns the next available ordinal and increments the counter.
+func (s *SessionStore) NextOrdinal() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextOrdinal++
+	return s.nextOrdinal
+}
+
+// ResetReachability marks all entries as not reachable for the current request.
+// Callers should then mark the entries actually present in the request as reachable.
+func (s *SessionStore) ResetReachability() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.entries {
+		e.CurrentPayloadReachable = false
+		e.Availability = ImageUnavailableNow
+	}
+	s.updatedAt = time.Now()
+}
+
+// GetOrCreateEntry finds an existing entry by hash or creates a new one.
+func (s *SessionStore) GetOrCreateEntry(hash ImageHash, ordinal int, maxEntries int) *ImageEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if e, ok := s.entries[hash]; ok {
+		e.LastAccessAt = time.Now()
+		s.promote(hash)
+		return e
+	}
+
+	// Check per-session limit
+	if maxEntries > 0 && len(s.entries) >= maxEntries {
+		s.evictOldestEntry()
+	}
+
+	e := &ImageEntry{
+		Hash:          hash,
+		StableOrdinal: ordinal,
+		CreatedAt:     time.Now(),
+		LastAccessAt:  time.Now(),
+	}
+	s.entries[hash] = e
+	s.order = append(s.order, hash)
+	s.updatedAt = time.Now()
+	return e
+}
+
+// GetEntry retrieves an entry by hash.
+func (s *SessionStore) GetEntry(hash ImageHash) *ImageEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.entries[hash]
+	if ok {
+		e.LastAccessAt = time.Now()
+	}
+	return e
+}
+
+// UpdateEntry applies a mutator function to an existing entry.
+func (s *SessionStore) UpdateEntry(hash ImageHash, fn func(e *ImageEntry)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.entries[hash]; ok {
+		fn(e)
+		e.LastAccessAt = time.Now()
+		e.Revision++
+		s.updatedAt = time.Now()
+	}
+}
+
+// AllEntries returns a copy of all entries sorted by ordinal.
+func (s *SessionStore) AllEntries() []*ImageEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*ImageEntry, 0, len(s.entries))
+	for _, e := range s.entries {
+		out = append(out, e)
+	}
+	// Sort by ordinal (stable across turns)
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j].StableOrdinal < out[i].StableOrdinal {
+				out[i], out[j] = out[j], out[i]
 			}
 		}
-		if len(valid) == 0 {
-			delete(r.entries, sessionID)
-		} else {
-			r.entries[sessionID] = valid
+	}
+	return out
+}
+
+func (s *SessionStore) promote(hash ImageHash) {
+	// Move hash to end of order list (most recently used)
+	idx := -1
+	for i, h := range s.order {
+		if h == hash {
+			idx = i
+			break
 		}
 	}
+	if idx >= 0 {
+		s.order = append(s.order[:idx], s.order[idx+1:]...)
+		s.order = append(s.order, hash)
+	}
 }
 
-// SetMaxAge configures the maximum age for entries
-func (r *ContextRegistry) SetMaxAge(d time.Duration) {
-	if r == nil {
+func (s *SessionStore) evictOldestEntry() {
+	if len(s.order) == 0 {
 		return
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.maxAge = d
-}
-
-// SetMaxPerSession configures the maximum number of images per session
-func (r *ContextRegistry) SetMaxPerSession(n int) {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.maxPerSession = n
+	oldest := s.order[0]
+	s.order = s.order[1:]
+	delete(s.entries, oldest)
 }

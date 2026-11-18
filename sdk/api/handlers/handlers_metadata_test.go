@@ -3,14 +3,16 @@ package handlers
 import (
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coresession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"golang.org/x/net/context"
 )
@@ -146,147 +148,6 @@ func TestSetReasoningEffortMetadataSupportsOpenAIResponses(t *testing.T) {
 	}
 }
 
-func TestEnrichRequestExecutionMetadataMarksMCPTools(t *testing.T) {
-	meta := make(map[string]any)
-
-	enrichRequestExecutionMetadata(meta, []byte(`{
-		"model":"gpt-5.3-codex",
-		"input":[{"role":"user","content":"use mcp"}],
-		"tools":[{"type":"mcp","server_label":"web-reader"}]
-	}`))
-
-	features, ok := meta[coreexecutor.RequestFeaturesMetadataKey].([]string)
-	if !ok {
-		t.Fatalf("RequestFeaturesMetadataKey = %#v, want []string", meta[coreexecutor.RequestFeaturesMetadataKey])
-	}
-	for _, want := range []string{"tools", "mcp"} {
-		if !slices.Contains(features, want) {
-			t.Fatalf("features = %v, want %q", features, want)
-		}
-	}
-}
-
-func TestEnrichRequestExecutionMetadataMarksRequiredAndXunfeiUnsupportedTools(t *testing.T) {
-	meta := make(map[string]any)
-
-	enrichRequestExecutionMetadata(meta, []byte(`{
-		"model":"gpt-5.3-codex",
-		"input":[{"role":"user","content":"use tools"}],
-		"tool_choice":"required",
-		"tools":[
-			{"type":"function","name":"read_file","parameters":{"type":"object"}},
-			{"type":"image_generation"}
-		]
-	}`))
-
-	features, ok := meta[coreexecutor.RequestFeaturesMetadataKey].([]string)
-	if !ok {
-		t.Fatalf("RequestFeaturesMetadataKey = %#v, want []string", meta[coreexecutor.RequestFeaturesMetadataKey])
-	}
-	for _, want := range []string{"tools", "required-tools", "xunfei-unsupported-tools"} {
-		if !slices.Contains(features, want) {
-			t.Fatalf("features = %v, want %q", features, want)
-		}
-	}
-}
-
-func TestEnrichRequestExecutionMetadataTreatsWebSearchPreviewAsXunfeiSupported(t *testing.T) {
-	meta := make(map[string]any)
-
-	enrichRequestExecutionMetadata(meta, []byte(`{
-		"model":"gpt-5.3-codex",
-		"input":[{"role":"user","content":"search for docs"}],
-		"tool_choice":"auto",
-		"tools":[
-			{"type":"function","name":"read_file","parameters":{"type":"object"}},
-			{"type":"web_search_preview","search_context_size":"high"}
-		]
-	}`))
-
-	features, ok := meta[coreexecutor.RequestFeaturesMetadataKey].([]string)
-	if !ok {
-		t.Fatalf("RequestFeaturesMetadataKey = %#v, want []string", meta[coreexecutor.RequestFeaturesMetadataKey])
-	}
-	if !slices.Contains(features, "tools") {
-		t.Fatalf("features = %v, want tools", features)
-	}
-	for _, unexpected := range []string{"required-tools", "xunfei-unsupported-tools", "mcp"} {
-		if slices.Contains(features, unexpected) {
-			t.Fatalf("features = %v, did not want %q", features, unexpected)
-		}
-	}
-}
-
-func TestEnrichRequestExecutionMetadataAllowsForcedFunctionToolChoiceForAstron(t *testing.T) {
-	meta := make(map[string]any)
-
-	enrichRequestExecutionMetadata(meta, []byte(`{
-		"model":"gpt-5.3-codex",
-		"input":[{"role":"user","content":"use the read_file tool"}],
-		"tool_choice":{"type":"function","function":{"name":"read_file"}},
-		"tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}]
-	}`))
-
-	features, ok := meta[coreexecutor.RequestFeaturesMetadataKey].([]string)
-	if !ok {
-		t.Fatalf("RequestFeaturesMetadataKey = %#v, want []string", meta[coreexecutor.RequestFeaturesMetadataKey])
-	}
-	if slices.Contains(features, "required-tools") {
-		t.Fatalf("features = %v, did not want required-tools", features)
-	}
-}
-
-func TestEnrichRequestExecutionMetadataKeepsXunfeiSupportedAutoTools(t *testing.T) {
-	meta := make(map[string]any)
-
-	enrichRequestExecutionMetadata(meta, []byte(`{
-		"model":"gpt-5.3-codex",
-		"input":[{"role":"user","content":"use tools"}],
-		"tool_choice":"auto",
-		"tools":[
-			{"type":"function","name":"read_file","parameters":{"type":"object"}},
-			{"type":"web_search"}
-		]
-	}`))
-
-	features, ok := meta[coreexecutor.RequestFeaturesMetadataKey].([]string)
-	if !ok {
-		t.Fatalf("RequestFeaturesMetadataKey = %#v, want []string", meta[coreexecutor.RequestFeaturesMetadataKey])
-	}
-	if !slices.Contains(features, "tools") {
-		t.Fatalf("features = %v, want tools", features)
-	}
-	for _, unexpected := range []string{"required-tools", "xunfei-unsupported-tools", "mcp"} {
-		if slices.Contains(features, unexpected) {
-			t.Fatalf("features = %v, did not want %q", features, unexpected)
-		}
-	}
-}
-
-func TestEnrichRequestExecutionMetadataCompactIgnoresHistoricalToolFeatures(t *testing.T) {
-	meta := make(map[string]any)
-
-	enrichRequestExecutionMetadataForAlt(meta, []byte(`{
-		"model":"gpt-5.3-codex",
-		"input":[{"role":"user","content":"hi"}],
-		"tool_choice":"required",
-		"tools":[
-			{"type":"mcp","server_label":"web-reader"},
-			{"type":"web_search_preview"}
-		]
-	}`), "responses/compact")
-
-	if got := meta[coreexecutor.InputItemsMetadataKey]; got != 1 {
-		t.Fatalf("InputItemsMetadataKey = %v, want 1", got)
-	}
-	if got := meta[coreexecutor.ToolDefinitionsMetadataKey]; got != 2 {
-		t.Fatalf("ToolDefinitionsMetadataKey = %v, want 2", got)
-	}
-	if features, ok := meta[coreexecutor.RequestFeaturesMetadataKey].([]string); ok && len(features) > 0 {
-		t.Fatalf("compact features = %v, want none", features)
-	}
-}
-
 func TestSetServiceTierMetadataExtractsValue(t *testing.T) {
 	meta := make(map[string]any)
 
@@ -316,80 +177,6 @@ func TestSetServiceTierMetadataPreservesExplicitDefault(t *testing.T) {
 
 	if gotServiceTier := meta[coreexecutor.ServiceTierMetadataKey]; gotServiceTier != "default" {
 		t.Fatalf("ServiceTierMetadataKey = %v, want %q", gotServiceTier, "default")
-	}
-}
-
-func TestFilterModelsByAccess(t *testing.T) {
-	h := &BaseAPIHandler{}
-
-	models := []map[string]any{
-		{"id": "gpt-5.3-codex"},
-		{"id": "glm-5.1"},
-		{"id": "gemini-3-flash"},
-		{"id": "gpt-5.4"},
-		{"name": "models/gemini-3-pro"},
-	}
-
-	// 1. nil Context
-	res1 := h.FilterModelsByAccess(nil, models)
-	if len(res1) != len(models) {
-		t.Fatalf("nil context: expected %d, got %d", len(models), len(res1))
-	}
-
-	// 2. No accessMetadata
-	c2 := &gin.Context{}
-	res2 := h.FilterModelsByAccess(c2, models)
-	if len(res2) != len(models) {
-		t.Fatalf("no metadata: expected %d, got %d", len(models), len(res2))
-	}
-
-	// 3. Metadata with no allowed-models
-	c3 := &gin.Context{}
-	c3.Set("accessMetadata", map[string]string{})
-	res3 := h.FilterModelsByAccess(c3, models)
-	if len(res3) != len(models) {
-		t.Fatalf("no allowed-models: expected %d, got %d", len(models), len(res3))
-	}
-
-	// 4. Allowed-models exact match
-	c4 := &gin.Context{}
-	c4.Set("accessMetadata", map[string]string{"allowed-models": "gpt-5.3-codex,glm-5.1"})
-	res4 := h.FilterModelsByAccess(c4, models)
-	if len(res4) != 2 {
-		t.Fatalf("exact match: expected 2, got %d", len(res4))
-	}
-	if res4[0]["id"] != "gpt-5.3-codex" || res4[1]["id"] != "glm-5.1" {
-		t.Fatalf("exact match: unexpected elements: %v", res4)
-	}
-
-	// 5. Allowed-models wildcard match
-	c5 := &gin.Context{}
-	c5.Set("accessMetadata", map[string]string{"allowed-models": "gpt-*"})
-	res5 := h.FilterModelsByAccess(c5, models)
-	if len(res5) != 2 {
-		t.Fatalf("wildcard match: expected 2, got %d", len(res5))
-	}
-	if res5[0]["id"] != "gpt-5.3-codex" || res5[1]["id"] != "gpt-5.4" {
-		t.Fatalf("wildcard match: unexpected elements: %v", res5)
-	}
-
-	// 6. Gemini name fields may include a models/ prefix.
-	c6 := &gin.Context{}
-	c6.Set("accessMetadata", map[string]string{"allowed-models": "gemini-3-pro"})
-	res6 := h.FilterModelsByAccess(c6, models)
-	if len(res6) != 1 {
-		t.Fatalf("gemini name match: expected 1, got %d", len(res6))
-	}
-	if res6[0]["name"] != "models/gemini-3-pro" {
-		t.Fatalf("gemini name match: unexpected elements: %v", res6)
-	}
-
-	// 7. Scoped access without an auth manager must fail closed.
-	c7 := &gin.Context{}
-	c7.Set("accessMetadata", map[string]string{"allowed-channel-groups": "team"})
-	res7 := h.FilterModelsByAccess(c7, models)
-	if len(res7) != 0 {
-		t.Fatalf("missing auth manager: expected 0, got %d", len(res7))
 	}
 }
 
@@ -537,5 +324,117 @@ func TestEnrichContextWithSessionHierarchyFromBody(t *testing.T) {
 	meta8 := logging.GetClientRequestMetadata(ctx8)
 	if meta8.SessionID != "session:opencode-sess-1" || meta8.ParentSessionID != "session:opencode-root-1" {
 		t.Fatalf("OpenCode parent_id session = (%q, %q), want (session:opencode-sess-1, session:opencode-root-1)", meta8.SessionID, meta8.ParentSessionID)
+	}
+}
+
+type issue7056UsageCapture struct {
+	records chan coreusage.Record
+	model   string
+}
+
+func (p *issue7056UsageCapture) HandleUsage(_ context.Context, record coreusage.Record) {
+	if p == nil || p.records == nil {
+		return
+	}
+	if record.Model == p.model {
+		p.records <- record
+	}
+}
+
+func TestGetContextWithCancelIsolatesUsagePublishFromReusedGinContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const model = "issue-7056-unauthenticated-model"
+	capture := &issue7056UsageCapture{records: make(chan coreusage.Record, 1), model: model}
+	coreusage.RegisterNamedPlugin(t.Name(), capture)
+	t.Cleanup(func() { coreusage.RegisterNamedPlugin(t.Name(), &issue7056UsageCapture{}) })
+
+	router := gin.New()
+	var (
+		capturedCtx  context.Context
+		streamReady  = make(chan struct{})
+		finishStream = make(chan struct{})
+		publishDone  = make(chan struct{})
+	)
+	handler := &BaseAPIHandler{Cfg: &config.SDKConfig{}}
+	router.POST("/v1/responses", func(c *gin.Context) {
+		if c.GetHeader("X-Turn") == "2" {
+			c.Set("userApiKey", "reused-turn2-key")
+			c.Set("accessProvider", "config-inline")
+			close(finishStream)
+			<-publishDone
+			c.Status(http.StatusOK)
+			return
+		}
+		cliCtx, cliCancel := handler.GetContextWithCancel(nil, c, context.Background())
+		capturedCtx = cliCtx
+		reporter := helps.NewUsageReporter(cliCtx, "antigravity", model, nil)
+		go func() {
+			defer close(publishDone)
+			close(streamReady)
+			<-finishStream
+			reporter.Publish(capturedCtx, coreusage.Detail{InputTokens: 1, OutputTokens: 2, TotalTokens: 3})
+		}()
+		<-streamReady
+		cliCancel()
+		c.Status(http.StatusOK)
+	})
+
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader("{}"))
+	req1.Header.Set("X-Turn", "1")
+	router.ServeHTTP(httptest.NewRecorder(), req1)
+
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader("{}"))
+	req2.Header.Set("X-Turn", "2")
+	router.ServeHTTP(httptest.NewRecorder(), req2)
+
+	select {
+	case got := <-capture.records:
+		if got.APIKey != "" || got.AccessProvider != "" || got.IsNativeKey {
+			t.Fatalf("usage record leaked identity from reused gin.Context: APIKey=%q AccessProvider=%q IsNativeKey=%v", got.APIKey, got.AccessProvider, got.IsNativeKey)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for usage record")
+	}
+}
+
+func TestGetContextWithCancelNilGinContextDoesNotPanic(t *testing.T) {
+	handler := &BaseAPIHandler{Cfg: &config.SDKConfig{}}
+	cliCtx, cliCancel := handler.GetContextWithCancel(nil, nil, context.Background())
+	defer cliCancel()
+
+	if got := coreusage.APIKeyFromContext(cliCtx); got != "" {
+		t.Fatalf("APIKeyFromContext = %q, want empty", got)
+	}
+	if got := coreusage.AccessProviderFromContext(cliCtx); got != "" {
+		t.Fatalf("AccessProviderFromContext = %q, want empty", got)
+	}
+	if !coreusage.HasCapturedIdentity(cliCtx) {
+		t.Fatal("expected captured identity holder on context")
+	}
+}
+
+func TestHomeUpdatedAPIKeyOverridesParentWithAPIKeyAfterCapture(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	reqCtx := coreusage.WithAPIKey(req.Context(), "parent-key-a")
+	reqCtx = coreusage.WithAccessProvider(reqCtx, "config-inline")
+	reqCtx = coreusage.WithIsNativeKey(reqCtx, true)
+	ginCtx.Request = req.WithContext(reqCtx)
+	ginCtx.Set("userApiKey", "parent-key-a")
+	ginCtx.Set("accessProvider", "config-inline")
+
+	handler := &BaseAPIHandler{Cfg: &config.SDKConfig{}}
+	cliCtx, cliCancel := handler.GetContextWithCancel(nil, ginCtx, reqCtx)
+	defer cliCancel()
+
+	coreusage.SetCapturedAPIKey(cliCtx, "home-dispatched-key-b")
+	ginCtx.Set("userApiKey", "home-dispatched-key-b")
+
+	if got := helps.APIKeyFromContext(cliCtx); got != "home-dispatched-key-b" {
+		t.Fatalf("helps.APIKeyFromContext = %q, want %q", got, "home-dispatched-key-b")
+	}
+	if got := coreusage.APIKeyFromContext(cliCtx); got != "home-dispatched-key-b" {
+		t.Fatalf("coreusage.APIKeyFromContext = %q, want %q", got, "home-dispatched-key-b")
 	}
 }

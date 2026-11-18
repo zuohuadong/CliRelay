@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	log "github.com/sirupsen/logrus"
+	oauthsession "github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/session"
 )
 
 type oauthCallbackRequest struct {
@@ -25,26 +25,20 @@ func (h *Handler) PostOAuthCallback(c *gin.Context) {
 	}
 
 	var req oauthCallbackRequest
-	if errBindJSON := c.ShouldBindJSON(&req); errBindJSON != nil {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "invalid body"})
 		return
 	}
 	h.handleOAuthCallback(c, req)
 }
 
-func (h *Handler) GetOAuthCallback(c *gin.Context) {
-	req := oauthCallbackRequest{
-		Provider: strings.TrimSpace(c.Query("provider")),
-		Code:     strings.TrimSpace(c.Query("code")),
-		State:    strings.TrimSpace(c.Query("state")),
-		Error:    firstNonEmpty(c.Query("error"), c.Query("error_description")),
-	}
-	h.handleOAuthCallback(c, req)
-}
-
+// handleOAuthCallback processes a decoded callback. Keeping this entry point
+// separate lets the v8 SIWC callback route fall back to the legacy callback
+// semantics for ordinary OAuth sessions without manufacturing a request body.
 func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) {
-	if h == nil || h.cfg == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "handler not initialized"})
+	canonicalProvider, err := NormalizeOAuthProvider(req.Provider)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "unsupported provider"})
 		return
 	}
 
@@ -86,28 +80,58 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 		return
 	}
 
-	sessionProvider, sessionStatus, isPlugin, _, completed, ok := GetOAuthSessionDetails(state)
+	if shared := sharedOAuthSessionStore(); shared != nil {
+		if session, ok := shared.Get(state); ok {
+			if session.Status == oauthsession.StatusCompleted {
+				c.JSON(http.StatusOK, gin.H{"status": "ok", "already_processed": true})
+				return
+			}
+			if session.Status != "" {
+				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": session.Status})
+				return
+			}
+			if !strings.EqualFold(session.Provider, canonicalProvider) {
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "provider does not match state"})
+				return
+			}
+			if session.TenantID != "" && session.TenantID != effectiveTenantID(c) {
+				c.JSON(http.StatusForbidden, gin.H{"status": "error", "error": "oauth state belongs to another tenant"})
+				return
+			}
+			if session.TenantID != "" {
+				if err = h.identity().ValidateTenantAccess(c.Request.Context(), session.TenantID); err != nil {
+					identityError(c, err)
+					return
+				}
+			}
+			if errDeliver := shared.DeliverCallback(h.cfg.AuthDir, canonicalProvider, state, code, errMsg); errDeliver == nil {
+				c.JSON(http.StatusOK, gin.H{"status": "ok"})
+				return
+			} else if !errors.Is(errDeliver, oauthsession.ErrNotPending) {
+				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to persist oauth callback"})
+				return
+			}
+		} else if sharedOAuthStateSuperseded(c, state) {
+			c.JSON(http.StatusConflict, gin.H{"status": "error", "error": oauthSupersededMessage, "code": oauthCodeSessionSuperseded})
+			return
+		}
+	}
+
+	sessionProvider, sessionTenantID, sessionStatus, ok := GetOAuthSessionWithTenant(state)
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "unknown or expired state"})
+		if sharedOAuthStateSuperseded(c, state) {
+			c.JSON(http.StatusConflict, gin.H{"status": "error", "error": oauthSupersededMessage, "code": oauthCodeSessionSuperseded})
+			return
+		}
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "unknown or expired state", "code": oauthCodeSessionExpired})
 		return
 	}
-	if completed {
-		c.JSON(http.StatusConflict, gin.H{"status": "error", "error": "oauth flow is already completed"})
+	if sessionStatus == oauthSessionStatusCompleted {
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "already_processed": true})
 		return
 	}
-	provider := strings.TrimSpace(req.Provider)
-	if provider == "" {
-		provider = sessionProvider
-	}
-	var canonicalProvider string
-	var errNormalize error
-	if isPlugin {
-		canonicalProvider, errNormalize = NormalizePluginOAuthCallbackProvider(provider)
-	} else {
-		canonicalProvider, errNormalize = NormalizeOAuthCallbackProvider(provider)
-	}
-	if errNormalize != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "unsupported provider"})
+	if sessionStatus == oauthSessionStatusSuperseded {
+		c.JSON(http.StatusConflict, gin.H{"status": "error", "error": oauthSupersededMessage, "code": oauthCodeSessionSuperseded})
 		return
 	}
 	if sessionStatus != "" {
@@ -118,18 +142,35 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "provider does not match state"})
 		return
 	}
+	if sessionTenantID != "" && sessionTenantID != effectiveTenantID(c) {
+		c.JSON(http.StatusForbidden, gin.H{"status": "error", "error": "oauth state belongs to another tenant"})
+		return
+	}
+	if sessionTenantID != "" {
+		if err = h.identity().ValidateTenantAccess(c.Request.Context(), sessionTenantID); err != nil {
+			identityError(c, err)
+			return
+		}
+	}
 
 	if _, errWrite := WriteOAuthCallbackFileForPendingSession(h.cfg.AuthDir, canonicalProvider, state, code, errMsg); errWrite != nil {
 		if errors.Is(errWrite, errOAuthSessionNotPending) {
-			_, status, okSession := GetOAuthSession(state)
-			if okSession && status != "" {
-				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": status})
+			_, latestStatus, okLatest := GetOAuthSession(state)
+			if okLatest && latestStatus == oauthSessionStatusCompleted {
+				c.JSON(http.StatusOK, gin.H{"status": "ok", "already_processed": true})
+				return
+			}
+			if okLatest && latestStatus == oauthSessionStatusSuperseded {
+				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": oauthSupersededMessage, "code": oauthCodeSessionSuperseded})
+				return
+			}
+			if okLatest && latestStatus != "" {
+				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": latestStatus})
 				return
 			}
 			c.JSON(http.StatusConflict, gin.H{"status": "error", "error": "oauth flow is not pending"})
 			return
 		}
-		log.WithError(errWrite).Error("failed to persist oauth callback")
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to persist oauth callback"})
 		return
 	}

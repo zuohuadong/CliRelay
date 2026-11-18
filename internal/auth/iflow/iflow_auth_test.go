@@ -6,6 +6,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,16 +82,32 @@ func TestRefreshAPIKeyRejectsOversizedCompressedResponse(t *testing.T) {
 	}
 }
 
-func TestNewIFlowAuthWithProxyURL(t *testing.T) {
-	auth := NewIFlowAuthWithProxyURL(nil, "http://127.0.0.1:8080")
-	if auth == nil || auth.httpClient == nil {
-		t.Fatal("expected non-nil auth with httpClient")
+func TestSaveTokenToFileUsesPrivatePermissions(t *testing.T) {
+	authFilePath := filepath.Join(t.TempDir(), "auth", "iflow-user.json")
+	storage := &IFlowTokenStorage{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		APIKey:       "api-key",
+		Email:        "user@example.com",
 	}
-	transport, ok := auth.httpClient.Transport.(*http.Transport)
-	if !ok || transport == nil {
-		t.Fatalf("expected *http.Transport, got %T", auth.httpClient.Transport)
+
+	if err := storage.SaveTokenToFile(authFilePath); err != nil {
+		t.Fatalf("SaveTokenToFile returned error: %v", err)
 	}
-	if transport.Proxy == nil {
-		t.Fatal("expected proxy resolver on transport")
+
+	dirInfo, err := os.Stat(filepath.Dir(authFilePath))
+	if err != nil {
+		t.Fatalf("stat auth dir failed: %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf("auth dir permissions = %o, want 700", got)
+	}
+
+	fileInfo, err := os.Stat(authFilePath)
+	if err != nil {
+		t.Fatalf("stat auth file failed: %v", err)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("auth file permissions = %o, want 600", got)
 	}
 }

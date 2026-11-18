@@ -3,7 +3,6 @@ package antigravity
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -53,29 +53,71 @@ func (e *HTTPStatusError) StatusCode() int {
 // AntigravityAuth handles Antigravity OAuth authentication
 type AntigravityAuth struct {
 	httpClient *http.Client
+	clientID   string
+	secret     string
 }
 
 // NewAntigravityAuth creates a new Antigravity auth service.
 func NewAntigravityAuth(cfg *config.Config, httpClient *http.Client) *AntigravityAuth {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	clientID, clientSecret := cfg.OAuthClientCredentials(config.OAuthClientAntigravity)
 	if httpClient != nil {
-		return &AntigravityAuth{httpClient: httpClient}
-	}
-	return NewAntigravityAuthWithProxyURL(cfg, "")
-}
-
-// NewAntigravityAuthWithProxyURL creates a new Antigravity auth service pinned to one egress proxy.
-// An empty proxyURL keeps the configured default.
-func NewAntigravityAuthWithProxyURL(cfg *config.Config, proxyURL string) *AntigravityAuth {
-	var sdkCfg config.SDKConfig
-	if cfg != nil {
-		sdkCfg = cfg.SDKConfig
-	}
-	if trimmed := strings.TrimSpace(proxyURL); trimmed != "" {
-		sdkCfg.ProxyURL = trimmed
+		return &AntigravityAuth{httpClient: httpClient, clientID: clientID, secret: clientSecret}
 	}
 	return &AntigravityAuth{
-		httpClient: util.SetProxy(&sdkCfg, &http.Client{}),
+		httpClient: util.SetProxy(&cfg.SDKConfig, &http.Client{}),
+		clientID:   clientID,
+		secret:     clientSecret,
 	}
+}
+
+// NewAntigravityAuthWithProxy creates an auth client using a request-scoped proxy.
+func NewAntigravityAuthWithProxy(cfg *config.Config, proxyURL string) *AntigravityAuth {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	clone := *cfg
+	clone.SDKConfig = cfg.SDKConfig
+	clone.ProxyURL = strings.TrimSpace(proxyURL)
+	return NewAntigravityAuth(&clone, nil)
+}
+
+// RefreshAccessToken trades a refresh token for a fresh access token.
+func (o *AntigravityAuth) RefreshAccessToken(ctx context.Context, refreshToken string) (*TokenResponse, error) {
+	clientID := strings.TrimSpace(o.clientID)
+	if clientID == "" {
+		clientID = ClientID
+	}
+	data := url.Values{}
+	data.Set("client_id", clientID)
+	data.Set("client_secret", strings.TrimSpace(o.secret))
+	if data.Get("client_secret") == "" {
+		data.Set("client_secret", ClientSecret)
+	}
+	data.Set("grant_type", "refresh_token")
+	data.Set("refresh_token", strings.TrimSpace(refreshToken))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, TokenEndpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("antigravity token refresh: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", APIUserAgent)
+	resp, err := o.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("antigravity token refresh: execute request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		return nil, fmt.Errorf("antigravity token refresh: request failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var token TokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
+		return nil, fmt.Errorf("antigravity token refresh: decode response: %w", err)
+	}
+	return &token, nil
 }
 
 func (o *AntigravityAuth) shortUserAgent() string {

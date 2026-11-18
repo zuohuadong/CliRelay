@@ -1,23 +1,25 @@
-version: 2
-
 builds:
   - id: "cli-proxy-api"
     env:
       - CGO_ENABLED=0
     goos:
       - linux
+      - windows
+      - darwin
     goarch:
       - amd64
       - arm64
     main: ./cmd/server/
     binary: cli-proxy-api
+    # Inject into internal/buildinfo (cmd/server reads these; main.Version is unused).
     ldflags:
-      - -s -w -X 'main.Version={{.Version}}' -X 'main.Commit={{.ShortCommit}}' -X 'main.BuildDate={{.Date}}'
+      - -s -w -X 'github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo.Version={{.Version}}' -X 'github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo.Commit={{.ShortCommit}}' -X 'github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo.BuildDate={{.Date}}'
 archives:
   - id: "cli-proxy-api"
     format: tar.gz
-    name_template: >-
-      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{- if eq .Arch "arm64" -}}aarch64{{- else -}}{{ .Arch }}{{- end -}}
+    format_overrides:
+      - goos: windows
+        format: zip
     files:
       - LICENSE
       - README.md

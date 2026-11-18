@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -21,19 +21,7 @@ const antigravityCredentialAcquisitionTimeout = 30 * time.Second
 
 // Refresh refreshes the authentication credentials using the refresh token.
 func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
-	originalProxy := ""
-	if auth != nil {
-		originalProxy = auth.ProxyURL
-	}
-	routedAuth, errRoute := e.resolveEgressAuth(ctx, auth)
-	if errRoute != nil {
-		return nil, errRoute
-	}
-	auth = routedAuth
 	if refreshed, handled, err := helps.RefreshAuthViaHome(ctx, e.cfg, auth); handled {
-		if refreshed != nil {
-			refreshed.ProxyURL = originalProxy
-		}
 		return refreshed, err
 	}
 	if auth == nil {
@@ -43,7 +31,7 @@ func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Au
 	if errRefresh != nil {
 		return nil, errRefresh
 	}
-	return restoreAntigravityPersistedProxy(updated, &cliproxyauth.Auth{ProxyURL: originalProxy}), nil
+	return updated, nil
 }
 
 func (e *AntigravityExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
@@ -55,7 +43,6 @@ func (e *AntigravityExecutor) PrepareRequestAuth(ctx context.Context, auth *clip
 		return nil, nil
 	}
 
-	original := auth
 	updated := auth.Clone()
 	token, refreshedAuth, errToken := e.ensureAccessToken(ctx, updated)
 	if errToken != nil {
@@ -65,7 +52,7 @@ func (e *AntigravityExecutor) PrepareRequestAuth(ctx context.Context, auth *clip
 		updated = refreshedAuth
 	}
 	if antigravityProjectIDFromAuth(updated) != "" {
-		return restoreAntigravityPersistedProxy(updated, original), nil
+		return updated, nil
 	}
 
 	projectID, errProject := e.fetchAntigravityProjectID(ctx, updated, token)
@@ -79,26 +66,17 @@ func (e *AntigravityExecutor) PrepareRequestAuth(ctx context.Context, auth *clip
 		updated.Metadata = make(map[string]any)
 	}
 	updated.Metadata["project_id"] = projectID
-	return restoreAntigravityPersistedProxy(updated, original), nil
+	return updated, nil
 }
 
 func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *cliproxyauth.Auth) (string, *cliproxyauth.Auth, error) {
 	if auth == nil {
 		return "", nil, statusErr{code: http.StatusUnauthorized, msg: "missing auth"}
 	}
-	originalAuth := auth
-	routedAuth, errRoute := e.resolveEgressAuth(ctx, auth)
-	if errRoute != nil {
-		return "", nil, errRoute
-	}
-	auth = routedAuth
 	accessToken := metaStringValue(auth.Metadata, "access_token")
 	expiry, _ := auth.ExpirationTime()
 	if accessToken != "" && expiry.After(time.Now().Add(antigravityRequestTokenSafetyWindow)) {
 		e.maybeRefreshAntigravityCreditsHint(ctx, auth, accessToken)
-		if auth != originalAuth {
-			return accessToken, auth, nil
-		}
 		return accessToken, nil, nil
 	}
 	refreshCtx := context.Background()
@@ -116,22 +94,14 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 			return "", nil, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 		}
 		e.maybeRefreshAntigravityCreditsHint(ctx, refreshed, token)
-		routedRefreshed, errRoute := e.resolveEgressAuth(ctx, refreshed)
-		if errRoute != nil {
-			return "", nil, errRoute
-		}
-		return token, routedRefreshed, nil
+		return token, refreshed, nil
 	}
 
 	updated, errRefresh := e.refreshToken(refreshCtx, auth.Clone())
 	if errRefresh != nil {
 		return "", nil, errRefresh
 	}
-	routedUpdated, errRoute := e.resolveEgressAuth(ctx, updated)
-	if errRoute != nil {
-		return "", nil, errRoute
-	}
-	return metaStringValue(routedUpdated.Metadata, "access_token"), routedUpdated, nil
+	return metaStringValue(updated.Metadata, "access_token"), updated, nil
 }
 
 func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {

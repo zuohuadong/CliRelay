@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v8/internal/routing"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
@@ -102,11 +103,7 @@ func collectKnownChannelsWithPolicy(cfg *config.Config, auths []*coreauth.Auth, 
 			if strings.TrimSpace(entry.APIKey) == "" {
 				continue
 			}
-			name := entry.Prefix
-			if name == "" {
-				name = "gemini"
-			}
-			if err := addKnownChannelWithPolicy(known, name, name, "Gemini API key config", failOnConflict); err != nil {
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Gemini API key config", failOnConflict); err != nil {
 				return nil, err
 			}
 		}
@@ -114,23 +111,7 @@ func collectKnownChannelsWithPolicy(cfg *config.Config, auths []*coreauth.Auth, 
 			if strings.TrimSpace(entry.APIKey) == "" {
 				continue
 			}
-			name := entry.Prefix
-			if name == "" {
-				name = "claude"
-			}
-			if err := addKnownChannelWithPolicy(known, name, name, "Claude API key config", failOnConflict); err != nil {
-				return nil, err
-			}
-		}
-		for _, entry := range cfg.CodexKey {
-			if strings.TrimSpace(entry.APIKey) == "" {
-				continue
-			}
-			name := entry.Prefix
-			if name == "" {
-				name = "codex"
-			}
-			if err := addKnownChannelWithPolicy(known, name, name, "Codex API key config", failOnConflict); err != nil {
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Claude API key config", failOnConflict); err != nil {
 				return nil, err
 			}
 		}
@@ -142,6 +123,14 @@ func collectKnownChannelsWithPolicy(cfg *config.Config, auths []*coreauth.Auth, 
 				return nil, err
 			}
 		}
+		for _, entry := range cfg.CodexKey {
+			if strings.TrimSpace(entry.APIKey) == "" {
+				continue
+			}
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Codex API key config", failOnConflict); err != nil {
+				return nil, err
+			}
+		}
 		for _, entry := range cfg.OpenCodeGoKey {
 			if strings.TrimSpace(entry.APIKey) == "" {
 				continue
@@ -150,59 +139,27 @@ func collectKnownChannelsWithPolicy(cfg *config.Config, auths []*coreauth.Auth, 
 				return nil, err
 			}
 		}
+		for _, entry := range cfg.ClineKey {
+			if strings.TrimSpace(entry.APIKey) == "" {
+				continue
+			}
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Cline API key config", failOnConflict); err != nil {
+				return nil, err
+			}
+		}
+		for _, entry := range cfg.OllamaCloudKey {
+			if strings.TrimSpace(entry.APIKey) == "" {
+				continue
+			}
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Ollama Cloud API key config", failOnConflict); err != nil {
+				return nil, err
+			}
+		}
 		for _, entry := range cfg.OpenAICompatibility {
 			if strings.TrimSpace(entry.BaseURL) == "" {
 				continue
 			}
 			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "OpenAI compatibility config", failOnConflict); err != nil {
-				return nil, err
-			}
-		}
-		for _, entry := range cfg.BigModelCodingAPIKey {
-			if strings.TrimSpace(entry.BaseURL) == "" {
-				continue
-			}
-			name := entry.Name
-			if name == "" {
-				name = "bigmodel-coding"
-			}
-			if err := addKnownChannelWithPolicy(known, name, name, "BigModel coding config", failOnConflict); err != nil {
-				return nil, err
-			}
-		}
-		for _, entry := range cfg.AstronCodeAPIKey {
-			if strings.TrimSpace(entry.BaseURL) == "" {
-				continue
-			}
-			name := entry.Name
-			if name == "" {
-				name = "astron-code"
-			}
-			if err := addKnownChannelWithPolicy(known, name, name, "Astron code config", failOnConflict); err != nil {
-				return nil, err
-			}
-		}
-		for _, entry := range cfg.AgnesAPIKey {
-			if strings.TrimSpace(entry.BaseURL) == "" {
-				continue
-			}
-			name := entry.Name
-			if name == "" {
-				name = "agnes"
-			}
-			if err := addKnownChannelWithPolicy(known, name, name, "Agnes config", failOnConflict); err != nil {
-				return nil, err
-			}
-		}
-		for _, entry := range cfg.VertexCompatAPIKey {
-			if strings.TrimSpace(entry.APIKey) == "" {
-				continue
-			}
-			name := entry.Prefix
-			if name == "" {
-				name = "vertex"
-			}
-			if err := addKnownChannelWithPolicy(known, name, name, "Vertex compat config", failOnConflict); err != nil {
 				return nil, err
 			}
 		}
@@ -314,9 +271,21 @@ func canonicalizeRoutingConfigChannels(routing config.RoutingConfig, known map[s
 		group := routing.ChannelGroups[i]
 		group.Match.Channels = canonicalizeChannelList(group.Match.Channels, known)
 		group.ChannelPriorities = canonicalizeChannelPriorities(group.ChannelPriorities, known)
+		group.Scheduling.ChannelWeights = canonicalizeChannelPriorities(group.Scheduling.ChannelWeights, known)
 		routing.ChannelGroups[i] = group
 	}
 	return routing
+}
+
+func canonicalizeAPIKeyEntriesChannels(entries []config.APIKeyEntry, known map[string]knownChannel) []config.APIKeyEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := append([]config.APIKeyEntry(nil), entries...)
+	for i := range out {
+		out[i].AllowedChannels = canonicalizeChannelList(out[i].AllowedChannels, known)
+	}
+	return out
 }
 
 func (h *Handler) validateChannelNames() error {
@@ -328,7 +297,106 @@ func (h *Handler) validateChannelNames() error {
 	return err
 }
 
+func (h *Handler) validateAllowedChannels(values []string) ([]string, error) {
+	normalized := uniqueChannels(values)
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	var auths []*coreauth.Auth
+	var cfg *config.Config
+	if h != nil {
+		cfg = h.cfg
+	}
+	if h != nil && h.authManager != nil {
+		auths = h.authManager.List()
+	}
+	known, err := collectKnownChannels(cfg, auths, "")
+	if err != nil {
+		return nil, err
+	}
+	resolved := make([]string, 0, len(normalized))
+	seen := make(map[string]struct{}, len(normalized))
+	for _, value := range normalized {
+		key := strings.ToLower(strings.TrimSpace(value))
+		entry, exists := known[key]
+		if !exists {
+			return nil, fmt.Errorf("unknown channel %q", value)
+		}
+		canonical := strings.TrimSpace(entry.Canonical)
+		if canonical == "" {
+			canonical = strings.TrimSpace(value)
+		}
+		canonicalKey := strings.ToLower(canonical)
+		if _, exists := seen[canonicalKey]; exists {
+			continue
+		}
+		seen[canonicalKey] = struct{}{}
+		resolved = append(resolved, canonical)
+	}
+	return resolved, nil
+}
+
+func (h *Handler) sanitizeAllowedChannelsForSave(values []string) ([]string, error) {
+	return h.sanitizeAllowedChannelsForTenant(identity.SystemTenantID, values)
+}
+
+func (h *Handler) sanitizeAllowedChannelsForTenant(tenantID string, values []string) ([]string, error) {
+	normalized := uniqueChannels(values)
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+
+	var auths []*coreauth.Auth
+	var cfg *config.Config
+	if h != nil {
+		if tenantID == identity.SystemTenantID {
+			cfg = h.cfg
+		} else {
+			cfg = &config.Config{Routing: currentRoutingConfigForTenant(h.cfg, tenantID)}
+		}
+	}
+	if h != nil && h.authManager != nil {
+		// Shared platform credentials are channels this tenant can be limited to.
+		auths = h.authManager.ListUsableForTenant(tenantID)
+	}
+	known, err := collectKnownChannels(cfg, auths, "")
+	if err != nil {
+		return nil, err
+	}
+	if len(known) == 0 {
+		return h.validateAllowedChannels(normalized)
+	}
+
+	resolved := make([]string, 0, len(normalized))
+	seen := make(map[string]struct{}, len(normalized))
+	for _, value := range normalized {
+		key := strings.ToLower(strings.TrimSpace(value))
+		entry, exists := known[key]
+		if !exists {
+			continue
+		}
+		canonical := strings.TrimSpace(entry.Canonical)
+		if canonical == "" {
+			canonical = strings.TrimSpace(value)
+		}
+		canonicalKey := strings.ToLower(canonical)
+		if _, exists := seen[canonicalKey]; exists {
+			continue
+		}
+		seen[canonicalKey] = struct{}{}
+		resolved = append(resolved, canonical)
+	}
+	if len(resolved) == 0 {
+		return nil, nil
+	}
+	return resolved, nil
+}
+
 func (h *Handler) validateAllowedChannelGroups(values []string) ([]string, error) {
+	return h.validateAllowedChannelGroupsForTenant(identity.SystemTenantID, values)
+}
+
+func (h *Handler) validateAllowedChannelGroupsForTenant(tenantID string, values []string) ([]string, error) {
 	normalized := uniqueChannelGroups(values)
 	if len(normalized) == 0 {
 		return nil, nil
@@ -336,11 +404,38 @@ func (h *Handler) validateAllowedChannelGroups(values []string) ([]string, error
 	if h == nil || h.authManager == nil {
 		return normalized, nil
 	}
-	known := h.authManager.KnownChannelGroups()
+	known := h.authManager.KnownChannelGroupsForTenant(tenantID)
 	for _, value := range normalized {
 		if _, exists := known[value]; !exists {
 			return nil, fmt.Errorf("unknown channel group %q", value)
 		}
 	}
 	return normalized, nil
+}
+
+func (h *Handler) validateAuthChannelName(name, excludeAuthID string) (string, error) {
+	return h.validateAuthChannelNameForTenant(identity.SystemTenantID, name, excludeAuthID)
+}
+
+func (h *Handler) validateAuthChannelNameForTenant(tenantID, name, excludeAuthID string) (string, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "", fmt.Errorf("channel name is required")
+	}
+	var auths []*coreauth.Auth
+	if h != nil && h.authManager != nil {
+		// A name taken by a shared platform credential is taken in this
+		// tenant's routing too.
+		auths = h.authManager.ListUsableForTenant(tenantID)
+	}
+	cfg := h.cfg
+	if tenantID != identity.SystemTenantID {
+		cfg = &config.Config{Routing: currentRoutingConfigForTenant(h.cfg, tenantID)}
+	}
+	known := collectKnownChannelsForAuthRename(cfg, auths, excludeAuthID)
+	key := strings.ToLower(trimmed)
+	if existing, exists := known[key]; exists {
+		return "", fmt.Errorf("channel name %q is already used by %s", trimmed, existing.Source)
+	}
+	return trimmed, nil
 }

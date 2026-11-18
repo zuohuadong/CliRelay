@@ -4,84 +4,113 @@
 // embed CLIProxyAPI without importing internal packages.
 package config
 
-import internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+import bridgeconfig "github.com/router-for-me/CLIProxyAPI/v8/sdkbridge/config"
 
-type SDKConfig = internalconfig.SDKConfig
+type SDKConfig = bridgeconfig.SDKConfig
+type ClaudeCodeConfig = bridgeconfig.ClaudeCodeConfig
+type ClientConfig = bridgeconfig.ClientConfig
+type CodexClientConfig = bridgeconfig.CodexClientConfig
+type ClaudeClientConfig = bridgeconfig.ClaudeClientConfig
+type DisableImageGenerationMode = bridgeconfig.DisableImageGenerationMode
 
-type Config = internalconfig.Config
+type Config = bridgeconfig.Config
+type APIKeyEntry = bridgeconfig.APIKeyEntry
+type ModelCatalogs = bridgeconfig.ModelCatalogs
 
-type StreamingConfig = internalconfig.StreamingConfig
-type ClientConfig = internalconfig.ClientConfig
-type CodexClientConfig = internalconfig.CodexClientConfig
-type CodexWebSearchResultCacheConfig = internalconfig.CodexWebSearchResultCacheConfig
-type ClaudeCodeConfig = internalconfig.ClaudeCodeConfig
-type TLSConfig = internalconfig.TLSConfig
-type DiscoveryConfig = internalconfig.DiscoveryConfig
-type DiscoveryInterfacesConfig = internalconfig.DiscoveryInterfacesConfig
-type RemoteManagement = internalconfig.RemoteManagement
-type OAuthModelAlias = internalconfig.OAuthModelAlias
-type ModelOverride = internalconfig.ModelOverride
-type ModelRouteRule = internalconfig.ModelRouteRule
-type ModelRouteMatch = internalconfig.ModelRouteMatch
-type ModelRouteMeasure = internalconfig.ModelRouteMeasure
-type ModelRouteBranch = internalconfig.ModelRouteBranch
-type ModelRouteTarget = internalconfig.ModelRouteTarget
-type OAuthModelSetting = internalconfig.OAuthModelSetting
-type PayloadConfig = internalconfig.PayloadConfig
-type PayloadRule = internalconfig.PayloadRule
-type PayloadFilterRule = internalconfig.PayloadFilterRule
-type PayloadModelRule = internalconfig.PayloadModelRule
+type StreamingConfig = bridgeconfig.StreamingConfig
+type ResponsesWebsocketConfig = bridgeconfig.ResponsesWebsocketConfig
+type RoutingConfig = bridgeconfig.RoutingConfig
+type RoutingChannelGroup = bridgeconfig.RoutingChannelGroup
+type RoutingPathRoute = bridgeconfig.RoutingPathRoute
+type ChannelGroupMatch = bridgeconfig.ChannelGroupMatch
+type GroupScheduling = bridgeconfig.GroupScheduling
+type GroupStickyConfig = bridgeconfig.GroupStickyConfig
+type TLSConfig = bridgeconfig.TLSConfig
+type PprofConfig = bridgeconfig.PprofConfig
+type RemoteManagement = bridgeconfig.RemoteManagement
+type AmpCode = bridgeconfig.AmpCode
+type OAuthModelAlias = bridgeconfig.OAuthModelAlias
+type PayloadConfig = bridgeconfig.PayloadConfig
+type PayloadRule = bridgeconfig.PayloadRule
+type PayloadFilterRule = bridgeconfig.PayloadFilterRule
+type PayloadModelRule = bridgeconfig.PayloadModelRule
+type PayloadReplaceRule = bridgeconfig.PayloadReplaceRule
+type PayloadReplaceTarget = bridgeconfig.PayloadReplaceTarget
+type PayloadReplacement = bridgeconfig.PayloadReplacement
 
-type GeminiKey = internalconfig.GeminiKey
-type CodexKey = internalconfig.CodexKey
-type XAIKey = internalconfig.XAIKey
-type XAIModel = internalconfig.XAIModel
-type MetaKey = internalconfig.MetaKey
-type MetaModel = internalconfig.MetaModel
-type ClaudeKey = internalconfig.ClaudeKey
-type VertexCompatKey = internalconfig.VertexCompatKey
-type VertexCompatModel = internalconfig.VertexCompatModel
-type OpenAICompatibility = internalconfig.OpenAICompatibility
-type OpenAICompatibilityAPIKey = internalconfig.OpenAICompatibilityAPIKey
-type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
-type OpenCodeGoKey = internalconfig.OpenCodeGoKey
-type OpenCodeGoModel = internalconfig.OpenCodeGoModel
-type BedrockKey = internalconfig.BedrockKey
-type BedrockModel = internalconfig.BedrockModel
+type GeminiKey = bridgeconfig.GeminiKey
+type CodexKey = bridgeconfig.CodexKey
+type ClaudeKey = bridgeconfig.ClaudeKey
+type BedrockKey = bridgeconfig.BedrockKey
+type XAIKey = bridgeconfig.XAIKey
+type XAIModel = bridgeconfig.XAIModel
+type MetaKey = bridgeconfig.MetaKey
+type BedrockModel = bridgeconfig.BedrockModel
+type OpenCodeGoKey = bridgeconfig.OpenCodeGoKey
+type OpenCodeGoModel = bridgeconfig.OpenCodeGoModel
+type ClineKey = bridgeconfig.ClineKey
+type ClineModel = bridgeconfig.ClineModel
+type OllamaCloudKey = bridgeconfig.OllamaCloudKey
+type OllamaCloudModel = bridgeconfig.OllamaCloudModel
+type CommandCodeKey = bridgeconfig.CommandCodeKey
+type CommandCodeModel = bridgeconfig.CommandCodeModel
+type VertexCompatKey = bridgeconfig.VertexCompatKey
+type VertexCompatModel = bridgeconfig.VertexCompatModel
+type OpenAICompatibility = bridgeconfig.OpenAICompatibility
+type OpenAICompatibilityAPIKey = bridgeconfig.OpenAICompatibilityAPIKey
+type OpenAICompatibilityModel = bridgeconfig.OpenAICompatibilityModel
+type ProxyConnectionPoolConfig = bridgeconfig.ProxyConnectionPoolConfig
+type OAuthModelSetting = bridgeconfig.OAuthModelSetting
 
-type TLS = internalconfig.TLSConfig
+type TLS = bridgeconfig.TLSConfig
 
 const (
-	DefaultPanelGitHubRepository                = internalconfig.DefaultPanelGitHubRepository
-	DefaultResponsesMaxInboundBytes             = internalconfig.DefaultResponsesMaxInboundBytes
-	DefaultResponsesMemoryBudgetBytes           = internalconfig.DefaultResponsesMemoryBudgetBytes
-	DefaultResponsesWebsocketMaxSessionBytes    = internalconfig.DefaultResponsesWebsocketMaxSessionBytes
-	DefaultResponsesWebsocketMaxTurnOutputBytes = internalconfig.DefaultResponsesWebsocketMaxTurnOutputBytes
-	DefaultResponsesWebsocketToolCacheBytes     = internalconfig.DefaultResponsesWebsocketToolCacheBytes
-	DefaultResponsesWebsocketMemoryBudgetBytes  = internalconfig.DefaultResponsesWebsocketMemoryBudgetBytes
-	DefaultResponsesWebsocketMaxConnections     = internalconfig.DefaultResponsesWebsocketMaxConnections
+	DefaultPanelGitHubRepository = bridgeconfig.DefaultPanelGitHubRepository
+	DefaultBedrockRegion         = bridgeconfig.DefaultBedrockRegion
+	DefaultClineBaseURL          = bridgeconfig.DefaultClineBaseURL
+	DefaultOllamaCloudBaseURL    = bridgeconfig.DefaultOllamaCloudBaseURL
+	DefaultCommandCodeBaseURL    = bridgeconfig.DefaultCommandCodeBaseURL
+	DefaultPprofAddr             = bridgeconfig.DefaultPprofAddr
+
+	DistributionWeighted     = bridgeconfig.DistributionWeighted
+	DistributionLeastLoad    = bridgeconfig.DistributionLeastLoad
+	DistributionFillFirst    = bridgeconfig.DistributionFillFirst
+	DistributionResetAware   = bridgeconfig.DistributionResetAware
+	DefaultStickyMaxRequests = bridgeconfig.DefaultStickyMaxRequests
 )
 
-func LoadConfig(configFile string) (*Config, error) { return internalconfig.LoadConfig(configFile) }
-
-func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
-	return internalconfig.LoadConfigOptional(configFile, optional)
+func NormalizeDistribution(value string) string {
+	return bridgeconfig.NormalizeDistribution(value)
 }
+
+func MigrateLegacyPriorities(priorities map[string]int) map[string]int {
+	return bridgeconfig.MigrateLegacyPriorities(priorities)
+}
+
+func LoadConfig(configFile string) (*Config, error) { return bridgeconfig.LoadConfig(configFile) }
+
+func ParseConfigBytes(data []byte) (*Config, error) { return bridgeconfig.ParseConfigBytes(data) }
 
 func ResolveOAuthModelSetting(settings []OAuthModelSetting, modelID, metadataModelID, modelName string) *OAuthModelSetting {
-	return internalconfig.ResolveOAuthModelSetting(settings, modelID, metadataModelID, modelName)
+	return bridgeconfig.ResolveOAuthModelSetting(settings, modelID, metadataModelID, modelName)
 }
 
-func ParseConfigBytes(data []byte) (*Config, error) { return internalconfig.ParseConfigBytes(data) }
+func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
+	return bridgeconfig.LoadConfigOptional(configFile, optional)
+}
 
 func SaveConfigPreserveComments(configFile string, cfg *Config) error {
-	return internalconfig.SaveConfigPreserveComments(configFile, cfg)
+	return bridgeconfig.SaveConfigPreserveComments(configFile, cfg)
 }
 
 func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []string, value string) error {
-	return internalconfig.SaveConfigPreserveCommentsUpdateNestedScalar(configFile, path, value)
+	return bridgeconfig.SaveConfigPreserveCommentsUpdateNestedScalar(configFile, path, value)
 }
 
 func NormalizeCommentIndentation(data []byte) []byte {
-	return internalconfig.NormalizeCommentIndentation(data)
+	return bridgeconfig.NormalizeCommentIndentation(data)
+}
+
+func NormalizeRoutingStrategy(strategy string) string {
+	return bridgeconfig.NormalizeRoutingStrategy(strategy)
 }

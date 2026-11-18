@@ -1,9 +1,9 @@
 package auth
 
 import (
-	"encoding/json"
 	"strings"
 
+	"github.com/MoeForge/moego/json"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 )
@@ -33,7 +33,6 @@ type OAuthModelAliasResult struct {
 	UpstreamModel string // resolved upstream model name (empty if no mapping found)
 	ForceMapping  bool   // whether to rewrite model name in responses
 	OriginalAlias string // client-visible model for response rewrite; only applied when ForceMapping is true (see rewriteForceMappedResponse / wrapStreamResult)
-	Matched       bool   // prevents a matched per-auth no-op from falling through to global aliases
 }
 
 func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelAlias) *oauthModelAliasTable {
@@ -55,7 +54,7 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 			if name == "" || alias == "" {
 				continue
 			}
-			if strings.EqualFold(name, alias) {
+			if name == alias {
 				continue
 			}
 			aliasKey := strings.ToLower(alias)
@@ -90,7 +89,55 @@ func (m *Manager) SetOAuthModelAlias(aliases map[string][]internalconfig.OAuthMo
 	if table == nil {
 		table = &oauthModelAliasTable{}
 	}
-	m.oauthModelAlias.Store(table)
+	m.publishOAuthModelAliasAndReconcileStates(nil, table)
+}
+
+type oauthResolvedAliasRoute struct {
+	aliasKey  string
+	targetKey string
+}
+
+func (m *Manager) configuredOAuthAliasRoutes(auth *Auth) []oauthResolvedAliasRoute {
+	if m == nil || auth == nil {
+		return nil
+	}
+	channel := modelAliasChannel(auth)
+	if channel == "" {
+		return nil
+	}
+	seenAliases := make(map[string]struct{})
+	var routes []oauthResolvedAliasRoute
+	addAlias := func(alias string) {
+		alias = strings.TrimSpace(alias)
+		if alias == "" {
+			return
+		}
+		aliasLookup := canonicalModelLookupKey(alias)
+		if aliasLookup == "" {
+			return
+		}
+		if _, exists := seenAliases[aliasLookup]; exists {
+			return
+		}
+		seenAliases[aliasLookup] = struct{}{}
+		aliasKey := canonicalModelKey(alias)
+		if targetKey := m.selectionModelKeyForAuth(auth, alias); targetKey != "" && !sameCanonicalModelKey(aliasKey, targetKey) {
+			routes = append(routes, oauthResolvedAliasRoute{
+				aliasKey:  aliasKey,
+				targetKey: targetKey,
+			})
+		}
+	}
+	for _, entry := range OAuthModelAliasesFromAttributes(authAttributes(auth)) {
+		addAlias(entry.Alias)
+	}
+	raw := m.oauthModelAlias.Load()
+	if table, _ := raw.(*oauthModelAliasTable); table != nil && table.reverse != nil {
+		for _, entry := range table.reverse[channel] {
+			addAlias(entry.configAlias)
+		}
+	}
+	return routes
 }
 
 // applyOAuthModelAlias resolves the upstream model from OAuth model alias.
@@ -227,16 +274,12 @@ func resolveModelAliasResultFromConfigModels(requestedModel string, models []mod
 			}
 			if strings.EqualFold(original, baseModel) {
 				if !models[i].GetForceMapping() {
-					return OAuthModelAliasResult{
-						UpstreamModel: preserveResolvedModelSuffix(original, requestResult),
-						Matched:       true,
-					}
+					return OAuthModelAliasResult{}
 				}
 				return OAuthModelAliasResult{
 					UpstreamModel: preserveResolvedModelSuffix(original, requestResult),
 					ForceMapping:  models[i].GetForceMapping(),
 					OriginalAlias: oauthModelAliasForceMappingResponseModel(alias),
-					Matched:       true,
 				}
 			}
 			originalAlias := requestedModel
@@ -247,7 +290,6 @@ func resolveModelAliasResultFromConfigModels(requestedModel string, models []mod
 				UpstreamModel: preserveResolvedModelSuffix(original, requestResult),
 				ForceMapping:  models[i].GetForceMapping(),
 				OriginalAlias: originalAlias,
-				Matched:       true,
 			}
 		}
 	}
@@ -271,13 +313,10 @@ func (m *Manager) resolveOAuthModelAliasWithResult(auth *Auth, requestedModel st
 	if channel == "" {
 		return OAuthModelAliasResult{}
 	}
-	if result := resolveUpstreamModelFromAliases(OAuthModelAliasesFromAttributes(authAttributes(auth)), requestedModel); result.Matched {
+	if result, matched := resolveUpstreamModelFromAliases(OAuthModelAliasesFromAttributes(authAttributes(auth)), requestedModel); matched {
 		return result
 	}
-	if result := resolveUpstreamModelFromAliasTable(m, auth, requestedModel, channel); result.Matched {
-		return result
-	}
-	return resolveUpstreamModelFromAliases(OAuthModelAliasDefaults(channel), requestedModel)
+	return resolveUpstreamModelFromAliasTable(m, auth, requestedModel, channel)
 }
 
 func authAttributes(auth *Auth) map[string]string {
@@ -339,13 +378,13 @@ func sanitizeOAuthModelAliases(aliases []internalconfig.OAuthModelAlias) []inter
 	return append([]internalconfig.OAuthModelAlias(nil), clean...)
 }
 
-func resolveUpstreamModelFromAliases(aliases []internalconfig.OAuthModelAlias, requestedModel string) OAuthModelAliasResult {
+func resolveUpstreamModelFromAliases(aliases []internalconfig.OAuthModelAlias, requestedModel string) (OAuthModelAliasResult, bool) {
 	if len(aliases) == 0 {
-		return OAuthModelAliasResult{}
+		return OAuthModelAliasResult{}, false
 	}
 	requestResult, candidates := modelAliasLookupCandidates(requestedModel)
 	if len(candidates) == 0 {
-		return OAuthModelAliasResult{}
+		return OAuthModelAliasResult{}, false
 	}
 	baseModel := requestResult.ModelName
 	if baseModel == "" {
@@ -362,19 +401,15 @@ func resolveUpstreamModelFromAliases(aliases []internalconfig.OAuthModelAlias, r
 			if original == "" || alias == "" || !strings.EqualFold(alias, key) {
 				continue
 			}
-			if strings.EqualFold(original, baseModel) {
+			if original == baseModel {
 				if !entry.ForceMapping {
-					return OAuthModelAliasResult{
-						UpstreamModel: preserveResolvedModelSuffix(original, requestResult),
-						Matched:       true,
-					}
+					return OAuthModelAliasResult{}, true
 				}
 				return OAuthModelAliasResult{
 					UpstreamModel: preserveResolvedModelSuffix(original, requestResult),
 					ForceMapping:  entry.ForceMapping,
 					OriginalAlias: oauthModelAliasForceMappingResponseModel(alias),
-					Matched:       true,
-				}
+				}, true
 			}
 			originalAlias := requestedModel
 			if entry.ForceMapping {
@@ -384,17 +419,16 @@ func resolveUpstreamModelFromAliases(aliases []internalconfig.OAuthModelAlias, r
 				UpstreamModel: preserveResolvedModelSuffix(original, requestResult),
 				ForceMapping:  entry.ForceMapping,
 				OriginalAlias: originalAlias,
-				Matched:       true,
-			}
+			}, true
 		}
 	}
-	return OAuthModelAliasResult{}
+	return OAuthModelAliasResult{}, false
 }
 
 func (m *Manager) applyOAuthModelAliasWithResult(auth *Auth, requestedModel string) OAuthModelAliasResult {
 	result := m.resolveOAuthModelAliasWithResult(auth, requestedModel)
 	if result.UpstreamModel == "" {
-		result.UpstreamModel = requestedModel
+		return OAuthModelAliasResult{UpstreamModel: requestedModel}
 	}
 	return result
 }
@@ -435,18 +469,14 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 			continue
 		}
 
-		if strings.EqualFold(targetModel, baseModel) {
+		if targetModel == baseModel {
 			if !entry.forceMapping {
-				return OAuthModelAliasResult{
-					UpstreamModel: preserveResolvedModelSuffix(targetModel, requestResult),
-					Matched:       true,
-				}
+				return OAuthModelAliasResult{}
 			}
 			return OAuthModelAliasResult{
 				UpstreamModel: preserveResolvedModelSuffix(targetModel, requestResult),
 				ForceMapping:  entry.forceMapping,
 				OriginalAlias: oauthModelAliasForceMappingResponseModel(entry.configAlias),
-				Matched:       true,
 			}
 		}
 
@@ -467,7 +497,6 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 			UpstreamModel: upstreamModel,
 			ForceMapping:  entry.forceMapping,
 			OriginalAlias: originalAlias,
-			Matched:       true,
 		}
 	}
 
@@ -511,34 +540,6 @@ func OAuthModelAliasChannel(provider, authKind string) string {
 		return provider
 	default:
 		return provider
-	}
-}
-
-// OAuthModelAliasDefaults returns compatibility aliases that are safe for the
-// corresponding OAuth-backed channel. The source model still has to be present
-// in that channel's catalog before the alias is advertised.
-func OAuthModelAliasDefaults(channel string) []internalconfig.OAuthModelAlias {
-	switch strings.ToLower(strings.TrimSpace(channel)) {
-	case "antigravity", "gemini-cli":
-		return []internalconfig.OAuthModelAlias{{
-			Name:  "gemini-3.7-flash-high",
-			Alias: "gemini-3.7-flash-tiered",
-		}}
-	case "codex":
-		return []internalconfig.OAuthModelAlias{
-			{
-				Name:  "gpt-5.6-sol",
-				Alias: "gpt-5.6-ultra",
-				Fork:  true,
-			},
-			{
-				Name:  "gpt-5.6-sol",
-				Alias: "gpt-5.6",
-				Fork:  true,
-			},
-		}
-	default:
-		return nil
 	}
 }
 

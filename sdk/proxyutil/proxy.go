@@ -4,9 +4,9 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/base64"
 	"net"
 	"net/http"
 	"net/url"
@@ -106,6 +106,14 @@ func NewDirectTransport() *http.Transport {
 	return clone
 }
 
+// socksForwardDialer dials the SOCKS5 proxy itself. It mirrors net/http's
+// DefaultTransport dialer so the resulting upstream socket gets TCP keepalive:
+// proxy.Direct would leave keepalive at the OS default of hours, which lets a
+// silently dead peer pin an otherwise reusable connection.
+func socksForwardDialer() *net.Dialer {
+	return &net.Dialer{KeepAlive: 30 * time.Second}
+}
+
 // BuildHTTPTransport constructs an HTTP transport for the provided proxy setting.
 func BuildHTTPTransport(raw string) (*http.Transport, Mode, error) {
 	setting, errParse := Parse(raw)
@@ -126,17 +134,14 @@ func BuildHTTPTransport(raw string) (*http.Transport, Mode, error) {
 				password, _ := setting.URL.User.Password()
 				proxyAuth = &proxy.Auth{User: username, Password: password}
 			}
-			dialer, errSOCKS5 := proxy.SOCKS5("tcp", setting.URL.Host, proxyAuth, proxy.Direct)
+			dialer, errSOCKS5 := proxy.SOCKS5("tcp", setting.URL.Host, proxyAuth, socksForwardDialer())
 			if errSOCKS5 != nil {
 				return nil, setting.Mode, fmt.Errorf("create SOCKS5 dialer failed: %w", errSOCKS5)
 			}
 			transport := cloneDefaultTransport()
 			transport.Proxy = nil
-			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-				if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
-					return contextDialer.DialContext(ctx, network, addr)
-				}
-				return nil, fmt.Errorf("SOCKS5 dialer does not support context cancellation")
+			transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
+				return dialer.Dial(network, addr)
 			}
 			return transport, setting.Mode, nil
 		}
@@ -218,11 +223,10 @@ func BuildDialer(raw string) (proxy.Dialer, Mode, error) {
 	case ModeDirect:
 		return proxy.Direct, setting.Mode, nil
 	case ModeProxy:
-		forward := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 		if setting.URL.Scheme == "http" || setting.URL.Scheme == "https" {
-			return &httpConnectDialer{proxyURL: setting.URL, dialer: forward}, setting.Mode, nil
+			return &httpConnectDialer{proxyURL: setting.URL, dialer: proxy.Direct}, setting.Mode, nil
 		}
-		dialer, errDialer := proxy.FromURL(setting.URL, forward)
+		dialer, errDialer := proxy.FromURL(setting.URL, proxy.Direct)
 		if errDialer != nil {
 			return nil, setting.Mode, fmt.Errorf("create proxy dialer failed: %w", errDialer)
 		}
@@ -254,8 +258,18 @@ func (d *httpConnectDialer) DialContext(ctx context.Context, network, addr strin
 	if errDial != nil {
 		return nil, fmt.Errorf("dial HTTP proxy failed: %w", errDial)
 	}
+
 	conn := proxyConn
-	stopCancel := context.AfterFunc(ctx, func() { _ = proxyConn.Close() })
+	cancelDone := make(chan struct{})
+	stopCancel := context.AfterFunc(ctx, func() {
+		_ = proxyConn.Close()
+		close(cancelDone)
+	})
+	defer func() {
+		if !stopCancel() {
+			<-cancelDone
+		}
+	}()
 	if d.proxyURL.Scheme == "https" {
 		var tlsConfig *tls.Config
 		if d.tlsConfig != nil {
@@ -270,12 +284,6 @@ func (d *httpConnectDialer) DialContext(ctx context.Context, network, addr strin
 
 		tlsConn := tls.Client(conn, tlsConfig)
 		if errHandshake := tlsConn.HandshakeContext(ctx); errHandshake != nil {
-			_ = stopCancel()
-			if errCtx := ctx.Err(); errCtx != nil {
-				_ = conn.Close()
-				return nil, errCtx
-			}
-
 			if errClose := conn.Close(); errClose != nil {
 				return nil, fmt.Errorf("HTTPS proxy TLS handshake failed: %w; close failed: %v", errHandshake, errClose)
 			}
@@ -294,11 +302,6 @@ func (d *httpConnectDialer) DialContext(ctx context.Context, network, addr strin
 		req.Header.Set("Proxy-Authorization", proxyAuthorization(d.proxyURL.User))
 	}
 	if errWrite := req.Write(conn); errWrite != nil {
-		_ = stopCancel()
-		if errCtx := ctx.Err(); errCtx != nil {
-			_ = conn.Close()
-			return nil, errCtx
-		}
 		if errClose := conn.Close(); errClose != nil {
 			return nil, fmt.Errorf("write CONNECT request failed: %w; close failed: %v", errWrite, errClose)
 		}
@@ -308,18 +311,12 @@ func (d *httpConnectDialer) DialContext(ctx context.Context, network, addr strin
 	reader := bufio.NewReader(conn)
 	resp, errRead := http.ReadResponse(reader, req)
 	if errRead != nil {
-		_ = stopCancel()
-		if errCtx := ctx.Err(); errCtx != nil {
-			_ = conn.Close()
-			return nil, errCtx
-		}
 		if errClose := conn.Close(); errClose != nil {
 			return nil, fmt.Errorf("read CONNECT response failed: %w; close failed: %v", errRead, errClose)
 		}
 		return nil, fmt.Errorf("read CONNECT response failed: %w", errRead)
 	}
 	if resp.StatusCode != http.StatusOK {
-		_ = stopCancel()
 		if resp.Body != nil {
 			_ = resp.Body.Close()
 		}
@@ -336,16 +333,7 @@ func (d *httpConnectDialer) DialContext(ctx context.Context, network, addr strin
 		return nil, errContext
 	}
 	if reader.Buffered() > 0 {
-		conn = &bufferedConn{Conn: conn, reader: reader}
-	}
-	stopped := stopCancel()
-	if errCtx := ctx.Err(); errCtx != nil {
-		_ = conn.Close()
-		return nil, errCtx
-	}
-	if !stopped {
-		_ = conn.Close()
-		return nil, context.Canceled
+		return &bufferedConn{Conn: conn, reader: reader}, nil
 	}
 	return conn, nil
 }

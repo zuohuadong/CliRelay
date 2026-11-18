@@ -2,12 +2,21 @@ package auth
 
 import (
 	"context"
+	"maps"
 	"reflect"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
+
+func (m *Manager) loadPersistedAuths(ctx context.Context) ([]*Auth, error) {
+	if m == nil || m.store == nil {
+		return nil, nil
+	}
+	return m.store.List(ctx)
+}
 
 // lockAuthMutation acquires the reload barrier, then the credential gate, before
 // m.mu. Keep both until publication completes. Load never takes credential or
@@ -241,7 +250,16 @@ func mergeAuthSaveDelta(target, before, after *Auth, preserveConcurrent bool) {
 	next := reflect.ValueOf(after).Elem()
 	for i := 0; i < dst.NumField(); i++ {
 		field := dst.Type().Field(i)
-		if field.PkgPath != "" || field.Name == "ID" || field.Name == "RegistrationEpoch" || field.Name == "CredentialVersion" || field.Name == "Generation" || field.Name == "RejectedAccessToken" {
+		switch field.Name {
+		case "ID", "RegistrationEpoch", "CredentialVersion", "Generation",
+			"RejectedAccessToken", "RejectedSIWCAccessToken",
+			"RejectedRefreshToken", "RejectedSIWCRefreshToken", "RenewalWarnedRefreshToken",
+			"RequiresSignIn", "RefreshError", "RenewalEventAt",
+			"AdoptedAt", "InferenceVerified", "LastInferenceVerifiedAt",
+			"RenewalVerified", "LastRenewalVerifiedAt":
+			continue
+		}
+		if field.PkgPath != "" {
 			continue
 		}
 		d, b, n := dst.Field(i), base.Field(i), next.Field(i)
@@ -268,6 +286,11 @@ func mergeAuthSaveDelta(target, before, after *Auth, preserveConcurrent bool) {
 				if d.IsNil() {
 					d.Set(reflect.MakeMap(d.Type()))
 				}
+				if field.Name == "ModelStates" && newValue.IsValid() && !newValue.IsNil() {
+					if ms, ok := newValue.Interface().(*ModelState); ok {
+						newValue = reflect.ValueOf(ms.Clone())
+					}
+				}
 				d.SetMapIndex(key, newValue)
 			}
 			continue
@@ -275,6 +298,51 @@ func mergeAuthSaveDelta(target, before, after *Auth, preserveConcurrent bool) {
 		if !preserveConcurrent {
 			d.Set(n)
 		}
+	}
+	mergeRuntimeCooldownSaveDelta(target, before, after, preserveConcurrent)
+}
+
+func mergeRuntimeCooldownSaveDelta(target, before, after *Auth, preserveConcurrent bool) {
+	if target == nil || before == nil || after == nil {
+		return
+	}
+	if !after.forceCooldownUntil.Equal(before.forceCooldownUntil) && (!preserveConcurrent || target.forceCooldownUntil.Equal(before.forceCooldownUntil)) {
+		target.forceCooldownUntil = after.forceCooldownUntil
+	}
+	if !after.quotaForceCooldownUntil.Equal(before.quotaForceCooldownUntil) && (!preserveConcurrent || target.quotaForceCooldownUntil.Equal(before.quotaForceCooldownUntil)) {
+		target.quotaForceCooldownUntil = after.quotaForceCooldownUntil
+	}
+	if !after.credQuotaForceUntil.Equal(before.credQuotaForceUntil) && (!preserveConcurrent || target.credQuotaForceUntil.Equal(before.credQuotaForceUntil)) {
+		target.credQuotaForceUntil = after.credQuotaForceUntil
+	}
+	if !after.credentialRetryAfter.Equal(before.credentialRetryAfter) && (!preserveConcurrent || target.credentialRetryAfter.Equal(before.credentialRetryAfter)) {
+		target.credentialRetryAfter = after.credentialRetryAfter
+	}
+	if !after.nonQuotaCooldownUntil.Equal(before.nonQuotaCooldownUntil) && (!preserveConcurrent || target.nonQuotaCooldownUntil.Equal(before.nonQuotaCooldownUntil)) {
+		target.nonQuotaCooldownUntil = after.nonQuotaCooldownUntil
+	}
+	if after.forceCooldownSeeded != before.forceCooldownSeeded && (!preserveConcurrent || target.forceCooldownSeeded == before.forceCooldownSeeded) {
+		target.forceCooldownSeeded = after.forceCooldownSeeded
+	}
+	if after.cooldownRecordedSeq != before.cooldownRecordedSeq && (!preserveConcurrent || target.cooldownRecordedSeq == before.cooldownRecordedSeq) {
+		target.cooldownRecordedSeq = after.cooldownRecordedSeq
+	}
+	if !maps.Equal(after.Quota.cooldownSignals, before.Quota.cooldownSignals) && (!preserveConcurrent || maps.Equal(target.Quota.cooldownSignals, before.Quota.cooldownSignals)) {
+		target.Quota.cooldownSignals = maps.Clone(after.Quota.cooldownSignals)
+	}
+	if after.Quota.cooldownEvaluated != before.Quota.cooldownEvaluated && (!preserveConcurrent || target.Quota.cooldownEvaluated == before.Quota.cooldownEvaluated) {
+		target.Quota.cooldownEvaluated = after.Quota.cooldownEvaluated
+	}
+	if (before.Unavailable || before.Quota.Exceeded) &&
+		after.Unavailable == before.Unavailable &&
+		after.NextRetryAfter.Equal(before.NextRetryAfter) &&
+		!target.Unavailable && target.NextRetryAfter.IsZero() &&
+		(!target.Quota.Exceeded || target.Quota.NextRecoverAt.IsZero()) {
+		target.forceCooldownUntil = time.Time{}
+		target.quotaForceCooldownUntil = time.Time{}
+		target.credQuotaForceUntil = time.Time{}
+		target.credentialRetryAfter = time.Time{}
+		target.nonQuotaCooldownUntil = time.Time{}
 	}
 }
 

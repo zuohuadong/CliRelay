@@ -9,15 +9,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// DoXAILogin triggers the OAuth device-code flow for the xAI provider and saves tokens.
 func DoXAILogin(cfg *config.Config, options *LoginOptions) {
 	if options == nil {
 		options = &LoginOptions{}
-	}
-
-	promptFn := options.Prompt
-	if promptFn == nil {
-		promptFn = defaultProjectPrompt()
 	}
 
 	manager := newAuthManager()
@@ -25,7 +19,7 @@ func DoXAILogin(cfg *config.Config, options *LoginOptions) {
 		NoBrowser:    options.NoBrowser,
 		CallbackPort: options.CallbackPort,
 		Metadata:     map[string]string{},
-		Prompt:       promptFn,
+		Prompt:       options.Prompt,
 	}
 
 	record, savedPath, err := manager.Login(context.Background(), "xai", cfg, authOpts)

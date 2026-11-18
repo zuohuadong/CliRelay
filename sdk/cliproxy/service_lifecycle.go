@@ -12,7 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
-	internalusage "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -58,14 +58,13 @@ func (s *Service) Run(ctx context.Context) error {
 
 	usage.StartDefault(ctx)
 	cfg := s.currentConfig()
-	internalusage.RegisterSQLiteSink(internalusage.SQLiteDBPathForConfig(s.configPath))
-	internalusage.SetChannelBillingMultipliersFromConfig(cfg)
 	homeEnabled := cfg != nil && cfg.Home.Enabled
 	if homeEnabled {
 		s.cfgMu.Lock()
 		forceHomeRuntimeConfig(s.cfg)
 		cfg = s.cfg
 		s.cfgMu.Unlock()
+		s.applyKVStoreConfig(cfg)
 		redisqueue.SetUsageStatisticsEnabled(true)
 	}
 
@@ -77,20 +76,11 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 	}()
 
-	// 启动出口端点健康检查循环；该调用曾两次在上游同步冲突中丢失，
-	// 导致 last_checked_at 仅靠面板手动触发刷新，TTL 过后端点全部
-	// 被判定 endpoint_health_stale_or_unhealthy 而拒绝服务。
-	if s.egressService != nil {
-		if errStartEgress := s.egressService.Start(ctx); errStartEgress != nil {
-			return fmt.Errorf("cliproxy: start egress lifecycle: %w", errStartEgress)
-		}
-		log.Info("egress endpoint health check loop started")
-	}
-
 	if !homeEnabled {
 		if errEnsureAuthDir := s.ensureAuthDir(); errEnsureAuthDir != nil {
 			return errEnsureAuthDir
 		}
+		s.applyKVStoreConfig(cfg)
 	}
 
 	s.applyRetryConfig(cfg)
@@ -402,18 +392,15 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 
-		usage.StopDefault()
+		if errShutdownKV := s.shutdownKVStore(); errShutdownKV != nil {
+			log.Errorf("failed to stop local kv store: %v", errShutdownKV)
+			if shutdownErr == nil {
+				shutdownErr = errShutdownKV
+			}
+		}
 
-		if s.egressService != nil {
-			if errCloseEgress := s.egressService.Close(); errCloseEgress != nil && shutdownErr == nil {
-				shutdownErr = errCloseEgress
-			}
-		}
-		if s.videoService != nil {
-			if errCloseVideo := s.videoService.Close(); errCloseVideo != nil && shutdownErr == nil {
-				shutdownErr = errCloseVideo
-			}
-		}
+		helps.RetireProxyPoolPublisher(s.proxyPoolPublisher)
+		usage.StopDefault()
 	})
 	return shutdownErr
 }
@@ -448,7 +435,11 @@ func (s *Service) startModelCatalogUpdaters(ctx context.Context) {
 	s.cfgMu.RUnlock()
 	proxyURL := ""
 	if cfg != nil {
-		registry.StartModelCatalogUpdaters(ctx, cfg.Models, cfg.Home.Enabled)
+		registry.StartModelCatalogUpdaters(ctx, registry.ModelCatalogSources{
+			Catalog:      cfg.Models.Catalog,
+			CodexCatalog: cfg.Models.CodexCatalog,
+			DevinCatalog: cfg.Models.DevinCatalog,
+		}, cfg.Home.Enabled)
 		proxyURL = cfg.ProxyURL
 	}
 	executor.StartXAIVersionUpdater(ctx, proxyURL)

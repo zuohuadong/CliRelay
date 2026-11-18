@@ -21,8 +21,8 @@ var aiAPIPrefixes = []string{
 	"/v1",
 	"/v1beta",
 	"/openai/v1",
-	"/api/provider/",
 	"/backend-api/codex",
+	"/muse-code",
 }
 
 const (
@@ -88,7 +88,7 @@ func GinLogrusLogger() gin.HandlerFunc {
 		}
 
 		statusCode := c.Writer.Status()
-		clientIP := util.RealClientIP(c)
+		clientIP := c.ClientIP()
 		method := c.Request.Method
 		errorMessage := c.Errors.ByType(gin.ErrorTypePrivate).String()
 

@@ -1,51 +1,10 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"io"
-	"net/http"
-	"strings"
-	"sync/atomic"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/egress"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/MoeForge/moego/ojson"
 )
-
-type countingRoundTripper func(*http.Request) (*http.Response, error)
-
-func (f countingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
-
-func TestCodexNetworkPathsRequireManagedEgressBeforeNetwork(t *testing.T) {
-	originalTransport := http.DefaultTransport
-	var networkCalls atomic.Int32
-	http.DefaultTransport = countingRoundTripper(func(*http.Request) (*http.Response, error) {
-		networkCalls.Add(1)
-		return &http.Response{
-			StatusCode: http.StatusBadRequest,
-			Body:       io.NopCloser(strings.NewReader(`{"error":"unexpected network"}`)),
-			Header:     make(http.Header),
-		}, nil
-	})
-	t.Cleanup(func() { http.DefaultTransport = originalTransport })
-
-	auth := &coreauth.Auth{
-		Provider: "codex",
-		Metadata: map[string]any{"refresh_token": "must-not-leave-host"},
-	}
-	if _, _, err := ensureAccessToken(context.Background(), nil, auth); !errors.Is(err, egress.ErrEgressRequired) {
-		t.Fatalf("ensureAccessToken() error = %v, want ErrEgressRequired", err)
-	}
-	if _, _, err := fetchModels(context.Background(), auth, "access-token", defaultClientVersion); !errors.Is(err, egress.ErrEgressRequired) {
-		t.Fatalf("fetchModels() error = %v, want ErrEgressRequired", err)
-	}
-	if got := networkCalls.Load(); got != 0 {
-		t.Fatalf("network calls = %d, want 0", got)
-	}
-}
 
 func TestCodexModelsURL(t *testing.T) {
 	got, err := codexModelsURL(" 0.144.1 ")
@@ -90,4 +49,97 @@ func TestCountModels(t *testing.T) {
 	if _, err := countModels([]byte(`{}`)); err == nil {
 		t.Fatal("countModels(missing models) error = nil, want error")
 	}
+}
+
+func TestEnsureBaselineModel(t *testing.T) {
+	t.Run("clones first model as gpt-5.5 when missing", func(t *testing.T) {
+		raw := []byte(`{"models":[{"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","visibility":"list","tool_mode":"code_mode_only","use_responses_lite":true,"supports_reasoning_effort_updates":true},{"slug":"gpt-5.6-sol","visibility":"list"}]}`)
+		out, count, errEnsure := ensureBaselineModel(raw)
+		if errEnsure != nil {
+			t.Fatalf("ensureBaselineModel: %v", errEnsure)
+		}
+		if count != 3 {
+			t.Fatalf("count = %d, want 3", count)
+		}
+		if got := ojson.GetBytesNoCopy(out, "models.0.slug").String(); got != "gpt-6.1-sol" {
+			t.Fatalf("models[0].slug = %q, want gpt-6.1-sol", got)
+		}
+		if got := ojson.GetBytesNoCopy(out, "models.0.tool_mode").String(); got != "code_mode_only" {
+			t.Fatalf("models[0].tool_mode = %q, want code_mode_only", got)
+		}
+		if got := ojson.GetBytesNoCopy(out, "models.2.slug").String(); got != "gpt-5.5" {
+			t.Fatalf("models[2].slug = %q, want gpt-5.5", got)
+		}
+		if got := ojson.GetBytesNoCopy(out, "models.2.display_name").String(); got != "GPT-6.1-Sol" {
+			t.Fatalf("models[2].display_name = %q, want GPT-6.1-Sol", got)
+		}
+		if got := ojson.GetBytesNoCopy(out, "models.2.visibility").String(); got != "list" {
+			t.Fatalf("models[2].visibility = %q, want list", got)
+		}
+		if got := ojson.GetBytesNoCopy(out, "models.2.tool_mode"); got.Type != ojson.String || got.Str != "direct" {
+			t.Fatalf("models[2].tool_mode = %v (%s), want string \"direct\"", got.Value(), got.Type)
+		}
+		if got := ojson.GetBytesNoCopy(out, "models.2.use_responses_lite"); got.Type != ojson.False {
+			t.Fatalf("models[2].use_responses_lite = %v (%s), want false", got.Value(), got.Type)
+		}
+		if got := ojson.GetBytesNoCopy(out, "models.2.supports_reasoning_effort_updates"); got.Type != ojson.False {
+			t.Fatalf("models[2].supports_reasoning_effort_updates = %v (%s), want false", got.Value(), got.Type)
+		}
+	})
+
+	t.Run("clones first model and forces visibility to list when first model is hidden", func(t *testing.T) {
+		raw := []byte(`{"models":[{"slug":"gpt-reserve","visibility":"hide"}]}`)
+		out, count, errEnsure := ensureBaselineModel(raw)
+		if errEnsure != nil {
+			t.Fatalf("ensureBaselineModel: %v", errEnsure)
+		}
+		if count != 2 {
+			t.Fatalf("count = %d, want 2", count)
+		}
+		if got := ojson.GetBytesNoCopy(out, "models.0.visibility").String(); got != "hide" {
+			t.Fatalf("models[0].visibility = %q, want hide", got)
+		}
+		if got := ojson.GetBytesNoCopy(out, "models.1.slug").String(); got != "gpt-5.5" {
+			t.Fatalf("models[1].slug = %q, want gpt-5.5", got)
+		}
+		if got := ojson.GetBytesNoCopy(out, "models.1.visibility").String(); got != "list" {
+			t.Fatalf("models[1].visibility = %q, want list", got)
+		}
+	})
+
+	t.Run("forces existing gpt-5.5 visibility to list when hidden", func(t *testing.T) {
+		raw := []byte(`{"models":[{"slug":"gpt-6.1-sol","visibility":"list"},{"slug":"gpt-5.5","visibility":"hide"}]}`)
+		out, count, errEnsure := ensureBaselineModel(raw)
+		if errEnsure != nil {
+			t.Fatalf("ensureBaselineModel: %v", errEnsure)
+		}
+		if count != 2 {
+			t.Fatalf("count = %d, want 2", count)
+		}
+		if got := ojson.GetBytesNoCopy(out, "models.1.slug").String(); got != "gpt-5.5" {
+			t.Fatalf("models[1].slug = %q, want gpt-5.5", got)
+		}
+		if got := ojson.GetBytesNoCopy(out, "models.1.visibility").String(); got != "list" {
+			t.Fatalf("models[1].visibility = %q, want list", got)
+		}
+	})
+
+	t.Run("forces existing gpt-5.5 visibility to exact list when padded or non-string", func(t *testing.T) {
+		for _, raw := range [][]byte{
+			[]byte(`{"models":[{"slug":"gpt-5.5","visibility":" list "}]}`),
+			[]byte(`{"models":[{"slug":"gpt-5.5","visibility":false}]}`),
+		} {
+			out, count, errEnsure := ensureBaselineModel(raw)
+			if errEnsure != nil {
+				t.Fatalf("ensureBaselineModel(%s): %v", raw, errEnsure)
+			}
+			if count != 1 {
+				t.Fatalf("count = %d, want 1", count)
+			}
+			vis := ojson.GetBytesNoCopy(out, "models.0.visibility")
+			if vis.Type != ojson.String || vis.Str != "list" {
+				t.Fatalf("models[0].visibility = %v (%s), want string \"list\"", vis.Value(), vis.Type)
+			}
+		}
+	})
 }

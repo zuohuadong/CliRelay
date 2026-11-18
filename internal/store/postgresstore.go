@@ -14,7 +14,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -40,13 +40,16 @@ type PostgresStoreConfig struct {
 // PostgresStore persists configuration and authentication metadata using PostgreSQL as backend
 // while mirroring data to a local workspace so existing file-based workflows continue to operate.
 type PostgresStore struct {
-	db            *sql.DB
-	cfg           PostgresStoreConfig
-	spoolRoot     string
-	configPath    string
-	authDir       string
-	cooldownStore *postgresCooldownStateStore
-	mu            sync.Mutex
+	db                 *sql.DB
+	cfg                PostgresStoreConfig
+	spoolRoot          string
+	configPath         string
+	authDir            string
+	cooldownStore      *postgresCooldownStateStore
+	mu                 sync.Mutex
+	refreshSchemaMu    sync.Mutex
+	refreshSchemaReady bool
+	refreshClaims      sync.Map
 }
 
 // NewPostgresStore establishes a connection to PostgreSQL and prepares the local workspace.
@@ -148,19 +151,28 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	`, authTable)); err != nil {
 		return fmt.Errorf("postgres store: create auth table: %w", err)
 	}
-	cooldownTable := s.fullTableName(s.cfg.CooldownTable)
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(
+		"ALTER TABLE %s ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001'",
+		authTable,
+	)); err != nil {
+		return fmt.Errorf("postgres store: add auth tenant scope: %w", err)
+	}
 	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
-			auth_id TEXT NOT NULL,
-			model TEXT NOT NULL DEFAULT '',
-			content JSONB NOT NULL,
-			deleted BOOLEAN NOT NULL DEFAULT FALSE,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			PRIMARY KEY (auth_id, model)
-		)
-	`, cooldownTable)); err != nil {
-		return fmt.Errorf("postgres store: create cooldown table: %w", err)
+		DELETE FROM %[1]s AS legacy
+		USING %[1]s AS scoped
+		WHERE position('/' in legacy.id) = 0
+		  AND scoped.id = legacy.tenant_id || '/' || legacy.id
+		  AND scoped.content = legacy.content;
+		UPDATE %[1]s AS legacy
+		SET id = legacy.tenant_id || '/' || legacy.id
+		WHERE position('/' in legacy.id) = 0
+		  AND NOT EXISTS (
+			SELECT 1 FROM %[1]s AS scoped
+			WHERE scoped.id = legacy.tenant_id || '/' || legacy.id
+		  );
+		CREATE INDEX IF NOT EXISTS %[2]s ON %[1]s (tenant_id);
+	`, authTable, quoteIdentifier("idx_"+s.cfg.AuthTable+"_tenant"))); err != nil {
+		return fmt.Errorf("postgres store: migrate auth tenant ids: %w", err)
 	}
 	return nil
 }
@@ -212,10 +224,6 @@ func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (stri
 	if auth == nil {
 		return "", fmt.Errorf("postgres store: auth is nil")
 	}
-	cliproxyauth.NormalizeCredentialMetadata(auth.Metadata)
-	if errWeight := cliproxyauth.ValidateAuthWeight(auth); errWeight != nil {
-		return "", fmt.Errorf("postgres store: %w", errWeight)
-	}
 
 	path, err := s.resolveAuthPath(auth)
 	if err != nil {
@@ -225,10 +233,7 @@ func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (stri
 		return "", fmt.Errorf("postgres store: missing file path attribute for %s", auth.ID)
 	}
 
-	// Runtime updates must not recreate a disabled credential whose source file
-	// was deliberately removed. Login and migration callers explicitly mark the
-	// save when creating a missing disabled credential is intentional.
-	if auth.Disabled && !cliproxyauth.HasAuthCreationIntent(ctx) {
+	if auth.Disabled {
 		if _, statErr := os.Stat(path); errors.Is(statErr, fs.ErrNotExist) {
 			return "", nil
 		}
@@ -240,93 +245,61 @@ func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (stri
 	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("postgres store: create auth directory: %w", err)
 	}
-	relID, err := s.relativeAuthID(path)
-	if err != nil {
-		return "", err
-	}
+	// The mirrored auth JSON is what List (and the file watcher) reads back, so
+	// the disabled flag must be part of the payload, not just runtime state.
 	cliproxyauth.SyncPersistedDisabled(auth)
 
-	prevMirror, _ := os.ReadFile(path)
-	if handled, errCodex := cliproxyauth.PersistCodexAuthFile(ctx, path, auth); handled {
-		if errCodex != nil {
-			if prevMirror != nil {
-				_ = misc.WriteCredentialFileAtomic(path, prevMirror)
-			}
-			return "", errCodex
+	switch {
+	case auth.Storage != nil:
+		baseauth.ApplyMetadata(auth.Storage, auth.Metadata)
+		if err = auth.Storage.SaveTokenToFile(path); err != nil {
+			return "", err
 		}
-		if auth.Storage == nil {
-			raw, errMarshal := marshalAuthMetadata(auth)
-			if errMarshal != nil {
-				return "", fmt.Errorf("postgres store: %w", errMarshal)
-			}
-			if err = s.persistAuth(ctx, relID, raw); err != nil {
-				if prevMirror != nil {
-					_ = misc.WriteCredentialFileAtomic(path, prevMirror)
-				}
-				return "", err
-			}
+	case auth.Metadata != nil:
+		raw, errMarshal := json.Marshal(auth.Metadata)
+		if errMarshal != nil {
+			return "", fmt.Errorf("postgres store: marshal metadata: %w", errMarshal)
 		}
-	} else {
-		switch {
-		case auth.Storage != nil:
-			if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
-				setter.SetMetadata(auth.Metadata)
+		if existing, errRead := os.ReadFile(path); errRead == nil {
+			if jsonEqual(existing, raw) {
+				return path, nil
 			}
-			if err = auth.Storage.SaveTokenToFile(path); err != nil {
-				return "", err
-			}
-		case auth.Metadata != nil:
-			if err = s.saveAuthMetadata(ctx, auth, relID, path); err != nil {
-				return "", err
-			}
-		default:
-			return "", fmt.Errorf("postgres store: nothing to persist for %s", auth.ID)
+		} else if errRead != nil && !errors.Is(errRead, fs.ErrNotExist) {
+			return "", fmt.Errorf("postgres store: read existing metadata: %w", errRead)
 		}
+		tmp := path + ".tmp"
+		if errWrite := os.WriteFile(tmp, raw, 0o600); errWrite != nil {
+			return "", fmt.Errorf("postgres store: write temp auth file: %w", errWrite)
+		}
+		if errRename := os.Rename(tmp, path); errRename != nil {
+			return "", fmt.Errorf("postgres store: rename auth file: %w", errRename)
+		}
+	default:
+		return "", fmt.Errorf("postgres store: nothing to persist for %s", auth.ID)
 	}
 
 	if auth.Attributes == nil {
 		auth.Attributes = make(map[string]string)
 	}
-	auth.Attributes[cliproxyauth.AttributePath] = path
-	auth.Attributes[cliproxyauth.AttributeSourceBackend] = cliproxyauth.AuthSourcePostgres
+	auth.Attributes["path"] = path
 
 	if strings.TrimSpace(auth.FileName) == "" {
 		auth.FileName = auth.ID
 	}
 
-	if auth.Storage != nil {
-		err = s.upsertAuthRecord(ctx, relID, path)
-	}
+	relID, err := s.relativeAuthID(path)
 	if err != nil {
+		return "", err
+	}
+	if err = s.upsertAuthRecord(ctx, relID, path); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
-func (s *PostgresStore) saveAuthMetadata(ctx context.Context, auth *cliproxyauth.Auth, relID, path string) error {
-	raw, err := marshalAuthMetadata(auth)
-	if err != nil {
-		return fmt.Errorf("postgres store: %w", err)
-	}
-	unchanged, err := tightenAuthMetadataIfMatching(path, raw)
-	if err != nil {
-		return fmt.Errorf("postgres store: %w", err)
-	}
-	if unchanged {
-		return nil
-	}
-	if err = s.persistAuth(ctx, relID, raw); err != nil {
-		return err
-	}
-	if err = misc.WriteCredentialFileAtomic(path, raw); err != nil {
-		return fmt.Errorf("postgres store: replace local auth mirror: %w", err)
-	}
-	return nil
-}
-
 // List enumerates all auth records stored in PostgreSQL.
 func (s *PostgresStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) {
-	query := fmt.Sprintf("SELECT id, content, created_at, updated_at FROM %s ORDER BY id", s.fullTableName(s.cfg.AuthTable))
+	query := fmt.Sprintf("SELECT id, tenant_id, content, created_at, updated_at FROM %s ORDER BY tenant_id, id", s.fullTableName(s.cfg.AuthTable))
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("postgres store: list auth: %w", err)
@@ -337,11 +310,12 @@ func (s *PostgresStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) 
 	for rows.Next() {
 		var (
 			id        string
+			tenantID  string
 			payload   string
 			createdAt time.Time
 			updatedAt time.Time
 		)
-		if err = rows.Scan(&id, &payload, &createdAt, &updatedAt); err != nil {
+		if err = rows.Scan(&id, &tenantID, &payload, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("postgres store: scan auth row: %w", err)
 		}
 		path, errPath := s.absoluteAuthPath(id)
@@ -354,24 +328,17 @@ func (s *PostgresStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) 
 			log.WithError(err).Warnf("postgres store: skipping auth %s with invalid json", id)
 			continue
 		}
-		cliproxyauth.NormalizeCredentialMetadata(metadata)
-		if errWeight := cliproxyauth.ValidateAuthWeight(&cliproxyauth.Auth{Metadata: metadata}); errWeight != nil {
-			log.WithError(errWeight).Warnf("postgres store: skipping auth %s with invalid weight", id)
-			continue
-		}
 		provider := strings.TrimSpace(valueAsString(metadata["type"]))
 		if provider == "" {
 			provider = "unknown"
 		}
-		attr := map[string]string{
-			cliproxyauth.AttributePath:          path,
-			cliproxyauth.AttributeSourceBackend: cliproxyauth.AuthSourcePostgres,
-		}
+		attr := map[string]string{"path": path}
 		if email := strings.TrimSpace(valueAsString(metadata["email"])); email != "" {
 			attr["email"] = email
 		}
 		auth := &cliproxyauth.Auth{
 			ID:               normalizeAuthID(id),
+			TenantID:         cliproxyauth.NormalizedTenantID(tenantID),
 			Provider:         provider,
 			FileName:         normalizeAuthID(id),
 			Label:            labelFor(metadata),
@@ -383,7 +350,6 @@ func (s *PostgresStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) 
 			LastRefreshedAt:  time.Time{},
 			NextRefreshAfter: time.Time{},
 		}
-		cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
 		cliproxyauth.RestorePersistedDisabled(auth)
 		auths = append(auths, auth)
 	}
@@ -487,11 +453,6 @@ func (s *PostgresStore) syncConfigFromDatabase(ctx context.Context, exampleConfi
 				}
 			}
 		}
-		// Seed remote storage with the file the startup load leaves behind, so a
-		// plaintext management secret never reaches it.
-		if errPrepare := config.PrepareConfigFileForUpload(s.configPath); errPrepare != nil {
-			return fmt.Errorf("postgres store: prepare local config for seeding: %w", errPrepare)
-		}
 		data, errRead := os.ReadFile(s.configPath)
 		if errRead != nil {
 			return fmt.Errorf("postgres store: read local config: %w", errRead)
@@ -515,7 +476,7 @@ func (s *PostgresStore) syncConfigFromDatabase(ctx context.Context, exampleConfi
 
 // syncAuthFromDatabase populates the local auth directory from PostgreSQL data.
 func (s *PostgresStore) syncAuthFromDatabase(ctx context.Context) error {
-	query := fmt.Sprintf("SELECT id, content FROM %s", s.fullTableName(s.cfg.AuthTable))
+	query := fmt.Sprintf("SELECT id, content FROM %s ORDER BY tenant_id, id", s.fullTableName(s.cfg.AuthTable))
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return fmt.Errorf("postgres store: load auth from database: %w", err)
@@ -582,21 +543,22 @@ func (s *PostgresStore) upsertAuthRecord(ctx context.Context, relID, path string
 
 func (s *PostgresStore) persistAuth(ctx context.Context, relID string, data []byte) error {
 	jsonPayload := json.RawMessage(data)
+	tenantID := cliproxyauth.TenantIDFromAuthID(relID)
 	query := fmt.Sprintf(`
-		INSERT INTO %s (id, content, created_at, updated_at)
-		VALUES ($1, $2, NOW(), NOW())
+		INSERT INTO %s (id, tenant_id, content, created_at, updated_at)
+		VALUES ($1, $2, $3, NOW(), NOW())
 		ON CONFLICT (id)
-		DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()
+		DO UPDATE SET tenant_id = EXCLUDED.tenant_id, content = EXCLUDED.content, updated_at = NOW()
 	`, s.fullTableName(s.cfg.AuthTable))
-	if _, err := s.db.ExecContext(ctx, query, relID, jsonPayload); err != nil {
+	if _, err := s.db.ExecContext(ctx, query, relID, tenantID, jsonPayload); err != nil {
 		return fmt.Errorf("postgres store: upsert auth record: %w", err)
 	}
 	return nil
 }
 
 func (s *PostgresStore) deleteAuthRecord(ctx context.Context, relID string) error {
-	query := fmt.Sprintf("DELETE FROM %s WHERE id = $1", s.fullTableName(s.cfg.AuthTable))
-	if _, err := s.db.ExecContext(ctx, query, relID); err != nil {
+	query := fmt.Sprintf("DELETE FROM %s WHERE tenant_id = $1 AND id = $2", s.fullTableName(s.cfg.AuthTable))
+	if _, err := s.db.ExecContext(ctx, query, cliproxyauth.TenantIDFromAuthID(relID), relID); err != nil {
 		return fmt.Errorf("postgres store: delete auth record: %w", err)
 	}
 	return nil
@@ -649,10 +611,18 @@ func (s *PostgresStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 }
 
 func (s *PostgresStore) resolveDeletePath(id string) (string, error) {
-	if strings.ContainsRune(id, os.PathSeparator) || filepath.IsAbs(id) {
-		return id, nil
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", fmt.Errorf("postgres store: auth identifier is empty")
 	}
-	return filepath.Join(s.authDir, filepath.FromSlash(id)), nil
+	if filepath.IsAbs(id) {
+		clean := filepath.Clean(id)
+		if _, err := s.relativeAuthID(clean); err != nil {
+			return "", err
+		}
+		return clean, nil
+	}
+	return s.absoluteAuthPath(id)
 }
 
 func (s *PostgresStore) relativeAuthID(path string) (string, error) {

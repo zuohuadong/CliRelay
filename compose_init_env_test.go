@@ -1,0 +1,300 @@
+package main
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/deploy/composeplan"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+)
+
+func TestComposeInitEnvGeneratesMissingEnv(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+
+	cmd := exec.Command("sh", "scripts/init-compose-env.sh")
+	cmd.Env = append(os.Environ(),
+		"CLIRELAY_ENV_FILE="+envFile,
+		"CLIRELAY_PROJECT_DIR="+dir,
+		"CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:test",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("init-compose-env failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	values := readEnvFile(t, envFile)
+	for _, key := range []string{
+		"CLI_PROXY_IMAGE",
+		"CLIRELAY_PROJECT_DIR",
+		"CLIRELAY_UPDATER_URL",
+		"CLIRELAY_UPDATER_TOKEN",
+		"CLIRELAY_ADMIN_PASSWORD",
+		"CLIRELAY_POSTGRES_PASSWORD",
+		"CLIRELAY_POSTGRES_DSN",
+		"CLIRELAY_REDIS_ENABLE",
+		"CLIRELAY_REDIS_ADDR",
+	} {
+		if values[key] == "" {
+			t.Fatalf("%s was not generated in .env: %#v", key, values)
+		}
+	}
+	if values["CLI_PROXY_IMAGE"] != "ghcr.io/kittors/clirelay:test" {
+		t.Fatalf("CLI_PROXY_IMAGE = %q", values["CLI_PROXY_IMAGE"])
+	}
+	if len(values["CLIRELAY_UPDATER_TOKEN"]) != 32 {
+		t.Fatalf("updater token length = %d, want 32", len(values["CLIRELAY_UPDATER_TOKEN"]))
+	}
+	// The admin password carries 32 hex characters of entropy plus the character
+	// classes the identity bootstrap requires, so only the lower bound is asserted
+	// here; TestComposeInitEnvAdminPasswordPassesIdentityValidation checks usability.
+	if len(values["CLIRELAY_ADMIN_PASSWORD"]) < 32 {
+		t.Fatalf("admin password length = %d, want at least 32", len(values["CLIRELAY_ADMIN_PASSWORD"]))
+	}
+	if len(values["CLIRELAY_POSTGRES_PASSWORD"]) != 32 {
+		t.Fatalf("postgres password length = %d, want 32", len(values["CLIRELAY_POSTGRES_PASSWORD"]))
+	}
+	if !strings.Contains(values["CLIRELAY_POSTGRES_DSN"], values["CLIRELAY_POSTGRES_PASSWORD"]) {
+		t.Fatalf("postgres DSN does not contain generated password")
+	}
+}
+
+func TestComposeInitEnvPreservesExistingValues(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envFile, []byte("CLIRELAY_UPDATER_TOKEN=custom-token\nCLIRELAY_ADMIN_PASSWORD=Custom-Admin-Password1\nCLIRELAY_POSTGRES_PASSWORD=custom-pass\nCLIRELAY_POSTGRES_DB=customdb\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+
+	cmd := exec.Command("sh", "scripts/init-compose-env.sh")
+	cmd.Env = append(os.Environ(),
+		"CLIRELAY_ENV_FILE="+envFile,
+		"CLIRELAY_PROJECT_DIR="+dir,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("init-compose-env failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	values := readEnvFile(t, envFile)
+	if values["CLIRELAY_UPDATER_TOKEN"] != "custom-token" {
+		t.Fatalf("updater token = %q, want custom-token", values["CLIRELAY_UPDATER_TOKEN"])
+	}
+	// Policy-compliant, so the repair pass must leave it alone.
+	if values["CLIRELAY_ADMIN_PASSWORD"] != "Custom-Admin-Password1" {
+		t.Fatalf("admin password = %q, want Custom-Admin-Password1", values["CLIRELAY_ADMIN_PASSWORD"])
+	}
+	if values["CLIRELAY_POSTGRES_PASSWORD"] != "custom-pass" {
+		t.Fatalf("postgres password = %q, want custom-pass", values["CLIRELAY_POSTGRES_PASSWORD"])
+	}
+	if !strings.Contains(values["CLIRELAY_POSTGRES_DSN"], "customdb") || !strings.Contains(values["CLIRELAY_POSTGRES_DSN"], "custom-pass") {
+		t.Fatalf("postgres DSN = %q, want existing db/password", values["CLIRELAY_POSTGRES_DSN"])
+	}
+}
+
+func TestComposeInitEnvCreatesMissingConfigFromExample(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	configFile := filepath.Join(dir, "config.yaml")
+	exampleFile := filepath.Join(dir, "config.example.yaml")
+	if err := os.WriteFile(exampleFile, []byte("host: \"\"\nport: 8317\n"), 0o644); err != nil {
+		t.Fatalf("write config example: %v", err)
+	}
+
+	cmd := exec.Command("sh", "scripts/init-compose-env.sh")
+	cmd.Env = append(os.Environ(),
+		"CLIRELAY_ENV_FILE="+envFile,
+		"CLIRELAY_PROJECT_DIR="+dir,
+		"CLIRELAY_CONFIG_FILE="+configFile,
+		"CLIRELAY_CONFIG_EXAMPLE_FILE="+exampleFile,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("init-compose-env failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	configData, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	if string(configData) != "host: \"\"\nport: 8317\n" {
+		t.Fatalf("generated config = %q", configData)
+	}
+
+	if err := os.WriteFile(configFile, []byte("custom: true\n"), 0o600); err != nil {
+		t.Fatalf("write custom config: %v", err)
+	}
+	cmd = exec.Command("sh", "scripts/init-compose-env.sh")
+	cmd.Env = append(os.Environ(),
+		"CLIRELAY_ENV_FILE="+envFile,
+		"CLIRELAY_PROJECT_DIR="+dir,
+		"CLIRELAY_CONFIG_FILE="+configFile,
+		"CLIRELAY_CONFIG_EXAMPLE_FILE="+exampleFile,
+	)
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("second init-compose-env failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	configData, err = os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("read custom config: %v", err)
+	}
+	if string(configData) != "custom: true\n" {
+		t.Fatalf("custom config was overwritten: %q", configData)
+	}
+}
+
+func readEnvFile(t *testing.T, path string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	values := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if ok {
+			values[strings.TrimSpace(key)] = strings.Trim(strings.TrimSpace(value), `"'`)
+		}
+	}
+	return values
+}
+
+// Proves the generated admin password is actually usable: the compose bootstrap feeds
+// CLIRELAY_ADMIN_PASSWORD straight into identity.HashPassword on a fresh database, so a
+// value that fails its character-class checks makes first startup crash.
+func TestComposeInitEnvAdminPasswordPassesIdentityValidation(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+
+	cmd := exec.Command("sh", "scripts/init-compose-env.sh")
+	cmd.Env = append(os.Environ(),
+		"CLIRELAY_ENV_FILE="+envFile,
+		"CLIRELAY_PROJECT_DIR="+dir,
+		"CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:test",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("init script failed: %v\n%s", err, out)
+	}
+
+	values := readEnvFile(t, envFile)
+	password := values["CLIRELAY_ADMIN_PASSWORD"]
+	if password == "" {
+		t.Fatal("CLIRELAY_ADMIN_PASSWORD was not generated")
+	}
+	if _, err := identity.HashPassword(password); err != nil {
+		t.Fatalf("generated admin password %q is rejected by identity.HashPassword: %v", password, err)
+	}
+}
+
+// The victims of the hex-only generator have an unusable password in .env and an empty
+// database, so their deployment has never started. Upgrading has to repair the value,
+// otherwise the fix reaches only fresh installs.
+func TestComposeInitEnvReplacesUnusableAdminPassword(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	const legacyHexPassword = "e2ffab13c1cb4bf1a01e0c9a7e3f88cd"
+	if err := os.WriteFile(envFile, []byte("CLIRELAY_UPDATER_TOKEN=keep-me\nCLIRELAY_ADMIN_PASSWORD="+legacyHexPassword+"\n"), 0o600); err != nil {
+		t.Fatalf("seed .env: %v", err)
+	}
+
+	runComposeInitEnv(t, dir, envFile)
+
+	values := readEnvFile(t, envFile)
+	replaced := values["CLIRELAY_ADMIN_PASSWORD"]
+	if replaced == legacyHexPassword {
+		t.Fatal("unusable admin password was left in place")
+	}
+	if _, err := identity.HashPassword(replaced); err != nil {
+		t.Fatalf("replacement password %q is still rejected: %v", replaced, err)
+	}
+	if values["CLIRELAY_UPDATER_TOKEN"] != "keep-me" {
+		t.Fatalf("unrelated value was disturbed: %q", values["CLIRELAY_UPDATER_TOKEN"])
+	}
+
+	// The key must be rewritten in place, not appended a second time; a duplicate would
+	// leave the stale value winning depending on who parses the file.
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read .env: %v", err)
+	}
+	if got := strings.Count(string(data), "CLIRELAY_ADMIN_PASSWORD="); got != 1 {
+		t.Fatalf("CLIRELAY_ADMIN_PASSWORD appears %d times, want 1:\n%s", got, string(data))
+	}
+}
+
+// A password that already satisfies the policy is the operator's choice and must survive.
+func TestComposeInitEnvKeepsUsableAdminPassword(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	const chosen = "MyStr0ng!Password"
+	if err := os.WriteFile(envFile, []byte("CLIRELAY_ADMIN_PASSWORD="+chosen+"\n"), 0o600); err != nil {
+		t.Fatalf("seed .env: %v", err)
+	}
+
+	runComposeInitEnv(t, dir, envFile)
+	runComposeInitEnv(t, dir, envFile)
+
+	values := readEnvFile(t, envFile)
+	if values["CLIRELAY_ADMIN_PASSWORD"] != chosen {
+		t.Fatalf("admin password = %q, want %q", values["CLIRELAY_ADMIN_PASSWORD"], chosen)
+	}
+}
+
+func runComposeInitEnv(t *testing.T, dir, envFile string) {
+	t.Helper()
+	cmd := exec.Command("sh", "scripts/init-compose-env.sh")
+	cmd.Env = append(os.Environ(),
+		"CLIRELAY_ENV_FILE="+envFile,
+		"CLIRELAY_PROJECT_DIR="+dir,
+		"CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:test",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("init script failed: %v\n%s", err, out)
+	}
+}
+
+// The updater runs the new image's init script before compose reconciliation;
+// ensureRuntimeEnvFile is no longer an independent bootstrap-password owner.
+func TestComposeInitEnvPasswordSurvivesTopologyMigration(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	composeFile := filepath.Join(dir, "docker-compose.yml")
+	if err := os.WriteFile(composeFile, []byte(`services:
+  cli-proxy-api:
+    image: ghcr.io/kittors/clirelay:dev
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "scripts/init-compose-env.sh")
+	cmd.Env = append(os.Environ(),
+		"CLIRELAY_ENV_FILE="+envFile,
+		"CLIRELAY_PROJECT_DIR="+dir,
+		"CLIRELAY_COMPOSE_FILE="+composeFile,
+		"CLIRELAY_CONFIG_FILE="+filepath.Join(dir, "config.yaml"),
+		"CLIRELAY_CONFIG_EXAMPLE_FILE="+filepath.Join(dir, "missing-example.yaml"),
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("init-compose-env: %v: %s", err, out)
+	}
+	password := readEnvFile(t, envFile)["CLIRELAY_ADMIN_PASSWORD"]
+	if _, err := identity.HashPassword(password); err != nil {
+		t.Fatalf("generated admin password rejected: %v", err)
+	}
+	// The script invokes the image's binary at an absolute container path. Call
+	// its real implementation here to exercise the same boundary on the host.
+	opts := composeplan.Options{ComposeFile: composeFile, EnvFile: envFile, ProjectDir: dir, Service: "cli-proxy-api"}
+	for i := 0; i < 2; i++ {
+		if err := composeplan.Migrate(opts); err != nil {
+			t.Fatalf("topology migration %d: %v", i+1, err)
+		}
+		if readEnvFile(t, envFile)["CLIRELAY_ADMIN_PASSWORD"] != password {
+			t.Fatalf("topology migration %d replaced or removed the bootstrap password", i+1)
+		}
+	}
+}

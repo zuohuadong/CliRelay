@@ -130,7 +130,7 @@ When a plugin executor encounters an upstream failure (such as `401 Unauthorized
 - **Important**: Both non-streaming (`executor.execute`) and streaming (`executor.execute_stream`) call sites must include `http_status` so failures are classified consistently.
 - Because native dynamic library plugins communicate across the C ABI via serialized JSON buffers, the status code must be encoded in the serialized JSON envelope (e.g. using `pluginabi.NewErrorEnvelope` or a custom envelope struct with an `http_status` field). Returning an unmarshaled Go error does not traverse the C ABI boundary.
 
-Go plugins can import `github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi` and use `pluginabi.NewErrorEnvelope(code, message, httpStatus)`:
+Go plugins can import `github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi` and use `pluginabi.NewErrorEnvelope(code, message, httpStatus)`:
 
 ```go
 // Recommended: construct an error envelope directly using sdk/pluginabi
@@ -171,6 +171,11 @@ make -C examples/plugin build
 ```
 
 Artifacts are written to `examples/plugin/bin`.
+
+When building prebuilt `c-shared` plugin release artifacts on CI runners for distribution across diverse machines, pin the baseline CPU instruction set so compiler-emitted instructions (such as AVX/AVX2/AVX-512 on modern `ubuntu-latest` runners) do not trigger `SIGILL` on older CPUs or virtualized hosts:
+
+- `amd64`: `GOAMD64=v1 CGO_CFLAGS="-march=x86-64"`
+- `arm64`: `GOARM64=v8.0 CGO_CFLAGS="-march=armv8-a"`
 
 ## Notes
 

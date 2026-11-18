@@ -1,0 +1,561 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"strings"
+	"testing"
+
+	_ "modernc.org/sqlite"
+)
+
+func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
+	migrations := RuntimeMigrations()
+	if len(migrations) != 51 {
+		t.Fatalf("RuntimeMigrations len = %d, want 51", len(migrations))
+	}
+	// Membership table of multi-instance deployments.
+	if migrations[31].Version != "202609250001_cluster_nodes" {
+		t.Fatalf("cluster nodes migration version = %q", migrations[31].Version)
+	}
+	if !strings.Contains(migrations[31].SQL, "CREATE TABLE IF NOT EXISTS cluster_nodes") {
+		t.Fatalf("cluster nodes migration missing its table: %q", migrations[31].SQL)
+	}
+	// Shared credential store of cluster mode.
+	if migrations[33].Version != "202609250003_cluster_auth_credentials" ||
+		!strings.Contains(migrations[33].SQL, "CREATE TABLE IF NOT EXISTS auth_credentials") {
+		t.Fatalf("cluster credential migration = %q", migrations[33].Version)
+	}
+	// Optimistic versions for cross-node management writes.
+	if migrations[34].Version != "202609250004_config_optimistic_versions" {
+		t.Fatalf("config versions migration version = %q", migrations[34].Version)
+	}
+	for _, fragment := range []string{
+		"ALTER TABLE runtime_settings ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1",
+		"ALTER TABLE routing_config ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1",
+		"CREATE TABLE IF NOT EXISTS config_versions",
+	} {
+		if !strings.Contains(migrations[34].SQL, fragment) {
+			t.Fatalf("config versions migration missing %q", fragment)
+		}
+	}
+	// Cross-node sessions and asynchronous work, one new table each.
+	for i, want := range []struct{ version, table string }{
+		{"202609250005_oauth_sessions", "CREATE TABLE IF NOT EXISTS oauth_sessions"},
+		{"202609250006_async_task_routes", "CREATE TABLE IF NOT EXISTS async_task_routes"},
+		{"202609250007_management_jobs", "CREATE TABLE IF NOT EXISTS management_jobs"},
+		{"202609250008_warmup_policies", "CREATE TABLE IF NOT EXISTS warmup_policies"},
+	} {
+		got := migrations[35+i]
+		if got.Version != want.version || !strings.Contains(got.SQL, want.table) {
+			t.Fatalf("migration %d = %q, want %q creating %q", 35+i, got.Version, want.version, want.table)
+		}
+	}
+	// Grants of the system tenant's shared proxies and credentials. A new
+	// table only; proxy_pool and auth_credentials keep their shape.
+	if got := migrations[39]; got.Version != "202610130001_platform_resource_grants" ||
+		!strings.Contains(got.SQL, "CREATE TABLE IF NOT EXISTS platform_resource_grants") ||
+		strings.Contains(got.SQL, "ALTER TABLE") {
+		t.Fatalf("resource grants migration = %q", got.Version)
+	}
+	if got := migrations[40]; got.Version != "202610130002_ccswitch_codex_context_window" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS codex_context_window") {
+		t.Fatalf("ccswitch context window migration = %q", got.Version)
+	}
+	// Access policies of accounts, keys and permission profiles: one additive
+	// column each, defaulting to the empty policy so no backfill is needed.
+	if got := migrations[41]; got.Version != "202610190001_access_policy" {
+		t.Fatalf("access policy migration = %q", got.Version)
+	} else {
+		for _, table := range []string{"end_users", "api_keys", "api_key_permission_profiles"} {
+			if !strings.Contains(got.SQL, "ALTER TABLE "+table+" ADD COLUMN IF NOT EXISTS access_policy TEXT NOT NULL DEFAULT '{}'") {
+				t.Fatalf("access policy migration does not add the column to %s", table)
+			}
+		}
+	}
+	// Cache reads, cache writes, prompt size and session on request_logs, cache
+	// totals on rollups. Catalog-only ALTERs: an index on request_logs would
+	// block log writes for the whole build, and an UPDATE would rewrite every
+	// row; the session backfill runs in the background instead.
+	if got := migrations[42]; got.Version != "202610300001_request_log_cache_and_session" {
+		t.Fatalf("cache and session migration = %q", got.Version)
+	} else {
+		for _, fragment := range []string{
+			"ADD COLUMN IF NOT EXISTS cache_read_tokens BIGINT,",
+			"ADD COLUMN IF NOT EXISTS cache_write_tokens BIGINT,",
+			"ADD COLUMN IF NOT EXISTS prompt_tokens BIGINT,",
+			"ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''",
+			"ADD COLUMN IF NOT EXISTS cache_known_prompt_tokens BIGINT NOT NULL DEFAULT 0",
+		} {
+			if !strings.Contains(got.SQL, fragment) {
+				t.Fatalf("cache and session migration missing %q", fragment)
+			}
+		}
+		if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
+			t.Fatalf("cache and session migration must only change the catalog: %q", got.SQL)
+		}
+	}
+	// Which loop protection check ended a request: one constant-default column,
+	// no index (it would block log writes for the whole build) and no backfill.
+	if got := migrations[43]; got.Version != "202611010001_request_log_guard_kind" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS guard_kind TEXT NOT NULL DEFAULT ''") {
+		t.Fatalf("guard kind migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
+		t.Fatalf("guard kind migration must only change the catalog: %q", got.SQL)
+	}
+	// Generation-speed sums on rollups: constant-default columns on a table
+	// every request writes to, so catalog-only; old buckets stay at zero, which
+	// reads as "no sample", instead of being rewritten.
+	if got := migrations[44]; got.Version != "202611040001_usage_rollup_generation_speed" {
+		t.Fatalf("generation speed migration = %q", got.Version)
+	} else {
+		for _, fragment := range []string{
+			"ADD COLUMN IF NOT EXISTS generation_count BIGINT NOT NULL DEFAULT 0",
+			"ADD COLUMN IF NOT EXISTS generation_output_tokens BIGINT NOT NULL DEFAULT 0",
+			"ADD COLUMN IF NOT EXISTS generation_sum_ms BIGINT NOT NULL DEFAULT 0",
+			"ADD COLUMN IF NOT EXISTS generation_speed_sum DOUBLE PRECISION NOT NULL DEFAULT 0",
+		} {
+			if !strings.Contains(got.SQL, fragment) {
+				t.Fatalf("generation speed migration missing %q", fragment)
+			}
+		}
+		if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") || strings.Contains(got.SQL, "request_logs") {
+			t.Fatalf("generation speed migration must only add rollup columns: %q", got.SQL)
+		}
+	}
+	// A subject-first index on the rollups, for reading one AI account across
+	// tenants. Only immutable key columns: a counter in it would turn the
+	// per-request bucket updates into index writes.
+	if got := migrations[45]; got.Version != "202611100001_usage_rollup_subject_index" ||
+		!strings.Contains(got.SQL, "ON usage_rollup_buckets(auth_subject_id, bucket_kind, bucket_start)") {
+		t.Fatalf("rollup subject index migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "cost_total") || strings.Contains(got.SQL, "request_logs") || strings.Contains(got.SQL, "UPDATE") {
+		t.Fatalf("rollup subject index migration must only add the key index: %q", got.SQL)
+	}
+	// The body purge's flag and its partial index, as two migrations: the
+	// constant-default column is catalog-only, and building the index inside
+	// the ALTER's transaction would hold a lock that blocks reads too. No
+	// UPDATE: rows older than the column read 0 and the purge checks them.
+	if got := migrations[46]; got.Version != "202611100002_request_log_content_bodies_stripped" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS bodies_stripped INTEGER NOT NULL DEFAULT 0") {
+		t.Fatalf("bodies stripped migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
+		t.Fatalf("bodies stripped migration must only change the catalog: %q", got.SQL)
+	}
+	if got := migrations[47]; got.Version != "202611100003_request_log_content_unstripped_index" ||
+		!strings.Contains(got.SQL, "ON request_log_content(log_id)") ||
+		!strings.Contains(got.SQL, "WHERE bodies_stripped = 0") {
+		t.Fatalf("unstripped index migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "ALTER TABLE") || strings.Contains(got.SQL, "UPDATE") {
+		t.Fatalf("unstripped index migration must only add the partial index: %q", got.SQL)
+	}
+	// Access freezes: three new tables and their indexes, nothing that touches
+	// an existing table. The partial unique index is what keeps two refusals in
+	// flight at once from freezing a requester twice.
+	if got := migrations[48]; got.Version != "202611130001_access_freezes" ||
+		!strings.Contains(got.SQL, "CREATE UNIQUE INDEX IF NOT EXISTS uq_access_freezes_active") ||
+		!strings.Contains(got.SQL, "WHERE released_at IS NULL") {
+		t.Fatalf("access freeze migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "ALTER TABLE") || strings.Contains(got.SQL, "UPDATE") || strings.Contains(got.SQL, "DROP") {
+		t.Fatalf("access freeze migration must only create its own tables: %q", got.SQL)
+	}
+	// Node snapshots: two nullable columns on cluster_nodes and nothing else,
+	// so the migration is a catalog change that cannot hold a lock for long.
+	if got := migrations[49]; got.Version != "202611170001_cluster_node_snapshot" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS snapshot JSONB") ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS snapshot_at TIMESTAMPTZ") {
+		t.Fatalf("cluster node snapshot migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "DEFAULT") || strings.Contains(got.SQL, "UPDATE") || strings.Contains(got.SQL, "INDEX") {
+		t.Fatalf("cluster node snapshot migration must only add nullable columns: %q", got.SQL)
+	}
+	// Host snapshots: a table of their own, nothing that touches the
+	// membership table the nodes and dnswatch read.
+	if got := migrations[50]; got.Version != "202611170002_cluster_hosts" ||
+		!strings.Contains(got.SQL, "CREATE TABLE IF NOT EXISTS cluster_hosts") {
+		t.Fatalf("cluster hosts migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "cluster_nodes") || strings.Contains(got.SQL, "ALTER TABLE") || strings.Contains(got.SQL, "DROP") {
+		t.Fatalf("cluster hosts migration must only create its own table: %q", got.SQL)
+	}
+	// Appended from laterRuntimeMigrations() because migrations.go sits at its
+	// structure-gate size ceiling.
+	if migrations[27].Version != "202608100001_ip_access_control" {
+		t.Fatalf("ip access migration version = %q", migrations[27].Version)
+	}
+	// Clears model/channel scopes stranded on end users whose permission profile
+	// was unbound without them.
+	if migrations[28].Version != "202608270001_end_user_unbound_profile_scope_cleanup" {
+		t.Fatalf("scope cleanup migration version = %q", migrations[28].Version)
+	}
+	// Completion marker for the one-shot pass that locks portal accounts still
+	// on the legacy backfill password; without it the pass would re-run on
+	// every boot.
+	if migrations[30].Version != "202609240001_end_user_legacy_password_lock_state" {
+		t.Fatalf("legacy password lock migration version = %q", migrations[30].Version)
+	}
+	// Exactly-once keys for request log writes. It must be a new table,
+	// not an index on request_logs, so upgrading never blocks log writes.
+	if migrations[32].Version != "202609250002_request_log_idempotency_keys" {
+		t.Fatalf("request log idempotency migration version = %q", migrations[32].Version)
+	}
+	if !strings.Contains(migrations[32].SQL, "CREATE TABLE IF NOT EXISTS request_log_idempotency_keys") ||
+		strings.Contains(migrations[32].SQL, "ON request_logs") {
+		t.Fatalf("request log idempotency migration must only add its own table: %q", migrations[32].SQL)
+	}
+	if !strings.Contains(migrations[30].SQL, "CREATE TABLE IF NOT EXISTS end_user_legacy_password_lock_state") {
+		t.Fatalf("legacy password lock migration missing its table: %q", migrations[30].SQL)
+	}
+	// Records the model an upstream declares in its own response, so a silent
+	// reroute to a different build is visible in the request log. Added as a new
+	// migration rather than by editing the shipped runtime schema, which
+	// TestPublishedMigrationChecksums pins.
+	if migrations[29].Version != "202609210001_request_log_upstream_response_model" {
+		t.Fatalf("upstream response model migration version = %q", migrations[29].Version)
+	}
+	if !strings.Contains(migrations[29].SQL, "ADD COLUMN IF NOT EXISTS upstream_response_model TEXT NOT NULL DEFAULT ''") {
+		t.Fatalf("upstream response model migration missing its column: %q", migrations[29].SQL)
+	}
+	for _, fragment := range []string{
+		"UPDATE end_users",
+		"allowed_channel_groups = '[]'",
+		"COALESCE(TRIM(permission_profile_id), '') = ''",
+	} {
+		if !strings.Contains(migrations[28].SQL, fragment) {
+			t.Fatalf("scope cleanup migration missing %q", fragment)
+		}
+	}
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS ip_access_rules",
+		"CREATE TABLE IF NOT EXISTS auth_attempt_events",
+		"ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip_address",
+	} {
+		if !strings.Contains(migrations[27].SQL, fragment) {
+			t.Fatalf("ip access migration missing %q", fragment)
+		}
+	}
+	if migrations[26].Version != "202608080001_audit_log_read_noise_cleanup" {
+		t.Fatalf("audit cleanup migration version = %q", migrations[26].Version)
+	}
+	for _, fragment := range []string{
+		"DELETE FROM audit_logs",
+		"result <> 'denied'",
+		"idx_audit_logs_created_at",
+	} {
+		if !strings.Contains(migrations[26].SQL, fragment) {
+			t.Fatalf("audit log cleanup migration missing %q", fragment)
+		}
+	}
+	// Quota observation time, so a failing probe stops making stale quota look
+	// freshly checked.
+	if migrations[25].Version != "202608070001_ai_account_quota_observed_at" {
+		t.Fatalf("quota observed_at migration version = %q", migrations[25].Version)
+	}
+	for _, fragment := range []string{
+		"ADD COLUMN IF NOT EXISTS quota_observed_at TIMESTAMPTZ",
+		"FROM ai_account_subject_quota_points p",
+	} {
+		if !strings.Contains(migrations[25].SQL, fragment) {
+			t.Fatalf("quota observed_at migration missing %q", fragment)
+		}
+	}
+	if migrations[24].Version != "202608060001_auth_session_hardening" {
+		t.Fatalf("auth session migration version = %q", migrations[24].Version)
+	}
+	authSessionSQL := migrations[24].SQL
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS user_session_tokens",
+		"last_failed_login_at TIMESTAMPTZ",
+		"remember_me BOOLEAN NOT NULL DEFAULT false",
+		"refresh_absolute_expires_at TIMESTAMPTZ",
+		// Mirroring live tokens into the new table is what keeps signed-in users
+		// from being logged out by the deploy itself.
+		"INSERT INTO user_session_tokens",
+	} {
+		if !strings.Contains(authSessionSQL, fragment) {
+			t.Fatalf("auth session hardening migration missing %q", fragment)
+		}
+	}
+	// Prior: request-log thinking level metadata.
+	if migrations[23].Version != "202608030001_request_log_thinking_level" {
+		t.Fatalf("thinking level migration version = %q", migrations[23].Version)
+	}
+	thinkingSQL := migrations[23].SQL
+	for _, fragment := range []string{"ALTER TABLE request_logs", "thinking_level TEXT NOT NULL DEFAULT ''"} {
+		if !strings.Contains(thinkingSQL, fragment) {
+			t.Fatalf("request log thinking level migration missing %q", fragment)
+		}
+	}
+	// Prior: shared AI-account cycle token projection.
+	tokenSQL := migrations[22].SQL
+	for _, fragment := range []string{"ALTER TABLE ai_account_subject_usage_buckets", "total_tokens BIGINT NOT NULL DEFAULT 0"} {
+		if !strings.Contains(tokenSQL, fragment) {
+			t.Fatalf("AI account subject token migration missing %q", fragment)
+		}
+	}
+	// Prior: fixed period spending columns.
+	periodSQL := migrations[21].SQL
+	for _, fragment := range []string{"five_hour_spending_limit", "weekly_spending_limit", "monthly_spending_limit"} {
+		if !strings.Contains(periodSQL, fragment) {
+			t.Fatalf("period migration missing %q", fragment)
+		}
+	}
+	// Prior: append-only account-level daily spending reset history.
+	endUserResetEventsSQL := migrations[20].SQL
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS end_user_daily_spending_reset_events",
+		"effective_used_before",
+		"raw_today_cost",
+		"actor_username",
+	} {
+		if !strings.Contains(endUserResetEventsSQL, fragment) {
+			t.Fatalf("end-user daily spending reset events migration missing %q", fragment)
+		}
+	}
+	// Prior: usage rollup buckets for stats/limits isolation from request_logs.
+	rollupSQL := migrations[18].SQL
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS usage_rollup_buckets",
+		"bucket_kind",
+		"effective_input_tokens",
+		"CREATE TABLE IF NOT EXISTS request_log_storage_state",
+	} {
+		if !strings.Contains(rollupSQL, fragment) {
+			t.Fatalf("usage rollup migration missing %q", fragment)
+		}
+	}
+	// Prior: account-level daily spending reset baselines.
+	endUserResetSQL := migrations[17].SQL
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS end_user_daily_spending_resets",
+		"cost_baseline",
+		"day_key",
+	} {
+		if !strings.Contains(endUserResetSQL, fragment) {
+			t.Fatalf("end-user daily spending reset migration missing %q", fragment)
+		}
+	}
+	// Prior: account-level quota on end_users.
+	accountQuotaSQL := migrations[16].SQL
+	for _, fragment := range []string{
+		"end_users ADD COLUMN IF NOT EXISTS permission_profile_id",
+		"end_users ADD COLUMN IF NOT EXISTS daily_limit",
+		"WHERE end_user_id IS NOT NULL",
+	} {
+		if !strings.Contains(accountQuotaSQL, fragment) {
+			t.Fatalf("end user account quota migration missing %q", fragment)
+		}
+	}
+	// Prior: end users + refresh tokens.
+	endUsersSQL := migrations[15].SQL
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS end_users",
+		"end_user_sessions",
+		"access_token_ttl_seconds",
+		"end_users.read",
+	} {
+		if !strings.Contains(endUsersSQL, fragment) {
+			t.Fatalf("end users migration missing %q", fragment)
+		}
+	}
+	// Prior: append-only daily spending reset history.
+	resetEventsSQL := migrations[14].SQL
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS api_key_daily_spending_reset_events",
+		"effective_used_before",
+		"raw_today_cost",
+		"actor_username",
+	} {
+		if !strings.Contains(resetEventsSQL, fragment) {
+			t.Fatalf("daily spending reset events migration missing %q", fragment)
+		}
+	}
+	// Prior: daily spending limit on permission profiles.
+	profileSpendSQL := migrations[13].SQL
+	if !strings.Contains(profileSpendSQL, "daily_spending_limit") {
+		t.Fatalf("profile daily spending migration missing daily_spending_limit")
+	}
+	// Prior: API key daily spending reset baselines.
+	resetSQL := migrations[12].SQL
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS api_key_daily_spending_resets",
+		"cost_baseline",
+		"day_key",
+	} {
+		if !strings.Contains(resetSQL, fragment) {
+			t.Fatalf("daily spending reset migration missing %q", fragment)
+		}
+	}
+	// Prior migration: AI account status read model tables.
+	statusSQL := migrations[11].SQL
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS ai_account_status",
+		"CREATE TABLE IF NOT EXISTS auth_subject_usage_daily",
+		"success_count",
+		"usage_projection_markers",
+	} {
+		if !strings.Contains(statusSQL, fragment) {
+			t.Fatalf("ai account status migration missing %q", fragment)
+		}
+	}
+	sharedSQL := migrations[19].SQL
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS ai_account_subjects",
+		"CREATE TABLE IF NOT EXISTS ai_account_tenant_bindings",
+		"CREATE TABLE IF NOT EXISTS ai_account_subject_status",
+		"CREATE TABLE IF NOT EXISTS ai_account_subject_usage_buckets",
+		"CREATE TABLE IF NOT EXISTS ai_account_subject_quota_cycles",
+		"CREATE TABLE IF NOT EXISTS ai_account_subject_quota_points",
+	} {
+		if !strings.Contains(sharedSQL, fragment) {
+			t.Fatalf("shared AI account migration missing %q", fragment)
+		}
+	}
+
+	authLookupSQL := migrations[10].SQL
+	for _, fragment := range []string{
+		"idx_request_logs_tenant_auth_index_time",
+		"idx_request_logs_tenant_auth_subject_time_cost",
+	} {
+		if !strings.Contains(authLookupSQL, fragment) {
+			t.Fatalf("auth lookup index migration missing %q", fragment)
+		}
+	}
+	sqlText := migrations[0].SQL
+	for _, table := range []string{
+		"request_logs",
+		"request_log_content",
+		"api_keys",
+		"api_key_permission_profiles",
+		"model_configs",
+		"model_pricing",
+		"proxy_pool",
+		"routing_config",
+		"runtime_settings",
+		"identity_fingerprints",
+		"ccswitch_import_configs",
+	} {
+		if !strings.Contains(sqlText, "CREATE TABLE IF NOT EXISTS "+table) {
+			t.Fatalf("runtime migration does not create %s", table)
+		}
+	}
+
+	scopeSQL := migrations[3].SQL
+	for _, table := range []string{"api_keys", "request_logs", "runtime_settings", "identity_fingerprints"} {
+		if !strings.Contains(scopeSQL, "ALTER TABLE "+table+" ADD COLUMN IF NOT EXISTS tenant_id") {
+			t.Fatalf("tenant scope migration does not alter %s", table)
+		}
+	}
+
+	constraintsSQL := migrations[4].SQL
+	for _, fragment := range []string{
+		"ADD PRIMARY KEY (tenant_id, model_id)",
+		"FOREIGN KEY (tenant_id, log_id)",
+		"idx_ccswitch_import_configs_tenant_route_path",
+	} {
+		if !strings.Contains(constraintsSQL, fragment) {
+			t.Fatalf("tenant constraints migration missing %q", fragment)
+		}
+	}
+
+	deleteConstraintsSQL := migrations[5].SQL
+	for _, fragment := range []string{
+		"users_created_by_fkey",
+		"audit_logs_actor_user_id_fkey",
+		"audit_logs_actor_session_id_fkey",
+		"ON DELETE SET NULL",
+	} {
+		if !strings.Contains(deleteConstraintsSQL, fragment) {
+			t.Fatalf("identity delete constraints migration missing %q", fragment)
+		}
+	}
+
+	ccSwitchConstraintsSQL := migrations[6].SQL
+	if !strings.Contains(ccSwitchConstraintsSQL, "ADD PRIMARY KEY (tenant_id, id)") {
+		t.Fatal("ccswitch tenant primary key migration is missing composite primary key")
+	}
+
+	menuSQL := migrations[7].SQL
+	for _, fragment := range []string{"CREATE TABLE IF NOT EXISTS menus", "permission_code", "idx_menus_parent_sort"} {
+		if !strings.Contains(menuSQL, fragment) {
+			t.Fatalf("dynamic menu migration missing %q", fragment)
+		}
+	}
+
+	menuV2SQL := migrations[8].SQL
+	for _, fragment := range []string{"button", "component", "link_url", "hide_menu", "menus_menu_type_check"} {
+		if !strings.Contains(menuV2SQL, fragment) {
+			t.Fatalf("menu management v2 migration missing %q", fragment)
+		}
+	}
+
+	identitySQL := migrations[2].SQL
+	for _, table := range []string{"tenants", "users", "roles", "permissions", "role_permissions", "user_roles", "user_sessions", "audit_logs"} {
+		if !strings.Contains(identitySQL, "CREATE TABLE IF NOT EXISTS "+table) {
+			t.Fatalf("identity migration does not create %s", table)
+		}
+	}
+
+	profileSQL := migrations[1].SQL
+	for _, fragment := range []string{
+		"ADD COLUMN IF NOT EXISTS profile_key",
+		"codex_quarantined",
+		"ADD PRIMARY KEY (provider, account_key, profile_key)",
+		"CREATE TABLE IF NOT EXISTS identity_fingerprint_account_policies",
+		"strategy = 'cli_preferred' AND active_profile_key = ''",
+	} {
+		if !strings.Contains(profileSQL, fragment) {
+			t.Fatalf("identity profile migration missing %q", fragment)
+		}
+	}
+}
+
+func TestMigrationChecksumChangesWithSQL(t *testing.T) {
+	first := migrationChecksum("SELECT 1")
+	second := migrationChecksum("SELECT 2")
+	if first == second {
+		t.Fatal("migrationChecksum returned identical values for different SQL")
+	}
+}
+
+func TestApplyMigrationDirtyErrorIncludesRemediation(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close sqlite db: %v", err)
+		}
+	})
+	if _, err := db.Exec(`
+		CREATE TABLE schema_migrations (
+			version TEXT PRIMARY KEY,
+			checksum TEXT NOT NULL,
+			dirty BOOLEAN NOT NULL
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	migration := Migration{Version: "202607210001_slow_ddl", SQL: "CREATE TABLE example (id INTEGER)"}
+	if _, err := db.Exec(
+		"INSERT INTO schema_migrations (version, checksum, dirty) VALUES (?, ?, true)",
+		migration.Version,
+		migrationChecksum(migration.SQL),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	err = applyMigration(context.Background(), db, migration)
+	if err == nil {
+		t.Fatal("applyMigration() error = nil, want dirty migration error")
+	}
+	for _, fragment := range []string{
+		"migration 202607210001_slow_ddl is dirty",
+		"confirm whether the SQL committed",
+		"do not only clear dirty",
+		"do not automatically replay SQL",
+	} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("applyMigration() error = %q, want %q", err, fragment)
+		}
+	}
+}

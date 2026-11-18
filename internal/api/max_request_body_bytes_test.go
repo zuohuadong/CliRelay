@@ -60,6 +60,28 @@ func parseTestServerConfigYAML(t *testing.T, raw string) *proxyconfig.Config {
 	return cfg
 }
 
+func TestMaxRequestBodyBytesConfigV8Validation(t *testing.T) {
+	raw := "config-version: 8\nserver:\n  max-request-body-bytes: 64\n"
+	if errValidate := proxyconfig.ValidateV8Config([]byte(raw)); errValidate != nil {
+		t.Fatalf("ValidateV8Config() error = %v, want nil", errValidate)
+	}
+
+	cfg := parseTestServerConfigYAML(t, raw)
+	if cfg.MaxRequestBodyBytes != 64 {
+		t.Fatalf("cfg.MaxRequestBodyBytes = %d, want 64", cfg.MaxRequestBodyBytes)
+	}
+
+	legacyCfg := parseTestServerConfigYAML(t, "max-request-body-bytes: 128\n")
+	if legacyCfg.MaxRequestBodyBytes != 128 {
+		t.Fatalf("legacyCfg.MaxRequestBodyBytes = %d, want 128", legacyCfg.MaxRequestBodyBytes)
+	}
+
+	precedenceCfg := parseTestServerConfigYAML(t, "max-request-body-bytes: 128\nserver:\n  max-request-body-bytes: 0\n")
+	if precedenceCfg.MaxRequestBodyBytes != 0 {
+		t.Fatalf("precedenceCfg.MaxRequestBodyBytes = %d, want 0", precedenceCfg.MaxRequestBodyBytes)
+	}
+}
+
 func TestServerMaxRequestBodyBytesRejectsContentLengthAndChunkedBodies(t *testing.T) {
 	cfg := parseTestServerConfigYAML(t, `config-version: 8
 server:
@@ -90,10 +112,28 @@ observability:
 		}
 	})
 
-	t.Run("unauthenticated chunked body with request-log enabled is bounded and returns 413", func(t *testing.T) {
+	t.Run("unauthenticated chunked body with request-log enabled returns 401 without reading body", func(t *testing.T) {
 		counter := &countingBodyReader{reader: strings.NewReader(strings.Repeat("b", 1024))}
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", io.NopCloser(counter))
 		req.ContentLength = -1
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+		}
+		if got := counter.read.Load(); got != 0 {
+			t.Fatalf("bytes read before auth rejection = %d, want 0", got)
+		}
+	})
+
+	t.Run("authenticated chunked body with request-log enabled is bounded and returns 413", func(t *testing.T) {
+		counter := &countingBodyReader{reader: strings.NewReader(strings.Repeat("b", 1024))}
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", io.NopCloser(counter))
+		req.ContentLength = -1
+		req.Header.Set("Authorization", "Bearer test-key")
 		req.Header.Set("Content-Type", "application/json")
 		rr := httptest.NewRecorder()
 
@@ -174,6 +214,39 @@ access:
 
 		if rr.Code != http.StatusRequestEntityTooLarge {
 			t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusRequestEntityTooLarge, rr.Body.String())
+		}
+	})
+
+	t.Run("unauthenticated chunked body with plugin auth fallback is bounded and returns 413", func(t *testing.T) {
+		cfgPluginAuth := parseTestServerConfigYAML(t, `config-version: 8
+server:
+  max-request-body-bytes: 64
+access:
+  api-keys:
+    - test-key
+`)
+		srv := newTestServerWithConfig(t, cfgPluginAuth)
+		fallbackProvider := &bodyReadingAccessProvider{}
+		providers := append(srv.accessManager.Providers(), fallbackProvider)
+		srv.accessManager.SetProviders(providers)
+
+		counter := &countingBodyReader{reader: strings.NewReader(strings.Repeat("p", 1024))}
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", io.NopCloser(counter))
+		req.ContentLength = -1
+		req.Header.Set("Authorization", "Bearer wrong-key")
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+
+		srv.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusRequestEntityTooLarge, rr.Body.String())
+		}
+		if got := counter.read.Load(); got > 65 {
+			t.Fatalf("underlying bytes read = %d, want <= 65", got)
+		}
+		if got := fallbackProvider.readBytes.Load(); got > 65 {
+			t.Fatalf("fallback provider readBytes = %d, want <= 65", got)
 		}
 	})
 

@@ -1,9 +1,14 @@
 package auth
 
 import (
+	"context"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
@@ -32,7 +37,10 @@ func TestFindAllAntigravityCreditsCandidateAuths_PrefersKnownCreditsThenUnknown(
 
 	opts := cliproxyexecutor.Options{}
 
-	candidates := m.findAllAntigravityCreditsCandidateAuths("claude-sonnet-4-6", opts)
+	candidates, errCandidates := m.findAllAntigravityCreditsCandidateAuths(context.Background(), "claude-sonnet-4-6", opts)
+	if errCandidates != nil {
+		t.Fatalf("findAllAntigravityCreditsCandidateAuths() error = %v", errCandidates)
+	}
 	if len(candidates) != 2 {
 		t.Fatalf("candidates len = %d, want 2", len(candidates))
 	}
@@ -43,7 +51,10 @@ func TestFindAllAntigravityCreditsCandidateAuths_PrefersKnownCreditsThenUnknown(
 		t.Fatalf("candidates[1].auth.ID = %q, want %q", candidates[1].auth.ID, "aa-unknown")
 	}
 
-	nonClaude := m.findAllAntigravityCreditsCandidateAuths("gemini-3-flash", opts)
+	nonClaude, errNonClaude := m.findAllAntigravityCreditsCandidateAuths(context.Background(), "gemini-3-flash", opts)
+	if errNonClaude != nil {
+		t.Fatalf("findAllAntigravityCreditsCandidateAuths(non claude) error = %v", errNonClaude)
+	}
 	if len(nonClaude) != 0 {
 		t.Fatalf("nonClaude len = %d, want 0", len(nonClaude))
 	}
@@ -51,7 +62,10 @@ func TestFindAllAntigravityCreditsCandidateAuths_PrefersKnownCreditsThenUnknown(
 	pinnedOpts := cliproxyexecutor.Options{
 		Metadata: map[string]any{cliproxyexecutor.PinnedAuthMetadataKey: "aa-unknown"},
 	}
-	pinned := m.findAllAntigravityCreditsCandidateAuths("claude-sonnet-4-6", pinnedOpts)
+	pinned, errPinned := m.findAllAntigravityCreditsCandidateAuths(context.Background(), "claude-sonnet-4-6", pinnedOpts)
+	if errPinned != nil {
+		t.Fatalf("findAllAntigravityCreditsCandidateAuths(pinned) error = %v", errPinned)
+	}
 	if len(pinned) != 1 {
 		t.Fatalf("pinned len = %d, want 1", len(pinned))
 	}
@@ -70,12 +84,40 @@ func TestFindAllAntigravityCreditsCandidateAuths_PrefersKnownCreditsThenUnknown(
 		SetAntigravityCreditsHint("mm-no", AntigravityCreditsHint{})
 	})
 
-	afterExpiry := m.findAllAntigravityCreditsCandidateAuths("claude-sonnet-4-6", opts)
+	afterExpiry, errAfterExpiry := m.findAllAntigravityCreditsCandidateAuths(context.Background(), "claude-sonnet-4-6", opts)
+	if errAfterExpiry != nil {
+		t.Fatalf("findAllAntigravityCreditsCandidateAuths(after expiry) error = %v", errAfterExpiry)
+	}
 	if len(afterExpiry) != 3 {
 		t.Fatalf("afterExpiry candidates len = %d, want 3", len(afterExpiry))
 	}
 	if afterExpiry[0].auth.ID != "zz-credits" || afterExpiry[1].auth.ID != "aa-unknown" || afterExpiry[2].auth.ID != "mm-no" {
 		t.Fatalf("afterExpiry order = [%s, %s, %s], want [zz-credits, aa-unknown, mm-no]",
 			afterExpiry[0].auth.ID, afterExpiry[1].auth.ID, afterExpiry[2].auth.ID)
+	}
+}
+
+func TestFindAllAntigravityCreditsCandidateAuths_HomeKVUnavailableReturnsError(t *testing.T) {
+	homekv.SetCurrent(homekv.New(internalconfig.HomeConfig{Enabled: false}))
+	t.Cleanup(homekv.ClearCurrent)
+
+	m := &Manager{
+		auths: map[string]*Auth{
+			"ag-home-kv": {ID: "ag-home-kv", Provider: "antigravity"},
+		},
+		executors: map[string]ProviderExecutor{
+			"antigravity": schedulerTestExecutor{},
+		},
+	}
+
+	candidates, errCandidates := m.findAllAntigravityCreditsCandidateAuths(context.Background(), "claude-sonnet-4-6", cliproxyexecutor.Options{})
+	if errCandidates == nil {
+		t.Fatalf("findAllAntigravityCreditsCandidateAuths() error = nil, candidates=%#v", candidates)
+	}
+	if status := statusCodeFromError(errCandidates); status != http.StatusServiceUnavailable {
+		t.Fatalf("statusCodeFromError() = %d, want %d; err=%v", status, http.StatusServiceUnavailable, errCandidates)
+	}
+	if !strings.Contains(errCandidates.Error(), "home kv store unavailable") {
+		t.Fatalf("error = %v, want home kv store unavailable", errCandidates)
 	}
 }

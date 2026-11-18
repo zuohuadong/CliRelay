@@ -3,14 +3,15 @@ package executor
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
+	"github.com/MoeForge/moego/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -18,7 +19,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func validCodexReasoningEncryptedContentForTestSeed(seed byte) string {
@@ -99,13 +99,13 @@ func TestCodexExecutorReasoningReplayCacheStoresFinalDoneAndInjectsNextClaudeReq
 		t.Fatalf("upstream request count = %d, want 2", len(bodies))
 	}
 	secondBody := bodies[1]
-	if got := gjson.GetBytes(secondBody, "input.0.type").String(); got != "reasoning" {
+	if got := ojson.GetBytes(secondBody, "input.0.type").String(); got != "reasoning" {
 		t.Fatalf("input.0.type = %q, want reasoning; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.0.encrypted_content").String(); got != doneEncryptedContent {
+	if got := ojson.GetBytes(secondBody, "input.0.encrypted_content").String(); got != doneEncryptedContent {
 		t.Fatalf("injected encrypted_content = %q, want final done %q; body=%s", got, doneEncryptedContent, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.1.role").String(); got != "user" {
+	if got := ojson.GetBytes(secondBody, "input.1.role").String(); got != "user" {
 		t.Fatalf("input.1.role = %q, want user; body=%s", got, string(secondBody))
 	}
 }
@@ -133,10 +133,10 @@ func TestCodexExecutorReasoningReplayCacheSharesSameSessionAcrossClientKeys(t *t
 	if secondScope != firstScope {
 		t.Fatalf("replay scope should ignore client API key for the same session: first=%#v second=%#v", firstScope, secondScope)
 	}
-	if got := gjson.GetBytes(secondBody, "input.0.type").String(); got != "reasoning" {
+	if got := ojson.GetBytes(secondBody, "input.0.type").String(); got != "reasoning" {
 		t.Fatalf("input.0.type = %q, want same-session replay; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.0.encrypted_content").String(); got != encryptedContent {
+	if got := ojson.GetBytes(secondBody, "input.0.encrypted_content").String(); got != encryptedContent {
 		t.Fatalf("injected encrypted_content = %q, want cached value", got)
 	}
 }
@@ -290,10 +290,10 @@ func TestCodexExecutorReasoningReplayCacheSharesSameSessionAcrossCodexAuths(t *t
 		t.Fatalf("upstream request count = %d, want 2", len(bodies))
 	}
 	secondBody := bodies[1]
-	if got := gjson.GetBytes(secondBody, "input.0.type").String(); got != "reasoning" {
+	if got := ojson.GetBytes(secondBody, "input.0.type").String(); got != "reasoning" {
 		t.Fatalf("input.0.type = %q, want same-session replay across auths; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.0.encrypted_content").String(); got != encryptedContent {
+	if got := ojson.GetBytes(secondBody, "input.0.encrypted_content").String(); got != encryptedContent {
 		t.Fatalf("injected encrypted_content = %q, want cached value", got)
 	}
 }
@@ -344,10 +344,10 @@ func TestCodexExecutorReasoningReplayCacheDoesNotInjectNativeResponsesRequest(t 
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	if got := gjson.GetBytes(gotBody, "input.0.type").String(); got == "reasoning" {
+	if got := ojson.GetBytes(gotBody, "input.0.type").String(); got == "reasoning" {
 		t.Fatalf("native Responses request should not receive cached reasoning; body=%s", string(gotBody))
 	}
-	if got := gjson.GetBytes(gotBody, "input.0.role").String(); got != "user" {
+	if got := ojson.GetBytes(gotBody, "input.0.role").String(); got != "user" {
 		t.Fatalf("input.0.role = %q, want user; body=%s", got, string(gotBody))
 	}
 }
@@ -425,11 +425,11 @@ func TestCodexExecutorReasoningReplayCacheDoesNotDuplicateClaudeClientReasoning(
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	if got := gjson.GetBytes(gotBody, "input.0.encrypted_content").String(); got != clientEncryptedContent {
+	if got := ojson.GetBytes(gotBody, "input.0.encrypted_content").String(); got != clientEncryptedContent {
 		t.Fatalf("client reasoning should be preserved, got %q want %q; body=%s", got, clientEncryptedContent, string(gotBody))
 	}
 	reasoningCount := 0
-	for _, item := range gjson.GetBytes(gotBody, "input").Array() {
+	for _, item := range ojson.GetBytes(gotBody, "input").Array() {
 		if item.Get("type").String() == "reasoning" {
 			reasoningCount++
 		}
@@ -484,19 +484,19 @@ func TestCodexExecutorReasoningReplayCacheInsertsReasoningBeforeAssistantOutputI
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	if got := gjson.GetBytes(gotBody, "input.0.role").String(); got != "user" {
+	if got := ojson.GetBytes(gotBody, "input.0.role").String(); got != "user" {
 		t.Fatalf("input.0.role = %q, want first user message; body=%s", got, string(gotBody))
 	}
-	if got := gjson.GetBytes(gotBody, "input.1.type").String(); got != "reasoning" {
+	if got := ojson.GetBytes(gotBody, "input.1.type").String(); got != "reasoning" {
 		t.Fatalf("input.1.type = %q, want cached reasoning before assistant output; body=%s", got, string(gotBody))
 	}
-	if got := gjson.GetBytes(gotBody, "input.1.encrypted_content").String(); got != cachedEncryptedContent {
+	if got := ojson.GetBytes(gotBody, "input.1.encrypted_content").String(); got != cachedEncryptedContent {
 		t.Fatalf("input.1.encrypted_content = %q, want cached reasoning; body=%s", got, string(gotBody))
 	}
-	if got := gjson.GetBytes(gotBody, "input.2.role").String(); got != "assistant" {
+	if got := ojson.GetBytes(gotBody, "input.2.role").String(); got != "assistant" {
 		t.Fatalf("input.2.role = %q, want assistant output after cached reasoning; body=%s", got, string(gotBody))
 	}
-	if got := gjson.GetBytes(gotBody, "input.3.role").String(); got != "user" {
+	if got := ojson.GetBytes(gotBody, "input.3.role").String(); got != "user" {
 		t.Fatalf("input.3.role = %q, want final user message; body=%s", got, string(gotBody))
 	}
 }
@@ -562,7 +562,7 @@ func TestCodexExecutorReasoningReplayCacheExecuteStreamStoresFinalDoneForClaude(
 		t.Fatalf("upstream request count = %d, want 2", len(bodies))
 	}
 	secondBody := bodies[1]
-	if got := gjson.GetBytes(secondBody, "input.0.encrypted_content").String(); got != doneEncryptedContent {
+	if got := ojson.GetBytes(secondBody, "input.0.encrypted_content").String(); got != doneEncryptedContent {
 		t.Fatalf("stream cached encrypted_content = %q, want final done %q; body=%s", got, doneEncryptedContent, string(secondBody))
 	}
 }
@@ -649,132 +649,6 @@ func TestCodexExecutorReasoningReplayCacheClearsOnStreamResponseFailedInvalidSig
 	}
 }
 
-func TestCodexExecutorExecuteStreamRetriesWithoutClientReasoningEncryptedContentOnInvalidSignature(t *testing.T) {
-	internalcache.ClearCodexReasoningReplayCache()
-	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
-
-	staleEncryptedContent := validCodexReasoningEncryptedContentForTestSeed(16)
-	var bodies [][]byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, errRead := io.ReadAll(r.Body)
-		if errRead != nil {
-			t.Fatalf("read body: %v", errRead)
-		}
-		bodies = append(bodies, body)
-		w.Header().Set("Content-Type", "text/event-stream")
-		if len(bodies) == 1 {
-			_, _ = w.Write([]byte(`data: {"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"message":"The encrypted content located at input[0].summary could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","code":"invalid_request_error"}}}` + "\n\n"))
-			return
-		}
-		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_2","object":"response","created_at":0,"status":"completed","model":"gpt-5.5","output":[{"type":"message","content":[{"type":"output_text","text":"retry succeeded"}]}]}}` + "\n\n"))
-	}))
-	defer server.Close()
-
-	executor := NewCodexExecutor(&config.Config{})
-	streamResult, err := executor.ExecuteStream(context.Background(), &cliproxyauth.Auth{
-		ID: "auth-replay-switch-model-stream",
-		Attributes: map[string]string{
-			"base_url": server.URL,
-			"api_key":  "test",
-		},
-	}, cliproxyexecutor.Request{
-		Model: "gpt-5.5",
-		Payload: []byte(`{
-			"model":"gpt-5.5",
-			"metadata":{"user_id":"{\"device_id\":\"device-test\",\"account_uuid\":\"\",\"session_id\":\"session-switch-model\"}"},
-			"messages":[
-				{"role":"assistant","content":[{"type":"thinking","thinking":"previous model reasoning","signature":"` + staleEncryptedContent + `"},{"type":"text","text":"previous answer"}]},
-				{"role":"user","content":[{"type":"text","text":"continue on another model"}]}
-			]
-		}`),
-	}, cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FromString("claude"),
-		Stream:       true,
-	})
-	if err != nil {
-		t.Fatalf("ExecuteStream setup error: %v", err)
-	}
-
-	for chunk := range streamResult.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("unexpected stream chunk error after invalid signature retry: %v", chunk.Err)
-		}
-	}
-	if len(bodies) != 2 {
-		t.Fatalf("upstream request count = %d, want 2", len(bodies))
-	}
-	if got := gjson.GetBytes(bodies[0], "input.0.encrypted_content").String(); got != staleEncryptedContent {
-		t.Fatalf("first request encrypted_content = %q, want stale client signature; body=%s", got, string(bodies[0]))
-	}
-	if gjson.GetBytes(bodies[1], "input.0.encrypted_content").Exists() {
-		t.Fatalf("retry request should drop stale client encrypted_content; body=%s", string(bodies[1]))
-	}
-}
-
-func TestCodexExecutorExecuteStreamRetriesWithoutClientReasoningEncryptedContentOnHTTPInvalidSignature(t *testing.T) {
-	internalcache.ClearCodexReasoningReplayCache()
-	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
-
-	staleEncryptedContent := validCodexReasoningEncryptedContentForTestSeed(17)
-	var bodies [][]byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, errRead := io.ReadAll(r.Body)
-		if errRead != nil {
-			t.Fatalf("read body: %v", errRead)
-		}
-		bodies = append(bodies, body)
-		if len(bodies) == 1 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":{"message":"The encrypted content located at input[0].summary could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","code":"invalid_request_error"}}`))
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_2","object":"response","created_at":0,"status":"completed","model":"gpt-5.5","output":[{"type":"message","content":[{"type":"output_text","text":"retry succeeded"}]}]}}` + "\n\n"))
-	}))
-	defer server.Close()
-
-	executor := NewCodexExecutor(&config.Config{})
-	streamResult, err := executor.ExecuteStream(context.Background(), &cliproxyauth.Auth{
-		ID: "auth-replay-switch-model-http-stream",
-		Attributes: map[string]string{
-			"base_url": server.URL,
-			"api_key":  "test",
-		},
-	}, cliproxyexecutor.Request{
-		Model: "gpt-5.5",
-		Payload: []byte(`{
-			"model":"gpt-5.5",
-			"metadata":{"user_id":"{\"device_id\":\"device-test\",\"account_uuid\":\"\",\"session_id\":\"session-switch-model-http\"}"},
-			"messages":[
-				{"role":"assistant","content":[{"type":"thinking","thinking":"previous model reasoning","signature":"` + staleEncryptedContent + `"},{"type":"text","text":"previous answer"}]},
-				{"role":"user","content":[{"type":"text","text":"continue on another model"}]}
-			]
-		}`),
-	}, cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FromString("claude"),
-		Stream:       true,
-	})
-	if err != nil {
-		t.Fatalf("ExecuteStream setup error: %v", err)
-	}
-
-	for chunk := range streamResult.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("unexpected stream chunk error after HTTP invalid signature retry: %v", chunk.Err)
-		}
-	}
-	if len(bodies) != 2 {
-		t.Fatalf("upstream request count = %d, want 2", len(bodies))
-	}
-	if got := gjson.GetBytes(bodies[0], "input.0.encrypted_content").String(); got != staleEncryptedContent {
-		t.Fatalf("first request encrypted_content = %q, want stale client signature; body=%s", got, string(bodies[0]))
-	}
-	if gjson.GetBytes(bodies[1], "input.0.encrypted_content").Exists() {
-		t.Fatalf("retry request should drop stale client encrypted_content; body=%s", string(bodies[1]))
-	}
-}
-
 func TestCodexExecutorReasoningReplayCacheReplaysFunctionCallForClaudeToolResult(t *testing.T) {
 	internalcache.ClearCodexReasoningReplayCache()
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
@@ -842,22 +716,22 @@ func TestCodexExecutorReasoningReplayCacheReplaysFunctionCallForClaudeToolResult
 		t.Fatalf("upstream request count = %d, want 2", len(bodies))
 	}
 	secondBody := bodies[1]
-	if got := gjson.GetBytes(secondBody, "input.0.type").String(); got != "message" {
+	if got := ojson.GetBytes(secondBody, "input.0.type").String(); got != "message" {
 		t.Fatalf("input.0.type = %q, want initial user message; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.1.type").String(); got != "reasoning" {
+	if got := ojson.GetBytes(secondBody, "input.1.type").String(); got != "reasoning" {
 		t.Fatalf("input.1.type = %q, want cached reasoning; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.2.type").String(); got != "function_call" {
+	if got := ojson.GetBytes(secondBody, "input.2.type").String(); got != "function_call" {
 		t.Fatalf("input.2.type = %q, want cached function_call; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.2.call_id").String(); got != "call_1" {
+	if got := ojson.GetBytes(secondBody, "input.2.call_id").String(); got != "call_1" {
 		t.Fatalf("input.2.call_id = %q, want call_1; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.3.type").String(); got != "function_call_output" {
+	if got := ojson.GetBytes(secondBody, "input.3.type").String(); got != "function_call_output" {
 		t.Fatalf("input.3.type = %q, want function_call_output after cached call; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.3.call_id").String(); got != "call_1" {
+	if got := ojson.GetBytes(secondBody, "input.3.call_id").String(); got != "call_1" {
 		t.Fatalf("input.3.call_id = %q, want call_1; body=%s", got, string(secondBody))
 	}
 }
@@ -897,7 +771,7 @@ func TestCodexExecutorReasoningReplayCacheRestoresCumulativeToolTurns(t *testing
 		t.Fatalf("replay scope = %#v, want model/session %#v", gotScope, scope)
 	}
 	wantTypes := []string{"message", "reasoning", "function_call", "function_call_output", "message", "reasoning", "function_call", "function_call_output", "message"}
-	gotItems := gjson.GetBytes(updated, "input").Array()
+	gotItems := ojson.GetBytes(updated, "input").Array()
 	if len(gotItems) != len(wantTypes) {
 		t.Fatalf("input length = %d, want %d; body=%s", len(gotItems), len(wantTypes), updated)
 	}
@@ -946,7 +820,7 @@ func TestCodexExecutorReasoningReplayCacheRestoresCumulativeAssistantTurns(t *te
 		t.Fatalf("replay scope = %#v, want model/session %#v", gotScope, scope)
 	}
 	wantTypes := []string{"message", "reasoning", "message", "message", "reasoning", "message", "message"}
-	gotItems := gjson.GetBytes(updated, "input").Array()
+	gotItems := ojson.GetBytes(updated, "input").Array()
 	if len(gotItems) != len(wantTypes) {
 		t.Fatalf("input length = %d, want %d; body=%s", len(gotItems), len(wantTypes), updated)
 	}
@@ -989,7 +863,7 @@ func TestCodexExecutorReasoningReplayCacheSkipsDetachedTurnAfterCompaction(t *te
 		Payload: []byte(`{"metadata":{"user_id":"{\"session_id\":\"session-compacted\"}"}}`),
 	}
 	updated, _ := applyCodexReasoningReplayCache(context.Background(), sdktranslator.FromString("claude"), req, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")}, body)
-	gotItems := gjson.GetBytes(updated, "input").Array()
+	gotItems := ojson.GetBytes(updated, "input").Array()
 	if len(gotItems) != 4 || gotItems[1].Get("encrypted_content").String() != retainedEncrypted {
 		t.Fatalf("retained turn reasoning was not restored: %s", updated)
 	}
@@ -1027,7 +901,7 @@ func TestCodexExecutorReasoningReplayCacheMatchesNewestDuplicateAssistantAfterCo
 		Payload: []byte(`{"metadata":{"user_id":"{\"session_id\":\"session-duplicate-compaction\"}"}}`),
 	}
 	updated, _ := applyCodexReasoningReplayCache(context.Background(), sdktranslator.FromString("claude"), req, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")}, body)
-	gotItems := gjson.GetBytes(updated, "input").Array()
+	gotItems := ojson.GetBytes(updated, "input").Array()
 	if len(gotItems) != 4 || gotItems[1].Get("encrypted_content").String() != newEncrypted {
 		t.Fatalf("newest duplicate assistant turn was not retained: %s", updated)
 	}
@@ -1049,7 +923,7 @@ func TestCodexExecutorReasoningReplayCacheUsesRequestPrefixForDuplicateOutOfOrde
 		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]},` +
 		`{"type":"message","role":"user","content":"third"}` +
 		`]}`)
-	inputItems := gjson.GetBytes(body, "input").Array()
+	inputItems := ojson.GetBytes(body, "input").Array()
 	baseScope := codexReasoningReplayScope{
 		modelName:  "gpt-5.4",
 		sessionKey: "claude:session-duplicate-prefix:agent:main",
@@ -1074,7 +948,7 @@ func TestCodexExecutorReasoningReplayCacheUsesRequestPrefixForDuplicateOutOfOrde
 		Payload: []byte(`{"metadata":{"user_id":"{\"session_id\":\"session-duplicate-prefix\"}"}}`),
 	}
 	updated, _ := applyCodexReasoningReplayCache(context.Background(), sdktranslator.FromString("claude"), req, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")}, body)
-	gotItems := gjson.GetBytes(updated, "input").Array()
+	gotItems := ojson.GetBytes(updated, "input").Array()
 	if len(gotItems) != 7 || gotItems[1].Get("encrypted_content").String() != oldEncrypted || gotItems[4].Get("encrypted_content").String() != newEncrypted {
 		t.Fatalf("duplicate out-of-order turns were not matched by request prefix: %s", updated)
 	}
@@ -1114,13 +988,13 @@ func TestCodexExecutorReasoningReplayCacheDropsFunctionCallWithoutMatchingOutput
 	if replayScope.modelName != scope.modelName || replayScope.sessionKey != scope.sessionKey {
 		t.Fatalf("replay scope = %#v, want model/session %#v", replayScope, scope)
 	}
-	if got := gjson.GetBytes(updated, "input.0.role").String(); got != "user" {
+	if got := ojson.GetBytes(updated, "input.0.role").String(); got != "user" {
 		t.Fatalf("input.0.role = %q, want detached turn to be skipped; body=%s", got, string(updated))
 	}
-	if gjson.GetBytes(updated, `input.#(type=="reasoning")`).Exists() {
+	if ojson.GetBytes(updated, `input.#(type=="reasoning")`).Exists() {
 		t.Fatalf("detached turn reasoning should not move to the front; body=%s", string(updated))
 	}
-	if gjson.GetBytes(updated, `input.#(call_id=="call_dropped")`).Exists() {
+	if ojson.GetBytes(updated, `input.#(call_id=="call_dropped")`).Exists() {
 		t.Fatalf("cached function_call without matching output should not be replayed; body=%s", string(updated))
 	}
 }
@@ -1197,32 +1071,32 @@ func TestCodexExecutorReasoningReplayCacheMatchesShortenedClaudeToolResultCallID
 		t.Fatalf("upstream request count = %d, want 2", len(bodies))
 	}
 	secondBody := bodies[1]
-	if got := gjson.GetBytes(secondBody, "input.0.type").String(); got != "message" {
+	if got := ojson.GetBytes(secondBody, "input.0.type").String(); got != "message" {
 		t.Fatalf("input.0.type = %q, want initial user message; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.1.type").String(); got != "reasoning" {
+	if got := ojson.GetBytes(secondBody, "input.1.type").String(); got != "reasoning" {
 		t.Fatalf("input.1.type = %q, want cached reasoning; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.2.type").String(); got != "function_call" {
+	if got := ojson.GetBytes(secondBody, "input.2.type").String(); got != "function_call" {
 		t.Fatalf("input.2.type = %q, want cached function_call; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.2.call_id").String(); got != shortCallID {
+	if got := ojson.GetBytes(secondBody, "input.2.call_id").String(); got != shortCallID {
 		t.Fatalf("input.2.call_id = %q, want shortened call_id %q; body=%s", got, shortCallID, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.3.type").String(); got != "function_call_output" {
+	if got := ojson.GetBytes(secondBody, "input.3.type").String(); got != "function_call_output" {
 		t.Fatalf("input.3.type = %q, want function_call_output after cached call; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.3.call_id").String(); got != shortCallID {
+	if got := ojson.GetBytes(secondBody, "input.3.call_id").String(); got != shortCallID {
 		t.Fatalf("input.3.call_id = %q, want shortened call_id %q; body=%s", got, shortCallID, string(secondBody))
 	}
 }
 
 func TestCodexReplayPrefixFingerprintsMatchesDirectComputation(t *testing.T) {
-	items := []gjson.Result{
-		gjson.Parse(`{"type":"message","role":"user","content":"a"}`),
-		gjson.Parse(`{"type":"reasoning","encrypted_content":"abc"}`),
-		gjson.Parse(`{"type":"function_call","call_id":"call_1"}`),
-		gjson.Parse(`{"type":"function_call_output","call_id":"call_1","output":"ok"}`),
+	items := []ojson.Result{
+		ojson.Parse(`{"type":"message","role":"user","content":"a"}`),
+		ojson.Parse(`{"type":"reasoning","encrypted_content":"abc"}`),
+		ojson.Parse(`{"type":"function_call","call_id":"call_1"}`),
+		ojson.Parse(`{"type":"function_call_output","call_id":"call_1","output":"ok"}`),
 	}
 	cache := newCodexReplayPrefixFingerprints(items)
 	// Out-of-order and repeated probes mirror the downward anchor scan.

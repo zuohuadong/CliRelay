@@ -47,3 +47,7 @@ func NormalizeCredentialMetadata(metadata map[string]any) {
 		delete(metadata, key)
 	}
 }
+
+// DisableCoolingAttributeKey is the canonical auth metadata key for a
+// credential-scoped cooldown override.
+const DisableCoolingAttributeKey = "disable_cooling"

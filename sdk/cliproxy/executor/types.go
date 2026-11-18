@@ -11,48 +11,24 @@ import (
 // RequestedModelMetadataKey stores the client-requested model name in Options.Metadata.
 const RequestedModelMetadataKey = "requested_model"
 
+const (
+	TenantMetadataKey        = "tenant_id"
+	RouteGroupMetadataKey    = "route_group"
+	RouteFallbackMetadataKey = "route_fallback"
+)
+
 // RequestPathMetadataKey stores the inbound HTTP request path (e.g. "/v1/images/generations") in Options.Metadata.
 // It is optional and may be absent for non-HTTP executions.
 const RequestPathMetadataKey = "request_path"
 
+// RequestIDMetadataKey stores the host request lifecycle identifier in Options.Metadata.
+const RequestIDMetadataKey = "request_id"
+
+// TraceIDMetadataKey stores the inbound request trace identifier in Options.Metadata.
+const TraceIDMetadataKey = "trace_id"
+
 // DisallowFreeAuthMetadataKey instructs auth selection to skip known free-tier credentials.
 const DisallowFreeAuthMetadataKey = "disallow_free_auth"
-
-// RequestBytesMetadataKey stores the inbound request body size in bytes.
-const RequestBytesMetadataKey = "request_bytes"
-
-// EstimatedInputTokensMetadataKey stores the best-effort input token estimate used by routing rules.
-const EstimatedInputTokensMetadataKey = "estimated_input_tokens"
-
-// RoutedModelMetadataKey stores the model selected by configurable model routing.
-const RoutedModelMetadataKey = "routed_model"
-
-// RoutedProviderMetadataKey stores the provider selected by configurable model routing.
-const RoutedProviderMetadataKey = "routed_provider"
-
-// RequestFeaturesMetadataKey stores derived request features used by routing policies.
-const RequestFeaturesMetadataKey = "request_features"
-
-// InputItemsMetadataKey stores the number of top-level input/messages items.
-const InputItemsMetadataKey = "input_items"
-
-// ToolCallsMetadataKey stores the number of detected tool/function calls and outputs.
-const ToolCallsMetadataKey = "tool_calls"
-
-// ToolDefinitionsMetadataKey stores the number of top-level tools advertised by the request.
-const ToolDefinitionsMetadataKey = "tool_definitions"
-
-// SinglePickMetadataKey forces the auth manager to use exactly one picked auth.
-const SinglePickMetadataKey = "single_pick"
-
-// RouteGroupMetadataKey scopes execution to a channel group resolved from the URL path.
-const RouteGroupMetadataKey = "route_group"
-
-// RouteFallbackMetadataKey controls whether groupURL requests may fall back to the default scope.
-const RouteFallbackMetadataKey = "route_fallback"
-
-// DisableCooldownWaitMetadataKey skips manager-level cooldown waiting for latency-sensitive requests.
-const DisableCooldownWaitMetadataKey = "disable_cooldown_wait"
 
 // AuthSelectionModelMetadataKey overrides the model used only for auth selection.
 const AuthSelectionModelMetadataKey = "auth_selection_model"
@@ -70,6 +46,18 @@ const GenerateMetadataKey = "generate"
 const (
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
+	// TenantWideSelectionMetadataKey asks selection to consider all credentials
+	// visible to the tenant when no explicit route group is supplied.
+	TenantWideSelectionMetadataKey = "tenant_wide_selection"
+	// SessionStickyMetadataKey carries the caller's session identity.
+	SessionStickyMetadataKey = "session_sticky_key"
+	// SinglePickMetadataKey forces the auth manager to use exactly one picked
+	// auth and return its error directly without internal retry/fallback.
+	SinglePickMetadataKey = "single_pick"
+	// ExcludedAuthIDsMetadataKey excludes specific auth IDs from selection for the current attempt.
+	ExcludedAuthIDsMetadataKey = "excluded_auth_ids"
+	// SelectionIDMetadataKey stores the per-selection ID generated for a plugin scheduler pick.
+	SelectionIDMetadataKey = "selection_id"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.
 	SelectedAuthMetadataKey = "selected_auth_id"
 	// SelectedAuthCallbackMetadataKey carries an optional callback invoked with the selected auth ID.
@@ -78,6 +66,8 @@ const (
 	SelectedAuthIndexMetadataKey = "selected_auth_index"
 	// SelectedAuthIndexCallbackMetadataKey carries an optional callback invoked with the selected auth index.
 	SelectedAuthIndexCallbackMetadataKey = "selected_auth_index_callback"
+	// FinalizedResponseFormatCallbackMetadataKey carries an optional callback invoked with the effective response_format after payload rules.
+	FinalizedResponseFormatCallbackMetadataKey = "finalized_response_format_callback"
 	// ExecutionSessionMetadataKey identifies a long-lived downstream execution session.
 	ExecutionSessionMetadataKey = "execution_session_id"
 	// DerivedSessionIDMetadataKey stores a stable session identity inferred from request context.
@@ -134,6 +124,9 @@ type Request struct {
 	Metadata map[string]any
 }
 
+// RequestBeforeAuthInterceptor rewrites a follow-up request on a bound session before after-auth interception.
+type RequestBeforeAuthInterceptor func(context.Context, RequestAfterAuthInterceptRequest) RequestAfterAuthInterceptResponse
+
 // RequestAfterAuthInterceptor rewrites a request after credential selection and before executor translation.
 type RequestAfterAuthInterceptor func(context.Context, RequestAfterAuthInterceptRequest) RequestAfterAuthInterceptResponse
 
@@ -159,7 +152,7 @@ type RequestAfterAuthInterceptRequest struct {
 
 // RequestAfterAuthInterceptResponse returns selected-auth request modifications.
 type RequestAfterAuthInterceptResponse struct {
-	// Path optionally rewrites the request path (upstream routing hook).
+	// Path optionally overrides the inbound request path in Options.Metadata[RequestPathMetadataKey].
 	Path string
 	// Headers replaces matching current request headers and preserves headers not mentioned here.
 	Headers http.Header
@@ -250,6 +243,8 @@ type Options struct {
 	ResponseFormat sdktranslator.Format
 	// Metadata carries extra execution hints shared across selection and executors.
 	Metadata map[string]any
+	// RequestBeforeAuthInterceptor runs before after-auth interception on bound follow-up turns.
+	RequestBeforeAuthInterceptor RequestBeforeAuthInterceptor
 	// RequestAfterAuthInterceptor runs after credential selection and before executor translation.
 	RequestAfterAuthInterceptor RequestAfterAuthInterceptor
 	// WebSocketResponseObserver receives upstream WebSocket response events during execution.
@@ -284,6 +279,9 @@ func ResponseFormatOrSource(opts Options) sdktranslator.Format {
 type Response struct {
 	// Payload is the provider response in the executor format.
 	Payload []byte
+	// Incomplete reports that the upstream execution terminated in an incomplete state
+	// (e.g., response.incomplete) even if translated into a normal non-stream payload.
+	Incomplete bool
 	// Metadata exposes optional structured data for translators.
 	Metadata map[string]any
 	// Headers carries upstream HTTP response headers for passthrough to clients.
@@ -294,6 +292,9 @@ type Response struct {
 type StreamChunk struct {
 	// Payload is the raw provider chunk payload.
 	Payload []byte
+	// Incomplete reports that the upstream stream ended in an incomplete terminal state
+	// (e.g., response.incomplete) even if protocol translation mapped it to a normal chunk.
+	Incomplete bool
 	// Err reports any terminal error encountered while producing chunks.
 	Err error
 }
@@ -305,10 +306,10 @@ type StreamResult struct {
 	Headers http.Header
 	// Chunks is the channel of streaming payload units.
 	Chunks <-chan StreamChunk
-	// AuthID identifies the credential serving this stream.
+	// AuthID names the credential serving this stream. The auth manager fills it
+	// in; executors leave it empty.
 	AuthID string
-	// FailedAuthIDs identifies credentials that failed while this request was
-	// being routed before the returned stream was handed to the caller.
+	// FailedAuthIDs names credentials tried and failed before AuthID was selected.
 	FailedAuthIDs []string
 }
 
@@ -328,10 +329,21 @@ type RequestScopedError interface {
 	IsRequestScoped() bool
 }
 
-// StreamTruncatedError identifies a locally synthesized failure for an accepted
-// upstream stream that ended before its terminal marker. The request was already
-// submitted, so auth managers must not cool or replay the credential because of it.
+// StreamTruncatedError identifies a locally synthesized failure for an
+// accepted upstream stream that ended without its terminal frame. The
+// upstream generation was already submitted, so auth managers must not cool
+// the credential or replay the request on another credential because of it.
 type StreamTruncatedError interface {
 	error
 	IsStreamTruncated() bool
+}
+
+// TransientRateLimitError identifies a transient per-model capacity or
+// admission rejection (for example a Codex turn_rate_limit_exceeded 429).
+// The credential's plan quota is not exhausted, so auth managers must not
+// record quota exhaustion or advance the quota exponential backoff for it.
+// The rejecting model may still cool until any provider RetryAfter hint.
+type TransientRateLimitError interface {
+	error
+	IsTransientRateLimit() bool
 }

@@ -1,7 +1,6 @@
 package management
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,145 +8,148 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
-type staticPluginModelProvider struct {
-	provider string
-	models   []pluginapi.ModelInfo
-}
-
-func (p staticPluginModelProvider) StaticModels(context.Context, pluginapi.StaticModelRequest) (pluginapi.ModelResponse, error) {
-	return pluginapi.ModelResponse{
-		Provider: p.provider,
-		Models:   p.models,
-	}, nil
-}
-
-func (p staticPluginModelProvider) ModelsForAuth(context.Context, pluginapi.AuthModelRequest) (pluginapi.ModelResponse, error) {
-	return pluginapi.ModelResponse{}, nil
-}
-
-func invokeGetStaticModelDefinitions(t *testing.T, h *Handler, channel string) (*httptest.ResponseRecorder, struct {
-	Channel string               `json:"channel"`
-	Error   string               `json:"error"`
-	Models  []registry.ModelInfo `json:"models"`
-}) {
-	t.Helper()
+func performModelDefinitionsRequest(handler gin.HandlerFunc, channel string) *httptest.ResponseRecorder {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(rec)
-	ctx.Params = gin.Params{{Key: "channel", Value: channel}}
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/v8/management/routing/model-definitions/"+channel, nil)
-	h.GetStaticModelDefinitions(ctx)
-
-	var body struct {
-		Channel string               `json:"channel"`
-		Error   string               `json:"error"`
-		Models  []registry.ModelInfo `json:"models"`
-	}
-	if errUnmarshal := json.Unmarshal(rec.Body.Bytes(), &body); errUnmarshal != nil {
-		t.Fatalf("unmarshal response body %q: %v", rec.Body.String(), errUnmarshal)
-	}
-	return rec, body
+	c, _ := gin.CreateTestContext(rec)
+	c.Params = gin.Params{{Key: "channel", Value: channel}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/model-definitions/"+channel, nil)
+	handler(c)
+	return rec
 }
 
-func TestGetStaticModelDefinitions_BuiltInChannel(t *testing.T) {
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, nil)
-
-	rec, body := invokeGetStaticModelDefinitions(t, h, "claude")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if body.Channel != "claude" {
-		t.Fatalf("channel = %q, want %q", body.Channel, "claude")
-	}
-	if len(body.Models) == 0 {
-		t.Fatal("expected non-empty models for built-in channel claude")
-	}
-}
-
-func TestGetStaticModelDefinitions_FallsBackToPluginStaticModels(t *testing.T) {
-	const provider = "workbuddy"
-	reg := registry.GetGlobalRegistry()
-	clientID := "workbuddy-cred-1.json"
-	reg.RegisterClient(clientID, provider, []*registry.ModelInfo{
-		{ID: "workbuddy-from-registry", DisplayName: "WorkBuddy Registry"},
-	})
+func withClineRecommendedModelsServer(t *testing.T, status int, body string) {
+	t.Helper()
+	previousURL := clineRecommendedModelsURL
+	previousClient := clineRecommendedModelsClient
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
 	t.Cleanup(func() {
-		reg.UnregisterClient(clientID)
+		server.Close()
+		clineRecommendedModelsURL = previousURL
+		clineRecommendedModelsClient = previousClient
 	})
-
-	host := pluginhost.New()
-	pluginID := "workbuddy-plugin"
-	host.RegisterPluginForTest(pluginID, pluginapi.Plugin{
-		Capabilities: pluginapi.Capabilities{
-			ModelProvider: staticPluginModelProvider{
-				provider: provider,
-				models: []pluginapi.ModelInfo{
-					{ID: "workbuddy-pro", DisplayName: "WorkBuddy Pro"},
-					{ID: "workbuddy-lite", DisplayName: "WorkBuddy Lite"},
-				},
-			},
-		},
-	})
-	host.RegisterModels(t.Context(), reg)
-	host.RegisterExecutors(coreauth.NewManager(nil, nil, nil), reg)
-
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, nil)
-	h.SetPluginHost(host)
-
-	rec, body := invokeGetStaticModelDefinitions(t, h, "WorkBuddy")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if body.Channel != provider {
-		t.Fatalf("channel = %q, want %q", body.Channel, provider)
-	}
-	if len(body.Models) != 2 || body.Models[0].ID != "workbuddy-pro" || body.Models[1].ID != "workbuddy-lite" {
-		t.Fatalf("models = %#v, want [workbuddy-pro workbuddy-lite]", body.Models)
-	}
+	clineRecommendedModelsURL = server.URL + "/models"
+	clineRecommendedModelsClient = server.Client()
 }
 
-func TestGetStaticModelDefinitions_FallsBackToRegistryModelsForPerAuthPlugin(t *testing.T) {
-	const provider = "qoderwork"
-	reg := registry.GetGlobalRegistry()
-	clientID := "qoderwork-cred-1.json"
-	reg.RegisterClient(clientID, provider, []*registry.ModelInfo{
-		{ID: "qwen3.8-plus-QoderWork", DisplayName: "Qwen 3.8 Plus"},
-		{ID: "qwen3.8-flash-QoderWork", DisplayName: "Qwen 3.8 Flash"},
-	})
+func withOllamaCloudModelsServer(t *testing.T, status int, body string) {
+	t.Helper()
+	previousURL := ollamaCloudModelsURL
+	previousClient := ollamaCloudModelsClient
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
 	t.Cleanup(func() {
-		reg.UnregisterClient(clientID)
+		server.Close()
+		ollamaCloudModelsURL = previousURL
+		ollamaCloudModelsClient = previousClient
 	})
+	ollamaCloudModelsURL = server.URL + "/v1/models"
+	ollamaCloudModelsClient = server.Client()
+}
 
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, nil)
-	h.SetPluginHost(pluginhost.New())
+func TestGetStaticModelDefinitionsUsesClineRecommendedModels(t *testing.T) {
+	withClineRecommendedModelsServer(t, http.StatusOK, `{
+		"clinePass": [
+			{"id": "cline-pass/fresh", "name": "Fresh Model", "description": "from cline"},
+			{"id": " ", "name": "ignored"}
+		]
+	}`)
+	h := NewHandler(&config.Config{}, "", nil)
 
-	rec, body := invokeGetStaticModelDefinitions(t, h, "QoderWork")
+	rec := performModelDefinitionsRequest(h.GetStaticModelDefinitions, "cline")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	if body.Channel != provider {
-		t.Fatalf("channel = %q, want %q", body.Channel, provider)
+	var payload struct {
+		Models []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+			Description string `json:"description"`
+			OwnedBy     string `json:"owned_by"`
+			Type        string `json:"type"`
+		} `json:"models"`
 	}
-	if len(body.Models) != 2 || body.Models[0].ID != "qwen3.8-flash-QoderWork" || body.Models[1].ID != "qwen3.8-plus-QoderWork" {
-		t.Fatalf("models = %#v, want [qwen3.8-flash-QoderWork qwen3.8-plus-QoderWork]", body.Models)
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(payload.Models) != 1 {
+		t.Fatalf("expected one remote model, got %+v", payload.Models)
+	}
+	model := payload.Models[0]
+	if model.ID != "cline-pass/fresh" || model.DisplayName != "Fresh Model" || model.Description != "from cline" || model.OwnedBy != "cline" || model.Type != "cline" {
+		t.Fatalf("unexpected model payload: %+v", model)
 	}
 }
 
-func TestGetStaticModelDefinitions_RejectsUnknownChannel(t *testing.T) {
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, nil)
-	h.SetPluginHost(pluginhost.New())
+func TestGetStaticModelDefinitionsFallsBackToClineStaticModels(t *testing.T) {
+	withClineRecommendedModelsServer(t, http.StatusBadGateway, `{"error":"upstream unavailable"}`)
+	h := NewHandler(&config.Config{}, "", nil)
 
-	rec, body := invokeGetStaticModelDefinitions(t, h, "nonexistent-provider")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	rec := performModelDefinitionsRequest(h.GetStaticModelDefinitions, "cline")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	if body.Error != "unknown channel" || body.Channel != "nonexistent-provider" {
-		t.Fatalf("body = %#v, want unknown channel error for nonexistent-provider", body)
+	var payload struct {
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	for _, model := range payload.Models {
+		if model.ID == "cline-pass/glm-5.2" {
+			return
+		}
+	}
+	t.Fatalf("expected static fallback to include cline-pass/glm-5.2, got %+v", payload.Models)
+}
+
+func TestGetStaticModelDefinitionsUsesOllamaCloudModelsAPI(t *testing.T) {
+	withOllamaCloudModelsServer(t, http.StatusOK, `{
+		"object": "list",
+		"data": [
+			{"id": "gpt-oss:120b", "object": "model", "created": 1, "owned_by": "ollama"},
+			{"id": " ", "object": "model"}
+		]
+	}`)
+	h := NewHandler(&config.Config{}, "", nil)
+
+	rec := performModelDefinitionsRequest(h.GetStaticModelDefinitions, "ollama-cloud")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Models []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+			OwnedBy     string `json:"owned_by"`
+			Type        string `json:"type"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(payload.Models) != 1 {
+		t.Fatalf("expected one remote model, got %+v", payload.Models)
+	}
+	model := payload.Models[0]
+	if model.ID != "gpt-oss:120b" || model.DisplayName != "gpt-oss:120b" || model.OwnedBy != "ollama" || model.Type != "ollama-cloud" {
+		t.Fatalf("unexpected model payload: %+v", model)
 	}
 }

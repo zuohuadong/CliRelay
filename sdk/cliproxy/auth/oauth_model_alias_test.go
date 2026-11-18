@@ -181,42 +181,6 @@ func TestOAuthModelAliasChannel_APIKeyOnlyProviderUnsupported(t *testing.T) {
 	}
 }
 
-func TestDefaultOAuthModelAliasGemini37FlashTiered(t *testing.T) {
-	t.Parallel()
-
-	for _, provider := range []string{"antigravity", "gemini-cli"} {
-		t.Run(provider, func(t *testing.T) {
-			mgr := NewManager(nil, nil, nil)
-			auth := createAuthForChannel(provider)
-			if got := mgr.resolveOAuthUpstreamModel(auth, "gemini-3.7-flash-tiered(high)"); got != "gemini-3.7-flash-high(high)" {
-				t.Fatalf("default OAuth mapping = %q, want %q", got, "gemini-3.7-flash-high(high)")
-			}
-		})
-	}
-}
-
-func TestDefaultOAuthModelAliasCodex(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{input: "gpt-5.6-ultra", want: "gpt-5.6-sol"},
-		{input: "gpt-5.6-ultra(high)", want: "gpt-5.6-sol(high)"},
-		{input: "gpt-5.6", want: "gpt-5.6-sol"},
-		{input: "gpt-5.6(medium)", want: "gpt-5.6-sol(medium)"},
-	}
-
-	mgr := NewManager(nil, nil, nil)
-	auth := createAuthForChannel("codex")
-	for _, tt := range tests {
-		if got := mgr.resolveOAuthUpstreamModel(auth, tt.input); got != tt.want {
-			t.Fatalf("resolveOAuthUpstreamModel(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestOAuthModelAliasChannel_Kimi(t *testing.T) {
 	t.Parallel()
 
@@ -337,30 +301,6 @@ func TestApplyOAuthModelAlias_PerAuthOverridesGlobalAlias(t *testing.T) {
 	}
 }
 
-func TestApplyOAuthModelAlias_PerAuthNoOpShadowsGlobalAlias(t *testing.T) {
-	t.Parallel()
-
-	mgr := NewManager(nil, nil, nil)
-	mgr.SetConfig(&internalconfig.Config{})
-	mgr.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
-		"codex": {{Name: "gpt-global", Alias: "gpt-5.5(high)"}},
-	})
-
-	auth := &Auth{
-		ID:       "codex-auth-id",
-		Provider: "codex",
-		Attributes: map[string]string{
-			"auth_kind":     "oauth",
-			"model_aliases": `[{"name":"gpt-5.5","alias":"gpt-5.5(high)"}]`,
-		},
-	}
-
-	result := mgr.applyOAuthModelAliasWithResult(auth, "gpt-5.5(high)")
-	if result.UpstreamModel != "gpt-5.5(high)" || !result.Matched || result.ForceMapping {
-		t.Fatalf("applyOAuthModelAliasWithResult() = %+v, want matched per-auth no-op", result)
-	}
-}
-
 func TestApplyOAuthModelAlias_PerAuthAliasSkipsAPIKey(t *testing.T) {
 	t.Parallel()
 
@@ -423,6 +363,57 @@ func TestApplyOAuthModelAlias_Devin(t *testing.T) {
 	}
 	if result.OriginalAlias != "fable-5-1" {
 		t.Errorf("OriginalAlias = %q, want %q", result.OriginalAlias, "fable-5-1")
+	}
+}
+
+func TestApplyOAuthModelAlias_Meta(t *testing.T) {
+	t.Parallel()
+
+	aliases := map[string][]internalconfig.OAuthModelAlias{
+		"meta": {
+			{
+				Name:         "muse-spark-1.3",
+				Alias:        "muse-latest",
+				Fork:         true,
+				ForceMapping: true,
+			},
+		},
+	}
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(&internalconfig.Config{})
+	mgr.SetOAuthModelAlias(aliases)
+
+	// Meta OAuth credentials mint an LLM API key; aliases must still apply.
+	auth := &Auth{
+		ID:       "meta-auth",
+		Provider: "meta",
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+			"api_key":   "LLM|minted",
+			"dca_token": "dca:token",
+		},
+	}
+
+	resolvedModel := mgr.applyOAuthModelAlias(auth, "muse-latest")
+	if resolvedModel != "muse-spark-1.3" {
+		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "muse-spark-1.3")
+	}
+
+	suffixed := mgr.applyOAuthModelAlias(auth, "muse-latest(max)")
+	if suffixed != "muse-spark-1.3(max)" {
+		t.Errorf("applyOAuthModelAlias() suffixed model = %q, want %q", suffixed, "muse-spark-1.3(max)")
+	}
+
+	result := mgr.applyOAuthModelAliasWithResult(auth, "muse-latest(max)")
+	if result.UpstreamModel != "muse-spark-1.3(max)" {
+		t.Errorf("UpstreamModel = %q, want %q", result.UpstreamModel, "muse-spark-1.3(max)")
+	}
+	if !result.ForceMapping {
+		t.Errorf("ForceMapping = false, want true")
+	}
+	if result.OriginalAlias != "muse-latest" {
+		t.Errorf("OriginalAlias = %q, want %q", result.OriginalAlias, "muse-latest")
 	}
 }
 
@@ -512,4 +503,102 @@ func TestApplyOAuthModelAliasWithResult_NoForceMappingPreservesRequestedModelInO
 	if res.OriginalAlias != "gpt-5.4-fast(high)" {
 		t.Fatalf("OriginalAlias = %q want requested model when force-mapping off", res.OriginalAlias)
 	}
+}
+
+func TestApplyOAuthModelAlias_CaseOnlyAlias(t *testing.T) {
+	t.Parallel()
+
+	t.Run("global alias without force-mapping resolves upstream spelling", func(t *testing.T) {
+		t.Parallel()
+		mgr := NewManager(nil, nil, nil)
+		mgr.SetConfig(&internalconfig.Config{})
+		mgr.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+			"opencode-go": {{
+				Name:  "minimax-m3.1-flash",
+				Alias: "MiniMax-M3.1-Flash",
+			}},
+		})
+		auth := &Auth{ID: "opencode-go-auth", Provider: "opencode-go", Attributes: map[string]string{"auth_kind": "oauth"}}
+
+		if got := mgr.applyOAuthModelAlias(auth, "MiniMax-M3.1-Flash"); got != "minimax-m3.1-flash" {
+			t.Fatalf("applyOAuthModelAlias(MiniMax-M3.1-Flash) = %q, want %q", got, "minimax-m3.1-flash")
+		}
+		if got := mgr.applyOAuthModelAlias(auth, "MiniMax-M3.1-Flash(high)"); got != "minimax-m3.1-flash(high)" {
+			t.Fatalf("applyOAuthModelAlias(MiniMax-M3.1-Flash(high)) = %q, want %q", got, "minimax-m3.1-flash(high)")
+		}
+		res := mgr.applyOAuthModelAliasWithResult(auth, "MiniMax-M3.1-Flash(high)")
+		if res.UpstreamModel != "minimax-m3.1-flash(high)" || res.ForceMapping {
+			t.Fatalf("unexpected alias result: %+v", res)
+		}
+	})
+
+	t.Run("global alias with force-mapping rewrites response alias", func(t *testing.T) {
+		t.Parallel()
+		mgr := NewManager(nil, nil, nil)
+		mgr.SetConfig(&internalconfig.Config{})
+		mgr.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+			"opencode-go": {{
+				Name:         "minimax-m3.1-flash",
+				Alias:        "MiniMax-M3.1-Flash",
+				ForceMapping: true,
+			}},
+		})
+		auth := &Auth{ID: "opencode-go-auth", Provider: "opencode-go", Attributes: map[string]string{"auth_kind": "oauth"}}
+
+		res := mgr.applyOAuthModelAliasWithResult(auth, "MiniMax-M3.1-Flash(high)")
+		if res.UpstreamModel != "minimax-m3.1-flash(high)" || !res.ForceMapping || res.OriginalAlias != "MiniMax-M3.1-Flash" {
+			t.Fatalf("unexpected force-mapping alias result: %+v", res)
+		}
+	})
+
+	t.Run("per-auth case-only alias resolves upstream spelling", func(t *testing.T) {
+		t.Parallel()
+		mgr := NewManager(nil, nil, nil)
+		mgr.SetConfig(&internalconfig.Config{})
+		auth := &Auth{
+			ID:         "opencode-go-per-auth",
+			Provider:   "opencode-go",
+			Attributes: map[string]string{"auth_kind": "oauth"},
+		}
+		SetOAuthModelAliasesAttribute(auth, []internalconfig.OAuthModelAlias{{
+			Name:  "minimax-m3.1-flash",
+			Alias: "MiniMax-M3.1-Flash",
+		}})
+
+		if got := mgr.applyOAuthModelAlias(auth, "MiniMax-M3.1-Flash"); got != "minimax-m3.1-flash" {
+			t.Fatalf("applyOAuthModelAlias(MiniMax-M3.1-Flash) = %q, want %q", got, "minimax-m3.1-flash")
+		}
+	})
+
+	t.Run("per-auth case-only fork does not fall back to global alias on original name", func(t *testing.T) {
+		t.Parallel()
+		mgr := NewManager(nil, nil, nil)
+		mgr.SetConfig(&internalconfig.Config{})
+		mgr.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+			"opencode-go": {{
+				Name:  "another-model",
+				Alias: "MiniMax-M3.1-Flash",
+			}},
+		})
+		auth := &Auth{
+			ID:         "opencode-go-per-auth-fork",
+			Provider:   "opencode-go",
+			Attributes: map[string]string{"auth_kind": "oauth"},
+		}
+		SetOAuthModelAliasesAttribute(auth, []internalconfig.OAuthModelAlias{{
+			Name:  "minimax-m3.1-flash",
+			Alias: "MiniMax-M3.1-Flash",
+			Fork:  true,
+		}})
+
+		if got := mgr.applyOAuthModelAlias(auth, "MiniMax-M3.1-Flash"); got != "minimax-m3.1-flash" {
+			t.Fatalf("applyOAuthModelAlias(MiniMax-M3.1-Flash) = %q, want %q", got, "minimax-m3.1-flash")
+		}
+		if got := mgr.applyOAuthModelAlias(auth, "minimax-m3.1-flash"); got != "minimax-m3.1-flash" {
+			t.Fatalf("applyOAuthModelAlias(minimax-m3.1-flash) = %q, want %q", got, "minimax-m3.1-flash")
+		}
+		if got := mgr.applyOAuthModelAlias(auth, "minimax-m3.1-flash(high)"); got != "minimax-m3.1-flash(high)" {
+			t.Fatalf("applyOAuthModelAlias(minimax-m3.1-flash(high)) = %q, want %q", got, "minimax-m3.1-flash(high)")
+		}
+	})
 }

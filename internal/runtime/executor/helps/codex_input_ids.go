@@ -3,12 +3,11 @@ package helps
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strconv"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const (
@@ -27,26 +26,45 @@ const (
 )
 
 // SanitizeCodexInputItemIDs normalizes supported input item IDs for Codex, removes encrypted
-// reasoning items whose IDs cannot be changed safely, and deterministically rewrites
-// other invalid or overlong input item IDs.
+// reasoning items whose IDs exceed the Codex limit, and deterministically shortens
+// other overlong input item IDs.
 func SanitizeCodexInputItemIDs(body []byte) []byte {
-	input := util.GetGJSONBytesNoCopy(body, "input")
-	if !input.IsArray() {
+	if len(body) == 0 {
 		return body
+	}
+	doc := ojson.NewDoc(body)
+	if !SanitizeCodexInputItemIDsDoc(doc) {
+		return body
+	}
+	return doc.Bytes()
+}
+
+// SanitizeCodexInputItemIDsDoc normalizes supported input item IDs for Codex in place on doc,
+// removes encrypted reasoning items whose IDs exceed the Codex limit, and deterministically
+// shortens other overlong input item IDs.
+func SanitizeCodexInputItemIDsDoc(doc *ojson.Doc) bool {
+	if doc == nil || doc.Len() == 0 {
+		return false
+	}
+	input := doc.Get("input")
+	if !input.IsArray() {
+		return false
 	}
 
 	items := input.Array()
 	idStates := make(map[string]uint8, len(items))
+	hasDropped := false
 	for _, item := range items {
 		if shouldDropCodexEncryptedReasoningItem(item) {
+			hasDropped = true
 			continue
 		}
 		itemID := item.Get("id")
-		if itemID.Type != gjson.String {
+		if itemID.Type != ojson.String {
 			continue
 		}
 		originalID := itemID.String()
-		id := normalizeCodexInputItemID(item.Get("type").String(), originalID, 0)
+		id := normalizeCodexInputItemID(item, originalID)
 		state := idStates[id]
 		if state&codexInputItemIDSeen != 0 {
 			state |= codexInputItemIDDuplicate
@@ -63,58 +81,52 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 
 	var mapped map[string]string
 	var collisionMapped map[string]string
-	normalizedOwners := make(map[string]string, len(items))
-	resolveCollision := func(itemType, originalID, id string) string {
-		collisionKey := itemType + "\x00" + originalID
-		collisionID, ok := collisionMapped[collisionKey]
-		if ok {
-			return collisionID
-		}
-		for attempt := 1; ; attempt++ {
-			collisionID = normalizeCodexInputItemID(itemType, originalID, attempt)
-			if idStates[collisionID]&codexInputItemIDOccupied == 0 {
-				break
-			}
-		}
-		if collisionMapped == nil {
-			collisionMapped = make(map[string]string)
-		}
-		collisionMapped[collisionKey] = collisionID
-		idStates[collisionID] |= codexInputItemIDOccupied
-		return collisionID
+	var dropped map[int]bool
+	if hasDropped {
+		dropped = make(map[int]bool)
 	}
-	rebuilt := make([]string, 0, len(items))
 	changed := false
-	for _, item := range items {
+	for idx, item := range items {
 		if shouldDropCodexEncryptedReasoningItem(item) {
+			dropped[idx] = true
 			changed = true
 			continue
 		}
 
-		raw := item.Raw
 		itemID := item.Get("id")
-		if itemID.Type == gjson.String {
+		if itemID.Type == ojson.String {
 			originalID := itemID.String()
-			itemType := item.Get("type").String()
-			id := normalizeCodexInputItemID(itemType, originalID, 0)
-			normalizedKey := itemType + "\x00" + id
-			collisionNeeded := id != originalID && idStates[id]&codexInputItemIDPreserved != 0
-			if !collisionNeeded {
-				if owner, exists := normalizedOwners[normalizedKey]; exists && owner != originalID {
-					collisionNeeded = true
+			id := normalizeCodexInputItemID(item, originalID)
+			if id != originalID && idStates[id]&(codexInputItemIDPreserved|codexInputItemIDDuplicate) != 0 {
+				collisionKey := id + "\x00" + originalID
+				if collisionID, ok := collisionMapped[collisionKey]; ok {
+					id = collisionID
+				} else if idStates[id]&codexInputItemIDPreserved == 0 {
+					if collisionMapped == nil {
+						collisionMapped = make(map[string]string)
+					}
+					collisionMapped[collisionKey] = id
+					idStates[id] |= codexInputItemIDPreserved
 				} else {
-					normalizedOwners[normalizedKey] = originalID
+					rawNormalizedID := normalizeCodexInputItemIDPrefix(item, originalID)
+					var collisionID string
+					for attempt := 0; ; attempt++ {
+						collisionID = codexInputItemIDWithHashSuffix(rawNormalizedID, attempt)
+						if idStates[collisionID]&codexInputItemIDOccupied != 0 {
+							continue
+						}
+						if collisionMapped == nil {
+							collisionMapped = make(map[string]string)
+						}
+						collisionMapped[collisionKey] = collisionID
+						idStates[collisionID] |= codexInputItemIDOccupied | codexInputItemIDPreserved
+						break
+					}
+					id = collisionID
 				}
 			}
-			if collisionNeeded {
-				id = resolveCollision(itemType, originalID, id)
-			} else {
-				normalizedOwners[normalizedKey] = originalID
-
-			}
 			if len([]rune(id)) > codexInputItemIDLimit {
-				mappingKey := itemType + "\x00" + id
-				shortened, ok := mapped[mappingKey]
+				shortened, ok := mapped[id]
 				if !ok {
 					shortened = shortenCodexInputItemID(id)
 					for attempt := 1; ; attempt++ {
@@ -126,122 +138,108 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 					if mapped == nil {
 						mapped = make(map[string]string)
 					}
-					mapped[mappingKey] = shortened
+					mapped[id] = shortened
 					idStates[shortened] |= codexInputItemIDOccupied
 				}
 				id = shortened
 			}
+
 			if id != originalID {
-				next, errSet := sjson.SetBytes([]byte(raw), "id", id)
-				if errSet == nil {
-					raw = string(next)
+				if errSet := doc.Set(fmt.Sprintf("input.%d.id", idx), id); errSet == nil {
 					changed = true
 				}
 			}
 		}
-		rebuilt = append(rebuilt, raw)
 	}
 	if !changed {
-		return body
+		return false
 	}
-
-	updated, errSet := sjson.SetRawBytes(body, "input", []byte("["+strings.Join(rebuilt, ",")+"]"))
-	if errSet != nil {
-		return body
+	if hasDropped {
+		updatedItems := doc.Get("input").Array()
+		rebuilt := make([][]byte, 0, len(updatedItems)-len(dropped))
+		for idx, item := range updatedItems {
+			if !dropped[idx] {
+				rebuilt = append(rebuilt, []byte(item.Raw))
+			}
+		}
+		return doc.SetRawBytes("input", JoinRawJSONArray(rebuilt)) == nil
 	}
-	return updated
+	return true
 }
 
-func shouldDropCodexEncryptedReasoningItem(item gjson.Result) bool {
+func normalizeCodexInputItemID(item ojson.Result, id string) string {
+	normalized := normalizeCodexInputItemIDPrefix(item, id)
+	if len([]rune(normalized)) > codexInputItemIDLimit {
+		return normalized
+	}
+	return sanitizeCodexInputItemIDChars(normalized)
+}
+
+func normalizeCodexInputItemIDPrefix(item ojson.Result, id string) string {
+	var prefix string
+	switch item.Get("type").String() {
+	case "message":
+		prefix = codexMessageItemIDPrefix
+	case "reasoning":
+		prefix = codexReasoningItemIDPrefix
+	case "function_call":
+		prefix = codexFunctionCallItemIDPrefix
+	case "custom_tool_call":
+		prefix = codexCustomToolCallItemIDPrefix
+	case "custom_tool_call_output":
+		prefix = codexCustomToolCallOutputItemIDPrefix
+	case "tool_search_call":
+		if after, ok := strings.CutPrefix(id, "ts_"); ok && after != "" {
+			return codexToolSearchCallItemIDPrefix + "_" + after
+		}
+		prefix = codexToolSearchCallItemIDPrefix
+	default:
+		return id
+	}
+	if id == "" || strings.HasPrefix(id, prefix) {
+		return id
+	}
+	return prefix + "_" + id
+}
+
+func sanitizeCodexInputItemIDChars(id string) string {
+	if id == "" || isPortableToolCallID(id) {
+		return id
+	}
+	var b strings.Builder
+	b.Grow(len(id))
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+func shouldDropCodexEncryptedReasoningItem(item ojson.Result) bool {
 	if item.Get("type").String() != "reasoning" {
 		return false
 	}
 	itemID := item.Get("id")
-	if itemID.Type != gjson.String || isValidCodexInputItemID(itemID.String()) {
+	if itemID.Type != ojson.String || len([]rune(itemID.String())) <= codexInputItemIDLimit {
 		return false
 	}
 	encryptedContent := item.Get("encrypted_content")
-	return encryptedContent.Type == gjson.String && encryptedContent.String() != ""
+	return encryptedContent.Type == ojson.String && encryptedContent.String() != ""
 }
 
 func shortenCodexInputItemID(id string) string {
 	return shortenCodexInputItemIDWithAttempt(id, 0)
 }
 
-func normalizeCodexInputItemID(itemType, id string, attempt int) string {
-	if itemType == "tool_search_call" {
-		if after, ok := strings.CutPrefix(id, "ts_"); ok && after != "" {
-			id = codexToolSearchCallItemIDPrefix + "_" + after
-		}
-	}
-	requiredPrefix := ""
-	itemPrefix := codexInputItemIDPrefix(itemType)
-	if itemPrefix != "" && !strings.HasPrefix(id, itemPrefix) {
-		requiredPrefix = itemPrefix + "_"
-		id = requiredPrefix + id
-	}
-	return shortenCodexInputItemIDWithRequiredPrefix(id, requiredPrefix, attempt)
-}
-
-func isValidCodexInputItemIDForType(itemType, id string) bool {
-	if !isValidCodexInputItemID(id) {
-		return false
-	}
-	requiredPrefix := codexInputItemIDPrefix(itemType)
-	return requiredPrefix == "" || strings.HasPrefix(id, requiredPrefix)
-}
-
-func codexInputItemIDPrefix(itemType string) string {
-	switch itemType {
-	case "message":
-		return codexMessageItemIDPrefix
-	case "reasoning":
-		return codexReasoningItemIDPrefix
-	case "function_call":
-		return codexFunctionCallItemIDPrefix
-	case "custom_tool_call":
-		return codexCustomToolCallItemIDPrefix
-	case "custom_tool_call_output":
-		return codexCustomToolCallOutputItemIDPrefix
-	case "tool_search_call":
-		return codexToolSearchCallItemIDPrefix
-	default:
-		return ""
-	}
-}
-
 func shortenCodexInputItemIDWithAttempt(id string, attempt int) string {
-	return shortenCodexInputItemIDWithRequiredPrefix(id, "", attempt)
-}
-
-func shortenCodexInputItemIDWithRequiredPrefix(id, requiredPrefix string, attempt int) string {
 	runes := []rune(id)
-	if attempt == 0 && isValidCodexInputItemID(id) {
+	if len(runes) <= codexInputItemIDLimit {
 		return id
 	}
-	hashInput := id
-	if attempt > 0 {
-		hashInput += "\x00" + strconv.Itoa(attempt)
-	}
-	sum := sha256.Sum256([]byte(hashInput))
-	suffix := "_" + hex.EncodeToString(sum[:8])
-	prefixLength := codexInputItemIDLimit - len(suffix)
-	prefix := make([]rune, 0, prefixLength)
-	if requiredPrefix != "" {
-		prefix = append(prefix, []rune(requiredPrefix)...)
-		runes = runes[len([]rune(requiredPrefix)):]
-	}
-	for _, r := range runes {
-		if len(prefix) == prefixLength {
-			break
-		}
-		if isCodexInputItemIDRune(r) {
-			prefix = append(prefix, r)
-		} else {
-			prefix = append(prefix, '_')
-		}
-	}
-	return string(prefix) + suffix
+	return codexInputItemIDWithHashSuffixRunes(id, runes, attempt)
 }
 
 func codexInputItemIDWithHashSuffix(id string, attempt int) string {
@@ -256,33 +254,8 @@ func codexInputItemIDWithHashSuffixRunes(id string, runes []rune, attempt int) s
 	sum := sha256.Sum256([]byte(hashInput))
 	suffix := "_" + hex.EncodeToString(sum[:8])
 	prefixLength := codexInputItemIDLimit - len(suffix)
-	prefix := make([]rune, 0, prefixLength)
-	for _, r := range runes {
-		if len(prefix) == prefixLength {
-			break
-		}
-		if isCodexInputItemIDRune(r) {
-			prefix = append(prefix, r)
-		} else {
-			prefix = append(prefix, '_')
-		}
+	if len(runes) < prefixLength {
+		prefixLength = len(runes)
 	}
-	return string(prefix) + suffix
-}
-
-func isValidCodexInputItemID(id string) bool {
-	runes := []rune(id)
-	if len(runes) == 0 || len(runes) > codexInputItemIDLimit {
-		return false
-	}
-	for _, r := range runes {
-		if !isCodexInputItemIDRune(r) {
-			return false
-		}
-	}
-	return true
-}
-
-func isCodexInputItemIDRune(r rune) bool {
-	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-'
+	return sanitizeCodexInputItemIDChars(string(runes[:prefixLength])) + suffix
 }

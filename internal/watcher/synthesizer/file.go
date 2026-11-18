@@ -2,19 +2,19 @@ package synthesizer
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	kimiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/egress"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
@@ -38,7 +38,10 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 
 	entries, err := os.ReadDir(ctx.AuthDir)
 	if err != nil {
-		// Not an error if directory doesn't exist
+		// A missing directory holds no auths; any other read failure keeps the loaded ones.
+		if !errors.Is(err, fs.ErrNotExist) {
+			ctx.RecordIncompleteFile(ctx.AuthDir)
+		}
 		return out, nil
 	}
 
@@ -53,13 +56,16 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		full := filepath.Join(ctx.AuthDir, name)
 		data, errRead := os.ReadFile(full)
 		if errRead != nil {
+			if !errors.Is(errRead, fs.ErrNotExist) {
+				ctx.RecordIncompleteFile(full)
+			}
 			continue
 		}
 		if !json.Valid(data) {
 			ctx.RecordIncompleteFile(full)
 			continue
 		}
-		auths, errSynthesize := synthesizeFileAuths(ctx, full, data)
+		auths, _, errSynthesize := synthesizeFileAuths(ctx, full, data)
 		if errSynthesize != nil {
 			log.WithError(errSynthesize).Warnf("skipping auth file %s", name)
 			continue
@@ -75,24 +81,31 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 // SynthesizeAuthFile generates Auth entries for one auth JSON file payload.
 // It shares exactly the same mapping behavior as FileSynthesizer.Synthesize.
 func SynthesizeAuthFile(ctx *SynthesisContext, fullPath string, data []byte) ([]*coreauth.Auth, error) {
+	auths, _, errSynthesize := synthesizeFileAuths(ctx, fullPath, data)
+	return auths, errSynthesize
+}
+
+// SynthesizeAuthFileDetailed generates Auth entries for one auth JSON file payload
+// and reports whether a plugin auth parser claimed the file.
+func SynthesizeAuthFileDetailed(ctx *SynthesisContext, fullPath string, data []byte) ([]*coreauth.Auth, bool, error) {
 	return synthesizeFileAuths(ctx, fullPath, data)
 }
 
-func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([]*coreauth.Auth, error) {
+func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([]*coreauth.Auth, bool, error) {
 	if ctx == nil || len(data) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	now := ctx.Now
 	var metadata map[string]any
 	if errUnmarshal := json.Unmarshal(data, &metadata); errUnmarshal != nil {
 		if ctx.StrictFileParsing {
-			return nil, fmt.Errorf("parse auth file: %w", errUnmarshal)
+			return nil, false, fmt.Errorf("parse auth file: %w", errUnmarshal)
 		}
-		return nil, nil
+		return nil, false, nil
 	}
 	coreauth.NormalizeCredentialMetadata(metadata)
 	if errWeight := coreauth.ValidateAuthWeight(&coreauth.Auth{Metadata: metadata}); errWeight != nil {
-		return nil, fmt.Errorf("invalid weight in %s: %w", filepath.Base(fullPath), errWeight)
+		return nil, false, fmt.Errorf("invalid weight in %s: %w", filepath.Base(fullPath), errWeight)
 	}
 	// Invalid per-account rules must not drop an existing credential: keep the valid
 	// entries and warn. Write entry points (upload and PATCH) reject them before persisting.
@@ -101,33 +114,45 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 		log.WithError(errExcluded).Warnf("ignoring invalid excluded models in auth file %s", filepath.Base(fullPath))
 	}
 	t, _ := metadata["type"].(string)
-	if strings.TrimSpace(t) == "" {
-		t, _ = metadata["provider"].(string)
-	}
 	provider := strings.ToLower(strings.TrimSpace(t))
 	if provider == "gemini" {
 		provider = "gemini-cli"
-	} else if provider == coreauth.AuthKindAgentIdentity || provider == "agent-identity" {
-		provider = "codex"
 	}
-	var codexAccounts []map[string]any
-	if provider == "codex" {
-		codexAccounts = expandCodexBundle(metadata)
-	}
+	defaultID := fileRelativeAuthID(ctx.AuthDir, fullPath)
+	defaultFileName := filepath.Base(fullPath)
 	if ctx.PluginAuthParser != nil {
 		auths, handled, errParse := parsePluginFileAuths(ctx.PluginAuthParser, pluginapi.AuthParseRequest{
 			Provider: provider,
 			Path:     fullPath,
-			FileName: filepath.Base(fullPath),
+			FileName: defaultFileName,
 			RawJSON:  data,
-		})
+		}, ctx.AuthDir)
 		if errParse != nil && ctx.StrictFileParsing {
-			return nil, fmt.Errorf("parse plugin auth file: %w", errParse)
+			return nil, false, fmt.Errorf("parse plugin auth file: %w", errParse)
 		}
 		if errParse == nil && handled {
+			if ctx.StrictFileParsing {
+				for _, auth := range auths {
+					if auth == nil {
+						continue
+					}
+					if errWeight := coreauth.ValidateAuthWeight(auth); errWeight != nil {
+						return nil, true, fmt.Errorf("invalid plugin auth weight in %s: %w", defaultFileName, errWeight)
+					}
+				}
+			}
 			auths = compactPluginAuths(auths)
 			if len(auths) == 0 {
-				return nil, nil
+				return nil, true, nil
+			}
+			filePortalHint := ""
+			for _, key := range []string{"oauth_provider", "portal"} {
+				if raw, ok := metadata[key].(string); ok {
+					if hint := strings.ToLower(strings.TrimSpace(raw)); hint != "" {
+						filePortalHint = hint
+						break
+					}
+				}
 			}
 			perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
 			disabled, _ := metadata["disabled"].(bool)
@@ -135,7 +160,38 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				if auth == nil {
 					continue
 				}
+				auth.FileName = strings.TrimSpace(auth.FileName)
+				if auth.FileName == "" {
+					auth.FileName = defaultFileName
+				}
+				auth.ID = strings.TrimSpace(auth.ID)
+				if auth.ID == "" {
+					auth.ID = defaultID
+				}
 				coreauth.NormalizeCredentialMetadata(auth.Metadata)
+				if filePortalHint != "" {
+					hasPortalHint := false
+					for _, key := range []string{"oauth_provider", "portal"} {
+						raw, _ := auth.Metadata[key].(string)
+						if strings.TrimSpace(auth.Attributes[key]) != "" || strings.TrimSpace(raw) != "" {
+							hasPortalHint = true
+							break
+						}
+					}
+					if !hasPortalHint {
+						if auth.Metadata == nil {
+							auth.Metadata = make(map[string]any)
+						}
+						if auth.Attributes == nil {
+							auth.Attributes = make(map[string]string)
+						}
+						auth.Metadata["oauth_provider"] = filePortalHint
+						auth.Attributes["oauth_provider"] = filePortalHint
+						if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
+							setter.SetMetadata(auth.Metadata)
+						}
+					}
+				}
 				if len(auths) > 1 {
 					coreauth.MarkPluginVirtualAuth(auth, fullPath, index)
 				}
@@ -155,7 +211,6 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 					}
 					auth.Metadata["disabled"] = true
 				}
-				coreauth.RestorePersistedDisabled(auth)
 				if p, ok := metadata["proxy_url"].(string); ok && auth.ProxyURL == "" {
 					auth.ProxyURL = strings.TrimSpace(p)
 				}
@@ -163,7 +218,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 					auth.Prefix = strings.Trim(strings.TrimSpace(pref), "/")
 				}
 				if errWeight := coreauth.ApplyAuthWeightMetadata(auth, metadata); errWeight != nil {
-					return nil, fmt.Errorf("invalid plugin auth weight in %s: %w", filepath.Base(fullPath), errWeight)
+					return nil, true, fmt.Errorf("invalid plugin auth weight in %s: %w", defaultFileName, errWeight)
 				}
 				coreauth.ApplyAuthPriorityMetadata(auth, metadata)
 				if _, inherited := auth.Attributes[coreauth.AttributeFilePriority]; inherited {
@@ -172,95 +227,25 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 					}
 				}
 				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
+				applyVertexOpenAPISettingsAttribute(auth, metadata)
 				ApplyAuthExcludedModelsMeta(auth, perAccountExcluded, "oauth")
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
 				applyFingerprintProfileAttribute(auth, metadata)
 				auth.BindFileSnapshot(fullPath, data)
 			}
-			return auths, nil
+			return auths, true, nil
 		}
 	}
 	if provider == "" || provider == "gemini-cli" {
-		return nil, nil
-	}
-	// Use relative path under authDir as ID to stay consistent with the file-based token store.
-	baseID := fullPath
-	if strings.TrimSpace(ctx.AuthDir) != "" {
-		if rel, errRel := filepath.Rel(ctx.AuthDir, fullPath); errRel == nil && rel != "" {
-			baseID = rel
-		}
-	}
-	if runtime.GOOS == "windows" {
-		baseID = strings.ToLower(baseID)
-	}
-	if codexAccounts != nil {
-		out := make([]*coreauth.Auth, 0, len(codexAccounts))
-		multi := len(codexAccounts) > 1
-		for index, account := range codexAccounts {
-			auth, errAuth := synthesizeOneFileAuth(ctx, fullPath, baseID, provider, account, now)
-			if errAuth != nil {
-				return nil, errAuth
-			}
-			if auth == nil {
-				continue
-			}
-			if multi {
-				auth.ID = baseID + "#" + strconv.Itoa(index)
-				coreauth.MarkFileBundleAuth(auth, fullPath, index)
-			}
-			auth.BindFileSnapshot(fullPath, data)
-			out = append(out, auth)
-		}
-		return out, nil
-	}
-	auth, errAuth := synthesizeOneFileAuth(ctx, fullPath, baseID, provider, metadata, now)
-	if errAuth != nil || auth == nil {
-		return nil, errAuth
-	}
-	auth.BindFileSnapshot(fullPath, data)
-	return []*coreauth.Auth{auth}, nil
-}
-
-// resolveFileAuthKind classifies a credential by its metadata.
-func resolveFileAuthKind(metadata map[string]any) string {
-	auth := &coreauth.Auth{Metadata: metadata}
-	if coreauth.IsStandaloneAgentIdentityAuth(auth) {
-		return coreauth.AuthKindAgentIdentity
-	}
-	if kind, ok := metadata[coreauth.AttributeAuthKind].(string); ok {
-		switch strings.ToLower(strings.TrimSpace(kind)) {
-		case coreauth.AuthKindAPIKey, "api_key", "api-key":
-			return coreauth.AuthKindAPIKey
-		case coreauth.AuthKindOAuth, "oauth2":
-			return coreauth.AuthKindOAuth
-		case coreauth.AuthKindAgentIdentity, "agent-identity":
-			return coreauth.AuthKindAgentIdentity
-		}
-	}
-	return coreauth.AuthKindOAuth
-}
-
-func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider string, metadata map[string]any, now time.Time) (*coreauth.Auth, error) {
-	if metadata == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	label := provider
 	if email, _ := metadata["email"].(string); email != "" {
 		label = email
 	}
-	compatName := ""
-	if provider == "openai-compatibility" {
-		compatName, _ = metadata["compat_name"].(string)
-		compatName = strings.TrimSpace(compatName)
-		if compatName == "" {
-			compatName, _ = metadata["name"].(string)
-			compatName = strings.TrimSpace(compatName)
-		}
-		if compatName != "" {
-			label = compatName
-		}
-	}
-	id := baseID
+	// Use relative path under authDir as ID to stay consistent with the file-based token store.
+	id := defaultID
+
 	proxyURL := ""
 	if p, ok := metadata["proxy_url"].(string); ok {
 		proxyURL = p
@@ -275,18 +260,22 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 		}
 	}
 
-	perAccountExcluded, errExcluded := ExtractExcludedModelsFromMetadata(metadata)
-	if errExcluded != nil {
-		log.WithError(errExcluded).Warnf("ignoring invalid excluded models in auth file %s", filepath.Base(fullPath))
+	disabled, _ := metadata["disabled"].(bool)
+	status := coreauth.StatusActive
+	if disabled {
+		status = coreauth.StatusDisabled
 	}
+
 	perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
+
 	a := &coreauth.Auth{
 		ID:       id,
 		FileName: filepath.Base(fullPath),
 		Provider: provider,
 		Label:    label,
 		Prefix:   prefix,
-		Status:   coreauth.StatusActive,
+		Status:   status,
+		Disabled: disabled,
 		Attributes: map[string]string{
 			coreauth.AttributeSource:        fullPath,
 			coreauth.AttributePath:          fullPath,
@@ -297,47 +286,12 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	coreauth.RestorePersistedDisabled(a)
-	if provider == "kimi" || provider == "kimi-ai" {
-		if baseURL, _ := metadata["base_url"].(string); strings.TrimSpace(baseURL) != "" {
-			a.Attributes["base_url"] = strings.TrimSpace(baseURL)
-		}
-		if domain, _ := metadata["domain"].(string); strings.TrimSpace(domain) != "" {
-			a.Attributes["domain"] = strings.TrimSpace(domain)
-		}
-		resolvedDomain := kimiauth.ResolveKimiDomainFromAuth(a)
-		a.Attributes["domain"] = resolvedDomain
-		if a.Attributes["base_url"] == "" {
-			a.Attributes["base_url"] = kimiauth.ResolveKimiAPIBaseURL(resolvedDomain)
-		}
-	}
-	if provider == "openai-compatibility" {
-		if compatName != "" {
-			a.Attributes["compat_name"] = compatName
-			a.Attributes["provider_key"] = compatName
-		}
-		if baseURL, _ := metadata["base_url"].(string); strings.TrimSpace(baseURL) != "" {
-			a.Attributes["base_url"] = strings.TrimSpace(baseURL)
-		}
-		if apiKey, _ := metadata["api_key"].(string); strings.TrimSpace(apiKey) != "" {
-			a.Attributes["api_key"] = strings.TrimSpace(apiKey)
-			a.Attributes["auth_kind"] = "api_key"
-		}
-	}
-	if rawPriority, ok := metadata["priority"]; ok {
-		switch v := rawPriority.(type) {
-		case float64:
-			a.Attributes["priority"] = strconv.Itoa(int(v))
-		case string:
-			priority := strings.TrimSpace(v)
-			if _, errAtoi := strconv.Atoi(priority); errAtoi == nil {
-				a.Attributes["priority"] = priority
-			}
-		}
-	}
+	// Read priority from auth file.
+	coreauth.ApplyAuthPriorityMetadata(a, metadata)
 	if errWeight := coreauth.ApplyAuthWeightMetadata(a, metadata); errWeight != nil {
-		return nil, fmt.Errorf("invalid auth weight in %s: %w", filepath.Base(fullPath), errWeight)
+		return nil, false, fmt.Errorf("invalid auth weight in %s: %w", filepath.Base(fullPath), errWeight)
 	}
+	// Read note from auth file.
 	if rawNote, ok := metadata["note"]; ok {
 		if note, isStr := rawNote.(string); isStr {
 			if trimmed := strings.TrimSpace(note); trimmed != "" {
@@ -348,106 +302,100 @@ func synthesizeOneFileAuth(ctx *SynthesisContext, fullPath, baseID, provider str
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
 	applyOpenAPIModelsAttribute(a, metadata)
-	authKind := resolveFileAuthKind(metadata)
-	if provider == "openai-compatibility" && strings.TrimSpace(a.Attributes["api_key"]) != "" {
-		authKind = "api_key"
-	}
-	ApplyAuthExcludedModelsMeta(a, perAccountExcluded, authKind)
+	applyVertexOpenAPISettingsAttribute(a, metadata)
+	ApplyAuthExcludedModelsMeta(a, perAccountExcluded, "oauth")
 	applyFingerprintProfileAttribute(a, metadata)
+	// For Kimi auth files, preserve domain and base_url attributes.
+	if provider == "kimi" || provider == "kimi-ai" || provider == "kimi.ai" || provider == "kimi.com" {
+		if bu, ok := metadata["base_url"].(string); ok && strings.TrimSpace(bu) != "" {
+			a.Attributes["base_url"] = strings.TrimSpace(bu)
+		}
+		if dom, ok := metadata["domain"].(string); ok && strings.TrimSpace(dom) != "" {
+			a.Attributes["domain"] = strings.TrimSpace(dom)
+		}
+		resolvedDomain := kimiauth.ResolveKimiDomainFromAuth(a)
+		if a.Attributes["domain"] == "" {
+			a.Attributes["domain"] = resolvedDomain
+		} else {
+			a.Attributes["domain"] = kimiauth.NormalizeKimiDomain(a.Attributes["domain"])
+		}
+		if a.Attributes["base_url"] == "" {
+			a.Attributes["base_url"] = kimiauth.ResolveKimiAPIBaseURL(resolvedDomain)
+		}
+	}
 	// For codex auth files, extract plan_type from metadata or JWT id_token.
 	if provider == "codex" {
 		if ptRaw, ok := metadata["plan_type"].(string); ok && strings.TrimSpace(ptRaw) != "" {
 			a.Attributes["plan_type"] = strings.TrimSpace(ptRaw)
+		} else if idTokenRaw, ok := metadata["id_token"].(string); ok && strings.TrimSpace(idTokenRaw) != "" {
+			if claims, errParse := codex.ParseJWTToken(idTokenRaw); errParse == nil && claims != nil {
+				a.Attributes["plan_type"] = claims.GetPlanType()
+			} else {
+				a.Attributes["plan_type"] = codex.DefaultPlanType
+			}
+		}
+	}
+	a.BindFileSnapshot(fullPath, data)
+	return []*coreauth.Auth{a}, false, nil
+}
+
+func fileRelativeAuthID(authDir, fullPath string) string {
+	id := fullPath
+	if trimmedDir := strings.TrimSpace(authDir); trimmedDir != "" {
+		if rel, errRel := filepath.Rel(trimmedDir, fullPath); errRel == nil && rel != "" && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			id = rel
 		} else {
-			planType := ""
-			// 部分凭证文件只保存 access_token（无 id_token），其 JWT 同样携带
-			// chatgpt_plan_type，套餐类型应从 access_token 回退解析。
-			for _, key := range []string{"id_token", "access_token"} {
-				raw, ok := metadata[key].(string)
-				if !ok || strings.TrimSpace(raw) == "" {
-					continue
-				}
-				claims, errParse := codex.ParseJWTToken(raw)
-				if errParse != nil || claims == nil {
-					continue
-				}
-				if pt := claims.GetPlanType(); pt != "" {
-					planType = pt
-					break
+			cleanDir := filepath.Clean(trimmedDir)
+			cleanPath := filepath.Clean(fullPath)
+			if !filepath.IsAbs(cleanDir) {
+				if absDir, errAbs := filepath.Abs(cleanDir); errAbs == nil {
+					cleanDir = absDir
 				}
 			}
-			if planType == "" {
-				planType = codex.DefaultPlanType
+			if !filepath.IsAbs(cleanPath) {
+				if absPath, errAbs := filepath.Abs(cleanPath); errAbs == nil {
+					cleanPath = absPath
+				}
 			}
-			a.Attributes["plan_type"] = planType
-		}
-		if accountID := codex.AccountIDFromMetadata(metadata); accountID != "" {
-			if identity, errIdentity := egress.StableIdentity(accountID); errIdentity == nil {
-				a.Attributes["stable_identity"] = identity
+			if relAbs, errRelAbs := filepath.Rel(cleanDir, cleanPath); errRelAbs == nil && relAbs != "" && relAbs != "." && relAbs != ".." && !strings.HasPrefix(relAbs, ".."+string(filepath.Separator)) {
+				id = relAbs
+			} else if evalDir, evalPath := evalSynthesizerPathSymlinks(cleanDir), evalSynthesizerPathSymlinks(cleanPath); evalDir != "" && evalPath != "" {
+				if relEval, errRelEval := filepath.Rel(evalDir, evalPath); errRelEval == nil && relEval != "" && relEval != "." && relEval != ".." && !strings.HasPrefix(relEval, ".."+string(filepath.Separator)) {
+					id = relEval
+				}
 			}
 		}
 	}
-	return a, nil
+	if runtime.GOOS == "windows" {
+		id = strings.ToLower(id)
+	}
+	return id
 }
 
-var codexBundleCredentialKeys = []string{
-	"account_id", "id_token", "access_token", "refresh_token", "email",
-	"plan_type", "expired", "last_refresh", "token_type",
-	"chatgpt_account_id", "chatgpt_user_id", "workspace_id", "task_id",
-	"agent_private_key", "agent_runtime_id", "auth_mode",
+func evalSynthesizerPathSymlinks(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if real, errEval := filepath.EvalSymlinks(path); errEval == nil && strings.TrimSpace(real) != "" {
+		return filepath.Clean(real)
+	}
+	if parent, errParent := filepath.EvalSymlinks(filepath.Dir(path)); errParent == nil && strings.TrimSpace(parent) != "" {
+		return filepath.Clean(filepath.Join(parent, filepath.Base(path)))
+	}
+	return filepath.Clean(path)
 }
 
-// expandCodexBundle expands a Codex multi-account bundle file into per-account
-// metadata clones. It returns nil for ordinary single-account files.
-func expandCodexBundle(metadata map[string]any) []map[string]any {
-	if metadata == nil {
-		return nil
-	}
-	accounts, ok := metadata["accounts"].([]any)
-	if !ok || len(accounts) == 0 {
-		return nil
-	}
-	out := make([]map[string]any, 0, len(accounts))
-	for _, entry := range accounts {
-		account, ok := entry.(map[string]any)
-		if !ok {
-			continue
-		}
-		credentials, ok := account["credentials"].(map[string]any)
-		if !ok || len(credentials) == 0 {
-			continue
-		}
-		clone := make(map[string]any, len(metadata)+len(credentials)+4)
-		for key, value := range metadata {
-			clone[key] = value
-		}
-		for _, key := range codexBundleCredentialKeys {
-			if value, exists := credentials[key]; exists {
-				clone[key] = value
-			}
-		}
-		for _, key := range []string{"priority", "name", "disabled", "proxy_url", "prefix", "note"} {
-			if value, exists := account[key]; exists {
-				if key == "disabled" {
-					sourceDisabled, _ := clone[key].(bool)
-					accountDisabled, _ := value.(bool)
-					clone[key] = sourceDisabled || accountDisabled
-					continue
-				}
-				clone[key] = value
-			}
-		}
-		out = append(out, clone)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+type defaultAuthDirMultiParser interface {
+	ParseAuthsWithDefaultAuthDir(context.Context, pluginapi.AuthParseRequest, string) ([]*coreauth.Auth, bool, error)
 }
 
-func parsePluginFileAuths(parser PluginAuthParser, req pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
+func parsePluginFileAuths(parser PluginAuthParser, req pluginapi.AuthParseRequest, defaultAuthDir string) ([]*coreauth.Auth, bool, error) {
 	if parser == nil {
 		return nil, false, nil
+	}
+	if dirParser, ok := parser.(defaultAuthDirMultiParser); ok {
+		return dirParser.ParseAuthsWithDefaultAuthDir(context.Background(), req, defaultAuthDir)
 	}
 	if multiParser, ok := parser.(PluginMultiAuthParser); ok {
 		return multiParser.ParseAuths(context.Background(), req)
@@ -493,11 +441,17 @@ func extractOAuthModelAliasesFromMetadata(metadata map[string]any) []config.OAut
 		if errMarshal != nil {
 			continue
 		}
-		var aliases []config.OAuthModelAlias
-		if errUnmarshal := json.Unmarshal(data, &aliases); errUnmarshal != nil {
+		var items []json.RawMessage
+		if errUnmarshal := json.Unmarshal(data, &items); errUnmarshal != nil {
 			continue
 		}
-		combined = append(combined, aliases...)
+		for _, item := range items {
+			var alias config.OAuthModelAlias
+			if errUnmarshal := json.Unmarshal(item, &alias); errUnmarshal != nil {
+				continue
+			}
+			combined = append(combined, alias)
+		}
 	}
 	if len(combined) == 0 {
 		return nil
@@ -509,6 +463,76 @@ func extractOAuthModelAliasesFromMetadata(metadata map[string]any) []config.OAut
 	}
 	cfg.SanitizeOAuthModelAlias()
 	return cfg.OAuthModelAlias["auth"]
+}
+
+func applyVertexOpenAPISettingsAttribute(auth *coreauth.Auth, metadata map[string]any) {
+	if auth == nil || auth.Provider != "vertex" {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	switch value := metadata["openapi"].(type) {
+	case bool:
+		auth.Attributes["openapi"] = strconv.FormatBool(value)
+	case string:
+		if parsed, errParse := strconv.ParseBool(strings.TrimSpace(strings.ToLower(value))); errParse == nil {
+			auth.Attributes["openapi"] = strconv.FormatBool(parsed)
+		}
+	}
+	for _, key := range []string{"openapi_location", "openapi-location"} {
+		if location, ok := metadata[key].(string); ok && strings.TrimSpace(location) != "" {
+			auth.Attributes["openapi_location"] = strings.TrimSpace(location)
+			break
+		}
+	}
+	var rules []config.OAuthModelAlias
+	seenAlias := make(map[string]struct{})
+	seenNameOnly := make(map[string]struct{})
+	for _, key := range []string{"model_aliases", "model-aliases", "models"} {
+		data, errMarshal := json.Marshal(metadata[key])
+		if errMarshal != nil {
+			continue
+		}
+		var items []json.RawMessage
+		if errUnmarshal := json.Unmarshal(data, &items); errUnmarshal != nil {
+			continue
+		}
+		for _, item := range items {
+			var rule config.OAuthModelAlias
+			if errUnmarshal := json.Unmarshal(item, &rule); errUnmarshal != nil {
+				continue
+			}
+			rule.Name = strings.TrimSpace(rule.Name)
+			rule.Alias = strings.TrimSpace(rule.Alias)
+			if rule.Name == "" {
+				continue
+			}
+			if rule.Alias != "" && !strings.EqualFold(rule.Name, rule.Alias) {
+				aliasKey := strings.ToLower(rule.Alias)
+				if _, exists := seenAlias[aliasKey]; exists {
+					continue
+				}
+				seenAlias[aliasKey] = struct{}{}
+			} else if rule.OpenAPI != nil {
+				nameKey := strings.ToLower(rule.Name)
+				if _, exists := seenNameOnly[nameKey]; exists {
+					continue
+				}
+				seenNameOnly[nameKey] = struct{}{}
+			} else {
+				continue
+			}
+			if rule.OpenAPI != nil {
+				rules = append(rules, rule)
+			}
+		}
+	}
+	if len(rules) > 0 {
+		if data, errMarshal := json.Marshal(rules); errMarshal == nil {
+			auth.Attributes["vertex_model_openapi"] = string(data)
+		}
+	}
 }
 
 func applyOpenAPIModelsAttribute(auth *coreauth.Auth, metadata map[string]any) {

@@ -67,18 +67,14 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 	modelFamilyMismatch := false
 	if modelInfo != nil {
 		modelType := strings.ToLower(strings.TrimSpace(modelInfo.Type))
-		if modelType != "" {
+		if isKnownProviderFamily(modelType) {
 			if (fromFormat != "" && !isSameProviderFamily(fromFormat, modelType)) ||
 				(toFormat != "" && !isSameProviderFamily(toFormat, modelType)) {
 				modelFamilyMismatch = true
 			}
 		}
 	}
-	// Fork behavior: different OpenAI-family wire formats (openai vs codex vs
-	// openai-response) expose different level sets, so an unsupported level must
-	// clamp instead of erroring when the request crosses formats.
-	formatMismatch := fromFormat != "" && toFormat != "" && fromFormat != toFormat
-	allowClampUnsupported := toHasLevelSupport && (!isSameProviderFamily(fromFormat, toFormat) || modelFamilyMismatch || formatMismatch)
+	allowClampUnsupported := toHasLevelSupport && (!isSameProviderFamily(fromFormat, toFormat) || modelFamilyMismatch)
 
 	// strictBudget determines whether to enforce strict budget range validation.
 	// This applies when: (1) config comes from request body (not suffix), (2) source format is known,
@@ -421,6 +417,15 @@ func isGeminiFamily(provider string) bool {
 func isOpenAIFamily(provider string) bool {
 	switch provider {
 	case "openai", "openai-response", "codex":
+		return true
+	default:
+		return false
+	}
+}
+
+func isKnownProviderFamily(provider string) bool {
+	switch provider {
+	case "gemini", "antigravity", "claude", "openai", "openai-response", "codex", "kimi", "kimi-ai", "kimi.ai", "kimi.com", "xai", "interactions", "devin":
 		return true
 	default:
 		return false

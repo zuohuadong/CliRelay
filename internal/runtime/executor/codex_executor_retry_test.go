@@ -1,13 +1,14 @@
 package executor
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/MoeForge/moego/json"
 )
 
 func TestCodexQuotaErrorCredentialScope(t *testing.T) {
@@ -287,14 +288,6 @@ func TestNewCodexStatusErrClassifiesKnownCodexFailures(t *testing.T) {
 			wantCode:   "context_too_large",
 		},
 		{
-			name:       "plain codex context window text",
-			statusCode: http.StatusInternalServerError,
-			body:       []byte("Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."),
-			wantStatus: http.StatusInternalServerError,
-			wantType:   "invalid_request_error",
-			wantCode:   "context_too_large",
-		},
-		{
 			name:       "thinking signature",
 			statusCode: http.StatusBadRequest,
 			body:       []byte(`{"error":{"message":"Invalid signature in thinking block","type":"invalid_request_error","code":"invalid_request_error"}}`),
@@ -339,19 +332,6 @@ func TestNewCodexStatusErrPreservesUnclassifiedErrors(t *testing.T) {
 
 	if got := err.StatusCode(); got != http.StatusBadGateway {
 		t.Fatalf("status code = %d, want %d", got, http.StatusBadGateway)
-	}
-	if got := err.Error(); got != string(body) {
-		t.Fatalf("error body = %s, want original %s", got, string(body))
-	}
-}
-
-func TestNewCodexStatusErrPreservesUpstreamModelUnavailableContextDiagnostics(t *testing.T) {
-	body := []byte(`{"error":{"message":"upstream_model_unavailable: no executable upstream model available (provider=astron-code, model=deepseek-v4-pro, request_bytes=121, candidates=xopdeepseekv4pro,astron-code-latest, candidate_context_lengths=astron-code-latest:500000)","code":"internal_server_error"}}`)
-
-	err := newCodexStatusErr(http.StatusServiceUnavailable, body)
-
-	if got := err.StatusCode(); got != http.StatusServiceUnavailable {
-		t.Fatalf("status code = %d, want %d", got, http.StatusServiceUnavailable)
 	}
 	if got := err.Error(); got != string(body) {
 		t.Fatalf("error body = %s, want original %s", got, string(body))

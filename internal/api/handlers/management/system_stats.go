@@ -1,7 +1,6 @@
 package management
 
 import (
-	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,44 +10,147 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	pscpu "github.com/shirou/gopsutil/v3/cpu"
-	psdisk "github.com/shirou/gopsutil/v3/disk"
-	psmem "github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v3/mem"
 	psnet "github.com/shirou/gopsutil/v3/net"
-	psproc "github.com/shirou/gopsutil/v3/process"
+	"github.com/shirou/gopsutil/v3/process"
+	log "github.com/sirupsen/logrus"
 )
 
 // SystemStats is the JSON payload pushed via WebSocket and returned by HTTP.
 type SystemStats struct {
-	DBSizeBytes          int64                    `json:"db_size_bytes"`
-	LogContentStoreBytes int64                    `json:"log_content_store_bytes"`
-	LogDirSizeBytes      int64                    `json:"log_dir_size_bytes"`
-	LogSizeBytes         int64                    `json:"log_size_bytes"`
-	ProcessMemBytes      uint64                   `json:"process_mem_bytes"`
-	ProcessMemPct        float64                  `json:"process_mem_pct"`
-	ProcessCPUPct        float64                  `json:"process_cpu_pct"`
-	GoRoutines           int                      `json:"go_routines"`
-	GoHeapBytes          uint64                   `json:"go_heap_bytes"`
-	SystemCPUPct         float64                  `json:"system_cpu_pct"`
-	SystemMemTotal       uint64                   `json:"system_mem_total"`
-	SystemMemUsed        uint64                   `json:"system_mem_used"`
-	SystemMemPct         float64                  `json:"system_mem_pct"`
-	NetBytesSent         uint64                   `json:"net_bytes_sent"`
-	NetBytesRecv         uint64                   `json:"net_bytes_recv"`
-	NetSendRate          float64                  `json:"net_send_rate"`
-	NetRecvRate          float64                  `json:"net_recv_rate"`
-	DiskTotal            uint64                   `json:"disk_total"`
-	DiskUsed             uint64                   `json:"disk_used"`
-	DiskFree             uint64                   `json:"disk_free"`
-	DiskPct              float64                  `json:"disk_pct"`
-	UptimeSeconds        int64                    `json:"uptime_seconds"`
-	StartTime            string                   `json:"start_time"`
-	ChannelLatency       []map[string]interface{} `json:"channel_latency"`
-	ActiveConcurrency    []map[string]interface{} `json:"active_concurrency"`
-	TotalInFlight        int64                    `json:"total_in_flight"`
-	TotalRPM             int                      `json:"total_rpm"`
-	TotalTPM             int64                    `json:"total_tpm"`
+	// Database
+	DBSizeBytes int64  `json:"db_size_bytes"`
+	DBEngine    string `json:"db_engine"`
+
+	// Request log body storage inside the runtime database.
+	LogContentStoreBytes int64 `json:"log_content_store_bytes"`
+
+	// Log directory size on disk.
+	LogDirSizeBytes int64 `json:"log_dir_size_bytes"`
+
+	// Deprecated alias retained for older panels that still read log_size_bytes.
+	LogSizeBytes int64 `json:"log_size_bytes"`
+
+	// Process-level resources
+	ProcessMemBytes uint64  `json:"process_mem_bytes"`
+	ProcessMemPct   float64 `json:"process_mem_pct"`
+	ProcessCPUPct   float64 `json:"process_cpu_pct"`
+	GoRoutines      int     `json:"go_routines"`
+	GoHeapBytes     uint64  `json:"go_heap_bytes"`
+
+	// System-level resources
+	SystemCPUPct   float64 `json:"system_cpu_pct"`
+	SystemMemTotal uint64  `json:"system_mem_total"`
+	SystemMemUsed  uint64  `json:"system_mem_used"`
+	SystemMemPct   float64 `json:"system_mem_pct"`
+
+	// Network (service-level)
+	NetBytesSent uint64  `json:"net_bytes_sent"`
+	NetBytesRecv uint64  `json:"net_bytes_recv"`
+	NetSendRate  float64 `json:"net_send_rate"` // bytes/sec
+	NetRecvRate  float64 `json:"net_recv_rate"` // bytes/sec
+
+	// Disk
+	DiskTotal uint64  `json:"disk_total"`
+	DiskUsed  uint64  `json:"disk_used"`
+	DiskFree  uint64  `json:"disk_free"`
+	DiskPct   float64 `json:"disk_pct"`
+
+	// Uptime
+	UptimeSeconds int64  `json:"uptime_seconds"`
+	StartTime     string `json:"start_time"`
+
+	// Channel latency
+	ChannelLatency []usage.ChannelLatency `json:"channel_latency"`
+
+	// Concurrency
+	ActiveConcurrency []middleware.ConcurrencySnapshot `json:"active_concurrency"`
+	TotalInFlight     int64                            `json:"total_in_flight"`
+	TotalRPM          int                              `json:"total_rpm"`
+	TotalTPM          int64                            `json:"total_tpm"`
+
+	// DBResilience shows how this node is riding out database trouble.
+	DBResilience DBResilienceStats `json:"db_resilience"`
+}
+
+// DBResilienceStats reports usage records waiting in the local spool and
+// decisions made on cached data while the database could not be read.
+type DBResilienceStats struct {
+	UsageWrites usage.UsageWriteStatus `json:"usage_writes"`
+	// QuotaStaleDecisions counts quota checks decided on a kept usage reading.
+	QuotaStaleDecisions int64 `json:"quota_stale_decisions"`
+	// TenantStaleChecks counts tenant checks answered from a cached row.
+	TenantStaleChecks int64 `json:"tenant_stale_checks"`
+}
+
+type expensiveSystemStats struct {
+	DBSizeBytes          int64
+	DBEngine             string
+	LogContentStoreBytes int64
+	LogDirSizeBytes      int64
+	ChannelLatency       []usage.ChannelLatency
+}
+
+type systemStatsCacheEntry struct {
+	cachedAt time.Time
+	value    expensiveSystemStats
+}
+
+const defaultSystemStatsCacheSeconds = 60
+
+func (h *Handler) systemStatsCacheTTL() time.Duration {
+	seconds := defaultSystemStatsCacheSeconds
+	if h != nil {
+		h.mu.Lock()
+		if h.cfg != nil && h.cfg.SystemStatsCacheSeconds > 0 {
+			seconds = h.cfg.SystemStatsCacheSeconds
+		}
+		h.mu.Unlock()
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (h *Handler) collectExpensiveSystemStats() expensiveSystemStats {
+	stats := expensiveSystemStats{}
+	dbStats, err := usage.GetDatabaseStats()
+	stats.DBEngine = dbStats.Driver
+	stats.DBSizeBytes = dbStats.SizeBytes
+	if err != nil {
+		log.Warnf("system-stats: failed to query database stats: %v", err)
+	}
+	if contentBytes, err := usage.GetRequestLogStorageBytes(); err == nil {
+		stats.LogContentStoreBytes = contentBytes
+	} else {
+		log.Warnf("system-stats: failed to query request log storage bytes: %v", err)
+	}
+	if h != nil && h.logDir != "" {
+		stats.LogDirSizeBytes = dirSize(h.logDir)
+	}
+	if latency, err := usage.GetChannelAvgLatency(7); err == nil {
+		stats.ChannelLatency = latency
+	}
+	return stats
+}
+
+func (h *Handler) cachedExpensiveSystemStats() expensiveSystemStats {
+	if h == nil {
+		return expensiveSystemStats{}
+	}
+	h.systemStatsCacheMu.Lock()
+	defer h.systemStatsCacheMu.Unlock()
+
+	now := time.Now()
+	ttl := h.systemStatsCacheTTL()
+	if !h.systemStatsCache.cachedAt.IsZero() && now.Sub(h.systemStatsCache.cachedAt) < ttl {
+		return h.systemStatsCache.value
+	}
+	value := h.collectExpensiveSystemStats()
+	h.systemStatsCache = systemStatsCacheEntry{cachedAt: now, value: value}
+	return value
 }
 
 // network baseline for rate calculation
@@ -60,47 +162,27 @@ var (
 )
 
 func (h *Handler) collectSystemStats() SystemStats {
-	stats, _ := h.collectSystemStatsContext(context.Background())
-	return stats
-}
-
-func (h *Handler) collectSystemStatsContext(ctx context.Context) (SystemStats, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	startTime := h.startTime
-	if startTime.IsZero() {
-		startTime = time.Now()
-	}
 	stats := SystemStats{
-		GoRoutines:        runtime.NumGoroutine(),
-		StartTime:         startTime.UTC().Format(time.RFC3339),
-		UptimeSeconds:     int64(time.Since(startTime).Seconds()),
-		ChannelLatency:    []map[string]interface{}{},
-		ActiveConcurrency: []map[string]interface{}{},
-	}
-	slowMetrics, err := h.loadSystemStatsSlowMetrics(ctx)
-	if err != nil {
-		if ctx.Err() != nil {
-			return SystemStats{}, err
-		}
-		slowMetrics = gin.H{}
-	}
-	stats.DBSizeBytes = int64FromGinValue(slowMetrics["db_size_bytes"])
-	stats.LogDirSizeBytes = int64FromGinValue(slowMetrics["log_dir_size_bytes"])
-	stats.LogSizeBytes = stats.LogDirSizeBytes
-	if channelLatency, ok := slowMetrics["channel_latency"].([]map[string]interface{}); ok {
-		stats.ChannelLatency = channelLatency
+		GoRoutines:    runtime.NumGoroutine(),
+		StartTime:     h.startTime.Format(time.RFC3339),
+		UptimeSeconds: int64(time.Since(h.startTime).Seconds()),
 	}
 
-	// Go runtime memory
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-	stats.GoHeapBytes = mem.HeapAlloc
-	stats.ProcessMemBytes = mem.Sys
+	// ── Go runtime memory ──
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	stats.GoHeapBytes = m.HeapAlloc
 
-	// Process CPU/Memory (gopsutil)
-	if proc, err := psproc.NewProcess(int32(os.Getpid())); err == nil {
+	expensive := h.cachedExpensiveSystemStats()
+	stats.DBEngine = expensive.DBEngine
+	stats.DBSizeBytes = expensive.DBSizeBytes
+	stats.LogContentStoreBytes = expensive.LogContentStoreBytes
+	stats.LogDirSizeBytes = expensive.LogDirSizeBytes
+	stats.LogSizeBytes = expensive.LogDirSizeBytes
+	stats.ChannelLatency = expensive.ChannelLatency
+
+	// ── Process CPU/Memory (gopsutil) ──
+	if proc, err := process.NewProcess(int32(os.Getpid())); err == nil {
 		if pct, err := proc.CPUPercent(); err == nil {
 			stats.ProcessCPUPct = pct
 		}
@@ -112,19 +194,19 @@ func (h *Handler) collectSystemStatsContext(ctx context.Context) (SystemStats, e
 		}
 	}
 
-	// System CPU
-	if pcts, err := pscpu.Percent(0, false); err == nil && len(pcts) > 0 {
+	// ── System CPU ──
+	if pcts, err := cpu.Percent(0, false); err == nil && len(pcts) > 0 {
 		stats.SystemCPUPct = pcts[0]
 	}
 
-	// System Memory
-	if vm, err := psmem.VirtualMemory(); err == nil {
+	// ── System Memory ──
+	if vm, err := mem.VirtualMemory(); err == nil {
 		stats.SystemMemTotal = vm.Total
 		stats.SystemMemUsed = vm.Used
 		stats.SystemMemPct = vm.UsedPercent
 	}
 
-	// Network I/O
+	// ── Network I/O ──
 	if counters, err := psnet.IOCounters(false); err == nil && len(counters) > 0 {
 		total := counters[0]
 		stats.NetBytesSent = total.BytesSent
@@ -145,128 +227,59 @@ func (h *Handler) collectSystemStatsContext(ctx context.Context) (SystemStats, e
 		netMu.Unlock()
 	}
 
-	// Disk usage
-	if du, err := psdisk.Usage("/"); err == nil {
+	// ── Disk usage ──
+	if du, err := disk.Usage("/"); err == nil {
 		stats.DiskTotal = du.Total
 		stats.DiskUsed = du.Used
 		stats.DiskFree = du.Free
 		stats.DiskPct = du.UsedPercent
 	}
 
-	// Concurrency snapshot from middleware
+	// ── Concurrency snapshot ──
 	stats.ActiveConcurrency, stats.TotalInFlight = middleware.GetConcurrencySnapshot()
+	maskConcurrencyKeys(stats.ActiveConcurrency)
 
 	// Compute system-wide RPM and TPM totals
 	var sysRPM int
 	var sysTPM int64
 	for _, snap := range stats.ActiveConcurrency {
-		if rpm, ok := snap["rpm"]; ok {
-			if v, ok := rpm.(int); ok {
-				sysRPM += v
-			}
-		}
-		if tpm, ok := snap["tpm"]; ok {
-			if v, ok := tpm.(int64); ok {
-				sysTPM += v
-			}
-		}
+		sysRPM += snap.RPM
+		sysTPM += snap.TPM
 	}
 	stats.TotalRPM = sysRPM
 	stats.TotalTPM = sysTPM
 
-	return stats, nil
-}
-
-func (h *Handler) loadSystemStatsSlowMetrics(ctx context.Context) (gin.H, error) {
-	payload, err := h.loadUsageAggregateWithTTL(
-		ctx,
-		usageAggregateSystemStats,
-		usageFilters{Days: 7},
-		systemStatsSlowCacheTTL,
-		func(buildContext context.Context) (gin.H, error) {
-			if errContext := buildContext.Err(); errContext != nil {
-				return nil, errContext
-			}
-			dbSizeBytes := int64(0)
-			dbPath := h.apiKeysDBPath()
-			if dbPath != "" {
-				if info, statErr := os.Stat(dbPath); statErr == nil {
-					dbSizeBytes = info.Size()
-				}
-				for _, suffix := range []string{"-wal", "-shm"} {
-					if info, statErr := os.Stat(dbPath + suffix); statErr == nil {
-						dbSizeBytes += info.Size()
-					}
-				}
-			}
-
-			logDirSizeBytes := int64(0)
-			if h.logDir != "" {
-				var dirErr error
-				logDirSizeBytes, dirErr = dirSizeContext(buildContext, h.logDir)
-				if dirErr != nil {
-					return nil, dirErr
-				}
-			}
-
-			channelLatency := []map[string]interface{}{}
-			loader := h.channelLatencyLoader
-			if loader == nil {
-				loader = usage.GetChannelAvgLatencyContext
-			}
-			if entries, loadErr := loader(buildContext, 7); loadErr == nil {
-				for _, entry := range entries {
-					channelLatency = append(channelLatency, map[string]interface{}{
-						"source": entry.Source,
-						"count":  entry.Count,
-						"avg_ms": entry.AvgMs,
-					})
-				}
-			} else if loadErr != nil {
-				return nil, loadErr
-			}
-
-			return gin.H{
-				"db_size_bytes":      dbSizeBytes,
-				"log_dir_size_bytes": logDirSizeBytes,
-				"channel_latency":    channelLatency,
-			}, nil
-		},
-	)
-	if err != nil {
-		return nil, err
+	stats.DBResilience = DBResilienceStats{
+		UsageWrites:         usage.GetUsageWriteStatus(),
+		QuotaStaleDecisions: middleware.QuotaUsageStaleServed(),
+		TenantStaleChecks:   identity.TenantStaleServed(),
 	}
-	return payload, nil
+	return stats
 }
 
+// maskConcurrencyKeys replaces the client secret each snapshot is tracked under
+// (that is what the rate windows are keyed by) with its mask: the dashboard only
+// needs to tell the keys apart.
+func maskConcurrencyKeys(snapshots []middleware.ConcurrencySnapshot) {
+	for i := range snapshots {
+		snapshots[i].APIKey = usage.MaskAPIKey(snapshots[i].APIKey)
+	}
+}
+
+// GetSystemStats handles GET /v0/management/system-stats
 func (h *Handler) GetSystemStats(c *gin.Context) {
-	stats, err := h.collectSystemStatsContext(c.Request.Context())
-	if err != nil {
-		if c.Request.Context().Err() == nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to collect system stats"})
-		}
-		return
-	}
-	c.JSON(http.StatusOK, stats)
+	c.JSON(http.StatusOK, h.collectSystemStats())
 }
 
 // dirSize calculates the total size of all files in a directory tree.
-func dirSize(root string) int64 {
-	size, _ := dirSizeContext(context.Background(), root)
-	return size
-}
-
-func dirSizeContext(ctx context.Context, root string) (int64, error) {
+func dirSize(path string) int64 {
 	var size int64
-	errWalk := filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
-		if errContext := ctx.Err(); errContext != nil {
-			return errContext
-		}
-		if err != nil || info == nil || info.IsDir() {
+	_ = filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
 			return nil
 		}
 		size += info.Size()
 		return nil
 	})
-	return size, errWalk
+	return size
 }

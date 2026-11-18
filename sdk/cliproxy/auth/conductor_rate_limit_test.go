@@ -2,11 +2,12 @@ package auth
 
 import (
 	"testing"
+	"time"
 )
 
-// Google CloudCode returns "Resource has been exhausted" for ordinary
+// Google's CloudCode returns "Resource has been exhausted" for ordinary
 // per-minute throttling. Reading that as an exhausted quota suspended models on
-// accounts that still had their full allowance, producing a suspend -> resume ->
+// accounts that still had their full allowance, producing a suspend → resume →
 // suspend loop within seconds.
 func TestTransientRateLimitIsNotQuotaExhaustion(t *testing.T) {
 	throttles := []string{
@@ -58,5 +59,44 @@ func TestUnrecognisedMessageFallsBackToExhaustion(t *testing.T) {
 	}
 	if isTransientRateLimitError(nil) {
 		t.Fatal("nil error must not be classified as throttling")
+	}
+}
+
+// Throttling must leave no quota state behind, otherwise the model stays parked
+// even though its allowance was never the problem.
+func TestTransientRateLimitClearsQuotaStateAndDoesNotSuspend(t *testing.T) {
+	auth := &Auth{}
+	state := &ModelState{Quota: QuotaState{Exceeded: true, Reason: "quota"}}
+	effects := &resultStateEffects{}
+	now := time.Now().UTC()
+
+	applyTransientRateLimitLocked(auth, state, Result{}, now, effects)
+
+	if state.Quota.Exceeded {
+		t.Fatal("quota flag must be cleared for a throttled request")
+	}
+	if effects.shouldSuspendModel {
+		t.Fatal("throttling must not suspend the model")
+	}
+	if !effects.clearModelQuota {
+		t.Fatal("a previously misclassified quota flag must be cleared")
+	}
+	if !state.NextRetryAfter.After(now) {
+		t.Fatal("a short backoff should still be applied")
+	}
+}
+
+// A provider-supplied Retry-After wins over the default backoff.
+func TestTransientRateLimitHonoursRetryAfter(t *testing.T) {
+	auth := &Auth{}
+	state := &ModelState{}
+	effects := &resultStateEffects{}
+	now := time.Now().UTC()
+	retry := 10 * time.Second
+
+	applyTransientRateLimitLocked(auth, state, Result{RetryAfter: &retry}, now, effects)
+
+	if got := state.NextRetryAfter.Sub(now); got < 9*time.Second || got > 11*time.Second {
+		t.Fatalf("backoff = %s, want the provider's 10s", got)
 	}
 }

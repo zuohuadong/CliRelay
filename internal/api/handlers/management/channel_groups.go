@@ -8,6 +8,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	managementauthfiles "github.com/router-for-me/CLIProxyAPI/v8/internal/management/authfiles"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modeldiscovery"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v8/internal/routing"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
@@ -29,24 +32,69 @@ const (
 	channelDisabledAuthorityConfig  = 2
 )
 
+// channelGroupScheduling mirrors config.GroupScheduling on the wire. It is
+// always emitted (no omitempty on the block) so the panel can render the
+// resolved defaults for implicit groups such as "default", which have no stored
+// configuration of their own.
+type channelGroupScheduling struct {
+	Distribution        string         `json:"distribution"`
+	StickyEnabled       bool           `json:"sticky-enabled"`
+	StickyMaxRequests   int            `json:"sticky-max-requests,omitempty"`
+	StickyReleaseAtLoad float64        `json:"sticky-release-at-load,omitempty"`
+	ChannelWeights      map[string]int `json:"channel-weights,omitempty"`
+}
+
 type channelGroupItem struct {
-	Name           string                      `json:"name"`
-	Description    string                      `json:"description,omitempty"`
-	Strategy       string                      `json:"strategy,omitempty"`
-	Priority       int                         `json:"priority,omitempty"`
-	Implicit       bool                        `json:"implicit"`
-	Prefixes       []string                    `json:"prefixes,omitempty"`
-	Tags           []string                    `json:"tags,omitempty"`
-	Types          []string                    `json:"types,omitempty"`
-	Channels       []string                    `json:"channels,omitempty"`
-	ChannelDetails []channelGroupChannelDetail `json:"channel-details,omitempty"`
-	AllowedModels  []string                    `json:"allowed-models,omitempty"`
-	PathRoutes     []string                    `json:"path-routes,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Strategy is the legacy mirror of Scheduling, retained so an older panel
+	// build keeps working against a newer backend during a staged rollout.
+	Strategy           string                      `json:"strategy,omitempty"`
+	Scheduling         channelGroupScheduling      `json:"scheduling"`
+	Priority           int                         `json:"priority,omitempty"`
+	ExcludeFromDefault bool                        `json:"exclude-from-default,omitempty"`
+	Implicit           bool                        `json:"implicit"`
+	Prefixes           []string                    `json:"prefixes,omitempty"`
+	Tags               []string                    `json:"tags,omitempty"`
+	Channels           []string                    `json:"channels,omitempty"`
+	ChannelDetails     []channelGroupChannelDetail `json:"channel-details,omitempty"`
+	AllowedModels      []string                    `json:"allowed-models,omitempty"`
+	ExcludedModels     []string                    `json:"excluded-models,omitempty"`
+	PathRoutes         []string                    `json:"path-routes,omitempty"`
+	// FollowUpstreamModels is the resolved follow-upstream-models setting, an
+	// unset one already mapped to the group's default, so the panel shows what
+	// the gate does instead of re-deriving that default.
+	FollowUpstreamModels bool `json:"follow-upstream-models"`
+	// DiscoveredModels are what following upstream admits beyond the allow
+	// list: listed by discovery, served by the group's channels, not excluded.
+	// A following group serves them now; for a frozen one they are what turning
+	// the setting on would open, which the panel shows before it is turned on.
+	// Empty for a group without an allow list, which serves all of them anyway.
+	DiscoveredModels []string `json:"discovered-models,omitempty"`
+}
+
+func schedulingItemFrom(group config.RoutingChannelGroup) channelGroupScheduling {
+	scheduling := group.Scheduling
+	if strings.TrimSpace(scheduling.Distribution) == "" && !scheduling.Sticky.Enabled && len(scheduling.ChannelWeights) == 0 {
+		scheduling = config.SchedulingFromLegacyGroup(group)
+	}
+	return channelGroupScheduling{
+		Distribution:        config.NormalizeDistribution(scheduling.Distribution),
+		StickyEnabled:       scheduling.Sticky.Enabled,
+		StickyMaxRequests:   scheduling.Sticky.MaxRequests,
+		StickyReleaseAtLoad: scheduling.Sticky.ReleaseAtLoad,
+		ChannelWeights:      scheduling.ChannelWeights,
+	}
+}
+
+// defaultSchedulingItem describes an implicit group that has no stored config.
+func defaultSchedulingItem() channelGroupScheduling {
+	return channelGroupScheduling{Distribution: config.DistributionWeighted}
 }
 
 func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []channelDescriptor {
 	items := make([]channelDescriptor, 0)
-	push := func(name, prefix, source string, disabled bool, disabledAuthority int, tags authTagPayload) {
+	push := func(name, prefix, source string, disabled bool, disabledAuthority int, tags managementauthfiles.TagPayload) {
 		name = strings.TrimSpace(name)
 		prefix = internalrouting.NormalizeGroupName(prefix)
 		if name == "" && prefix == "" {
@@ -67,59 +115,34 @@ func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []cha
 
 	if cfg != nil {
 		for _, entry := range cfg.GeminiKey {
-			channelName := strings.TrimSpace(entry.Prefix)
-			if channelName == "" {
-				channelName = "gemini"
-			}
-			push(channelName, entry.Prefix, "gemini", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("gemini", nil))
+			push(entry.Name, entry.Prefix, "gemini", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, managementauthfiles.BuildTagPayloadFromValues("gemini", nil))
 		}
 		for _, entry := range cfg.ClaudeKey {
-			channelName := strings.TrimSpace(entry.Prefix)
-			if channelName == "" {
-				channelName = "claude"
-			}
-			push(channelName, entry.Prefix, "claude", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("claude", nil))
-		}
-		for _, entry := range cfg.CodexKey {
-			channelName := strings.TrimSpace(entry.Prefix)
-			if channelName == "" {
-				channelName = "codex"
-			}
-			push(channelName, entry.Prefix, "codex", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("codex", nil))
+			push(entry.Name, entry.Prefix, "claude", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, managementauthfiles.BuildTagPayloadFromValues("claude", nil))
 		}
 		for _, entry := range cfg.BedrockKey {
-			push(entry.Name, entry.Prefix, "bedrock", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("bedrock", nil))
+			push(entry.Name, entry.Prefix, "bedrock", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, managementauthfiles.BuildTagPayloadFromValues("bedrock", nil))
+		}
+		for _, entry := range cfg.CodexKey {
+			push(entry.Name, entry.Prefix, "codex", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, managementauthfiles.BuildTagPayloadFromValues("codex", nil))
 		}
 		for _, entry := range cfg.OpenCodeGoKey {
-			push(entry.Name, entry.Prefix, "opencode-go", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("opencode-go", nil))
+			push(entry.Name, entry.Prefix, "opencode-go", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, managementauthfiles.BuildTagPayloadFromValues("opencode-go", nil))
+		}
+		for _, entry := range cfg.ClineKey {
+			push(entry.Name, entry.Prefix, "cline", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, managementauthfiles.BuildTagPayloadFromValues("cline", nil))
+		}
+		for _, entry := range cfg.OllamaCloudKey {
+			push(entry.Name, entry.Prefix, "ollama-cloud", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, managementauthfiles.BuildTagPayloadFromValues("ollama-cloud", nil))
+		}
+		for _, entry := range cfg.CommandCodeKey {
+			push(entry.Name, entry.Prefix, "commandcode", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, managementauthfiles.BuildTagPayloadFromValues("commandcode", nil))
 		}
 		for _, entry := range cfg.VertexCompatAPIKey {
-			channelName := strings.TrimSpace(entry.Prefix)
-			if channelName == "" {
-				channelName = "vertex"
-			}
-			push(channelName, entry.Prefix, "vertex", false, channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("vertex", nil))
+			push("", entry.Prefix, "vertex", false, channelDisabledAuthorityConfig, managementauthfiles.BuildTagPayloadFromValues("vertex", nil))
 		}
 		for _, entry := range cfg.OpenAICompatibility {
-			channelName := strings.TrimSpace(entry.Name)
-			if channelName == "" {
-				channelName = entry.Prefix
-			}
-			push(channelName, entry.Prefix, "openai", entry.Disabled, channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues("openai", nil))
-		}
-		for _, entry := range cfg.BigModelCodingAPIKey {
-			channelName := strings.TrimSpace(entry.Name)
-			if channelName == "" {
-				channelName = config.DefaultBigModelCodingProviderName
-			}
-			push(channelName, entry.Prefix, config.DefaultBigModelCodingProviderName, entry.Disabled, channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues(config.DefaultBigModelCodingProviderName, nil))
-		}
-		for _, entry := range cfg.AstronCodeAPIKey {
-			channelName := strings.TrimSpace(entry.Name)
-			if channelName == "" {
-				channelName = config.DefaultAstronCodeProviderName
-			}
-			push(channelName, entry.Prefix, config.DefaultAstronCodeProviderName, entry.Disabled, channelDisabledAuthorityConfig, buildAuthTagPayloadFromValues(config.DefaultAstronCodeProviderName, nil))
+			push(entry.Name, entry.Prefix, "openai", entry.Disabled, channelDisabledAuthorityConfig, managementauthfiles.BuildTagPayloadFromValues("openai", nil))
 		}
 	}
 
@@ -133,7 +156,7 @@ func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []cha
 			auth.Provider,
 			authChannelDisabled(auth),
 			channelDisabledAuthorityRuntime,
-			buildAuthTagPayload(auth),
+			managementauthfiles.BuildTagPayload(auth),
 		)
 	}
 
@@ -175,16 +198,26 @@ func includeAuthInChannelGroups(auth *coreauth.Auth) bool {
 		strings.EqualFold(statusMessage, "removed via config update") {
 		return false
 	}
-	if isRuntimeOnlyAuth(auth) && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
+	if managementauthfiles.IsRuntimeOnly(auth) && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
 		return false
 	}
 	return true
 }
 
+func routingConfigFrom(cfg *config.Config) config.RoutingConfig {
+	// Callers (GetChannelGroups / PutRoutingConfig) already put the correct
+	// tenant-scoped Routing on cfg. Do not re-read System tenant store here —
+	// that leaked other tenants' channel groups into business-tenant UIs.
+	if cfg == nil {
+		return config.RoutingConfig{IncludeDefaultGroup: true}
+	}
+	return cfg.Routing
+}
+
 func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channelGroupItem {
 	items := collectChannelDescriptors(cfg, auths)
 	knownPaths := make(map[string][]string)
-	routingCfg := currentRoutingConfig(cfg)
+	routingCfg := routingConfigFrom(cfg)
 	if known, err := collectKnownChannels(cfg, auths, ""); err == nil {
 		routingCfg = canonicalizeRoutingConfigChannels(routingCfg, known)
 	}
@@ -209,7 +242,12 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 			}
 			return existing
 		}
-		item := &channelGroupItem{Name: name, Implicit: implicit}
+		item := &channelGroupItem{
+			Name:                 name,
+			Implicit:             implicit,
+			Scheduling:           defaultSchedulingItem(),
+			FollowUpstreamModels: internalrouting.FollowsUpstreamModels(name, nil),
+		}
 		groupMap[name] = item
 		return item
 	}
@@ -221,8 +259,12 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 		}
 		item.Description = group.Description
 		item.Strategy = group.Strategy
+		item.Scheduling = schedulingItemFrom(group)
 		item.Priority = group.Priority
+		item.ExcludeFromDefault = group.ExcludeFromDefault
+		item.FollowUpstreamModels = group.FollowsUpstreamModels()
 		item.AllowedModels = append(item.AllowedModels, group.AllowedModels...)
+		item.ExcludedModels = append(item.ExcludedModels, group.ExcludedModels...)
 		item.Prefixes = append(item.Prefixes, group.Match.Prefixes...)
 		item.Tags = append(item.Tags, group.Match.Tags...)
 		configuredChannelsByGroup[item.Name] = append(configuredChannelsByGroup[item.Name], group.Match.Channels...)
@@ -244,6 +286,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 	for _, channel := range items {
 		prefix := internalrouting.NormalizeGroupName(channel.Prefix)
 		channelName := strings.TrimSpace(channel.Name)
+		excludedFromDefault := channelExcludedFromImplicitDefault(routingCfg, channel)
 		for groupName, group := range groupMap {
 			matched := false
 			for _, candidatePrefix := range group.Prefixes {
@@ -264,7 +307,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 				matched = true
 			}
 			if !matched {
-				if group.Name == "default" && prefix == "" && includeDefault {
+				if group.Name == "default" && prefix == "" && includeDefault && !excludedFromDefault {
 					matched = true
 				} else if prefix != "" && group.Name == prefix {
 					matched = true
@@ -290,8 +333,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 	for name, item := range groupMap {
 		item.Name = name
 		item.Prefixes = uniqueSortedStrings(item.Prefixes, internalrouting.NormalizeGroupName)
-		item.Tags = uniqueSortedStrings(item.Tags, normalizeTagValue)
-		item.Types = uniqueSortedStrings(item.Types, func(value string) string { return strings.ToLower(strings.TrimSpace(value)) })
+		item.Tags = uniqueSortedStrings(item.Tags, config.NormalizeRoutingTag)
 		item.Channels = uniqueSortedStrings(item.Channels, func(value string) string { return strings.TrimSpace(value) })
 		item.ChannelDetails = uniqueSortedChannelDetails(item.ChannelDetails)
 		item.PathRoutes = uniqueSortedStrings(knownPaths[name], internalrouting.NormalizeNamespacePath)
@@ -299,6 +341,25 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+func channelExcludedFromImplicitDefault(routingCfg config.RoutingConfig, channel channelDescriptor) bool {
+	if internalrouting.NormalizeGroupName(channel.Prefix) != "" {
+		return false
+	}
+	for _, group := range routingCfg.ChannelGroups {
+		if !group.ExcludeFromDefault {
+			continue
+		}
+		groupName := internalrouting.NormalizeGroupName(group.Name)
+		if groupName == "" || groupName == "default" {
+			continue
+		}
+		if channelGroupMatchesDescriptor(group, channel) {
+			return true
+		}
+	}
+	return false
 }
 
 func channelGroupMatchesDescriptor(group config.RoutingChannelGroup, channel channelDescriptor) bool {
@@ -323,7 +384,7 @@ func channelMatchesAnyTag(channel channelDescriptor, tags []string) bool {
 	}
 	displayTags := make(map[string]struct{}, len(channel.DisplayTags))
 	for _, tag := range channel.DisplayTags {
-		normalized := normalizeTagValue(tag)
+		normalized := config.NormalizeRoutingTag(tag)
 		if normalized != "" {
 			displayTags[normalized] = struct{}{}
 		}
@@ -332,7 +393,7 @@ func channelMatchesAnyTag(channel channelDescriptor, tags []string) bool {
 		return false
 	}
 	for _, tag := range tags {
-		if _, ok := displayTags[normalizeTagValue(tag)]; ok {
+		if _, ok := displayTags[config.NormalizeRoutingTag(tag)]; ok {
 			return true
 		}
 	}
@@ -371,11 +432,66 @@ func uniqueSortedStrings(values []string, normalizer func(string) string) []stri
 }
 
 func (h *Handler) GetChannelGroups(c *gin.Context) {
+	tenantID := effectiveTenantID(c)
 	var auths []*coreauth.Auth
 	if h != nil && h.authManager != nil {
-		auths = h.authManager.List()
+		// Shared platform credentials join this tenant's groups like its own.
+		auths = h.authManager.ListUsableForTenant(tenantID)
 	}
-	c.JSON(http.StatusOK, gin.H{"items": buildChannelGroupItems(h.cfg, auths)})
+	cfg := h.cfg
+	if tenantID != identity.SystemTenantID {
+		cfg = &config.Config{Routing: currentRoutingConfigForTenant(h.cfg, tenantID)}
+	}
+	items := buildChannelGroupItems(cfg, auths)
+	var canServe func(group, model string) bool
+	if h != nil && h.authManager != nil {
+		canServe = func(group, model string) bool {
+			// The group's own model lists are left out on purpose (see
+			// attachDiscoveredModels); its exclusions are checked there.
+			return h.authManager.CanServeModelWithScopesForTenantOpts(tenantID, model, nil, nil, group,
+				coreauth.ServeModelScopeOptions{IgnoreGroupAllowedModels: true})
+		}
+	}
+	attachDiscoveredModels(items, modeldiscovery.FollowedModelIDs(tenantID), canServe)
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+// attachDiscoveredModels fills DiscoveredModels on each group with an allow
+// list, following or not: the listed ids the list does not name already, that
+// the group does not exclude, and that its channels can serve. The last check
+// matters because discovery is per tenant, not per group: a group of Claude
+// channels must not offer a Codex model it would then fail to route.
+//
+// canServe answers for the group as it is configured. For a frozen group it
+// refuses a model its allow list does not name, so it is asked as though the
+// group followed upstream; that is the question being answered.
+func attachDiscoveredModels(items []channelGroupItem, listed []string, canServe func(group, model string) bool) {
+	if len(listed) == 0 {
+		return
+	}
+	for i := range items {
+		item := &items[i]
+		if len(item.AllowedModels) == 0 {
+			continue
+		}
+		named := make(map[string]struct{}, len(item.AllowedModels))
+		for _, model := range item.AllowedModels {
+			named[strings.ToLower(strings.TrimSpace(model))] = struct{}{}
+		}
+		for _, model := range listed {
+			if _, ok := named[strings.ToLower(model)]; ok {
+				continue
+			}
+			if internalrouting.ChannelGroupExcludesModel(item.ExcludedModels, model) {
+				continue
+			}
+			if canServe != nil && !canServe(item.Name, model) {
+				continue
+			}
+			item.DiscoveredModels = append(item.DiscoveredModels, model)
+		}
+		sort.Strings(item.DiscoveredModels)
+	}
 }
 
 func reservedPathRoutePrefixes() []string {
@@ -390,6 +506,7 @@ func reservedPathRoutePrefixes() []string {
 		"/codex",
 		"/google",
 		"/iflow",
+		"/antigravity",
 	}
 }
 
@@ -398,12 +515,13 @@ func validateRoutingAndAPIKeyRestrictions(cfg *config.Config, auths []*coreauth.
 		return nil
 	}
 
-	routingCfg := currentRoutingConfig(cfg)
+	routingCfg := routingConfigFrom(cfg)
 	known, err := collectKnownChannels(cfg, auths, "")
 	if err != nil {
 		return err
 	}
 	routingCfg = canonicalizeRoutingConfigChannels(routingCfg, known)
+	apiKeyEntries := canonicalizeAPIKeyEntriesChannels(cfg.APIKeyEntries, known)
 
 	groups := buildChannelGroupItems(cfg, auths)
 	knownGroups := make(map[string]channelGroupItem, len(groups))
@@ -421,8 +539,12 @@ func validateRoutingAndAPIKeyRestrictions(cfg *config.Config, auths []*coreauth.
 			return fmt.Errorf("duplicate channel group %q", group.Name)
 		}
 		seenGroupNames[name] = struct{}{}
-		if _, exists := knownGroups[name]; !exists {
+		known, exists := knownGroups[name]
+		if !exists {
 			return fmt.Errorf("channel group %q does not match any known channel", group.Name)
+		}
+		if err := validateGroupWeights(group, known); err != nil {
+			return err
 		}
 	}
 
@@ -447,14 +569,108 @@ func validateRoutingAndAPIKeyRestrictions(cfg *config.Config, auths []*coreauth.
 		}
 	}
 
+	if len(apiKeyEntries) == 0 {
+		return nil
+	}
+	channelGroupMap := make(map[string]map[string]struct{}, len(groups))
+	for _, group := range groups {
+		set := make(map[string]struct{}, len(group.Channels))
+		for _, channel := range group.Channels {
+			set[strings.ToLower(strings.TrimSpace(channel))] = struct{}{}
+		}
+		channelGroupMap[group.Name] = set
+	}
+
+	for _, entry := range apiKeyEntries {
+		allowedGroups := uniqueChannelGroups(entry.AllowedChannelGroups)
+		for _, group := range allowedGroups {
+			if _, exists := knownGroups[group]; !exists {
+				return fmt.Errorf("api-key %q references unknown channel group %q", strings.TrimSpace(entry.Name), group)
+			}
+		}
+		if len(allowedGroups) == 0 || len(entry.AllowedChannels) == 0 {
+			continue
+		}
+		intersectionFound := false
+		for _, channel := range entry.AllowedChannels {
+			key := strings.ToLower(strings.TrimSpace(channel))
+			if key == "" {
+				continue
+			}
+			for _, group := range allowedGroups {
+				if _, ok := channelGroupMap[group][key]; ok {
+					intersectionFound = true
+					break
+				}
+			}
+			if intersectionFound {
+				break
+			}
+		}
+		if !intersectionFound {
+			return fmt.Errorf("api-key %q allowed-channels do not belong to allowed-channel-groups", strings.TrimSpace(entry.Name))
+		}
+	}
+
 	return nil
 }
 
-func currentRoutingConfig(cfg *config.Config) config.RoutingConfig {
-	if cfg == nil {
-		return config.RoutingConfig{IncludeDefaultGroup: true}
+// validateGroupWeights rejects a group whose every resolved member is weighted
+// 0. Such a group cannot serve a single request, and letting it save produced a
+// runtime error far away from the setting that caused it.
+func validateGroupWeights(group config.RoutingChannelGroup, resolved channelGroupItem) error {
+	weights := group.Scheduling.ChannelWeights
+	if len(weights) == 0 {
+		weights = group.ChannelPriorities
 	}
-	routingCfg := cfg.Routing
-	routingCfg.IncludeDefaultGroup = true
-	return routingCfg
+	if len(weights) == 0 || len(resolved.Channels) == 0 {
+		return nil
+	}
+	// A member without an entry keeps the default weight 1, so the group stays
+	// usable as long as one member is unconfigured or positively weighted.
+	for _, channel := range resolved.Channels {
+		weight, configured := lookupChannelWeight(weights, channel)
+		if !configured || weight > 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("channel group %q has every channel weighted 0, so it cannot serve any request", group.Name)
+}
+
+func lookupChannelWeight(weights map[string]int, channel string) (int, bool) {
+	channel = strings.TrimSpace(channel)
+	if channel == "" {
+		return 0, false
+	}
+	for name, weight := range weights {
+		if strings.EqualFold(strings.TrimSpace(name), channel) {
+			return weight, true
+		}
+	}
+	return 0, false
+}
+
+func channelGroupMatchesAnyDescriptor(group config.RoutingChannelGroup, descriptors []channelDescriptor) bool {
+	name := internalrouting.NormalizeGroupName(group.Name)
+	for _, descriptor := range descriptors {
+		prefix := internalrouting.NormalizeGroupName(descriptor.Prefix)
+		channel := strings.TrimSpace(descriptor.Name)
+		if name != "" && prefix != "" && name == prefix {
+			return true
+		}
+		for _, candidatePrefix := range group.Match.Prefixes {
+			if prefix != "" && prefix == internalrouting.NormalizeGroupName(candidatePrefix) {
+				return true
+			}
+		}
+		for _, candidateChannel := range group.Match.Channels {
+			if channel != "" && strings.EqualFold(strings.TrimSpace(candidateChannel), channel) {
+				return true
+			}
+		}
+		if channelMatchesAnyTag(descriptor, group.Match.Tags) {
+			return true
+		}
+	}
+	return false
 }

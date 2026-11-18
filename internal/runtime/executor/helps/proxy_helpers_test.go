@@ -2,13 +2,20 @@ package helps
 
 import (
 	"context"
+	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 )
 
 func TestNewProxyAwareHTTPClientRequestProxyOverridesAuthAndGlobal(t *testing.T) {
@@ -76,72 +83,6 @@ func TestNewProxyAwareHTTPClientDirectBypassesGlobalProxy(t *testing.T) {
 	}
 }
 
-func TestResolveAuthProxyURL(t *testing.T) {
-	t.Parallel()
-
-	cfg := &config.Config{
-		SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://global.example.com:7890"},
-	}
-
-	tests := []struct {
-		name string
-		cfg  *config.Config
-		auth *cliproxyauth.Auth
-		want string
-	}{
-		{
-			name: "auth proxy_url takes priority over global",
-			cfg:  cfg,
-			auth: &cliproxyauth.Auth{ProxyURL: "socks5://auth.example.com:1080"},
-			want: "socks5://auth.example.com:1080",
-		},
-		{
-			name: "auth metadata proxy_url takes priority over global",
-			cfg:  cfg,
-			auth: &cliproxyauth.Auth{Metadata: map[string]any{"proxy_url": "http://meta.example.com:8080"}},
-			want: "http://meta.example.com:8080",
-		},
-		{
-			name: "auth proxy_id with scheme takes priority over global",
-			cfg:  cfg,
-			auth: &cliproxyauth.Auth{ProxyID: "socks5://id.example.com:1080"},
-			want: "socks5://id.example.com:1080",
-		},
-		{
-			name: "no credential proxy falls back to global default",
-			cfg:  cfg,
-			auth: &cliproxyauth.Auth{},
-			want: "http://global.example.com:7890",
-		},
-		{
-			name: "nil auth falls back to global default",
-			cfg:  cfg,
-			auth: nil,
-			want: "http://global.example.com:7890",
-		},
-		{
-			name: "nil config returns auth proxy",
-			cfg:  nil,
-			auth: &cliproxyauth.Auth{ProxyURL: "socks5://auth.example.com:1080"},
-			want: "socks5://auth.example.com:1080",
-		},
-		{
-			name: "nil config and nil auth returns empty",
-			cfg:  nil,
-			auth: nil,
-			want: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := ResolveAuthProxyURL(tt.cfg, tt.auth); got != tt.want {
-				t.Fatalf("ResolveAuthProxyURL() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestNewDevinHTTPClient_ReusesTransportFromContext(t *testing.T) {
 	baseTransport := &http.Transport{}
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", baseTransport)
@@ -183,4 +124,128 @@ type roundTripperFunc func(req *http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestProxyConnectionPoolReuse(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		enabled         bool
+		wantConnections int
+	}{{"disabled", false, 2}, {"enabled", true, 1}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ResetProxyTransports()
+			t.Cleanup(ResetProxyTransports)
+			var connections atomic.Int32
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) }))
+			server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateNew {
+					connections.Add(1)
+				}
+			}
+			server.Start()
+			defer server.Close()
+			cfg := testConfig()
+			auth := &cliproxyauth.Auth{ProxyURL: "direct"}
+			if tc.enabled {
+				auth.ProxyConnectionPool = poolEnabled()
+			}
+			for i := 0; i < 2; i++ {
+				client := NewProxyAwareHTTPClient(context.Background(), cfg, auth, 0)
+				resp, err := client.Get(server.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = io.Copy(io.Discard, resp.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = resp.Body.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if !tc.enabled {
+					client.CloseIdleConnections()
+				}
+			}
+			if got := connections.Load(); got != int32(tc.wantConnections) {
+				t.Fatalf("connections = %d, want %d", got, tc.wantConnections)
+			}
+		})
+	}
+}
+
+func TestProxyConnectionPoolSettingsIsolation(t *testing.T) {
+	enabled := true
+	maxIdle := 4
+	cfg := testConfig()
+	auth := poolAuth("settings", &cliproxyauth.ProxyConnectionPoolOverride{Enabled: &enabled, IdleConnTimeout: "15s", MaxIdleConnsPerHost: &maxIdle})
+	defer ResetProxyTransports()
+	first := pooledProxyTransport("direct", cfg, auth)
+	if first == nil || first.IdleConnTimeout != 15*time.Second || first.MaxIdleConnsPerHost != 4 {
+		t.Fatalf("unexpected transport: %+v", first)
+	}
+	if pooledProxyTransport("direct", cfg, auth) != first {
+		t.Fatal("transport not reused")
+	}
+	auth.ProxyConnectionPool.IdleConnTimeout = "20s"
+	if pooledProxyTransport("direct", cfg, auth) == first {
+		t.Fatal("different settings reused transport")
+	}
+	if pooledProxyTransport("http://localhost:1234", cfg, auth) == first {
+		t.Fatal("different proxies reused transport")
+	}
+	ResetProxyTransports()
+	if pooledProxyTransport("direct", cfg, auth) == first {
+		t.Fatal("reset did not remove transport")
+	}
+}
+
+func TestProxyConnectionPoolAuthenticatedProxyIsolation(t *testing.T) {
+	ResetProxyTransports()
+	t.Cleanup(ResetProxyTransports)
+	cfg := testConfig()
+	auth := poolOptInAuth("credential-url")
+
+	first := pooledProxyTransport("http://user:old-secret@localhost:1234", cfg, auth)
+	second := pooledProxyTransport("http://user:old-secret@localhost:1234", cfg, auth)
+	if first == nil || second != first {
+		t.Fatal("identical authenticated proxy must reuse its pool")
+	}
+	rotated := pooledProxyTransport("http://user:new-secret@localhost:1234", cfg, auth)
+	if rotated == nil || rotated == first {
+		t.Fatal("different proxy credentials on the same host must not share a pool")
+	}
+	socks := pooledProxyTransport("socks5://user:old-secret@localhost:1234", cfg, auth)
+	if socks == nil || socks == first || pooledProxyTransport("socks5://user:old-secret@localhost:1234", cfg, auth) != socks {
+		t.Fatal("authenticated socks5 proxy must pool per scheme and credential")
+	}
+	setting, err := proxyutil.Parse("http://user:old-secret@localhost:1234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheKey, label := proxyPoolCacheTarget(setting)
+	if strings.Contains(cacheKey, "old-secret") || strings.Contains(label, "old-secret") {
+		t.Fatalf("cache target leaked proxy secret: key=%q label=%q", cacheKey, label)
+	}
+}
+func TestProxyConnectionPoolCustomDefaultTransportDeclinesPooling(t *testing.T) {
+	ResetProxyTransports()
+	t.Cleanup(ResetProxyTransports)
+
+	oldDefault := http.DefaultTransport
+	defer func() { http.DefaultTransport = oldDefault }()
+
+	customRT := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200}, nil
+	})
+	http.DefaultTransport = customRT
+
+	cfg := testConfig()
+	auth := poolOptInAuth("custom-default")
+
+	// With empty proxy-url, pooling must be declined because http.DefaultTransport
+	// cannot be cloned into *http.Transport.
+	client := NewProxyAwareHTTPClient(context.Background(), cfg, auth, 0)
+	if client.Transport != nil {
+		t.Fatalf("client.Transport = %T, want nil so client uses http.DefaultTransport", client.Transport)
+	}
 }

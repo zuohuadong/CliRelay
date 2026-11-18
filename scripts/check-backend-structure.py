@@ -19,7 +19,10 @@ BLOCKING_LINE_THRESHOLD = 1200
 
 ALLOWLIST_PATH = Path("docs/internal-review/backend-structure-allowlist.json")
 MANAGEMENT_DIR = Path("internal/api/handlers/management")
-SERVER_PATH = Path("internal/api/server.go")
+MANAGEMENT_ROUTE_PATHS = (
+    Path("internal/api/server_management.go"),
+    Path("internal/api/server_management_v8.go"),
+)
 
 MANAGEMENT_PERSISTENCE_SYMBOLS = (
     "config.SaveConfigPreserveComments",
@@ -242,8 +245,14 @@ def scan(update_baseline: bool = False) -> int:
                     f"{relative} has fewer {symbol} calls than the allowlist; consider tightening it"
                 )
 
-    server_text = (root / SERVER_PATH).read_text(encoding="utf-8", errors="ignore")
-    management_routes = len(re.findall(r"\bmgmt\.(GET|POST|PUT|PATCH|DELETE)\s*\(", server_text))
+    route_text = "\n".join(
+        (root / path).read_text(encoding="utf-8", errors="ignore")
+        for path in MANAGEMENT_ROUTE_PATHS
+        if (root / path).exists()
+    )
+    management_routes = len(
+        re.findall(r"\b(?:mgmt|v8)\.(GET|POST|PUT|PATCH|DELETE|Handle)\s*\(", route_text)
+    )
     handler_methods = 0
     for path in sorted((root / MANAGEMENT_DIR).rglob("*.go")):
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -266,7 +275,8 @@ def scan(update_baseline: bool = False) -> int:
     )
     print(f"SDK production files importing internal packages: {len(sdk_internal_files)}")
     print(f"Management handler files with direct persistence calls: {len(persistence_files)}")
-    print(f"Management routes registered in {SERVER_PATH}: {management_routes}")
+    route_paths = ", ".join(path.as_posix() for path in MANAGEMENT_ROUTE_PATHS)
+    print(f"Management routes registered in {route_paths}: {management_routes}")
     print(f"management.Handler receiver methods: {handler_methods}")
     print(
         "Internal production directories: "

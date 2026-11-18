@@ -1,0 +1,825 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+// These are configuration drift guard tests: they assert shipped workflow text,
+// not runtime behavior.
+func TestDeployWorkflowOnlyPublishesBackendBinary(t *testing.T) {
+	// The ssh client setup moved into a script both the preflight and the
+	// deploy jobs call, so the markers are checked across the two files.
+	var content string
+	for _, path := range []string{".github/workflows/deploy.yml", "scripts/gha-node-ssh.sh"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		content += string(data) + "\n"
+	}
+
+	for _, want := range []string{
+		`Upload binary to staging`,
+		`/opt/clirelay2/incoming/cli-proxy-api-new`,
+		`User deploy`,
+		`/usr/local/sbin/clirelay-gha-deploy`,
+		`StrictHostKeyChecking yes`,
+		`DEPLOY_SSH_KNOWN_HOSTS`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("deploy workflow missing backend binary deployment marker %q", want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		`Upload panel assets`,
+		`source: "manage.html,management.html,assets"`,
+		`scripts/migrate-sqlite-to-postgres.sh`,
+		`scripts/prepare-runtime-data-stack.sh`,
+		`PANEL_SRC=`,
+		`PANEL_DIR=`,
+		`relay-panel`,
+		`/home/web/html`,
+		`appleboy/scp-action`,
+		`appleboy/ssh-action`,
+		`username: root`,
+		`StrictHostKeyChecking accept-new`,
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("backend deploy workflow must not publish frontend panel assets or use insecure deploy markers, found %q", forbidden)
+		}
+	}
+}
+
+func TestDeployWorkflowUsesBlueGreenDeployment(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/deploy.yml")
+	if err != nil {
+		t.Fatalf("read deploy workflow: %v", err)
+	}
+	content := string(data)
+
+	for _, want := range []string{
+		`Blue-green deploy via fixed root entrypoint`,
+		`SERVICE_CPU_QUOTA: ${{ vars.CLIRELAY_SERVICE_CPU_QUOTA || '170%' }}`,
+		`SERVICE_MEMORY_HIGH: ${{ vars.CLIRELAY_SERVICE_MEMORY_HIGH || '1400M' }}`,
+		`SERVICE_MEMORY_MAX: ${{ vars.CLIRELAY_SERVICE_MEMORY_MAX || '1600M' }}`,
+		`SERVICE_TASKS_MAX: ${{ vars.CLIRELAY_SERVICE_TASKS_MAX || '512' }}`,
+		`COMMIT_SHA: ${{ github.sha }}`,
+		`/usr/local/sbin/clirelay-gha-deploy`,
+		`EXPECTED_SCRIPT_VERSION`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("deploy workflow missing blue-green marker %q", want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		`systemctl stop clirelay2`,
+		`systemctl start clirelay2`,
+		`Stop, swap, and restart`,
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("deploy workflow still has outage-prone restart marker %q", forbidden)
+		}
+	}
+}
+
+func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
+	for _, path := range []string{
+		"scripts/deploy-blue-green.sh",
+		"scripts/cleanup-drained-slot.sh",
+		"scripts/reconcile-active-slot.sh",
+		// The root entrypoint is installed by hand and never run in CI, so a
+		// syntax error would first show up as a failed production deploy.
+		"scripts/clirelay-gha-deploy",
+		"scripts/gha-node-ssh.sh",
+		"scripts/gha-node-verify.sh",
+	} {
+		cmd := exec.Command("bash", "-n", path)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s syntax failed: %v\n%s", path, err, out)
+		}
+	}
+
+	data, err := os.ReadFile("scripts/deploy-blue-green.sh")
+	if err != nil {
+		t.Fatalf("read deploy script: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		`/readyz`,
+		`/healthz`,
+		`CLIRELAY_PORT=`,
+		`.active-port`,
+		`reconcile-active-slot.sh`,
+		`HEALTH_TIMEOUT_SECONDS`,
+		`SMOKE_TIMEOUT_SECONDS`,
+		`PUBLIC_BASE_URL`,
+		`external smoke failed`,
+		`rolling nginx back`,
+		`MIN_AVAILABLE_MB`,
+		`NGINX_CONTAINER`,
+		`EnvironmentFile=`,
+		`docker exec "$NGINX_CONTAINER" nginx -t`,
+		`nginx -t`,
+		`DRAIN_SECONDS`,
+		`systemd-run`,
+		`scripts/cleanup-drained-slot.sh`,
+		`NGINX_BACKUP_PATTERN`,
+		`SCRIPT_VERSION`,
+		`TimeoutStopSec=${SLOT_STOP_TIMEOUT_SECONDS}`,
+		`Environment=CLIRELAY_SHUTDOWN_GRACE=${SHUTDOWN_GRACE_SECONDS}s`,
+		// The cutover must prove it happened rather than infer it from an exit
+		// status. A missing rewrite tool once left the config untouched while
+		// the deploy reported success, which is what manufactured the slot
+		// drift behind two outages.
+		`rewrite_slot_port`,
+		`nginx_slot_port`,
+		`required command not found on deploy host`,
+		`refusing to stop`,
+		// One rewrite cannot cut over two vhosts that both route the domain to
+		// a slot, so the deploy must refuse instead of picking one.
+		`several nginx configs proxy`,
+		// Multi-node: settings come from a root-owned file, the smoke is pinned
+		// to this node, a split config is refused, and a new node can deploy.
+		`DEPLOY_ENV_FILE=/etc/clirelay2/deploy.env`,
+		`require_root_controlled "$DEPLOY_ENV_FILE"`,
+		`--resolve "${DOMAIN}:443:${smoke_addr}"`,
+		`routes to both slots`,
+		`first deploy on this node`,
+		`SLOT_USER in ${DEPLOY_ENV_FILE}`,
+		`CLIRELAY_DEPLOY_RESULT`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("deploy script missing guard %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		// perl is not installed on the deploy host. Using it for the config
+		// rewrite failed silently and the deploy still reported success.
+		`perl -0pi`,
+		// The dot-anchored backup filter only caught `.bak.<timestamp>` and let
+		// every `.bak-before-<tag>` file through, so the lookup could return a
+		// backup vhost that nginx never reads. Replaced by NGINX_BACKUP_PATTERN;
+		// see TestNginxBackupPatternExcludesEveryBackupShape.
+		`grep -v '\.bak\.'`,
+		// Taking the first file that names the domain handed cutover a port-80
+		// redirect with no slot port to rewrite, so every deploy failed at
+		// cutover. The container lookup cannot run in a unit test, so this is
+		// its only guard; see TestNginxLookupPicksTheVhostThatProxiesToASlot.
+		`"$NGINX_BACKUP_PATTERN" | head -n1`,
+		`'${NGINX_BACKUP_PATTERN}' | head -n1`,
+		// systemd then SIGKILLed a slot whose drain used the whole grace before
+		// it wrote its queued usage records; see
+		// TestSlotUnitStopTimeoutOutlastsTheShutdownGrace.
+		`TimeoutStopSec=${SHUTDOWN_GRACE_SECONDS}`,
+		`migrate-sqlite-to-postgres.sh`,
+		`Legacy SQLite`,
+		`stop_active_units_for_migration`,
+		`CLIRELAY_SQLITE_PATH`,
+		`usage.db`,
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("deploy script contains forbidden pattern %q; see the comment beside it", forbidden)
+		}
+	}
+}
+
+// A drain that uses the whole grace still leaves the process its own shutdown
+// to run: queued usage records written or spooled, the Redis snapshot saved,
+// the database closed. With TimeoutStopSec equal to the grace, systemd
+// SIGKILLed the slot the moment its drain ran out. The unit's stop timeout is
+// the grace in effect on the node plus a fixed headroom, so a node that raises
+// its grace in deploy.env keeps the headroom; how large the headroom must be
+// is checked against the binary's own timeouts in
+// internal/cmd TestDeployStopHeadroomCoversTheShutdownAfterTheDrain.
+func TestSlotUnitStopTimeoutOutlastsTheShutdownGrace(t *testing.T) {
+	const script = "scripts/deploy-blue-green.sh"
+	keys := extractShellAssignment(t, script, "DEPLOY_ENV_KEYS")
+	grace, headroom := slotStopTimeoutDefaults(t)
+
+	run := func(t *testing.T, content string) (string, error) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "deploy.env")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write deploy.env: %v", err)
+		}
+		// Same order as the script: the node file first, then the derivation.
+		body := fmt.Sprintf(`DEPLOY_ENV_KEYS=%q
+SHUTDOWN_GRACE_SECONDS=%d
+SHUTDOWN_STOP_HEADROOM_SECONDS=%d
+load_deploy_env %q
+derive_stop_timeout
+echo "grace=${SHUTDOWN_GRACE_SECONDS} stop_timeout=${SLOT_STOP_TIMEOUT_SECONDS}"
+`, keys, grace, headroom, path)
+		return runShellFunctions(t, script, []string{"fail", "tunable_is_valid", "setting_is_valid", "load_deploy_env", "derive_stop_timeout"}, body)
+	}
+
+	for content, want := range map[string]string{
+		"":                           fmt.Sprintf("grace=%d stop_timeout=%d", grace, grace+headroom),
+		"SHUTDOWN_GRACE_SECONDS=600": fmt.Sprintf("grace=600 stop_timeout=%d", 600+headroom),
+	} {
+		out, err := run(t, content)
+		if err != nil || !strings.Contains(out, want+"\n") {
+			t.Fatalf("deploy.env %q: want %q, err=%v\n%s", content, want, err, out)
+		}
+	}
+	// The binary's shutdown sizes the headroom, not the node.
+	if out, err := run(t, "SHUTDOWN_STOP_HEADROOM_SECONDS=0\n"); err == nil || !strings.Contains(out, "unknown setting SHUTDOWN_STOP_HEADROOM_SECONDS") {
+		t.Fatalf("deploy.env must not be able to shrink the stop headroom, err=%v\n%s", err, out)
+	}
+
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatalf("read deploy script: %v", err)
+	}
+	content := string(data)
+	// Derived after deploy.env is read, or a node's own grace would leave its
+	// unit with the default stop timeout.
+	loadIndex := strings.Index(content, "\n\tload_deploy_env \"$DEPLOY_ENV_FILE\"\n")
+	deriveIndex := strings.Index(content, "\nderive_stop_timeout\n")
+	if loadIndex < 0 || deriveIndex < loadIndex {
+		t.Fatalf("derive_stop_timeout must run after deploy.env is loaded (load at %d, derive at %d)", loadIndex, deriveIndex)
+	}
+	// The workflow waits for the old slot by the timeout the node reports.
+	if !strings.Contains(content, `stop_timeout_seconds=%s`) || !strings.Contains(content, `"$SLOT_STOP_TIMEOUT_SECONDS"`) {
+		t.Fatalf("the deploy result line must report the slot's stop timeout")
+	}
+}
+
+// slotStopTimeoutDefaults reads the shipped shutdown grace and stop headroom.
+func slotStopTimeoutDefaults(t *testing.T) (grace, headroom int) {
+	t.Helper()
+	const script = "scripts/deploy-blue-green.sh"
+	grace, err := strconv.Atoi(extractShellAssignment(t, script, "SHUTDOWN_GRACE_SECONDS"))
+	if err != nil {
+		t.Fatalf("parse SHUTDOWN_GRACE_SECONDS: %v", err)
+	}
+	headroom, err = strconv.Atoi(extractShellAssignment(t, script, "SHUTDOWN_STOP_HEADROOM_SECONDS"))
+	if err != nil || headroom <= 0 {
+		t.Fatalf("SHUTDOWN_STOP_HEADROOM_SECONDS must be a positive number of seconds, got %d (%v)", headroom, err)
+	}
+	return grace, headroom
+}
+
+// defaultSlotStopTimeout is the TimeoutStopSec a node without deploy.env gets.
+func defaultSlotStopTimeout(t *testing.T) string {
+	t.Helper()
+	grace, headroom := slotStopTimeoutDefaults(t)
+	return strconv.Itoa(grace + headroom)
+}
+
+func TestCleanupDrainedSlotStopsOnlyTheExpectedInactiveSlot(t *testing.T) {
+	tmp := t.TempDir()
+	binDir := tmp + "/bin"
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create fake bin dir: %v", err)
+	}
+	logPath := tmp + "/systemctl.log"
+	activeUnitPath := tmp + "/active-unit"
+	fakeSystemctl := `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+if [ "$1" = "is-active" ] && [ "$2" = "--quiet" ]; then
+  active="$(cat "$SYSTEMCTL_ACTIVE_UNIT" 2>/dev/null || true)"
+  if [ "${3:-}" = "$active" ]; then
+    exit 0
+  fi
+  exit 3
+fi
+`
+	if err := os.WriteFile(binDir+"/systemctl", []byte(fakeSystemctl), 0o755); err != nil {
+		t.Fatalf("write fake systemctl: %v", err)
+	}
+	activePortFile := tmp + "/.active-port"
+	if err := os.WriteFile(activePortFile, []byte("8319\n"), 0o644); err != nil {
+		t.Fatalf("write active port: %v", err)
+	}
+	if err := os.WriteFile(activeUnitPath, []byte("clirelay2-8319\n"), 0o644); err != nil {
+		t.Fatalf("write active unit: %v", err)
+	}
+
+	runCleanup := func() string {
+		t.Helper()
+		cmd := exec.Command("bash", "scripts/cleanup-drained-slot.sh", "8318", "8319")
+		cmd.Env = append(os.Environ(),
+			"PATH="+binDir+":"+os.Getenv("PATH"),
+			"SYSTEMCTL_LOG="+logPath,
+			"SYSTEMCTL_ACTIVE_UNIT="+activeUnitPath,
+			"BASE_DIR="+tmp,
+			"ACTIVE_PORT_FILE="+activePortFile,
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("cleanup drained slot: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+
+	runCleanup()
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read systemctl log: %v", err)
+	}
+	logText := string(logData)
+	for _, want := range []string{"disable --now clirelay2", "disable --now clirelay2-8318"} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("cleanup log missing %q: %s", want, logText)
+		}
+	}
+
+	if err := os.WriteFile(activePortFile, []byte("8318\n"), 0o644); err != nil {
+		t.Fatalf("move active port back: %v", err)
+	}
+	if err := os.Remove(logPath); err != nil {
+		t.Fatalf("clear systemctl log: %v", err)
+	}
+	if out := runCleanup(); !strings.Contains(out, "Skip draining 8318") {
+		t.Fatalf("expected stale cleanup to be skipped, got: %s", out)
+	}
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("stale cleanup must not call systemctl, stat err = %v", err)
+	}
+}
+
+func TestReconcileActiveSlotRepairsStaleMarker(t *testing.T) {
+	tmp := t.TempDir()
+	binDir := tmp + "/bin"
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create fake bin dir: %v", err)
+	}
+	statePath := tmp + "/active-unit"
+	activePortFile := tmp + "/.active-port"
+	fakeSystemctl := `#!/usr/bin/env bash
+if [ "$1" = "is-active" ] && [ "$2" = "--quiet" ]; then
+  active="$(cat "$SYSTEMCTL_ACTIVE_UNIT" 2>/dev/null || true)"
+  if [ "${3:-}" = "$active" ]; then
+    exit 0
+  fi
+  exit 3
+fi
+exit 1
+`
+	if err := os.WriteFile(binDir+"/systemctl", []byte(fakeSystemctl), 0o755); err != nil {
+		t.Fatalf("write fake systemctl: %v", err)
+	}
+	if err := os.WriteFile(activePortFile, []byte("8318\n"), 0o644); err != nil {
+		t.Fatalf("write active port: %v", err)
+	}
+	if err := os.WriteFile(statePath, []byte("clirelay2-8319\n"), 0o644); err != nil {
+		t.Fatalf("write active unit: %v", err)
+	}
+
+	cmd := exec.Command("bash", "scripts/reconcile-active-slot.sh")
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"BASE_DIR="+tmp,
+		"ACTIVE_PORT_FILE="+activePortFile,
+		"SYSTEMCTL_ACTIVE_UNIT="+statePath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("reconcile active slot: %v\n%s", err, out)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	got := strings.TrimSpace(lines[len(lines)-1])
+	if got != "8319" {
+		t.Fatalf("reconciled slot = %q, want 8319", got)
+	}
+	data, err := os.ReadFile(activePortFile)
+	if err != nil {
+		t.Fatalf("read active port file: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "8319" {
+		t.Fatalf("active port file = %q, want 8319", got)
+	}
+}
+
+func TestDeployCompletesBeforeDispatchingDevDockerBuild(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/deploy.yml")
+	if err != nil {
+		t.Fatalf("read deploy workflow: %v", err)
+	}
+	content := string(data)
+	deployIndex := strings.Index(content, `name: Blue-green deploy via fixed root entrypoint`)
+	dockerIndex := strings.Index(content, `name: Trigger dev Docker image build`)
+	if deployIndex < 0 || dockerIndex < 0 || dockerIndex <= deployIndex {
+		t.Fatalf("dev Docker build must be dispatched only after blue-green deployment")
+	}
+	if !strings.Contains(content, `if: success() && env.SHOULD_DEPLOY == 'true'`) {
+		t.Fatalf("docker publish must only run after a real deploy attempt")
+	}
+	for _, want := range []string{
+		`actions: write`,
+		`cancel-in-progress: false`,
+		`gh workflow run docker-publish.yml`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("deploy workflow missing deployment-priority marker %q", want)
+		}
+	}
+}
+
+func TestReleaseAndDeployWorkflowsRejectVendoredPanelAssets(t *testing.T) {
+	for _, path := range []string{
+		".github/workflows/deploy.yml",
+		".github/workflows/docker-publish.yml",
+		".github/workflows/release.yaml",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(data), `./scripts/ensure-no-vendored-panel-assets.sh`) {
+			t.Fatalf("%s must reject committed frontend panel build output", path)
+		}
+	}
+
+	data, err := os.ReadFile(".github/workflows/pr-test-build.yml")
+	if err != nil {
+		t.Fatalf("read PR workflow: %v", err)
+	}
+	if !strings.Contains(string(data), `./scripts/ci-pr.sh`) {
+		t.Fatalf("PR workflow must use the shared PR check script")
+	}
+	data, err = os.ReadFile("scripts/ci-pr.sh")
+	if err != nil {
+		t.Fatalf("read PR check script: %v", err)
+	}
+	if !strings.Contains(string(data), `./scripts/ensure-no-vendored-panel-assets.sh`) {
+		t.Fatalf("PR check script must reject committed frontend panel build output")
+	}
+}
+
+func TestDockerPublishWorkflowUsesGHCRForBranchesAndReleaseTags(t *testing.T) {
+	if _, err := os.Stat(".github/workflows/docker-image.yml"); !os.IsNotExist(err) {
+		t.Fatalf("legacy DockerHub workflow must be removed, stat err = %v", err)
+	}
+
+	data, err := os.ReadFile(".github/workflows/docker-publish.yml")
+	if err != nil {
+		t.Fatalf("read Docker publish workflow: %v", err)
+	}
+	content := string(data)
+
+	for _, want := range []string{
+		"tags:\n      - 'v*'",
+		"REGISTRY: ghcr.io",
+		"IMAGE_NAME: kittors/clirelay",
+		`if [[ "${GITHUB_REF_TYPE:-branch}" == "tag" ]]; then`,
+		`FRONTEND_REF="main"`,
+		`VERSION="${REF_NAME}"`,
+		"type=ref,event=tag",
+		"github.ref_name == 'main' || github.ref_type == 'tag'",
+		"branches: [main]",
+		"group: docker-publish-${{ github.ref }}",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("Docker publish workflow missing GHCR release marker %q", want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"branches: [main, dev]",
+		"DOCKERHUB_USERNAME",
+		"DOCKERHUB_TOKEN",
+		"eceasy/cli-proxy-api",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("Docker publish workflow still contains legacy DockerHub marker %q", forbidden)
+		}
+	}
+}
+
+// extractShellAssignment pulls a single-quoted assignment out of a shell script
+// so the test exercises the value the deploy host will actually use, rather
+// than a copy that can drift away from it.
+func extractShellAssignment(t *testing.T, path, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, name+"=") {
+			continue
+		}
+		value := strings.TrimPrefix(line, name+"=")
+		value = strings.TrimSuffix(strings.TrimPrefix(value, "'"), "'")
+		if value != "" {
+			return value
+		}
+	}
+	t.Fatalf("%s does not define %s", path, name)
+	return ""
+}
+
+// The deploy host keeps every historical vhost next to the live one (74 files
+// at the time of writing), all containing the same server_name. Picking a
+// backup means the cutover rewrites a file nginx never reads: traffic stays on
+// the old slot, the deploy reports success, and the drain step then stops the
+// slot that is still serving. This asserts the real grep behaviour against the
+// filename shapes observed on the host.
+func TestNginxBackupPatternExcludesEveryBackupShape(t *testing.T) {
+	pattern := extractShellAssignment(t, "scripts/deploy-blue-green.sh", "NGINX_BACKUP_PATTERN")
+
+	dir := t.TempDir()
+	const live = "code.07230805.xyz.conf"
+	backups := []string{
+		"code.07230805.xyz.conf.bak.1787125852",
+		"code.07230805.xyz.conf.bak.20260819_152834",
+		"code.07230805.xyz.conf.bak-before-options",
+		"code.07230805.xyz.conf.bak-before-restore-001802",
+		"code.07230805.xyz.conf.bak",
+	}
+	for _, name := range append([]string{live}, backups...) {
+		if err := os.WriteFile(dir+"/"+name, []byte("server_name code.07230805.xyz;\nproxy_pass http://127.0.0.1:8319;\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	script := `set -o pipefail; grep -Rsl "$DOMAIN" "$DIR" 2>/dev/null | grep -Ev "$PATTERN" || true`
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Env = append(os.Environ(), "DOMAIN=code.07230805.xyz", "DIR="+dir, "PATTERN="+pattern)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run lookup: %v\n%s", err, out)
+	}
+
+	matches := strings.Fields(strings.TrimSpace(string(out)))
+	if len(matches) != 1 {
+		t.Fatalf("lookup matched %d files, want only the live vhost: %v", len(matches), matches)
+	}
+	if got := matches[0]; got != dir+"/"+live {
+		t.Fatalf("lookup selected %q, want the live vhost %q", got, dir+"/"+live)
+	}
+}
+
+// extractShellFunction returns a function definition from a shell script, from
+// its `name() {` line through the closing brace in column one, so the test runs
+// the lookup the deploy host will run rather than a copy that can drift.
+func extractShellFunction(t *testing.T, path, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var body []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if body == nil {
+			if strings.HasPrefix(line, name+"() {") {
+				body = append(body, line)
+			}
+			continue
+		}
+		body = append(body, line)
+		if line == "}" {
+			return strings.Join(body, "\n")
+		}
+	}
+	t.Fatalf("%s does not define function %s", path, name)
+	return ""
+}
+
+// The deploy host names the domain in two live files: a port-80 redirect and
+// the TLS vhost that proxies to the slot. grep -R lists them in directory
+// order, and taking the first handed cutover the redirect, which has no slot
+// port to rewrite, so every deploy failed at cutover. The lookup must return
+// exactly the files that route to a slot, whatever order they are found in.
+func TestNginxLookupPicksTheVhostThatProxiesToASlot(t *testing.T) {
+	lookup := extractShellFunction(t, "scripts/deploy-blue-green.sh", "find_host_nginx_conf")
+	backupPattern := extractShellAssignment(t, "scripts/deploy-blue-green.sh", "NGINX_BACKUP_PATTERN")
+
+	// Shapes copied from the deploy host, including a second vhost in the TLS
+	// file that proxies elsewhere and must not matter.
+	const redirect = `server {
+    listen 80;
+    server_name code.07230805.xyz relay.07230805.xyz;
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+`
+	const tlsVhost = `server {
+    listen 127.0.0.1:8444 ssl http2;
+    server_name code.07230805.xyz relay.07230805.xyz;
+    location / {
+        proxy_pass http://127.0.0.1:8318;
+    }
+}
+server {
+    listen 127.0.0.1:8444 ssl;
+    server_name sonar.07230805.xyz;
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+    }
+}
+`
+	write := func(t *testing.T, path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	run := func(t *testing.T, searchDirs string) []string {
+		t.Helper()
+		cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+lookup+"\nfind_host_nginx_conf")
+		cmd.Env = append(os.Environ(),
+			"DOMAIN=relay.07230805.xyz",
+			"PORT_A=8318",
+			"PORT_B=8319",
+			"NGINX_SEARCH_DIRS="+searchDirs,
+			"NGINX_BACKUP_PATTERN="+backupPattern,
+			"NGINX_CONF=",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("run lookup: %v\n%s", err, out)
+		}
+		return strings.Fields(strings.TrimSpace(string(out)))
+	}
+
+	t.Run("redirect is found first", func(t *testing.T) {
+		// grep -R walks its arguments in order, so the redirect is always the
+		// first match here: the file a first-match lookup would hand cutover.
+		redirectDir, vhostDir := t.TempDir(), t.TempDir()
+		write(t, redirectDir+"/code.07230805.xyz.conf", redirect)
+		write(t, vhostDir+"/00-https-local-8444.conf", tlsVhost)
+		// A backup that still routes to a slot stays excluded.
+		write(t, vhostDir+"/00-https-local-8444.conf.bak-before-migrate", strings.ReplaceAll(tlsVhost, "8318", "8319"))
+
+		got := run(t, redirectDir+" "+vhostDir)
+		if want := vhostDir + "/00-https-local-8444.conf"; len(got) != 1 || got[0] != want {
+			t.Fatalf("lookup returned %v, want only the vhost that proxies to the slot %q", got, want)
+		}
+	})
+
+	t.Run("two vhosts route to a slot", func(t *testing.T) {
+		// Both are reported so the deploy refuses instead of rewriting one and
+		// leaving the other on the old slot.
+		dir := t.TempDir()
+		write(t, dir+"/relay.conf", tlsVhost)
+		write(t, dir+"/code.conf", strings.ReplaceAll(tlsVhost, "8318", "8319"))
+		if got := run(t, dir); len(got) != 2 {
+			t.Fatalf("lookup returned %v, want both vhosts so the deploy can refuse", got)
+		}
+	})
+
+	t.Run("nothing routes to a slot", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir+"/code.07230805.xyz.conf", redirect)
+		if got := run(t, dir); len(got) != 0 {
+			t.Fatalf("lookup returned %v for a redirect-only host, want nothing", got)
+		}
+	})
+}
+
+// A cutover that failed to move nginx leaves .active-port and systemd agreeing
+// with each other while nginx still points at the old slot. Draining then takes
+// production down, so the drain must refuse.
+func TestCleanupDrainedSlotRefusesToStopSlotNginxStillServes(t *testing.T) {
+	tmp := t.TempDir()
+	binDir := tmp + "/bin"
+	nginxDir := tmp + "/nginx"
+	for _, dir := range []string{binDir, nginxDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+	}
+
+	activeUnitPath := tmp + "/active-unit"
+	fakeSystemctl := `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+if [ "$1" = "is-active" ] && [ "$2" = "--quiet" ]; then
+  active="$(cat "$SYSTEMCTL_ACTIVE_UNIT" 2>/dev/null || true)"
+  if [ "${3:-}" = "$active" ]; then
+    exit 0
+  fi
+  exit 3
+fi
+`
+	if err := os.WriteFile(binDir+"/systemctl", []byte(fakeSystemctl), 0o755); err != nil {
+		t.Fatalf("write fake systemctl: %v", err)
+	}
+
+	activePortFile := tmp + "/.active-port"
+	// Both local sources say 8319 won the cutover...
+	if err := os.WriteFile(activePortFile, []byte("8319\n"), 0o644); err != nil {
+		t.Fatalf("write active port: %v", err)
+	}
+	if err := os.WriteFile(activeUnitPath, []byte("clirelay2-8319\n"), 0o644); err != nil {
+		t.Fatalf("write active unit: %v", err)
+	}
+	// ...but nginx never moved off 8318.
+	if err := os.WriteFile(nginxDir+"/live.conf", []byte("proxy_pass http://127.0.0.1:8318;\n"), 0o644); err != nil {
+		t.Fatalf("write live vhost: %v", err)
+	}
+	// A stale backup pointing at the new slot must not be mistaken for live config.
+	if err := os.WriteFile(nginxDir+"/live.conf.bak-before-cutover", []byte("proxy_pass http://127.0.0.1:8319;\n"), 0o644); err != nil {
+		t.Fatalf("write backup vhost: %v", err)
+	}
+
+	logPath := tmp + "/systemctl.log"
+	cmd := exec.Command("bash", "scripts/cleanup-drained-slot.sh", "8318", "8319")
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"SYSTEMCTL_LOG="+logPath,
+		"SYSTEMCTL_ACTIVE_UNIT="+activeUnitPath,
+		"BASE_DIR="+tmp,
+		"ACTIVE_PORT_FILE="+activePortFile,
+		"NGINX_SEARCH_DIRS="+nginxDir,
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("drain succeeded while nginx still served 8318; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "live nginx still proxies to it") {
+		t.Fatalf("drain refused for the wrong reason:\n%s", out)
+	}
+
+	logData, _ := os.ReadFile(logPath)
+	if strings.Contains(string(logData), "disable --now clirelay2-8318") {
+		t.Fatalf("drain stopped the slot nginx was serving:\n%s", logData)
+	}
+}
+
+// The gate compares the workflow's expectation against the version baked into
+// the script. When they drift, every deploy fails before touching the host --
+// safe, but it silently disables deployment until someone notices.
+func TestDeployScriptVersionMatchesWorkflowExpectation(t *testing.T) {
+	raw := extractShellAssignment(t, "scripts/deploy-blue-green.sh", "SCRIPT_VERSION")
+	raw = strings.Trim(raw, `"`)
+	scriptVersion := strings.TrimSuffix(strings.TrimPrefix(raw, "${SCRIPT_VERSION:-"), "}")
+	if scriptVersion == "" || strings.ContainsAny(scriptVersion, "${}\"") {
+		t.Fatalf("could not parse SCRIPT_VERSION, got %q", raw)
+	}
+
+	data, err := os.ReadFile(".github/workflows/deploy.yml")
+	if err != nil {
+		t.Fatalf("read deploy workflow: %v", err)
+	}
+	want := "EXPECTED_SCRIPT_VERSION: '" + scriptVersion + "'"
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("deploy workflow must expect script version %q (looked for %q)", scriptVersion, want)
+	}
+}
+
+// Deployment must not depend on a repository variable being present. It used to
+// require CLIRELAY_DEV_AUTO_DEPLOY == 'true', so clearing or losing that
+// variable turned every merge into dev into a silent build-only run while the
+// workflow still reported success.
+func TestDeployIsOptOutRatherThanOptIn(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/deploy.yml")
+	if err != nil {
+		t.Fatalf("read deploy workflow: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, `vars.CLIRELAY_DEV_AUTO_DEPLOY != 'false'`) {
+		t.Fatalf("merges into dev must deploy unless explicitly disabled")
+	}
+	if strings.Contains(content, `vars.CLIRELAY_DEV_AUTO_DEPLOY == 'true'`) {
+		t.Fatalf("deployment must not be gated behind an opt-in variable")
+	}
+}
+
+// Cutover smoke-tests the new slot, but the old slot is drained on a delay
+// afterwards, and draining is where the previous outages actually happened. The
+// workflow must keep probing across that window rather than reporting success
+// at cutover.
+func TestDeployVerifiesHealthAcrossTheDrainWindow(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/deploy.yml")
+	if err != nil {
+		t.Fatalf("read deploy workflow: %v", err)
+	}
+	content := string(data)
+
+	for _, want := range []string{
+		`name: Verify service stays healthy through drain`,
+		`CLIRELAY_PUBLIC_HEALTH_URL`,
+		`Post-deploy health probes failed`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("deploy workflow missing post-deploy verification marker %q", want)
+		}
+	}
+
+	// The probe is worthless if it runs before the deploy step.
+	deployIndex := strings.Index(content, `name: Blue-green deploy via fixed root entrypoint`)
+	probeIndex := strings.Index(content, `name: Verify service stays healthy through drain`)
+	if deployIndex < 0 || probeIndex < 0 || probeIndex <= deployIndex {
+		t.Fatalf("post-deploy health probe must run after the blue-green deploy step")
+	}
+
+	// It must also gate the run: a silent probe would repeat the failure mode
+	// this whole change exists to prevent.
+	if !strings.Contains(content, `exit 1`) {
+		t.Fatalf("post-deploy health probe must fail the workflow when probes fail")
+	}
+}

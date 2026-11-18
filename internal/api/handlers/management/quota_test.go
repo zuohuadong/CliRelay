@@ -1,194 +1,69 @@
 package management
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-type reconcileQuotaTestExecutor struct {
-	probedAuthID string
-}
-
-func (e *reconcileQuotaTestExecutor) Identifier() string { return "quota-test" }
-
-func (*reconcileQuotaTestExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, nil
-}
-
-func (*reconcileQuotaTestExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
-	return nil, nil
-}
-
-func (*reconcileQuotaTestExecutor) Refresh(context.Context, *coreauth.Auth) (*coreauth.Auth, error) {
-	return nil, nil
-}
-
-func (*reconcileQuotaTestExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, nil
-}
-
-func (*reconcileQuotaTestExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
-	return nil, nil
-}
-
-func (e *reconcileQuotaTestExecutor) ProbeQuotaRecovery(_ context.Context, auth *coreauth.Auth) (*coreauth.QuotaProbeResult, error) {
-	e.probedAuthID = auth.ID
-	return &coreauth.QuotaProbeResult{}, nil
-}
-
-func TestResetQuota_UsesAuthIndex(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "")
+func TestPostQuotaClearStatusClearsUnauthorizedAuthByIndex(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 
 	manager := coreauth.NewManager(nil, nil, nil)
-	next := time.Now().Add(time.Hour)
-	auth := &coreauth.Auth{
-		ID:             "reset-auth-id",
-		FileName:       "reset-auth-file.json",
-		Provider:       "claude",
-		Status:         coreauth.StatusError,
-		StatusMessage:  "quota exhausted",
-		Unavailable:    true,
-		NextRetryAfter: next,
-		Quota:          coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next, BackoffLevel: 2},
-		ModelStates: map[string]*coreauth.ModelState{
-			"claude-reset-model": {
-				Status:         coreauth.StatusError,
-				StatusMessage:  "quota exhausted",
-				Unavailable:    true,
-				NextRetryAfter: next,
-				Quota:          coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next, BackoffLevel: 2},
-			},
-		},
+	registered, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:        "xai-auth",
+		Provider:  "xai",
+		FileName:  "xai.json",
+		Status:    coreauth.StatusError,
+		LastError: &coreauth.Error{HTTPStatus: http.StatusUnauthorized},
+	})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
 	}
-	authIndex := auth.EnsureIndex()
-	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
-		t.Fatalf("failed to register auth record: %v", errRegister)
+	if registered.Index == "" {
+		t.Fatalf("registered auth index is empty")
 	}
 
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	h := &Handler{authManager: manager}
+	router := gin.New()
+	router.POST("/quota/clear-status", h.PostQuotaClearStatus)
 
-	rec := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(rec)
-	req := httptest.NewRequest(http.MethodPost, "/v0/management/reset-quota", strings.NewReader(`{"auth_index":"`+authIndex+`"}`))
+	body, err := json.Marshal(map[string]string{"authIndex": registered.Index})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/quota/clear-status", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	ctx.Request = req
-	h.ResetQuota(ctx)
+	router.ServeHTTP(rr, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var response struct {
+		Changed bool `json:"changed"`
+	}
+	if err = json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Unmarshal(response) error = %v", err)
+	}
+	if !response.Changed {
+		t.Fatalf("response.changed = false, want true; body=%s", rr.Body.String())
 	}
 
-	var payload map[string]any
-	if errUnmarshal := json.Unmarshal(rec.Body.Bytes(), &payload); errUnmarshal != nil {
-		t.Fatalf("failed to decode response: %v", errUnmarshal)
-	}
-	if payload["auth_index"] != authIndex {
-		t.Fatalf("auth_index = %#v, want %q", payload["auth_index"], authIndex)
-	}
-
-	updated, ok := manager.GetByID("reset-auth-id")
+	updated, ok := manager.GetByID(registered.ID)
 	if !ok || updated == nil {
-		t.Fatalf("expected auth record to exist after reset")
+		t.Fatalf("GetByID() missing auth")
 	}
-	if updated.Status != coreauth.StatusActive || updated.StatusMessage != "" || updated.Unavailable || !updated.NextRetryAfter.IsZero() {
-		t.Fatalf("updated auth state = status %q message %q unavailable %v next %v", updated.Status, updated.StatusMessage, updated.Unavailable, updated.NextRetryAfter)
+	if updated.Status != coreauth.StatusActive {
+		t.Fatalf("auth.Status = %q, want %q", updated.Status, coreauth.StatusActive)
 	}
-	if updated.Quota.Exceeded || updated.Quota.Reason != "" || !updated.Quota.NextRecoverAt.IsZero() || updated.Quota.BackoffLevel != 0 {
-		t.Fatalf("updated auth quota = %+v, want cleared", updated.Quota)
-	}
-	state := updated.ModelStates["claude-reset-model"]
-	if state == nil {
-		t.Fatalf("expected model state to remain")
-	}
-	if state.Status != coreauth.StatusActive || state.StatusMessage != "" || state.Unavailable || !state.NextRetryAfter.IsZero() {
-		t.Fatalf("updated model state = status %q message %q unavailable %v next %v", state.Status, state.StatusMessage, state.Unavailable, state.NextRetryAfter)
-	}
-	if state.Quota.Exceeded || state.Quota.Reason != "" || !state.Quota.NextRecoverAt.IsZero() || state.Quota.BackoffLevel != 0 {
-		t.Fatalf("updated model quota = %+v, want cleared", state.Quota)
-	}
-}
-
-func TestResetQuota_DoesNotAcceptAuthIDOrFileName(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "")
-
-	manager := coreauth.NewManager(nil, nil, nil)
-	auth := &coreauth.Auth{
-		ID:       "reset-auth-id-only",
-		FileName: "reset-auth-file-only.json",
-		Provider: "claude",
-		Status:   coreauth.StatusError,
-	}
-	authIndex := auth.EnsureIndex()
-	if authIndex == auth.ID || authIndex == auth.FileName {
-		t.Fatalf("test auth_index unexpectedly matches id or file name: %q", authIndex)
-	}
-	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
-		t.Fatalf("failed to register auth record: %v", errRegister)
-	}
-
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
-
-	tests := []struct {
-		name     string
-		body     string
-		wantCode int
-	}{
-		{name: "auth_id field ignored", body: `{"auth_id":"reset-auth-id-only"}`, wantCode: http.StatusBadRequest},
-		{name: "id field ignored", body: `{"id":"reset-auth-id-only"}`, wantCode: http.StatusBadRequest},
-		{name: "file name is not an index", body: `{"auth_index":"reset-auth-file-only.json"}`, wantCode: http.StatusNotFound},
-		{name: "auth id is not an index", body: `{"auth_index":"reset-auth-id-only"}`, wantCode: http.StatusNotFound},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			ctx, _ := gin.CreateTestContext(rec)
-			req := httptest.NewRequest(http.MethodPost, "/v0/management/reset-quota", strings.NewReader(tt.body))
-			req.Header.Set("Content-Type", "application/json")
-			ctx.Request = req
-			h.ResetQuota(ctx)
-
-			if rec.Code != tt.wantCode {
-				t.Fatalf("status = %d, want %d with body %s", rec.Code, tt.wantCode, rec.Body.String())
-			}
-		})
-	}
-}
-
-func TestReconcileQuota_UsesAuthIndex(t *testing.T) {
-	manager := coreauth.NewManager(nil, nil, nil)
-	executor := &reconcileQuotaTestExecutor{}
-	manager.RegisterExecutor(executor)
-	auth := &coreauth.Auth{
-		ID:       "reconcile-auth-id",
-		Provider: "quota-test",
-	}
-	authIndex := auth.EnsureIndex()
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatalf("register auth: %v", err)
-	}
-
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
-	rec := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(rec)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/quota/reconcile", strings.NewReader(`{"authIndex":"`+authIndex+`"}`))
-	ctx.Request.Header.Set("Content-Type", "application/json")
-	h.ReconcileQuota(ctx)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if executor.probedAuthID != auth.ID {
-		t.Fatalf("probed auth id = %q, want %q", executor.probedAuthID, auth.ID)
+	if updated.StatusMessage != "" || updated.Unavailable || !updated.NextRetryAfter.IsZero() || updated.LastError != nil || updated.Quota != (coreauth.QuotaState{}) {
+		t.Fatalf("401 runtime state was not cleared: %#v", updated)
 	}
 }

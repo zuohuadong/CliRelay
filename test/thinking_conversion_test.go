@@ -17,11 +17,10 @@ import (
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/openai"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/xai"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // thinkingTestCase represents a common test case structure for both suffix and body tests.
@@ -42,15 +41,25 @@ type thinkingTestCase struct {
 	expectErr       bool
 }
 
+func registerTestModelsForProviders(t *testing.T, prefix string) {
+	t.Helper()
+	reg := registry.GetGlobalRegistry()
+	models := getTestModels()
+	for _, provider := range []string{"gemini", "antigravity", "claude", "openai", "codex", "kimi", "xai", "interactions"} {
+		clientID := fmt.Sprintf("%s-%s", prefix, provider)
+		reg.RegisterClient(clientID, provider, models)
+		t.Cleanup(func() {
+			reg.UnregisterClient(clientID)
+		})
+	}
+}
+
 // TestThinkingE2EMatrix_Suffix tests the thinking configuration transformation using model name suffix.
 // Data flow: Input JSON → TranslateRequest → ApplyThinking → Validate Output
 // No helper functions are used; all test data is inline.
 func TestThinkingE2EMatrix_Suffix(t *testing.T) {
-	reg := registry.GetGlobalRegistry()
 	uid := fmt.Sprintf("thinking-e2e-suffix-%d", time.Now().UnixNano())
-
-	reg.RegisterClient(uid, "test", getTestModels())
-	defer reg.UnregisterClient(uid)
+	registerTestModelsForProviders(t, uid)
 
 	cases := []thinkingTestCase{
 		// level-model (Levels=minimal/low/medium/high, ZeroAllowed=false, DynamicAllowed=false)
@@ -77,16 +86,15 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectValue: "medium",
 			expectErr:   false,
 		},
-		// Case 3: Specified xhigh → clamped to high for cross-format Codex output
+		// Case 3: Specified xhigh → out of range error
 		{
 			name:        "3",
 			from:        "openai",
 			to:          "codex",
 			model:       "level-model(xhigh)",
 			inputJSON:   `{"model":"level-model(xhigh)","messages":[{"role":"user","content":"hi"}]}`,
-			expectField: "reasoning.effort",
-			expectValue: "high",
-			expectErr:   false,
+			expectField: "",
+			expectErr:   true,
 		},
 		// Case 4: Level none → clamped to minimal (ZeroAllowed=false)
 		{
@@ -842,26 +850,29 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectValue: "xhigh",
 			expectErr:   false,
 		},
-		// Case 69: Budget 0 → passthrough logic → none
+		// Case 69: Budget 0 means "do not think". For a model whose accepted
+		// levels are unknown the field is omitted rather than set to "none":
+		// "none" is an internal marker, not an OpenAI wire value, and Command
+		// Code answers 400 `expected one of "low"|"medium"|"high"|"xhigh"|"max"`
+		// on it. Omission is how the wire format says "use the model default".
 		{
 			name:        "69",
 			from:        "gemini",
 			to:          "openai",
 			model:       "user-defined-model(0)",
 			inputJSON:   `{"model":"user-defined-model(0)","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
-			expectField: "reasoning_effort",
-			expectValue: "none",
+			expectField: "",
 			expectErr:   false,
 		},
-		// Case 70: Budget -1 → passthrough logic → auto
+		// Case 70: Budget -1 maps to "auto", which is the same kind of internal
+		// marker as "none" and is omitted for the same reason.
 		{
 			name:        "70",
 			from:        "gemini",
 			to:          "openai",
 			model:       "user-defined-model(-1)",
 			inputJSON:   `{"model":"user-defined-model(-1)","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
-			expectField: "reasoning_effort",
-			expectValue: "auto",
+			expectField: "",
 			expectErr:   false,
 		},
 		// Case 71: Claude to Codex no suffix → injected default → medium
@@ -1000,16 +1011,15 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectValue: "high",
 			expectErr:   false,
 		},
-		// Case 83: OpenAI-Response to Codex, level xhigh → clamped to high
+		// Case 83: OpenAI-Response to Codex, level xhigh → out of range error
 		{
 			name:        "83",
 			from:        "openai-response",
 			to:          "codex",
 			model:       "level-model(xhigh)",
 			inputJSON:   `{"model":"level-model(xhigh)","input":[{"role":"user","content":"hi"}]}`,
-			expectField: "reasoning.effort",
-			expectValue: "high",
-			expectErr:   false,
+			expectField: "",
+			expectErr:   true,
 		},
 		// Case 84: Gemini to Gemini, budget 8192 → passthrough thinkingBudget
 		{
@@ -1092,11 +1102,8 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 // TestThinkingE2EMatrix_Body tests the thinking configuration transformation using request body parameters.
 // Data flow: Input JSON with thinking params → TranslateRequest → ApplyThinking → Validate Output
 func TestThinkingE2EMatrix_Body(t *testing.T) {
-	reg := registry.GetGlobalRegistry()
 	uid := fmt.Sprintf("thinking-e2e-body-%d", time.Now().UnixNano())
-
-	reg.RegisterClient(uid, "test", getTestModels())
-	defer reg.UnregisterClient(uid)
+	registerTestModelsForProviders(t, uid)
 
 	cases := []thinkingTestCase{
 		// level-model (Levels=minimal/low/medium/high, ZeroAllowed=false, DynamicAllowed=false)
@@ -1123,16 +1130,15 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "medium",
 			expectErr:   false,
 		},
-		// Case 3: reasoning_effort=xhigh → clamped to high for cross-format Codex output
+		// Case 3: reasoning_effort=xhigh → out of range error
 		{
 			name:        "3",
 			from:        "openai",
 			to:          "codex",
 			model:       "level-model",
 			inputJSON:   `{"model":"level-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"xhigh"}`,
-			expectField: "reasoning.effort",
-			expectValue: "high",
-			expectErr:   false,
+			expectField: "",
+			expectErr:   true,
 		},
 		// Case 4: reasoning_effort=none → clamped to minimal
 		{
@@ -1918,26 +1924,30 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "xhigh",
 			expectErr:   false,
 		},
-		// Case 69: thinkingBudget=0 → none
+		// Case 69: thinkingBudget=0 means "do not think". For a model whose
+		// accepted levels are unknown the field is omitted rather than set to
+		// "none": "none" is an internal marker, not an OpenAI wire value, and
+		// Command Code answers 400 `expected one of
+		// "low"|"medium"|"high"|"xhigh"|"max"` on it. Omission is how the wire
+		// format says "use the model default".
 		{
 			name:        "69",
 			from:        "gemini",
 			to:          "openai",
 			model:       "user-defined-model",
 			inputJSON:   `{"model":"user-defined-model","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":0}}}`,
-			expectField: "reasoning_effort",
-			expectValue: "none",
+			expectField: "",
 			expectErr:   false,
 		},
-		// Case 70: thinkingBudget=-1 → auto
+		// Case 70: thinkingBudget=-1 maps to "auto", the same kind of internal
+		// marker as "none", omitted for the same reason.
 		{
 			name:        "70",
 			from:        "gemini",
 			to:          "openai",
 			model:       "user-defined-model",
 			inputJSON:   `{"model":"user-defined-model","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":-1}}}`,
-			expectField: "reasoning_effort",
-			expectValue: "auto",
+			expectField: "",
 			expectErr:   false,
 		},
 		// Case 71: Claude no param → injected default → medium
@@ -2076,16 +2086,15 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "high",
 			expectErr:   false,
 		},
-		// Case 83: OpenAI-Response to Codex, reasoning.effort=xhigh → clamped to high
+		// Case 83: OpenAI-Response to Codex, reasoning.effort=xhigh → out of range error
 		{
 			name:        "83",
 			from:        "openai-response",
 			to:          "codex",
 			model:       "level-model",
 			inputJSON:   `{"model":"level-model","input":[{"role":"user","content":"hi"}],"reasoning":{"effort":"xhigh"}}`,
-			expectField: "reasoning.effort",
-			expectValue: "high",
-			expectErr:   false,
+			expectField: "",
+			expectErr:   true,
 		},
 		// Case 84: Gemini to Gemini, thinkingBudget=8192 → passthrough
 		{
@@ -2162,11 +2171,8 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 
 // TestThinkingE2EProviderTargets covers provider-specific targets that are not part of the main matrix.
 func TestThinkingE2EProviderTargets(t *testing.T) {
-	reg := registry.GetGlobalRegistry()
 	uid := fmt.Sprintf("thinking-e2e-provider-targets-%d", time.Now().UnixNano())
-
-	reg.RegisterClient(uid, "test", getTestModels())
-	defer reg.UnregisterClient(uid)
+	registerTestModelsForProviders(t, uid)
 
 	cases := []thinkingTestCase{
 		// Kimi target: emit the native thinking object and accept reasoning_effort only as legacy input.
@@ -2533,11 +2539,8 @@ func TestThinkingE2EProviderTargets(t *testing.T) {
 // client against every provider, so an explicit on/off request has to survive the
 // round trip in both roles.
 func TestThinkingE2EInteractionsMatrix(t *testing.T) {
-	reg := registry.GetGlobalRegistry()
 	uid := fmt.Sprintf("thinking-e2e-interactions-%d", time.Now().UnixNano())
-
-	reg.RegisterClient(uid, "test", getTestModels())
-	defer reg.UnregisterClient(uid)
+	registerTestModelsForProviders(t, uid)
 
 	cases := []thinkingTestCase{
 		// Interactions as provider: explicit on from every client protocol.
@@ -2778,11 +2781,8 @@ func TestThinkingE2EInteractionsMatrix(t *testing.T) {
 // TestThinkingE2EClaudeAdaptive_Body covers Group 3 cases in docs/thinking-e2e-test-cases.md.
 // It focuses on Claude 4.6 adaptive thinking and effort/level cross-protocol semantics (body-only).
 func TestThinkingE2EClaudeAdaptive_Body(t *testing.T) {
-	reg := registry.GetGlobalRegistry()
 	uid := fmt.Sprintf("thinking-e2e-claude-adaptive-%d", time.Now().UnixNano())
-
-	reg.RegisterClient(uid, "test", getTestModels())
-	defer reg.UnregisterClient(uid)
+	registerTestModelsForProviders(t, uid)
 
 	cases := []thinkingTestCase{
 		// A subgroup: OpenAI -> Claude (reasoning_effort -> output_config.effort)
@@ -3438,7 +3438,7 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 				true,
 			)
 			if applyTo == "claude" {
-				body, _ = sjson.SetBytes(body, "max_tokens", 200000)
+				body, _ = ojson.SetBytes(body, "max_tokens", 200000)
 			}
 
 			body, err := thinking.ApplyThinking(body, tc.model, tc.from, applyTo, applyTo)
@@ -3454,7 +3454,7 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 			}
 
 			for _, fieldPath := range tc.expectAbsent {
-				if gjson.GetBytes(body, fieldPath).Exists() {
+				if ojson.GetBytesNoCopy(body, fieldPath).Exists() {
 					t.Fatalf("expected field %s to be absent, body=%s", fieldPath, string(body))
 				}
 			}
@@ -3463,17 +3463,17 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 				var hasThinking bool
 				switch tc.to {
 				case "gemini":
-					hasThinking = gjson.GetBytes(body, "generationConfig.thinkingConfig").Exists()
+					hasThinking = ojson.GetBytesNoCopy(body, "generationConfig.thinkingConfig").Exists()
 				case "antigravity":
-					hasThinking = gjson.GetBytes(body, "request.generationConfig.thinkingConfig").Exists()
+					hasThinking = ojson.GetBytesNoCopy(body, "request.generationConfig.thinkingConfig").Exists()
 				case "claude":
-					hasThinking = gjson.GetBytes(body, "thinking").Exists()
+					hasThinking = ojson.GetBytesNoCopy(body, "thinking").Exists()
 				case "openai":
-					hasThinking = gjson.GetBytes(body, "reasoning_effort").Exists()
+					hasThinking = ojson.GetBytesNoCopy(body, "reasoning_effort").Exists()
 				case "codex":
-					hasThinking = gjson.GetBytes(body, "reasoning.effort").Exists() || gjson.GetBytes(body, "reasoning").Exists()
+					hasThinking = ojson.GetBytesNoCopy(body, "reasoning.effort").Exists() || ojson.GetBytesNoCopy(body, "reasoning").Exists()
 				case "kimi":
-					hasThinking = gjson.GetBytes(body, "thinking").Exists() || gjson.GetBytes(body, "reasoning_effort").Exists()
+					hasThinking = ojson.GetBytesNoCopy(body, "thinking").Exists() || ojson.GetBytesNoCopy(body, "reasoning_effort").Exists()
 				}
 				if hasThinking {
 					t.Fatalf("expected no thinking field but found one, body=%s", string(body))
@@ -3482,12 +3482,12 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 			}
 
 			assertField := func(fieldPath, expected string) {
-				val := gjson.GetBytes(body, fieldPath)
+				val := ojson.GetBytesNoCopy(body, fieldPath)
 				if !val.Exists() {
 					t.Fatalf("expected field %s not found, body=%s", fieldPath, string(body))
 				}
 				actualValue := val.String()
-				if val.Type == gjson.Number {
+				if val.Type == ojson.Number {
 					actualValue = fmt.Sprintf("%d", val.Int())
 				}
 				if actualValue != expected {
@@ -3504,7 +3504,7 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 			// 2.1.220 always sends thinking.type="adaptive" alongside
 			// output_config.effort. Emitting effort on its own would be a wire
 			// shape the real client never produces.
-			if tc.to == "claude" && gjson.GetBytes(body, "output_config.effort").Exists() {
+			if tc.to == "claude" && ojson.GetBytesNoCopy(body, "output_config.effort").Exists() {
 				assertField("thinking.type", "adaptive")
 			}
 			if tc.expectField3 != "" {
@@ -3519,7 +3519,7 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 				// Each case declares its expected visibility independently from the
 				// extractor under test. Empty means the provider field must be absent.
 				wantIncludeThoughts := tc.includeThoughts
-				itVal := gjson.GetBytes(body, path)
+				itVal := ojson.GetBytesNoCopy(body, path)
 				if wantIncludeThoughts == "" {
 					if itVal.Exists() {
 						t.Fatalf("includeThoughts should be absent without summary intent, body=%s", string(body))

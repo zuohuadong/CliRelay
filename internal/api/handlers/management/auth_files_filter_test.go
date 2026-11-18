@@ -2,7 +2,6 @@ package management
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -27,7 +27,7 @@ func TestListAuthFilesFiltersByNameAndAuthIndex(t *testing.T) {
 	}
 
 	manager := coreauth.NewManager(nil, nil, nil)
-	registerFilterAuthForLookupTest(t, manager, &coreauth.Auth{
+	registerAuthForLookupTest(t, manager, &coreauth.Auth{
 		ID:       "auth-a",
 		Index:    "idx-a",
 		FileName: fileName,
@@ -37,7 +37,7 @@ func TestListAuthFilesFiltersByNameAndAuthIndex(t *testing.T) {
 			"path": filePath,
 		},
 	})
-	registerFilterAuthForLookupTest(t, manager, &coreauth.Auth{
+	registerAuthForLookupTest(t, manager, &coreauth.Auth{
 		ID:       "auth-b",
 		Index:    "idx-b",
 		FileName: fileName,
@@ -134,14 +134,14 @@ func TestPatchAuthFileStatusVerifiesAuthIndex(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 
 	manager := coreauth.NewManager(nil, nil, nil)
-	registerFilterAuthForLookupTest(t, manager, &coreauth.Auth{
+	registerAuthForLookupTest(t, manager, &coreauth.Auth{
 		ID:       "auth-a",
 		Index:    "idx-a",
 		FileName: "shared-codex.json",
 		Provider: "codex",
 		Status:   coreauth.StatusActive,
 	})
-	registerFilterAuthForLookupTest(t, manager, &coreauth.Auth{
+	registerAuthForLookupTest(t, manager, &coreauth.Auth{
 		ID:       "auth-b",
 		Index:    "idx-b",
 		FileName: "shared-codex.json",
@@ -178,7 +178,7 @@ func TestPatchAuthFileStatusRejectsMismatchedAuthIndex(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 
 	manager := coreauth.NewManager(nil, nil, nil)
-	registerFilterAuthForLookupTest(t, manager, &coreauth.Auth{
+	registerAuthForLookupTest(t, manager, &coreauth.Auth{
 		ID:       "auth-a",
 		Index:    "idx-a",
 		FileName: "shared-codex.json",
@@ -238,7 +238,7 @@ func TestAuthFileLookupAndEntryBuildConcurrentEnsureIndex(t *testing.T) {
 				if !matchesAuthFileLookup(auth, fileName, "idx-concurrent") {
 					t.Errorf("auth lookup did not match")
 				}
-				entry := h.buildAuthFileEntry(auth)
+				entry := h.buildAuthFileEntry(auth, authFileQuotaContext{})
 				if entry == nil {
 					t.Errorf("entry is nil")
 					continue
@@ -252,7 +252,7 @@ func TestAuthFileLookupAndEntryBuildConcurrentEnsureIndex(t *testing.T) {
 	wg.Wait()
 }
 
-func registerFilterAuthForLookupTest(t *testing.T, manager *coreauth.Manager, auth *coreauth.Auth) {
+func registerAuthForLookupTest(t *testing.T, manager *coreauth.Manager, auth *coreauth.Auth) {
 	t.Helper()
 	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
 		t.Fatalf("register auth %q: %v", auth.ID, errRegister)

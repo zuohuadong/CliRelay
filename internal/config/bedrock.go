@@ -8,23 +8,66 @@ const (
 	BedrockAuthModeAPIKey = "api-key"
 )
 
+// BedrockKey represents an AWS Bedrock Runtime credential.
+// It supports both AWS SigV4 credentials and Bedrock API key bearer auth.
 type BedrockKey struct {
-	Name              string            `yaml:"name,omitempty" json:"name,omitempty"`
-	Priority          int               `yaml:"priority,omitempty" json:"priority,omitempty"`
-	Prefix            string            `yaml:"prefix,omitempty" json:"prefix,omitempty"`
-	AuthMode          string            `yaml:"auth-mode,omitempty" json:"auth-mode,omitempty"`
-	APIKey            string            `yaml:"api-key,omitempty" json:"api-key,omitempty"`
-	AccessKeyID       string            `yaml:"access-key-id,omitempty" json:"access-key-id,omitempty"`
-	SecretAccessKey   string            `yaml:"secret-access-key,omitempty" json:"secret-access-key,omitempty"`
-	SessionToken      string            `yaml:"session-token,omitempty" json:"session-token,omitempty"`
-	Region            string            `yaml:"region,omitempty" json:"region,omitempty"`
-	ForceGlobal       bool              `yaml:"force-global,omitempty" json:"force-global,omitempty"`
-	BaseURL           string            `yaml:"base-url,omitempty" json:"base-url,omitempty"`
-	ProxyURL          string            `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
-	Models            []BedrockModel    `yaml:"models,omitempty" json:"models,omitempty"`
-	Headers           map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
-	ExcludedModels    []string          `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
-	BillingMultiplier float64           `yaml:"billing-multiplier,omitempty" json:"billing-multiplier,omitempty"`
+	// ID is the immutable persistent UUID used by channel bindings.
+	ID string `yaml:"id,omitempty" json:"id,omitempty"`
+
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// Prefix optionally namespaces model aliases for this credential.
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// AuthMode selects credential handling: "sigv4" (default) or "api-key".
+	AuthMode string `yaml:"auth-mode,omitempty" json:"auth-mode,omitempty"`
+
+	// APIKey is used when AuthMode is "api-key" and maps to Authorization: Bearer.
+	APIKey string `yaml:"api-key,omitempty" json:"api-key,omitempty"`
+
+	// AccessKeyID is the AWS access key id used for SigV4 signing.
+	AccessKeyID string `yaml:"access-key-id,omitempty" json:"access-key-id,omitempty"`
+
+	// SecretAccessKey is the AWS secret access key used for SigV4 signing.
+	SecretAccessKey string `yaml:"secret-access-key,omitempty" json:"secret-access-key,omitempty"`
+
+	// SessionToken is an optional AWS session token for temporary credentials.
+	SessionToken string `yaml:"session-token,omitempty" json:"session-token,omitempty"`
+
+	// Region is the Bedrock Runtime region. Empty defaults to us-east-1.
+	Region string `yaml:"region,omitempty" json:"region,omitempty"`
+
+	// ForceGlobal maps supported Claude aliases to the global Bedrock prefix.
+	ForceGlobal bool `yaml:"force-global,omitempty" json:"force-global,omitempty"`
+
+	// BaseURL optionally overrides the Bedrock Runtime endpoint.
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this credential.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// Models defines upstream model names and aliases for request routing.
+	Models []BedrockModel `yaml:"models,omitempty" json:"models,omitempty"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this credential.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this credential.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 }
 
 func (k BedrockKey) GetAPIKey() string {
@@ -39,20 +82,24 @@ func (k BedrockKey) GetAPIKey() string {
 
 func (k BedrockKey) GetBaseURL() string { return k.BaseURL }
 
+// BedrockModel describes an upstream Bedrock/Claude model and a client-facing alias.
 type BedrockModel struct {
-	Name        string `yaml:"name" json:"name"`
-	Alias       string `yaml:"alias" json:"alias"`
-	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
+	// Name is the upstream model or Claude alias used by the executor.
+	Name string `yaml:"name" json:"name"`
+
+	// Alias is the client-facing model name.
+	Alias string `yaml:"alias" json:"alias"`
 }
 
-func (m BedrockModel) GetName() string        { return m.Name }
-func (m BedrockModel) GetAlias() string       { return m.Alias }
-func (m BedrockModel) GetDisplayName() string { return m.DisplayName }
+func (m BedrockModel) GetName() string  { return m.Name }
+func (m BedrockModel) GetAlias() string { return m.Alias }
 
+// SanitizeBedrockKeys deduplicates and normalizes AWS Bedrock credentials.
 func (cfg *Config) SanitizeBedrockKeys() {
 	if cfg == nil {
 		return
 	}
+
 	seen := make(map[string]struct{}, len(cfg.BedrockKey))
 	out := cfg.BedrockKey[:0]
 	for i := range cfg.BedrockKey {
@@ -70,6 +117,7 @@ func (cfg *Config) SanitizeBedrockKeys() {
 		}
 		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
 		entry.Models = sanitizeBedrockModels(entry.Models)
@@ -113,7 +161,6 @@ func sanitizeBedrockModels(models []BedrockModel) []BedrockModel {
 	for _, model := range models {
 		model.Name = strings.TrimSpace(model.Name)
 		model.Alias = strings.TrimSpace(model.Alias)
-		model.DisplayName = strings.TrimSpace(model.DisplayName)
 		if model.Name == "" && model.Alias == "" {
 			continue
 		}

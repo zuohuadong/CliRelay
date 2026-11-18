@@ -18,7 +18,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -30,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -360,7 +360,7 @@ func parseSingleModelConfig(b []byte) rawDevinModel {
 	return m
 }
 
-func vendorName(id uint64, uid ...string) string {
+func vendorName(id uint64, uid string) string {
 	switch id {
 	case 1:
 		return "cognition"
@@ -379,7 +379,7 @@ func vendorName(id uint64, uid ...string) string {
 	case 11:
 		return "nvidia"
 	default:
-		if len(uid) > 0 && strings.Contains(strings.ToLower(uid[0]), "grok") {
+		if strings.Contains(strings.ToLower(uid), "grok") {
 			return "xai"
 		}
 		return "devin"
@@ -397,7 +397,7 @@ func formatRawModels(raw []rawDevinModel) []devinModelJSON {
 			ID:                        r.UID,
 			Object:                    "model",
 			Type:                      "devin",
-			OwnedBy:                   vendorName(r.VendorID),
+			OwnedBy:                   vendorName(r.VendorID, r.UID),
 			DisplayName:               r.Label,
 			ContextLength:             r.ContextLength,
 			MaxCompletionTokens:       64000,
@@ -429,6 +429,15 @@ var devinCompoundSuffixes = []struct {
 	{suffix: "-thinking", effort: ""},
 	{suffix: "-max-1m", effort: "max", readd: "-1m"},
 	{suffix: "-none-1m", effort: "none", readd: "-1m"},
+	// Lightning tier keeps the effort before the -lightning suffix upstream
+	// (e.g. swe-2-high-lightning), so it aggregates as <base>-lightning.
+	{suffix: "-minimal-lightning", effort: "minimal", readd: "-lightning"},
+	{suffix: "-low-lightning", effort: "low", readd: "-lightning"},
+	{suffix: "-medium-lightning", effort: "medium", readd: "-lightning"},
+	{suffix: "-high-lightning", effort: "high", readd: "-lightning"},
+	{suffix: "-xhigh-lightning", effort: "xhigh", readd: "-lightning"},
+	{suffix: "-max-lightning", effort: "max", readd: "-lightning"},
+	{suffix: "-none-lightning", effort: "none", readd: "-lightning"},
 }
 
 var devinSimpleEffortSuffixes = []struct {
@@ -442,6 +451,54 @@ var devinSimpleEffortSuffixes = []struct {
 	{suffix: "-high", effort: "high"},
 	{suffix: "-xhigh", effort: "xhigh"},
 	{suffix: "-max", effort: "max"},
+}
+
+func splitDevinUID(uid string) (string, string) {
+	if uid == "swe-1-6-slow" {
+		return uid, ""
+	}
+	if uid == "swe-1-6-fast" {
+		return "swe-1-6", ""
+	}
+
+	upper := strings.ToUpper(uid)
+	for _, s := range []struct {
+		suffix string
+		effort string
+	}{
+		{"_NONE", "none"},
+		{"_MINIMAL", "minimal"},
+		{"_LOW", "low"},
+		{"_MEDIUM", "medium"},
+		{"_HIGH", "high"},
+		{"_XHIGH", "xhigh"},
+		{"_MAX", "max"},
+		{"_THINKING", "high"},
+	} {
+		if strings.HasSuffix(upper, s.suffix) {
+			base := uid[:len(uid)-len(s.suffix)]
+			return base, s.effort
+		}
+	}
+
+	for _, s := range devinCompoundSuffixes {
+		if strings.HasSuffix(uid, s.suffix) {
+			base := uid[:len(uid)-len(s.suffix)]
+			if s.readd != "" {
+				base += s.readd
+			}
+			return base, s.effort
+		}
+	}
+
+	for _, s := range devinSimpleEffortSuffixes {
+		if strings.HasSuffix(uid, s.suffix) {
+			base := uid[:len(uid)-len(s.suffix)]
+			return base, s.effort
+		}
+	}
+
+	return uid, ""
 }
 
 func aggregateModels(raw []rawDevinModel) []devinModelJSON {
@@ -523,12 +580,19 @@ func aggregateModels(raw []rawDevinModel) []devinModelJSON {
 			}
 		}
 
+		// Lightning display names strip both the effort word and "Lightning";
+		// re-append it so swe-2-lightning shows as "SWE-2 Lightning".
+		displayName := entry.displayName
+		if strings.HasSuffix(id, "-lightning") && !strings.HasSuffix(strings.ToLower(displayName), "lightning") {
+			displayName = strings.TrimSpace(displayName + " Lightning")
+		}
+
 		res = append(res, devinModelJSON{
 			ID:                        entry.baseID,
 			Object:                    "model",
 			Type:                      "devin",
 			OwnedBy:                   vendorName(entry.vendorID, entry.baseID),
-			DisplayName:               entry.displayName,
+			DisplayName:               displayName,
 			ContextLength:             entry.contextLength,
 			MaxCompletionTokens:       64000,
 			SupportedInputModalities:  modalities,
@@ -547,7 +611,7 @@ var devinDisplayNameSuffixes = []string{
 	" Low Thinking", " Medium Thinking", " High Thinking", " XHigh Thinking",
 	" Max Thinking", " No Thinking",
 	" Low", " Medium", " High", " XHigh", " Max", " None", " Minimal",
-	" Thinking", " Fast",
+	" Thinking", " Fast", " Lightning",
 }
 
 func cleanDisplayName(label string) string {
@@ -594,52 +658,4 @@ func sortLevels(levels []string) {
 		}
 		return levels[i] < levels[j]
 	})
-}
-
-func splitDevinUID(uid string) (string, string) {
-	if uid == "swe-1-6-slow" {
-		return uid, ""
-	}
-	if uid == "swe-1-6-fast" {
-		return "swe-1-6", ""
-	}
-
-	upper := strings.ToUpper(uid)
-	for _, s := range []struct {
-		suffix string
-		effort string
-	}{
-		{"_NONE", "none"},
-		{"_MINIMAL", "minimal"},
-		{"_LOW", "low"},
-		{"_MEDIUM", "medium"},
-		{"_HIGH", "high"},
-		{"_XHIGH", "xhigh"},
-		{"_MAX", "max"},
-		{"_THINKING", "high"},
-	} {
-		if strings.HasSuffix(upper, s.suffix) {
-			base := uid[:len(uid)-len(s.suffix)]
-			return base, s.effort
-		}
-	}
-
-	for _, s := range devinCompoundSuffixes {
-		if strings.HasSuffix(uid, s.suffix) {
-			base := uid[:len(uid)-len(s.suffix)]
-			if s.readd != "" {
-				base += s.readd
-			}
-			return base, s.effort
-		}
-	}
-
-	for _, s := range devinSimpleEffortSuffixes {
-		if strings.HasSuffix(uid, s.suffix) {
-			base := uid[:len(uid)-len(s.suffix)]
-			return base, s.effort
-		}
-	}
-
-	return uid, ""
 }

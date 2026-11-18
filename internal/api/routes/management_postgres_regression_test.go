@@ -1,0 +1,485 @@
+package routes
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	managementhandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	postgresstore "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/postgrestest"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+)
+
+const postgresManagementKey = "local-management-key"
+
+type postgresManagementClient struct {
+	router *gin.Engine
+}
+
+func TestManagementAPIPostgresDataStackRegression(t *testing.T) {
+	client := setupPostgresManagementClient(t)
+
+	client.expectStatus(t, http.MethodPut, "/v0/management/api-key-permission-profiles", `{"items":[{
+		"id":"profile-route-test",
+		"name":"Route Test Profile",
+		"allowed-models":["gpt-route-test"],
+		"allowed-channel-groups":["codex-group"],
+		"system-prompt":"route profile"
+	}]}`, http.StatusOK)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/api-key-permission-profiles", "", http.StatusOK, "profile-route-test")
+
+	client.expectStatus(t, http.MethodPut, "/v0/management/api-key-entries", `{"items":[{
+		"id":"key-route-test",
+		"key":"sk-test-postgres-route",
+		"name":"Postgres Route Key",
+		"permission-profile-id":"profile-route-test"
+	}]}`, http.StatusOK)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/api-key-entries", "", http.StatusOK, "Postgres Route Key")
+	// The simulator reads the key by id from PostgreSQL; the response names the
+	// key without its secret.
+	simulated := client.expectStatus(t, http.MethodGet, "/v0/management/routing-simulation?api-key-id=key-route-test&model=gpt-route-test", "", http.StatusOK).Body.String()
+	if !strings.Contains(simulated, `"name":"Postgres Route Key"`) || strings.Contains(simulated, "sk-test-postgres-route") {
+		t.Fatalf("routing simulation = %s, want the key named without its secret", simulated)
+	}
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/routing-simulation?api-key-id=key-route-missing&model=gpt-route-test", "", http.StatusNotFound, "api_key_not_found")
+
+	// Loop protection is a runtime_settings row written with a compare-and-swap;
+	// a key's override is checked against the key stored just above.
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/loop-guard", "", http.StatusOK, `"persistent":true`)
+	client.expectStatus(t, http.MethodPut, "/v0/management/loop-guard", `{"reply":{"enabled":true,"window":512,"max_distinct":40}}`, http.StatusOK)
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/loop-guard/keys/key-route-test", `{"tool":{"enabled":true,"repeats":5}}`, http.StatusOK, `"source":"api_key"`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/loop-guard", "", http.StatusOK, `"window":512`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/loop-guard/keys/key-route-test", "", http.StatusOK, `"repeats":5`)
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/loop-guard/keys/key-route-missing", `{}`, http.StatusNotFound, "api_key_not_found")
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/content-moderation/secret-masking", "", http.StatusOK, `"persistent":true`)
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/content-moderation/secret-masking", `{"enabled":true}`, http.StatusOK, `"enabled":true`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/content-moderation/secret-masking", "", http.StatusOK, `"enabled":true`)
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/content-moderation/secret-masking", `{}`, http.StatusBadRequest, "invalid_request")
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/content-moderation/secret-masking", `{"enabled":false}`, http.StatusOK, `"enabled":false`)
+
+	client.expectStatus(t, http.MethodPost, "/v0/management/model-configs", `{
+		"id":"gpt-route-test",
+		"owned_by":"route-owner",
+		"description":"Postgres route model",
+		"enabled":true,
+		"pricing":{"mode":"token","input_price_per_million":1.25,"output_price_per_million":2.5}
+	}`, http.StatusOK)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/model-configs?scope=all", "", http.StatusOK, "gpt-route-test")
+
+	client.expectStatus(t, http.MethodPut, "/v0/management/model-pricing", `{"items":[{
+		"model_id":"gpt-route-test",
+		"input_price_per_million":1.25,
+		"output_price_per_million":2.5,
+		"cached_price_per_million":0.25
+	}]}`, http.StatusOK)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/model-pricing", "", http.StatusOK, "gpt-route-test")
+
+	client.expectStatus(t, http.MethodPut, "/v0/management/proxy-pool", `{"items":[{
+		"id":"local-proxy",
+		"name":"Local Proxy",
+		"url":"http://127.0.0.1:7890",
+		"enabled":true,
+		"description":"route regression"
+	}]}`, http.StatusOK)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/proxy-pool", "", http.StatusOK, "local-proxy")
+	client.expectStatus(t, http.MethodPatch, "/v0/management/proxy-pool/local-proxy", `{
+		"name":"Local Proxy Updated",
+		"url":"http://127.0.0.1:7891",
+		"enabled":false
+	}`, http.StatusOK)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/proxy-pool", "", http.StatusOK, "Local Proxy Updated")
+
+	client.expectStatus(t, http.MethodPut, "/v0/management/routing-config", `{
+		"strategy":"round-robin",
+		"include-default-group":true,
+		"channel-groups":[{"name":"codex-group","match":{"channels":["codex"]}}],
+		"path-routes":[{"path":"/route-codex","group":"codex-group","strip-prefix":true}]
+	}`, http.StatusOK)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/routing-config", "", http.StatusOK, "codex-group")
+
+	// A raw config.yaml save is checked against the sections PostgreSQL now
+	// holds; rejected saves leave the handler as it was for the steps below.
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/config.yaml",
+		"port: 8317\nrouting:\n  strategy: fill-first\nproxy-pool:\n  - id: other-proxy\n    url: http://127.0.0.1:7892\n    enabled: true\n",
+		http.StatusUnprocessableEntity, `"sections":["routing","proxy-pool"]`)
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/config.yaml",
+		"port: 8317\napi-keys:\n  - sk-test-postgres-yaml\napi-key-permission-profiles:\n  - id: yaml-profile\n    name: From YAML\n",
+		http.StatusUnprocessableEntity, `"sections":["api-keys","api-key-permission-profiles"]`)
+
+	client.expectStatus(t, http.MethodPatch, "/v0/management/usage-statistics-enabled", `{"value":false}`, http.StatusOK)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage-statistics-enabled", "", http.StatusOK, "false")
+	client.expectStatus(t, http.MethodPut, "/v0/management/codex-oauth-admission", `{"allowed_clients":["claude_code"]}`, http.StatusOK)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/codex-oauth-admission", "", http.StatusOK, "claude_code")
+
+	client.expectStatus(t, http.MethodPut, "/v0/management/ccswitch-import-configs", `{"items":[{
+		"id":"cc-route-test",
+		"client-type":"codex",
+		"provider-name":"route-provider",
+		"default-model":"gpt-route-test",
+		"route-path":"/route-test",
+		"endpoint-path":"/v1/responses",
+		"api-key-field":"apiKey"
+	}]}`, http.StatusOK)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/ccswitch-import-configs", "", http.StatusOK, "cc-route-test")
+	client.expectBodyContains(t, http.MethodPost, "/v0/management/public/ccswitch-import-configs", `{"api_key":"sk-test-postgres-route"}`, http.StatusOK, "cc-route-test")
+
+	insertPostgresManagementUsageFixture(t)
+	logID := client.expectUsageLog(t)
+	client.expectBodyContains(t, http.MethodGet, fmt.Sprintf("/v0/management/usage/logs/%d/content", logID), "", http.StatusOK, "route-input")
+	client.expectBodyContains(t, http.MethodPost, fmt.Sprintf("/v0/management/public/usage/logs/%d/content", logID), `{"api_key":"sk-test-postgres-route"}`, http.StatusOK, "route-output")
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/chart-data?api_key=sk-test-postgres-route&days=1", "", http.StatusOK, "gpt-route-test")
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/entity-stats?api_key=sk-test-postgres-route&days=1", "", http.StatusOK, `"requests":1`)
+	// Monitor center SQL (rollup GROUP BYs, latency bins, recent failures) on
+	// real PostgreSQL, filtered and unfiltered.
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/monitor/overview?range=24h", "", http.StatusOK, `"key":"gpt-route-test"`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/monitor/overview?range=1h&model=gpt-route-test&channel=CODEX&consumer=key:key-route-test", "", http.StatusOK, `"samples":1`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/monitor/overview?range=30d", "", http.StatusOK, `"requests":1`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/monitor/realtime", "", http.StatusOK, `"last_5m":{"requests":1`)
+	// Averages and interpolated percentiles survive PostgreSQL's numeric types.
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/monitor/overview?range=today", "", http.StatusOK, `"latency_avg_ms":120`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/monitor/overview?range=7d", "", http.StatusOK, `"p50_ms":120`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/dashboard-summary?days=1", "", http.StatusOK, "total_requests")
+	client.expectBodyContains(t, http.MethodPost, "/v0/management/public/usage/summary", `{"api_key":"sk-test-postgres-route","days":1}`, http.StatusOK, `"total_calls":1`)
+
+	client.expectStatus(t, http.MethodDelete, "/v0/management/api-key-entries?key=sk-test-postgres-route&delete_logs=true", "", http.StatusOK)
+	if got := usage.GetAPIKey("sk-test-postgres-route"); got != nil {
+		t.Fatalf("api key still exists after DELETE: %#v", got)
+	}
+	// delete_logs removes the key's history by its id, which outlives the secret.
+	var leftover int
+	if err := usage.RuntimeDB().QueryRow(`SELECT COUNT(*) FROM request_logs WHERE api_key_id = ?`, "key-route-test").Scan(&leftover); err != nil {
+		t.Fatalf("count the deleted key's logs: %v", err)
+	}
+	if leftover != 0 {
+		t.Fatalf("%d request logs of the deleted key remain", leftover)
+	}
+
+	// Last, as it replaces the handler's config: copies of the stored routing
+	// and proxy pool go through.
+	client.expectStatus(t, http.MethodPut, "/v0/management/config.yaml", `port: 8317
+routing:
+  strategy: round-robin
+  channel-groups:
+    - name: codex-group
+      match:
+        channels: [codex]
+  path-routes:
+    - path: /route-codex
+      group: codex-group
+      strip-prefix: true
+proxy-pool:
+  - id: local-proxy
+    name: Local Proxy Updated
+    url: http://127.0.0.1:7891
+    enabled: false
+`, http.StatusOK)
+}
+
+func TestManagementAPIPostgresAllRoutesSmoke(t *testing.T) {
+	client := setupPostgresManagementClient(t)
+
+	for _, key := range expectedManagementRoutes() {
+		method, routePath, ok := strings.Cut(key, " ")
+		if !ok {
+			t.Fatalf("invalid route key: %q", key)
+		}
+		t.Run(key, func(t *testing.T) {
+			path := postgresSmokePath(routePath)
+			body := postgresSmokeBody(method, routePath)
+			rec := client.request(method, path, body)
+			if postgresSmokeAllowsStatus(routePath, rec.Code, rec.Body.String()) {
+				return
+			}
+			if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed || rec.Code >= 500 {
+				t.Fatalf("%s %s status=%d body=%s", method, path, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func setupPostgresManagementClient(t *testing.T) postgresManagementClient {
+	t.Helper()
+	dsn := os.Getenv("CLIRELAY_POSTGRES_TEST_DSN")
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
+	}
+	postgrestest.LockSharedRuntimeDB(t, dsn)
+
+	usage.CloseDB()
+	t.Cleanup(usage.CloseDB)
+	if err := usage.InitPostgres(config.PostgresConfig{
+		DSN:          dsn,
+		MaxOpenConns: 8,
+		MaxIdleConns: 2,
+	}, config.RequestLogStorageConfig{StoreContent: true}, time.UTC); err != nil {
+		t.Fatalf("InitPostgres: %v", err)
+	}
+	truncatePostgresManagementTables(t, dsn)
+
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("create auth dir: %v", err)
+	}
+	logDir := filepath.Join(tmpDir, "logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		t.Fatalf("create log dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "main.log"), []byte("postgres route smoke\n"), 0o600); err != nil {
+		t.Fatalf("write log fixture: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("port: 8317\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	handler := managementhandlers.NewHandler(&config.Config{
+		AuthDir: authDir,
+		Routing: config.RoutingConfig{IncludeDefaultGroup: true},
+	}, configPath, nil)
+	handler.SetLocalPassword(postgresManagementKey)
+	handler.SetLogDirectory(logDir)
+	// The server wires its simulator into every handler it builds; a stand-in
+	// keeps the route answering as it does there, for requests that reach it.
+	handler.SetRoutingSimulator(func(_ context.Context, req managementhandlers.RoutingSimulationRequest) (*managementhandlers.RoutingSimulationResult, error) {
+		return &managementhandlers.RoutingSimulationResult{Model: req.Model}, nil
+	})
+	t.Cleanup(handler.Close)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	RegisterManagement(router, handler, ManagementOptions{})
+	return postgresManagementClient{router: router}
+}
+
+func truncatePostgresManagementTables(t *testing.T, dsn string) {
+	t.Helper()
+	db, err := postgresstore.OpenRuntimeDB(context.Background(), config.PostgresConfig{
+		DSN:          dsn,
+		MaxOpenConns: 4,
+		MaxIdleConns: 1,
+	})
+	if err != nil {
+		t.Fatalf("open postgres for truncate: %v", err)
+	}
+	defer db.Close()
+	// usage_rollup_buckets outlives request_logs by design, so it has to be
+	// cleared here too: otherwise every rerun against the same database adds
+	// the fixture request to the rollups again and count assertions drift.
+	if _, err := db.Exec(`
+		TRUNCATE
+			request_log_content,
+			request_logs,
+			usage_rollup_buckets,
+			auth_file_quota_snapshot_points,
+			auth_file_quota_snapshots,
+			auth_subject_quota_cycles,
+			model_pricing,
+			api_keys,
+			api_key_permission_profiles,
+			model_configs,
+			model_owner_presets,
+			auth_group_model_owner_mappings,
+			model_openrouter_sync_state,
+			proxy_pool,
+			routing_config,
+			runtime_settings,
+			identity_fingerprint_account_policies,
+			identity_fingerprints,
+			ccswitch_import_configs
+		RESTART IDENTITY CASCADE
+	`); err != nil {
+		t.Fatalf("truncate postgres management tables: %v", err)
+	}
+}
+
+func insertPostgresManagementUsageFixture(t *testing.T) {
+	t.Helper()
+	usage.InsertLogWithDetailsIdentitySubject(
+		"sk-test-postgres-route",
+		"key-route-test",
+		"subject-route-test",
+		"Postgres Route Key",
+		"gpt-route-test",
+		"codex",
+		"codex",
+		"auth-route-test",
+		false,
+		time.Now().UTC(),
+		120,
+		30,
+		usage.TokenStats{InputTokens: 10, OutputTokens: 5, CachedTokens: 2, TotalTokens: 15},
+		`{"prompt":"route-input"}`,
+		`{"text":"route-output"}`,
+		`{"detail":"route-detail"}`,
+	)
+}
+
+func (client postgresManagementClient) expectUsageLog(t *testing.T) int64 {
+	t.Helper()
+	rec := client.expectStatus(t, http.MethodGet, "/v0/management/usage/logs?api_key=sk-test-postgres-route&days=1&page=1&size=10", "", http.StatusOK)
+	var payload struct {
+		Items []struct {
+			ID       int64  `json:"id"`
+			APIKey   string `json:"api_key"`
+			APIKeyID string `json:"api_key_id"`
+			Model    string `json:"model"`
+		} `json:"items"`
+		Total int64 `json:"total"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode usage logs: %v; body=%s", err, rec.Body.String())
+	}
+	if payload.Total != 1 || len(payload.Items) != 1 {
+		t.Fatalf("usage logs total=%d len=%d body=%s", payload.Total, len(payload.Items), rec.Body.String())
+	}
+	// The row is tied to the key by id and shows only the mask; the secret passed
+	// as the selector is not echoed back.
+	if payload.Items[0].APIKey != usage.MaskAPIKey("sk-test-postgres-route") ||
+		payload.Items[0].APIKeyID != "key-route-test" ||
+		payload.Items[0].Model != "gpt-route-test" {
+		t.Fatalf("usage log item = %#v", payload.Items[0])
+	}
+	if strings.Contains(rec.Body.String(), "sk-test-postgres-route") {
+		t.Fatalf("usage logs response carries the client secret: %s", rec.Body.String())
+	}
+	return payload.Items[0].ID
+}
+
+func postgresSmokePath(routePath string) string {
+	// Prefer longer placeholders first so :key_id is not partially matched by :id.
+	replacer := strings.NewReplacer(
+		":key_id", "00000000-0000-0000-0000-000000000099",
+		":task_id", "task-test",
+		":id", "00000000-0000-0000-0000-000000000001",
+		":name", "main.log",
+		":channel", "codex",
+		"*id", "gpt-route-test",
+	)
+	return replacer.Replace(routePath)
+}
+
+func postgresSmokeBody(method, routePath string) string {
+	if method == http.MethodGet || method == http.MethodDelete {
+		return ""
+	}
+	if strings.Contains(routePath, "/public/usage") || strings.Contains(routePath, "/public/ccswitch-import-configs") {
+		return `{"api_key":"sk-test-postgres-route"}`
+	}
+	if routePath == "/v0/management/usage/import" {
+		return `{"version":1,"usage":{}}`
+	}
+	return `{}`
+}
+
+func postgresSmokeAllowsStatus(routePath string, status int, body string) bool {
+	if status == http.StatusNotFound || status == http.StatusBadRequest {
+		// The generic smoke sends placeholder ids / empty JSON. These routes
+		// therefore have no real target; dedicated handler tests cover success.
+		targetedLookup := routePath == "/v0/management/api-key-entries/daily-spending/reset" ||
+			routePath == "/v0/management/api-key-entries/daily-spending/reset-history"
+		return (strings.Contains(body, "not found") || strings.Contains(body, "validation") || strings.Contains(body, "invalid")) &&
+			(strings.Contains(routePath, ":") || strings.Contains(routePath, "*") || targetedLookup)
+	}
+	if status == http.StatusServiceUnavailable && strings.Contains(body, "updater_unavailable") {
+		// The smoke config leaves auto-update off and runs no updater sidecar, so the
+		// progress endpoints report that there is no updater instead of dialling one.
+		return routePath == "/v0/management/update/progress" || routePath == "/v0/management/update/events"
+	}
+	if status == http.StatusInternalServerError {
+		// Qwen and Kimi use OAuth *device* login: the handler must reach the upstream
+		// provider to exchange a device code before it can return an auth URL. The other
+		// six *-auth-url routes build a PKCE URL locally and stay green offline.
+		// This smoke asserts the route is registered and reachable — upstream availability
+		// is not what it covers — so a sandboxed runner with no egress must not fail it.
+		deviceLogin := routePath == "/v0/management/qwen-auth-url" ||
+			routePath == "/v0/management/kimi-auth-url"
+		return deviceLogin && strings.Contains(body, "failed to generate authorization url")
+	}
+	if status != http.StatusServiceUnavailable {
+		return false
+	}
+	allowed := []string{
+		"auth manager unavailable",
+		"core auth manager unavailable",
+		"image generation service unavailable",
+		"video generation service unavailable",
+		"identity service unavailable",
+	}
+	for _, text := range allowed {
+		if strings.Contains(body, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func (client postgresManagementClient) expectBodyContains(t *testing.T, method, path, body string, status int, needle string) {
+	t.Helper()
+	rec := client.expectStatus(t, method, path, body, status)
+	if !strings.Contains(rec.Body.String(), needle) {
+		t.Fatalf("%s %s body does not contain %q: %s", method, path, needle, rec.Body.String())
+	}
+}
+
+func (client postgresManagementClient) expectStatus(t *testing.T, method, path, body string, status int) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := client.request(method, path, body)
+	if rec.Code != status {
+		t.Fatalf("%s %s status=%d want=%d body=%s", method, path, rec.Code, status, rec.Body.String())
+	}
+	return rec
+}
+
+func (client postgresManagementClient) request(method, path, body string) *httptest.ResponseRecorder {
+	var reader *bytes.Reader
+	if body == "" {
+		reader = bytes.NewReader(nil)
+	} else {
+		reader = bytes.NewReader([]byte(body))
+	}
+	req := httptest.NewRequest(method, path, reader)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Authorization", "Bearer "+postgresManagementKey)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rec := httptest.NewRecorder()
+	client.router.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestPostgresSmokeAllowsDeviceLoginUpstreamFailure(t *testing.T) {
+	const authURLFailure = `{"error":"failed to generate authorization url"}`
+
+	// Device-login routes must survive a runner with no egress to the provider.
+	for _, routePath := range []string{
+		"/v0/management/qwen-auth-url",
+		"/v0/management/kimi-auth-url",
+	} {
+		if !postgresSmokeAllowsStatus(routePath, http.StatusInternalServerError, authURLFailure) {
+			t.Errorf("%s: upstream device-code failure should be tolerated by the route smoke", routePath)
+		}
+	}
+
+	// The remaining *-auth-url routes build their URL locally, so a 500 there is a real bug.
+	if postgresSmokeAllowsStatus("/v0/management/codex-auth-url", http.StatusInternalServerError, authURLFailure) {
+		t.Error("codex-auth-url builds its URL locally; a 500 must still fail the smoke")
+	}
+
+	// The allowance is scoped to this one failure, not to 500s in general.
+	if postgresSmokeAllowsStatus("/v0/management/qwen-auth-url", http.StatusInternalServerError, `{"error":"boom"}`) {
+		t.Error("unrelated 500s on qwen-auth-url must still fail the smoke")
+	}
+}

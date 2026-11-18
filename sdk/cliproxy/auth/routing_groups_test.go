@@ -27,24 +27,6 @@ func TestAllowedChannelGroupsFromMetadataParsesStringList(t *testing.T) {
 	}
 }
 
-func TestAllowedChannelsFromMetadataParsesStringList(t *testing.T) {
-	t.Parallel()
-
-	allowed := allowedChannelsFromMetadata(map[string]any{
-		"allowed-channels": " Codex,openai,,CODEX ",
-	})
-
-	if len(allowed) != 2 {
-		t.Fatalf("allowed channel count = %d, want 2", len(allowed))
-	}
-	if _, ok := allowed["codex"]; !ok {
-		t.Fatal("expected normalized channel codex")
-	}
-	if _, ok := allowed["openai"]; !ok {
-		t.Fatal("expected normalized channel openai")
-	}
-}
-
 func TestCanServeModelWithScopesSupportsAllowedGroupPrefixedModels(t *testing.T) {
 	t.Parallel()
 
@@ -113,37 +95,111 @@ func TestCanServeModelWithScopesHonorsGroupAllowedModels(t *testing.T) {
 	}
 }
 
-func TestCanServeModelWithScopesRejectsStatusDisabledAuth(t *testing.T) {
+// A group that lists exclusions instead of an allow list must keep serving a
+// model the upstream added after the group was configured. The allow-list form
+// cannot express that, which is what the panel's "auto-allow new models" switch
+// saves the group as.
+func TestCanServeModelWithScopesHonorsGroupExcludedModels(t *testing.T) {
 	t.Parallel()
 
 	reg := registry.GetGlobalRegistry()
 	now := time.Now().Unix()
-	reg.RegisterClient("disabled-team-auth", "openai", []*registry.ModelInfo{
-		{ID: "team/gpt-5", Created: now},
+	reg.RegisterClient("xai-auth", "openai", []*registry.ModelInfo{
+		{ID: "xai/grok-4.6", Created: now},
+		{ID: "xai/grok-4.7", Created: now},
+		{ID: "xai/grok-imagine-video-1.5", Created: now},
 	})
 	t.Cleanup(func() {
-		reg.UnregisterClient("disabled-team-auth")
+		reg.UnregisterClient("xai-auth")
 	})
 
 	manager := NewManager(nil, nil, nil)
 	manager.SetConfig(&internalconfig.Config{
 		Routing: internalconfig.RoutingConfig{
 			ChannelGroups: []internalconfig.RoutingChannelGroup{
-				{Name: "team", AllowedModels: []string{"gpt-5"}},
+				{
+					Name:           "xai",
+					ExcludedModels: []string{"grok-imagine-video-1.5"},
+				},
 			},
 		},
 	})
 	if _, err := manager.Register(context.Background(), &Auth{
-		ID:       "disabled-team-auth",
+		ID:       "xai-auth",
 		Provider: "openai",
-		Prefix:   "team",
-		Status:   StatusDisabled,
+		Prefix:   "xai",
 	}); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
 
-	if manager.CanServeModelWithScopes("gpt-5", nil, map[string]struct{}{"team": {}}, "") {
-		t.Fatal("expected status-disabled auth to be unavailable")
+	if !manager.CanServeModelWithScopes("grok-4.6", nil, nil, "xai") {
+		t.Fatal("expected model outside the exclusion list to stay available")
+	}
+	if !manager.CanServeModelWithScopes("grok-4.7", nil, nil, "xai") {
+		t.Fatal("expected a newly added upstream model to be available without editing the group")
+	}
+	if manager.CanServeModelWithScopes("grok-imagine-video-1.5", nil, nil, "xai") {
+		t.Fatal("expected excluded model to be unavailable")
+	}
+}
+
+// Exclusions win over allow entries so a model named in both stays blocked.
+func TestCanServeModelWithScopesExclusionOverridesAllowList(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.GetGlobalRegistry()
+	now := time.Now().Unix()
+	reg.RegisterClient("mixed-auth", "openai", []*registry.ModelInfo{
+		{ID: "mixed/gpt-5", Created: now},
+		{ID: "mixed/claude-opus", Created: now},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient("mixed-auth")
+	})
+
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{
+					Name:           "mixed",
+					AllowedModels:  []string{"gpt-5", "claude-opus"},
+					ExcludedModels: []string{"claude-opus"},
+				},
+			},
+		},
+	})
+	if _, err := manager.Register(context.Background(), &Auth{
+		ID:       "mixed-auth",
+		Provider: "openai",
+		Prefix:   "mixed",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if !manager.CanServeModelWithScopes("gpt-5", nil, nil, "mixed") {
+		t.Fatal("expected allowed model to stay available")
+	}
+	if manager.CanServeModelWithScopes("claude-opus", nil, nil, "mixed") {
+		t.Fatal("expected exclusion to win over the allow entry")
+	}
+}
+
+func TestCanServeModelWithScopesHonorsDisableAllModelsMetadata(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{})
+	if _, err := manager.Register(context.Background(), &Auth{
+		ID:         "model-access-disabled-auth",
+		Provider:   "opencode-go",
+		Attributes: map[string]string{"excluded_models": "*"},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if manager.CanServeModelWithScopes("qwen3.7-max", nil, nil, "") {
+		t.Fatal("expected excluded_models=* auth not to serve any model")
 	}
 }
 
@@ -172,56 +228,150 @@ func TestAuthGroupsMatchesLegacyOAuthEmailAfterRename(t *testing.T) {
 		},
 	}
 
-	groups := authGroups(cfg, auth)
+	runtimeCfg := newRuntimeConfigSnapshot(cfg)
+	groups := authGroups(runtimeCfg, auth)
 	if _, ok := groups["team-alpha"]; !ok {
 		t.Fatalf("expected group match through legacy email alias, got %v", groups)
 	}
-	if got, ok := derivedGroupPriority(cfg, auth, map[string]struct{}{"team-alpha": {}}); !ok || got != 100 {
-		t.Fatalf("derivedGroupPriority() = %d, want 100", got)
+	if got, ok := derivedGroupWeight(runtimeCfg, auth, map[string]struct{}{"team-alpha": {}}); !ok || got != 100 {
+		t.Fatalf("derivedGroupWeight() = %d, want 100", got)
 	}
 }
 
-func TestAuthGroupsMatchesDisplayTags(t *testing.T) {
+func TestAuthGroupsExcludeFromDefaultKeepsExplicitGroup(t *testing.T) {
 	t.Parallel()
 
 	cfg := &internalconfig.Config{
 		Routing: internalconfig.RoutingConfig{
+			IncludeDefaultGroup: true,
 			ChannelGroups: []internalconfig.RoutingChannelGroup{
 				{
-					Name: "paid",
+					Name:               "kimicode",
+					ExcludeFromDefault: true,
 					Match: internalconfig.ChannelGroupMatch{
-						Tags: []string{"vip-team"},
-					},
-				},
-				{
-					Name: "hidden-free",
-					Match: internalconfig.ChannelGroupMatch{
-						Tags: []string{"free"},
+						Channels: []string{"Kimi Channel"},
 					},
 				},
 			},
 		},
 	}
 	auth := &Auth{
-		Provider: "codex",
-		Metadata: map[string]any{
-			"plan_type":           "free",
-			"custom_tags":         []any{"VIP Team"},
-			"hidden_default_tags": []any{"free"},
-			"display_tags":        []any{"codex", "vip-team"},
-		},
+		Label:    "Kimi Channel",
+		Provider: "kimi",
 	}
 
-	groups := authGroups(cfg, auth)
-	if _, ok := groups["paid"]; !ok {
-		t.Fatalf("expected paid group match through display tag, got %v", groups)
+	runtimeCfg := newRuntimeConfigSnapshot(cfg)
+	groups := authGroups(runtimeCfg, auth)
+	if _, ok := groups["kimicode"]; !ok {
+		t.Fatalf("expected explicit kimicode group, got %v", groups)
 	}
-	if _, ok := groups["hidden-free"]; ok {
-		t.Fatalf("did not expect hidden free tag to match, got %v", groups)
+	if _, ok := groups["default"]; ok {
+		t.Fatalf("exclusive group member should not be in default, got %v", groups)
+	}
+	if authAllowedByGroups(runtimeCfg, auth, map[string]struct{}{"default": {}}) {
+		t.Fatal("expected default group restriction to reject isolated auth")
+	}
+	if !authAllowedByGroups(runtimeCfg, auth, map[string]struct{}{"kimicode": {}}) {
+		t.Fatal("expected explicit group restriction to allow isolated auth")
 	}
 }
 
-func TestDerivedGroupPriorityPreservesExplicitZero(t *testing.T) {
+func TestEffectiveRouteGroupForSelectionDefaultsOnlyForUnprefixedRootModels(t *testing.T) {
+	t.Parallel()
+
+	cfg := &internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{IncludeDefaultGroup: true},
+	}
+
+	runtimeCfg := newRuntimeConfigSnapshot(cfg)
+	if got := effectiveRouteGroupForSelection(runtimeCfg, "", nil, "gpt-5.5"); got != "default" {
+		t.Fatalf("unprefixed root route group = %q, want default", got)
+	}
+	if got := effectiveRouteGroupForSelection(runtimeCfg, "", nil, "kimicode/gpt-5.5"); got != "" {
+		t.Fatalf("prefixed root route group = %q, want empty", got)
+	}
+	if got := effectiveRouteGroupForSelection(runtimeCfg, "kimicode", nil, "gpt-5.5"); got != "kimicode" {
+		t.Fatalf("explicit route group = %q, want kimicode", got)
+	}
+	if got := effectiveRouteGroupForSelection(runtimeCfg, "", map[string]struct{}{"kimicode": {}}, "gpt-5.5"); got != "" {
+		t.Fatalf("allowed group route group = %q, want empty", got)
+	}
+}
+
+func TestAuthGroupsMatchesAnyDisplayTagDynamically(t *testing.T) {
+	t.Parallel()
+
+	cfg := &internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{
+					Name: "tag-pool",
+					Match: internalconfig.ChannelGroupMatch{
+						Tags: []string{"vip", "team-a"},
+					},
+				},
+			},
+		},
+	}
+	auth := &Auth{
+		Label:    "codex-account",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"custom_tags": []string{"vip"},
+		},
+	}
+
+	runtimeCfg := newRuntimeConfigSnapshot(cfg)
+	groups := authGroups(runtimeCfg, auth)
+	if _, ok := groups["tag-pool"]; !ok {
+		t.Fatalf("expected tag-pool from matching tag, got %v", groups)
+	}
+
+	auth.Metadata["custom_tags"] = []string{"other"}
+	groups = authGroups(runtimeCfg, auth)
+	if _, ok := groups["tag-pool"]; ok {
+		t.Fatalf("tag-pool should disappear after the matching tag is removed, got %v", groups)
+	}
+}
+
+func TestAuthGroupsIgnoresHiddenDisplayTags(t *testing.T) {
+	t.Parallel()
+
+	cfg := &internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{
+					Name: "pro-pool",
+					Match: internalconfig.ChannelGroupMatch{
+						Tags: []string{"pro"},
+					},
+				},
+			},
+		},
+	}
+	auth := &Auth{
+		Label:    "codex-account",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"plan_type":           "pro",
+			"hidden_default_tags": []string{"pro"},
+		},
+	}
+
+	runtimeCfg := newRuntimeConfigSnapshot(cfg)
+	groups := authGroups(runtimeCfg, auth)
+	if _, ok := groups["pro-pool"]; ok {
+		t.Fatalf("pro-pool should not match a hidden display tag, got %v", groups)
+	}
+
+	auth.Metadata["display_tags"] = []string{}
+	groups = authGroups(runtimeCfg, auth)
+	if _, ok := groups["pro-pool"]; ok {
+		t.Fatalf("pro-pool should not match an explicit empty display tag list, got %v", groups)
+	}
+}
+
+func TestDerivedGroupWeightPreservesExplicitZero(t *testing.T) {
 	t.Parallel()
 
 	cfg := &internalconfig.Config{
@@ -230,10 +380,14 @@ func TestDerivedGroupPriorityPreservesExplicitZero(t *testing.T) {
 				{
 					Name: "team-alpha",
 					Match: internalconfig.ChannelGroupMatch{
-						Channels: []string{"chatgpt-pro1"},
+						Channels: []string{"chatgpt-pro1", "chatgpt-pro2"},
 					},
-					ChannelPriorities: map[string]int{
-						"chatgpt-pro1": 0,
+					Scheduling: internalconfig.GroupScheduling{
+						Distribution: internalconfig.DistributionWeighted,
+						ChannelWeights: map[string]int{
+							"chatgpt-pro1": 0,
+							"chatgpt-pro2": 1,
+						},
 					},
 				},
 			},
@@ -241,20 +395,24 @@ func TestDerivedGroupPriorityPreservesExplicitZero(t *testing.T) {
 	}
 	auth := &Auth{Label: "chatgpt-pro1"}
 
-	got, ok := derivedGroupPriority(cfg, auth, map[string]struct{}{"team-alpha": {}})
+	runtimeCfg := newRuntimeConfigSnapshot(cfg)
+	got, ok := derivedGroupWeight(runtimeCfg, auth, map[string]struct{}{"team-alpha": {}})
 	if !ok {
-		t.Fatal("derivedGroupPriority() did not report an explicit priority")
+		t.Fatal("derivedGroupWeight() did not report an explicit weight")
 	}
 	if got != 0 {
-		t.Fatalf("derivedGroupPriority() = %d, want 0", got)
+		t.Fatalf("derivedGroupWeight() = %d, want 0", got)
 	}
 
-	prepared := prepareCandidateForSelection(cfg, auth, "", map[string]struct{}{"team-alpha": {}}, "", "", "")
+	prepared := prepareCandidateForSelection(runtimeCfg, auth, "", map[string]struct{}{"team-alpha": {}})
 	if prepared == nil {
 		t.Fatal("prepareCandidateForSelection() = nil")
 	}
-	if got := prepared.Attributes["priority"]; got != "0" {
-		t.Fatalf("prepared priority = %q, want %q", got, "0")
+	if got := prepared.Attributes[selectionWeightAttribute]; got != "0" {
+		t.Fatalf("prepared weight = %q, want %q", got, "0")
+	}
+	if authParticipatesInSelection(prepared) {
+		t.Fatal("weight 0 must exclude the candidate from scheduling")
 	}
 }
 
@@ -278,11 +436,42 @@ func TestPrepareCandidateForSelectionIgnoresPriorityOutsideSelectionScope(t *tes
 	}
 	auth := &Auth{Label: "chatgpt-pro1"}
 
-	prepared := prepareCandidateForSelection(cfg, auth, "", nil, "", "", "")
+	prepared := prepareCandidateForSelection(newRuntimeConfigSnapshot(cfg), auth, "", nil)
 	if prepared == nil {
 		t.Fatal("prepareCandidateForSelection() = nil")
 	}
 	if got := prepared.Attributes["priority"]; got != "" {
 		t.Fatalf("prepared priority = %q, want empty outside scoped selection", got)
+	}
+}
+
+func TestRouteFallbackFromMetadataNormalizesKnownValues(t *testing.T) {
+	t.Parallel()
+
+	if got := routeFallbackFromMetadata(map[string]any{"route_fallback": " default "}); got != "default" {
+		t.Fatalf("routeFallbackFromMetadata(default) = %q, want default", got)
+	}
+	if got := routeFallbackFromMetadata(map[string]any{"route_fallback": "invalid"}); got != "none" {
+		t.Fatalf("routeFallbackFromMetadata(invalid) = %q, want none", got)
+	}
+}
+
+func TestAuthDisplayTagsRemapsStaleCodexPlanTagToCurrentPlan(t *testing.T) {
+	t.Parallel()
+
+	auth := &Auth{
+		Provider: "codex",
+		Metadata: map[string]any{
+			"plan_type":    "pro",
+			"display_tags": []string{"plus", "codex"},
+		},
+	}
+
+	got := authDisplayTags(auth)
+	if len(got) != 2 {
+		t.Fatalf("authDisplayTags() len = %d, want 2 (%v)", len(got), got)
+	}
+	if got[0] != "pro" && got[1] != "pro" {
+		t.Fatalf("authDisplayTags() = %v, want remapped current plan tag pro", got)
 	}
 }

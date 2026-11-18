@@ -3,10 +3,10 @@ package diff
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"sort"
 	"strings"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -26,6 +26,21 @@ func ComputeVertexCompatModelsHash(models []config.VertexCompatModel) string {
 // ComputeClaudeModelsHash returns a stable hash for Claude model aliases.
 func ComputeClaudeModelsHash(models []config.ClaudeModel) string {
 	return modelconfig.ComputeClaudeModelsHash(models)
+}
+
+// ComputeBedrockModelsHash returns a stable hash for AWS Bedrock model aliases.
+func ComputeBedrockModelsHash(models []config.BedrockModel) string {
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return hashJoined(keys)
 }
 
 // ComputeCodexModelsHash returns a stable hash for Codex model aliases.
@@ -53,8 +68,38 @@ func ComputeOpenCodeGoModelsHash(models []config.OpenCodeGoModel) string {
 	return hashJoined(keys)
 }
 
-// ComputeBedrockModelsHash returns a stable hash for Bedrock model aliases.
-func ComputeBedrockModelsHash(models []config.BedrockModel) string {
+// ComputeCommandCodeModelsHash returns a stable hash for Command Code model aliases.
+func ComputeCommandCodeModelsHash(models []config.CommandCodeModel) string {
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return hashJoined(keys)
+}
+
+// ComputeClineModelsHash returns a stable hash for Cline model aliases.
+func ComputeClineModelsHash(models []config.ClineModel) string {
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return hashJoined(keys)
+}
+
+// ComputeOllamaCloudModelsHash returns a stable hash for Ollama Cloud model aliases.
+func ComputeOllamaCloudModelsHash(models []config.OllamaCloudModel) string {
 	keys := normalizeModelPairs(func(out func(key string)) {
 		for _, model := range models {
 			name := strings.TrimSpace(model.Name)

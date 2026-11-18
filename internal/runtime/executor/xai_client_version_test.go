@@ -33,8 +33,8 @@ func TestXAIChatProxyClientVersionMeetsServerFloor(t *testing.T) {
 	// cli-chat-proxy.grok.com started rejecting client versions older than
 	// 1.0.13 with HTTP 426 ("Your Grok CLI version is outdated"); see #6249.
 	const serverFloor = "1.0.13"
-	if !xaiVersionAtLeast(xaiClientVersion(), serverFloor) {
-		t.Fatalf("xaiClientVersion() = %q, cli-chat-proxy rejects clients older than %s with 426", xaiClientVersion(), serverFloor)
+	if !xaiVersionAtLeast(xaiClientVersionValue, serverFloor) {
+		t.Fatalf("xaiClientVersionValue = %q, cli-chat-proxy rejects clients older than %s with 426", xaiClientVersionValue, serverFloor)
 	}
 }
 
@@ -49,11 +49,11 @@ func TestXAIChatProxyIdentityHeadersDeriveFromOneConstant(t *testing.T) {
 	}
 	applyXAIChatHeaders(req, auth, "token", false, "")
 
-	if got := req.Header.Get(xaiClientVersionHeader); got != xaiClientVersion() {
-		t.Fatalf("%s = %q, want %q", xaiClientVersionHeader, got, xaiClientVersion())
+	if got := req.Header.Get(xaiClientVersionHeader); got != xaiClientVersionValue {
+		t.Fatalf("%s = %q, want %q", xaiClientVersionHeader, got, xaiClientVersionValue)
 	}
-	if got, want := req.Header.Get("User-Agent"), "xai-grok-workspace/"+xaiClientVersion(); got != want {
-		t.Fatalf("User-Agent = %q, want %q (must derive from xaiClientVersion())", got, want)
+	if got, want := req.Header.Get("User-Agent"), "xai-grok-workspace/"+xaiClientVersionValue; got != want {
+		t.Fatalf("User-Agent = %q, want %q (must derive from xaiClientVersionValue)", got, want)
 	}
 }
 

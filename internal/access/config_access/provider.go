@@ -6,18 +6,28 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/accessfreeze"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/accesspolicy"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
+// Register ensures the config-access provider is available to the access manager.
 func Register(cfg *sdkconfig.SDKConfig) {
 	if cfg == nil {
 		sdkaccess.UnregisterProvider(sdkaccess.AccessProviderTypeConfigAPIKey)
 		return
 	}
 
-	keyConfigs := buildKeyConfigMap(cfg)
+	keyConfigs, policies := buildKeyConfigAndPolicyMaps(cfg)
+	// 策略表与 Key 表来自同一次读库，一起替换；即使没有任何 Key 也要发布空表，
+	// 让已删除 Key 的策略不再被查到。
+	accesspolicy.Publish(policies)
 	if len(keyConfigs) == 0 {
 		sdkaccess.UnregisterProvider(sdkaccess.AccessProviderTypeConfigAPIKey)
 		return
@@ -29,36 +39,78 @@ func Register(cfg *sdkconfig.SDKConfig) {
 	)
 }
 
+// buildKeyConfigMap builds a map from API key to its full configuration.
 func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
-	result := make(map[string]keyConfig)
+	keys, _ := buildKeyConfigAndPolicyMaps(cfg)
+	return keys
+}
 
-	rows := usage.ListAPIKeys()
+// buildKeyConfigAndPolicyMaps builds the key map and the structured access policy
+// of every key (see internal/accesspolicy) from one read of the database.
+// Primary source: management/settings/apikey service backed by PostgreSQL.
+// Fallback: legacy APIKeys and APIKeyEntries from YAML config.
+func buildKeyConfigAndPolicyMaps(cfg *sdkconfig.SDKConfig) (map[string]keyConfig, map[string]*accesspolicy.Policy) {
+	result := make(map[string]keyConfig)
+	policies := make(map[string]*accesspolicy.Policy)
+
+	// Primary: preload tenant profiles and owned accounts once, then build every key.
+	storedRows := usage.ListAllAPIKeys()
+	profilesByTenant := make(map[string][]usage.APIKeyPermissionProfileRow)
+	endUserIDs := make([]string, 0)
+	for _, stored := range storedRows {
+		tenantID := strings.TrimSpace(stored.TenantID)
+		if _, ok := profilesByTenant[tenantID]; !ok {
+			profilesByTenant[tenantID] = usage.ListAPIKeyPermissionProfilesForTenant(tenantID)
+		}
+		if endUserID := strings.TrimSpace(stored.EndUserID); endUserID != "" {
+			endUserIDs = append(endUserIDs, endUserID)
+		}
+	}
+	accounts, _ := usage.ListEndUserQuotasByIDs(endUserIDs)
+	for _, stored := range storedRows {
+		profiles := profilesByTenant[strings.TrimSpace(stored.TenantID)]
+		entry := usage.EffectiveAPIKeyRowWithProfiles(stored, profiles)
+		trimmed := strings.TrimSpace(entry.Key)
+		if trimmed == "" || entry.Disabled {
+			continue
+		}
+		var account *usage.EndUserQuota
+		if endUserID := strings.TrimSpace(entry.EndUserID); endUserID != "" {
+			loaded, ok := accounts[endUserID]
+			if !ok {
+				fallback := usage.GetEndUserQuota(endUserID)
+				if fallback == nil {
+					continue
+				}
+				loaded = *fallback
+			}
+			effective := usage.EffectiveEndUserQuotaWithProfiles(loaded, profiles)
+			if strings.TrimSpace(effective.Status) != "active" {
+				continue
+			}
+			account = &effective
+		}
+		if _, exists := result[trimmed]; exists {
+			continue
+		}
+		result[trimmed] = keyConfigFromRowWithAccount(entry, account)
+		policies[trimmed] = accessPolicyFor(entry, account)
+	}
+
+	// Fallback: YAML config (for backward compatibility during migration)
 	profiles := usage.ListAPIKeyPermissionProfiles()
-	for _, row := range rows {
-		row = usage.EffectiveAPIKeyRowWithProfiles(row, profiles)
-		trimmed := strings.TrimSpace(row.Key)
-		if trimmed == "" || row.Disabled {
+	for _, entry := range cfg.APIKeyEntries {
+		row := usage.EffectiveAPIKeyRowWithProfiles(usage.APIKeyRowFromConfig(entry), profiles)
+		trimmed := strings.TrimSpace(entry.Key)
+		if trimmed == "" || entry.Disabled {
 			continue
 		}
 		if _, exists := result[trimmed]; exists {
 			continue
 		}
-		result[trimmed] = keyConfig{
-			allowedModels:        row.AllowedModels,
-			allowedChannels:      row.AllowedChannels,
-			allowedChannelGroups: row.AllowedChannelGroups,
-			dailyLimit:           row.DailyLimit,
-			totalQuota:           row.TotalQuota,
-			spendingLimit:        row.SpendingLimit,
-			monthlySpendingLimit: row.MonthlySpendingLimit,
-			billingCycleAnchor:   row.BillingCycleAnchor,
-			concurrencyLimit:     row.ConcurrencyLimit,
-			rpmLimit:             row.RPMLimit,
-			tpmLimit:             row.TPMLimit,
-			systemPrompt:         row.SystemPrompt,
-		}
+		result[trimmed] = keyConfigFromRow(row)
+		policies[trimmed] = accessPolicyFor(row, nil)
 	}
-
 	for _, k := range cfg.APIKeys {
 		trimmed := strings.TrimSpace(k)
 		if trimmed == "" {
@@ -69,23 +121,106 @@ func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 		}
 		result[trimmed] = keyConfig{}
 	}
-
-	return result
+	return result, policies
 }
 
+// accessPolicyFor 算出一把 Key 的生效策略。账号下的 Key：额度分账号与 Key 两层，
+// 规则也分两层，路由来自账号（模板覆盖后）；独立 Key：row 已经叠加过它绑定的模板。
+func accessPolicyFor(row usage.APIKeyRow, account *usage.EndUserQuota) *accesspolicy.Policy {
+	tenantID := strings.TrimSpace(row.TenantID)
+	if tenantID == "" {
+		tenantID = identity.SystemTenantID
+	}
+	period := row.PeriodSpendingLimits
+	period.Day = row.DailySpendingLimit
+	policy := &accesspolicy.Policy{
+		TenantID: tenantID,
+		APIKeyID: strings.TrimSpace(row.ID),
+		KeyRules: row.AccessPolicy.ModelRules,
+	}
+	if endUserID := strings.TrimSpace(row.EndUserID); endUserID != "" && account != nil {
+		policy.EndUserID = endUserID
+		policy.AccountLimits = account.QuotaMatrix()
+		policy.AccountRules = account.AccessPolicy.ModelRules
+		policy.Routes = account.AccessPolicy.ModelRoutes
+		policy.KeyLimits = quota.OwnedKeyColumnLayout.MatrixFromColumns(quota.ColumnValues{Period: period}, row.AccessPolicy.Limits)
+		return policy
+	}
+	policy.Routes = row.AccessPolicy.ModelRoutes
+	policy.KeyLimits = quota.StandaloneKeyColumnLayout.MatrixFromColumns(quota.ColumnValues{
+		Period: period, LifetimeCost: row.SpendingLimit, DailyRequests: row.DailyLimit, TotalRequests: row.TotalQuota,
+	}, row.AccessPolicy.Limits)
+	return policy
+}
+
+// keyConfig holds the per-key configuration extracted from APIKeyEntry.
+// When endUserID is set, quota/permissions come from the end-user account pool.
 type keyConfig struct {
-	allowedModels        []string
-	allowedChannels      []string
-	allowedChannelGroups []string
-	dailyLimit           int
-	totalQuota           int
-	spendingLimit        float64
-	monthlySpendingLimit float64
-	billingCycleAnchor   string
-	concurrencyLimit     int
-	rpmLimit             int
-	tpmLimit             int
-	systemPrompt         string
+	tenantID                    string
+	apiKeyID                    string
+	apiKeyName                  string
+	endUserID                   string
+	allowedModels               []string
+	allowedChannels             []string
+	allowedChannelGroups        []string
+	dailyLimit                  int
+	totalQuota                  int
+	spendingLimit               float64
+	dailySpendingLimit          float64
+	accountPeriodSpendingLimits quota.PeriodSpendingLimits
+	keyPeriodSpendingLimits     quota.PeriodSpendingLimits
+	concurrencyLimit            int
+	rpmLimit                    int
+	tpmLimit                    int
+	systemPrompt                string
+}
+
+func keyConfigFromRow(row usage.APIKeyRow) keyConfig {
+	var account *usage.EndUserQuota
+	if endUserID := strings.TrimSpace(row.EndUserID); endUserID != "" {
+		if loaded := usage.GetEndUserQuota(endUserID); loaded != nil {
+			effective := usage.EffectiveEndUserQuota(*loaded)
+			account = &effective
+		}
+	}
+	return keyConfigFromRowWithAccount(row, account)
+}
+
+func keyConfigFromRowWithAccount(row usage.APIKeyRow, account *usage.EndUserQuota) keyConfig {
+	tenantID := strings.TrimSpace(row.TenantID)
+	if tenantID == "" {
+		tenantID = identity.SystemTenantID
+	}
+	kc := keyConfig{
+		tenantID: tenantID, apiKeyID: strings.TrimSpace(row.ID), apiKeyName: strings.TrimSpace(row.Name),
+		endUserID: strings.TrimSpace(row.EndUserID), allowedModels: row.AllowedModels,
+		allowedChannels: row.AllowedChannels, allowedChannelGroups: row.AllowedChannelGroups,
+		dailyLimit: row.DailyLimit, totalQuota: row.TotalQuota, spendingLimit: row.SpendingLimit,
+		dailySpendingLimit: row.DailySpendingLimit, keyPeriodSpendingLimits: row.PeriodSpendingLimits,
+		concurrencyLimit: row.ConcurrencyLimit, rpmLimit: row.RPMLimit, tpmLimit: row.TPMLimit, systemPrompt: row.SystemPrompt,
+	}
+	if kc.endUserID != "" && account != nil {
+		if name := strings.TrimSpace(account.DisplayName); name != "" {
+			kc.apiKeyName = name
+		}
+		kc.allowedModels = account.AllowedModels
+		kc.allowedChannels = account.AllowedChannels
+		kc.allowedChannelGroups = account.AllowedChannelGroups
+		kc.dailyLimit = account.DailyLimit
+		kc.totalQuota = account.TotalQuota
+		kc.spendingLimit = account.SpendingLimit
+		kc.dailySpendingLimit = account.DailySpendingLimit
+		kc.accountPeriodSpendingLimits = account.PeriodSpendingLimits
+		kc.concurrencyLimit = account.ConcurrencyLimit
+		kc.rpmLimit = account.RPMLimit
+		kc.tpmLimit = account.TPMLimit
+		kc.systemPrompt = account.SystemPrompt
+	}
+	kc.keyPeriodSpendingLimits.Day = row.DailySpendingLimit
+	if kc.endUserID == "" {
+		kc.dailySpendingLimit = kc.keyPeriodSpendingLimits.Day
+	}
+	return kc
 }
 
 type provider struct {
@@ -115,7 +250,6 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 	if len(p.keys) == 0 {
 		return nil, sdkaccess.NewNotHandledError()
 	}
-
 	authHeader := r.Header.Get("Authorization")
 	authHeaderGoogle := r.Header.Get("X-Goog-Api-Key")
 	authHeaderAnthropic := r.Header.Get("X-Api-Key")
@@ -147,8 +281,20 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 			continue
 		}
 		if kc, ok := p.keys[candidate.value]; ok {
+			// Example keys stay in p.keys so an instance configured with only them
+			// still has keys and allow-unauthenticated cannot open it up, but they
+			// never authenticate: carry on exactly as for an unknown key.
+			if config.IsPlaceholderAPIKey(candidate.value) {
+				warnPlaceholderKeyRejected(candidate.value, kc.apiKeyName)
+				continue
+			}
 			metadata := map[string]string{
-				"source": candidate.source,
+				"source":     candidate.source,
+				"tenant-id":  kc.tenantID,
+				"api-key-id": kc.apiKeyID,
+			}
+			if kc.endUserID != "" {
+				metadata["end-user-id"] = kc.endUserID
 			}
 			if len(kc.allowedModels) > 0 {
 				metadata["allowed-models"] = strings.Join(kc.allowedModels, ",")
@@ -158,6 +304,11 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 			}
 			if len(kc.allowedChannelGroups) > 0 {
 				metadata["allowed-channel-groups"] = strings.Join(kc.allowedChannelGroups, ",")
+			}
+			// Read per request, not kept in keyConfig: a freeze applies from the
+			// requester's next request, without waiting for the keys to reload.
+			if frozen := accessfreeze.FrozenProvidersFor(kc.tenantID, kc.endUserID, kc.apiKeyID); frozen != "" {
+				metadata[cliproxyexecutor.AccessFrozenProvidersKey] = frozen
 			}
 			if kc.dailyLimit > 0 {
 				metadata["daily-limit"] = fmt.Sprintf("%d", kc.dailyLimit)
@@ -177,24 +328,34 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 			if kc.spendingLimit > 0 {
 				metadata["spending-limit"] = fmt.Sprintf("%f", kc.spendingLimit)
 			}
-			if kc.monthlySpendingLimit > 0 {
-				metadata["monthly-spending-limit"] = fmt.Sprintf("%f", kc.monthlySpendingLimit)
+			if kc.dailySpendingLimit > 0 {
+				metadata["daily-spending-limit"] = fmt.Sprintf("%f", kc.dailySpendingLimit)
 			}
-			if strings.TrimSpace(kc.billingCycleAnchor) != "" {
-				metadata["billing-cycle-anchor"] = strings.TrimSpace(kc.billingCycleAnchor)
-			}
+			addPeriodLimitMetadata(metadata, "account-period-spending-limit-", kc.accountPeriodSpendingLimits)
+			addPeriodLimitMetadata(metadata, "key-period-spending-limit-", kc.keyPeriodSpendingLimits)
 			if kc.systemPrompt != "" {
 				metadata["system-prompt"] = kc.systemPrompt
 			}
 			return &sdkaccess.Result{
-				Provider:  p.Identifier(),
-				Principal: candidate.value,
-				Metadata:  metadata,
+				Provider:   p.Identifier(),
+				Principal:  candidate.value,
+				TenantID:   kc.tenantID,
+				APIKeyID:   kc.apiKeyID,
+				APIKeyName: kc.apiKeyName,
+				Metadata:   metadata,
 			}, nil
 		}
 	}
 
 	return nil, sdkaccess.NewInvalidCredentialError()
+}
+
+func addPeriodLimitMetadata(metadata map[string]string, prefix string, limits quota.PeriodSpendingLimits) {
+	for _, period := range quota.OrderedPeriods {
+		if value := limits.Value(period); value > 0 {
+			metadata[prefix+string(period)] = fmt.Sprintf("%f", value)
+		}
+	}
 }
 
 func extractBearerToken(header string) string {

@@ -1,0 +1,719 @@
+package usage
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/tidwall/gjson"
+)
+
+// DailySeriesPoint holds one day of aggregated usage data.
+type DailySeriesPoint struct {
+	Date         string `json:"date"`
+	Requests     int    `json:"requests"`
+	FailedReq    int    `json:"failed_requests"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+}
+
+// DailyHeatmapPoint holds one day of usage for the calendar heatmap.
+type DailyHeatmapPoint struct {
+	Date     string  `json:"date"`
+	Requests int64   `json:"requests"`
+	Sessions int64   `json:"sessions"`
+	Tokens   int64   `json:"tokens"`
+	Cost     float64 `json:"cost"`
+}
+
+// ModelDistributionPoint holds aggregated usage data for a single model.
+type ModelDistributionPoint struct {
+	Model    string `json:"model"`
+	Requests int64  `json:"requests"`
+	Tokens   int64  `json:"tokens"`
+}
+
+// PublicAPIKeyDistributionPoint exposes stable per-key usage without secrets.
+type PublicAPIKeyDistributionPoint struct {
+	APIKeyID string `json:"api_key_id"`
+	Name     string `json:"name"`
+	Requests int64  `json:"requests"`
+	Tokens   int64  `json:"tokens"`
+}
+
+type PublicChartData struct {
+	DailySeries        []DailySeriesPoint
+	HeatmapSeries      []DailyHeatmapPoint
+	ModelDistribution  []ModelDistributionPoint
+	APIKeyDistribution []PublicAPIKeyDistributionPoint
+	Stats              LogStats
+}
+
+// QueryPublicChartData aggregates the public API-key lookup charts in one indexed pass.
+func QueryPublicChartData(apiKey string, days int) (PublicChartData, error) {
+	row := GetAPIKey(apiKey)
+	if row != nil && strings.TrimSpace(row.EndUserID) != "" {
+		return QueryPublicChartDataForEndUser(row.TenantID, row.EndUserID, days)
+	}
+	return queryPublicChartData(LogQueryParams{
+		TenantID: ResolveAPIKeyTenant(apiKey),
+		APIKeys:  ExpandPublicLookupAPIKeys(apiKey),
+	}, days)
+}
+
+func QueryPublicChartDataForEndUser(tenantID, endUserID string, days int) (PublicChartData, error) {
+	return queryPublicChartData(LogQueryParams{
+		TenantID:  tenantID,
+		EndUserID: endUserID,
+	}, days)
+}
+
+func queryPublicChartData(params LogQueryParams, days int) (PublicChartData, error) {
+	if getReadDB() == nil {
+		return PublicChartData{
+			DailySeries:        []DailySeriesPoint{},
+			HeatmapSeries:      []DailyHeatmapPoint{},
+			ModelDistribution:  []ModelDistributionPoint{},
+			APIKeyDistribution: []PublicAPIKeyDistributionPoint{},
+			Stats:              LogStats{CacheRate: 0},
+		}, nil
+	}
+	if days < 1 {
+		days = 7
+	}
+	const heatmapDays = 365
+	tenantID := params.TenantID
+	if tenantID == "" {
+		tenantID = systemTenantID
+	}
+	filter, ok := rollupIdentityFilter(params)
+	if !ok {
+		return PublicChartData{
+			DailySeries:        []DailySeriesPoint{},
+			HeatmapSeries:      []DailyHeatmapPoint{},
+			ModelDistribution:  []ModelDistributionPoint{},
+			APIKeyDistribution: []PublicAPIKeyDistributionPoint{},
+			Stats:              LogStats{CacheRate: 0},
+		}, nil
+	}
+	filter.BucketKind = rollupBucketDay
+	filter.BucketFrom = dayBucketFromDays(heatmapDays)
+	points, err := queryRollupDailySeries(filter)
+	if err != nil {
+		return PublicChartData{}, err
+	}
+	statsStartDay := dayBucketFromDays(days)
+	dailyByDate := make(map[string]*DailySeriesPoint)
+	heatmapByDate := make(map[string]*DailyHeatmapPoint)
+	var stats LogStats
+	var cache cacheTotals
+	var successCount int64
+	for _, p := range points {
+		heat := heatmapByDate[p.Date]
+		if heat == nil {
+			heat = &DailyHeatmapPoint{Date: p.Date}
+			heatmapByDate[p.Date] = heat
+		}
+		heat.Requests += p.Requests
+		heat.Tokens += p.TotalTokens
+		heat.Cost += p.Cost
+		// Sessions only cover the request_logs retention window; days before it keep 0.
+		if p.Date < statsStartDay {
+			continue
+		}
+		daily := dailyByDate[p.Date]
+		if daily == nil {
+			daily = &DailySeriesPoint{Date: p.Date}
+			dailyByDate[p.Date] = daily
+		}
+		daily.Requests += int(p.Requests)
+		daily.FailedReq += int(p.FailedRequests)
+		daily.InputTokens += int(p.InputTokens)
+		daily.OutputTokens += int(p.OutputTokens)
+		stats.Total += p.Requests
+		stats.TotalTokens += p.TotalTokens
+		stats.TotalCost += p.Cost
+		successCount += p.SuccessCount
+		cache.add(p.Cache)
+	}
+	models, err := queryRollupModelDistribution(rollupFilter{
+		TenantID:   tenantID,
+		BucketKind: rollupBucketDay,
+		BucketFrom: statsStartDay,
+		APIKeyIDs:  filter.APIKeyIDs,
+		EndUserID:  filter.EndUserID,
+	})
+	if err != nil {
+		return PublicChartData{}, err
+	}
+	apiKeyDistribution := []PublicAPIKeyDistributionPoint{}
+	if filter.EndUserID != "" {
+		apiKeyDistribution, err = queryRollupAPIKeyDistributionForEndUser(tenantID, filter.EndUserID, days)
+		if err != nil {
+			return PublicChartData{}, err
+		}
+	}
+	if stats.Total > 0 {
+		stats.SuccessRate = float64(successCount) / float64(stats.Total) * 100
+	}
+	stats.CacheUsage = cache.usage()
+	stats.CacheRate = stats.legacyCacheRate()
+	// Distinct sessions come from request_logs, so they cover its retention
+	// window (7 days by default), not the 365 days of the heatmap.
+	if sessionsByDate, sessErr := querySessionSetsByDate(params); sessErr == nil {
+		statsStart := LocalDayKeyAt(CutoffStartUTC(days))
+		totalSessions := make(map[string]struct{})
+		for dateKey, sessions := range sessionsByDate {
+			if point := heatmapByDate[dateKey]; point != nil {
+				point.Sessions = int64(len(sessions))
+			}
+			if dateKey >= statsStart {
+				for sessionID := range sessions {
+					totalSessions[sessionID] = struct{}{}
+				}
+			}
+		}
+		stats.TotalSessions = int64(len(totalSessions))
+	}
+	return PublicChartData{
+		DailySeries:        sortedDailySeries(dailyByDate),
+		HeatmapSeries:      sortedHeatmapSeries(heatmapByDate),
+		ModelDistribution:  models,
+		APIKeyDistribution: apiKeyDistribution,
+		Stats:              stats,
+	}, nil
+}
+
+func effectiveInputTokenTotal(inputTokens, cachedTokens int64) int64 {
+	if cachedTokens > inputTokens {
+		return inputTokens + cachedTokens
+	}
+	return inputTokens
+}
+
+func sortedDailySeries(points map[string]*DailySeriesPoint) []DailySeriesPoint {
+	result := make([]DailySeriesPoint, 0, len(points))
+	for _, point := range points {
+		result = append(result, *point)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Date < result[j].Date
+	})
+	return result
+}
+
+func sortedHeatmapSeries(points map[string]*DailyHeatmapPoint) []DailyHeatmapPoint {
+	result := make([]DailyHeatmapPoint, 0, len(points))
+	for _, point := range points {
+		result = append(result, *point)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Date < result[j].Date
+	})
+	return result
+}
+
+func sortedModelDistribution(points map[string]*ModelDistributionPoint) []ModelDistributionPoint {
+	result := make([]ModelDistributionPoint, 0, len(points))
+	for _, point := range points {
+		result = append(result, *point)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Requests == result[j].Requests {
+			return result[i].Model < result[j].Model
+		}
+		return result[i].Requests > result[j].Requests
+	})
+	return result
+}
+
+// QueryDailySeries returns per-day aggregated request count and token usage for a given API key.
+func QueryDailySeries(apiKey string, days int) ([]DailySeriesPoint, error) {
+	return QueryDailySeriesForTenant(systemTenantID, apiKey, days)
+}
+
+func QueryDailySeriesForTenant(tenantID, apiKey string, days int) ([]DailySeriesPoint, error) {
+	if getReadDB() == nil {
+		return nil, nil
+	}
+	if days < 1 {
+		days = 7
+	}
+
+	// Use usage_rollup_buckets, already keyed by usageLoc (project timezone)
+	// day; no SQL day function follows usageLoc on both drivers.
+	params := LogQueryParams{TenantID: tenantID, APIKey: apiKey, Days: days}
+	filter, ok := rollupIdentityFilter(params)
+	if !ok {
+		return []DailySeriesPoint{}, nil
+	}
+	filter.BucketKind = rollupBucketDay
+	filter.BucketFrom = dayBucketFromDays(days)
+	points, err := queryRollupDailySeries(filter)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]DailySeriesPoint, 0, len(points))
+	for _, p := range points {
+		result = append(result, DailySeriesPoint{
+			Date:         p.Date,
+			Requests:     int(p.Requests),
+			FailedReq:    int(p.FailedRequests),
+			InputTokens:  int(p.InputTokens),
+			OutputTokens: int(p.OutputTokens),
+		})
+	}
+	return result, nil
+}
+
+func querySessionSetsByDate(params LogQueryParams) (map[string]map[string]struct{}, error) {
+	db := getReadDB()
+	if db == nil {
+		return map[string]map[string]struct{}{}, nil
+	}
+	if params.Days < 1 {
+		params.Days = 7
+	}
+
+	where, args := buildWhereClause(params)
+	rows, err := db.Query(
+		`SELECT timestamp, session_id FROM request_logs`+where+` AND session_id <> ''`,
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("usage: session query: %w", err)
+	}
+	defer rows.Close()
+
+	// Day keys meet usage_rollup_buckets keys, so they follow the usage timezone.
+	loc := getUsageLocation()
+	seenByDate := make(map[string]map[string]struct{})
+	for rows.Next() {
+		var at storedTime
+		var sessionID string
+		if err := rows.Scan(&at, &sessionID); err != nil {
+			return nil, fmt.Errorf("usage: session scan: %w", err)
+		}
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" || !at.Valid {
+			continue
+		}
+		dateKey := localDayKeyAtLocation(at.Time, loc)
+		if seenByDate[dateKey] == nil {
+			seenByDate[dateKey] = make(map[string]struct{})
+		}
+		seenByDate[dateKey][sessionID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return seenByDate, nil
+}
+
+func extractSessionIDFromDetails(detail string) string {
+	if strings.TrimSpace(detail) == "" {
+		return ""
+	}
+	payload := gjson.Parse(detail)
+	if !payload.Exists() {
+		return ""
+	}
+	bestRank := 99
+	bestValue := ""
+	var walk func(gjson.Result, string)
+	walk = func(value gjson.Result, key string) {
+		rank := sessionDetailKeyRank(key)
+		if rank < bestRank {
+			if text := sessionDetailString(value); text != "" {
+				bestRank = rank
+				bestValue = text
+			}
+		}
+		if bestRank == 0 {
+			return
+		}
+		if value.Type == gjson.JSON {
+			value.ForEach(func(childKey, childValue gjson.Result) bool {
+				walk(childValue, childKey.String())
+				return bestRank != 0
+			})
+		}
+	}
+	walk(payload, "")
+	return bestValue
+}
+
+func sessionDetailString(value gjson.Result) string {
+	if value.Type == gjson.String {
+		return strings.TrimSpace(value.String())
+	}
+	if value.IsArray() {
+		result := ""
+		value.ForEach(func(_, item gjson.Result) bool {
+			if item.Type == gjson.String {
+				result = strings.TrimSpace(item.String())
+			}
+			return result == ""
+		})
+		return result
+	}
+	return ""
+}
+
+func sessionDetailKeyRank(key string) int {
+	normalized := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(key)))
+	switch normalized {
+	// Rank 0: stable client session ids. Grok/xAI clients send X-Grok-Session-Id
+	// rather than generic Session-Id; without it request_log_content.session_id
+	// stays empty for the bulk of Grok traffic and session-level analytics break.
+	case "session_id", "sessionid", "x_session_id", "x_sessionid",
+		"x_grok_session_id", "x_grok_sessionid":
+		return 0
+	case "conversation_id", "conversationid", "x_conversation_id", "x_conversationid",
+		"openai_conversation_id", "x_grok_conv_id", "x_grok_convid":
+		return 1
+	default:
+		return 99
+	}
+}
+
+// QueryModelDistribution returns request count and token usage grouped by model for a given API key.
+func QueryModelDistribution(apiKey string, days int) ([]ModelDistributionPoint, error) {
+	return QueryModelDistributionForTenant(systemTenantID, apiKey, days)
+}
+
+func QueryModelDistributionForTenant(tenantID, apiKey string, days int) ([]ModelDistributionPoint, error) {
+	if getReadDB() == nil {
+		return nil, nil
+	}
+	if days < 1 {
+		days = 7
+	}
+
+	params := LogQueryParams{TenantID: tenantID, APIKey: apiKey, Days: days}
+	filter, ok := rollupIdentityFilter(params)
+	if !ok {
+		return []ModelDistributionPoint{}, nil
+	}
+	filter.BucketKind = rollupBucketDay
+	filter.BucketFrom = dayBucketFromDays(days)
+	return queryRollupModelDistribution(filter)
+}
+
+// APIKeyDistributionPoint holds aggregated usage data for a single API key, or
+// for one end-user account when it owns several keys.
+type APIKeyDistributionPoint struct {
+	// APIKey is a mask of the key (the account's representative key for an
+	// account); APIKeyID is the key itself. Never a secret.
+	APIKey   string `json:"api_key"`
+	APIKeyID string `json:"api_key_id,omitempty"`
+	Name     string `json:"name"`
+	Requests int64  `json:"requests"`
+	Tokens   int64  `json:"tokens"`
+}
+
+// QueryAPIKeyDistribution returns request count and token usage grouped by key.
+func QueryAPIKeyDistribution(days int) ([]APIKeyDistributionPoint, error) {
+	return QueryAPIKeyDistributionForTenant(systemTenantID, days)
+}
+
+func QueryAPIKeyDistributionForTenant(tenantID string, days int) ([]APIKeyDistributionPoint, error) {
+	db := getReadDB()
+	if db == nil {
+		return nil, nil
+	}
+	if days < 1 {
+		days = 7
+	}
+
+	params := LogQueryParams{TenantID: tenantID, Days: days}
+	where, args := buildWhereClause(params)
+	currentByID := currentAPIKeyRowsByIDForTenant(tenantID)
+
+	// Rows are attributed to a key by api_key_id. The stored api_key is only a
+	// mask or a label, kept as the display fallback. A row with no id (the key was
+	// deleted before ids existed, or it is a route/internal label) keeps its own
+	// slice per stored value, as it always has.
+	q := `SELECT trim(coalesce(api_key_id, '')) as key_id,
+	             CASE WHEN trim(coalesce(api_key_id, '')) = '' THEN api_key ELSE '' END as unattributed_key,
+	             MAX(api_key) as snapshot_key,
+	             COALESCE(NULLIF(MAX(api_key_name),''), '') as snapshot_name,
+	             COUNT(*) as reqs,
+	             COALESCE(SUM(total_tokens),0)
+	      FROM request_logs` + where + `
+	      AND (trim(coalesce(api_key_id, '')) <> '' OR api_key <> '')
+	      GROUP BY key_id, unattributed_key ORDER BY reqs DESC`
+
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("usage: apikey distribution query: %w", err)
+	}
+	defer rows.Close()
+
+	repByEndUser, nameByEndUser := accountFilterRepresentatives(tenantID)
+	merged := make(map[string]*APIKeyDistributionPoint)
+	order := make([]string, 0)
+	for rows.Next() {
+		var keyID, unattributedKey, snapshotKey, snapshotName string
+		var p APIKeyDistributionPoint
+		if err := rows.Scan(&keyID, &unattributedKey, &snapshotKey, &snapshotName, &p.Requests, &p.Tokens); err != nil {
+			return nil, fmt.Errorf("usage: apikey distribution scan: %w", err)
+		}
+		keyID = strings.TrimSpace(keyID)
+		p.APIKeyID = keyID
+		p.APIKey = requestLogAPIKeyForDisplay(snapshotKey)
+		p.Name = strings.TrimSpace(snapshotName)
+
+		mergeKey := keyID
+		if keyID == "" {
+			mergeKey = "raw:" + strings.TrimSpace(unattributedKey)
+		} else if live, ok := currentByID[keyID]; ok {
+			if secret := strings.TrimSpace(live.Key); secret != "" {
+				p.APIKey = MaskAPIKey(secret)
+			}
+			if eu := strings.TrimSpace(live.EndUserID); eu != "" {
+				// Collapse multi-key accounts into one distribution slice.
+				mergeKey = "eu:" + eu
+				if rep := strings.TrimSpace(repByEndUser[eu]); rep != "" {
+					p.APIKeyID = rep
+					if repRow, ok := currentByID[rep]; ok {
+						if secret := strings.TrimSpace(repRow.Key); secret != "" {
+							p.APIKey = MaskAPIKey(secret)
+						}
+					}
+				}
+				if label := strings.TrimSpace(nameByEndUser[eu]); label != "" {
+					p.Name = label
+				} else if label := ResolveAPIKeyDisplayName(&live, p.Name); label != "" {
+					p.Name = label
+				}
+			} else if label := ResolveAPIKeyDisplayName(&live, p.Name); label != "" {
+				p.Name = label
+			}
+		}
+
+		if existing, ok := merged[mergeKey]; ok {
+			existing.Requests += p.Requests
+			existing.Tokens += p.Tokens
+			if existing.Name == "" && p.Name != "" {
+				existing.Name = p.Name
+			}
+			continue
+		}
+		point := p
+		merged[mergeKey] = &point
+		order = append(order, mergeKey)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	result := make([]APIKeyDistributionPoint, 0, len(order))
+	for _, key := range order {
+		result = append(result, *merged[key])
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Requests != result[j].Requests {
+			return result[i].Requests > result[j].Requests
+		}
+		if result[i].APIKeyID != result[j].APIKeyID {
+			return result[i].APIKeyID < result[j].APIKeyID
+		}
+		return result[i].APIKey < result[j].APIKey
+	})
+	return result, nil
+}
+
+// HourlyTokenPoint holds token usage per hour for the last N hours.
+type HourlyTokenPoint struct {
+	Hour            string `json:"hour"`
+	InputTokens     int64  `json:"input_tokens"`
+	OutputTokens    int64  `json:"output_tokens"`
+	ReasoningTokens int64  `json:"reasoning_tokens"`
+	CachedTokens    int64  `json:"cached_tokens"`
+	TotalTokens     int64  `json:"total_tokens"`
+	// CacheReadTokens and CacheWriteTokens only count requests whose cache use
+	// is known (see CacheUsage).
+	CacheReadTokens  int64 `json:"cache_read_tokens"`
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
+}
+
+// HourlyModelPoint holds model request counts per hour.
+type HourlyModelPoint struct {
+	Hour     string `json:"hour"`
+	Model    string `json:"model"`
+	Requests int64  `json:"requests"`
+}
+
+// QueryHourlySeries returns per-hour token and model aggregates for the last N hours.
+func QueryHourlySeries(apiKey string, hours int) ([]HourlyTokenPoint, []HourlyModelPoint, error) {
+	return QueryHourlySeriesForTenant(systemTenantID, apiKey, hours)
+}
+
+func QueryHourlySeriesForTenant(tenantID, apiKey string, hours int) ([]HourlyTokenPoint, []HourlyModelPoint, error) {
+	return queryHourlySeriesAt(tenantID, apiKey, hours, time.Now(), getUsageLocation())
+}
+
+func queryHourlySeriesAt(tenantID, apiKey string, hours int, now time.Time, loc *time.Location) ([]HourlyTokenPoint, []HourlyModelPoint, error) {
+	tenantID = normalizeTenantID(tenantID)
+	db := getReadDB()
+	if db == nil {
+		return nil, nil, nil
+	}
+	if hours < 1 {
+		hours = 24
+	}
+
+	cutoff := now.Add(-time.Duration(hours) * time.Hour)
+	// The panel labels these hours as local wall-clock time, so key them in the
+	// usage timezone (see timeBucketCase).
+	bounds := localHourBoundsAt(cutoff, now, loc)
+	hourExpr, hourArgs, hourKeys := timeBucketCase("timestamp", bounds, "2006-01-02 15:00")
+
+	// Build WHERE clause directly with the correct hourly cutoff.
+	// Previously this used buildWhereClause + strings.Replace, but that failed
+	// because buildWhereClause uses parameterised queries (? placeholders)
+	// so the time value lives in args, not in the where string.
+	conditions := []string{"tenant_id = ?", "timestamp >= ?", "timestamp < ?"}
+	args := make([]interface{}, 0, len(hourArgs)+5)
+	args = append(args, hourArgs...)
+	args = append(args, tenantID, cutoff.UTC().Format(time.RFC3339), bounds[len(bounds)-1].UTC().Format(time.RFC3339))
+	if apiKey != "" {
+		clause, clauseArgs := buildSingleAPIKeySelectorClauseForTenant(tenantID, apiKey)
+		conditions = append(conditions, strings.TrimPrefix(clause, " WHERE "))
+		args = append(args, clauseArgs...)
+	}
+	where := " WHERE " + strings.Join(conditions, " AND ")
+
+	// query tokens by hour
+	tokenQuery := `SELECT ` + hourExpr + ` as h,
+	                      COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+	                      COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cached_tokens),0), COALESCE(SUM(total_tokens),0),
+	                      COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_tokens),0)
+	               FROM request_logs` + where + ` GROUP BY h ORDER BY h`
+	tokenRows, err := db.Query(tokenQuery, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("usage: hourly token query: %w", err)
+	}
+	defer tokenRows.Close()
+
+	var tokens []HourlyTokenPoint
+	for tokenRows.Next() {
+		var hour int
+		var p HourlyTokenPoint
+		if err := tokenRows.Scan(&hour, &p.InputTokens, &p.OutputTokens, &p.ReasoningTokens, &p.CachedTokens, &p.TotalTokens, &p.CacheReadTokens, &p.CacheWriteTokens); err != nil {
+			return nil, nil, fmt.Errorf("usage: hourly token scan: %w", err)
+		}
+		p.Hour = hourKeys[hour]
+		tokens = append(tokens, p)
+	}
+
+	// query models by hour
+	modelQuery := `SELECT ` + hourExpr + ` as h, model, COUNT(*) as reqs
+	               FROM request_logs` + where + ` AND model != '' GROUP BY h, model ORDER BY h`
+	modelRows, err := db.Query(modelQuery, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("usage: hourly model query: %w", err)
+	}
+	defer modelRows.Close()
+
+	var models []HourlyModelPoint
+	for modelRows.Next() {
+		var hour int
+		var p HourlyModelPoint
+		if err := modelRows.Scan(&hour, &p.Model, &p.Requests); err != nil {
+			return nil, nil, fmt.Errorf("usage: hourly model scan: %w", err)
+		}
+		p.Hour = hourKeys[hour]
+		models = append(models, p)
+	}
+
+	return tokens, models, nil
+}
+
+// EntityStatPoint holds aggregated usage data for a single entity (source or auth_index).
+type EntityStatPoint struct {
+	EntityName  string  `json:"entity_name"`
+	Requests    int64   `json:"requests"`
+	Failed      int64   `json:"failed"`
+	AvgLatency  float64 `json:"avg_latency"`
+	TotalTokens int64   `json:"total_tokens"`
+}
+
+// QueryEntityStats returns aggregates grouped by a given column (e.g. "source" or "auth_index").
+// Time range is derived from days logic.
+func QueryEntityStats(apiKey string, days int, groupColumn string, entityNames []string) ([]EntityStatPoint, error) {
+	return QueryEntityStatsForTenant(systemTenantID, apiKey, days, groupColumn, entityNames)
+}
+
+func QueryEntityStatsForTenant(tenantID, apiKey string, days int, groupColumn string, entityNames []string) ([]EntityStatPoint, error) {
+	db := getReadDB()
+	if db == nil {
+		return nil, nil
+	}
+	if days < 1 {
+		days = 7
+	}
+	if groupColumn != "source" && groupColumn != "auth_index" {
+		return nil, fmt.Errorf("usage: invalid group column")
+	}
+
+	params := LogQueryParams{TenantID: tenantID, APIKey: apiKey, Days: days}
+	where, args := buildWhereClause(params)
+	entityNames = normalizeEntityStatFilters(entityNames)
+	if len(entityNames) > 0 {
+		placeholders := make([]string, 0, len(entityNames))
+		for _, name := range entityNames {
+			placeholders = append(placeholders, "?")
+			args = append(args, name)
+		}
+		if where == "" {
+			where = " WHERE " + groupColumn + " IN (" + strings.Join(placeholders, ",") + ")"
+		} else {
+			where += " AND " + groupColumn + " IN (" + strings.Join(placeholders, ",") + ")"
+		}
+	}
+
+	q := fmt.Sprintf(`
+		SELECT %s, COUNT(*), COALESCE(SUM(failed),0), COALESCE(AVG(latency_ms),0), COALESCE(SUM(total_tokens),0)
+		FROM request_logs%s AND %s != ''
+		GROUP BY %s ORDER BY COUNT(*) DESC
+	`, groupColumn, where, groupColumn, groupColumn)
+
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("usage: entity stats query: %w", err)
+	}
+	defer rows.Close()
+
+	var result []EntityStatPoint
+	for rows.Next() {
+		var p EntityStatPoint
+		if err := rows.Scan(&p.EntityName, &p.Requests, &p.Failed, &p.AvgLatency, &p.TotalTokens); err != nil {
+			return nil, fmt.Errorf("usage: entity stats scan: %w", err)
+		}
+		result = append(result, p)
+	}
+	return result, rows.Err()
+}
+
+func normalizeEntityStatFilters(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
+}

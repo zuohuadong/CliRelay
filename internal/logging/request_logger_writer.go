@@ -4,20 +4,22 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/MoeForge/moego/regexp"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	log "github.com/sirupsen/logrus"
 )
 
-var requestLogID atomic.Uint64
+var (
+	requestLogID                        atomic.Uint64
+	sanitizeFilenameInvalidCharsPattern = regexp.MustCompile(`[<>:"|?*\s]`)
+	sanitizeFilenameMultiHyphenPattern  = regexp.MustCompile(`-+`)
+)
 
 // LogRequest logs a complete non-streaming request/response cycle to a file.
 //
@@ -111,17 +113,13 @@ func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHea
 
 	// Generate filename with request ID
 	filename := l.generateFilename(url, requestID)
-	if force && !l.enabled {
+	if (force && !l.enabled) || (statusCode >= 400 && statusCode != 499) {
 		filename = l.generateErrorFilename(url, requestID)
 	}
 
-	requestBodyPath := ""
-	if l.BodyEnabled() {
-		var errTemp error
-		requestBodyPath, errTemp = l.writeRequestBodyTempFile(body)
-		if errTemp != nil {
-			log.WithError(errTemp).Warn("failed to create request body temp file, falling back to direct write")
-		}
+	requestBodyPath, errTemp := l.writeRequestBodyTempFile(body)
+	if errTemp != nil {
+		log.WithError(errTemp).Warn("failed to create request body temp file, falling back to direct write")
 	}
 	if requestBodyPath != "" {
 		defer func() {
@@ -206,7 +204,7 @@ func (l *FileRequestLogger) LogStreamingRequest(url, method string, headers map[
 		if client == nil || !client.HeartbeatOK() {
 			return &NoOpStreamingLogWriter{}, nil
 		}
-		return newHomeStreamingLogWriter(url, method, headers, body, requestID, l.BodyEnabled()), nil
+		return newHomeStreamingLogWriter(url, method, headers, body, requestID), nil
 	}
 
 	// Ensure logs directory exists
@@ -224,24 +222,17 @@ func (l *FileRequestLogger) LogStreamingRequest(url, method string, headers map[
 		requestHeaders[key] = headerValues
 	}
 
-	requestBodyPath := ""
-	var responseBodyFile *os.File
-	responseBodyPath := ""
-	if l.BodyEnabled() {
-		var errTemp error
-		requestBodyPath, errTemp = l.writeRequestBodyTempFile(body)
-		if errTemp != nil {
-			return nil, fmt.Errorf("failed to create request body temp file: %w", errTemp)
-		}
-
-		var errCreate error
-		responseBodyFile, errCreate = os.CreateTemp(l.logsDir, "response-body-*.tmp")
-		if errCreate != nil {
-			_ = os.Remove(requestBodyPath)
-			return nil, fmt.Errorf("failed to create response body temp file: %w", errCreate)
-		}
-		responseBodyPath = responseBodyFile.Name()
+	requestBodyPath, errTemp := l.writeRequestBodyTempFile(body)
+	if errTemp != nil {
+		return nil, fmt.Errorf("failed to create request body temp file: %w", errTemp)
 	}
+
+	responseBodyFile, errCreate := os.CreateTemp(l.logsDir, "response-body-*.tmp")
+	if errCreate != nil {
+		_ = os.Remove(requestBodyPath)
+		return nil, fmt.Errorf("failed to create response body temp file: %w", errCreate)
+	}
+	responseBodyPath := responseBodyFile.Name()
 
 	// Create streaming writer
 	writer := &FileStreamingLogWriter{
@@ -254,7 +245,6 @@ func (l *FileRequestLogger) LogStreamingRequest(url, method string, headers map[
 		requestBodyPath:  requestBodyPath,
 		responseBodyPath: responseBodyPath,
 		responseBodyFile: responseBodyFile,
-		bodyEnabled:      l.BodyEnabled(),
 		chunkChan:        make(chan []byte, 100), // Buffered channel for async writes
 		closeChan:        make(chan struct{}),
 		errorChan:        make(chan error, 1),
@@ -266,64 +256,12 @@ func (l *FileRequestLogger) LogStreamingRequest(url, method string, headers map[
 	return writer, nil
 }
 
-// generateErrorFilename creates a filename with an error prefix to differentiate forced error logs.
-func (l *FileRequestLogger) generateErrorFilename(url string, requestID ...string) string {
-	return fmt.Sprintf("error-%s", l.generateFilename(url, requestID...))
-}
-
-// ensureLogsDir creates the logs directory if it doesn't exist.
-//
-// Returns:
-//   - error: An error if directory creation fails, nil otherwise
-func (l *FileRequestLogger) ensureLogsDir() error {
-	if _, err := os.Stat(l.logsDir); os.IsNotExist(err) {
-		return os.MkdirAll(l.logsDir, 0755)
-	}
-	return nil
-}
-
-// generateFilename creates a sanitized filename from the URL path and current timestamp.
-// Format: v1-responses-2025-12-23T195811-a1b2c3d4.log
-//
-// Parameters:
-//   - url: The request URL
-//   - requestID: Optional request ID to include in filename
-//
-// Returns:
-//   - string: A sanitized filename for the log file
-func (l *FileRequestLogger) generateFilename(url string, requestID ...string) string {
-	// Extract path from URL
-	path := url
-	if strings.Contains(url, "?") {
-		path = strings.Split(url, "?")[0]
-	}
-
-	// Remove leading slash
-	if strings.HasPrefix(path, "/") {
-		path = path[1:]
-	}
-
-	// Sanitize path for filename
-	sanitized := l.sanitizeForFilename(path)
-
-	// Add timestamp
-	timestamp := time.Now().Format("2006-01-02T150405")
-
-	// Use request ID if provided, otherwise use sequential ID
-	var idPart string
-	if len(requestID) > 0 && requestID[0] != "" {
-		idPart = ShortRequestID(requestID[0])
-	} else {
-		id := requestLogID.Add(1)
-		idPart = fmt.Sprintf("%d", id)
-	}
-
-	return fmt.Sprintf("%s-%s-%s.log", sanitized, timestamp, idPart)
-}
-
 // createUniqueLogFile atomically opens a unique log file within dir. If a file with filename already exists,
 // it avoids overwriting by injecting an incrementing sequence number before the trailing request ID component.
 func createUniqueLogFile(dir, filename string) (*os.File, string, error) {
+	if filename == "" || filename == "." || filename == ".." || strings.ContainsAny(filename, `/\`) || strings.Contains(filename, "..") || filepath.Base(filename) != filename {
+		return nil, "", fmt.Errorf("invalid log filename: %q", filename)
+	}
 	ext := filepath.Ext(filename)
 	base := strings.TrimSuffix(filename, ext)
 	idx := strings.LastIndex(base, "-")
@@ -355,106 +293,4 @@ func createUniqueLogFile(dir, filename string) (*os.File, string, error) {
 		}
 	}
 	return nil, "", fmt.Errorf("too many conflicting log files for %s", filename)
-}
-
-// sanitizeForFilename replaces characters that are not safe for filenames.
-//
-// Parameters:
-//   - path: The path to sanitize
-//
-// Returns:
-//   - string: A sanitized filename
-func (l *FileRequestLogger) sanitizeForFilename(path string) string {
-	// Replace slashes with hyphens
-	sanitized := strings.ReplaceAll(path, "/", "-")
-
-	// Replace colons with hyphens
-	sanitized = strings.ReplaceAll(sanitized, ":", "-")
-
-	// Replace other problematic characters with hyphens
-	reg := regexp.MustCompile(`[<>:"|?*\s]`)
-	sanitized = reg.ReplaceAllString(sanitized, "-")
-
-	// Remove multiple consecutive hyphens
-	reg = regexp.MustCompile(`-+`)
-	sanitized = reg.ReplaceAllString(sanitized, "-")
-
-	// Remove leading/trailing hyphens
-	sanitized = strings.Trim(sanitized, "-")
-
-	// Handle empty result
-	if sanitized == "" {
-		sanitized = "root"
-	}
-
-	return sanitized
-}
-
-// cleanupOldErrorLogs keeps only the newest errorLogsMaxFiles forced error log files.
-func (l *FileRequestLogger) cleanupOldErrorLogs() error {
-	if l.errorLogsMaxFiles <= 0 {
-		return nil
-	}
-
-	entries, errRead := os.ReadDir(l.logsDir)
-	if errRead != nil {
-		return errRead
-	}
-
-	type logFile struct {
-		name    string
-		modTime time.Time
-	}
-
-	var files []logFile
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasPrefix(name, "error-") || !strings.HasSuffix(name, ".log") {
-			continue
-		}
-		info, errInfo := entry.Info()
-		if errInfo != nil {
-			log.WithError(errInfo).Warn("failed to read error log info")
-			continue
-		}
-		files = append(files, logFile{name: name, modTime: info.ModTime()})
-	}
-
-	if len(files) <= l.errorLogsMaxFiles {
-		return nil
-	}
-
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].modTime.After(files[j].modTime)
-	})
-
-	for _, file := range files[l.errorLogsMaxFiles:] {
-		if errRemove := os.Remove(filepath.Join(l.logsDir, file.name)); errRemove != nil {
-			log.WithError(errRemove).Warnf("failed to remove old error log: %s", file.name)
-		}
-	}
-
-	return nil
-}
-
-func (l *FileRequestLogger) writeRequestBodyTempFile(body []byte) (string, error) {
-	tmpFile, errCreate := os.CreateTemp(l.logsDir, "request-body-*.tmp")
-	if errCreate != nil {
-		return "", errCreate
-	}
-	tmpPath := tmpFile.Name()
-
-	if _, errCopy := io.Copy(tmpFile, bytes.NewReader(body)); errCopy != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-		return "", errCopy
-	}
-	if errClose := tmpFile.Close(); errClose != nil {
-		_ = os.Remove(tmpPath)
-		return "", errClose
-	}
-	return tmpPath, nil
 }

@@ -34,6 +34,11 @@ func configureLogDirCleanerLocked(logDir string, maxTotalSizeMB int, protectedPa
 
 	ctx, cancel := context.WithCancel(context.Background())
 	logDirCleanerCancel = cancel
+	// 日志目录清理器属于 logging 子系统自身的后台维护任务：
+	// - owner: logging 配置生命周期
+	// - 取消条件: stopLogDirCleanerLocked / 下一次重新配置 / 进程退出
+	// - 超时策略: 无单次请求超时，按 ticker 周期执行
+	// - 清理方式: cancel 后退出 runLogDirCleaner 循环，不依赖外部请求 context
 	go runLogDirCleaner(ctx, filepath.Clean(dir), maxBytes, strings.TrimSpace(protectedPath))
 }
 
@@ -110,7 +115,7 @@ func enforceLogDirSizeLimit(logDir string, maxBytes int64, protectedPath string)
 			continue
 		}
 		name := entry.Name()
-		if !isLogFileName(name) {
+		if !isLogDirManagedFileName(name) {
 			continue
 		}
 		info, errInfo := entry.Info()
@@ -133,7 +138,14 @@ func enforceLogDirSizeLimit(logDir string, maxBytes int64, protectedPath string)
 		return 0, nil
 	}
 
+	// Prefer deleting orphaned spool temps before request/main logs so a
+	// leaked *.tmp storm cannot pin the directory above the configured cap.
 	sort.Slice(files, func(i, j int) bool {
+		iTmp := isLogSpoolTempFileName(filepath.Base(files[i].path))
+		jTmp := isLogSpoolTempFileName(filepath.Base(files[j].path))
+		if iTmp != jTmp {
+			return iTmp
+		}
 		return files[i].modTime.Before(files[j].modTime)
 	})
 
@@ -146,6 +158,10 @@ func enforceLogDirSizeLimit(logDir string, maxBytes int64, protectedPath string)
 			continue
 		}
 		if errRemove := os.Remove(file.path); errRemove != nil {
+			// Active stream may still hold the spool file open; skip and retry next cycle.
+			if isLogSpoolTempFileName(filepath.Base(file.path)) && !os.IsNotExist(errRemove) {
+				continue
+			}
 			log.WithError(errRemove).Warnf("logging: failed to remove old log file: %s", filepath.Base(file.path))
 			continue
 		}
@@ -163,4 +179,23 @@ func isLogFileName(name string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 	return strings.HasSuffix(lower, ".log") || strings.HasSuffix(lower, ".log.gz")
+}
+
+// isLogSpoolTempFileName matches request/response body spool files written into
+// the logs directory while assembling per-request logs. These used to escape
+// logs-max-total-size-mb because only *.log / *.log.gz were counted.
+func isLogSpoolTempFileName(name string) bool {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if !strings.HasSuffix(lower, ".tmp") {
+		return false
+	}
+	return strings.HasPrefix(lower, "request-body-") || strings.HasPrefix(lower, "response-body-")
+}
+
+func isLogDirManagedFileName(name string) bool {
+	return isLogFileName(name) || isLogSpoolTempFileName(name)
 }

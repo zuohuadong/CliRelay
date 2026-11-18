@@ -1,9 +1,17 @@
 package cliproxy
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/MoeForge/moego/json"
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/gemini"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
@@ -122,76 +130,35 @@ func TestApplyOAuthModelAlias_ForkAddsMultipleAliases(t *testing.T) {
 	}
 }
 
-func TestApplyOAuthModelAlias_AddsAliasWhenSourceModelMissing(t *testing.T) {
+func TestApplyOAuthModelAlias_Meta(t *testing.T) {
 	cfg := &config.Config{
 		OAuthModelAlias: map[string][]config.OAuthModelAlias{
-			"antigravity": {
-				{Name: "gemini-3.1-pro-high", Alias: "gpt-5.2", Fork: true, DisplayName: "GPT 5.2"},
+			"meta": {
+				{Name: "muse-spark-1.3", Alias: "muse-latest", DisplayName: "Muse Latest"},
 			},
 		},
 	}
 	models := []*ModelInfo{
-		{ID: "gemini-3.1-pro-low", Name: "models/gemini-3.1-pro-low"},
+		{ID: "muse-spark-1.3", Name: "models/muse-spark-1.3", DisplayName: "Muse Spark 1.3"},
 	}
 
-	out := applyOAuthModelAlias(cfg, "antigravity", "oauth", models)
-	if len(out) != 2 {
-		t.Fatalf("expected 2 models, got %d", len(out))
+	out := applyOAuthModelAlias(cfg, "meta", "oauth", models)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(out))
 	}
-	if out[0].ID != "gemini-3.1-pro-low" {
-		t.Fatalf("expected original model id %q, got %q", "gemini-3.1-pro-low", out[0].ID)
+	if out[0].ID != "muse-latest" {
+		t.Fatalf("expected model id %q, got %q", "muse-latest", out[0].ID)
 	}
-	if out[1].ID != "gpt-5.2" {
-		t.Fatalf("expected configured alias id %q, got %q", "gpt-5.2", out[1].ID)
+	if out[0].Name != "models/muse-latest" {
+		t.Fatalf("expected model name %q, got %q", "models/muse-latest", out[0].Name)
 	}
-	if out[1].Name != "models/gpt-5.2" {
-		t.Fatalf("expected configured alias name %q, got %q", "models/gpt-5.2", out[1].Name)
+	if out[0].DisplayName != "Muse Latest" {
+		t.Fatalf("expected display name %q, got %q", "Muse Latest", out[0].DisplayName)
 	}
-	if out[1].DisplayName != "GPT 5.2" {
-		t.Fatalf("expected configured alias display name %q, got %q", "GPT 5.2", out[1].DisplayName)
-	}
-}
 
-func TestApplyOAuthModelAlias_AllowlistSkipsMissingSourceUnlessAliasMatches(t *testing.T) {
-	cfg := &config.Config{
-		OAuthModelAlias: map[string][]config.OAuthModelAlias{
-			"xai": {
-				{Name: "grok-4.6", Alias: "gpt-5.4", Fork: true},
-				{Name: "grok-4.7-preview", Alias: "grok-4.7"},
-				{Name: "grok-4.5", Alias: "grok-4.5-latest"},
-				{Name: "grok-4.20-0309-reasoning", Alias: "grok-4.20-reasoning"},
-			},
-		},
-	}
-	out := applyOAuthModelAliasForAuthAllowed(cfg, "xai", "oauth", nil, []*ModelInfo{
-		{ID: "grok-4.6", Name: "models/grok-4.6"},
-	}, []string{"grok-4.6", "grok-4.6-*", "grok-4.7", "grok-4.7-*"})
-	ids := make([]string, 0, len(out))
-	for _, model := range out {
-		if model != nil {
-			ids = append(ids, model.ID)
-		}
-	}
-	want := []string{"grok-4.6", "gpt-5.4", "grok-4.7"}
-	if len(ids) != len(want) {
-		t.Fatalf("allowed alias models = %v, want %v", ids, want)
-	}
-	for i := range want {
-		if ids[i] != want[i] {
-			t.Fatalf("allowed alias models = %v, want %v", ids, want)
-		}
-	}
-}
-
-func TestApplyOAuthModelAlias_DefaultsGemini37FlashTiered(t *testing.T) {
-	for _, provider := range []string{"antigravity", "gemini-cli"} {
-		t.Run(provider, func(t *testing.T) {
-			models := []*ModelInfo{{ID: "gemini-3.7-flash-high", Name: "gemini-3.7-flash-high"}}
-			out := applyOAuthModelAlias(nil, provider, "oauth", models)
-			if len(out) != 1 || out[0].ID != "gemini-3.7-flash-tiered" {
-				t.Fatalf("default alias models = %#v, want tiered alias", out)
-			}
-		})
+	apiKeyOut := applyOAuthModelAlias(cfg, "meta", "apikey", models)
+	if len(apiKeyOut) != 1 || apiKeyOut[0].ID != "muse-spark-1.3" {
+		t.Fatalf("expected meta-api-key models to remain unchanged, got %#v", apiKeyOut)
 	}
 }
 
@@ -340,37 +307,178 @@ func TestApplyModelPrefixes_PreservesMetadataModelID(t *testing.T) {
 	}
 }
 
-func TestApplyModelOverridesAfterOAuthAlias(t *testing.T) {
-	cfg := &config.Config{
-		OAuthModelAlias: map[string][]config.OAuthModelAlias{
-			"codex": {
-				{Name: "gpt-5.3-codex-spark", Alias: "gpt-5.3-codex"},
-			},
-		},
-		ModelOverrides: []config.ModelOverride{
-			{
-				Channel:             "codex",
-				Model:               "gpt-5.3-codex-spark",
-				Priority:            100,
-				ContextLength:       131072,
-				MaxCompletionTokens: 32768,
-			},
-		},
-	}
+func TestApplyModelPrefixes_RewritesModelInfoNameForGeminiEndpoints(t *testing.T) {
 	models := []*ModelInfo{
-		{ID: "gpt-5.3-codex-spark", Name: "models/gpt-5.3-codex-spark"},
+		{ID: "gemini-4-argon", Name: "models/gemini-4-argon", DisplayName: "Gemini 4 Argon"},
+		{ID: "gemini-3.8-flash", Name: "gemini-3.8-flash", DisplayName: "Gemini 3.8 Flash"},
 	}
 
-	prepared := applyModelOverrides(cfg, "codex", "oauth", models)
-	aliased := applyOAuthModelAlias(cfg, "codex", "oauth", prepared)
-	out := applyModelOverrides(cfg, "codex", "oauth", aliased)
-	if len(out) != 1 {
-		t.Fatalf("expected 1 model, got %d", len(out))
+	out := applyModelPrefixes(models, "gcp", false)
+	if len(out) != 4 {
+		t.Fatalf("expected 4 models (2 unprefixed + 2 prefixed), got %d", len(out))
 	}
-	if out[0].ID != "gpt-5.3-codex" {
-		t.Fatalf("expected aliased model id, got %q", out[0].ID)
+
+	entryMap := make(map[string]*ModelInfo, len(out))
+	for _, m := range out {
+		entryMap[m.ID] = m
 	}
-	if out[0].Priority != 100 || out[0].ContextLength != 131072 || out[0].MaxCompletionTokens != 32768 {
-		t.Fatalf("override metadata not applied: %#v", out[0])
+
+	if base := entryMap["gemini-4-argon"]; base == nil {
+		t.Fatal("missing unprefixed gemini-4-argon")
+	} else if base.Name != "models/gemini-4-argon" {
+		t.Fatalf("unprefixed gemini-4-argon Name = %q, want models/gemini-4-argon", base.Name)
 	}
+
+	if prefixed := entryMap["gcp/gemini-4-argon"]; prefixed == nil {
+		t.Fatal("missing gcp/gemini-4-argon")
+	} else {
+		if prefixed.Name != "models/gcp/gemini-4-argon" {
+			t.Fatalf("gcp/gemini-4-argon Name = %q, want models/gcp/gemini-4-argon", prefixed.Name)
+		}
+		if prefixed.DisplayName != "Gemini 4 Argon" {
+			t.Fatalf("gcp/gemini-4-argon DisplayName = %q, want Gemini 4 Argon", prefixed.DisplayName)
+		}
+		if prefixed.MetadataModelID != "gemini-4-argon" {
+			t.Fatalf("gcp/gemini-4-argon MetadataModelID = %q, want gemini-4-argon", prefixed.MetadataModelID)
+		}
+	}
+
+	if prefixedBare := entryMap["gcp/gemini-3.8-flash"]; prefixedBare == nil {
+		t.Fatal("missing gcp/gemini-3.8-flash")
+	} else if prefixedBare.Name != "gcp/gemini-3.8-flash" {
+		t.Fatalf("gcp/gemini-3.8-flash Name = %q, want gcp/gemini-3.8-flash", prefixedBare.Name)
+	}
+
+	gin.SetMode(gin.TestMode)
+	authID := t.Name() + "-vertex-gcp"
+	svc := &Service{cfg: &config.Config{}}
+	auth := &coreauth.Auth{
+		ID:       authID,
+		Provider: "vertex",
+		Prefix:   "gcp",
+		Status:   coreauth.StatusActive,
+	}
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(authID)
+	})
+	svc.registerModelsForAuth(context.Background(), auth)
+
+	handler := gemini.NewGeminiAPIHandler(&handlers.BaseAPIHandler{})
+	router := gin.New()
+	router.GET("/v1beta/models", handler.GeminiModels)
+	router.GET("/v1beta/models/*action", handler.GeminiGetHandler)
+
+	listRec := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodGet, "/v1beta/models", nil)
+	router.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("GET /v1beta/models status = %d, want 200", listRec.Code)
+	}
+	var listResp struct {
+		Models []struct {
+			Name        string `json:"name"`
+			DisplayName string `json:"displayName"`
+		} `json:"models"`
+	}
+	if errUnmarshal := json.Unmarshal(listRec.Body.Bytes(), &listResp); errUnmarshal != nil {
+		t.Fatalf("decode model list response: %v", errUnmarshal)
+	}
+	foundPrefixed := false
+	for _, m := range listResp.Models {
+		if m.Name == "models/gcp/gemini-4-argon" {
+			foundPrefixed = true
+			break
+		}
+	}
+	if !foundPrefixed {
+		t.Fatalf("expected GET /v1beta/models to include models/gcp/gemini-4-argon")
+	}
+
+	getRec := httptest.NewRecorder()
+	getReq := httptest.NewRequest(http.MethodGet, "/v1beta/models/gcp/gemini-4-argon", nil)
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET /v1beta/models/gcp/gemini-4-argon status = %d, want 200 (body: %s)", getRec.Code, getRec.Body.String())
+	}
+	var getResp struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"displayName"`
+	}
+	if errUnmarshal := json.Unmarshal(getRec.Body.Bytes(), &getResp); errUnmarshal != nil {
+		t.Fatalf("decode model detail response: %v", errUnmarshal)
+	}
+	if getResp.Name != "models/gcp/gemini-4-argon" {
+		t.Fatalf("model detail name = %q, want models/gcp/gemini-4-argon", getResp.Name)
+	}
+
+	unprefixedRec := httptest.NewRecorder()
+	unprefixedReq := httptest.NewRequest(http.MethodGet, "/v1beta/models/gemini-4-argon", nil)
+	router.ServeHTTP(unprefixedRec, unprefixedReq)
+	if unprefixedRec.Code != http.StatusOK {
+		t.Fatalf("GET /v1beta/models/gemini-4-argon status = %d, want 200 when force-model-prefix is false", unprefixedRec.Code)
+	}
+
+	forcedOut := applyModelPrefixes(models, "gcp", true)
+	if len(forcedOut) != 2 {
+		t.Fatalf("expected 2 forced-prefix models, got %d", len(forcedOut))
+	}
+	if forcedOut[0].Name != "models/gcp/gemini-4-argon" {
+		t.Fatalf("forced gcp/gemini-4-argon Name = %q, want models/gcp/gemini-4-argon", forcedOut[0].Name)
+	}
+}
+
+func TestApplyOAuthModelAlias_CaseOnlyRenameAndFork(t *testing.T) {
+	t.Run("rename preserves case-only alias", func(t *testing.T) {
+		cfg := &config.Config{
+			OAuthModelAlias: map[string][]config.OAuthModelAlias{
+				"opencode-go": {
+					{Name: "minimax-m3.1-flash", Alias: "MiniMax-M3.1-Flash", Fork: false},
+				},
+			},
+		}
+		models := []*ModelInfo{
+			{ID: "minimax-m3.1-flash", Name: "models/minimax-m3.1-flash", DisplayName: "MiniMax M3.1 Flash"},
+		}
+
+		out := applyOAuthModelAlias(cfg, "opencode-go", "oauth", models)
+		if len(out) != 1 {
+			t.Fatalf("expected 1 model, got %d", len(out))
+		}
+		if out[0].ID != "MiniMax-M3.1-Flash" {
+			t.Fatalf("expected model id %q, got %q", "MiniMax-M3.1-Flash", out[0].ID)
+		}
+		if out[0].Name != "models/MiniMax-M3.1-Flash" {
+			t.Fatalf("expected model name %q, got %q", "models/MiniMax-M3.1-Flash", out[0].Name)
+		}
+		if out[0].MetadataModelID != "minimax-m3.1-flash" {
+			t.Fatalf("expected MetadataModelID %q, got %q", "minimax-m3.1-flash", out[0].MetadataModelID)
+		}
+	})
+
+	t.Run("fork keeps both original and case-only alias", func(t *testing.T) {
+		cfg := &config.Config{
+			OAuthModelAlias: map[string][]config.OAuthModelAlias{
+				"opencode-go": {
+					{Name: "minimax-m3.1-flash", Alias: "MiniMax-M3.1-Flash", Fork: true},
+				},
+			},
+		}
+		models := []*ModelInfo{
+			{ID: "minimax-m3.1-flash", Name: "models/minimax-m3.1-flash", DisplayName: "MiniMax M3.1 Flash"},
+		}
+
+		out := applyOAuthModelAlias(cfg, "opencode-go", "oauth", models)
+		if len(out) != 2 {
+			t.Fatalf("expected 2 models, got %d", len(out))
+		}
+		if out[0].ID != "minimax-m3.1-flash" {
+			t.Fatalf("expected first model id %q, got %q", "minimax-m3.1-flash", out[0].ID)
+		}
+		if out[1].ID != "MiniMax-M3.1-Flash" {
+			t.Fatalf("expected second model id %q, got %q", "MiniMax-M3.1-Flash", out[1].ID)
+		}
+		if out[1].Name != "models/MiniMax-M3.1-Flash" {
+			t.Fatalf("expected second model name %q, got %q", "models/MiniMax-M3.1-Flash", out[1].Name)
+		}
+	})
 }

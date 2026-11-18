@@ -21,6 +21,35 @@ func TestResolveDevinChatModelUID(t *testing.T) {
 			want:     "claude-fable-5-1-max",
 		},
 		{
+			name:     "direct swe-2-flash-high unchanged",
+			rawModel: "swe-2-flash-high",
+			want:     "swe-2-flash-high",
+		},
+		{
+			name:          "swe-2-flash default to high when no effort",
+			rawModel:      "swe-2-flash",
+			thinkingLevel: "",
+			want:          "swe-2-flash-high",
+		},
+		{
+			name:          "swe-2-flash with medium effort",
+			rawModel:      "swe-2-flash",
+			thinkingLevel: "medium",
+			want:          "swe-2-flash-medium",
+		},
+		{
+			name:          "swe-2-flash with max effort suffix",
+			rawModel:      "swe-2-flash(max)",
+			thinkingLevel: "",
+			want:          "swe-2-flash-max",
+		},
+		{
+			name:          "devin/swe-2-flash with colon medium",
+			rawModel:      "devin/swe-2-flash:medium",
+			thinkingLevel: "",
+			want:          "swe-2-flash-medium",
+		},
+		{
 			name:     "direct swe-2-high unchanged",
 			rawModel: "swe-2-high",
 			want:     "swe-2-high",
@@ -212,10 +241,10 @@ func TestResolveDevinChatModelUID(t *testing.T) {
 			want:          "deepseek-v4-flash-high",
 		},
 		{
-			name:          "devin prefix deepseek-v4.1-flash with max suffix",
-			rawModel:      "devin/deepseek-v4.1-flash(max)",
+			name:          "devin prefix deepseek-v4.1-flash-1017 with max suffix",
+			rawModel:      "devin/deepseek-v4.1-flash-1017(max)",
 			thinkingLevel: "",
-			want:          "deepseek-v4-1-flash-max",
+			want:          "deepseek-v4-1-flash-1017-max",
 		},
 		{
 			name:          "swe-1-7 default maps to swe-1-7",
@@ -308,10 +337,10 @@ func TestResolveDevinChatModelUID(t *testing.T) {
 			want:          "gpt-5-4-mini-medium",
 		},
 		{
-			name:          "gpt-5-3-codex default maps to medium",
+			name:          "gpt-5-3-codex removed upstream resolves bare",
 			rawModel:      "devin/gpt-5-3-codex",
 			thinkingLevel: "",
-			want:          "gpt-5-3-codex-medium",
+			want:          "gpt-5-3-codex",
 		},
 		{
 			name:          "claude-opus-5 default maps to medium",
@@ -324,6 +353,54 @@ func TestResolveDevinChatModelUID(t *testing.T) {
 			rawModel:      "devin/claude-opus-4-8",
 			thinkingLevel: "",
 			want:          "claude-opus-4-8-medium",
+		},
+		{
+			name:          "claude-opus-5-5 with high-fast suffix maps to high-fast",
+			rawModel:      "devin/claude-opus-5-5(high-fast)",
+			thinkingLevel: "",
+			want:          "claude-opus-5-5-high-fast",
+		},
+		{
+			name:          "claude-opus-5-5 with max-fast suffix maps to max-fast",
+			rawModel:      "devin/claude-opus-5-5(max-fast)",
+			thinkingLevel: "",
+			want:          "claude-opus-5-5-max-fast",
+		},
+		{
+			name:          "claude-opus-5-5 with body high-fast effort maps to high-fast",
+			rawModel:      "devin/claude-opus-5-5",
+			thinkingLevel: "high-fast",
+			want:          "claude-opus-5-5-high-fast",
+		},
+		{
+			name:          "claude-opus-5-5 with fast suffix maps to default effort fast",
+			rawModel:      "devin/claude-opus-5-5(fast)",
+			thinkingLevel: "",
+			want:          "claude-opus-5-5-medium-fast",
+		},
+		{
+			name:          "claude-opus-5-5 with body fast effort maps to default effort fast",
+			rawModel:      "devin/claude-opus-5-5",
+			thinkingLevel: "fast",
+			want:          "claude-opus-5-5-medium-fast",
+		},
+		{
+			name:          "claude-opus-5-5 with high suffix still maps to high",
+			rawModel:      "devin/claude-opus-5-5(high)",
+			thinkingLevel: "",
+			want:          "claude-opus-5-5-high",
+		},
+		{
+			name:          "claude-haiku-4-5 with high-fast suffix still maps to private alias",
+			rawModel:      "devin/claude-haiku-4-5(high-fast)",
+			thinkingLevel: "",
+			want:          "MODEL_PRIVATE_11",
+		},
+		{
+			name:          "swe-2-lightning with high-fast suffix still maps to high-lightning",
+			rawModel:      "devin/swe-2-lightning(high-fast)",
+			thinkingLevel: "",
+			want:          "swe-2-high-lightning",
 		},
 		{
 			name:          "claude-opus-4-7 default maps to medium",
@@ -362,10 +439,10 @@ func TestResolveDevinChatModelUID(t *testing.T) {
 			want:          "deepseek-v4-pro-high",
 		},
 		{
-			name:          "grok-4-5 default maps to high",
+			name:          "grok-4-5 removed upstream resolves bare",
 			rawModel:      "devin/grok-4-5",
 			thinkingLevel: "",
-			want:          "grok-4-5-high",
+			want:          "grok-4-5",
 		},
 		{
 			name:          "kimi-k3 default maps to high",
@@ -392,6 +469,30 @@ func TestResolveDevinChatModelUID(t *testing.T) {
 			want:          "swe-1-6-fast",
 		},
 		{
+			name:          "swe-1-6-slow default maps to swe-1-6-slow",
+			rawModel:      "devin/swe-1-6-slow",
+			thinkingLevel: "",
+			want:          "swe-1-6-slow",
+		},
+		{
+			name:          "swe-1-6-slow without prefix maps to swe-1-6-slow",
+			rawModel:      "swe-1-6-slow",
+			thinkingLevel: "",
+			want:          "swe-1-6-slow",
+		},
+		{
+			name:          "swe-1-6-slow with low maps to swe-1-6-slow",
+			rawModel:      "devin/swe-1-6-slow:low",
+			thinkingLevel: "",
+			want:          "swe-1-6-slow",
+		},
+		{
+			name:          "swe-1-6-slow with high maps to swe-1-6-slow",
+			rawModel:      "devin/swe-1-6-slow:high",
+			thinkingLevel: "",
+			want:          "swe-1-6-slow",
+		},
+		{
 			name:          "kimi-k2-6 default maps to kimi-k2-6",
 			rawModel:      "devin/kimi-k2-6",
 			thinkingLevel: "",
@@ -414,6 +515,186 @@ func TestResolveDevinChatModelUID(t *testing.T) {
 			rawModel:      "devin/claude-sonnet-4-6",
 			thinkingLevel: "",
 			want:          "claude-sonnet-4-6",
+		},
+		{
+			name:          "claude-opus-4-6 with high maps to claude-opus-4-6-thinking",
+			rawModel:      "devin/claude-opus-4-6",
+			thinkingLevel: "high",
+			want:          "claude-opus-4-6-thinking",
+		},
+		{
+			name:          "claude-sonnet-4-6 with high maps to claude-sonnet-4-6-thinking",
+			rawModel:      "devin/claude-sonnet-4-6",
+			thinkingLevel: "high",
+			want:          "claude-sonnet-4-6-thinking",
+		},
+		{
+			name:          "claude-opus-4-6-1m default maps to claude-opus-4-6-1m",
+			rawModel:      "devin/claude-opus-4-6-1m",
+			thinkingLevel: "",
+			want:          "claude-opus-4-6-1m",
+		},
+		{
+			name:          "claude-opus-4-6-1m with high maps to claude-opus-4-6-thinking-1m",
+			rawModel:      "devin/claude-opus-4-6-1m",
+			thinkingLevel: "high",
+			want:          "claude-opus-4-6-thinking-1m",
+		},
+		{
+			name:          "claude-sonnet-4-6-1m default maps to claude-sonnet-4-6-1m",
+			rawModel:      "devin/claude-sonnet-4-6-1m",
+			thinkingLevel: "",
+			want:          "claude-sonnet-4-6-1m",
+		},
+		{
+			name:          "claude-sonnet-4-6-1m with high maps to claude-sonnet-4-6-thinking-1m",
+			rawModel:      "devin/claude-sonnet-4-6-1m",
+			thinkingLevel: "high",
+			want:          "claude-sonnet-4-6-thinking-1m",
+		},
+		{
+			name:          "glm-5-2-1m default maps to glm-5-2-1m",
+			rawModel:      "devin/glm-5-2-1m",
+			thinkingLevel: "",
+			want:          "glm-5-2-1m",
+		},
+		{
+			name:          "glm-5-2-1m with none maps to glm-5-2-none-1m",
+			rawModel:      "devin/glm-5-2-1m",
+			thinkingLevel: "none",
+			want:          "glm-5-2-none-1m",
+		},
+		{
+			name:          "glm-5-2-1m with max maps to glm-5-2-max-1m",
+			rawModel:      "devin/glm-5-2-1m",
+			thinkingLevel: "max",
+			want:          "glm-5-2-max-1m",
+		},
+		{
+			name:          "MODEL_GPT_5_2 default maps to MODEL_GPT_5_2_LOW",
+			rawModel:      "devin/MODEL_GPT_5_2",
+			thinkingLevel: "",
+			want:          "MODEL_GPT_5_2_LOW",
+		},
+		{
+			name:          "MODEL_GPT_5_2 with none maps to MODEL_GPT_5_2_NONE",
+			rawModel:      "devin/MODEL_GPT_5_2",
+			thinkingLevel: "none",
+			want:          "MODEL_GPT_5_2_NONE",
+		},
+		{
+			name:          "MODEL_GPT_5_2 with medium maps to MODEL_GPT_5_2_MEDIUM",
+			rawModel:      "devin/MODEL_GPT_5_2",
+			thinkingLevel: "medium",
+			want:          "MODEL_GPT_5_2_MEDIUM",
+		},
+		{
+			name:          "MODEL_GPT_5_2 with high maps to MODEL_GPT_5_2_HIGH",
+			rawModel:      "devin/MODEL_GPT_5_2",
+			thinkingLevel: "high",
+			want:          "MODEL_GPT_5_2_HIGH",
+		},
+		{
+			name:          "MODEL_GPT_5_2 with xhigh maps to MODEL_GPT_5_2_XHIGH",
+			rawModel:      "devin/MODEL_GPT_5_2",
+			thinkingLevel: "xhigh",
+			want:          "MODEL_GPT_5_2_XHIGH",
+		},
+		{
+			name:          "MODEL_GOOGLE_GEMINI_3_0_FLASH default maps to HIGH",
+			rawModel:      "devin/MODEL_GOOGLE_GEMINI_3_0_FLASH",
+			thinkingLevel: "",
+			want:          "MODEL_GOOGLE_GEMINI_3_0_FLASH_HIGH",
+		},
+		{
+			name:          "MODEL_GOOGLE_GEMINI_3_0_FLASH with minimal maps to MINIMAL",
+			rawModel:      "devin/MODEL_GOOGLE_GEMINI_3_0_FLASH",
+			thinkingLevel: "minimal",
+			want:          "MODEL_GOOGLE_GEMINI_3_0_FLASH_MINIMAL",
+		},
+		{
+			name:          "MODEL_GOOGLE_GEMINI_3_0_FLASH with low maps to LOW",
+			rawModel:      "devin/MODEL_GOOGLE_GEMINI_3_0_FLASH",
+			thinkingLevel: "low",
+			want:          "MODEL_GOOGLE_GEMINI_3_0_FLASH_LOW",
+		},
+		{
+			name:          "MODEL_GOOGLE_GEMINI_3_0_FLASH with medium maps to MEDIUM",
+			rawModel:      "devin/MODEL_GOOGLE_GEMINI_3_0_FLASH",
+			thinkingLevel: "medium",
+			want:          "MODEL_GOOGLE_GEMINI_3_0_FLASH_MEDIUM",
+		},
+		{
+			name:          "MODEL_GOOGLE_GEMINI_3_0_FLASH with high maps to HIGH",
+			rawModel:      "devin/MODEL_GOOGLE_GEMINI_3_0_FLASH",
+			thinkingLevel: "high",
+			want:          "MODEL_GOOGLE_GEMINI_3_0_FLASH_HIGH",
+		},
+		{
+			name:          "MODEL_CLAUDE_4_5_OPUS default maps to MODEL_CLAUDE_4_5_OPUS",
+			rawModel:      "devin/MODEL_CLAUDE_4_5_OPUS",
+			thinkingLevel: "",
+			want:          "MODEL_CLAUDE_4_5_OPUS",
+		},
+		{
+			name:          "MODEL_CLAUDE_4_5_OPUS with high maps to MODEL_CLAUDE_4_5_OPUS_THINKING",
+			rawModel:      "devin/MODEL_CLAUDE_4_5_OPUS",
+			thinkingLevel: "high",
+			want:          "MODEL_CLAUDE_4_5_OPUS_THINKING",
+		},
+		{
+			name:          "swe-2-lightning default maps to swe-2-high-lightning",
+			rawModel:      "devin/swe-2-lightning",
+			thinkingLevel: "",
+			want:          "swe-2-high-lightning",
+		},
+		{
+			name:          "swe-2-lightning with medium suffix maps to swe-2-medium-lightning",
+			rawModel:      "devin/swe-2-lightning(medium)",
+			thinkingLevel: "",
+			want:          "swe-2-medium-lightning",
+		},
+		{
+			name:          "swe-2-lightning with colon max maps to swe-2-max-lightning",
+			rawModel:      "devin/swe-2-lightning:max",
+			thinkingLevel: "",
+			want:          "swe-2-max-lightning",
+		},
+		{
+			name:          "swe-2-lightning body effort maps to swe-2-medium-lightning",
+			rawModel:      "devin/swe-2-lightning",
+			thinkingLevel: "medium",
+			want:          "swe-2-medium-lightning",
+		},
+		{
+			name:          "swe-2-lightning suffix overrides body effort",
+			rawModel:      "devin/swe-2-lightning(max)",
+			thinkingLevel: "medium",
+			want:          "swe-2-max-lightning",
+		},
+		{
+			name:          "swe-2-high-lightning direct UID passes through",
+			rawModel:      "devin/swe-2-high-lightning",
+			thinkingLevel: "",
+			want:          "swe-2-high-lightning",
+		},
+		{
+			name:          "swe-2-medium-lightning direct UID passes through",
+			rawModel:      "devin/swe-2-medium-lightning",
+			thinkingLevel: "",
+			want:          "swe-2-medium-lightning",
+		},
+		{
+			name:          "swe-2-high-lightning with suffix still passes through complete UID",
+			rawModel:      "devin/swe-2-high-lightning(max)",
+			thinkingLevel: "",
+			want:          "swe-2-high-lightning",
+		},
+		{
+			name:          "swe-2-lightning clamps unsupported effort",
+			rawModel:      "devin/swe-2-lightning(low)",
+			thinkingLevel: "",
+			want:          "swe-2-medium-lightning",
 		},
 	}
 
@@ -443,7 +724,7 @@ func TestResolveDevinChatModelUID_AllCatalogModels(t *testing.T) {
 			}
 			// If model defines thinking levels, resolved UID must have an effort suffix
 			if m.Thinking != nil && len(m.Thinking.Levels) > 0 {
-				if !HasDevinEffortSuffix(resolved) && baseID != "swe-1-7" && baseID != "glm-5-2" {
+				if !HasDevinEffortSuffix(resolved) && baseID != "swe-1-7" && baseID != "glm-5-2" && baseID != "glm-5-2-1m" && baseID != "swe-1-6-slow" && baseID != "model_claude_4_5_opus" {
 					t.Errorf("thinking model %q with effort %q resolved to bare UID %q without effort suffix", baseID, eff, resolved)
 				}
 			}

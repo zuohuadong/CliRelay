@@ -7,30 +7,30 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
-	internalvideo "github.com/router-for-me/CLIProxyAPI/v8/internal/video"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 type serverOptionConfig struct {
-	extraMiddleware       []gin.HandlerFunc
-	engineConfigurator    func(*gin.Engine)
-	routerConfigurator    func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
-	requestLoggerFactory  func(*config.Config, string) logging.RequestLogger
-	localPassword         string
-	keepAliveEnabled      bool
-	keepAliveTimeout      time.Duration
-	keepAliveOnTimeout    func()
-	postAuthHook          auth.PostAuthHook
-	postAuthPersistHook   auth.PostAuthHook
-	pluginHost            *pluginhost.Host
-	configReloadHook      func(context.Context, *config.Config)
-	exampleAPIKeySafeMode bool
-	egressService         *egress.Service
-	videoService          *internalvideo.Service
+	pluginInterceptorHost      handlers.PluginInterceptorHost
+	extraMiddleware            []gin.HandlerFunc
+	engineConfigurator         func(*gin.Engine)
+	routerConfigurator         func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
+	requestLoggerFactory       func(*config.Config, string) logging.RequestLogger
+	localPassword              string
+	keepAliveEnabled           bool
+	keepAliveTimeout           time.Duration
+	keepAliveOnTimeout         func()
+	postAuthHook               auth.PostAuthHook
+	postAuthPersistHook        auth.PostAuthHook
+	pluginHost                 *pluginhost.Host
+	configReloadHook           func(context.Context, *config.Config)
+	configMutatedCallback      func(*config.Config)
+	modelConfigMutatedCallback func(tenantID string)
+	configResyncCallback       func(*config.Config)
+	exampleAPIKeySafeMode      bool
 }
 
 // ServerOption customises HTTP server construction.
@@ -40,7 +40,6 @@ func defaultRequestLoggerFactory(cfg *config.Config, configPath string) logging.
 	configDir := filepath.Dir(configPath)
 	logsDir := logging.ResolveLogDirectory(cfg)
 	logger := logging.NewFileRequestLogger(cfg.RequestLog, logsDir, configDir, cfg.ErrorLogsMaxFiles)
-	logger.SetBodyEnabled(cfg.SDKConfig.RequestLogBodyEnabled())
 	logger.SetHomeEnabled(cfg != nil && cfg.Home.Enabled)
 	return logger
 }
@@ -50,7 +49,6 @@ func effectiveSDKConfig(cfg *config.Config) *config.SDKConfig {
 		return nil
 	}
 	sdkCfg := cfg.SDKConfig
-	sdkCfg.CodexOptimizeMultiAgentV2 = cfg.Codex.OptimizeMultiAgentV2
 	sdkCfg.CodexOrphanDelegationCompatibility = cfg.Codex.OrphanDelegationCompatibility
 	sdkCfg.CodexResponseSteering = cfg.Codex.ResponseSteering
 	if cfg.CommercialMode {
@@ -120,6 +118,17 @@ func WithPostAuthPersistHook(hook auth.PostAuthHook) ServerOption {
 	}
 }
 
+// WithPluginInterceptorHost installs a caller-provided plugin interceptor host
+// on request handlers. When set, the server forwards interceptor calls to this
+// host while keeping model routing, lifecycle callbacks, and websocket observer
+// dispatch delegated to the internal plugin host so plugin features stay
+// functional across startup and config reloads.
+func WithPluginInterceptorHost(host handlers.PluginInterceptorHost) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.pluginInterceptorHost = host
+	}
+}
+
 // WithPluginHost registers dynamic plugin HTTP adapters with the server.
 func WithPluginHost(host *pluginhost.Host) ServerOption {
 	return func(cfg *serverOptionConfig) {
@@ -134,21 +143,33 @@ func WithConfigReloadHook(hook func(context.Context, *config.Config)) ServerOpti
 	}
 }
 
+// WithConfigMutatedCallback registers the callback used after a management
+// configuration mutation has been applied locally.
+func WithConfigMutatedCallback(fn func(*config.Config)) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.configMutatedCallback = fn
+	}
+}
+
+// WithModelConfigMutatedCallback registers the callback used after model
+// configuration changes.
+func WithModelConfigMutatedCallback(fn func(tenantID string)) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.modelConfigMutatedCallback = fn
+	}
+}
+
+// WithConfigResyncCallback registers the full configuration reload callback
+// used when a cluster node must resynchronize its configuration.
+func WithConfigResyncCallback(fn func(*config.Config)) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.configResyncCallback = fn
+	}
+}
+
 // WithExampleAPIKeySafeMode blocks proxy API endpoints while template API keys remain configured.
 func WithExampleAPIKeySafeMode() ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.exampleAPIKeySafeMode = true
-	}
-}
-
-func WithEgressService(service *egress.Service) ServerOption {
-	return func(cfg *serverOptionConfig) {
-		cfg.egressService = service
-	}
-}
-
-func WithVideoService(service *internalvideo.Service) ServerOption {
-	return func(cfg *serverOptionConfig) {
-		cfg.videoService = service
 	}
 }

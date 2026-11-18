@@ -1,6 +1,5 @@
 # Binaries
 cli-proxy-api
-server
 *.exe
 
 # Configuration
@@ -9,14 +8,10 @@ config.yaml
 
 # Generated content
 bin/*
-/logs
+logs/*
 conv/*
 temp/*
 refs/*
-/data/
-verify-report-*.txt
-plugins/*
-examples/plugin/bin/*
 
 # Storage backends
 pgstore/*
@@ -25,78 +20,72 @@ objectstore/*
 
 # Static assets
 static/*
-
-# Panel frontend
-panel/.git/
-panel/node_modules/
-panel/dist/
-panel/.omx/
-panel/.sisyphus/
-panel/.agentflow/
-panel/.helloagents/
-panel/.agents/
-panel/test-results/
-panel/playwright-report/
-panel/bun.lockb
+/assets/
+/manage.html
+/management.html
+/panel-meta.json
+/dist/
+/panel-dist.zip
 
 # Authentication data
 auths/*
-/auths
 !auths/.gitkeep
 
 # Documentation
 docs/*
-!docs/codex-socks-egress_CN.md
-!docs/video-generation.md
-!docs/video-generation_CN.md
-!docs/management-api-v8.md
+!docs/multi-instance-node-bootstrap_CN.md
+!docs/multi-instance-deployment.md
+!docs/multi-instance-deployment_CN.md
+!docs/images/
+!docs/images/*.png
+!docs/internal-review/
+docs/internal-review/*
+!docs/internal-review/io-readall-inventory.md
+!docs/internal-review/monorepo-audit-report.md
+!docs/internal-review/monorepo-remediation-checklist.md
+!docs/internal-review/performance-regression-checks.md
+!docs/internal-review/quality-baseline.md
+!docs/internal-review/release-checklist.md
+!docs/internal-review/security-baseline-checks.md
+!docs/internal-review/sensitive-ops-audit-log-inventory.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md
-AGENTS.override.md
+
+# Tool runtime/generated content
+node_modules/
+tools*/**/node_modules/
+tools*/**/.profiles/
+tools*/**/data/
+
+# Python bytecode — repo-wide, not scoped to tools*: every tracked .py lives in
+# scripts/ (structure-debt gate, PR/issue agents) and running them leaves a
+# scripts/__pycache__ that `git add -A` would otherwise sweep into a commit.
+__pycache__/
+*.pyc
 
 # Tooling metadata
 .vscode/*
-.omx/
-.worktrees/
 .codex/*
 .claude/*
-.claude
 .gemini/*
 .serena/*
+.hermes/*
+.playwright-mcp/*
+.tmp-go/*
 .agent/*
-.agents
-.pi
 .agents/*
+.agents/*
+.agentflow/*
 .opencode/*
-.idea/*
-.beads/*
 .bmad/*
 _bmad/*
 _bmad-output/*
-.gocache/
-.gitnexus/
+
+# Local backups / runtime data
+config.yaml.pre-sqlite-migration
+data/*
 
 # macOS
 .DS_Store
 ._*
-
-# docker
-docker-compose.override.yml
-
-# Local LLM Wiki vault
-.llm-wiki
-
-# Local project files
-.gocache/
-progress.md
-tasks.md
-servers.local.md
-.mailbox/
-.agents/state/
-.agents/automations/
-.zed/CONVENTIONS.md
-.agents/goal-forge/runs/
-CODEBUDDY.md
-HERMES.md
-.agents/docs/

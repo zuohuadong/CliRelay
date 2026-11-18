@@ -1,532 +1,766 @@
 package management
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
-// The APICall HTTP handler is the stable public seam for credential-specific
-// management tests. A disabled credential must be rejected before this handler
-// resolves a token or creates an upstream request.
-func TestAPICallRejectsDisabledAuthWithoutUpstreamRequest(t *testing.T) {
-	tests := []struct {
-		name string
-		auth *coreauth.Auth
-	}{
-		{
-			name: "disabled flag",
-			auth: &coreauth.Auth{
-				ID:       "api-call-disabled-flag",
-				Provider: "astron-code",
-				Disabled: true,
-				Attributes: map[string]string{
-					"api_key": "disabled-flag-token",
-				},
-			},
-		},
-		{
-			name: "disabled status",
-			auth: &coreauth.Auth{
-				ID:       "api-call-disabled-status",
-				Provider: "astron-code",
-				Status:   coreauth.StatusDisabled,
-				Attributes: map[string]string{
-					"api_key": "disabled-status-token",
-				},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var upstreamCalls atomic.Int32
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				upstreamCalls.Add(1)
-				w.WriteHeader(http.StatusOK)
-			}))
-			defer upstream.Close()
-
-			manager := coreauth.NewManager(nil, nil, nil)
-			if _, errRegister := manager.Register(t.Context(), tt.auth); errRegister != nil {
-				t.Fatalf("register auth: %v", errRegister)
-			}
-			h := &Handler{authManager: manager}
-
-			body := fmt.Sprintf(`{"auth_index":%q,"method":"GET","url":%q,"header":{"Authorization":"Bearer $TOKEN$"}}`, tt.auth.EnsureIndex(), upstream.URL)
-			rec := httptest.NewRecorder()
-			ctx, _ := gin.CreateTestContext(rec)
-			ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-call", strings.NewReader(body))
-			ctx.Request.Header.Set("Content-Type", "application/json")
-
-			h.APICall(ctx)
-
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
-			}
-			if !strings.Contains(rec.Body.String(), "auth is disabled") {
-				t.Fatalf("response body = %s, want disabled auth error", rec.Body.String())
-			}
-			if got := upstreamCalls.Load(); got != 0 {
-				t.Fatalf("upstream requests = %d, want 0", got)
-			}
-		})
-	}
+type memoryAuthStore struct {
+	mu    sync.Mutex
+	items map[string]*coreauth.Auth
 }
 
-func TestAPICallEnabledAuthReplacesTokenAndCallsUpstream(t *testing.T) {
-	var upstreamCalls atomic.Int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamCalls.Add(1)
-		if got := r.Header.Get("Authorization"); got != "Bearer enabled-token" {
-			t.Errorf("Authorization = %q, want %q", got, "Bearer enabled-token")
+func (s *memoryAuthStore) List(ctx context.Context) ([]*coreauth.Auth, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*coreauth.Auth, 0, len(s.items))
+	for _, a := range s.items {
+		out = append(out, a.Clone())
+	}
+	return out, nil
+}
+
+func (s *memoryAuthStore) Save(ctx context.Context, auth *coreauth.Auth) (string, error) {
+	_ = ctx
+	if auth == nil {
+		return "", nil
+	}
+	s.mu.Lock()
+	if s.items == nil {
+		s.items = make(map[string]*coreauth.Auth)
+	}
+	s.items[auth.ID] = auth.Clone()
+	s.mu.Unlock()
+	return auth.ID, nil
+}
+
+func (s *memoryAuthStore) Delete(ctx context.Context, id string) error {
+	_ = ctx
+	s.mu.Lock()
+	delete(s.items, id)
+	s.mu.Unlock()
+	return nil
+}
+
+func TestResolveTokenForAuth_Antigravity_RefreshesExpiredToken(t *testing.T) {
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
 		}
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte("ok"))
-	}))
-	defer upstream.Close()
+		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
+			t.Fatalf("unexpected content-type: %s", ct)
+		}
+		bodyBytes, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		values, err := url.ParseQuery(string(bodyBytes))
+		if err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		if values.Get("grant_type") != "refresh_token" {
+			t.Fatalf("unexpected grant_type: %s", values.Get("grant_type"))
+		}
+		if values.Get("refresh_token") != "rt" {
+			t.Fatalf("unexpected refresh_token: %s", values.Get("refresh_token"))
+		}
+		if values.Get("client_id") != "test-antigravity-client-id" {
+			t.Fatalf("unexpected client_id: %s", values.Get("client_id"))
+		}
+		if values.Get("client_secret") != "test-antigravity-client-secret" {
+			t.Fatalf("unexpected client_secret")
+		}
 
-	manager := coreauth.NewManager(nil, nil, nil)
-	auth := &coreauth.Auth{
-		ID:       "api-call-enabled",
-		Provider: "astron-code",
-		Attributes: map[string]string{
-			"api_key": "enabled-token",
-		},
-	}
-	if _, errRegister := manager.Register(t.Context(), auth); errRegister != nil {
-		t.Fatalf("register auth: %v", errRegister)
-	}
-	h := &Handler{authManager: manager}
-
-	body := fmt.Sprintf(`{"auth_index":%q,"method":"GET","url":%q,"header":{"Authorization":"Bearer $TOKEN$"}}`, auth.EnsureIndex(), upstream.URL)
-	rec := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(rec)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-call", strings.NewReader(body))
-	ctx.Request.Header.Set("Content-Type", "application/json")
-
-	h.APICall(ctx)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if got := upstreamCalls.Load(); got != 1 {
-		t.Fatalf("upstream requests = %d, want 1", got)
-	}
-	var response apiCallResponse
-	if errUnmarshal := json.Unmarshal(rec.Body.Bytes(), &response); errUnmarshal != nil {
-		t.Fatalf("unmarshal response: %v", errUnmarshal)
-	}
-	if response.StatusCode != http.StatusCreated {
-		t.Fatalf("upstream status = %d, want %d", response.StatusCode, http.StatusCreated)
-	}
-	if response.Body != "ok" {
-		t.Fatalf("upstream body = %q, want %q", response.Body, "ok")
-	}
-}
-
-func TestAPICallUsesRequestProxyURL(t *testing.T) {
-	t.Parallel()
-
-	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte("proxied"))
-	}))
-	defer proxyServer.Close()
-
-	h := &Handler{
-		cfg: &config.Config{
-			SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://127.0.0.1:1"},
-		},
-	}
-	router := gin.New()
-	router.POST("/", h.APICall)
-
-	body := `{"method":"GET","url":"http://upstream.invalid/test","proxy_url":"` + proxyServer.URL + `"}`
-	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(recorder, req)
-
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status code = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
-	}
-
-	var response apiCallResponse
-	if errDecode := json.NewDecoder(recorder.Body).Decode(&response); errDecode != nil {
-		t.Fatalf("decode response: %v", errDecode)
-	}
-	if response.StatusCode != http.StatusCreated {
-		t.Fatalf("upstream status code = %d, want %d", response.StatusCode, http.StatusCreated)
-	}
-	if response.Body != "proxied" {
-		t.Fatalf("upstream body = %q, want %q", response.Body, "proxied")
-	}
-}
-
-func TestAPICallTransportDirectBypassesGlobalProxy(t *testing.T) {
-	t.Parallel()
-
-	h := &Handler{
-		cfg: &config.Config{
-			SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://global-proxy.example.com:8080"},
-		},
-	}
-
-	transport := h.apiCallTransport(&coreauth.Auth{ProxyURL: "direct"}, "")
-	httpTransport, ok := transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport type = %T, want *http.Transport", transport)
-	}
-	if httpTransport.Proxy != nil {
-		t.Fatal("expected direct transport to disable proxy function")
-	}
-}
-
-func TestAPICallTransportInvalidAuthFallsBackToGlobalProxy(t *testing.T) {
-	t.Parallel()
-
-	h := &Handler{
-		cfg: &config.Config{
-			SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://global-proxy.example.com:8080"},
-		},
-	}
-
-	transport := h.apiCallTransport(&coreauth.Auth{ProxyURL: "bad-value"}, "")
-	httpTransport, ok := transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport type = %T, want *http.Transport", transport)
-	}
-
-	req, errRequest := http.NewRequest(http.MethodGet, "https://example.com", nil)
-	if errRequest != nil {
-		t.Fatalf("http.NewRequest returned error: %v", errRequest)
-	}
-
-	proxyURL, errProxy := httpTransport.Proxy(req)
-	if errProxy != nil {
-		t.Fatalf("httpTransport.Proxy returned error: %v", errProxy)
-	}
-	if proxyURL == nil || proxyURL.String() != "http://global-proxy.example.com:8080" {
-		t.Fatalf("proxy URL = %v, want http://global-proxy.example.com:8080", proxyURL)
-	}
-}
-
-func TestAPICallTransportRequestProxyOverridesCredentialAndGlobalProxy(t *testing.T) {
-	t.Parallel()
-
-	h := &Handler{
-		cfg: &config.Config{
-			SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://global-proxy.example.com:8080"},
-		},
-	}
-	auth := &coreauth.Auth{ProxyURL: "http://credential-proxy.example.com:8080"}
-
-	transport := h.apiCallTransport(auth, " http://request-proxy.example.com:8080 ")
-	httpTransport, ok := transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport type = %T, want *http.Transport", transport)
-	}
-
-	req, errRequest := http.NewRequest(http.MethodGet, "https://example.com", nil)
-	if errRequest != nil {
-		t.Fatalf("http.NewRequest returned error: %v", errRequest)
-	}
-
-	proxyURL, errProxy := httpTransport.Proxy(req)
-	if errProxy != nil {
-		t.Fatalf("httpTransport.Proxy returned error: %v", errProxy)
-	}
-	if proxyURL == nil || proxyURL.String() != "http://request-proxy.example.com:8080" {
-		t.Fatalf("proxy URL = %v, want http://request-proxy.example.com:8080", proxyURL)
-	}
-}
-
-func TestAPICallTransportInvalidRequestProxyDoesNotFallBack(t *testing.T) {
-	t.Parallel()
-
-	h := &Handler{
-		cfg: &config.Config{
-			SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://global-proxy.example.com:8080"},
-		},
-	}
-	auth := &coreauth.Auth{ProxyURL: "http://credential-proxy.example.com:8080"}
-
-	transport := h.apiCallTransport(auth, "bad-value")
-	httpTransport, ok := transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport type = %T, want *http.Transport", transport)
-	}
-	if httpTransport.Proxy != nil {
-		t.Fatal("expected invalid request proxy to avoid lower-priority proxy settings")
-	}
-}
-
-func TestAPICallTransportAPIKeyAuthFallsBackToConfigProxyURL(t *testing.T) {
-	t.Parallel()
-
-	h := &Handler{
-		cfg: &config.Config{
-			SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://global-proxy.example.com:8080"},
-			GeminiKey: []config.GeminiKey{{
-				APIKey:   "gemini-key",
-				ProxyURL: "http://gemini-proxy.example.com:8080",
-			}},
-			ClaudeKey: []config.ClaudeKey{{
-				APIKey:   "claude-key",
-				ProxyURL: "http://claude-proxy.example.com:8080",
-			}},
-			CodexKey: []config.CodexKey{{
-				APIKey:   "codex-key",
-				ProxyURL: "http://codex-proxy.example.com:8080",
-			}},
-			XAIKey: []config.XAIKey{{
-				APIKey:   "xai-key",
-				ProxyURL: "http://xai-proxy.example.com:8080",
-			}},
-			MetaKey: []config.MetaKey{{
-				APIKey:   "meta-key",
-				ProxyURL: "http://meta-proxy.example.com:8080",
-			}},
-			OpenAICompatibility: []config.OpenAICompatibility{{
-				Name:    "bohe",
-				BaseURL: "https://bohe.example.com",
-				APIKeyEntries: []config.OpenAICompatibilityAPIKey{{
-					APIKey:   "compat-key",
-					ProxyURL: "http://compat-proxy.example.com:8080",
-				}},
-			}},
-			AstronCodeAPIKey: []config.OpenAICompatibility{{
-				Name:    "astron-code",
-				BaseURL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
-				APIKeyEntries: []config.OpenAICompatibilityAPIKey{{
-					APIKey:   "astron-key",
-					ProxyURL: "http://astron-proxy.example.com:8080",
-				}},
-			}},
-		},
-	}
-
-	cases := []struct {
-		name      string
-		auth      *coreauth.Auth
-		wantProxy string
-	}{
-		{
-			name: "gemini",
-			auth: &coreauth.Auth{
-				Provider:   "gemini",
-				Attributes: map[string]string{"api_key": "gemini-key"},
-			},
-			wantProxy: "http://gemini-proxy.example.com:8080",
-		},
-		{
-			name: "claude",
-			auth: &coreauth.Auth{
-				Provider:   "claude",
-				Attributes: map[string]string{"api_key": "claude-key"},
-			},
-			wantProxy: "http://claude-proxy.example.com:8080",
-		},
-		{
-			name: "codex",
-			auth: &coreauth.Auth{
-				Provider:   "codex",
-				Attributes: map[string]string{"api_key": "codex-key"},
-			},
-			wantProxy: "http://codex-proxy.example.com:8080",
-		},
-		{
-			name: "xai",
-			auth: &coreauth.Auth{
-				Provider:   "xai",
-				Attributes: map[string]string{"api_key": "xai-key"},
-			},
-			wantProxy: "http://xai-proxy.example.com:8080",
-		},
-		{
-			name: "meta",
-			auth: &coreauth.Auth{
-				Provider:   "meta",
-				Attributes: map[string]string{"api_key": "meta-key"},
-			},
-			wantProxy: "http://meta-proxy.example.com:8080",
-		},
-		{
-			name: "openai-compatibility",
-			auth: &coreauth.Auth{
-				Provider: "bohe",
-				Attributes: map[string]string{
-					"api_key":      "compat-key",
-					"compat_name":  "bohe",
-					"provider_key": "bohe",
-				},
-			},
-			wantProxy: "http://compat-proxy.example.com:8080",
-		},
-		{
-			name: "astron-code",
-			auth: &coreauth.Auth{
-				Provider: "astron-code",
-				Attributes: map[string]string{
-					"api_key":      "astron-key",
-					"compat_name":  "astron-code",
-					"provider_key": "astron-code",
-				},
-			},
-			wantProxy: "http://astron-proxy.example.com:8080",
-		},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			transport := h.apiCallTransport(tc.auth, "")
-			httpTransport, ok := transport.(*http.Transport)
-			if !ok {
-				t.Fatalf("transport type = %T, want *http.Transport", transport)
-			}
-
-			req, errRequest := http.NewRequest(http.MethodGet, "https://example.com", nil)
-			if errRequest != nil {
-				t.Fatalf("http.NewRequest returned error: %v", errRequest)
-			}
-
-			proxyURL, errProxy := httpTransport.Proxy(req)
-			if errProxy != nil {
-				t.Fatalf("httpTransport.Proxy returned error: %v", errProxy)
-			}
-			if proxyURL == nil || proxyURL.String() != tc.wantProxy {
-				t.Fatalf("proxy URL = %v, want %s", proxyURL, tc.wantProxy)
-			}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "new-token",
+			"refresh_token": "rt2",
+			"expires_in":    int64(3600),
+			"token_type":    "Bearer",
 		})
-	}
-}
-
-func TestAuthByIndexDistinguishesSharedAPIKeysAcrossProviders(t *testing.T) {
-	t.Parallel()
-
-	manager := coreauth.NewManager(nil, nil, nil)
-	geminiAuth := &coreauth.Auth{
-		ID:       "gemini:apikey:123",
-		Provider: "gemini",
-		Attributes: map[string]string{
-			"api_key": "shared-key",
-		},
-	}
-	compatAuth := &coreauth.Auth{
-		ID:       "openai-compatibility:bohe:456",
-		Provider: "bohe",
-		Label:    "bohe",
-		Attributes: map[string]string{
-			"api_key":      "shared-key",
-			"compat_name":  "bohe",
-			"provider_key": "bohe",
-		},
-	}
-
-	if _, errRegister := manager.Register(context.Background(), geminiAuth); errRegister != nil {
-		t.Fatalf("register gemini auth: %v", errRegister)
-	}
-	if _, errRegister := manager.Register(context.Background(), compatAuth); errRegister != nil {
-		t.Fatalf("register compat auth: %v", errRegister)
-	}
-
-	geminiIndex := geminiAuth.EnsureIndex()
-	compatIndex := compatAuth.EnsureIndex()
-	if geminiIndex == compatIndex {
-		t.Fatalf("shared api key produced duplicate auth_index %q", geminiIndex)
-	}
-
-	h := &Handler{authManager: manager}
-
-	gotGemini := h.authByIndex(geminiIndex)
-	if gotGemini == nil {
-		t.Fatal("expected gemini auth by index")
-	}
-	if gotGemini.ID != geminiAuth.ID {
-		t.Fatalf("authByIndex(gemini) returned %q, want %q", gotGemini.ID, geminiAuth.ID)
-	}
-
-	gotCompat := h.authByIndex(compatIndex)
-	if gotCompat == nil {
-		t.Fatal("expected compat auth by index")
-	}
-	if gotCompat.ID != compatAuth.ID {
-		t.Fatalf("authByIndex(compat) returned %q, want %q", gotCompat.ID, compatAuth.ID)
-	}
-}
-
-func TestAPICallReplacesTokenInBodyData(t *testing.T) {
-	t.Parallel()
-
-	var receivedBody string
-	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		receivedBody = string(b)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
-	defer upstreamServer.Close()
+	t.Cleanup(srv.Close)
 
-	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
-	devinAuth := &coreauth.Auth{
-		ID:       "devin-test.json",
-		Provider: "devin",
-		Attributes: map[string]string{
-			"api_key": "secret-session-token-xyz",
-		},
+	originalURL := antigravityOAuthTokenURL
+	antigravityOAuthTokenURL = srv.URL
+	t.Cleanup(func() { antigravityOAuthTokenURL = originalURL })
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+
+	auth := &coreauth.Auth{
+		ID:       "antigravity-test.json",
+		FileName: "antigravity-test.json",
+		Provider: "antigravity",
 		Metadata: map[string]any{
-			"type":    "devin",
-			"api_key": "secret-session-token-xyz",
+			"type":          "antigravity",
+			"access_token":  "old-token",
+			"refresh_token": "rt",
+			"expires_in":    int64(3600),
+			"timestamp":     time.Now().Add(-2 * time.Hour).UnixMilli(),
+			"expired":       time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
 		},
 	}
-	if _, errRegister := manager.Register(context.Background(), devinAuth); errRegister != nil {
-		t.Fatalf("register devin auth: %v", errRegister)
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
 	}
-	authIndex := devinAuth.EnsureIndex()
 
 	h := &Handler{
-		cfg:         &config.Config{},
+		cfg: &config.Config{
+			OAuthClients: config.OAuthClients{
+				Antigravity: config.OAuthClient{
+					ClientID:     "test-antigravity-client-id",
+					ClientSecret: "test-antigravity-client-secret",
+				},
+			},
+		},
 		authManager: manager,
 	}
-	router := gin.New()
-	router.POST("/", h.APICall)
+	token, err := h.APITools().resolveTokenForAuth(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if token != "new-token" {
+		t.Fatalf("expected refreshed token, got %q", token)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 refresh call, got %d", callCount)
+	}
 
-	reqPayload := map[string]any{
-		"method":     "POST",
-		"url":        upstreamServer.URL,
-		"auth_index": authIndex,
-		"header": map[string]string{
-			"Content-Type": "application/json",
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth in manager after update")
+	}
+	if got := tokenValueFromMetadata(updated.Metadata); got != "new-token" {
+		t.Fatalf("expected manager metadata updated, got %q", got)
+	}
+}
+
+func TestResolveTokenForAuth_Antigravity_SkipsRefreshWhenTokenValid(t *testing.T) {
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	originalURL := antigravityOAuthTokenURL
+	antigravityOAuthTokenURL = srv.URL
+	t.Cleanup(func() { antigravityOAuthTokenURL = originalURL })
+
+	auth := &coreauth.Auth{
+		ID:       "antigravity-valid.json",
+		FileName: "antigravity-valid.json",
+		Provider: "antigravity",
+		Metadata: map[string]any{
+			"type":         "antigravity",
+			"access_token": "ok-token",
+			"expired":      time.Now().Add(30 * time.Minute).Format(time.RFC3339),
 		},
-		"data": `{"metadata":{"apiKey":"$TOKEN$","ideName":"chisel"}}`,
 	}
-	reqBytes, _ := json.Marshal(reqPayload)
+	h := &Handler{}
+	token, err := h.APITools().resolveTokenForAuth(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if token != "ok-token" {
+		t.Fatalf("expected existing token, got %q", token)
+	}
+	if callCount != 0 {
+		t.Fatalf("expected no refresh calls, got %d", callCount)
+	}
+}
 
-	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(reqBytes)))
+type fakeClaudeOAuthRefresher struct {
+	tokenData *claudeauth.ClaudeTokenData
+	err       error
+	calls     int
+	gotRT     string
+}
+
+func (f *fakeClaudeOAuthRefresher) RefreshTokens(ctx context.Context, refreshToken string) (*claudeauth.ClaudeTokenData, error) {
+	_ = ctx
+	f.calls++
+	f.gotRT = refreshToken
+	return f.tokenData, f.err
+}
+
+func TestResolveTokenForAuth_Claude_RefreshesExpiredToken(t *testing.T) {
+	refresher := &fakeClaudeOAuthRefresher{
+		tokenData: &claudeauth.ClaudeTokenData{
+			AccessToken:  "new-claude-token",
+			RefreshToken: "new-claude-refresh",
+			Email:        "claude@example.com",
+			Expire:       time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	originalFactory := newClaudeOAuthRefresher
+	newClaudeOAuthRefresher = func(cfg *config.Config) claudeOAuthRefresher {
+		_ = cfg
+		return refresher
+	}
+	t.Cleanup(func() { newClaudeOAuthRefresher = originalFactory })
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+
+	auth := &coreauth.Auth{
+		ID:       "claude-test.json",
+		FileName: "claude-test.json",
+		Provider: "claude",
+		Metadata: map[string]any{
+			"type":          "claude",
+			"access_token":  "old-claude-token",
+			"refresh_token": "old-claude-refresh",
+			"expired":       time.Now().Add(-time.Hour).Format(time.RFC3339),
+			"email":         "old@example.com",
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{cfg: &config.Config{}, authManager: manager}
+	token, err := h.APITools().resolveTokenForAuth(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if token != "new-claude-token" {
+		t.Fatalf("expected refreshed token, got %q", token)
+	}
+	if refresher.calls != 1 {
+		t.Fatalf("expected 1 refresh call, got %d", refresher.calls)
+	}
+	if refresher.gotRT != "old-claude-refresh" {
+		t.Fatalf("unexpected refresh token: %q", refresher.gotRT)
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth in manager after update")
+	}
+	if got := tokenValueFromMetadata(updated.Metadata); got != "new-claude-token" {
+		t.Fatalf("expected manager metadata updated, got %q", got)
+	}
+	if got, _ := updated.Metadata["refresh_token"].(string); got != "new-claude-refresh" {
+		t.Fatalf("expected refresh_token updated, got %q", got)
+	}
+	if got, _ := updated.Metadata["email"].(string); got != "claude@example.com" {
+		t.Fatalf("expected email updated, got %q", got)
+	}
+}
+
+func TestResolveTokenForAuth_Claude_RefreshUsesAuthProxyURL(t *testing.T) {
+	refresher := &fakeClaudeOAuthRefresher{
+		tokenData: &claudeauth.ClaudeTokenData{
+			AccessToken: "new-claude-token",
+			Expire:      time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	var gotProxyURL string
+	originalFactory := newClaudeOAuthRefresher
+	newClaudeOAuthRefresher = func(cfg *config.Config) claudeOAuthRefresher {
+		if cfg != nil {
+			gotProxyURL = cfg.ProxyURL
+		}
+		return refresher
+	}
+	t.Cleanup(func() { newClaudeOAuthRefresher = originalFactory })
+
+	auth := &coreauth.Auth{
+		ID:       "claude-proxy.json",
+		FileName: "claude-proxy.json",
+		Provider: "claude",
+		ProxyURL: "http://auth-proxy.local:8080",
+		Metadata: map[string]any{
+			"type":          "claude",
+			"access_token":  "old-claude-token",
+			"refresh_token": "old-claude-refresh",
+			"expired":       time.Now().Add(-time.Hour).Format(time.RFC3339),
+		},
+	}
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{ProxyURL: "http://global-proxy.local:8080"}}}
+
+	if _, err := h.APITools().resolveTokenForAuth(context.Background(), auth); err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if gotProxyURL != "http://auth-proxy.local:8080" {
+		t.Fatalf("expected Claude refresh to use auth proxy URL, got %q", gotProxyURL)
+	}
+}
+
+func TestResolveTokenForAuth_Claude_RefreshUsesProxyIDBeforeProxyURL(t *testing.T) {
+	refresher := &fakeClaudeOAuthRefresher{
+		tokenData: &claudeauth.ClaudeTokenData{
+			AccessToken: "new-claude-token",
+			Expire:      time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	var gotProxyURL string
+	originalFactory := newClaudeOAuthRefresher
+	newClaudeOAuthRefresher = func(cfg *config.Config) claudeOAuthRefresher {
+		if cfg != nil {
+			gotProxyURL = cfg.ProxyURL
+		}
+		return refresher
+	}
+	t.Cleanup(func() { newClaudeOAuthRefresher = originalFactory })
+
+	auth := &coreauth.Auth{
+		ID:       "claude-proxy-id.json",
+		FileName: "claude-proxy-id.json",
+		Provider: "claude",
+		ProxyID:  "premium-egress",
+		ProxyURL: "http://legacy-proxy.local:8080",
+		Metadata: map[string]any{
+			"type":          "claude",
+			"access_token":  "old-claude-token",
+			"refresh_token": "old-claude-refresh",
+			"expired":       time.Now().Add(-time.Hour).Format(time.RFC3339),
+		},
+	}
+	h := &Handler{cfg: &config.Config{
+		SDKConfig: config.SDKConfig{ProxyURL: "http://global-proxy.local:8080"},
+		ProxyPool: []config.ProxyPoolEntry{
+			{ID: "premium-egress", URL: "http://pool-proxy.local:8080", Enabled: true},
+		},
+	}}
+
+	if _, err := h.APITools().resolveTokenForAuth(context.Background(), auth); err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if gotProxyURL != "http://pool-proxy.local:8080" {
+		t.Fatalf("expected Claude refresh to use proxy-id URL, got %q", gotProxyURL)
+	}
+}
+
+func TestResolveTokenForAuth_Claude_SkipsRefreshWhenTokenValid(t *testing.T) {
+	refresher := &fakeClaudeOAuthRefresher{
+		tokenData: &claudeauth.ClaudeTokenData{AccessToken: "should-not-be-used"},
+	}
+	originalFactory := newClaudeOAuthRefresher
+	newClaudeOAuthRefresher = func(cfg *config.Config) claudeOAuthRefresher {
+		_ = cfg
+		return refresher
+	}
+	t.Cleanup(func() { newClaudeOAuthRefresher = originalFactory })
+
+	auth := &coreauth.Auth{
+		ID:       "claude-valid.json",
+		FileName: "claude-valid.json",
+		Provider: "claude",
+		Metadata: map[string]any{
+			"type":         "claude",
+			"access_token": "ok-claude-token",
+			"expired":      time.Now().Add(30 * time.Minute).Format(time.RFC3339),
+		},
+	}
+	h := &Handler{cfg: &config.Config{}}
+	token, err := h.APITools().resolveTokenForAuth(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if token != "ok-claude-token" {
+		t.Fatalf("expected existing token, got %q", token)
+	}
+	if refresher.calls != 0 {
+		t.Fatalf("expected no refresh calls, got %d", refresher.calls)
+	}
+}
+
+func TestResolveTokenForAuth_XAI_RefreshesExpiredToken(t *testing.T) {
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
+			t.Fatalf("unexpected content-type: %s", ct)
+		}
+		bodyBytes, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		values, err := url.ParseQuery(string(bodyBytes))
+		if err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		if values.Get("grant_type") != "refresh_token" {
+			t.Fatalf("unexpected grant_type: %s", values.Get("grant_type"))
+		}
+		if values.Get("refresh_token") != "xai-refresh" {
+			t.Fatalf("unexpected refresh_token: %s", values.Get("refresh_token"))
+		}
+		if values.Get("client_id") == "" {
+			t.Fatal("expected client_id")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "new-xai-token",
+			"refresh_token": "xai-refresh-2",
+			"expires_in":    int64(3600),
+			"token_type":    "Bearer",
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "xai-test.json",
+		FileName: "xai-test.json",
+		Provider: "xai",
+		Metadata: map[string]any{
+			"type":           "xai",
+			"auth_kind":      "oauth",
+			"access_token":   "old-xai-token",
+			"refresh_token":  "xai-refresh",
+			"token_endpoint": srv.URL,
+			"expired":        time.Now().Add(-time.Hour).Format(time.RFC3339),
+			"email":          "old@example.com",
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{cfg: &config.Config{}, authManager: manager}
+	token, err := h.APITools().resolveTokenForAuth(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if token != "new-xai-token" {
+		t.Fatalf("expected refreshed token, got %q", token)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 refresh call, got %d", callCount)
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("expected auth in manager after update")
+	}
+	if got := tokenValueFromMetadata(updated.Metadata); got != "new-xai-token" {
+		t.Fatalf("expected manager metadata updated, got %q", got)
+	}
+	if updated.Metadata["auth_kind"] != "oauth" {
+		t.Fatalf("auth_kind = %#v", updated.Metadata["auth_kind"])
+	}
+}
+
+func TestResolveTokenForAuth_XAI_SkipsRefreshWhenTokenValid(t *testing.T) {
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	auth := &coreauth.Auth{
+		ID:       "xai-valid.json",
+		FileName: "xai-valid.json",
+		Provider: "xai",
+		Metadata: map[string]any{
+			"type":           "xai",
+			"auth_kind":      "oauth",
+			"access_token":   "ok-xai-token",
+			"refresh_token":  "xai-refresh",
+			"token_endpoint": srv.URL,
+			"expired":        time.Now().Add(30 * time.Minute).Format(time.RFC3339),
+		},
+	}
+	h := &Handler{cfg: &config.Config{}}
+	token, err := h.APITools().resolveTokenForAuth(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if token != "ok-xai-token" {
+		t.Fatalf("expected existing token, got %q", token)
+	}
+	if callCount != 0 {
+		t.Fatalf("expected no refresh calls, got %d", callCount)
+	}
+}
+
+func TestResolveTokenForAuth_XAI_APIKeyDoesNotRefresh(t *testing.T) {
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	auth := &coreauth.Auth{
+		ID:       "xai-key.json",
+		FileName: "xai-key.json",
+		Provider: "xai",
+		Attributes: map[string]string{
+			"api_key": "xai-api-key-value",
+		},
+		Metadata: map[string]any{
+			"type":      "xai",
+			"auth_kind": "api_key",
+			"api_key":   "xai-api-key-value",
+		},
+	}
+	h := &Handler{cfg: &config.Config{}}
+	token, err := h.APITools().resolveTokenForAuth(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if token != "xai-api-key-value" {
+		t.Fatalf("expected api key, got %q", token)
+	}
+	if callCount != 0 {
+		t.Fatalf("expected no refresh calls, got %d", callCount)
+	}
+}
+
+func TestAPICallReconcilesCodexWhamUsagePlanType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "93.184.216.34" {
+			t.Fatalf("unexpected proxy host: %s", r.Host)
+		}
+		if r.URL.Path != "/backend-api/wham/usage" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"email":     "aleckmason123@gmail.com",
+			"plan_type": "free",
+		})
+	}))
+	t.Cleanup(proxy.Close)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "codex-plan.json",
+		FileName: "codex-plan.json",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"type":         "codex",
+			"access_token": "access-token",
+			"email":        "aleckmason123@gmail.com",
+			"plan_type":    "plus",
+			"display_tags": []string{"codex", "plus"},
+		},
+	}
+	registered, err := manager.Register(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	registered.EnsureIndex()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"authIndex": registered.Index,
+		"method":    "GET",
+		"url":       "http://93.184.216.34/backend-api/wham/usage",
+		"header": map[string]string{
+			"Authorization": "Bearer $TOKEN$",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{ProxyURL: proxy.URL}}, authManager: manager}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-call", bytes.NewReader(requestBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.APITools().APICall(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	if got, _ := updated.Metadata["plan_type"].(string); got != "free" {
+		t.Fatalf("plan_type = %q, want free", got)
+	}
+	displayTags, ok := updated.Metadata["display_tags"].([]string)
+	if !ok {
+		t.Fatalf("display_tags type = %T, want []string", updated.Metadata["display_tags"])
+	}
+	if len(displayTags) != 2 || displayTags[0] != "codex" || displayTags[1] != "free" {
+		t.Fatalf("display_tags = %#v, want [codex free]", displayTags)
+	}
+	saved := store.items[auth.ID]
+	if saved == nil {
+		t.Fatal("expected auth store to persist reconciled auth")
+	}
+	if got, _ := saved.Metadata["plan_type"].(string); got != "free" {
+		t.Fatalf("saved plan_type = %q, want free", got)
+	}
+}
+
+func TestAPICallRejectsLoopbackTarget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := &Handler{cfg: &config.Config{}}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"method":"GET","url":"http://127.0.0.1:1/metadata"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/api-call", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(recorder, req)
+	c.Request = req
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status code = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	h.APITools().APICall(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
-	expectedBody := `{"metadata":{"apiKey":"secret-session-token-xyz","ideName":"chisel"}}`
-	if receivedBody != expectedBody {
-		t.Fatalf("received body = %q, want %q", receivedBody, expectedBody)
+	if !strings.Contains(rec.Body.String(), "blocked url") {
+		t.Fatalf("expected blocked url error, got body=%s", rec.Body.String())
+	}
+}
+
+// postAPICallWithTokenPlaceholder sends a GET with "Authorization: Bearer
+// $TOKEN$" through the api-call tool. Egress is routed through a stand-in proxy
+// that counts every request reaching it, so a regression fails here instead of
+// dialing the public address in the URL.
+func postAPICallWithTokenPlaceholder(t *testing.T, authIndex string, manager *coreauth.Manager) (*httptest.ResponseRecorder, int32) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+
+	var upstreamHits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		t.Errorf("upstream reached with Authorization=%q", r.Header.Get("Authorization"))
+		http.Error(w, "upstream must not be reached", http.StatusBadGateway)
+	}))
+	t.Cleanup(proxy.Close)
+
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{ProxyURL: proxy.URL}}, authManager: manager}
+
+	payload := map[string]any{
+		"method": "GET",
+		"url":    "http://93.184.216.34/backend-api/wham/usage",
+		"header": map[string]string{"Authorization": "Bearer $TOKEN$"},
+	}
+	if authIndex != "" {
+		payload["authIndex"] = authIndex
+	}
+	requestBody, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-call", bytes.NewReader(requestBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.APITools().APICall(c)
+	return rec, upstreamHits.Load()
+}
+
+// TestAPICallRejectsUnknownAuthIndexTokenPlaceholder covers a stale or
+// cross-tenant auth_index, which resolves to no credential. The tool used to
+// forward the header with the literal "$TOKEN$" still in it, and the upstream's
+// 401 then read as an expired credential.
+func TestAPICallRejectsUnknownAuthIndexTokenPlaceholder(t *testing.T) {
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	rec, hits := postAPICallWithTokenPlaceholder(t, "stale-or-cross-tenant-index", manager)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "auth not found for index") {
+		t.Fatalf("got %d %s, want 400 with auth not found for index", rec.Code, rec.Body.String())
+	}
+	if hits != 0 {
+		t.Fatalf("upstream was reached %d time(s)", hits)
+	}
+}
+
+func TestAPICallRejectsMissingAuthIndexTokenPlaceholder(t *testing.T) {
+	rec, hits := postAPICallWithTokenPlaceholder(t, "", nil)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "missing auth index") {
+		t.Fatalf("got %d %s, want 400 with missing auth index", rec.Code, rec.Body.String())
+	}
+	if hits != 0 {
+		t.Fatalf("upstream was reached %d time(s)", hits)
+	}
+}
+
+func TestAPICallRejectsRedirectToLoopbackTarget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://127.0.0.1:1/metadata", http.StatusFound)
+	}))
+	t.Cleanup(proxy.Close)
+
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{ProxyURL: proxy.URL}}}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"method":"GET","url":"http://93.184.216.34/redirect"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/api-call", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.APITools().APICall(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "blocked url") {
+		t.Fatalf("expected blocked url error, got body=%s", rec.Body.String())
+	}
+}
+
+func TestAPICallRejectsOversizedUpstreamResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(bytes.Repeat([]byte("a"), int(managementAPICallResponseLimit)+1))
+	}))
+	t.Cleanup(proxy.Close)
+
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{ProxyURL: proxy.URL}}}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"method":"GET","url":"http://93.184.216.34/large"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/api-call", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.APITools().APICall(c)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusBadGateway, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "upstream response too large") {
+		t.Fatalf("expected upstream size error, got body=%s", rec.Body.String())
 	}
 }

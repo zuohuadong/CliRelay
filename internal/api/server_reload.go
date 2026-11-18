@@ -15,8 +15,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
-	internalusage "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -24,7 +24,13 @@ import (
 )
 
 func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) bool {
-	if s == nil || s.accessManager == nil || newCfg == nil {
+	if s == nil || newCfg == nil {
+		return false
+	}
+	if s.tunnelHub != nil {
+		s.tunnelHub.UpdateAllowedAPIKeys(newCfg.APIKeys)
+	}
+	if s.accessManager == nil {
 		return false
 	}
 	if _, err := access.ApplyAccessProviders(s.accessManager, oldCfg, newCfg); err != nil {
@@ -39,10 +45,7 @@ func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) bool {
 // Parameters:
 //   - clients: The new slice of AI service clients
 //   - cfg: The new application configuration
-func (s *Server) UpdateClients(cfg *config.Config) {
-	s.UpdateClientsContext(context.Background(), cfg)
-}
-
+//
 // UpdateClientsContext updates runtime clients while honoring cancellation between
 // short configuration and filesystem operations.
 func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) bool {
@@ -55,10 +58,14 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
+	cfg = cfg.CloneForRuntime()
 	// Reconstruct old config from YAML snapshot to avoid reference sharing issues
 	var oldCfg *config.Config
-	if len(s.oldConfigYaml) > 0 {
-		_ = yaml.Unmarshal(s.oldConfigYaml, &oldCfg)
+	s.cfgMu.RLock()
+	oldConfigYaml := append([]byte(nil), s.oldConfigYaml...)
+	s.cfgMu.RUnlock()
+	if len(oldConfigYaml) > 0 {
+		_ = yaml.Unmarshal(oldConfigYaml, &oldCfg)
 	}
 
 	// Update request logger enabled state if it has changed
@@ -71,23 +78,6 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 			s.loggerToggle(cfg.RequestLog)
 		} else if toggler, ok := s.requestLogger.(interface{ SetEnabled(bool) }); ok {
 			toggler.SetEnabled(cfg.RequestLog)
-		}
-	}
-	previousRequestLogBody := true
-	if oldCfg != nil {
-		previousRequestLogBody = oldCfg.SDKConfig.RequestLogBodyEnabled()
-	}
-	currentRequestLogBody := cfg.SDKConfig.RequestLogBodyEnabled()
-	if s.requestLogger != nil && (oldCfg == nil || previousRequestLogBody != currentRequestLogBody) {
-		if setter, ok := s.requestLogger.(interface{ SetBodyEnabled(bool) }); ok {
-			setter.SetBodyEnabled(currentRequestLogBody)
-		}
-		if !currentRequestLogBody {
-			if purger, ok := s.requestLogger.(interface{ PurgeStoredBodies() error }); ok {
-				if errPurge := purger.PurgeStoredBodies(); errPurge != nil {
-					log.Errorf("failed to purge stored request log bodies: %v", errPurge)
-				}
-			}
 		}
 	}
 
@@ -132,7 +122,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	}
 
 	applySignatureCacheConfig(oldCfg, cfg)
-	internalusage.SetChannelBillingMultipliersFromConfig(cfg)
+	applyClaudeToolSearchConfig(cfg)
 
 	if oldCfg != nil && !reflect.DeepEqual(oldCfg.Antigravity.ConnectionPool, cfg.Antigravity.ConnectionPool) {
 		executor.ResetAntigravityTransports()
@@ -196,21 +186,27 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 			log.WithError(errUpdate).Error("failed to update Codex Live media relay configuration")
 		}
 	}
+	if s.museCodeHandler != nil {
+		s.museCodeHandler.UpdateConfig(cfg)
+	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
+	openai.SetResponsesWebsocketCompressionEnabled(cfg.Codex.WebsocketCompressionEnabled())
 	if oldCfg != nil && s.wsAuthChanged != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
 		s.wsAuthChanged(oldCfg.WebsocketAuth, cfg.WebsocketAuth)
 	}
-	managementasset.SetCurrentConfig(cfg)
 	githubauth.SetToken(cfg.GitHubToken)
-	responsesclaude.SetClientToolSearchEnabled(cfg != nil && cfg.Claude.ToolSearch)
+	managementasset.SetCurrentConfig(cfg)
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
 	// Save YAML snapshot for next comparison
-	s.oldConfigYaml, _ = yaml.Marshal(cfg)
+	marshaledCfg, _ := yaml.Marshal(cfg)
+	s.cfgMu.Lock()
+	s.oldConfigYaml = marshaledCfg
+	s.cfgMu.Unlock()
 
 	s.handlers.UpdateClients(effectiveSDKConfig(cfg))
-	s.handlers.SetPluginHost(s.pluginHost)
+	s.handlers.SetPluginHost(s.interceptorHost)
 	if s.pluginHost != nil {
 		s.pluginHost.SetModelExecutor(s.handlers)
 		s.pluginHost.SetAuthManager(s.handlers.AuthManager)
@@ -272,6 +268,13 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 		return
 	}
 	s.wsAuthChanged = fn
+}
+
+// applyClaudeToolSearchConfig publishes upstream.claude.tool-search to the
+// Claude Responses translator, which the Claude executor and the Codex model
+// catalog also read so all three agree on it.
+func applyClaudeToolSearchConfig(cfg *config.Config) {
+	responsesclaude.SetClientToolSearchEnabled(cfg != nil && cfg.Claude.ToolSearch)
 }
 
 func configuredSignatureCacheEnabled(cfg *config.Config) bool {

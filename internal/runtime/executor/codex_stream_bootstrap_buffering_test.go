@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -179,80 +179,6 @@ func TestCodexExecutor_BootstrapBuffering_NonOverloadStaysInStream(t *testing.T)
 	}
 	if got := statusCodeFromTestError(t, streamErr); got != http.StatusBadRequest {
 		t.Fatalf("status code = %d, want %d", got, http.StatusBadRequest)
-	}
-	requestAuth, ok := streamErr.(interface{ RequestAuthScheme() string })
-	if !ok {
-		t.Fatalf("stream error %T does not expose the request auth scheme", streamErr)
-	}
-	if got := requestAuth.RequestAuthScheme(); got != "Bearer" {
-		t.Fatalf("request auth scheme = %q, want Bearer", got)
-	}
-}
-
-func TestCodexExecutor_BootstrapBuffering_RejectsEmptyCompletedAfterHandshake(t *testing.T) {
-	server := codexSSEServer(
-		codexCreatedEvent,
-		codexInProgressEvent,
-		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]}}`,
-	)
-	defer server.Close()
-
-	req, opts := codexTestRequest()
-	result, err := NewCodexExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
-	if err != nil {
-		t.Fatalf("empty completion must keep the in-stream delivery contract: %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected a stream result for the empty completion error")
-	}
-
-	combined, streamErr := drainChunks(result)
-	if streamErr == nil {
-		t.Fatal("expected the empty completion to be rejected")
-	}
-	if !strings.Contains(combined, "response.created") {
-		t.Fatalf("buffered handshake must be flushed before the empty completion error: %s", combined)
-	}
-	if strings.Contains(combined, `data: {"type":"response.completed"`) {
-		t.Fatalf("empty response.completed must not be forwarded as success: %s", combined)
-	}
-	if got := statusCodeFromTestError(t, streamErr); got != http.StatusBadGateway {
-		t.Fatalf("status code = %d, want %d", got, http.StatusBadGateway)
-	}
-	if !strings.Contains(streamErr.Error(), "empty stream response") {
-		t.Fatalf("stream error = %v, want empty stream response", streamErr)
-	}
-	requestAuth, ok := streamErr.(interface{ RequestAuthScheme() string })
-	if !ok {
-		t.Fatalf("stream error %T does not expose the request auth scheme", streamErr)
-	}
-	if got := requestAuth.RequestAuthScheme(); got != "Bearer" {
-		t.Fatalf("request auth scheme = %q, want Bearer", got)
-	}
-}
-
-func TestCodexExecutor_BootstrapBuffering_AllowsResponsesLiteEmptyCompleted(t *testing.T) {
-	server := codexSSEServer(
-		codexCreatedEvent,
-		codexInProgressEvent,
-		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]}}`,
-	)
-	defer server.Close()
-
-	req, opts := codexTestRequest()
-	opts.Headers = make(http.Header)
-	opts.Headers.Set(codexResponsesLiteHeader, "true")
-	result, err := NewCodexExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
-	if err != nil {
-		t.Fatalf("responses-lite empty completion must remain valid: %v", err)
-	}
-
-	combined, streamErr := drainChunks(result)
-	if streamErr != nil {
-		t.Fatalf("responses-lite empty completion returned stream error: %v", streamErr)
-	}
-	if !strings.Contains(combined, "response.completed") {
-		t.Fatalf("responses-lite completion missing from stream: %s", combined)
 	}
 }
 
@@ -752,6 +678,7 @@ func TestCodexExecutor_BootstrapBuffering_ByteCapReleasesStream(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected a stream result once the byte cap released the stream")
 	}
+	drainChunks(result)
 }
 
 // Upstream interleaves keepalive heartbeats and item announcements while the model is still
@@ -977,6 +904,7 @@ func TestIsCodexBootstrapBufferableEvent(t *testing.T) {
 		`{"type":"response.in_progress"}`,
 		`{"type":"codex.rate_limits"}`,
 		`{"type":"codex.response.metadata"}`,
+		`{"type":"response.metadata","response_id":"resp_1","sequence_number":2,"metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{}}}}`,
 		codexKeepaliveEvent,
 		codexOutputAddedEvent,
 		`{"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
@@ -994,7 +922,7 @@ func TestIsCodexBootstrapBufferableEvent(t *testing.T) {
 		`   `,
 	}
 	for _, payload := range hold {
-		eventType := gjson.GetBytes([]byte(payload), "type").String()
+		eventType := ojson.GetBytes([]byte(payload), "type").String()
 		if !isCodexBootstrapBufferableEvent(eventType, []byte(payload)) {
 			t.Errorf("must stay bufferable: %s", payload)
 		}
@@ -1030,7 +958,7 @@ func TestIsCodexBootstrapBufferableEvent(t *testing.T) {
 		`{"type":"response.some_future_event_we_have_never_seen"}`,
 	}
 	for _, payload := range release {
-		eventType := gjson.GetBytes([]byte(payload), "type").String()
+		eventType := ojson.GetBytes([]byte(payload), "type").String()
 		if isCodexBootstrapBufferableEvent(eventType, []byte(payload)) {
 			t.Errorf("must release the stream: %s", payload)
 		}
@@ -1133,6 +1061,46 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_OverloadFailsAttempt(t *test
 	}
 	if result != nil {
 		t.Fatal("expected nil result so no buffered handshake frame can reach the client")
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+}
+
+// Captured from upstream on 2026-10-21: created, in_progress, a prompt-moderation response.metadata
+// frame, then server_is_overloaded. Nothing generated has been produced, so the attempt must fail over.
+const codexModerationMetadataEvent = `{"type":"response.metadata","response_id":"resp_1","sequence_number":2,"metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{"omnimod":{"protection_type":"omnimod"}}}}}`
+
+func TestCodexExecutor_BootstrapBuffering_OverloadAfterModerationMetadataFailsAttempt(t *testing.T) {
+	server := codexSSEServer(codexCreatedEvent, codexInProgressEvent, codexModerationMetadataEvent, codexOverloadEvent)
+	defer server.Close()
+
+	req, opts := codexTestRequest()
+	result, err := NewCodexExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+
+	if err == nil {
+		t.Fatal("expected ExecuteStream to fail the attempt on an overload after response.metadata")
+	}
+	if result != nil {
+		t.Fatal("expected nil result so no buffered frame can reach the client")
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+}
+
+func TestCodexWebsocketsExecutor_BootstrapBuffering_OverloadAfterModerationMetadataFailsAttempt(t *testing.T) {
+	server := codexWebsocketServer(t, codexCreatedEvent, codexInProgressEvent, codexModerationMetadataEvent, codexOverloadEvent)
+	defer server.Close()
+
+	req, opts := codexWebsocketRequest()
+	result, err := NewCodexWebsocketsExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+
+	if err == nil {
+		t.Fatal("expected ExecuteStream to fail the attempt on a websocket overload after response.metadata")
+	}
+	if result != nil {
+		t.Fatal("expected nil result so no buffered frame can reach the client")
 	}
 	if got := statusCodeFromTestError(t, err); got != http.StatusServiceUnavailable {
 		t.Fatalf("status code = %d, want %d", got, http.StatusServiceUnavailable)
@@ -1397,105 +1365,15 @@ func TestCodexWebsocketsExecutor_BootstrapNonOverload_StillNotifiesDownstreamDis
 	}
 }
 
-func TestCodexBootstrapRetryBoundary(t *testing.T) {
-	const serverFailure = `{"type":"response.failed","response":{"error":{"type":"server_error","code":"server_error","message":"Internal error"}}}`
-	const timeoutFailure = `{"type":"error","error":{"type":"timeout_error","code":"request_timeout"}}`
-	const partAdded = `{"type":"response.content_part.added","part":{"type":"output_text","text":""}}`
-	tests := []struct {
-		name   string
-		events []string
-		retry  bool
-		status int
-	}{
-		{"empty_announcements_overload", []string{codexOutputAddedEvent, partAdded, codexOverloadEvent}, true, 503},
-		{"server_failure", []string{codexOutputAddedEvent, partAdded, serverFailure}, true, 502},
-		{"timeout_failure", []string{partAdded, timeoutFailure}, true, 502},
-		{"invalid_request", []string{codexOutputAddedEvent, codexInvalidEvent}, false, 400},
-		{"unknown_failure", []string{`{"type":"error","error":{"type":"upstream_error","code":"unknown"}}`}, false, 502},
-		{"text_committed", []string{`{"type":"response.output_text.delta","delta":"hello"}`, serverFailure}, false, 502},
-		{"reasoning_committed", []string{`{"type":"response.reasoning_summary_text.delta","delta":"thinking"}`, serverFailure}, false, 502},
-		{"tool_committed", []string{`{"type":"response.output_item.added","item":{"type":"function_call","name":"run","arguments":"{}"}}`, serverFailure}, false, 502},
-		{"arguments_committed", []string{`{"type":"response.function_call_arguments.delta","delta":"{}"}`, serverFailure}, false, 502},
-		{"populated_message", []string{`{"type":"response.output_item.added","item":{"type":"message","content":[{"type":"output_text","text":"hello"}]}}`, serverFailure}, false, 502},
-		{"populated_part", []string{`{"type":"response.content_part.added","part":{"type":"output_text","text":"hello"}}`, serverFailure}, false, 502},
-	}
-	for _, transport := range []string{"http", "websocket"} {
-		for _, tt := range tests {
-			t.Run(transport+"/"+tt.name, func(t *testing.T) {
-				events := append([]string{codexCreatedEvent, codexInProgressEvent}, tt.events...)
-				req, opts := codexTestRequest()
-				var result *cliproxyexecutor.StreamResult
-				var err error
-				if transport == "http" {
-					server := codexSSEServer(events...)
-					defer server.Close()
-					result, err = NewCodexExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
-				} else {
-					server := codexWebsocketServer(t, events...)
-					defer server.Close()
-					result, err = NewCodexWebsocketsExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
-				}
-				if tt.retry {
-					if err == nil || result != nil {
-						t.Fatalf("retryable bootstrap must return error without a stream: result=%v err=%v", result, err)
-					}
-				} else {
-					if err != nil || result == nil {
-						t.Fatalf("expected in-stream failure: result=%v err=%v", result, err)
-					}
-					var output string
-					output, err = drainChunks(result)
-					if !strings.Contains(output, "response.created") {
-						t.Fatalf("committed stream lost its handshake: %s", output)
-					}
-					if err == nil {
-						t.Fatal("expected terminal error")
-					}
-				}
-				if got := statusCodeFromTestError(t, err); got != tt.status {
-					t.Fatalf("status=%d, want %d", got, tt.status)
-				}
-			})
-		}
-	}
-}
-
-func TestCodexBootstrapServerFailurePreservesDownstreamSession(t *testing.T) {
-	notified, err := executeWebsocketStreamInSession(t, codexCreatedEvent, codexOutputAddedEvent,
-		`{"type":"response.failed","response":{"error":{"type":"server_error","code":"server_error"}}}`)
-	if err == nil {
-		t.Fatal("expected retryable server failure")
-	}
-	if notified {
-		t.Fatal("retryable server failure must not close the downstream session")
-	}
-}
-
 type mockClock struct {
-	mu      sync.Mutex
-	cur     time.Time
-	started chan struct{}
-	once    sync.Once
+	mu  sync.Mutex
+	cur time.Time
 }
 
 func (m *mockClock) now() time.Time {
 	m.mu.Lock()
-	now := m.cur
-	m.mu.Unlock()
-	// 先捕获计时起点，再通知服务端；否则推进时钟仍可能抢在首次读取之前。
-	m.once.Do(func() { close(m.started) })
-	return now
-}
-
-func (m *mockClock) waitForStart(t *testing.T) bool {
-	t.Helper()
-	select {
-	case <-m.started:
-		return true
-	case <-time.After(2 * time.Second):
-		t.Error("timed out waiting for bootstrap clock initialization")
-		return false
-	}
+	defer m.mu.Unlock()
+	return m.cur
 }
 
 func (m *mockClock) advance(d time.Duration) {
@@ -1505,7 +1383,7 @@ func (m *mockClock) advance(d time.Duration) {
 }
 
 func withMockClock(t *testing.T, initial time.Time) *mockClock {
-	m := &mockClock{cur: initial, started: make(chan struct{})}
+	m := &mockClock{cur: initial}
 	cleanup := setCodexBootstrapNowForTest(m.now)
 	t.Cleanup(cleanup)
 	return m
@@ -1557,6 +1435,17 @@ func TestCodexExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *testing.T)
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	clock := withMockClock(t, t0)
 
+	bootstrapStarted := make(chan struct{})
+	var once sync.Once
+	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
+		once.Do(func() {
+			close(bootstrapStarted)
+		})
+		return now
+	})
+	t.Cleanup(cleanup)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: response.in_progress\ndata: " + codexInProgressEvent + "\n\n"))
@@ -1564,9 +1453,7 @@ func TestCodexExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *testing.T)
 			f.Flush()
 		}
 
-		if !clock.waitForStart(t) {
-			return
-		}
+		<-bootstrapStarted
 		clock.advance(11 * time.Second)
 
 		_, _ = w.Write([]byte("event: response.in_progress\ndata: " + codexInProgressEvent + "\n\n"))
@@ -1598,6 +1485,17 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	clock := withMockClock(t, t0)
 
+	bootstrapStarted := make(chan struct{})
+	var once sync.Once
+	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
+		once.Do(func() {
+			close(bootstrapStarted)
+		})
+		return now
+	})
+	t.Cleanup(cleanup)
+
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -1610,10 +1508,8 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *
 		}
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexInProgressEvent))
 
+		<-bootstrapStarted
 		// Advance clock past default 10s timeout
-		if !clock.waitForStart(t) {
-			return
-		}
 		clock.advance(11 * time.Second)
 
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexInProgressEvent))
@@ -1647,9 +1543,6 @@ func TestCodexExecutor_BootstrapBuffering_DisabledTimeBudget(t *testing.T) {
 		}
 
 		// Advance clock by 100 seconds
-		if !clock.waitForStart(t) {
-			return
-		}
 		clock.advance(100 * time.Second)
 
 		_, _ = w.Write([]byte("event: response.in_progress\ndata: " + codexInProgressEvent + "\n\n"))
@@ -1692,9 +1585,6 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_DisabledTimeBudget(t *testin
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexInProgressEvent))
 
 		// Advance clock by 100 seconds
-		if !clock.waitForStart(t) {
-			return
-		}
 		clock.advance(100 * time.Second)
 
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexInProgressEvent))
@@ -1726,9 +1616,6 @@ func TestCodexExecutor_BootstrapBuffering_DefaultUnsetTimeoutIsUnlimited(t *test
 		}
 
 		// Advance clock by 100 seconds
-		if !clock.waitForStart(t) {
-			return
-		}
 		clock.advance(100 * time.Second)
 
 		_, _ = w.Write([]byte("event: response.in_progress\ndata: " + codexInProgressEvent + "\n\n"))
@@ -1761,6 +1648,17 @@ func TestCodexExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeoutDeliveredI
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	clock := withMockClock(t, t0)
 
+	bootstrapStarted := make(chan struct{})
+	var once sync.Once
+	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
+		once.Do(func() {
+			close(bootstrapStarted)
+		})
+		return now
+	})
+	t.Cleanup(cleanup)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -1768,10 +1666,8 @@ func TestCodexExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeoutDeliveredI
 			f.Flush()
 		}
 
+		<-bootstrapStarted
 		// Advance clock past 10s timeout before the first event arrives
-		if !clock.waitForStart(t) {
-			return
-		}
 		clock.advance(11 * time.Second)
 
 		_, _ = w.Write([]byte("event: error\ndata: " + codexOverloadEvent + "\n\n"))
@@ -1798,6 +1694,17 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeout
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	clock := withMockClock(t, t0)
 
+	bootstrapStarted := make(chan struct{})
+	var once sync.Once
+	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
+		once.Do(func() {
+			close(bootstrapStarted)
+		})
+		return now
+	})
+	t.Cleanup(cleanup)
+
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -1809,10 +1716,8 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeout
 			return
 		}
 
+		<-bootstrapStarted
 		// Advance clock past 10s timeout before writing any messages
-		if !clock.waitForStart(t) {
-			return
-		}
 		clock.advance(11 * time.Second)
 
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexOverloadEvent))
@@ -1838,6 +1743,17 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_StatusBearingErrorAfterTimeo
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	clock := withMockClock(t, t0)
 
+	bootstrapStarted := make(chan struct{})
+	var once sync.Once
+	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
+		once.Do(func() {
+			close(bootstrapStarted)
+		})
+		return now
+	})
+	t.Cleanup(cleanup)
+
 	statusBearingError := `{"type":"error","status":429,"error":{"message":"Rate limit exceeded","type":"requests","code":"rate_limit_exceeded"}}`
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -1851,10 +1767,8 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_StatusBearingErrorAfterTimeo
 			return
 		}
 
+		<-bootstrapStarted
 		// Advance clock past 10s timeout before writing error frame
-		if !clock.waitForStart(t) {
-			return
-		}
 		clock.advance(11 * time.Second)
 
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(statusBearingError))
@@ -1871,5 +1785,133 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_StatusBearingErrorAfterTimeo
 	}
 	if _, streamErr := drainChunks(result); streamErr == nil {
 		t.Fatal("expected status-bearing error to be delivered in-stream")
+	}
+}
+
+// The downstream handler closes the client connection as soon as the executor publishes an
+// upstream disconnect, which cancels the request context. When an upstream error arrives after
+// the stream has already emitted payload chunks, the error chunk must still reach the conductor
+// before the disconnect notification fires (issue 6503).
+func TestCodexWebsocketsExecutor_UnbufferedUpstreamErrorIsDeliveredBeforeDisconnectNotify(t *testing.T) {
+	frames := map[string]string{
+		"error frame":     `{"type":"error","status":429,"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":600}}`,
+		"response.failed": `{"type":"response.failed","response":{"error":{"type":"usage_limit_reached","status_code":429,"message":"The usage limit has been reached","resets_in_seconds":600}}}`,
+	}
+	for name, frame := range frames {
+		t.Run(name, func(t *testing.T) {
+			server := codexWebsocketServerHoldingConnection(t, codexCreatedEvent, codexOutputDeltaEvent, frame)
+			defer server.Close()
+
+			exec := NewCodexWebsocketsExecutor(codexBufferingConfig(false))
+			exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+
+			const sessionID = "issue-6503-session"
+			disconnectCh := exec.UpstreamDisconnectChan(sessionID)
+			if disconnectCh == nil {
+				t.Fatal("expected a disconnect channel")
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			canceled := make(chan struct{})
+			go func() {
+				<-disconnectCh
+				cancel()
+				close(canceled)
+			}()
+
+			req, opts := codexWebsocketRequest()
+			opts.Metadata = map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: sessionID}
+			result, err := exec.ExecuteStream(ctx, codexTestAuth(server.URL), req, opts)
+			if err != nil {
+				t.Fatalf("ExecuteStream() error = %v", err)
+			}
+
+			// Give a premature disconnect notification time to cancel the context before the error is read.
+			select {
+			case <-canceled:
+			case <-time.After(200 * time.Millisecond):
+			}
+
+			var streamErr error
+			for chunk := range result.Chunks {
+				if chunk.Err != nil {
+					streamErr = chunk.Err
+				}
+			}
+			if streamErr == nil {
+				t.Fatal("the upstream usage-limit error was dropped by the disconnect-triggered cancellation")
+			}
+			if got := statusCodeFromTestError(t, streamErr); got != http.StatusTooManyRequests {
+				t.Fatalf("status code = %d, want %d", got, http.StatusTooManyRequests)
+			}
+			select {
+			case <-canceled:
+			case <-time.After(5 * time.Second):
+				t.Fatal("downstream disconnect was never signalled after the error was delivered")
+			}
+		})
+	}
+}
+
+// When an upstream usage-limit error arrives before any downstream payload chunk is emitted
+// (or after buffered handshake events while bootstrap buffering is enabled), the executor must
+// not signal UpstreamDisconnectChan so the conductor can fail over to another credential on the
+// same downstream WebSocket connection (issue 7051).
+func TestCodexWebsocketsExecutor_PreOutputUpstreamErrorDoesNotNotifyDisconnect(t *testing.T) {
+	frames := map[string]string{
+		"error frame":     `{"type":"error","status":429,"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":600}}`,
+		"response.failed": `{"type":"response.failed","response":{"error":{"type":"usage_limit_reached","status_code":429,"message":"The usage limit has been reached","resets_in_seconds":600}}}`,
+	}
+	cases := []struct {
+		label     string
+		buffering bool
+		preamble  []string
+	}{
+		{label: "immediate/buffering=false", buffering: false},
+		{label: "immediate/buffering=true", buffering: true},
+		{label: "after_handshake/buffering=true", buffering: true, preamble: []string{codexCreatedEvent, codexInProgressEvent}},
+	}
+	for name, frame := range frames {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("%s/%s", name, tc.label), func(t *testing.T) {
+				seq := append(append([]string(nil), tc.preamble...), frame)
+				server := codexWebsocketServerHoldingConnection(t, seq...)
+				defer server.Close()
+
+				exec := NewCodexWebsocketsExecutor(codexBufferingConfig(tc.buffering))
+				exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+
+				const sessionID = "issue-7051-session"
+				disconnectCh := exec.UpstreamDisconnectChan(sessionID)
+				if disconnectCh == nil {
+					t.Fatal("expected a disconnect channel")
+				}
+
+				req, opts := codexWebsocketRequest()
+				opts.Metadata = map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: sessionID}
+				result, err := exec.ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+
+				streamErr := err
+				if result != nil {
+					for chunk := range result.Chunks {
+						if chunk.Err != nil {
+							streamErr = chunk.Err
+						}
+					}
+				}
+				if streamErr == nil {
+					t.Fatal("expected upstream usage-limit error")
+				}
+				if got := statusCodeFromTestError(t, streamErr); got != http.StatusTooManyRequests {
+					t.Fatalf("status code = %d, want %d", got, http.StatusTooManyRequests)
+				}
+				select {
+				case disconnectErr := <-disconnectCh:
+					t.Fatalf("pre-output upstream error must not notify downstream disconnect, got %v", disconnectErr)
+				default:
+				}
+			})
+		}
 	}
 }

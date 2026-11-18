@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/refreshguard"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -89,12 +90,17 @@ func NewQwenAuth(cfg *config.Config) *QwenAuth {
 	return NewQwenAuthWithProxy(cfg, "")
 }
 
-// NewQwenAuthWithProxy creates a new QwenAuth instance pinned to one egress proxy.
-// An empty proxyURL keeps the configured default.
+// NewQwenAuthWithProxy is NewQwenAuth pinned to one egress proxy.
+//
+// Token refresh has to leave from the same address as the credential's own
+// requests; see resolveAuthProxyURL in the executor package for what goes wrong
+// when the two diverge. An empty proxyURL keeps the configured default.
 func NewQwenAuthWithProxy(cfg *config.Config, proxyURL string) *QwenAuth {
 	var sdkCfg *config.SDKConfig
 	userAgent := defaultOAuthUserAgent
 	if cfg != nil {
+		// Copied rather than referenced: pinning a proxy must not mutate the
+		// shared configuration every other caller reads.
 		copied := cfg.SDKConfig
 		sdkCfg = &copied
 		if strings.TrimSpace(cfg.OAuthUserAgent) != "" {
@@ -139,7 +145,21 @@ func (qa *QwenAuth) generatePKCEPair() (string, string, error) {
 }
 
 // RefreshTokens exchanges a refresh token for a new access token.
+//
+// The response carries a new refresh token, so the exchange runs through
+// refreshguard: it finishes even if ctx ends, and concurrent refreshes of one
+// token share a single request.
 func (qa *QwenAuth) RefreshTokens(ctx context.Context, refreshToken string) (*QwenTokenData, error) {
+	return refreshguard.Exchange(ctx, refreshGuardProvider, refreshToken, func(ctx context.Context) (*QwenTokenData, error) {
+		return qa.refreshOnce(ctx, refreshToken)
+	})
+}
+
+// refreshGuardProvider scopes Qwen exchanges in refreshguard; RefreshTokens and
+// RefreshTokensWithRetry share it, so either one joins the other's exchange.
+const refreshGuardProvider = "qwen"
+
+func (qa *QwenAuth) refreshOnce(ctx context.Context, refreshToken string) (*QwenTokenData, error) {
 	data := url.Values{}
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", refreshToken)
@@ -330,6 +350,12 @@ func (qa *QwenAuth) doFormRequest(ctx context.Context, endpoint string, data url
 
 // RefreshTokensWithRetry attempts to refresh tokens with a specified number of retries upon failure.
 func (o *QwenAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken string, maxRetries int) (*QwenTokenData, error) {
+	return refreshguard.Exchange(ctx, refreshGuardProvider, refreshToken, func(ctx context.Context) (*QwenTokenData, error) {
+		return o.refreshWithRetry(ctx, refreshToken, maxRetries)
+	})
+}
+
+func (o *QwenAuth) refreshWithRetry(ctx context.Context, refreshToken string, maxRetries int) (*QwenTokenData, error) {
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -342,7 +368,7 @@ func (o *QwenAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken stri
 			}
 		}
 
-		tokenData, err := o.RefreshTokens(ctx, refreshToken)
+		tokenData, err := o.refreshOnce(ctx, refreshToken)
 		if err == nil {
 			return tokenData, nil
 		}

@@ -6,80 +6,64 @@ package config
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/json"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
 	"gopkg.in/yaml.v3"
 )
 
 // SDKConfig represents the application's configuration, loaded from a YAML file.
 type SDKConfig struct {
-	// MaxRequestBodyBytes limits the size (in bytes) of incoming HTTP request bodies.
-	// Values <= 0 disable the limit (default).
+	// OAuthOnlyFields records provider settings that apply only after OAuth
+	// credential selection and must not affect API-key credentials.
+	OAuthOnlyFields map[string]bool `yaml:"-" json:"-"`
+	// GitHubToken optionally authenticates GitHub API requests made by management
+	// update and model-catalog helpers.
+	GitHubToken string `yaml:"github-token,omitempty" json:"github-token,omitempty"`
+
+	// MaxRequestBodyBytes limits the size of incoming HTTP request bodies.
+	// Values <= 0 disable the limit.
 	MaxRequestBodyBytes int64 `yaml:"max-request-body-bytes" json:"max-request-body-bytes"`
 
-	// Client configures client-facing compatibility behavior.
-	Client ClientConfig `yaml:"client" json:"client"`
+	// Client contains client-specific compatibility switches retained from the
+	// upstream v8 configuration shape.
+	Client ClientConfig `yaml:"client,omitempty" json:"client,omitempty"`
 
-	// OAuthOnlyFields records v8 provider settings that must wait for credential
-	// selection and must not affect API-key credentials. Config YAML snapshots
-	// preserve the corresponding v8 paths instead of serializing this metadata.
-	OAuthOnlyFields map[string]bool `yaml:"-" json:"-"`
+	// DisableImageGeneration controls whether the built-in image_generation tool is injected or allowed.
+	DisableImageGeneration DisableImageGenerationMode `yaml:"disable-image-generation" json:"disable-image-generation"`
+
+	// GPTImage2BaseModel selects the base model used by the hosted image_generation path.
+	GPTImage2BaseModel string `yaml:"gpt-image-2-base-model,omitempty" json:"gpt-image-2-base-model,omitempty"`
+
+	// VideoResultAuthCacheTTL pins video result IDs to their creating credential
+	// for the configured duration.
+	VideoResultAuthCacheTTL string `yaml:"video-result-auth-cache-ttl,omitempty" json:"video-result-auth-cache-ttl,omitempty"`
 
 	// CodexResponseSteering mirrors the provider-wide runtime setting for API handlers.
 	CodexResponseSteering bool `yaml:"-" json:"-"`
 
+	// CodexOrphanDelegationCompatibility mirrors the provider-wide runtime setting for API handlers.
+	CodexOrphanDelegationCompatibility bool `yaml:"-" json:"-"`
+
+	// TLSHandshakeTimeoutSeconds bounds upstream TLS handshakes made by the
+	// shared transport. Non-positive values disable the bound.
+	TLSHandshakeTimeoutSeconds int `yaml:"tls-handshake-timeout-seconds,omitempty" json:"tls-handshake-timeout-seconds,omitempty"`
+
+	// ClaudeCode configures Claude Code compatibility behavior.
+	ClaudeCode ClaudeCodeConfig `yaml:"claude-code" json:"claude-code"`
+
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
-	// TLSHandshakeTimeoutSeconds bounds upstream TLS handshakes made by the
-	// shared uTLS client, in seconds. It applies to both the Claude Code
-	// Anthropic transport and the Chrome ChatGPT/Codex transport; the
-	// standard fallback transport is unaffected. It starts after TCP or
-	// proxy connection establishment returns and does not bound dialing or
-	// proxy CONNECT. Those uTLS paths use custom TLS dialing, for which Go
-	// ignores http.Transport.TLSHandshakeTimeout, so a peer that accepts the
-	// connection but never answers the ClientHello would otherwise block the
-	// request indefinitely and request-retry could never engage. The bound
-	// applies only during the TLS handshake and is removed once it succeeds,
-	// so inference and long-running streams are unaffected. The default 0
-	// disables the bound (previous behavior); negative values are treated as
-	// 0, and values beyond the representable duration range saturate.
-	TLSHandshakeTimeoutSeconds int `yaml:"tls-handshake-timeout-seconds" json:"tls-handshake-timeout-seconds"`
-
-	// DisableImageGeneration controls whether the built-in image_generation tool is injected/allowed.
-	//
-	// Supported values:
-	//   - false (default): image_generation is enabled everywhere (normal behavior).
-	//   - true: image_generation is disabled everywhere. The server stops injecting it, removes it from request payloads,
-	//     and returns 404 for /v1/images/generations and /v1/images/edits.
-	//   - "chat": disable image_generation injection for all non-images endpoints (e.g. /v1/responses, /v1/chat/completions),
-	//     while keeping /v1/images/generations and /v1/images/edits enabled and preserving image_generation there.
-	//   - "passthrough": do not modify the tool list on non-images endpoints — keep image_generation if the client
-	//     sent it and do not inject it otherwise; on /v1/images/generations and /v1/images/edits behave like "chat".
-	DisableImageGeneration DisableImageGenerationMode `yaml:"disable-image-generation" json:"disable-image-generation"`
-
-	// GPTImage2BaseModel sets the base (mainline) model used by the legacy hosted
-	// image_generation tool path when a Codex image request is not proxied directly
-	// through the Image API.
-	//
-	// The value must start with "gpt-" (case-insensitive). If empty or invalid, the
-	// default base model ("gpt-5.4-mini") is used.
-	GPTImage2BaseModel string `yaml:"gpt-image-2-base-model,omitempty" json:"gpt-image-2-base-model,omitempty"`
-
-	// VideoResultAuthCacheTTL controls how long video IDs stay pinned to the credential
-	// that created them. Accepts duration strings like "30m" or "3h".
-	// Empty or invalid values use the default 3h.
-	VideoResultAuthCacheTTL string `yaml:"video-result-auth-cache-ttl,omitempty" json:"video-result-auth-cache-ttl,omitempty"`
-
-	// VideoStorage configures optional S3-compatible persistence for completed
-	// videos. Credentials are resolved from environment variable names so config
-	// and management responses do not need to contain secret values.
-	VideoStorage VideoStorageConfig `yaml:"video-storage,omitempty" json:"video-storage,omitempty"`
+	// PreferIPv4 forces all outbound upstream connections to use IPv4 only.
+	// When true, the dialer binds to 0.0.0.0 and skips IPv6 resolution.
+	// Useful when the server's IPv6 route quality is poor (e.g. SIT tunnel).
+	PreferIPv4 bool `yaml:"prefer-ipv4" json:"prefer-ipv4"`
 
 	// ForceModelPrefix requires explicit model prefixes (e.g., "teamA/gemini-3-pro-preview")
 	// to target prefixed credentials. When false, unprefixed model requests may use prefixed
@@ -89,35 +73,20 @@ type SDKConfig struct {
 	// RequestLog enables or disables detailed request logging functionality.
 	RequestLog bool `yaml:"request-log" json:"request-log"`
 
-	// ResponsesMaxInboundBytes limits compressed and decoded inbound bodies for
-	// OpenAI Responses HTTP and WebSocket routes. Values <= 0 use the safe default.
-	ResponsesMaxInboundBytes int64 `yaml:"responses-max-inbound-bytes" json:"responses-max-inbound-bytes"`
-
-	// ResponsesMemoryBudgetBytes limits aggregate in-flight memory reservations
-	// for OpenAI Responses HTTP requests.
-	ResponsesMemoryBudgetBytes int64 `yaml:"responses-memory-budget-bytes" json:"responses-memory-budget-bytes"`
-
-	ResponsesWebsocketMaxSessionBytes    int64 `yaml:"responses-websocket-max-session-bytes" json:"responses-websocket-max-session-bytes"`
-	ResponsesWebsocketMaxTurnOutputBytes int64 `yaml:"responses-websocket-max-turn-output-bytes" json:"responses-websocket-max-turn-output-bytes"`
-	ResponsesWebsocketToolCacheBytes     int64 `yaml:"responses-websocket-tool-cache-bytes" json:"responses-websocket-tool-cache-bytes"`
-	ResponsesWebsocketMemoryBudgetBytes  int64 `yaml:"responses-websocket-memory-budget-bytes" json:"responses-websocket-memory-budget-bytes"`
-	ResponsesWebsocketMaxConnections     int   `yaml:"responses-websocket-max-connections" json:"responses-websocket-max-connections"`
-
-	// RequestLogBody controls full payload retention independently from request
-	// log metadata. Nil keeps the historical behavior of retaining bodies.
-	RequestLogBody *bool `yaml:"request-log-body,omitempty" json:"request-log-body,omitempty"`
-
-	// CodexOptimizeMultiAgentV2 mirrors the provider-wide runtime setting for API handlers.
-	CodexOptimizeMultiAgentV2 bool `yaml:"-" json:"-"`
-
-	// CodexOrphanDelegationCompatibility mirrors the provider-wide runtime setting for API handlers.
-	CodexOrphanDelegationCompatibility bool `yaml:"-" json:"-"`
-
-	// ClaudeCode configures Claude Code compatibility behavior.
-	ClaudeCode ClaudeCodeConfig `yaml:"claude-code" json:"claude-code"`
+	// RequestLogStorage controls how full request/response bodies are retained.
+	RequestLogStorage RequestLogStorageConfig `yaml:"request-log-storage" json:"request-log-storage"`
 
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
+
+	// AllowUnauthenticated controls whether client API requests are allowed when
+	// no authentication providers (API keys) are configured. Default is false
+	// (secure-by-default).
+	AllowUnauthenticated bool `yaml:"allow-unauthenticated" json:"allow-unauthenticated"`
+
+	// APIKeyEntries is a list of API key entries with metadata for advanced management.
+	// Keys from both APIKeys and APIKeyEntries are valid for authentication.
+	APIKeyEntries []APIKeyEntry `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
 
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
@@ -126,122 +95,56 @@ type SDKConfig struct {
 	// Streaming configures server-side streaming behavior (keep-alives and safe bootstrap retries).
 	Streaming StreamingConfig `yaml:"streaming" json:"streaming"`
 
-	// ContextRetrieval reduces oversized conversational payloads using local retrieval.
-	ContextRetrieval ContextRetrievalConfig `yaml:"context-retrieval,omitempty" json:"context-retrieval,omitempty"`
-
-	// MultimodalAdapters turns unsupported media inputs into text context before routing to text models.
-	MultimodalAdapters MultimodalAdaptersConfig `yaml:"multimodal-adapters,omitempty" json:"multimodal-adapters,omitempty"`
-
-	// Observability controls optional high-cardinality diagnostic logs.
-	Observability ObservabilityConfig `yaml:"observability,omitempty" json:"observability,omitempty"`
+	// ResponsesWebsocket tunes the client-facing Responses WebSocket entry.
+	ResponsesWebsocket ResponsesWebsocketConfig `yaml:"responses-websocket,omitempty" json:"responses-websocket,omitempty"`
 
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
 
-	// RejectUnconfiguredModels rejects POST requests for models that have no
-	// configured auth credentials backing them. When false (default), such
-	// requests proceed to the normal routing path which may return a generic
-	// upstream error. When true, the proxy returns 404 immediately with a
-	// descriptive error message.
-	RejectUnconfiguredModels bool `yaml:"reject-unconfigured-models" json:"rejectUnconfiguredModels"`
+	// InsecureSkipVerify disables TLS certificate verification for upstream HTTPS connections.
+	// When true, the proxy will accept any certificate presented by upstream servers.
+	// This is insecure and should only be used in testing or trusted internal networks.
+	InsecureSkipVerify bool `yaml:"insecure-skip-verify" json:"insecure-skip-verify"`
 
-	// OpenRouterSyncEnabled enables periodic OpenRouter model metadata synchronization.
-	// When enabled, model listings, pricing, and context window information are
-	// fetched from the OpenRouter API for management metadata.
-	OpenRouterSyncEnabled bool `yaml:"openrouter-sync-enabled" json:"openrouterSyncEnabled"`
-
-	// OpenRouterSyncIntervalMinutes controls how often the OpenRouter model
-	// catalog is refreshed. Minimum is 60 minutes. Default is 1440 (24 hours).
-	OpenRouterSyncIntervalMinutes int `yaml:"openrouter-sync-interval-minutes" json:"openrouterSyncIntervalMinutes"`
-
-	// OpenRouterAPIKey is an optional API key for authenticating with the
-	// OpenRouter API. When set, it is included as a Bearer token in sync requests.
-	OpenRouterAPIKey string `yaml:"openrouter-api-key" json:"openRouterApiKey"`
+	// CACert is the path to a PEM-encoded CA certificate file used to verify upstream server certificates.
+	// When empty, the system default root CA pool is used.
+	CACert string `yaml:"ca-cert" json:"ca-cert"`
 }
 
-// VideoStorageConfig supports AWS S3, Cloudflare R2, MinIO, and other
-// S3-compatible object stores.
-type VideoStorageConfig struct {
-	Enabled            bool   `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	Endpoint           string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
-	Region             string `yaml:"region,omitempty" json:"region,omitempty"`
-	Bucket             string `yaml:"bucket,omitempty" json:"bucket,omitempty"`
-	PathStyle          bool   `yaml:"path-style,omitempty" json:"path-style,omitempty"`
-	Prefix             string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
-	SignedURLTTL       string `yaml:"signed-url-ttl,omitempty" json:"signed-url-ttl,omitempty"`
-	MaxSourceBytes     int64  `yaml:"max-source-bytes,omitempty" json:"max-source-bytes,omitempty"`
-	AccessKeyIDEnv     string `yaml:"access-key-id-env,omitempty" json:"access-key-id-env,omitempty"`
-	SecretAccessKeyEnv string `yaml:"secret-access-key-env,omitempty" json:"secret-access-key-env,omitempty"`
-	SessionTokenEnv    string `yaml:"session-token-env,omitempty" json:"session-token-env,omitempty"`
+// ClaudeCodeConfig configures Claude Code compatibility behavior.
+type ClaudeCodeConfig struct {
+	DisableCloakingModelList bool `yaml:"disable-cloaking-model-list" json:"disable-cloaking-model-list"`
 }
 
-// RequestLogBodyEnabled keeps existing deployments compatible when the new
-// setting is absent from their config file.
-func (c SDKConfig) RequestLogBodyEnabled() bool {
-	return c.RequestLogBody == nil || *c.RequestLogBody
-}
-
-// TLSHandshakeTimeout returns the configured upstream TLS handshake bound
-// for requests using the shared uTLS client. A non-positive configured
-// value disables the bound and yields 0.
-func (c *SDKConfig) TLSHandshakeTimeout() time.Duration {
-	if c == nil || c.TLSHandshakeTimeoutSeconds <= 0 {
-		return 0
-	}
-	const maxTLSHandshakeTimeoutSeconds = math.MaxInt64 / int64(time.Second)
-	if int64(c.TLSHandshakeTimeoutSeconds) > maxTLSHandshakeTimeoutSeconds {
-		return time.Duration(math.MaxInt64)
-	}
-	return time.Duration(c.TLSHandshakeTimeoutSeconds) * time.Second
-}
-
-// ClientConfig configures client-facing compatibility behavior.
 type ClientConfig struct {
-	Codex CodexClientConfig `yaml:"codex" json:"codex"`
+	Codex  CodexClientConfig  `yaml:"codex,omitempty" json:"codex,omitempty"`
+	Claude ClaudeClientConfig `yaml:"claude,omitempty" json:"claude,omitempty"`
 }
 
-// CodexClientConfig configures Codex client compatibility and the model catalog.
 type CodexClientConfig struct {
-	// OptimizeMultiAgentV2 optimizes official Codex multi-agent requests across providers.
-	// Default false leaves the client's multi-agent behavior unchanged.
-	OptimizeMultiAgentV2 bool `yaml:"optimize-multi-agent-v2" json:"optimize-multi-agent-v2"`
-
-	// EnableApplyPatch advertises freeform apply_patch only for supported models.
-	// Default false clears the capability regardless of template metadata.
-	EnableApplyPatch bool `yaml:"enable-apply-patch" json:"enable-apply-patch"`
-
-	// WebSearchResultCache configures caching of upstream web search results for
-	// Codex Responses clients that drop search results from replayed history.
+	OptimizeMultiAgentV2 bool                            `yaml:"optimize-multi-agent-v2,omitempty" json:"optimize-multi-agent-v2,omitempty"`
+	EnableApplyPatch     bool                            `yaml:"enable-apply-patch,omitempty" json:"enable-apply-patch,omitempty"`
 	WebSearchResultCache CodexWebSearchResultCacheConfig `yaml:"web-search-result-cache" json:"web-search-result-cache"`
 }
 
+type ClaudeClientConfig struct {
+	DisableCommentary   bool `yaml:"disable-commentary,omitempty" json:"disable-commentary,omitempty"`
+	ShowCodexCommentary bool `yaml:"show-codex-commentary,omitempty" json:"show-codex-commentary,omitempty"`
+}
+
 const (
-	// DefaultCodexWebSearchResultCacheTTL is the default lifetime of cached web search results.
-	DefaultCodexWebSearchResultCacheTTL = 24 * time.Hour
-
-	// DefaultCodexWebSearchResultCacheLimit is the default maximum number of cached web search result entries.
-	DefaultCodexWebSearchResultCacheLimit = 1024
-
+	DefaultCodexWebSearchResultCacheTTL    = 24 * time.Hour
+	DefaultCodexWebSearchResultCacheLimit  = 1024
 	maxCodexWebSearchResultCacheTTLSeconds = int64(math.MaxInt64 / time.Second)
 )
 
-// CodexWebSearchResultCacheConfig configures the session-scoped web search result cache.
 type CodexWebSearchResultCacheConfig struct {
-	// Enabled controls whether web search results are cached and restored for Codex Responses requests.
-	// Default is false (disabled).
-	Enabled bool `yaml:"enabled" json:"enabled"`
-
-	// TTL specifies how long cached web search results remain valid (e.g. 1800, "30m", "24h").
-	// Pure numbers are interpreted as seconds. Defaults to "24h" when unset.
-	TTL string `yaml:"ttl" json:"ttl"`
-
-	// Limit specifies the maximum number of entries retained in the web search result cache.
-	// Defaults to 1024 when unset or zero.
-	Limit int `yaml:"limit" json:"limit"`
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	TTL     string `yaml:"ttl" json:"ttl"`
+	Limit   int    `yaml:"limit" json:"limit"`
 }
 
-// Validate checks that the configured TTL and entry limit are valid.
 func (c CodexWebSearchResultCacheConfig) Validate() error {
 	if _, err := parseCodexWebSearchResultCacheTTL(c.TTL); err != nil {
 		return err
@@ -252,7 +155,6 @@ func (c CodexWebSearchResultCacheConfig) Validate() error {
 	return nil
 }
 
-// EffectiveTTL returns the parsed cache TTL, or DefaultCodexWebSearchResultCacheTTL when unset or zero.
 func (c CodexWebSearchResultCacheConfig) EffectiveTTL() time.Duration {
 	d, err := parseCodexWebSearchResultCacheTTL(c.TTL)
 	if err != nil || d <= 0 {
@@ -261,7 +163,6 @@ func (c CodexWebSearchResultCacheConfig) EffectiveTTL() time.Duration {
 	return d
 }
 
-// EffectiveLimit returns the configured entry limit, or DefaultCodexWebSearchResultCacheLimit when unset or non-positive.
 func (c CodexWebSearchResultCacheConfig) EffectiveLimit() int {
 	if c.Limit > 0 {
 		return c.Limit
@@ -283,8 +184,7 @@ func (c *CodexWebSearchResultCacheConfig) UnmarshalYAML(value *yaml.Node) error 
 	var next CodexWebSearchResultCacheConfig
 	seen := make(map[string]bool, len(value.Content)/2)
 	for i := 0; i+1 < len(value.Content); i += 2 {
-		keyNode := value.Content[i]
-		valNode := value.Content[i+1]
+		keyNode, valNode := value.Content[i], value.Content[i+1]
 		if keyNode == nil || valNode == nil {
 			continue
 		}
@@ -295,20 +195,16 @@ func (c *CodexWebSearchResultCacheConfig) UnmarshalYAML(value *yaml.Node) error 
 		switch keyNode.Value {
 		case "enabled":
 			if valNode.Tag == "!!null" {
-				next.Enabled = false
 				continue
 			}
 			if valNode.Kind != yaml.ScalarNode || valNode.Tag != "!!bool" {
 				return fmt.Errorf("client.codex.web-search-result-cache.enabled must be a boolean")
 			}
-			var enabled bool
-			if errDecode := valNode.Decode(&enabled); errDecode != nil {
-				return fmt.Errorf("client.codex.web-search-result-cache.enabled: %w", errDecode)
+			if err := valNode.Decode(&next.Enabled); err != nil {
+				return fmt.Errorf("client.codex.web-search-result-cache.enabled: %w", err)
 			}
-			next.Enabled = enabled
 		case "ttl":
 			if valNode.Tag == "!!null" {
-				next.TTL = ""
 				continue
 			}
 			if valNode.Kind != yaml.ScalarNode || (valNode.Tag != "!!str" && valNode.Tag != "!!int") {
@@ -317,23 +213,20 @@ func (c *CodexWebSearchResultCacheConfig) UnmarshalYAML(value *yaml.Node) error 
 			next.TTL = strings.TrimSpace(valNode.Value)
 		case "limit":
 			if valNode.Tag == "!!null" {
-				next.Limit = 0
 				continue
 			}
 			if valNode.Kind != yaml.ScalarNode || valNode.Tag != "!!int" {
 				return fmt.Errorf("client.codex.web-search-result-cache.limit must be an integer")
 			}
-			var limit int
-			if errDecode := valNode.Decode(&limit); errDecode != nil {
-				return fmt.Errorf("client.codex.web-search-result-cache.limit: %w", errDecode)
+			if err := valNode.Decode(&next.Limit); err != nil {
+				return fmt.Errorf("client.codex.web-search-result-cache.limit: %w", err)
 			}
-			next.Limit = limit
 		default:
 			return fmt.Errorf("client.codex.web-search-result-cache: unknown field %q", keyNode.Value)
 		}
 	}
-	if errValidate := next.Validate(); errValidate != nil {
-		return errValidate
+	if err := next.Validate(); err != nil {
+		return err
 	}
 	*c = next
 	return nil
@@ -355,20 +248,16 @@ func (c *CodexWebSearchResultCacheConfig) UnmarshalJSON(data []byte) error {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(trimmed))
 	decoder.DisallowUnknownFields()
-	if errDecode := decoder.Decode(&raw); errDecode != nil {
-		return errDecode
+	if err := decoder.Decode(&raw); err != nil {
+		return err
 	}
-	ttl, errTTL := parseCodexWebSearchResultCacheTTLJSON(raw.TTL)
-	if errTTL != nil {
-		return errTTL
+	ttl, err := parseCodexWebSearchResultCacheTTLJSON(raw.TTL)
+	if err != nil {
+		return err
 	}
-	next := CodexWebSearchResultCacheConfig{
-		Enabled: raw.Enabled,
-		TTL:     ttl,
-		Limit:   raw.Limit,
-	}
-	if errValidate := next.Validate(); errValidate != nil {
-		return errValidate
+	next := CodexWebSearchResultCacheConfig{Enabled: raw.Enabled, TTL: ttl, Limit: raw.Limit}
+	if err := next.Validate(); err != nil {
+		return err
 	}
 	*c = next
 	return nil
@@ -380,17 +269,17 @@ func parseCodexWebSearchResultCacheTTLJSON(raw json.RawMessage) (string, error) 
 		return "", nil
 	}
 	if trimmed[0] == '"' {
-		var s string
-		if errUnmarshal := json.Unmarshal(trimmed, &s); errUnmarshal != nil {
-			return "", fmt.Errorf("client.codex.web-search-result-cache.ttl: %w", errUnmarshal)
+		var value string
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return "", fmt.Errorf("client.codex.web-search-result-cache.ttl: %w", err)
 		}
-		return strings.TrimSpace(s), nil
+		return strings.TrimSpace(value), nil
 	}
-	var n int64
-	if errUnmarshal := json.Unmarshal(trimmed, &n); errUnmarshal != nil {
+	var seconds int64
+	if err := json.Unmarshal(trimmed, &seconds); err != nil {
 		return "", fmt.Errorf("client.codex.web-search-result-cache.ttl must be a duration string or integer seconds")
 	}
-	return strconv.FormatInt(n, 10), nil
+	return strconv.FormatInt(seconds, 10), nil
 }
 
 func parseCodexWebSearchResultCacheTTL(raw string) (time.Duration, error) {
@@ -398,146 +287,228 @@ func parseCodexWebSearchResultCacheTTL(raw string) (time.Duration, error) {
 	if raw == "" || raw == "0" {
 		return DefaultCodexWebSearchResultCacheTTL, nil
 	}
-	if secs, errParseInt := strconv.ParseInt(raw, 10, 64); errParseInt == nil {
-		if secs < 0 {
+	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if seconds < 0 {
 			return 0, fmt.Errorf("client.codex.web-search-result-cache.ttl must not be negative")
 		}
-		if secs > maxCodexWebSearchResultCacheTTLSeconds {
+		if seconds > maxCodexWebSearchResultCacheTTLSeconds {
 			return 0, fmt.Errorf("client.codex.web-search-result-cache.ttl overflows duration")
 		}
-		return time.Duration(secs) * time.Second, nil
+		return time.Duration(seconds) * time.Second, nil
 	}
-	d, errParseDuration := time.ParseDuration(raw)
-	if errParseDuration != nil {
-		return 0, fmt.Errorf("client.codex.web-search-result-cache.ttl %q is invalid: %w", raw, errParseDuration)
+	duration, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("client.codex.web-search-result-cache.ttl %q is invalid: %w", raw, err)
 	}
-	if d < 0 {
+	if duration < 0 {
 		return 0, fmt.Errorf("client.codex.web-search-result-cache.ttl must not be negative")
 	}
-	if d == 0 {
+	if duration == 0 {
 		return DefaultCodexWebSearchResultCacheTTL, nil
 	}
-	return d, nil
+	return duration, nil
 }
 
-// ClaudeCodeConfig configures Claude Code compatibility behavior.
-type ClaudeCodeConfig struct {
-	// DisableCloakingModelList disables model ID cloaking in Anthropic model list responses.
-	DisableCloakingModelList bool `yaml:"disable-cloaking-model-list" json:"disable-cloaking-model-list"`
+// RequestLogStorageConfig controls retention and cleanup of request log metadata/bodies.
+// Stats live in usage_rollup_buckets and are never deleted by these policies.
+type RequestLogStorageConfig struct {
+	// StoreContent toggles persistence of full request and response bodies.
+	// Request details remain stored when this is false. Disabling through the
+	// management API also clears previously stored request/response bodies.
+	StoreContent bool `yaml:"store-content" json:"store-content"`
+
+	// RetentionDays is how long request_logs metadata rows are kept for diagnostics.
+	// Default 7. Stats are projected separately and survive cleanup.
+	RetentionDays int `yaml:"retention-days,omitempty" json:"retention-days,omitempty"`
+
+	// ContentRetentionDays defines how many days full request/response bodies are kept.
+	// Should not exceed RetentionDays. 0 keeps content until size/metadata caps apply.
+	ContentRetentionDays int `yaml:"content-retention-days,omitempty" json:"content-retention-days,omitempty"`
+
+	// CleanupEnabled toggles the background metadata/content cleanup job.
+	CleanupEnabled *bool `yaml:"cleanup-enabled,omitempty" json:"cleanup-enabled,omitempty"`
+
+	// CleanupIntervalMinutes controls how often the background cleanup job runs.
+	CleanupIntervalMinutes int `yaml:"cleanup-interval-minutes,omitempty" json:"cleanup-interval-minutes,omitempty"`
+
+	// CleanupBatchSize is the max metadata rows deleted per batch.
+	CleanupBatchSize int `yaml:"cleanup-batch-size,omitempty" json:"cleanup-batch-size,omitempty"`
+
+	// CleanupMaxRuntimeSeconds caps a single cleanup pass wall time.
+	CleanupMaxRuntimeSeconds int `yaml:"cleanup-max-runtime-seconds,omitempty" json:"cleanup-max-runtime-seconds,omitempty"`
+
+	// MaxRows caps request_logs row count; oldest rows are pruned first.
+	MaxRows int `yaml:"max-rows,omitempty" json:"max-rows,omitempty"`
+
+	// MaxMetadataSizeMB caps request_logs heap+index relation size (best-effort on Postgres).
+	MaxMetadataSizeMB int `yaml:"max-metadata-size-mb,omitempty" json:"max-metadata-size-mb,omitempty"`
+
+	// MaxTotalSizeMB caps the total size of stored request/response bodies.
+	// When the cap is exceeded, the oldest stored bodies are pruned before the
+	// normal retention window elapses. 0 disables the size cap.
+	MaxTotalSizeMB int `yaml:"max-total-size-mb,omitempty" json:"max-total-size-mb,omitempty"`
 }
 
 // StreamingConfig holds server streaming behavior configuration.
 type StreamingConfig struct {
-	// KeepAliveSeconds controls how often the server emits SSE heartbeats (": keep-alive\n\n")
-	// or WebSocket Ping control frames.
-	// <= 0 disables keep-alives. Default is 0.
+	// KeepAliveSeconds controls how often the server emits SSE heartbeats (": keep-alive\n\n").
+	// < 0 disables keep-alives. Default is 15.
 	KeepAliveSeconds int `yaml:"keepalive-seconds,omitempty" json:"keepalive-seconds,omitempty"`
 
-	// BootstrapRetries controls how many times the server may retry a streaming request before any bytes are sent,
-	// to allow auth rotation / transient recovery.
-	// <= 0 disables bootstrap retries. Default is 0.
-	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+	// BootstrapRetries controls how many times a streaming request may move to another account when the
+	// upstream fails before any byte has reached the client.
+	//
+	// It is a pointer because "not configured" and "configured as 0" mean
+	// different things: nil takes the built-in default while an explicit 0
+	// disables retries.
+	BootstrapRetries *int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
 
-	// SendKeepAliveBeforeFT controls whether SSE heartbeats are sent before the first token arrives
-	// when KeepAliveSeconds > 0. Default is false.
+	// BusyWaitMaxWaiters caps how many requests, across the whole process, may sit in a busy wait at
+	// once (a channel group's busy-wait-max-seconds); a request that would be the next one fails at
+	// once instead, as if the group had waiting off. Streaming or not, they all count.
+	//
+	// A waiting request keeps its client connection open and idle, and it counts against the reverse
+	// proxy's limit on connections to this process like any other request: with nginx's max_conns on
+	// the upstream (400 in the production deployment), every waiter is a slot taken from traffic that
+	// is not waiting. Keep this well below that limit. The cap is for the whole process, not per
+	// tenant: one tenant's waiters can use up all of it.
+	//
+	// 0, unset or negative takes the default (DefaultBusyWaitMaxWaiters); it does not mean unlimited.
+	// It only matters while some group has busy waiting on. A reload applies it to waits that start
+	// afterwards; requests already waiting keep their slot.
+	BusyWaitMaxWaiters int `yaml:"busy-wait-max-waiters,omitempty" json:"busy-wait-max-waiters,omitempty"`
+
+	// SendKeepAliveBeforeFT sends SSE heartbeats before the first token when
+	// keep-alives are enabled.
 	SendKeepAliveBeforeFT bool `yaml:"send-keepalive-before-ft,omitempty" json:"send-keepalive-before-ft,omitempty"`
-
-	// ResponsesWebsocketReplayRetries controls how many times a Responses websocket request may be replayed
-	// when the upstream closes before any response output is produced. Nil uses the server default.
-	// Set to 0 to disable these replay retries.
-	ResponsesWebsocketReplayRetries *int `yaml:"responses-websocket-replay-retries,omitempty" json:"responses-websocket-replay-retries,omitempty"`
 }
 
-// ContextRetrievalConfig controls local SQLite FTS based context reduction.
-type ContextRetrievalConfig struct {
-	Enabled             bool                         `yaml:"enabled" json:"enabled"`
-	Models              []PayloadModelRule           `yaml:"models,omitempty" json:"models,omitempty"`
-	MaxInputBytes       int                          `yaml:"max-input-bytes,omitempty" json:"max-input-bytes,omitempty"`
-	PreserveRecentTurns int                          `yaml:"preserve-recent-turns,omitempty" json:"preserve-recent-turns,omitempty"`
-	Chunk               ContextRetrievalChunkConfig  `yaml:"chunk,omitempty" json:"chunk,omitempty"`
-	Retrieval           ContextRetrievalSearchConfig `yaml:"retrieval,omitempty" json:"retrieval,omitempty"`
-	CodexAware          CodexAwareContextConfig      `yaml:"codex-aware,omitempty" json:"codex-aware,omitempty"`
-	Secondary           ContextRetrievalSecondPass   `yaml:"secondary,omitempty" json:"secondary,omitempty"`
+// DefaultBusyWaitMaxWaiters is how many requests may wait for a cooling account at once when
+// streaming.busy-wait-max-waiters is not set: about a sixth of the 400 connections nginx lets
+// through to the process in the production deployment, so a pool-wide stall cannot fill that
+// allowance with idle waiters.
+const DefaultBusyWaitMaxWaiters = 64
+
+// BusyWaiters returns the cap on requests in a busy wait at once.
+func (c StreamingConfig) BusyWaiters() int {
+	if c.BusyWaitMaxWaiters <= 0 {
+		return DefaultBusyWaitMaxWaiters
+	}
+	return c.BusyWaitMaxWaiters
 }
 
-type ContextRetrievalChunkConfig struct {
-	MaxBytes int `yaml:"max-bytes,omitempty" json:"max-bytes,omitempty"`
+// APIKeyEntry represents an API key with optional metadata for advanced management.
+type APIKeyEntry struct {
+	// ID is the stable identity of this logical API key entry.
+	// It is API-managed only and is not persisted back into YAML.
+	ID string `yaml:"-" json:"id,omitempty"`
+
+	// Key is the API key string used for authentication.
+	Key string `yaml:"key" json:"key"`
+
+	// Name is a human-readable label for this key.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Disabled marks this key as inactive. Disabled keys cannot authenticate.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
+	// PermissionProfileID links this key to a reusable permission profile.
+	// When set, the current profile values are used for limits and restrictions.
+	PermissionProfileID string `yaml:"permission-profile-id,omitempty" json:"permission-profile-id,omitempty"`
+
+	// DailyLimit is the maximum number of requests per day. 0 means unlimited.
+	DailyLimit int `yaml:"daily-limit,omitempty" json:"daily-limit,omitempty"`
+
+	// TotalQuota is the total number of requests allowed. 0 means unlimited.
+	TotalQuota int `yaml:"total-quota,omitempty" json:"total-quota,omitempty"`
+
+	// SpendingLimit is the maximum allowed spending in US dollars. 0 means unlimited.
+	// When model pricing is configured, requests will be rejected once the API key's
+	// total accumulated cost exceeds this limit.
+	SpendingLimit float64 `yaml:"spending-limit,omitempty" json:"spending-limit,omitempty"`
+
+	// DailySpendingLimit is the maximum allowed spending in US dollars per day. 0 means
+	// unlimited. It resets at the project timezone day boundary. When permission-profile-id
+	// is set, the effective value comes from the permission profile.
+	DailySpendingLimit float64 `yaml:"daily-spending-limit,omitempty" json:"daily-spending-limit,omitempty"`
+
+	// PeriodSpendingLimits contains fixed 5h/day/week/month USD limits. Day mirrors DailySpendingLimit.
+	PeriodSpendingLimits quota.PeriodSpendingLimits `yaml:"period-spending-limits,omitempty" json:"period-spending-limits"`
+
+	// PeriodSpending and LifetimeSpendingUsed are management-list runtime facts.
+	PeriodSpending       []quota.PeriodSpending `yaml:"-" json:"period-spending"`
+	LifetimeSpendingUsed float64                `yaml:"-" json:"lifetime-spending-used"`
+
+	// DailySpendingUsed is the effective project-day USD cost for this key (management list only).
+	// After a same-day manual reset, only costs after the reset baseline count.
+	DailySpendingUsed float64 `yaml:"-" json:"daily-spending-used"`
+
+	// DailySpendingRemaining is max(limit - used, 0) when DailySpendingLimit > 0; null when unlimited.
+	// Management list only; not persisted.
+	DailySpendingRemaining *float64 `yaml:"-" json:"daily-spending-remaining"`
+
+	// DailySpendingResetCount is how many times this key's daily spending was manually reset.
+	// Management list only; not persisted.
+	DailySpendingResetCount int `yaml:"-" json:"daily-spending-reset-count,omitempty"`
+
+	// ConcurrencyLimit is the maximum number of concurrent requests. 0 means unlimited.
+	ConcurrencyLimit int `yaml:"concurrency-limit,omitempty" json:"concurrency-limit,omitempty"`
+
+	// RPMLimit is the maximum number of requests per minute. 0 means unlimited.
+	RPMLimit int `yaml:"rpm-limit,omitempty" json:"rpm-limit,omitempty"`
+
+	// TPMLimit is the maximum number of tokens per minute. 0 means unlimited.
+	TPMLimit int `yaml:"tpm-limit,omitempty" json:"tpm-limit,omitempty"`
+
+	// AllowedModels lists model patterns this key can access. Empty means all models.
+	AllowedModels []string `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
+
+	// AllowedChannels lists channel names this key can access. Empty means all channels.
+	AllowedChannels []string `yaml:"allowed-channels,omitempty" json:"allowed-channels,omitempty"`
+
+	// AllowedChannelGroups lists channel groups this key can access. Empty means all groups.
+	AllowedChannelGroups []string `yaml:"allowed-channel-groups,omitempty" json:"allowed-channel-groups,omitempty"`
+
+	// SystemPrompt is a system-level prompt that will be prepended to all requests
+	// made with this API key. When set, a system message with this content is
+	// automatically injected as the first message in the conversation.
+	SystemPrompt string `yaml:"system-prompt,omitempty" json:"system-prompt,omitempty"`
+
+	// CreatedAt is the ISO 8601 timestamp when this key was created.
+	CreatedAt string `yaml:"created-at,omitempty" json:"created-at,omitempty"`
+
+	// EndUserID links this key to a portal end user (management only; not YAML).
+	EndUserID string `yaml:"-" json:"end_user_id,omitempty"`
+	// IsDefault marks the default key for the owning end user (management only).
+	IsDefault bool `yaml:"-" json:"is_default,omitempty"`
 }
 
-type ContextRetrievalSearchConfig struct {
-	TopK     int    `yaml:"top-k,omitempty" json:"top-k,omitempty"`
-	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
-}
-
-type ContextRetrievalSecondPass struct {
-	Enabled             bool `yaml:"enabled" json:"enabled"`
-	MaxInputBytes       int  `yaml:"max-input-bytes,omitempty" json:"max-input-bytes,omitempty"`
-	PreserveRecentTurns int  `yaml:"preserve-recent-turns,omitempty" json:"preserve-recent-turns,omitempty"`
-	TopK                int  `yaml:"top-k,omitempty" json:"top-k,omitempty"`
-	MaxSummaryBytes     int  `yaml:"max-summary-bytes,omitempty" json:"max-summary-bytes,omitempty"`
-	MaxItemBytes        int  `yaml:"max-item-bytes,omitempty" json:"max-item-bytes,omitempty"`
-}
-
-type CodexAwareContextConfig struct {
-	Enabled                bool   `yaml:"enabled" json:"enabled"`
-	PreserveToolPairs      bool   `yaml:"preserve-tool-pairs,omitempty" json:"preserve-tool-pairs,omitempty"`
-	ToolPairRepair         string `yaml:"tool-pair-repair,omitempty" json:"tool-pair-repair,omitempty"`
-	InsertSummary          bool   `yaml:"insert-summary,omitempty" json:"insert-summary,omitempty"`
-	MaxSummaryBytes        int    `yaml:"max-summary-bytes,omitempty" json:"max-summary-bytes,omitempty"`
-	PreserveRecentCommands int    `yaml:"preserve-recent-commands,omitempty" json:"preserve-recent-commands,omitempty"`
-	PreserveRecentErrors   int    `yaml:"preserve-recent-errors,omitempty" json:"preserve-recent-errors,omitempty"`
-}
-
-type MultimodalAdaptersConfig struct {
-	Enabled           *bool                       `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	DefaultAction     string                      `yaml:"default-action,omitempty" json:"default-action,omitempty"`
-	UnavailableAction string                      `yaml:"unavailable-action,omitempty" json:"unavailable-action,omitempty"`
-	InjectAs          string                      `yaml:"inject-as,omitempty" json:"inject-as,omitempty"`
-	MaxMediaItems     int                         `yaml:"max-media-items,omitempty" json:"max-media-items,omitempty"`
-	MaxOutputBytes    int                         `yaml:"max-output-bytes,omitempty" json:"max-output-bytes,omitempty"`
-	Rules             []MultimodalAdapterRule     `yaml:"rules,omitempty" json:"rules,omitempty"`
-	Extractors        []MultimodalExtractorConfig `yaml:"extractors,omitempty" json:"extractors,omitempty"`
-}
-
-type MultimodalAdapterRule struct {
-	Name              string                 `yaml:"name,omitempty" json:"name,omitempty"`
-	Match             MultimodalAdapterMatch `yaml:"match,omitempty" json:"match,omitempty"`
-	Extractor         string                 `yaml:"extractor,omitempty" json:"extractor,omitempty"`
-	Action            string                 `yaml:"action,omitempty" json:"action,omitempty"`
-	UnavailableAction string                 `yaml:"unavailable-action,omitempty" json:"unavailable-action,omitempty"`
-	InjectAs          string                 `yaml:"inject-as,omitempty" json:"inject-as,omitempty"`
-	MaxMediaItems     int                    `yaml:"max-media-items,omitempty" json:"max-media-items,omitempty"`
-	MaxOutputBytes    int                    `yaml:"max-output-bytes,omitempty" json:"max-output-bytes,omitempty"`
-}
-
-type MultimodalAdapterMatch struct {
-	RequestedModels   []string `yaml:"requested-models,omitempty" json:"requested-models,omitempty"`
-	UpstreamProviders []string `yaml:"upstream-providers,omitempty" json:"upstream-providers,omitempty"`
-	UpstreamModels    []string `yaml:"upstream-models,omitempty" json:"upstream-models,omitempty"`
-	Protocols         []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
-}
-
-type MultimodalExtractorConfig struct {
-	Name           string            `yaml:"name,omitempty" json:"name,omitempty"`
-	Type           string            `yaml:"type,omitempty" json:"type,omitempty"`
-	Endpoint       string            `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
-	Command        string            `yaml:"command,omitempty" json:"command,omitempty"`
-	Args           []string          `yaml:"args,omitempty" json:"args,omitempty"`
-	Env            map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
-	Headers        map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
-	ToolName       string            `yaml:"tool-name,omitempty" json:"tool-name,omitempty"`
-	TimeoutSeconds int               `yaml:"timeout-seconds,omitempty" json:"timeout-seconds,omitempty"`
-	Prompt         string            `yaml:"prompt,omitempty" json:"prompt,omitempty"`
-}
-
-type ObservabilityConfig struct {
-	ResponseTrace ResponseTraceConfig `yaml:"response-trace,omitempty" json:"response-trace,omitempty"`
-}
-
-type ResponseTraceConfig struct {
-	Enabled             bool `yaml:"enabled" json:"enabled"`
-	SlowThresholdMS     int  `yaml:"slow-threshold-ms,omitempty" json:"slow-threshold-ms,omitempty"`
-	LogPayloadPreview   bool `yaml:"log-payload-preview,omitempty" json:"log-payload-preview,omitempty"`
-	PayloadPreviewBytes int  `yaml:"payload-preview-bytes,omitempty" json:"payload-preview-bytes,omitempty"`
-	LogHeaders          bool `yaml:"log-headers,omitempty" json:"log-headers,omitempty"`
+// AllAPIKeys returns a merged, deduplicated list of all API key strings
+// from both the legacy APIKeys slice and the new APIKeyEntries slice.
+func (c *SDKConfig) AllAPIKeys() []string {
+	seen := make(map[string]struct{}, len(c.APIKeys)+len(c.APIKeyEntries))
+	var keys []string
+	for _, k := range c.APIKeys {
+		trimmed := k
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		keys = append(keys, trimmed)
+	}
+	for _, entry := range c.APIKeyEntries {
+		trimmed := entry.Key
+		if trimmed == "" || entry.Disabled {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		keys = append(keys, trimmed)
+	}
+	return keys
 }

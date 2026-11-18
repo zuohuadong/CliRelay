@@ -1,0 +1,160 @@
+package usage
+
+import "time"
+
+// LogRow represents a single request log entry returned by QueryLogs.
+type LogRow struct {
+	ID        int64     `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	// APIKey is a mask (see MaskAPIKey) or a route/origin label, never a secret.
+	// The key itself is APIKeyID.
+	APIKey             string `json:"api_key"`
+	APIKeyID           string `json:"api_key_id,omitempty"`
+	APIKeyMasked       string `json:"api_key_masked,omitempty"`
+	APIKeyName         string `json:"api_key_name"`
+	APIKeyOwnName      string `json:"api_key_own_name,omitempty"`
+	EndUserDisplayName string `json:"end_user_display_name,omitempty"`
+	Model              string `json:"model"`
+	ThinkingLevel      string `json:"thinking_level"`
+	UpstreamModel      string `json:"upstream_model,omitempty"`
+	// UpstreamResponseModel is the model the upstream declared in its own
+	// response; empty when it declared none.
+	UpstreamResponseModel string `json:"upstream_response_model,omitempty"`
+	// UpstreamModelMismatch is derived from the three model names on read, not
+	// stored. See usage.UpstreamModelMismatch.
+	UpstreamModelMismatch bool    `json:"upstream_model_mismatch,omitempty"`
+	VisionFallbackModel   string  `json:"vision_fallback_model,omitempty"`
+	Source                string  `json:"source"`
+	ChannelName           string  `json:"channel_name"`
+	Provider              string  `json:"provider,omitempty"`
+	AuthType              string  `json:"auth_type,omitempty"` // "oauth" | "api"
+	AuthIndex             string  `json:"auth_index"`
+	AuthSubjectID         string  `json:"auth_subject_id,omitempty"`
+	Failed                bool    `json:"failed"`
+	Streaming             bool    `json:"streaming"`
+	LatencyMs             int64   `json:"latency_ms"`
+	FirstTokenMs          int64   `json:"first_token_ms"`
+	InputTokens           int64   `json:"input_tokens"`
+	OutputTokens          int64   `json:"output_tokens"`
+	ReasoningTokens       int64   `json:"reasoning_tokens"`
+	CachedTokens          int64   `json:"cached_tokens"`
+	TotalTokens           int64   `json:"total_tokens"`
+	Cost                  float64 `json:"cost"`
+	HasContent            bool    `json:"has_content"`
+	// CacheReadTokens and CacheWriteTokens are null when the request's cache
+	// use is unknown: logged before they were stored, or an upstream that
+	// reports no cache accounting. CachedTokens keeps its legacy meaning
+	// (reads, else writes).
+	CacheReadTokens  *int64 `json:"cache_read_tokens"`
+	CacheWriteTokens *int64 `json:"cache_write_tokens"`
+	// PromptTokens is the prompt the model processed, cached part included;
+	// null on rows logged before it was stored.
+	PromptTokens *int64 `json:"prompt_tokens"`
+	// SessionID is the client's session identifier, empty when it sent none.
+	SessionID string `json:"session_id,omitempty"`
+	// GuardKind is the loop protection check that ended the request
+	// ("reply_loop" or "tool_loop"), empty for every other request. A request
+	// it is set on is also Failed.
+	GuardKind string `json:"guard_kind,omitempty"`
+}
+
+// LogQueryParams holds filter/pagination parameters for QueryLogs.
+type LogQueryParams struct {
+	TenantID         string
+	EndUserID        string   // stable account owner; matches all current key ids plus legacy raw-secret rows
+	Page             int      // 1-based
+	Size             int      // rows per page
+	Days             int      // time range in days
+	APIKey           string   // key selector (deprecated, use APIKeys or APIKeyIDs); resolved to the key id, never compared with the stored column
+	Model            string   // exact match filter (deprecated, use Models)
+	Status           string   // "success", "failed", or "" (all) (deprecated, use Statuses)
+	APIKeys          []string // multi-value key selectors (secrets the caller holds, or "__system__"); resolved to key ids
+	APIKeyIDs        []string // multi-value stable key id filter; "__system__" selects system calls
+	Models           []string // multi-value model filter
+	Statuses         []string // multi-value status filter
+	MatchNoAPIKeys   bool     // explicit empty API key filter
+	MatchNoAPIKeyIDs bool     // explicit empty stable key id filter
+	MatchNoModels    bool     // explicit empty model filter
+	MatchNoStatuses  bool     // explicit empty status filter
+	MatchNoChannels  bool     // explicit empty channel filter
+	// CollapseAccountKeys folds the keys of one end-user account into a single
+	// key-id facet option (management view). The public view keeps one per key.
+	CollapseAccountKeys bool
+	AuthSubjectIDs      []string // optional auth_subject_id IN (...) filter (account-level)
+	AuthIndexes         []string // optional auth_index IN (...) filter (credential instance)
+	ChannelNames        []string // optional channel_name IN (...) filter
+	// Optional precise legacy matches for renamed auth channels whose stored
+	// channel_name was a shared provider/source value.
+	AuthIndexChannelNames map[string][]string
+	// GuardKinds selects the requests loop protection ended ("reply_loop",
+	// "tool_loop"); empty selects all requests.
+	GuardKinds []string
+}
+
+// LogQueryResult holds the paginated query result.
+type LogQueryResult struct {
+	Items []LogRow `json:"items"`
+	Total int64    `json:"total"`
+	Page  int      `json:"page"`
+	Size  int      `json:"size"`
+}
+
+// FilterOptions holds the available filter values for the UI.
+type FilterOptions struct {
+	// APIKeyIDs / APIKeyIDNames / APIKeyIDCounts are the key facet, keyed by
+	// stable id. There is deliberately no facet keyed by secret: a facet value is
+	// echoed back by the client as a filter, so it has to be safe to publish.
+	// "__system__" counts the rows that carry no key (system calls).
+	APIKeyIDs      []string          `json:"api_key_ids"`
+	APIKeyIDNames  map[string]string `json:"api_key_id_names"`
+	APIKeyIDCounts map[string]int64  `json:"api_key_id_counts"`
+	Models         []string          `json:"models"`
+	// Channels is a legacy plain-name list kept for older clients.
+	// Prefer ChannelOptions when both are present.
+	Channels       []string              `json:"channels"`
+	ChannelOptions []ChannelFilterOption `json:"channel_options,omitempty"`
+	Statuses       []string              `json:"statuses"`
+	// GuardKinds lists the loop protection outcomes present in the window.
+	GuardKinds []string `json:"guard_kinds"`
+}
+
+// ChannelFilterOption is one selectable channel in request-log filters.
+// Value prefers auth_subject_id (account-level) when known; falls back to
+// auth_index (credential instance) or display name for orphans.
+type ChannelFilterOption struct {
+	Value         string `json:"value"`
+	Label         string `json:"label"`
+	Provider      string `json:"provider,omitempty"`
+	AuthType      string `json:"auth_type,omitempty"` // "oauth" | "api"
+	AuthIndex     string `json:"auth_index,omitempty"`
+	AuthSubjectID string `json:"auth_subject_id,omitempty"`
+}
+
+// LogStats holds aggregated stats over the filtered result set.
+type LogStats struct {
+	Total         int64   `json:"total"`
+	SuccessRate   float64 `json:"success_rate"`
+	TotalTokens   int64   `json:"total_tokens"`
+	TotalSessions int64   `json:"total_sessions"`
+	TotalCost     float64 `json:"total_cost"`
+	// CacheRate is deprecated: it is CacheHitRate, with 0 where that is
+	// unknown, for panels that read it as a number.
+	CacheRate float64 `json:"cache_rate"`
+	CacheUsage
+}
+
+// ClearRequestLogsOptions selects what ClearRequestLogs removes.
+type ClearRequestLogsOptions struct {
+	TenantID            string `json:"-"`
+	ClearBodyContent    bool   `json:"clear_body_content"`
+	ClearDetailContent  bool   `json:"clear_detail_content"`
+	ClearRequestRecords bool   `json:"clear_request_records"`
+}
+
+type ClearRequestLogsResult struct {
+	DeletedLogs       int64 `json:"deleted_logs"`
+	DeletedContents   int64 `json:"deleted_contents"`
+	ClearedBodyRows   int64 `json:"cleared_body_rows"`
+	ClearedDetailRows int64 `json:"cleared_detail_rows"`
+	ClearedLegacyRows int64 `json:"cleared_legacy_rows"`
+}

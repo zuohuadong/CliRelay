@@ -29,7 +29,7 @@ type antigravityHintPersistRequest struct {
 // one worker per account. Repeated updates replace a single queued successor,
 // rather than accumulating singleflight followers while an upstream is stalled.
 func (s *Service) queueAntigravityModelRefresh(ctx context.Context, auth *coreauth.Auth, provider string) {
-	if s == nil || auth == nil || auth.ID == "" || auth.Disabled {
+	if s == nil || auth == nil || auth.ID == "" || auth.Disabled || s.antigravityHomeEnabled() {
 		return
 	}
 	if ctx == nil {
@@ -204,6 +204,9 @@ func (s *Service) beginAntigravityAccountProbe(parent context.Context, auth *cor
 
 // Caller holds antigravityProbeMu, making tracking and invalidation indivisible.
 func (s *Service) antigravityAccountProbeCurrent(probe *antigravityAccountProbe) bool {
+	if s.antigravityHomeEnabled() {
+		return false
+	}
 	current := probe.auth
 	if s.coreManager != nil {
 		var exists bool

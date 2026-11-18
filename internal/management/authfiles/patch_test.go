@@ -1,0 +1,572 @@
+package authfiles
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexadmission"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+)
+
+func TestApplyStatusPatchDisablesAuth(t *testing.T) {
+	now := time.Date(2026, 6, 6, 10, 0, 0, 0, time.UTC)
+	auth := &coreauth.Auth{ID: "codex", Status: coreauth.StatusActive}
+
+	if err := ApplyStatusPatch(auth, true, now); err != nil {
+		t.Fatalf("ApplyStatusPatch() error = %v", err)
+	}
+	if !auth.Disabled {
+		t.Fatal("Disabled = false, want true")
+	}
+	if auth.Status != coreauth.StatusDisabled {
+		t.Fatalf("Status = %q, want %q", auth.Status, coreauth.StatusDisabled)
+	}
+	if auth.StatusMessage != "disabled via management API" {
+		t.Fatalf("StatusMessage = %q, want disabled message", auth.StatusMessage)
+	}
+	if !auth.UpdatedAt.Equal(now) {
+		t.Fatalf("UpdatedAt = %v, want %v", auth.UpdatedAt, now)
+	}
+}
+
+func TestApplyStatusPatchEnablesAuth(t *testing.T) {
+	now := time.Date(2026, 6, 6, 11, 0, 0, 0, time.UTC)
+	auth := &coreauth.Auth{
+		ID:            "codex",
+		Disabled:      true,
+		Status:        coreauth.StatusDisabled,
+		StatusMessage: "disabled via management API",
+	}
+
+	if err := ApplyStatusPatch(auth, false, now); err != nil {
+		t.Fatalf("ApplyStatusPatch() error = %v", err)
+	}
+	if auth.Disabled {
+		t.Fatal("Disabled = true, want false")
+	}
+	if auth.Status != coreauth.StatusActive {
+		t.Fatalf("Status = %q, want %q", auth.Status, coreauth.StatusActive)
+	}
+	if auth.StatusMessage != "" {
+		t.Fatalf("StatusMessage = %q, want empty", auth.StatusMessage)
+	}
+	if !auth.UpdatedAt.Equal(now) {
+		t.Fatalf("UpdatedAt = %v, want %v", auth.UpdatedAt, now)
+	}
+}
+
+func TestApplyStatusPatchRejectsMissingAuth(t *testing.T) {
+	err := ApplyStatusPatch(nil, true, time.Time{})
+	if err == nil || err.Error() != "auth file not found" {
+		t.Fatalf("ApplyStatusPatch() error = %v, want not found", err)
+	}
+}
+
+func TestApplyFieldPatchUpdatesOAuthLabel(t *testing.T) {
+	now := time.Date(2026, 6, 6, 10, 0, 0, 0, time.UTC)
+	auth := &coreauth.Auth{
+		ID:       "oauth-auth",
+		Provider: "codex",
+		Label:    "Old Label",
+		Metadata: map[string]any{
+			"email": "user@example.com",
+		},
+	}
+
+	label := " Team Alpha "
+	result, err := ApplyFieldPatch(auth, FieldPatch{Label: &label}, FieldPatchOptions{
+		Now: now,
+		ValidateLabel: func(label, excludeAuthID string) (string, error) {
+			if excludeAuthID != "oauth-auth" {
+				t.Fatalf("excludeAuthID = %q, want oauth-auth", excludeAuthID)
+			}
+			return strings.TrimSpace(label), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if auth.Label != "Team Alpha" {
+		t.Fatalf("Label = %q, want Team Alpha", auth.Label)
+	}
+	if got, _ := auth.Metadata["label"].(string); got != "Team Alpha" {
+		t.Fatalf("metadata label = %q, want Team Alpha", got)
+	}
+	if len(result.OldChannelIdentifiers) == 0 || result.NewChannelLabel != "Team Alpha" {
+		t.Fatalf("result = %#v, want old identifiers and new label", result)
+	}
+	if !auth.UpdatedAt.Equal(now) {
+		t.Fatalf("UpdatedAt = %v, want %v", auth.UpdatedAt, now)
+	}
+}
+
+func TestApplyFieldPatchRejectsNonOAuthLabel(t *testing.T) {
+	label := "Team Alpha"
+	auth := &coreauth.Auth{
+		ID:       "api-key-auth",
+		Provider: "openai",
+		Attributes: map[string]string{
+			"api_key": "redacted",
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{Label: &label}, FieldPatchOptions{})
+	if err == nil || err.Error() != "label is only supported for oauth auth files" {
+		t.Fatalf("ApplyFieldPatch() error = %v, want label oauth error", err)
+	}
+}
+
+func TestApplyFieldPatchUpdatesTagsPrefixAndProxyFields(t *testing.T) {
+	customTags := []string{" Team ", "priority", "team"}
+	hiddenTags := []string{" codex "}
+	displayTags := []string{"codex", "priority"}
+	prefix := " team-a "
+	proxyURL := ""
+	proxyID := " proxy-main "
+	priority := 3
+	auth := &coreauth.Auth{
+		ID:       "editable",
+		Provider: "codex",
+		ProxyURL: "http://old-proxy.example",
+		Metadata: map[string]any{
+			"proxy_url": "http://old-proxy.example",
+			"proxy-url": "legacy",
+			"proxyUrl":  "legacy",
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{
+		CustomTags:        &customTags,
+		HiddenDefaultTags: &hiddenTags,
+		DisplayTags:       &displayTags,
+		Prefix:            &prefix,
+		ProxyURL:          &proxyURL,
+		ProxyID:           &proxyID,
+		Priority:          &priority,
+	}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if auth.Prefix != "team-a" || auth.ProxyURL != "" || auth.ProxyID != "proxy-main" {
+		t.Fatalf("auth fields = prefix %q proxyURL %q proxyID %q", auth.Prefix, auth.ProxyURL, auth.ProxyID)
+	}
+	if got := auth.Metadata["custom_tags"]; !stringSliceEqual(got, []string{"team", "priority"}) {
+		t.Fatalf("custom_tags = %#v, want [team priority]", got)
+	}
+	if got := auth.Metadata["hidden_default_tags"]; !stringSliceEqual(got, []string{"codex"}) {
+		t.Fatalf("hidden_default_tags = %#v, want [codex]", got)
+	}
+	if got := auth.Metadata["display_tags"]; !stringSliceEqual(got, []string{"codex", "priority"}) {
+		t.Fatalf("display_tags = %#v, want [codex priority]", got)
+	}
+	if _, ok := auth.Metadata["proxy_url"]; ok {
+		t.Fatalf("proxy_url still present: %#v", auth.Metadata["proxy_url"])
+	}
+	if _, ok := auth.Metadata["proxy-url"]; ok {
+		t.Fatalf("proxy-url still present: %#v", auth.Metadata["proxy-url"])
+	}
+	if _, ok := auth.Metadata["proxyUrl"]; ok {
+		t.Fatalf("proxyUrl still present: %#v", auth.Metadata["proxyUrl"])
+	}
+	if got, _ := auth.Metadata["proxy_id"].(string); got != "proxy-main" {
+		t.Fatalf("proxy_id = %q, want proxy-main", got)
+	}
+	if got, _ := auth.Metadata["priority"].(int); got != 3 {
+		t.Fatalf("priority = %d, want 3", got)
+	}
+}
+
+func TestApplyFieldPatchRejectsTooManyCustomTags(t *testing.T) {
+	customTags := []string{"one", "two", "three", "four"}
+	auth := &coreauth.Auth{ID: "editable", Provider: "codex"}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{CustomTags: &customTags}, FieldPatchOptions{})
+	if err == nil || err.Error() != "custom_tags supports at most 3 items" {
+		t.Fatalf("ApplyFieldPatch() error = %v, want too many tags", err)
+	}
+}
+
+func TestApplyFieldPatchUpdatesSubscriptionFields(t *testing.T) {
+	startedAt := "2026-04-01T09:30:00Z"
+	period := "year"
+	auth := &coreauth.Auth{
+		ID:       "subscription",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"subscriptionExpiresAt": "2026-05-01T09:30:00Z",
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{
+		SubscriptionStartedAt: &startedAt,
+		SubscriptionPeriod:    &period,
+	}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if got, _ := auth.Metadata["subscription_started_at"].(string); got != "2026-04-01T09:30:00Z" {
+		t.Fatalf("subscription_started_at = %q, want canonical start", got)
+	}
+	if got, _ := auth.Metadata["subscription_period"].(string); got != "yearly" {
+		t.Fatalf("subscription_period = %q, want yearly", got)
+	}
+	if _, ok := auth.Metadata["subscriptionExpiresAt"]; ok {
+		t.Fatalf("legacy expiration key still present")
+	}
+}
+
+func TestApplyFieldPatchRejectsInvalidSubscriptionExpiration(t *testing.T) {
+	expiresAt := "not-a-time"
+	auth := &coreauth.Auth{ID: "subscription", Provider: "codex"}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{SubscriptionExpiresAt: &expiresAt}, FieldPatchOptions{})
+	if err == nil || err.Error() != "subscription_expires_at must be a valid time" {
+		t.Fatalf("ApplyFieldPatch() error = %v, want invalid expiration", err)
+	}
+}
+
+func TestApplyFieldPatchUpdatesCodexOAuthAdmission(t *testing.T) {
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	enabled := true
+	allowedClients := []string{" claude_code ", "CLAUDE_CODE"}
+	auth := &coreauth.Auth{
+		ID:       "codex-oauth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"email": "codex@example.com",
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{
+		CodexCLIOnly:               &enabled,
+		CodexCLIOnlyAllowedClients: &allowedClients,
+	}, FieldPatchOptions{Now: now})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if got, _ := auth.Metadata["codex_cli_only"].(bool); !got {
+		t.Fatalf("codex_cli_only = %#v, want true", auth.Metadata["codex_cli_only"])
+	}
+	gotAllowed, ok := auth.Metadata["codex_cli_only_allowed_clients"].([]string)
+	if !ok {
+		t.Fatalf("codex_cli_only_allowed_clients = %#v, want []string", auth.Metadata["codex_cli_only_allowed_clients"])
+	}
+	if len(gotAllowed) != 1 || gotAllowed[0] != codexadmission.AllowedClientClaudeCode {
+		t.Fatalf("allowed clients = %#v, want [claude_code]", gotAllowed)
+	}
+	if !auth.UpdatedAt.Equal(now) {
+		t.Fatalf("UpdatedAt = %v, want %v", auth.UpdatedAt, now)
+	}
+}
+
+func TestApplyFieldPatchClearsCodexOAuthAllowedClients(t *testing.T) {
+	allowedClients := []string{}
+	auth := &coreauth.Auth{
+		ID:       "codex-oauth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"codex_cli_only_allowed_clients": []string{codexadmission.AllowedClientClaudeCode},
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{
+		CodexCLIOnlyAllowedClients: &allowedClients,
+	}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if _, ok := auth.Metadata["codex_cli_only_allowed_clients"]; ok {
+		t.Fatalf("codex_cli_only_allowed_clients still present: %#v", auth.Metadata)
+	}
+}
+
+func TestApplyFieldPatchRejectsCodexOAuthAdmissionForAPIKeyAuth(t *testing.T) {
+	enabled := true
+	auth := &coreauth.Auth{
+		ID:       "codex-api-key",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"api_key": "sk-test",
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{CodexCLIOnly: &enabled}, FieldPatchOptions{})
+	if err == nil || !strings.Contains(err.Error(), "only supported for Codex OAuth") {
+		t.Fatalf("ApplyFieldPatch() error = %v, want Codex OAuth restriction", err)
+	}
+}
+
+func TestApplyFieldPatchUpdatesCodexImageGenerationBridge(t *testing.T) {
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	enabled := true
+	auth := &coreauth.Auth{
+		ID:       "codex-oauth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"email": "codex@example.com",
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{
+		CodexImageGenerationBridge: &enabled,
+	}, FieldPatchOptions{Now: now})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if got, _ := auth.Metadata["codex_image_generation_bridge"].(bool); !got {
+		t.Fatalf("codex_image_generation_bridge = %#v, want true", auth.Metadata["codex_image_generation_bridge"])
+	}
+	if !auth.UpdatedAt.Equal(now) {
+		t.Fatalf("UpdatedAt = %v, want %v", auth.UpdatedAt, now)
+	}
+}
+
+func TestApplyFieldPatchRejectsCodexImageGenerationBridgeForAPIKeyAuth(t *testing.T) {
+	enabled := true
+	auth := &coreauth.Auth{
+		ID:       "codex-api-key",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"api_key": "sk-test",
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{CodexImageGenerationBridge: &enabled}, FieldPatchOptions{})
+	if err == nil || !strings.Contains(err.Error(), "only supported for Codex OAuth") {
+		t.Fatalf("ApplyFieldPatch() error = %v, want Codex OAuth restriction", err)
+	}
+}
+
+func TestApplyFieldPatchRejectsUnknownCodexAllowedClientPreset(t *testing.T) {
+	allowedClients := []string{"unknown_client"}
+	auth := &coreauth.Auth{
+		ID:       "codex-oauth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"email": "codex@example.com",
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{
+		CodexCLIOnlyAllowedClients: &allowedClients,
+	}, FieldPatchOptions{})
+	if err == nil || !strings.Contains(err.Error(), "unknown codex allowed client preset") {
+		t.Fatalf("ApplyFieldPatch() error = %v, want unknown preset error", err)
+	}
+}
+
+func TestApplyFieldPatchUpdatesXAIUsingAPI(t *testing.T) {
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	usingAPI := true
+	auth := &coreauth.Auth{
+		ID:       "xai-oauth",
+		Provider: "xai",
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+			"using_api": "false",
+		},
+		Metadata: map[string]any{
+			"email":     "grok@example.com",
+			"auth_kind": "oauth",
+			"using_api": false,
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{UsingAPI: &usingAPI}, FieldPatchOptions{Now: now})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if got, _ := auth.Metadata["using_api"].(bool); !got {
+		t.Fatalf("metadata using_api = %#v, want true", auth.Metadata["using_api"])
+	}
+	if auth.Attributes["using_api"] != "true" {
+		t.Fatalf("attributes using_api = %q, want true", auth.Attributes["using_api"])
+	}
+	if !auth.UpdatedAt.Equal(now) {
+		t.Fatalf("UpdatedAt = %v, want %v", auth.UpdatedAt, now)
+	}
+}
+
+func TestApplyFieldPatchRejectsUsingAPIForNonXAI(t *testing.T) {
+	usingAPI := true
+	auth := &coreauth.Auth{
+		ID:       "codex-oauth",
+		Provider: "codex",
+		Metadata: map[string]any{"email": "codex@example.com"},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{UsingAPI: &usingAPI}, FieldPatchOptions{})
+	if err == nil || !strings.Contains(err.Error(), "only supported for xAI OAuth") {
+		t.Fatalf("ApplyFieldPatch() error = %v, want xAI OAuth restriction", err)
+	}
+}
+
+func TestApplyFieldPatchRejectsUsingAPIForXAIAPIKey(t *testing.T) {
+	usingAPI := false
+	auth := &coreauth.Auth{
+		ID:       "xai-api-key",
+		Provider: "xai",
+		Attributes: map[string]string{
+			"api_key":   "xai-key",
+			"auth_kind": "api_key",
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{UsingAPI: &usingAPI}, FieldPatchOptions{})
+	if err == nil || !strings.Contains(err.Error(), "only supported for xAI OAuth") {
+		t.Fatalf("ApplyFieldPatch() error = %v, want xAI OAuth restriction", err)
+	}
+}
+
+func TestApplyFieldPatchUpdatesConcurrencyLimit(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "account-concurrency",
+		Provider: "claude",
+	}
+
+	limit := 5
+	_, err := ApplyFieldPatch(auth, FieldPatch{ConcurrencyLimit: &limit}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if got, _ := auth.Metadata["concurrency_limit"].(int); got != 5 {
+		t.Fatalf("metadata concurrency_limit = %v, want 5", got)
+	}
+	if got := auth.Attributes["concurrency_limit"]; got != "5" {
+		t.Fatalf("attributes concurrency_limit = %q, want 5", got)
+	}
+	if auth.ConcurrencyLimit() != 5 {
+		t.Fatalf("auth.ConcurrencyLimit() = %d, want 5", auth.ConcurrencyLimit())
+	}
+
+	// Setting to 0 should clear it (unlimited)
+	zeroLimit := 0
+	_, err = ApplyFieldPatch(auth, FieldPatch{ConcurrencyLimit: &zeroLimit}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() zero error = %v", err)
+	}
+	if _, ok := auth.Metadata["concurrency_limit"]; ok {
+		t.Fatalf("metadata concurrency_limit should be deleted, got %v", auth.Metadata["concurrency_limit"])
+	}
+	if _, ok := auth.Attributes["concurrency_limit"]; ok {
+		t.Fatalf("attributes concurrency_limit should be deleted, got %v", auth.Attributes["concurrency_limit"])
+	}
+	if auth.ConcurrencyLimit() != 0 {
+		t.Fatalf("auth.ConcurrencyLimit() = %d, want 0", auth.ConcurrencyLimit())
+	}
+}
+
+func TestApplyFieldPatchUpdatesCodexConvergenceMode(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "codex-convergence",
+		Provider: "codex",
+		Metadata: map[string]any{},
+	}
+
+	mode := "session"
+	_, err := ApplyFieldPatch(auth, FieldPatch{CodexConvergenceMode: &mode}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if got, _ := auth.Metadata["codex_convergence_mode"].(string); got != "session" {
+		t.Fatalf("metadata codex_convergence_mode = %v, want session", got)
+	}
+	if got := auth.Attributes["codex_convergence_mode"]; got != "session" {
+		t.Fatalf("attributes codex_convergence_mode = %q, want session", got)
+	}
+	if got := CodexConvergenceModePayload(auth); got != "session" {
+		t.Fatalf("CodexConvergenceModePayload() = %q, want session", got)
+	}
+
+	// Clearing it
+	emptyMode := ""
+	_, err = ApplyFieldPatch(auth, FieldPatch{CodexConvergenceMode: &emptyMode}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() clear error = %v", err)
+	}
+	if _, ok := auth.Metadata["codex_convergence_mode"]; ok {
+		t.Fatalf("metadata codex_convergence_mode should be deleted, got %v", auth.Metadata["codex_convergence_mode"])
+	}
+	if _, ok := auth.Attributes["codex_convergence_mode"]; ok {
+		t.Fatalf("attributes codex_convergence_mode should be deleted, got %v", auth.Attributes["codex_convergence_mode"])
+	}
+	if got := CodexConvergenceModePayload(auth); got != "" {
+		t.Fatalf("CodexConvergenceModePayload() = %q, want empty", got)
+	}
+
+	// Invalid mode should be rejected
+	invalidMode := "invalid_mode"
+	_, err = ApplyFieldPatch(auth, FieldPatch{CodexConvergenceMode: &invalidMode}, FieldPatchOptions{})
+	if err == nil {
+		t.Fatal("ApplyFieldPatch() want error for invalid mode, got nil")
+	}
+}
+
+func TestApplyFieldPatchUpdatesCodexServiceTier(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "codex-tier",
+		Provider: "codex",
+		Metadata: map[string]any{},
+	}
+
+	tier := "priority"
+	_, err := ApplyFieldPatch(auth, FieldPatch{CodexServiceTier: &tier}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if got, _ := auth.Metadata["codex_service_tier"].(string); got != "priority" {
+		t.Fatalf("metadata codex_service_tier = %v, want priority", got)
+	}
+	if got := auth.Attributes["codex_service_tier"]; got != "priority" {
+		t.Fatalf("attributes codex_service_tier = %q, want priority", got)
+	}
+	if got := CodexServiceTierPayload(auth); got != "priority" {
+		t.Fatalf("CodexServiceTierPayload() = %q, want priority", got)
+	}
+
+	// Clearing it
+	emptyTier := ""
+	_, err = ApplyFieldPatch(auth, FieldPatch{CodexServiceTier: &emptyTier}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() clear error = %v", err)
+	}
+	if _, ok := auth.Metadata["codex_service_tier"]; ok {
+		t.Fatalf("metadata codex_service_tier should be deleted, got %v", auth.Metadata["codex_service_tier"])
+	}
+	if _, ok := auth.Attributes["codex_service_tier"]; ok {
+		t.Fatalf("attributes codex_service_tier should be deleted, got %v", auth.Attributes["codex_service_tier"])
+	}
+	if got := CodexServiceTierPayload(auth); got != "" {
+		t.Fatalf("CodexServiceTierPayload() = %q, want empty", got)
+	}
+
+	// Invalid tier should be rejected
+	invalidTier := "turbo"
+	_, err = ApplyFieldPatch(auth, FieldPatch{CodexServiceTier: &invalidTier}, FieldPatchOptions{})
+	if err == nil {
+		t.Fatal("ApplyFieldPatch() want error for invalid tier, got nil")
+	}
+}
+
+func TestApplyFieldPatchRejectsNoFields(t *testing.T) {
+	auth := &coreauth.Auth{ID: "empty", Provider: "codex"}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{}, FieldPatchOptions{})
+	if err == nil || err.Error() != "no fields to update" {
+		t.Fatalf("ApplyFieldPatch() error = %v, want no fields", err)
+	}
+}
+
+func stringSliceEqual(value any, want []string) bool {
+	got, ok := value.([]string)
+	if !ok || len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}

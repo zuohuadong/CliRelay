@@ -6,82 +6,74 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pr-test-build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.26.11'
+  GOLANGCI_LINT_VERSION: v1.64.5
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: cliproxy
+          POSTGRES_PASSWORD: cliproxy
+          POSTGRES_DB: cliproxy
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cliproxy -d cliproxy"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CLIRELAY_POSTGRES_TEST_DSN: postgres://cliproxy:cliproxy@localhost:5432/cliproxy?sslmode=disable
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-      - name: Reject vendored panel assets
-        run: ./scripts/ensure-no-vendored-panel-assets.sh
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.GO_VERSION }}
           cache: true
-      - name: Maintenance workflow regression tests
-        run: python3 scripts/test-maintenance-workflows.py
-      - name: Gofmt check
+      # v1.64.5 release binaries were built with Go 1.24 and reject this repo's Go 1.26 target.
+      # Cache the fixed-version binary compiled by the configured toolchain instead.
+      - name: Cache golangci-lint
+        id: cache-golangci-lint
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/clirelay/golangci-lint/${{ env.GO_VERSION }}-${{ env.GOLANGCI_LINT_VERSION }}/golangci-lint
+          key: golangci-lint-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ env.GOLANGCI_LINT_VERSION }}
+      - name: Install golangci-lint
+        if: steps.cache-golangci-lint.outputs.cache-hit != 'true'
         run: |
-          set -euo pipefail
-          files="$(gofmt -l . || true)"
-          if [ -n "${files}" ]; then
-            echo "gofmt needed for:"
-            echo "${files}"
-            exit 1
-          fi
-      - name: Secret smoke scan
+          tool_dir="$HOME/.cache/clirelay/golangci-lint/${GO_VERSION}-${GOLANGCI_LINT_VERSION}"
+          mkdir -p "$tool_dir"
+          GOBIN="$tool_dir" go install "github.com/golangci/golangci-lint/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
+      - name: PR checks
         run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os
-          import re
-          import sys
+          export GOLANGCI_LINT_BIN="$HOME/.cache/clirelay/golangci-lint/${GO_VERSION}-${GOLANGCI_LINT_VERSION}/golangci-lint"
+          ./scripts/ci-pr.sh
 
-          key_re = re.compile(r"\bsk-[A-Za-z0-9]{16,}\b")
-          skip_dirs = {".git", ".gocache", ".tmp-go", ".agentflow"}
-          skip_ext = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".pdf", ".zip"}
-
-          bad = []
-          for root, dirs, files in os.walk("."):
-            dirs[:] = [d for d in dirs if d not in skip_dirs]
-            for fn in files:
-              _, ext = os.path.splitext(fn)
-              if ext.lower() in skip_ext:
-                continue
-              path = os.path.join(root, fn)
-              try:
-                with open(path, "rb") as f:
-                  data = f.read()
-              except OSError:
-                continue
-
-              if b"\x00" in data:
-                continue
-              text = data.decode("utf-8", errors="ignore")
-              for match in key_re.finditer(text):
-                key = match.group(0)
-                if ("X" in key) or ("*" in key):
-                  continue
-                bad.append((path, key))
-
-          if bad:
-            print("Found real-looking API key(s). Use placeholders like 'sk-...XXXX...' or masked forms.")
-            for path, key in bad[:50]:
-              print(f"  {path}: {key}")
-            sys.exit(1)
-          PY
-      - name: Sync safety guard
-        run: ./scripts/sync-safety-check.sh
-      - name: Vet
-        run: go vet ./...
-      - name: Test
-        run: go test ./...
-      - name: Build
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      # Fails on any advisory reachable from this module's call graph, including
+      # the standard library, so a stale toolchain pin cannot silently ship
+      # known-vulnerable crypto/tls or net/http code.
+      - name: govulncheck
         run: |
-          go build -o test-output ./cmd/server
-          rm -f test-output
-      - name: Check panel source exists
-        run: |
-          test -f panel/package.json || { echo "panel/package.json not found"; exit 1; }
-          test -f panel/vite.config.ts || { echo "panel/vite.config.ts not found"; exit 1; }
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...

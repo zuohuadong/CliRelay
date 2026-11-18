@@ -5,7 +5,6 @@ package claude
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
@@ -24,15 +24,20 @@ const (
 	AuthURL = "https://claude.ai/oauth/authorize"
 	// TokenURL is the authorization-code exchange endpoint. Claude Code 2.1.220
 	// posts the code exchange to platform.claude.com, not api.anthropic.com.
-	TokenURL        = "https://platform.claude.com/v1/oauth/token"
-	RefreshTokenURL = "https://platform.claude.com/v1/oauth/token"
-	ProfileURL      = "https://api.anthropic.com/api/oauth/profile"
+	TokenURL            = "https://platform.claude.com/v1/oauth/token"
+	RefreshTokenURL     = "https://platform.claude.com/v1/oauth/token"
+	ProfileURL          = "https://api.anthropic.com/api/oauth/profile"
+	PlatformRedirectURI = "https://platform.claude.com/oauth/code/callback"
 	// RolesURL is the claude_cli role endpoint the native client queries right
 	// after a successful token exchange, alongside the profile lookup.
 	RolesURL         = "https://api.anthropic.com/api/oauth/claude_cli/roles"
 	ClientID         = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	RedirectURI      = "http://localhost:54545/callback"
 	ClaudeOAuthScope = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+
+	// Native Claude Code includes the Console scope when authorizing a new login.
+	// Keep the established token refresh scope unchanged.
+	claudeOAuthAuthorizeScope = "org:create_api_key " + ClaudeOAuthScope
 
 	claudeRefreshMinBackoff       = 5 * time.Second
 	claudeRefreshMaxBackoff       = 5 * time.Minute
@@ -212,6 +217,11 @@ func NewClaudeAuthWithProxyURL(cfg *config.Config, proxyURL string) *ClaudeAuth 
 	}
 }
 
+// NewClaudeAuthWithProxy is a compatibility alias for request-scoped proxy callers.
+func NewClaudeAuthWithProxy(cfg *config.Config, proxyURL string) *ClaudeAuth {
+	return NewClaudeAuthWithProxyURL(cfg, proxyURL)
+}
+
 func applyClaudeOAuthAxiosHeaders(req *http.Request) {
 	if req == nil {
 		return
@@ -321,16 +331,25 @@ func (o *ClaudeAuth) inspectOAuthAccount(ctx context.Context, accessToken string
 //   - string: The state parameter for verification
 //   - error: An error if PKCE codes are missing or URL generation fails
 func (o *ClaudeAuth) GenerateAuthURL(state string, pkceCodes *PKCECodes) (string, string, error) {
+	return o.GenerateAuthURLWithRedirectURI(state, pkceCodes, RedirectURI)
+}
+
+// GenerateAuthURLWithRedirectURI creates the OAuth authorization URL with a selected redirect URI.
+func (o *ClaudeAuth) GenerateAuthURLWithRedirectURI(state string, pkceCodes *PKCECodes, redirectURI string) (string, string, error) {
 	if pkceCodes == nil {
 		return "", "", fmt.Errorf("PKCE codes are required")
+	}
+	redirectURI = strings.TrimSpace(redirectURI)
+	if redirectURI == "" {
+		redirectURI = RedirectURI
 	}
 
 	params := url.Values{
 		"code":                  {"true"},
 		"client_id":             {ClientID},
 		"response_type":         {"code"},
-		"redirect_uri":          {RedirectURI},
-		"scope":                 {ClaudeOAuthScope},
+		"redirect_uri":          {redirectURI},
+		"scope":                 {claudeOAuthAuthorizeScope},
 		"code_challenge":        {pkceCodes.CodeChallenge},
 		"code_challenge_method": {"S256"},
 		"state":                 {state},
@@ -372,8 +391,18 @@ func (c *ClaudeAuth) parseCodeAndState(code string) (parsedCode, parsedState str
 //   - *ClaudeAuthBundle: The complete authentication bundle with tokens
 //   - error: An error if token exchange fails
 func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state string, pkceCodes *PKCECodes) (*ClaudeAuthBundle, error) {
+	return o.ExchangeCodeForTokensWithRedirectURI(ctx, code, state, pkceCodes, RedirectURI)
+}
+
+// ExchangeCodeForTokensWithRedirectURI exchanges an authorization code using a
+// caller-provided redirect URI. This is used by the claude.ai session flow.
+func (o *ClaudeAuth) ExchangeCodeForTokensWithRedirectURI(ctx context.Context, code, state string, pkceCodes *PKCECodes, redirectURI string) (*ClaudeAuthBundle, error) {
 	if pkceCodes == nil {
 		return nil, fmt.Errorf("PKCE codes are required for token exchange")
+	}
+	redirectURI = strings.TrimSpace(redirectURI)
+	if redirectURI == "" {
+		redirectURI = RedirectURI
 	}
 	newCode, newState := o.parseCodeAndState(code)
 
@@ -383,7 +412,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	reqBody := authorizationCodeExchangeRequest{
 		GrantType:    "authorization_code",
 		Code:         newCode,
-		RedirectURI:  RedirectURI,
+		RedirectURI:  redirectURI,
 		ClientID:     ClientID,
 		CodeVerifier: pkceCodes.CodeVerifier,
 		State:        state,

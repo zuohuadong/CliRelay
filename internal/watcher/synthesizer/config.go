@@ -21,6 +21,59 @@ func NewConfigSynthesizer() *ConfigSynthesizer {
 	return &ConfigSynthesizer{}
 }
 
+// authProxyConnectionPool converts a per-credential pool override from config into
+// the SDK representation carried on the auth record. Values are copied so the auth
+// snapshot never aliases a live config field.
+func authProxyConnectionPool(pool *config.ProxyConnectionPoolConfig) *coreauth.ProxyConnectionPoolOverride {
+	if pool == nil {
+		return nil
+	}
+	out := &coreauth.ProxyConnectionPoolOverride{IdleConnTimeout: pool.IdleConnTimeout}
+	if pool.Enabled != nil {
+		enabled := *pool.Enabled
+		out.Enabled = &enabled
+	}
+	if pool.MaxIdleConnsPerHost != nil {
+		maxIdle := *pool.MaxIdleConnsPerHost
+		out.MaxIdleConnsPerHost = &maxIdle
+	}
+	// A block without fields is still the opt-in: it asks for the pool defaults. It
+	// must therefore stay non-nil, or an operator writing `connection-pool: {}` (or
+	// inheriting an empty group block) would silently get no pooling at all.
+	return out
+}
+
+// openAICompatConnectionPool resolves the pool override for one OpenAI-compatible
+// key: the per-key block wins field by field, so a key that overrides only one value
+// keeps inheriting the provider-group default for the rest.
+// OpenAICompatConnectionPool resolves the effective connection-pool config for an OpenAI-compatible entry.
+func OpenAICompatConnectionPool(compat *config.OpenAICompatibility, entry *config.OpenAICompatibilityAPIKey) *config.ProxyConnectionPoolConfig {
+	return openAICompatConnectionPool(compat, entry)
+}
+
+func openAICompatConnectionPool(compat *config.OpenAICompatibility, entry *config.OpenAICompatibilityAPIKey) *config.ProxyConnectionPoolConfig {
+	var group *config.ProxyConnectionPoolConfig
+	if compat != nil {
+		group = compat.ConnectionPool
+	}
+	if entry == nil || entry.ConnectionPool == nil {
+		return group
+	}
+	merged := *entry.ConnectionPool
+	if group != nil {
+		if merged.Enabled == nil {
+			merged.Enabled = group.Enabled
+		}
+		if strings.TrimSpace(merged.IdleConnTimeout) == "" {
+			merged.IdleConnTimeout = group.IdleConnTimeout
+		}
+		if merged.MaxIdleConnsPerHost == nil {
+			merged.MaxIdleConnsPerHost = group.MaxIdleConnsPerHost
+		}
+	}
+	return &merged
+}
+
 func addWeightToAttrs(weight *int, attrs map[string]string) {
 	if weight == nil {
 		return
@@ -33,22 +86,6 @@ func addWeightToAttrs(weight *int, attrs map[string]string) {
 }
 
 // Synthesize generates Auth entries from config API keys.
-func addOpenAICompatibilityRetryMetadata(compat *config.OpenAICompatibility, metadata map[string]any) {
-	if compat == nil || metadata == nil {
-		return
-	}
-	if compat.RequestRetry != nil {
-		retry := *compat.RequestRetry
-		if retry < 0 {
-			retry = 0
-		}
-		metadata["request_retry"] = retry
-	}
-	if compat.TransientErrorCooldownSeconds != nil {
-		metadata["transient_error_cooldown_seconds"] = *compat.TransientErrorCooldownSeconds
-	}
-}
-
 func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, error) {
 	out := make([]*coreauth.Auth, 0, 32)
 	if ctx == nil || ctx.Config == nil {
@@ -66,16 +103,6 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeClaudeKeys(ctx)...)
 	// Codex API Keys
 	out = append(out, s.synthesizeCodexKeys(ctx)...)
-	// BigModel Coding Plan API Keys
-	out = append(out, s.synthesizeBigModelCoding(ctx)...)
-	// Astron Coding Plan API Keys
-	out = append(out, s.synthesizeAstronCode(ctx)...)
-	// Agnes multi-modal API Keys
-	out = append(out, s.synthesizeAgnes(ctx)...)
-	// OpenCode Go API Keys
-	out = append(out, s.synthesizeOpenCodeGo(ctx)...)
-	// Bedrock
-	out = append(out, s.synthesizeBedrock(ctx)...)
 	// xAI API Keys
 	out = append(out, s.synthesizeXAIKeys(ctx)...)
 	// Meta API Keys
@@ -86,446 +113,6 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeVertexCompat(ctx)...)
 
 	return out, nil
-}
-
-// synthesizeBedrock creates Auth entries for AWS Bedrock Runtime credentials.
-func (s *ConfigSynthesizer) synthesizeBedrock(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
-	const providerName = "bedrock"
-	out := make([]*coreauth.Auth, 0, len(cfg.BedrockKey))
-	for i := range cfg.BedrockKey {
-		entry := cfg.BedrockKey[i]
-		authMode := strings.ToLower(strings.TrimSpace(entry.AuthMode))
-		var credential string
-		if authMode == "api-key" {
-			credential = strings.TrimSpace(entry.APIKey)
-			if credential == "" {
-				continue
-			}
-		} else {
-			credential = strings.TrimSpace(entry.AccessKeyID) + "|" + strings.TrimSpace(entry.SecretAccessKey)
-			if strings.TrimSpace(entry.AccessKeyID) == "" || strings.TrimSpace(entry.SecretAccessKey) == "" {
-				continue
-			}
-		}
-		prefix := strings.TrimSpace(entry.Prefix)
-		region := strings.TrimSpace(entry.Region)
-		if region == "" {
-			region = config.DefaultBedrockRegion
-		}
-		base := strings.TrimSpace(entry.BaseURL)
-		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		id, token := idGen.Next("bedrock:credential", authMode, credential, region, base, proxyURL)
-		attrs := map[string]string{
-			"source":       fmt.Sprintf("config:bedrock[%s]", token),
-			"provider_key": providerName,
-			"compat_name":  providerName,
-			"auth_mode":    authMode,
-			"region":       region,
-		}
-		if base != "" {
-			attrs["base_url"] = base
-		}
-		if authMode == "api-key" {
-			attrs["api_key"] = strings.TrimSpace(entry.APIKey)
-		} else {
-			attrs["access_key_id"] = strings.TrimSpace(entry.AccessKeyID)
-			attrs["secret_access_key"] = strings.TrimSpace(entry.SecretAccessKey)
-			if strings.TrimSpace(entry.SessionToken) != "" {
-				attrs["session_token"] = strings.TrimSpace(entry.SessionToken)
-			}
-		}
-		if entry.ForceGlobal {
-			attrs["force_global"] = "true"
-		}
-		if entry.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(entry.Priority)
-		}
-		if hash := diff.ComputeBedrockModelsHash(entry.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		if hash := diff.ComputeExcludedModelsHash(entry.ExcludedModels); hash != "" {
-			attrs["excluded_models_hash"] = hash
-		}
-		addConfigHeadersToAttrs(entry.Headers, attrs)
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   providerName,
-			Label:      providerName,
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		out = append(out, a)
-	}
-	return out
-}
-
-// synthesizeBigModelCoding creates Auth entries for Zhipu Coding Plan.
-func (s *ConfigSynthesizer) synthesizeBigModelCoding(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
-	out := make([]*coreauth.Auth, 0)
-	for i := range cfg.BigModelCodingAPIKey {
-		compat := &cfg.BigModelCodingAPIKey[i]
-		if compat.Disabled {
-			continue
-		}
-		prefix := strings.TrimSpace(compat.Prefix)
-		providerName := config.DefaultBigModelCodingProviderName
-		base := strings.TrimSpace(compat.BaseURL)
-		if base == "" {
-			base = config.DefaultBigModelCodingBaseURL
-		}
-		disableCooling := compat.DisableCooling
-
-		createdEntries := 0
-		for j := range compat.APIKeyEntries {
-			entry := &compat.APIKeyEntries[j]
-			if entry.Disabled {
-				continue
-			}
-			key := strings.TrimSpace(entry.APIKey)
-			proxyURL := strings.TrimSpace(entry.ProxyURL)
-			idKind := fmt.Sprintf("%s:%s", providerName, providerName)
-			id, token := idGen.Next(idKind, key, base, proxyURL)
-			attrs := map[string]string{
-				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
-				"base_url":     base,
-				"compat_name":  providerName,
-				"provider_key": providerName,
-			}
-			metadata := map[string]any{}
-			metadata["models"] = append([]config.OpenAICompatibilityModel(nil), compat.Models...)
-			if disableCooling != nil {
-				metadata["disable_cooling"] = *disableCooling
-			}
-			addOpenAICompatibilityRetryMetadata(compat, metadata)
-			if compat.Priority != 0 {
-				attrs["priority"] = strconv.Itoa(compat.Priority)
-			}
-			if key != "" {
-				attrs["api_key"] = key
-			}
-			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
-				attrs["models_hash"] = hash
-			}
-			addConfigHeadersToAttrs(compat.Headers, attrs)
-			addConfigHeadersToAttrs(entry.Headers, attrs)
-			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   providerName,
-				Label:      providerName,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				ProxyURL:   proxyURL,
-				Attributes: attrs,
-				Metadata:   metadata,
-				CreatedAt:  now,
-				UpdatedAt:  now,
-			}
-			if len(a.Metadata) == 0 {
-				a.Metadata = nil
-			}
-			out = append(out, a)
-			createdEntries++
-		}
-		if createdEntries == 0 {
-			idKind := fmt.Sprintf("%s:%s", providerName, providerName)
-			id, token := idGen.Next(idKind, base)
-			attrs := map[string]string{
-				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
-				"base_url":     base,
-				"compat_name":  providerName,
-				"provider_key": providerName,
-			}
-			metadata := map[string]any{}
-			metadata["models"] = append([]config.OpenAICompatibilityModel(nil), compat.Models...)
-			if disableCooling != nil {
-				metadata["disable_cooling"] = *disableCooling
-			}
-			addOpenAICompatibilityRetryMetadata(compat, metadata)
-			if compat.Priority != 0 {
-				attrs["priority"] = strconv.Itoa(compat.Priority)
-			}
-			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
-				attrs["models_hash"] = hash
-			}
-			addConfigHeadersToAttrs(compat.Headers, attrs)
-			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   providerName,
-				Label:      providerName,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				Attributes: attrs,
-				Metadata:   metadata,
-				CreatedAt:  now,
-				UpdatedAt:  now,
-			}
-			if len(a.Metadata) == 0 {
-				a.Metadata = nil
-			}
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
-// synthesizeAstronCode creates Auth entries for iFlytek Astron Coding Plan.
-func (s *ConfigSynthesizer) synthesizeAstronCode(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
-	out := make([]*coreauth.Auth, 0)
-	for i := range cfg.AstronCodeAPIKey {
-		compat := &cfg.AstronCodeAPIKey[i]
-		if compat.Disabled {
-			continue
-		}
-		prefix := strings.TrimSpace(compat.Prefix)
-		providerName := config.DefaultAstronCodeProviderName
-		base := strings.TrimSpace(compat.BaseURL)
-		if base == "" {
-			base = config.DefaultAstronCodeBaseURL
-		}
-		disableCooling := compat.DisableCooling
-
-		createdEntries := 0
-		for j := range compat.APIKeyEntries {
-			entry := &compat.APIKeyEntries[j]
-			if entry.Disabled {
-				continue
-			}
-			key := strings.TrimSpace(entry.APIKey)
-			proxyURL := strings.TrimSpace(entry.ProxyURL)
-			idKind := fmt.Sprintf("%s:%s", providerName, providerName)
-			id, token := idGen.Next(idKind, key, base, proxyURL)
-			attrs := map[string]string{
-				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
-				"base_url":     base,
-				"compat_name":  providerName,
-				"provider_key": providerName,
-			}
-			metadata := map[string]any{}
-			metadata["models"] = append([]config.OpenAICompatibilityModel(nil), compat.Models...)
-			if disableCooling != nil {
-				metadata["disable_cooling"] = *disableCooling
-			}
-			addOpenAICompatibilityRetryMetadata(compat, metadata)
-			if compat.Priority != 0 {
-				attrs["priority"] = strconv.Itoa(compat.Priority)
-			}
-			if key != "" {
-				attrs["api_key"] = key
-			}
-			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
-				attrs["models_hash"] = hash
-			}
-			if compat.ResponseEndpoint {
-				attrs["response_endpoint"] = "true"
-			}
-			addConfigHeadersToAttrs(compat.Headers, attrs)
-			addConfigHeadersToAttrs(entry.Headers, attrs)
-			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   providerName,
-				Label:      providerName,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				ProxyURL:   proxyURL,
-				Attributes: attrs,
-				Metadata:   metadata,
-				CreatedAt:  now,
-				UpdatedAt:  now,
-			}
-			if len(a.Metadata) == 0 {
-				a.Metadata = nil
-			}
-			out = append(out, a)
-			createdEntries++
-		}
-		if createdEntries == 0 {
-			idKind := fmt.Sprintf("%s:%s", providerName, providerName)
-			id, token := idGen.Next(idKind, base)
-			attrs := map[string]string{
-				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
-				"base_url":     base,
-				"compat_name":  providerName,
-				"provider_key": providerName,
-			}
-			metadata := map[string]any{}
-			metadata["models"] = append([]config.OpenAICompatibilityModel(nil), compat.Models...)
-			if disableCooling != nil {
-				metadata["disable_cooling"] = *disableCooling
-			}
-			addOpenAICompatibilityRetryMetadata(compat, metadata)
-			if compat.Priority != 0 {
-				attrs["priority"] = strconv.Itoa(compat.Priority)
-			}
-			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
-				attrs["models_hash"] = hash
-			}
-			addConfigHeadersToAttrs(compat.Headers, attrs)
-			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   providerName,
-				Label:      providerName,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				Attributes: attrs,
-				Metadata:   metadata,
-				CreatedAt:  now,
-				UpdatedAt:  now,
-			}
-			if len(a.Metadata) == 0 {
-				a.Metadata = nil
-			}
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
-// synthesizeAgnes creates Auth entries for Sapiens Agnes multi-modal providers.
-func (s *ConfigSynthesizer) synthesizeAgnes(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
-	out := make([]*coreauth.Auth, 0)
-	for i := range cfg.AgnesAPIKey {
-		compat := &cfg.AgnesAPIKey[i]
-		if compat.Disabled {
-			continue
-		}
-		prefix := strings.TrimSpace(compat.Prefix)
-		providerName := config.DefaultAgnesProviderName
-		base := strings.TrimSpace(compat.BaseURL)
-		if base == "" {
-			base = config.DefaultAgnesBaseURL
-		}
-		disableCooling := compat.DisableCooling
-
-		for j := range compat.APIKeyEntries {
-			entry := &compat.APIKeyEntries[j]
-			if entry.Disabled {
-				continue
-			}
-			key := strings.TrimSpace(entry.APIKey)
-			if key == "" {
-				continue
-			}
-			proxyURL := strings.TrimSpace(entry.ProxyURL)
-			idKind := fmt.Sprintf("%s:%s", providerName, providerName)
-			id, token := idGen.Next(idKind, key, base, proxyURL)
-			attrs := map[string]string{
-				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
-				"base_url":     base,
-				"compat_name":  providerName,
-				"provider_key": providerName,
-			}
-			metadata := map[string]any{}
-			if disableCooling != nil {
-				metadata["disable_cooling"] = *disableCooling
-			}
-			addOpenAICompatibilityRetryMetadata(compat, metadata)
-			if compat.Priority != 0 {
-				attrs["priority"] = strconv.Itoa(compat.Priority)
-			}
-			if key != "" {
-				attrs["api_key"] = key
-			}
-			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
-				attrs["models_hash"] = hash
-			}
-			if compat.ResponseEndpoint {
-				attrs["response_endpoint"] = "true"
-			}
-			addConfigHeadersToAttrs(compat.Headers, attrs)
-			addConfigHeadersToAttrs(entry.Headers, attrs)
-			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   providerName,
-				Label:      providerName,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				ProxyURL:   proxyURL,
-				Attributes: attrs,
-				Metadata:   metadata,
-				CreatedAt:  now,
-				UpdatedAt:  now,
-			}
-			if len(a.Metadata) == 0 {
-				a.Metadata = nil
-			}
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
-// synthesizeOpenCodeGo creates Auth entries for OpenCode Go providers.
-func (s *ConfigSynthesizer) synthesizeOpenCodeGo(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
-	const providerName = "opencode-go"
-	out := make([]*coreauth.Auth, 0, len(cfg.OpenCodeGoKey))
-	for i := range cfg.OpenCodeGoKey {
-		entry := cfg.OpenCodeGoKey[i]
-		key := strings.TrimSpace(entry.APIKey)
-		if key == "" {
-			continue
-		}
-		prefix := strings.TrimSpace(entry.Prefix)
-		base := strings.TrimSpace(entry.BaseURL)
-		if base == "" {
-			base = "http://localhost:8080/v1"
-		}
-		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		id, token := idGen.Next("opencode-go:apikey", key, base, proxyURL)
-		attrs := map[string]string{
-			"source":       fmt.Sprintf("config:opencode-go[%s]", token),
-			"base_url":     base,
-			"compat_name":  providerName,
-			"provider_key": providerName,
-			"api_key":      key,
-		}
-		if entry.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(entry.Priority)
-		}
-		if entry.VisionModel != "" {
-			attrs["vision_model"] = entry.VisionModel
-		}
-		if hash := diff.ComputeOpenCodeGoModelsHash(entry.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		addConfigHeadersToAttrs(entry.Headers, attrs)
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   providerName,
-			Label:      providerName,
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		out = append(out, a)
-	}
-	return out
 }
 
 // synthesizeGeminiKeys creates Auth entries for Gemini API keys.
@@ -552,7 +139,11 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 		}
 		prefix := strings.TrimSpace(entry.Prefix)
 		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		id, token := idGen.Next(idKind, key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers))
+		idParts := []string{key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers)}
+		if poolID := config.FormatConnectionPoolDedupID(entry.ConnectionPool); poolID != "" {
+			idParts = append(idParts, poolID)
+		}
+		id, token := idGen.Next(idKind, idParts...)
 		attrs := map[string]string{
 			"source":       fmt.Sprintf("config:%s[%s]", sourceName, token),
 			"config_index": strconv.Itoa(i),
@@ -588,6 +179,8 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 			Metadata:   metadata,
 			CreatedAt:  now,
 			UpdatedAt:  now,
+
+			ProxyConnectionPool: authProxyConnectionPool(entry.ConnectionPool),
 		}
 		ApplyAuthExcludedModelsMeta(a, entry.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
@@ -614,7 +207,11 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		}
 		prefix := strings.TrimSpace(ck.Prefix)
 		proxyURL := strings.TrimSpace(ck.ProxyURL)
-		id, token := idGen.Next("claude:apikey", key, base, proxyURL, prefix, config.FormatSortedHeaders(ck.Headers))
+		idParts := []string{key, base, proxyURL, prefix, config.FormatSortedHeaders(ck.Headers)}
+		if poolID := config.FormatConnectionPoolDedupID(ck.ConnectionPool); poolID != "" {
+			idParts = append(idParts, poolID)
+		}
+		id, token := idGen.Next("claude:apikey", idParts...)
 		attrs := map[string]string{
 			"source":       fmt.Sprintf("config:claude[%s]", token),
 			"config_index": strconv.Itoa(i),
@@ -659,6 +256,8 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			Metadata:   metadata,
 			CreatedAt:  now,
 			UpdatedAt:  now,
+
+			ProxyConnectionPool: authProxyConnectionPool(ck.ConnectionPool),
 		}
 		ApplyAuthExcludedModelsMeta(a, ck.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
@@ -698,7 +297,11 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 		}
 		prefix := strings.TrimSpace(entry.Prefix)
 		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		id, token := idGen.Next(provider+":apikey", key, baseURL, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers))
+		idParts := []string{key, baseURL, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers)}
+		if poolID := config.FormatConnectionPoolDedupID(entry.ConnectionPool); poolID != "" {
+			idParts = append(idParts, poolID)
+		}
+		id, token := idGen.Next(provider+":apikey", idParts...)
 		attrs := map[string]string{
 			"source":       fmt.Sprintf("config:%s[%s]", provider, token),
 			"config_index": strconv.Itoa(i),
@@ -733,16 +336,17 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 		}
 		addConfigHeadersToAttrs(entry.Headers, attrs)
 		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   provider,
-			Label:      provider + "-apikey",
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   strings.TrimSpace(entry.ProxyURL),
-			Attributes: attrs,
-			Metadata:   metadata,
-			CreatedAt:  now,
-			UpdatedAt:  now,
+			ID:                  id,
+			Provider:            provider,
+			Label:               provider + "-apikey",
+			Prefix:              prefix,
+			Status:              coreauth.StatusActive,
+			ProxyURL:            strings.TrimSpace(entry.ProxyURL),
+			Attributes:          attrs,
+			Metadata:            metadata,
+			CreatedAt:           now,
+			UpdatedAt:           now,
+			ProxyConnectionPool: authProxyConnectionPool(entry.ConnectionPool),
 		}
 		ApplyAuthExcludedModelsMeta(a, entry.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
@@ -778,13 +382,15 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 		createdEntries := 0
 		for j := range compat.APIKeyEntries {
 			entry := &compat.APIKeyEntries[j]
-			if entry.Disabled {
-				continue
-			}
 			key := strings.TrimSpace(entry.APIKey)
 			proxyURL := strings.TrimSpace(entry.ProxyURL)
+			effectivePool := openAICompatConnectionPool(compat, entry)
 			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
-			id, token := idGen.Next(idKind, key, base, proxyURL)
+			idParts := []string{key, base, proxyURL}
+			if poolID := config.FormatConnectionPoolDedupID(effectivePool); poolID != "" {
+				idParts = append(idParts, poolID)
+			}
+			id, token := idGen.Next(idKind, idParts...)
 			attrs := map[string]string{
 				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
 				"base_url":     base,
@@ -796,7 +402,6 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if disableCooling != nil {
 				metadata["disable_cooling"] = *disableCooling
 			}
-			addOpenAICompatibilityRetryMetadata(compat, metadata)
 			addRequestRetryToMetadata(compat.RequestRetry, metadata)
 			addRequestScopedErrorsToMetadata(compat.RequestScopedErrors, metadata)
 			if compat.Priority != 0 {
@@ -811,16 +416,17 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   internalProviderKey,
-				Label:      compat.Name,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				ProxyURL:   proxyURL,
-				Attributes: attrs,
-				Metadata:   metadata,
-				CreatedAt:  now,
-				UpdatedAt:  now,
+				ID:                  id,
+				Provider:            internalProviderKey,
+				Label:               compat.Name,
+				Prefix:              prefix,
+				Status:              coreauth.StatusActive,
+				ProxyURL:            proxyURL,
+				Attributes:          attrs,
+				Metadata:            metadata,
+				CreatedAt:           now,
+				UpdatedAt:           now,
+				ProxyConnectionPool: authProxyConnectionPool(openAICompatConnectionPool(compat, entry)),
 			}
 			if len(a.Metadata) == 0 {
 				a.Metadata = nil
@@ -830,8 +436,13 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 		}
 		// Fallback: create entry without API key if no APIKeyEntries
 		if createdEntries == 0 {
+			effectivePool := openAICompatConnectionPool(compat, nil)
 			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
-			id, token := idGen.Next(idKind, base)
+			idParts := []string{base}
+			if poolID := config.FormatConnectionPoolDedupID(effectivePool); poolID != "" {
+				idParts = append(idParts, poolID)
+			}
+			id, token := idGen.Next(idKind, idParts...)
 			attrs := map[string]string{
 				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
 				"base_url":     base,
@@ -843,7 +454,6 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if disableCooling != nil {
 				metadata["disable_cooling"] = *disableCooling
 			}
-			addOpenAICompatibilityRetryMetadata(compat, metadata)
 			addRequestRetryToMetadata(compat.RequestRetry, metadata)
 			addRequestScopedErrorsToMetadata(compat.RequestScopedErrors, metadata)
 			if compat.Priority != 0 {
@@ -854,15 +464,16 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   internalProviderKey,
-				Label:      compat.Name,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				Attributes: attrs,
-				Metadata:   metadata,
-				CreatedAt:  now,
-				UpdatedAt:  now,
+				ID:                  id,
+				Provider:            internalProviderKey,
+				Label:               compat.Name,
+				Prefix:              prefix,
+				Status:              coreauth.StatusActive,
+				Attributes:          attrs,
+				Metadata:            metadata,
+				CreatedAt:           now,
+				UpdatedAt:           now,
+				ProxyConnectionPool: authProxyConnectionPool(openAICompatConnectionPool(compat, nil)),
 			}
 			if len(a.Metadata) == 0 {
 				a.Metadata = nil
@@ -889,7 +500,11 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		prefix := strings.TrimSpace(compat.Prefix)
 		proxyURL := strings.TrimSpace(compat.ProxyURL)
 		idKind := "vertex:apikey"
-		id, token := idGen.Next(idKind, key, base, proxyURL)
+		idParts := []string{key, base, proxyURL}
+		if poolID := config.FormatConnectionPoolDedupID(compat.ConnectionPool); poolID != "" {
+			idParts = append(idParts, poolID)
+		}
+		id, token := idGen.Next(idKind, idParts...)
 		attrs := map[string]string{
 			"source":       fmt.Sprintf("config:vertex-apikey[%s]", token),
 			"base_url":     base,
@@ -906,8 +521,11 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		if hash := diff.ComputeVertexCompatModelsHash(compat.Models); hash != "" {
 			attrs["models_hash"] = hash
 		}
-		if compat.Interactions != nil && *compat.Interactions {
-			attrs["interactions"] = "true"
+		if compat.OpenAPI != nil {
+			attrs["openapi"] = strconv.FormatBool(*compat.OpenAPI)
+		}
+		if loc := strings.TrimSpace(compat.OpenAPILocation); loc != "" {
+			attrs["openapi_location"] = loc
 		}
 		if compat.Interactions != nil && *compat.Interactions {
 			attrs["interactions"] = "true"
@@ -929,6 +547,8 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			Metadata:   metadata,
 			CreatedAt:  now,
 			UpdatedAt:  now,
+
+			ProxyConnectionPool: authProxyConnectionPool(compat.ConnectionPool),
 		}
 		ApplyAuthExcludedModelsMeta(a, compat.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {

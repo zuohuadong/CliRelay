@@ -1,0 +1,366 @@
+package usage
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretscrub"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	log "github.com/sirupsen/logrus"
+)
+
+// RequestLogEntry carries one request_logs row from the runtime down to the
+// INSERT.
+//
+// It replaces a positional argument list that had grown past twenty parameters
+// and a chain of InsertLogWithDetails*Identity*Subject*Upstream*Vision*Streaming
+// wrappers whose names encoded which subset of fields each caller filled in.
+// New columns now go here instead of adding another wrapper and another word to
+// that name. The legacy wrappers are retained below for existing callers.
+type RequestLogEntry struct {
+	// RequestID is the gateway request the entry bills. It is not stored: the
+	// settled hook hands it to the budget reservations (SetRequestLogSettledHook).
+	RequestID string
+
+	// IdempotencyKey makes the write exactly-once: a retry or spool replay of
+	// an entry whose earlier attempt already committed is skipped. Records from
+	// the usage queue carry the key assigned when they were published;
+	// InsertRequestLog assigns one to entries that arrive without it.
+	IdempotencyKey string
+
+	// TrustedTenantID is set only by authenticated internal execution paths;
+	// when empty the tenant is resolved from the API key.
+	TrustedTenantID string
+	APIKey          string
+	APIKeyID        string
+	AuthSubjectID   string
+	APIKeyName      string
+
+	// Model is the model this request is logged and billed under, always the
+	// clean request-time name.
+	Model string
+	// UpstreamModel is what we actually sent upstream when a mapping applied.
+	UpstreamModel string
+	// UpstreamResponseModel is what the upstream declared in its own response,
+	// recorded for auditing only. See the executor's upstream response observer.
+	UpstreamResponseModel string
+	VisionFallbackModel   string
+	ThinkingLevel         string
+
+	Source      string
+	ChannelName string
+	AuthIndex   string
+
+	Failed    bool
+	Streaming bool
+	// GuardKind is the loop protection check that ended the request, empty for
+	// every other request. See request_log_guard.go.
+	GuardKind string
+
+	Timestamp    time.Time
+	LatencyMs    int64
+	FirstTokenMs int64
+	Tokens       TokenStats
+
+	InputContent  string
+	OutputContent string
+	DetailContent string
+}
+
+// isRetryableUsageWriteErr reports lock contention between concurrent writers,
+// which a quick retry resolves.
+func isRetryableUsageWriteErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "deadlock") ||
+		strings.Contains(msg, "could not serialize") ||
+		strings.Contains(msg, "serialization failure") ||
+		strings.Contains(msg, "lock wait timeout") ||
+		strings.Contains(msg, "sqlite_busy") ||
+		strings.Contains(msg, "database is locked")
+}
+
+// insertRequestLogRowTx inserts the request_logs row and, when the plan keeps
+// content, its compressed body row.
+func insertRequestLogRowTx(tx usageMetadataWriteTx, plan requestLogWritePlan) error {
+	entry := plan.entry
+	failedInt, streamingInt := 0, 0
+	if entry.Failed {
+		failedInt = 1
+	}
+	if entry.Streaming {
+		streamingInt = 1
+	}
+
+	cacheRead, cacheWrite, promptTokens := requestLogCacheValues(entry.Tokens)
+	insertSQL := `INSERT INTO request_logs
+		(tenant_id, timestamp, api_key, api_key_id, auth_subject_id, api_key_name, model, thinking_level, upstream_model, upstream_response_model, vision_fallback_model, source, channel_name, auth_index,
+		 failed, streaming, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost,
+		 cache_read_tokens, cache_write_tokens, prompt_tokens, session_id, guard_kind)
+	 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	insertArgs := []any{
+		plan.tenantID, entry.Timestamp.UTC().Format(time.RFC3339Nano),
+		entry.APIKey, entry.APIKeyID, entry.AuthSubjectID, entry.APIKeyName, entry.Model, entry.ThinkingLevel,
+		entry.UpstreamModel, entry.UpstreamResponseModel, entry.VisionFallbackModel, entry.Source, entry.ChannelName, entry.AuthIndex,
+		failedInt, streamingInt, entry.LatencyMs, entry.FirstTokenMs,
+		entry.Tokens.InputTokens, entry.Tokens.OutputTokens, entry.Tokens.ReasoningTokens,
+		entry.Tokens.CachedTokens, entry.Tokens.TotalTokens, plan.cost,
+		cacheRead, cacheWrite, promptTokens, plan.sessionID, entry.GuardKind,
+	}
+
+	if !plan.storeContent {
+		if _, err := tx.Exec(insertSQL, insertArgs...); err != nil {
+			return fmt.Errorf("insert log: %w", err)
+		}
+		return nil
+	}
+	var logID int64
+	if tx.usageMetadata().driver == "postgres" {
+		if err := tx.QueryRow(insertSQL+" RETURNING id", insertArgs...).Scan(&logID); err != nil {
+			return fmt.Errorf("insert log: %w", err)
+		}
+	} else {
+		result, err := tx.Exec(insertSQL, insertArgs...)
+		if err != nil {
+			return fmt.Errorf("insert log: %w", err)
+		}
+		logID, err = result.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("resolve inserted log id: %w", err)
+		}
+	}
+	if err := insertLogContentTenantTx(tx, plan.tenantID, logID, entry.Timestamp, entry.InputContent, entry.OutputContent, entry.DetailContent, plan.sessionID, entry.Failed); err != nil {
+		return fmt.Errorf("insert log content: %w", err)
+	}
+	return nil
+}
+
+// normalizeRequestLogEntry trims identity fields, makes sure the entry
+// carries an idempotency key before its first attempt, so every retry and
+// replay of it shares that key, and scrubs the content it stores.
+func normalizeRequestLogEntry(entry RequestLogEntry) RequestLogEntry {
+	entry.IdempotencyKey = strings.TrimSpace(entry.IdempotencyKey)
+	if entry.IdempotencyKey == "" {
+		entry.IdempotencyKey = coreusage.NewIdempotencyKey()
+	}
+	entry.APIKeyID = strings.TrimSpace(entry.APIKeyID)
+	entry.AuthSubjectID = strings.TrimSpace(entry.AuthSubjectID)
+	entry.APIKeyName = strings.TrimSpace(entry.APIKeyName)
+	entry.UpstreamModel = strings.TrimSpace(entry.UpstreamModel)
+	entry.UpstreamResponseModel = strings.TrimSpace(entry.UpstreamResponseModel)
+	entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
+	entry.ThinkingLevel = strings.TrimSpace(entry.ThinkingLevel)
+	entry.GuardKind = normalizeGuardKind(entry.GuardKind)
+	return scrubRequestLogContent(entry)
+}
+
+// scrubRequestLogContent replaces the credentials in the stored request and
+// response bodies and diagnostics with [REDACTED:<kind>] (see secretscrub).
+// It runs before the entry is written or spooled, outside any transaction, so
+// neither the database nor the spool on disk keeps a key that a client's
+// prompt carried. What was sent upstream is not affected.
+func scrubRequestLogContent(entry RequestLogEntry) RequestLogEntry {
+	entry.InputContent = secretscrub.Scrub(entry.InputContent)
+	entry.OutputContent = secretscrub.Scrub(entry.OutputContent)
+	entry.DetailContent = secretscrub.Scrub(entry.DetailContent)
+	return entry
+}
+
+// InsertRequestLog writes a single request log entry into the runtime database.
+// It is safe to call concurrently.
+//
+// With the local spool running, a database that stays unreachable through the
+// retry budget no longer costs the record: it is appended to the spool and
+// replayed once the database is back. While such an outage is known, new
+// entries go straight to the spool so the usage worker keeps pace with
+// traffic instead of spending the retry budget on every record.
+func InsertRequestLog(entry RequestLogEntry) {
+	entry = normalizeRequestLogEntry(entry)
+	usageWriteLease.RLock()
+	spool := activeUsageSpool()
+	if spool == nil && getDB() == nil {
+		usageWriteLease.RUnlock()
+		settleRequestLog(entry, false, 0)
+		return
+	}
+	// A spooled entry is written later, if at all; the reservation of its
+	// request runs out on its own (internal/quota/inflight).
+	if spool != nil && usageDBHealth.down() {
+		appended := appendLiveRequestLog(spool, entry, usageSpoolReasonDBUnavailable, time.Time{}, nil)
+		usageWriteLease.RUnlock()
+		if appended {
+			notifyTokenUsage(entry, "")
+		}
+		return
+	}
+	result, outcome, err := writeRequestLogWithRetryLeased(entry, liveRequestLogRetryBudget(spool))
+	verifyCommit := outcome == requestLogWriteCommitted && spool != nil && result.duplicateNeedsRecheck(time.Now())
+	spooled := false
+	if verifyCommit {
+		spooled = appendLiveRequestLog(spool, entry, usageSpoolReasonVerifyCommit, result.commitUncertainAt, nil)
+	} else if outcome == requestLogWriteTransient && spool != nil {
+		usageDBHealth.markDown(err)
+		spooled = appendLiveRequestLog(spool, entry, usageSpoolReasonWriteFailed, result.commitUncertainAt, err)
+	}
+	// Keep append within the lease, but release before any application hook.
+	usageWriteLease.RUnlock()
+	switch outcome {
+	case requestLogWriteCommitted:
+		usageDBHealth.markUp()
+		settleRequestLog(entry, !entry.Failed, result.cost)
+		if verifyCommit {
+			if spooled {
+				notifyTokenUsage(entry, "")
+			}
+			return
+		}
+		notifyTokenUsage(entry, result.endUserID)
+	case requestLogWriteTransient:
+		if spool == nil {
+			log.Errorf("usage: insert log after retries: %v", err)
+			settleRequestLog(entry, false, 0)
+			return
+		}
+		if spooled {
+			notifyTokenUsage(entry, "")
+		}
+	default:
+		log.Errorf("usage: insert log: %v", err)
+		settleRequestLog(entry, false, 0)
+	}
+}
+
+// RequestLogSettledFunc is told when a gateway request's log has been
+// committed, which is when the budget checks start counting it, or was dropped
+// and never will be. billed marks a committed log of a successful request;
+// cost and tokens are what it was billed.
+type RequestLogSettledFunc func(requestID string, billed bool, cost float64, tokens int64)
+
+var requestLogSettled atomic.Pointer[RequestLogSettledFunc]
+
+// SetRequestLogSettledHook installs fn, or removes the hook when fn is nil.
+func SetRequestLogSettledHook(fn RequestLogSettledFunc) {
+	if fn == nil {
+		requestLogSettled.Store(nil)
+		return
+	}
+	requestLogSettled.Store(&fn)
+}
+
+func settleRequestLog(entry RequestLogEntry, billed bool, cost float64) {
+	if fn := requestLogSettled.Load(); fn != nil && entry.RequestID != "" {
+		(*fn)(entry.RequestID, billed, cost, entry.Tokens.TotalTokens)
+	}
+}
+
+func isStreamingRequestContent(content string) bool {
+	var payload struct {
+		Stream bool `json:"stream"`
+	}
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return false
+	}
+	return payload.Stream
+}
+
+// The InsertLogWithDetails* family below predates RequestLogEntry; each name
+// encodes which subset of columns that caller fills in. They are kept as thin
+// delegates so existing callers and tests keep working — new columns belong on
+// RequestLogEntry, not in another wrapper.
+
+// InsertLog writes a single request log entry into the runtime database.
+// It is safe to call concurrently.
+func InsertLog(apiKey, apiKeyName, model, source, channelName, authIndex string,
+	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
+	inputContent, outputContent string) {
+	InsertRequestLog(RequestLogEntry{
+		APIKey: apiKey, APIKeyName: apiKeyName, Model: model,
+		Source: source, ChannelName: channelName, AuthIndex: authIndex,
+		Failed: failed, Streaming: isStreamingRequestContent(inputContent),
+		Timestamp: timestamp, LatencyMs: latencyMs, FirstTokenMs: firstTokenMs, Tokens: tokens,
+		InputContent: inputContent, OutputContent: outputContent,
+	})
+}
+
+func InsertLogWithDetails(apiKey, apiKeyName, model, source, channelName, authIndex string,
+	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
+	inputContent, outputContent, detailContent string) {
+	InsertRequestLog(RequestLogEntry{
+		APIKey: apiKey, APIKeyName: apiKeyName, Model: model,
+		Source: source, ChannelName: channelName, AuthIndex: authIndex,
+		Failed: failed, Streaming: isStreamingRequestContent(inputContent),
+		Timestamp: timestamp, LatencyMs: latencyMs, FirstTokenMs: firstTokenMs, Tokens: tokens,
+		InputContent: inputContent, OutputContent: outputContent, DetailContent: detailContent,
+	})
+}
+
+func InsertLogWithDetailsIdentity(apiKey, apiKeyID, apiKeyName, model, source, channelName, authIndex string,
+	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
+	inputContent, outputContent, detailContent string) {
+	InsertRequestLog(RequestLogEntry{
+		APIKey: apiKey, APIKeyID: apiKeyID, APIKeyName: apiKeyName, Model: model,
+		Source: source, ChannelName: channelName, AuthIndex: authIndex,
+		Failed: failed, Streaming: isStreamingRequestContent(inputContent),
+		Timestamp: timestamp, LatencyMs: latencyMs, FirstTokenMs: firstTokenMs, Tokens: tokens,
+		InputContent: inputContent, OutputContent: outputContent, DetailContent: detailContent,
+	})
+}
+
+func InsertLogWithDetailsIdentitySubject(apiKey, apiKeyID, authSubjectID, apiKeyName, model, source, channelName, authIndex string,
+	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
+	inputContent, outputContent, detailContent string) {
+	InsertRequestLog(RequestLogEntry{
+		APIKey: apiKey, APIKeyID: apiKeyID, AuthSubjectID: authSubjectID, APIKeyName: apiKeyName, Model: model,
+		Source: source, ChannelName: channelName, AuthIndex: authIndex,
+		Failed: failed, Streaming: isStreamingRequestContent(inputContent),
+		Timestamp: timestamp, LatencyMs: latencyMs, FirstTokenMs: firstTokenMs, Tokens: tokens,
+		InputContent: inputContent, OutputContent: outputContent, DetailContent: detailContent,
+	})
+}
+
+func InsertLogWithDetailsIdentitySubjectUpstream(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, source, channelName, authIndex string,
+	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
+	inputContent, outputContent, detailContent string) {
+	InsertRequestLog(RequestLogEntry{
+		APIKey: apiKey, APIKeyID: apiKeyID, AuthSubjectID: authSubjectID, APIKeyName: apiKeyName,
+		Model: model, UpstreamModel: upstreamModel,
+		Source: source, ChannelName: channelName, AuthIndex: authIndex,
+		Failed: failed, Streaming: isStreamingRequestContent(inputContent),
+		Timestamp: timestamp, LatencyMs: latencyMs, FirstTokenMs: firstTokenMs, Tokens: tokens,
+		InputContent: inputContent, OutputContent: outputContent, DetailContent: detailContent,
+	})
+}
+
+func InsertLogWithDetailsIdentitySubjectUpstreamVision(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, source, channelName, authIndex string,
+	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
+	inputContent, outputContent, detailContent string) {
+	InsertRequestLog(RequestLogEntry{
+		APIKey: apiKey, APIKeyID: apiKeyID, AuthSubjectID: authSubjectID, APIKeyName: apiKeyName,
+		Model: model, UpstreamModel: upstreamModel, VisionFallbackModel: visionFallbackModel,
+		Source: source, ChannelName: channelName, AuthIndex: authIndex,
+		Failed: failed, Streaming: isStreamingRequestContent(inputContent),
+		Timestamp: timestamp, LatencyMs: latencyMs, FirstTokenMs: firstTokenMs, Tokens: tokens,
+		InputContent: inputContent, OutputContent: outputContent, DetailContent: detailContent,
+	})
+}
+
+// InsertLogWithDetailsIdentitySubjectUpstreamVisionStreaming persists an
+// explicit streaming classification even when request body storage is disabled.
+func InsertLogWithDetailsIdentitySubjectUpstreamVisionStreaming(trustedTenantID, apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, thinkingLevel, source, channelName, authIndex string,
+	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
+	inputContent, outputContent, detailContent string, streaming bool) {
+	InsertRequestLog(RequestLogEntry{
+		TrustedTenantID: trustedTenantID,
+		APIKey:          apiKey, APIKeyID: apiKeyID, AuthSubjectID: authSubjectID, APIKeyName: apiKeyName,
+		Model: model, UpstreamModel: upstreamModel, VisionFallbackModel: visionFallbackModel, ThinkingLevel: thinkingLevel,
+		Source: source, ChannelName: channelName, AuthIndex: authIndex,
+		Failed: failed, Streaming: streaming,
+		Timestamp: timestamp, LatencyMs: latencyMs, FirstTokenMs: firstTokenMs, Tokens: tokens,
+		InputContent: inputContent, OutputContent: outputContent, DetailContent: detailContent,
+	})
+}

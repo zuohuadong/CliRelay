@@ -12,7 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
-func TestRegisterModelsForAuth_UsesPreMergedExcludedModelsAttribute(t *testing.T) {
+func TestRegisterModelsForAuth_CredentialExcludedModelsOverrideGlobal(t *testing.T) {
 	service := &Service{
 		cfg: &config.Config{
 			OAuthExcludedModels: map[string][]string{
@@ -131,7 +131,6 @@ func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
 					BaseURL: "https://example.com/v1",
 					Models: []config.OpenAICompatibilityModel{
 						{Name: "upstream-image", Alias: "compat-image", Image: true},
-						{Name: "upstream-video", Alias: "compat-video", Video: true},
 						{Name: "upstream-chat", Alias: "compat-chat"},
 					},
 				},
@@ -159,7 +158,6 @@ func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
 
 	models := modelRegistry.GetModelsForClient(auth.ID)
 	var imageModel *internalregistry.ModelInfo
-	var videoModel *internalregistry.ModelInfo
 	var chatModel *internalregistry.ModelInfo
 	for _, model := range models {
 		if model == nil {
@@ -168,8 +166,6 @@ func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
 		switch strings.TrimSpace(model.ID) {
 		case "compat-image":
 			imageModel = model
-		case "compat-video":
-			videoModel = model
 		case "compat-chat":
 			chatModel = model
 		}
@@ -183,15 +179,6 @@ func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
 	if imageModel.Thinking != nil {
 		t.Fatalf("image model thinking = %+v, want nil", imageModel.Thinking)
 	}
-	if videoModel == nil {
-		t.Fatal("expected compat-video to be registered")
-	}
-	if videoModel.Type != internalregistry.OpenAIVideoModelType {
-		t.Fatalf("video model type = %q, want %q", videoModel.Type, internalregistry.OpenAIVideoModelType)
-	}
-	if videoModel.Thinking != nil {
-		t.Fatalf("video model thinking = %+v, want nil", videoModel.Thinking)
-	}
 	if chatModel == nil {
 		t.Fatal("expected compat-chat to be registered")
 	}
@@ -200,95 +187,6 @@ func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
 	}
 	if chatModel.Thinking == nil {
 		t.Fatal("expected chat model to keep default thinking support")
-	}
-}
-
-func TestRegisterModelsForAuth_OpenAICompatibilityMetadataModels(t *testing.T) {
-	service := &Service{cfg: &config.Config{}}
-	auth := &coreauth.Auth{
-		ID:       "auth-openai-compat-metadata",
-		Provider: "openai-compatibility",
-		Label:    "agnes",
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"auth_kind":    "api_key",
-			"compat_name":  "agnes",
-			"provider_key": "agnes",
-			"base_url":     "https://example.com/v1",
-			"api_key":      "sk-test",
-		},
-		Metadata: map[string]any{
-			"models": []any{
-				map[string]any{"name": "agnes-2.0-flash", "alias": "agnes-2.0-flash"},
-				map[string]any{"name": "agnes-image-2.1-flash", "alias": "agnes-image-2.1-flash", "image": true},
-				map[string]any{"name": "agnes-video-v2.0", "alias": "agnes-video-v2.0", "video": true},
-			},
-		},
-	}
-
-	modelRegistry := internalregistry.GetGlobalRegistry()
-	modelRegistry.UnregisterClient(auth.ID)
-	t.Cleanup(func() {
-		modelRegistry.UnregisterClient(auth.ID)
-	})
-
-	service.registerModelsForAuth(context.Background(), auth)
-
-	models := modelRegistry.GetModelsForClient(auth.ID)
-	if len(models) != 3 {
-		t.Fatalf("models len = %d, want 3: %#v", len(models), models)
-	}
-	typesByID := map[string]string{}
-	for _, model := range models {
-		if model != nil {
-			typesByID[strings.TrimSpace(model.ID)] = model.Type
-		}
-	}
-	if typesByID["agnes-2.0-flash"] != "openai-compatibility" {
-		t.Fatalf("chat model type = %q, want openai-compatibility", typesByID["agnes-2.0-flash"])
-	}
-	if typesByID["agnes-image-2.1-flash"] != internalregistry.OpenAIImageModelType {
-		t.Fatalf("image model type = %q, want %q", typesByID["agnes-image-2.1-flash"], internalregistry.OpenAIImageModelType)
-	}
-	if typesByID["agnes-video-v2.0"] != internalregistry.OpenAIVideoModelType {
-		t.Fatalf("video model type = %q, want %q", typesByID["agnes-video-v2.0"], internalregistry.OpenAIVideoModelType)
-	}
-}
-
-func TestRegisterModelsForAuth_AgnesRequiresEnabledAPIKey(t *testing.T) {
-	service := &Service{
-		cfg: &config.Config{
-			AgnesAPIKey: []config.OpenAICompatibility{{
-				Name:          "agnes",
-				BaseURL:       "https://apihub.agnes-ai.com/v1",
-				APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "  "}, {APIKey: "sk-disabled", Disabled: true}},
-				Models: []config.OpenAICompatibilityModel{
-					{Name: "agnes-video-v2.0", Alias: "agnes-video-v2.0", Video: true},
-				},
-			}},
-		},
-	}
-	auth := &coreauth.Auth{
-		ID:       "auth-agnes-without-key",
-		Provider: "agnes",
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"auth_kind":    "api_key",
-			"compat_name":  "agnes",
-			"provider_key": "agnes",
-		},
-	}
-
-	modelRegistry := internalregistry.GetGlobalRegistry()
-	modelRegistry.UnregisterClient(auth.ID)
-	t.Cleanup(func() {
-		modelRegistry.UnregisterClient(auth.ID)
-	})
-
-	service.registerModelsForAuth(context.Background(), auth)
-
-	if models := modelRegistry.GetModelsForClient(auth.ID); len(models) != 0 {
-		t.Fatalf("models len = %d, want 0 for agnes without enabled api key: %#v", len(models), models)
 	}
 }
 
@@ -386,16 +284,11 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 						"maxTokens": 1,
 						"maxOutputTokens": 2
 					},
-					"gemini-3.1-pro-high": {
-						"displayName": "Gemini 3.1 Pro (High)",
-						"maxTokens": 1048576,
-						"maxOutputTokens": 65535
-					},
 					"fetched-only-search-model": {
 						"displayName": "Fetched Only Search Model"
 					}
 				},
-				"webSearchModelIds": ["gemini-3.1-flash-lite", "gemini-3.1-pro-high", "fetched-only-search-model"]
+				"webSearchModelIds": ["gemini-3.1-flash-lite", "fetched-only-search-model"]
 			}`))
 	}))
 	defer server.Close()
@@ -434,7 +327,7 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 		}
 	}
 
-	var webSearchModel, highModel, staticOnlyModel, fetchedOnlyModel *internalregistry.ModelInfo
+	var webSearchModel, agentModel, staticOnlyModel, fetchedOnlyModel *internalregistry.ModelInfo
 	for _, model := range models {
 		if model == nil {
 			continue
@@ -442,11 +335,8 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 		switch strings.TrimSpace(model.ID) {
 		case "gemini-3.1-flash-lite":
 			webSearchModel = model
-		case "gemini-3.1-pro-high":
-			highModel = model
 		case "gemini-pro-agent":
-			// Account catalog is authoritative after a successful probe: static
-			// entries the API no longer reports are not re-registered.
+			agentModel = model
 		case "gpt-oss-120b-medium":
 			staticOnlyModel = model
 		case "fetched-only-search-model":
@@ -466,14 +356,8 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 	if webSearchModel.ContextLength != staticWebSearchModel.ContextLength || webSearchModel.MaxCompletionTokens != staticWebSearchModel.MaxCompletionTokens {
 		t.Fatalf("static token limits should be preserved, got=%#v static=%#v", webSearchModel, staticWebSearchModel)
 	}
-	if highModel == nil {
-		t.Fatal("expected fetched gemini-3.1-pro-high to be registered")
-	}
-	if !highModel.SupportsWebSearch {
-		t.Fatal("expected fetched gemini-3.1-pro-high to support web search")
-	}
-	if staticOnlyModel != nil {
-		t.Fatal("static-only Antigravity model must not survive an authoritative catalog probe")
+	if agentModel != nil || staticOnlyModel != nil {
+		t.Fatal("models absent from the account catalog must not be registered")
 	}
 	if fetchedOnlyModel != nil {
 		t.Fatalf("fetched-only model should not be registered: %#v", fetchedOnlyModel)

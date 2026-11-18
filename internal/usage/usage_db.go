@@ -1,0 +1,952 @@
+package usage
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"os"
+	"slices"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/contentmoderation"
+	postgresstore "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres"
+	log "github.com/sirupsen/logrus"
+)
+
+var (
+	usageDBLifecycleMu sync.Mutex
+	usageDB            *sql.DB
+	usageReadDB        *sql.DB
+	usageDBMu          sync.Mutex
+	usageDBPath        string
+	usageDriver        string
+	usageLoc           *time.Location
+)
+
+// DatabaseStats summarizes the active runtime database for management telemetry.
+type DatabaseStats struct {
+	Driver    string
+	SizeBytes int64
+}
+
+const createTableSQL = `
+CREATE TABLE IF NOT EXISTS request_logs (
+  tenant_id        TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp        DATETIME NOT NULL,
+  api_key          TEXT NOT NULL DEFAULT '',
+  api_key_id       TEXT NOT NULL DEFAULT '',
+  auth_subject_id  TEXT NOT NULL DEFAULT '',
+  model            TEXT NOT NULL DEFAULT '',
+  thinking_level   TEXT NOT NULL DEFAULT '',
+  upstream_model   TEXT NOT NULL DEFAULT '',
+  vision_fallback_model TEXT NOT NULL DEFAULT '',
+  source           TEXT NOT NULL DEFAULT '',
+  channel_name     TEXT NOT NULL DEFAULT '',
+  auth_index       TEXT NOT NULL DEFAULT '',
+  failed           INTEGER NOT NULL DEFAULT 0,
+  streaming        INTEGER NOT NULL DEFAULT 0,
+  latency_ms       INTEGER NOT NULL DEFAULT 0,
+  first_token_ms   INTEGER NOT NULL DEFAULT 0,
+  input_tokens     INTEGER NOT NULL DEFAULT 0,
+  output_tokens    INTEGER NOT NULL DEFAULT 0,
+  reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+  cached_tokens    INTEGER NOT NULL DEFAULT 0,
+  total_tokens     INTEGER NOT NULL DEFAULT 0,
+  input_content    TEXT NOT NULL DEFAULT '',
+  output_content   TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS request_log_content (
+  tenant_id        TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
+  log_id           INTEGER PRIMARY KEY,
+  timestamp        DATETIME NOT NULL,
+  compression      TEXT NOT NULL DEFAULT 'zstd',
+  input_content    BLOB NOT NULL DEFAULT X'',
+  output_content   BLOB NOT NULL DEFAULT X'',
+  detail_content   BLOB NOT NULL DEFAULT X'',
+  session_id       TEXT NOT NULL DEFAULT '',
+  bodies_stripped  INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY(log_id) REFERENCES request_logs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON request_logs(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_logs_api_key ON request_logs(api_key);
+CREATE INDEX IF NOT EXISTS idx_logs_api_key_timestamp ON request_logs(api_key, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_logs_model ON request_logs(model);
+CREATE INDEX IF NOT EXISTS idx_logs_failed ON request_logs(failed);
+CREATE INDEX IF NOT EXISTS idx_logs_auth_index ON request_logs(auth_index);
+CREATE INDEX IF NOT EXISTS idx_log_content_timestamp ON request_log_content(timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS auth_file_quota_snapshots (
+	  tenant_id    TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
+  date_key      TEXT NOT NULL,
+  auth_index    TEXT NOT NULL,
+  auth_subject_id TEXT NOT NULL DEFAULT '',
+  provider      TEXT NOT NULL DEFAULT '',
+  quota_key     TEXT NOT NULL,
+  percent       REAL,
+  recorded_at   DATETIME NOT NULL,
+	  PRIMARY KEY (tenant_id, date_key, auth_index, quota_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_quota_snapshots_date ON auth_file_quota_snapshots(date_key);
+CREATE INDEX IF NOT EXISTS idx_quota_snapshots_auth ON auth_file_quota_snapshots(auth_index);
+
+CREATE TABLE IF NOT EXISTS auth_file_quota_snapshot_points (
+	  tenant_id      TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  recorded_at    DATETIME NOT NULL,
+  auth_index     TEXT NOT NULL,
+  auth_subject_id TEXT NOT NULL DEFAULT '',
+  provider       TEXT NOT NULL DEFAULT '',
+  quota_key      TEXT NOT NULL,
+  quota_label    TEXT NOT NULL DEFAULT '',
+  percent        REAL,
+  reset_at       DATETIME,
+  window_seconds INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_quota_snapshot_points_auth_time ON auth_file_quota_snapshot_points(auth_index, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_quota_snapshot_points_auth_key_time ON auth_file_quota_snapshot_points(auth_index, quota_key, recorded_at);
+
+CREATE TABLE IF NOT EXISTS auth_subject_quota_cycles (
+	  tenant_id       TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
+  subject_id       TEXT NOT NULL,
+  auth_index       TEXT NOT NULL DEFAULT '',
+  provider         TEXT NOT NULL DEFAULT '',
+  quota_key        TEXT NOT NULL,
+  cycle_start_at   DATETIME NOT NULL,
+  reset_at         DATETIME NOT NULL,
+  window_seconds   INTEGER NOT NULL DEFAULT 0,
+  last_verified_at DATETIME NOT NULL,
+	  PRIMARY KEY (tenant_id, subject_id, quota_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_subject_quota_cycles_subject_window
+  ON auth_subject_quota_cycles(subject_id, window_seconds, last_verified_at);
+`
+
+// migrateContentColumns adds input_content/output_content columns to an
+// existing request_logs table that was created before this feature.
+func migrateContentColumns(db *sql.DB) {
+	for _, col := range []string{"input_content", "output_content"} {
+		_, err := db.Exec(fmt.Sprintf("ALTER TABLE request_logs ADD COLUMN %s TEXT NOT NULL DEFAULT ''", col))
+		if err != nil {
+			// "duplicate column name" is expected when already migrated
+			if !strings.Contains(err.Error(), "duplicate") {
+				log.Warnf("usage: migrate column %s: %v", col, err)
+			}
+		}
+	}
+}
+
+// migrateCostColumn adds cost column to an existing request_logs table.
+func migrateCostColumn(db *sql.DB) {
+	_, err := db.Exec("ALTER TABLE request_logs ADD COLUMN cost REAL NOT NULL DEFAULT 0")
+	if err != nil {
+		if !strings.Contains(err.Error(), "duplicate") {
+			log.Warnf("usage: migrate column cost: %v", err)
+		}
+	}
+}
+
+// migrateApiKeyNameColumn adds api_key_name column to an existing request_logs table.
+// This stores the display name of the API key at the time of the request, so that
+// the name is preserved even if the key is later deleted.
+func migrateApiKeyNameColumn(db *sql.DB) {
+	_, err := db.Exec("ALTER TABLE request_logs ADD COLUMN api_key_name TEXT NOT NULL DEFAULT ''")
+	if err != nil {
+		if !strings.Contains(err.Error(), "duplicate") {
+			log.Warnf("usage: migrate column api_key_name: %v", err)
+		}
+	}
+}
+
+func migrateAPIKeyIDColumn(db *sql.DB) {
+	_, err := db.Exec("ALTER TABLE request_logs ADD COLUMN api_key_id TEXT NOT NULL DEFAULT ''")
+	if err != nil {
+		if !strings.Contains(err.Error(), "duplicate") {
+			log.Warnf("usage: migrate column api_key_id: %v", err)
+		}
+	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_logs_api_key_id ON request_logs(api_key_id)"); err != nil {
+		log.Warnf("usage: create idx_logs_api_key_id: %v", err)
+	}
+}
+
+func ensureRequestLogLookupIndexes(db *sql.DB) {
+	for _, stmt := range []string{
+		"CREATE INDEX IF NOT EXISTS idx_logs_api_key_timestamp ON request_logs(api_key, timestamp DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_logs_api_key_id_timestamp ON request_logs(api_key_id, timestamp DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_logs_api_key_chart_cover ON request_logs(api_key, api_key_id, timestamp DESC, model, failed, input_tokens, output_tokens, total_tokens, cost, cached_tokens)",
+		"CREATE INDEX IF NOT EXISTS idx_logs_api_key_id_chart_cover ON request_logs(api_key_id, timestamp DESC, model, failed, input_tokens, output_tokens, total_tokens, cost, cached_tokens)",
+		// AI Accounts entity-stats / auth-file-trend: tenant + auth identity + time.
+		"CREATE INDEX IF NOT EXISTS idx_logs_tenant_auth_index_timestamp ON request_logs(tenant_id, auth_index, timestamp DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_logs_tenant_auth_subject_timestamp ON request_logs(tenant_id, auth_subject_id, timestamp DESC)",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			log.Warnf("usage: create request log lookup index: %v", err)
+		}
+	}
+}
+
+func migrateAuthSubjectIDColumns(db *sql.DB) {
+	for _, stmt := range []string{
+		"ALTER TABLE request_logs ADD COLUMN auth_subject_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE auth_file_quota_snapshots ADD COLUMN auth_subject_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE auth_file_quota_snapshot_points ADD COLUMN auth_subject_id TEXT NOT NULL DEFAULT ''",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			if !strings.Contains(err.Error(), "duplicate") {
+				log.Warnf("usage: migrate auth subject column: %v", err)
+			}
+		}
+	}
+	for _, stmt := range []string{
+		"CREATE INDEX IF NOT EXISTS idx_logs_auth_subject_id ON request_logs(auth_subject_id)",
+		"CREATE INDEX IF NOT EXISTS idx_quota_snapshots_subject ON auth_file_quota_snapshots(auth_subject_id)",
+		"CREATE INDEX IF NOT EXISTS idx_quota_snapshot_points_subject_time ON auth_file_quota_snapshot_points(auth_subject_id, recorded_at)",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			log.Warnf("usage: create auth subject index: %v", err)
+		}
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS auth_subject_quota_cycles (
+		  tenant_id       TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
+		  subject_id       TEXT NOT NULL,
+		  auth_index       TEXT NOT NULL DEFAULT '',
+		  provider         TEXT NOT NULL DEFAULT '',
+		  quota_key        TEXT NOT NULL,
+		  cycle_start_at   DATETIME NOT NULL,
+		  reset_at         DATETIME NOT NULL,
+		  window_seconds   INTEGER NOT NULL DEFAULT 0,
+		  last_verified_at DATETIME NOT NULL,
+		  PRIMARY KEY (tenant_id, subject_id, quota_key)
+		)
+	`); err != nil {
+		log.Warnf("usage: create auth_subject_quota_cycles table: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_auth_subject_quota_cycles_subject_window
+		ON auth_subject_quota_cycles(subject_id, window_seconds, last_verified_at)
+	`); err != nil {
+		log.Warnf("usage: create idx_auth_subject_quota_cycles_subject_window: %v", err)
+	}
+}
+
+func migrateRequestLogTenantColumns(db *sql.DB) {
+	for _, table := range []string{"request_logs", "request_log_content"} {
+		_, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001'")
+		if err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			log.Warnf("usage: migrate %s tenant_id: %v", table, err)
+		}
+	}
+	for _, stmt := range []string{
+		"CREATE INDEX IF NOT EXISTS idx_logs_tenant_timestamp ON request_logs(tenant_id, timestamp DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_logs_tenant_api_key_timestamp ON request_logs(tenant_id, api_key_id, timestamp DESC)",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			log.Warnf("usage: create tenant request log index: %v", err)
+		}
+	}
+}
+
+func migrateQuotaTenantColumns(db *sql.DB) {
+	for _, table := range []string{"auth_file_quota_snapshots", "auth_file_quota_snapshot_points", "auth_subject_quota_cycles"} {
+		_, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001'")
+		if err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			log.Warnf("usage: migrate %s tenant_id: %v", table, err)
+		}
+	}
+	for _, stmt := range []string{
+		"CREATE INDEX IF NOT EXISTS idx_quota_snapshots_tenant_date ON auth_file_quota_snapshots(tenant_id, date_key)",
+		"CREATE INDEX IF NOT EXISTS idx_quota_points_tenant_auth_time ON auth_file_quota_snapshot_points(tenant_id, auth_index, recorded_at)",
+		"CREATE INDEX IF NOT EXISTS idx_quota_cycles_tenant_subject ON auth_subject_quota_cycles(tenant_id, subject_id, last_verified_at)",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			log.Warnf("usage: create tenant quota index: %v", err)
+		}
+	}
+}
+
+func sqlitePrimaryKeyColumns(db *sql.DB, table string) ([]string, error) {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type column struct {
+		name string
+		pk   int
+	}
+	var columns []column
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, columnType string
+		var defaultValue any
+		if err = rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+		if pk > 0 {
+			columns = append(columns, column{name: name, pk: pk})
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(columns, func(i, j int) bool { return columns[i].pk < columns[j].pk })
+	result := make([]string, 0, len(columns))
+	for _, item := range columns {
+		result = append(result, item.name)
+	}
+	return result, nil
+}
+
+func migrateQuotaTenantPrimaryKeys(db *sql.DB) {
+	for _, migration := range []struct {
+		table   string
+		wantPK  []string
+		create  string
+		columns string
+		indexes []string
+	}{
+		{
+			table:  "auth_file_quota_snapshots",
+			wantPK: []string{"tenant_id", "date_key", "auth_index", "quota_key"},
+			create: `CREATE TABLE auth_file_quota_snapshots_tenant_migration (
+				tenant_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
+				date_key TEXT NOT NULL, auth_index TEXT NOT NULL, auth_subject_id TEXT NOT NULL DEFAULT '',
+				provider TEXT NOT NULL DEFAULT '', quota_key TEXT NOT NULL, percent REAL,
+				recorded_at DATETIME NOT NULL, PRIMARY KEY (tenant_id, date_key, auth_index, quota_key))`,
+			columns: "tenant_id,date_key,auth_index,auth_subject_id,provider,quota_key,percent,recorded_at",
+			indexes: []string{
+				"CREATE INDEX IF NOT EXISTS idx_quota_snapshots_date ON auth_file_quota_snapshots(date_key)",
+				"CREATE INDEX IF NOT EXISTS idx_quota_snapshots_auth ON auth_file_quota_snapshots(auth_index)",
+				"CREATE INDEX IF NOT EXISTS idx_quota_snapshots_subject ON auth_file_quota_snapshots(auth_subject_id)",
+				"CREATE INDEX IF NOT EXISTS idx_quota_snapshots_tenant_date ON auth_file_quota_snapshots(tenant_id, date_key)",
+			},
+		},
+		{
+			table:  "auth_subject_quota_cycles",
+			wantPK: []string{"tenant_id", "subject_id", "quota_key"},
+			create: `CREATE TABLE auth_subject_quota_cycles_tenant_migration (
+				tenant_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
+				subject_id TEXT NOT NULL, auth_index TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '',
+				quota_key TEXT NOT NULL, cycle_start_at DATETIME NOT NULL, reset_at DATETIME NOT NULL,
+				window_seconds INTEGER NOT NULL DEFAULT 0, last_verified_at DATETIME NOT NULL,
+				PRIMARY KEY (tenant_id, subject_id, quota_key))`,
+			columns: "tenant_id,subject_id,auth_index,provider,quota_key,cycle_start_at,reset_at,window_seconds,last_verified_at",
+			indexes: []string{
+				"CREATE INDEX IF NOT EXISTS idx_auth_subject_quota_cycles_subject_window ON auth_subject_quota_cycles(subject_id, window_seconds, last_verified_at)",
+				"CREATE INDEX IF NOT EXISTS idx_quota_cycles_tenant_subject ON auth_subject_quota_cycles(tenant_id, subject_id, last_verified_at)",
+			},
+		},
+	} {
+		currentPK, err := sqlitePrimaryKeyColumns(db, migration.table)
+		if err != nil {
+			log.Warnf("usage: inspect %s primary key: %v", migration.table, err)
+			continue
+		}
+		if slices.Equal(currentPK, migration.wantPK) {
+			continue
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			log.Warnf("usage: begin %s tenant primary key migration: %v", migration.table, err)
+			continue
+		}
+		migrationTable := migration.table + "_tenant_migration"
+		if _, err = tx.Exec("DROP TABLE IF EXISTS " + migrationTable); err == nil {
+			_, err = tx.Exec(migration.create)
+		}
+		if err == nil {
+			_, err = tx.Exec("INSERT INTO " + migrationTable + " (" + migration.columns + ") SELECT " + migration.columns + " FROM " + migration.table)
+		}
+		if err == nil {
+			_, err = tx.Exec("DROP TABLE " + migration.table)
+		}
+		if err == nil {
+			_, err = tx.Exec("ALTER TABLE " + migrationTable + " RENAME TO " + migration.table)
+		}
+		for _, indexSQL := range migration.indexes {
+			if err == nil {
+				_, err = tx.Exec(indexSQL)
+			}
+		}
+		if err != nil {
+			_ = tx.Rollback()
+			log.Warnf("usage: migrate %s tenant primary key: %v", migration.table, err)
+			continue
+		}
+		if err = tx.Commit(); err != nil {
+			log.Warnf("usage: commit %s tenant primary key migration: %v", migration.table, err)
+		}
+	}
+}
+
+// migrateFirstTokenColumn adds first_token_ms column to an existing request_logs table.
+func migrateFirstTokenColumn(db *sql.DB) {
+	_, err := db.Exec("ALTER TABLE request_logs ADD COLUMN first_token_ms INTEGER NOT NULL DEFAULT 0")
+	if err != nil {
+		if !strings.Contains(err.Error(), "duplicate") {
+			log.Warnf("usage: migrate column first_token_ms: %v", err)
+		}
+	}
+}
+
+func migrateStreamingColumn(db *sql.DB) {
+	_, err := db.Exec("ALTER TABLE request_logs ADD COLUMN streaming INTEGER NOT NULL DEFAULT 0")
+	if err != nil {
+		if !strings.Contains(err.Error(), "duplicate") {
+			log.Warnf("usage: migrate column streaming: %v", err)
+		}
+	}
+}
+
+const (
+	requestLogSessionBackfillMaxRows        = 50
+	requestLogSessionBackfillMaxContentSize = 1 << 20
+)
+
+func backfillRequestLogContentSessionIDs(db *sql.DB) {
+	rows, err := db.Query(`
+		SELECT log_id, compression, detail_content
+		  FROM request_log_content
+		 WHERE session_id = ''
+		   AND length(detail_content) > 0
+		   AND length(detail_content) <= ?
+		 ORDER BY timestamp DESC
+		 LIMIT ?
+	`, requestLogSessionBackfillMaxContentSize, requestLogSessionBackfillMaxRows)
+	if err != nil {
+		log.Warnf("usage: query request log session_id backfill rows: %v", err)
+		return
+	}
+
+	type update struct {
+		logID     int64
+		sessionID string
+	}
+	updates := make([]update, 0)
+	var scanned int64
+	for rows.Next() {
+		var logID int64
+		var compression string
+		var compressed []byte
+		if err := rows.Scan(&logID, &compression, &compressed); err != nil {
+			_ = rows.Close()
+			log.Warnf("usage: scan request log session_id backfill row: %v", err)
+			return
+		}
+		scanned++
+		detail, err := decompressLogContent(compression, compressed)
+		if err != nil {
+			log.Warnf("usage: decompress request log session_id backfill row %d: %v", logID, err)
+			continue
+		}
+		if sessionID := extractSessionIDFromDetails(detail); sessionID != "" {
+			updates = append(updates, update{logID: logID, sessionID: sessionID})
+		}
+	}
+	if err := rows.Close(); err != nil {
+		log.Warnf("usage: close request log session_id backfill rows: %v", err)
+		return
+	}
+	if err := rows.Err(); err != nil {
+		log.Warnf("usage: iterate request log session_id backfill rows: %v", err)
+		return
+	}
+	if len(updates) == 0 {
+		return
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		log.Warnf("usage: begin request log session_id backfill: %v", err)
+		return
+	}
+	stmt, err := tx.Prepare("UPDATE request_log_content SET session_id = ? WHERE log_id = ?")
+	if err != nil {
+		_ = tx.Rollback()
+		log.Warnf("usage: prepare request log session_id backfill: %v", err)
+		return
+	}
+	for _, update := range updates {
+		if _, err := stmt.Exec(update.sessionID, update.logID); err != nil {
+			_ = stmt.Close()
+			_ = tx.Rollback()
+			log.Warnf("usage: update request log session_id backfill row %d: %v", update.logID, err)
+			return
+		}
+	}
+	if err := stmt.Close(); err != nil {
+		_ = tx.Rollback()
+		log.Warnf("usage: close request log session_id backfill statement: %v", err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Warnf("usage: commit request log session_id backfill: %v", err)
+		return
+	}
+	log.Infof("usage: backfilled request log session_id values: %d/%d", len(updates), scanned)
+}
+
+func startRequestLogContentSessionIDBackfill(db *sql.DB) {
+	if db == nil {
+		return
+	}
+	// Historical detail_content can be very large; production databases have
+	// reached gigabytes here. New writes already populate session_id inline, so
+	// startup must not read/decompress old rows on the request-serving process.
+}
+
+// InitDB opens an embedded database for tests. Production startup uses InitPostgres.
+// Tests must register the sqlite driver (blank-import modernc.org/sqlite) before calling InitDB.
+func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.Location) error {
+	usageDBLifecycleMu.Lock()
+	defer usageDBLifecycleMu.Unlock()
+	usageWriteLease.Lock()
+	defer usageWriteLease.Unlock()
+
+	usageDBMu.Lock()
+	defer usageDBMu.Unlock()
+
+	if usageDB != nil {
+		return nil // already initialised
+	}
+
+	if loc == nil {
+		loc = time.Local
+	}
+	usageLoc = loc
+
+	log.Debugf("usage: opening test database at %s", dbPath)
+	// NOTE: Do NOT use _journal_mode or _busy_timeout in the connection string.
+	// Those are mattn/go-sqlite3 (CGO) conventions. modernc.org/sqlite ignores them,
+	// causing data to stay in-memory without flushing to disk.
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return fmt.Errorf("usage: open sqlite: %w", err)
+	}
+
+	db.SetMaxOpenConns(1) // SQLite performs best with a single writer
+	db.SetMaxIdleConns(1)
+
+	// Verify connectivity with a timeout to avoid hanging on WAL recovery
+	log.Debugf("usage: pinging database to verify connectivity")
+	// Test-only ping is a bootstrap health check, not bound to a request lifecycle.
+	// Use a timed root context so WAL recovery cannot block forever.
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer pingCancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		_ = db.Close()
+		return fmt.Errorf("usage: ping sqlite: %w", err)
+	}
+
+	// Set PRAGMAs explicitly via Exec because modernc.org/sqlite does NOT
+	// support the _pragma=value connection-string syntax used by mattn/go-sqlite3.
+	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+		_ = db.Close()
+		return fmt.Errorf("usage: set busy_timeout: %w", err)
+	}
+	if res, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
+		log.Warnf("usage: failed to enable WAL journal mode: %v (data may not persist correctly)", err)
+	} else {
+		log.Debugf("usage: journal_mode set (result: %v)", res)
+	}
+	// synchronous=NORMAL under WAL is safe (no corruption on power loss for
+	// committed txns) and reduces fsync contention between the writer and readers.
+	if _, err := db.Exec("PRAGMA synchronous = NORMAL"); err != nil {
+		log.Warnf("usage: failed to set synchronous=NORMAL: %v", err)
+	}
+
+	// Open a separate read-only connection pool so management reads (QueryLogs,
+	// QueryStats, QueryFilters, content queries) do not serialize behind the
+	// single writer or maintenance ops (wal_checkpoint/VACUUM). WAL mode allows
+	// concurrent readers alongside a writer, so reads stay responsive while inserts
+	// or maintenance hold the write connection. WAL is persisted on the DB file by
+	// the writer above, so the read-only handle opens in WAL mode automatically.
+	readDB, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		_ = db.Close()
+		return fmt.Errorf("usage: open sqlite read-only handle: %w", err)
+	}
+	// Readers can run concurrently with each other and with the writer under WAL.
+	readDB.SetMaxOpenConns(4)
+	readDB.SetMaxIdleConns(2)
+	readDB.SetConnMaxLifetime(30 * time.Minute)
+	if err := readDB.PingContext(pingCtx); err != nil {
+		_ = db.Close()
+		_ = readDB.Close()
+		return fmt.Errorf("usage: ping sqlite read-only handle: %w", err)
+	}
+
+	return initOpenedDBLocked(db, readDB, dbPath, "sqlite", storageCfg, loc, true)
+}
+
+const (
+	postgresMigrationTimeoutEnv     = "CLIRELAY_MIGRATION_TIMEOUT"
+	defaultPostgresMigrationTimeout = 30 * time.Second
+)
+
+func postgresMigrationTimeout() (time.Duration, error) {
+	raw, ok := os.LookupEnv(postgresMigrationTimeoutEnv)
+	if !ok {
+		return defaultPostgresMigrationTimeout, nil
+	}
+	timeout, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("usage: invalid %s %q: %w", postgresMigrationTimeoutEnv, raw, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("usage: invalid %s %q: duration must be greater than zero", postgresMigrationTimeoutEnv, raw)
+	}
+	return timeout, nil
+}
+
+func InitPostgres(pgCfg config.PostgresConfig, storageCfg config.RequestLogStorageConfig, loc *time.Location) error {
+	migrationTimeout, err := postgresMigrationTimeout()
+	if err != nil {
+		return err
+	}
+
+	usageDBLifecycleMu.Lock()
+	defer usageDBLifecycleMu.Unlock()
+	usageWriteLease.Lock()
+	defer usageWriteLease.Unlock()
+
+	usageDBMu.Lock()
+	defer usageDBMu.Unlock()
+
+	if usageDB != nil {
+		return nil
+	}
+	if loc == nil {
+		loc = time.Local
+	}
+	db, err := postgresstore.OpenRuntimeDBWithMigrationTimeout(context.Background(), pgCfg, migrationTimeout)
+	if err != nil {
+		return err
+	}
+	return initOpenedDBLocked(db, db, "postgres", "postgres", storageCfg, loc, false)
+}
+
+func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg config.RequestLogStorageConfig, loc *time.Location, runSQLiteBootstrap bool) (err error) {
+	if loc == nil {
+		loc = time.Local
+	}
+	usageLoc = loc
+	metadata := usageDBMetadata{driver: driver, loc: loc}
+	usageDBMetadataByHandle.Store(db, metadata)
+	usageDBMetadataByHandle.Store(readDB, metadata)
+	defer func() {
+		if err != nil {
+			usageDBMetadataByHandle.Delete(db)
+			usageDBMetadataByHandle.Delete(readDB)
+		}
+	}()
+
+	log.Debugf("usage: creating tables")
+	if runSQLiteBootstrap {
+		if _, err := db.Exec(createTableSQL); err != nil {
+			_ = db.Close()
+			return fmt.Errorf("usage: create table: %w", err)
+		}
+	}
+	usageDB = db
+	usageReadDB = readDB
+	usageDBPath = dbPath
+	usageDriver = driver
+	ApplyRequestLogStorageConfig(storageCfg)
+	if runSQLiteBootstrap {
+		log.Debugf("usage: running tenant scope column migration")
+		migrateRequestLogTenantColumns(db)
+		log.Debugf("usage: running quota tenant scope column migration")
+		migrateQuotaTenantColumns(db)
+		log.Debugf("usage: running content column migration")
+		migrateContentColumns(db)
+		log.Debugf("usage: running cost column migration")
+		migrateCostColumn(db)
+		log.Debugf("usage: running api_key_name column migration")
+		migrateApiKeyNameColumn(db)
+		log.Debugf("usage: running upstream_model column migration")
+		migrateUpstreamModelColumn(db)
+		log.Debugf("usage: running upstream_response_model column migration")
+		migrateUpstreamResponseModelColumn(db)
+		log.Debugf("usage: running vision_fallback_model column migration")
+		migrateVisionFallbackModelColumn(db)
+		log.Debugf("usage: running thinking_level column migration")
+		migrateThinkingLevelColumn(db)
+		log.Debugf("usage: running api_key_id column migration")
+		migrateAPIKeyIDColumn(db)
+		log.Debugf("usage: ensuring request log lookup indexes")
+		ensureRequestLogLookupIndexes(db)
+		log.Debugf("usage: running auth_subject_id column migration")
+		migrateAuthSubjectIDColumns(db)
+		log.Debugf("usage: rebuilding quota tenant primary keys")
+		migrateQuotaTenantPrimaryKeys(db)
+		log.Debugf("usage: running first_token_ms column migration")
+		migrateFirstTokenColumn(db)
+		log.Debugf("usage: running streaming column migration")
+		migrateStreamingColumn(db)
+		log.Debugf("usage: running request log detail column migration")
+		migrateRequestLogDetailColumn(db)
+		log.Debugf("usage: running request log content session_id column migration")
+		migrateRequestLogContentSessionIDColumn(db)
+		log.Debugf("usage: running request log content bodies_stripped column migration")
+		migrateRequestLogContentBodiesStrippedColumn(db)
+		log.Debugf("usage: running request log cache and session column migration")
+		migrateRequestLogCacheColumns(db)
+		log.Debugf("usage: running request log guard_kind column migration")
+		migrateRequestLogGuardKindColumn(db)
+		log.Debugf("usage: ensuring request log content indexes")
+		ensureRequestLogContentIndexes(db)
+		if err := ensureRequestLogIdempotencyTable(db); err != nil {
+			_ = db.Close()
+			usageDB, usageReadDB = nil, nil
+			return err
+		}
+	}
+	bootstrapAIAccountStatusReadModels(db, loc)
+	if err := ensureAIAccountSharedSubjectTables(db); err != nil {
+		_ = db.Close()
+		usageDB, usageReadDB = nil, nil
+		return err
+	}
+	if err := loadAIAccountSubjectCycleCache(db); err != nil {
+		_ = db.Close()
+		usageDB, usageReadDB = nil, nil
+		return fmt.Errorf("usage: load shared ai account cycles: %w", err)
+	}
+	if err := bootstrapAPIKeyDailySpendingResets(db); err != nil {
+		_ = db.Close()
+		usageDB, usageReadDB = nil, nil
+		return err
+	}
+	if err := bootstrapAPIKeyDailySpendingResetEvents(db); err != nil {
+		_ = db.Close()
+		usageDB, usageReadDB = nil, nil
+		return err
+	}
+	if err := bootstrapEndUserDailySpendingResets(db); err != nil {
+		_ = db.Close()
+		usageDB, usageReadDB = nil, nil
+		return err
+	}
+	if err := bootstrapEndUserDailySpendingResetEvents(db); err != nil {
+		_ = db.Close()
+		usageDB, usageReadDB = nil, nil
+		return err
+	}
+	log.Debugf("usage: initializing pricing table")
+	initPricingTable(db)
+	log.Debugf("usage: initializing model config tables")
+	initModelConfigTables(db)
+	log.Debugf("usage: initializing api_keys table")
+	initAPIKeysTable(db)
+	log.Debugf("usage: backfilling request log api_key_id values")
+	backfillRequestLogAPIKeyIDs(db)
+	// Rollup backfill after api_keys + api_key_id repair so historical rows resolve
+	// stable key/end-user dimensions before marker is set.
+	if err := bootstrapUsageRollup(db, loc); err != nil {
+		_ = db.Close()
+		usageDB, usageReadDB = nil, nil
+		return fmt.Errorf("usage: bootstrap usage rollup: %w", err)
+	}
+	log.Debugf("usage: initializing api_key_permission_profiles table")
+	initAPIKeyPermissionProfilesTable(db)
+	log.Debugf("usage: initializing ccswitch_import_configs table")
+	initCcSwitchImportConfigsTable(db)
+	log.Debugf("usage: initializing routing_config table")
+	initRoutingConfigTable(db)
+	log.Debugf("usage: initializing proxy_pool table")
+	initProxyPoolTable(db)
+	log.Debugf("usage: initializing runtime_settings table")
+	initRuntimeSettingsTable(db)
+	log.Debugf("usage: initializing identity_fingerprints table")
+	initIdentityFingerprintsTable(db)
+	log.Debugf("usage: initializing content moderation tables")
+	if err := contentmoderation.InitTables(db); err != nil {
+		_ = db.Close()
+		usageDB, usageReadDB = nil, nil
+		return err
+	}
+	startRequestLogMaintenance(db, driver)
+	startRequestLogContentSessionIDBackfill(db)
+	log.Infof("usage: %s database initialised at %s", driver, dbPath)
+	return nil
+}
+
+// MigrateFromSnapshot imports all request details from an existing
+// MigrateFromSnapshot is retained for API compatibility but no longer
+// migrates individual request details as they are no longer stored in memory.
+func MigrateFromSnapshot(snapshot StatisticsSnapshot) (int64, error) {
+	// Re-enable this to logic to parse aggregates if needed.
+	// We no longer migrate Details since we no longer keep track of them in memory
+	// and they are persisted real-time.
+	return 0, nil
+}
+
+// --- internal helpers ---
+
+type storedTime struct {
+	Time  time.Time
+	Valid bool
+}
+
+func (t *storedTime) Scan(value any) error {
+	parsed, ok := parseStoredTimeValue(value)
+	t.Time = parsed
+	t.Valid = ok
+	return nil
+}
+
+func parseStoredTime(value string) (time.Time, bool) {
+	return parseStoredTimeValue(value)
+}
+
+func parseStoredTimeValue(value any) (time.Time, bool) {
+	switch v := value.(type) {
+	case nil:
+		return time.Time{}, false
+	case time.Time:
+		return v.UTC(), true
+	case string:
+		return parseStoredTimeString(v)
+	case []byte:
+		return parseStoredTimeString(string(v))
+	default:
+		return time.Time{}, false
+	}
+}
+
+func parseStoredTimeString(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	// Include Postgres text forms of timestamptz (space separator, +00 / -07 offsets).
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05.999999999-07",
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05-07",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+	} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
+func getDB() *sql.DB {
+	usageDBMu.Lock()
+	defer usageDBMu.Unlock()
+	return usageDB
+}
+
+func currentUsageDriver() string {
+	usageDBMu.Lock()
+	defer usageDBMu.Unlock()
+	return usageDriver
+}
+
+// getReadDB returns the dedicated read-only connection pool used by management
+// read paths (QueryLogs/QueryStats/QueryFilters/content queries) so they do not
+// block on the single writer or maintenance ops. It falls back to the write
+// handle when no read pool is available, preserving correctness.
+func getReadDB() *sql.DB {
+	usageDBMu.Lock()
+	defer usageDBMu.Unlock()
+	if usageReadDB != nil {
+		return usageReadDB
+	}
+	return usageDB
+}
+
+func getUsageLocation() *time.Location {
+	usageDBMu.Lock()
+	defer usageDBMu.Unlock()
+	if usageLoc == nil {
+		return time.Local
+	}
+	return usageLoc
+}
+
+// GetDBPath returns the SQLite database file path, or empty for non-file databases.
+func GetDBPath() string {
+	usageDBMu.Lock()
+	defer usageDBMu.Unlock()
+	if usageDriver != "sqlite" {
+		return ""
+	}
+	return usageDBPath
+}
+
+// GetDatabaseStats returns runtime database engine and size telemetry.
+func GetDatabaseStats() (DatabaseStats, error) {
+	usageDBMu.Lock()
+	driver := usageDriver
+	path := usageDBPath
+	db := usageReadDB
+	if db == nil {
+		db = usageDB
+	}
+	usageDBMu.Unlock()
+
+	stats := DatabaseStats{Driver: driver}
+	switch driver {
+	case "postgres":
+		if db == nil {
+			return stats, nil
+		}
+		var size sql.NullInt64
+		if err := db.QueryRow("SELECT pg_database_size(current_database())").Scan(&size); err != nil {
+			return stats, fmt.Errorf("usage: query postgres database size: %w", err)
+		}
+		if size.Valid {
+			stats.SizeBytes = size.Int64
+		}
+	case "sqlite":
+		size, err := sqliteDatabaseSizeBytes(path)
+		if err != nil {
+			return stats, err
+		}
+		stats.SizeBytes = size
+	}
+	return stats, nil
+}
+
+func sqliteDatabaseSizeBytes(path string) (int64, error) {
+	if strings.TrimSpace(path) == "" {
+		return 0, nil
+	}
+	var size int64
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		info, err := os.Stat(candidate)
+		if err == nil {
+			size += info.Size()
+			continue
+		}
+		if !os.IsNotExist(err) {
+			return 0, fmt.Errorf("usage: stat sqlite database file %s: %w", candidate, err)
+		}
+	}
+	return size, nil
+}
+
+// RuntimeDB returns the initialized runtime database handle for internal services
+// that share PostgreSQL as the source of truth.
+func RuntimeDB() *sql.DB {
+	return getDB()
+}

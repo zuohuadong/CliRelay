@@ -1,0 +1,204 @@
+// Package serviceapp exposes service/runtime bridges outside the sdk tree.
+//
+// sdk/cliproxy uses this package to reach service runtime helpers without
+// importing internal assembly packages directly.
+package serviceapp
+
+import (
+	"context"
+
+	internalserviceapp "github.com/router-for-me/CLIProxyAPI/v8/internal/app/service"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
+)
+
+type RuntimeAuthUpdateAction = internalserviceapp.RuntimeAuthUpdateAction
+
+const (
+	RuntimeAuthUpdateActionAdd    = internalserviceapp.RuntimeAuthUpdateActionAdd
+	RuntimeAuthUpdateActionModify = internalserviceapp.RuntimeAuthUpdateActionModify
+	RuntimeAuthUpdateActionDelete = internalserviceapp.RuntimeAuthUpdateActionDelete
+)
+
+type RuntimeAuthUpdate = internalserviceapp.RuntimeAuthUpdate
+
+type WatcherBridge = internalserviceapp.WatcherBridge
+
+type ServerStarter = internalserviceapp.ServerStarter
+
+func NewWatcher(configPath, authDir string, reload func(*config.Config)) (WatcherBridge, error) {
+	return internalserviceapp.NewWatcher(configPath, authDir, reload)
+}
+
+type WebsocketGateway = internalserviceapp.WebsocketGateway
+
+func NewDefaultWebsocketGateway(onConnected func(string), onDisconnected func(string, error)) WebsocketGateway {
+	return internalserviceapp.NewDefaultWebsocketGateway(onConnected, onDisconnected)
+}
+
+type PprofServer = internalserviceapp.PprofServer
+
+func NewPprofServer() PprofServer {
+	return internalserviceapp.NewPprofServer()
+}
+
+func SanitizePprofAddr(addr string, allowRemote bool) string {
+	return internalserviceapp.SanitizePprofAddr(addr, allowRemote)
+}
+
+func StartServerLoop(server ServerStarter) chan error {
+	return internalserviceapp.StartServerLoop(server)
+}
+
+func EnsureAuthDir(authDir string) error {
+	return internalserviceapp.EnsureAuthDir(authDir)
+}
+
+type OAuthProviderModelConfigRow = internalserviceapp.OAuthProviderModelConfigRow
+
+func ListOAuthProviderModelConfigRows() []OAuthProviderModelConfigRow {
+	return internalserviceapp.ListOAuthProviderModelConfigRows()
+}
+
+func ListOAuthProviderModelConfigRowsForTenant(tenantID string) []OAuthProviderModelConfigRow {
+	return internalserviceapp.ListOAuthProviderModelConfigRowsForTenant(tenantID)
+}
+
+func ListModelOwnersForAuthGroupsForTenant(tenantID string, authGroups []string) []string {
+	return internalserviceapp.ListModelOwnersForAuthGroupsForTenant(tenantID, authGroups)
+}
+
+func ConfigureServiceAccess(cfg *config.Config, accessManager *sdkaccess.Manager) {
+	internalserviceapp.ConfigureServiceAccess(cfg, accessManager)
+}
+
+func NewDefaultAuthManager() *sdkAuth.Manager {
+	return internalserviceapp.NewDefaultAuthManager()
+}
+
+func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int) {
+	return internalserviceapp.BuildAPIKeyClients(cfg)
+}
+
+func ApplyTenantRuntimeConfigs(cfg *config.Config, manager *coreauth.Manager) {
+	internalserviceapp.ApplyTenantRuntimeConfigs(cfg, manager)
+}
+
+func NewDefaultRoundTripperProvider() coreauth.RoundTripperProvider {
+	return internalserviceapp.NewDefaultRoundTripperProvider()
+}
+
+func StartOpenRouterModelSync(ctx context.Context) {
+	internalserviceapp.StartOpenRouterModelSync(ctx)
+}
+
+func ApplyDBBackedRuntimeSettings(cfg *config.Config, configPath string) {
+	internalserviceapp.ApplyDBBackedRuntimeSettings(cfg, configPath)
+}
+
+func SyncConfigDerivedAuths(cfg *config.Config, coreManager *coreauth.Manager) {
+	internalserviceapp.SyncConfigDerivedAuths(cfg, coreManager)
+}
+
+func FetchAntigravityModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	return internalserviceapp.FetchAntigravityModels(ctx, auth, cfg)
+}
+
+func FetchXAIModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	return internalserviceapp.FetchXAIModels(ctx, auth, cfg)
+}
+
+func FetchClaudeModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	return internalserviceapp.FetchClaudeModels(ctx, auth, cfg)
+}
+
+func FetchCodexModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	return internalserviceapp.FetchCodexModels(ctx, auth, cfg)
+}
+
+func FetchKimiModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	return internalserviceapp.FetchKimiModels(ctx, auth, cfg)
+}
+
+// IsSelfListingProvider reports whether a provider's credentials each list their
+// own models.
+func IsSelfListingProvider(provider string) bool {
+	return internalserviceapp.IsSelfListingProvider(provider)
+}
+
+// DiscoverCredentialModels asks the upstream which models one credential of a
+// self-listing provider can call, reporting failure as an error.
+func DiscoverCredentialModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config, provider string) ([]*sdkmodelcatalog.ModelInfo, error) {
+	return internalserviceapp.DiscoverCredentialModels(ctx, auth, cfg, provider)
+}
+
+// CredentialModelFloor lists the compiled-in models a self-listing credential
+// registers while no credential of its provider has fetched a list.
+func CredentialModelFloor(provider string) []*sdkmodelcatalog.ModelInfo {
+	return internalserviceapp.CredentialModelFloor(provider)
+}
+
+// ModelListSnapshotPath is where the last list each credential fetched is kept
+// across restarts.
+func ModelListSnapshotPath(authDir string) string {
+	return internalserviceapp.ModelListSnapshotPath(authDir)
+}
+
+// ProviderDiscoveryDrivesRouting reports whether a provider's upstream model list is
+// merged into the models its credentials register.
+func ProviderDiscoveryDrivesRouting(provider string) bool {
+	return internalserviceapp.ProviderDiscoveryDrivesRouting(provider)
+}
+
+// ProviderDiscoveryRoutingProviders lists the providers whose upstream lists drive routing.
+func ProviderDiscoveryRoutingProviders() []string {
+	return internalserviceapp.ProviderDiscoveryRoutingProviders()
+}
+
+// IsProviderDiscoveryCredential reports whether a credential takes part in its
+// provider's shared upstream list.
+func IsProviderDiscoveryCredential(auth *coreauth.Auth, provider string) bool {
+	return internalserviceapp.IsProviderDiscoveryCredential(auth, provider)
+}
+
+// ProviderDiscoverySnapshotPath is where the shared upstream lists are kept across
+// restarts.
+func ProviderDiscoverySnapshotPath(authDir string) string {
+	return internalserviceapp.ProviderDiscoverySnapshotPath(authDir)
+}
+
+// LoadProviderDiscoverySnapshot restores the shared upstream lists the previous
+// process saved; see internal/app/service.
+func LoadProviderDiscoverySnapshot(authDir string) (int, error) {
+	return internalserviceapp.LoadProviderDiscoverySnapshot(authDir)
+}
+
+// ProviderDiscoverySnapshot returns the last upstream model list stored for a
+// tenant's credentials of a routing provider.
+func ProviderDiscoverySnapshot(tenantID, provider string) []*sdkmodelcatalog.ModelInfo {
+	return internalserviceapp.ProviderDiscoverySnapshot(tenantID, provider)
+}
+
+// RefreshProviderDiscovery re-fetches a provider's upstream list for a tenant.
+func RefreshProviderDiscovery(ctx context.Context, manager *coreauth.Manager, cfg *config.Config, tenantID, provider string) bool {
+	return internalserviceapp.RefreshProviderDiscovery(ctx, manager, cfg, tenantID, provider)
+}
+
+// SetProviderDiscoveryChangeHook registers the callback run after a routing
+// provider's upstream list changes for a tenant; nil removes it.
+func SetProviderDiscoveryChangeHook(fn func(tenantID, provider string)) {
+	internalserviceapp.SetProviderDiscoveryChangeHook(fn)
+}
+
+func RegisterExecutorForAuth(coreManager *coreauth.Manager, cfg *config.Config, auth *coreauth.Auth, forceReplace bool, gateway WebsocketGateway) {
+	internalserviceapp.RegisterExecutorForAuth(coreManager, cfg, auth, forceReplace, gateway)
+}
+
+// WithRegisteredImageModels guarantees a provider's image-generation models are in
+// the set registered for a credential. See internal/app/service for why.
+func WithRegisteredImageModels(provider string, models []*sdkmodelcatalog.ModelInfo) []*sdkmodelcatalog.ModelInfo {
+	return internalserviceapp.WithRegisteredImageModels(provider, models)
+}

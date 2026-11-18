@@ -1,17 +1,12 @@
 // Package api provides the HTTP API server implementation for the CLI Proxy API.
-// It includes the main server struct, routing setup, middleware for CORS and authentication,
-// and integration with various AI API handlers (OpenAI, Claude, Gemini).
-// The server supports hot-reloading of clients and configuration.
+// It includes the server lifecycle and shared runtime state.
 package api
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,24 +14,23 @@ import (
 
 	"github.com/gin-gonic/gin"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
+	ampmodule "github.com/router-for-me/CLIProxyAPI/v8/internal/api/modules/amp"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/live"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/client/musecode"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/clusterruntime"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/githubauth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/egresshealth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
-	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
-	internalusage "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	internalvideo "github.com/router-for-me/CLIProxyAPI/v8/internal/video"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/wstunnel"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
-	openai "github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/net/http2"
-	"gopkg.in/yaml.v3"
+)
+
+const (
+	// Main API requests can legitimately spend several minutes waiting on upstream model execution.
+	mainAPIServerWriteTimeout = 10 * time.Minute
 )
 
 // Server represents the main API server.
@@ -48,25 +42,11 @@ type Server struct {
 	// server is the underlying HTTP server.
 	server *http.Server
 
-	// muxBaseListener is the shared TCP listener used to serve both HTTP and Redis protocol traffic.
-	listenerMu      sync.Mutex
-	muxBaseListener net.Listener
-
-	// muxHTTPListener receives HTTP connections selected by the multiplexer.
-	muxHTTPListener *muxListener
-
 	// handlers contains the API handlers for processing requests.
-	handlers         *handlers.BaseAPIHandler
-	codexLiveHandler *codexlive.Handler
-	openaiHandler    *openai.OpenAIAPIHandler
-	videoService     *internalvideo.Service
-
-	// mcpProxyCounter is the round-robin counter for MCP proxy upstream selection.
-	mcpProxyCounter atomic.Uint64
+	handlers *handlers.BaseAPIHandler
 
 	// cfg holds the current server configuration.
-	cfgMu sync.RWMutex
-	cfg   *config.Config
+	cfg *config.Config
 
 	// oldConfigYaml stores a YAML snapshot of the previous configuration for change detection.
 	// This prevents issues when the config object is modified in place by Management API.
@@ -92,10 +72,22 @@ type Server struct {
 	wsAuthEnabled atomic.Bool
 
 	// management handler
-	mgmt *managementHandlers.Handler
+	mgmt             *managementHandlers.Handler
+	pluginHost       *pluginhost.Host
+	tunnelHub        *wstunnel.Hub
+	cfgMu            sync.RWMutex
+	interceptorHost  handlers.PluginInterceptorHost
+	codexLiveHandler *codexlive.Handler
+	museCodeHandler  *musecode.Handler
 
-	// pluginHost owns dynamic plugin Management API route dispatch.
-	pluginHost *pluginhost.Host
+	exampleAPIKeySafeModeEnabled bool
+	exampleAPIKeySafeModeActive  atomic.Bool
+
+	// routingSimulation runs the management API's simulated requests.
+	routingSimulation *routingSimulation
+
+	// ampModule is the Amp routing module for model mapping hot-reload
+	ampModule *ampmodule.AmpModule
 
 	// managementRoutesRegistered tracks whether the management routes have been attached to the engine.
 	managementRoutesRegistered atomic.Bool
@@ -113,320 +105,80 @@ type Server struct {
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
 
-	exampleAPIKeySafeModeEnabled bool
-	exampleAPIKeySafeModeActive  atomic.Bool
+	publicLookupRateMu          sync.Mutex
+	publicLookupRate            map[string]publicLookupRateLimitEntry
+	publicLookupRateLastCleanup time.Time
 
-	apiKeyBillingRateMu      sync.Mutex
-	apiKeyBillingRateBuckets map[string]routeRateLimitBucket
-}
+	proxyWarmMu        sync.Mutex
+	proxyWarmManager   interface{ Stop() }
+	proxyWarmSignature string
 
-// NewServer creates and initializes a new API server instance.
-// It sets up the Gin engine, middleware, routes, and handlers.
-//
-// Parameters:
-//   - cfg: The server configuration
-//   - authManager: core runtime auth manager
-//   - accessManager: request authentication manager
-//
-// Returns:
-//   - *Server: A new server instance
-func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdkaccess.Manager, configFilePath string, opts ...ServerOption) *Server {
-	optionState := &serverOptionConfig{
-		requestLoggerFactory: defaultRequestLoggerFactory,
-	}
-	for i := range opts {
-		opts[i](optionState)
-	}
-	// Set gin mode
-	if !cfg.Debug {
-		gin.SetMode(gin.ReleaseMode)
-	}
+	draining         atomic.Bool
+	inFlightRequests atomic.Int64
 
-	// Create gin engine
-	engine := gin.New()
-	if errSetTrustedProxies := engine.SetTrustedProxies(cfg.TrustedProxies); errSetTrustedProxies != nil {
-		log.WithError(errSetTrustedProxies).Error("invalid trusted-proxies configuration; forwarded client IP headers will be ignored")
-		if errDisableTrustedProxies := engine.SetTrustedProxies(nil); errDisableTrustedProxies != nil {
-			log.WithError(errDisableTrustedProxies).Error("failed to disable trusted proxy handling")
-		}
-	}
-	if optionState.engineConfigurator != nil {
-		optionState.engineConfigurator(engine)
-	}
+	// clusterRuntime is this server's hold on the cluster wiring; nil on a
+	// single node.
+	clusterRuntime *clusterruntime.Runtime
 
-	// Add middleware
-	engine.Use(logging.GinLogrusLogger())
-	engine.Use(logging.GinLogrusRecovery())
-	engine.Use(logging.CPATraceIDMiddleware())
-	// Bound request bodies before any middleware (request logging, auth) reads them.
-	// The server instance is created below, so the limit is resolved lazily.
-	var bodyLimitServer *Server
-	engine.Use(func(c *gin.Context) {
-		if bodyLimitServer == nil {
-			c.Next()
-			return
-		}
-		bodyLimitServer.maxRequestBodyBytesMiddleware()(c)
-	})
-	for _, mw := range optionState.extraMiddleware {
-		engine.Use(mw)
-	}
+	// configSync applies management changes made on other cluster nodes.
+	configSync configSyncState
 
-	// Add request logging middleware (positioned after recovery, before auth)
-	// Resolve logs directory relative to the configuration file directory.
-	var requestLogger logging.RequestLogger
-	var toggle func(bool)
-	if !cfg.CommercialMode {
-		if optionState.requestLoggerFactory != nil {
-			requestLogger = optionState.requestLoggerFactory(cfg, configFilePath)
-		}
-		if requestLogger != nil {
-			engine.Use(middleware.RequestLoggingMiddleware(requestLogger))
-			if setter, ok := requestLogger.(interface{ SetEnabled(bool) }); ok {
-				toggle = setter.SetEnabled
-			}
-		}
-	}
-
-	engine.Use(corsMiddleware())
-	wd, err := os.Getwd()
-	if err != nil {
-		wd = configFilePath
-	}
-
-	envAdminPassword, envAdminPasswordSet := os.LookupEnv("MANAGEMENT_PASSWORD")
-	envAdminPassword = strings.TrimSpace(envAdminPassword)
-	envManagementSecret := envAdminPasswordSet && envAdminPassword != ""
-
-	// Create server instance
-	s := &Server{
-		engine:              engine,
-		handlers:            handlers.NewBaseAPIHandlers(effectiveSDKConfig(cfg), authManager),
-		cfg:                 cfg,
-		accessManager:       accessManager,
-		requestLogger:       requestLogger,
-		loggerToggle:        toggle,
-		configFilePath:      configFilePath,
-		currentPath:         wd,
-		envManagementSecret: envManagementSecret,
-		wsRoutes:            make(map[string]struct{}),
-		pluginHost:          optionState.pluginHost,
-		videoService:        optionState.videoService,
-
-		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
-	}
-	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
-	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
-	s.handlers.SetPluginHost(optionState.pluginHost)
-	if optionState.pluginHost != nil {
-		optionState.pluginHost.SetModelExecutor(s.handlers)
-		optionState.pluginHost.SetAuthManager(authManager)
-	}
-	// Save initial YAML snapshot
-	s.oldConfigYaml, _ = yaml.Marshal(cfg)
-	s.applyAccessConfig(nil, cfg)
-	if authManager != nil {
-		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
-	}
-	managementasset.SetCurrentConfig(cfg)
-	githubauth.SetToken(cfg.GitHubToken)
-	responsesclaude.SetClientToolSearchEnabled(cfg != nil && cfg.Claude.ToolSearch)
-	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
-	auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
-	applySignatureCacheConfig(nil, cfg)
-	internalusage.SetChannelBillingMultipliersFromConfig(cfg)
-	// Initialize management handler
-	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
-	s.mgmt.SetEgressService(optionState.egressService)
-	s.mgmt.SetPluginHost(optionState.pluginHost)
-	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
-	if optionState.localPassword != "" {
-		s.mgmt.SetLocalPassword(optionState.localPassword)
-	}
-	logDir := logging.ResolveLogDirectory(cfg)
-	s.mgmt.SetLogDirectory(logDir)
-	if optionState.postAuthHook != nil {
-		s.mgmt.SetPostAuthHook(optionState.postAuthHook)
-	}
-	if optionState.postAuthPersistHook != nil {
-		s.mgmt.SetPostAuthPersistHook(optionState.postAuthPersistHook)
-	}
-	s.localPassword = optionState.localPassword
-
-	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
-	// subscribe-config heartbeat connection is healthy.
-	bodyLimitServer = s
-	engine.Use(s.homeHeartbeatMiddleware())
-	engine.Use(s.exampleAPIKeySafeModeMiddleware())
-
-	// Setup routes
-	s.setupRoutes()
-
-	// Apply additional router configurators from options
-	if optionState.routerConfigurator != nil {
-		optionState.routerConfigurator(engine, s.handlers, cfg)
-	}
-
-	// Register management routes when configuration or environment secrets are available,
-	// or when a local management password is provided (e.g. TUI mode).
-	hasManagementSecret := cfg.RemoteManagement.SecretKey != "" || envManagementSecret || s.localPassword != ""
-	s.managementRoutesEnabled.Store(hasManagementSecret)
-	redisqueue.SetEnabled(hasManagementSecret || (cfg != nil && cfg.Home.Enabled))
-	if hasManagementSecret {
-		s.registerManagementRoutes()
-	}
-	s.refreshPluginManagementRoutes()
-	engine.NoRoute(s.pluginManagementNoRoute)
-
-	if optionState.keepAliveEnabled {
-		s.enableKeepAlive(optionState.keepAliveTimeout, optionState.keepAliveOnTimeout)
-	}
-
-	// Create HTTP server
-	s.server = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Handler: engine,
-	}
-
-	return s
-}
-
-// Handler returns the HTTP handler used by the server.
-func (s *Server) Handler() http.Handler {
-	if s == nil || s.server == nil {
-		return nil
-	}
-	return s.server.Handler
+	// egress checks the proxies upstream traffic leaves through; it backs
+	// /readyz/egress.
+	egress *egresshealth.Prober
 }
 
 // Start begins listening for and serving HTTP or HTTPS requests.
-// It's a blocking call and will only return on an unrecoverable error.
-//
-// Returns:
-//   - error: An error if the server fails to start
+// It blocks until the listener exits or startup fails.
 func (s *Server) Start() error {
 	if s == nil || s.server == nil {
 		return fmt.Errorf("failed to start HTTP server: server not initialized")
 	}
 
-	addr := s.server.Addr
-	listener, errListen := net.Listen("tcp", addr)
+	s.startConfigSync()
+	s.egress.Start(context.Background())
+	s.startNodeMetrics()
+	// The listener is opened here rather than by ListenAndServe so that the
+	// node snapshot can count the bytes of every connection.
+	useTLS := s.cfg != nil && s.cfg.TLS.Enable
+	if useTLS {
+		cert := strings.TrimSpace(s.cfg.TLS.Cert)
+		key := strings.TrimSpace(s.cfg.TLS.Key)
+		if cert == "" || key == "" {
+			return fmt.Errorf("failed to start HTTPS server: tls.cert or tls.key is empty")
+		}
+		log.Debugf("Starting API server on %s with TLS", s.server.Addr)
+		ln, errListen := s.listenCounted(":https")
+		if errListen != nil {
+			return fmt.Errorf("failed to start HTTPS server: %v", errListen)
+		}
+		defer func() { _ = ln.Close() }()
+		if errServeTLS := s.server.ServeTLS(ln, cert, key); errServeTLS != nil && !errors.Is(errServeTLS, http.ErrServerClosed) {
+			return fmt.Errorf("failed to start HTTPS server: %v", errServeTLS)
+		}
+		return nil
+	}
+
+	log.Debugf("Starting API server on %s", s.server.Addr)
+	ln, errListen := s.listenCounted(":http")
 	if errListen != nil {
 		return fmt.Errorf("failed to start HTTP server: %v", errListen)
 	}
-
-	cfg := s.getConfig()
-	useTLS := cfg != nil && cfg.TLS.Enable
-	if useTLS {
-		certPath := strings.TrimSpace(cfg.TLS.Cert)
-		keyPath := strings.TrimSpace(cfg.TLS.Key)
-		if certPath == "" || keyPath == "" {
-			if errClose := listener.Close(); errClose != nil {
-				log.Errorf("failed to close listener after TLS validation failure: %v", errClose)
-			}
-			return fmt.Errorf("failed to start HTTPS server: tls.cert or tls.key is empty")
-		}
-		certPair, errLoad := tls.LoadX509KeyPair(certPath, keyPath)
-		if errLoad != nil {
-			if errClose := listener.Close(); errClose != nil {
-				log.Errorf("failed to close listener after TLS key pair load failure: %v", errClose)
-			}
-			return fmt.Errorf("failed to start HTTPS server: %v", errLoad)
-		}
-
-		tlsConfig := &tls.Config{
-			Certificates: []tls.Certificate{certPair},
-			NextProtos:   []string{"h2", "http/1.1"},
-		}
-		s.server.TLSConfig = tlsConfig
-		if errHTTP2 := http2.ConfigureServer(s.server, &http2.Server{}); errHTTP2 != nil {
-			log.Warnf("failed to configure HTTP/2: %v", errHTTP2)
-		}
-		listener = tls.NewListener(listener, tlsConfig)
-		log.Debugf("Starting API server on %s with TLS", addr)
-	} else {
-		log.Debugf("Starting API server on %s", addr)
+	defer func() { _ = ln.Close() }()
+	if errServe := s.server.Serve(ln); errServe != nil && !errors.Is(errServe, http.ErrServerClosed) {
+		return fmt.Errorf("failed to start HTTP server: %v", errServe)
 	}
 
-	httpListener := newMuxListener(listener.Addr(), 1024)
-	s.listenerMu.Lock()
-	s.muxBaseListener = listener
-	s.muxHTTPListener = httpListener
-	s.listenerMu.Unlock()
-
-	httpErrCh := make(chan error, 1)
-	acceptErrCh := make(chan error, 1)
-
-	go func() {
-		httpErrCh <- s.server.Serve(httpListener)
-	}()
-	go func() {
-		acceptErrCh <- s.acceptMuxConnections(listener, httpListener)
-	}()
-
-	select {
-	case errServe := <-httpErrCh:
-		s.listenerMu.Lock()
-		muxBase := s.muxBaseListener
-		muxHTTP := s.muxHTTPListener
-		s.muxBaseListener = nil
-		s.muxHTTPListener = nil
-		s.listenerMu.Unlock()
-		if muxBase != nil {
-			if errClose := muxBase.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
-				log.Debugf("failed to close shared listener after HTTP serve exit: %v", errClose)
-			}
-		}
-		if muxHTTP != nil {
-			_ = muxHTTP.Close()
-		}
-		errAccept := <-acceptErrCh
-		errServe = normalizeHTTPServeError(errServe)
-		errAccept = normalizeListenerError(errAccept)
-		if errServe != nil {
-			return fmt.Errorf("failed to start HTTP server: %v", errServe)
-		}
-		if errAccept != nil {
-			return fmt.Errorf("failed to start HTTP server: %v", errAccept)
-		}
-		return nil
-	case errAccept := <-acceptErrCh:
-		s.listenerMu.Lock()
-		muxHTTP := s.muxHTTPListener
-		muxBase := s.muxBaseListener
-		s.muxHTTPListener = nil
-		s.muxBaseListener = nil
-		s.listenerMu.Unlock()
-		if muxHTTP != nil {
-			_ = muxHTTP.Close()
-		}
-		if muxBase != nil {
-			if errClose := muxBase.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
-				log.Debugf("failed to close shared listener after accept loop exit: %v", errClose)
-			}
-		}
-		errServe := <-httpErrCh
-		errServe = normalizeHTTPServeError(errServe)
-		errAccept = normalizeListenerError(errAccept)
-		if errAccept != nil {
-			return fmt.Errorf("failed to start HTTP server: %v", errAccept)
-		}
-		if errServe != nil {
-			return fmt.Errorf("failed to start HTTP server: %v", errServe)
-		}
-		return nil
-	}
+	return nil
 }
 
-// Stop closes listeners and immediately shuts down the API server without waiting for active connections.
-//
-// Parameters:
-//   - ctx: Context passed for compatibility.
-//
-// Returns:
-//   - error: An error if the server fails to stop
+// Stop gracefully shuts down the API server without interrupting any
+// active connections and closes the management handler before the HTTP server.
 func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
+	s.draining.Store(true)
+	s.server.SetKeepAlivesEnabled(false)
+	log.Infof("API server entering draining mode with %d in-flight request(s)", s.inFlightRequests.Load())
 
 	if s.keepAliveEnabled {
 		select {
@@ -435,46 +187,25 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
-	s.listenerMu.Lock()
-	muxHTTP := s.muxHTTPListener
-	s.muxHTTPListener = nil
-	muxBase := s.muxBaseListener
-	s.muxBaseListener = nil
-	s.listenerMu.Unlock()
+	s.stopNodeMetrics()
+	s.stopConfigSync()
+	s.egress.Stop()
+	if s.mgmt != nil {
+		s.mgmt.Close()
+	}
+	s.stopProxyWarmup()
 
-	if muxHTTP != nil {
-		_ = muxHTTP.Close()
-	}
-	if muxBase != nil {
-		if errCloseBase := muxBase.Close(); errCloseBase != nil && !errors.Is(errCloseBase, net.ErrClosed) {
-			log.Debugf("failed to close shared listener: %v", errCloseBase)
-		}
-	}
-
-	// Close the HTTP server immediately without graceful draining.
-	var errCloseServer error
-	if s.server != nil {
-		errCloseServer = s.server.Close()
-		if errors.Is(errCloseServer, http.ErrServerClosed) || errors.Is(errCloseServer, net.ErrClosed) {
-			errCloseServer = nil
-		}
-	}
-	if s.codexLiveHandler != nil {
-		s.codexLiveHandler.Close()
-	}
-	if errCloseServer != nil {
-		return fmt.Errorf("failed to shutdown HTTP server: %v", errCloseServer)
+	// Shutdown the HTTP server.
+	err := s.server.Shutdown(ctx)
+	// Drained (or out of time): give this node's cluster slots back now rather
+	// than letting them sit until their leases expire.
+	clusterruntime.Release(s.clusterRuntime)
+	s.clusterRuntime = nil
+	if err != nil {
+		log.Errorf("API server shutdown timed out with %d in-flight request(s)", s.inFlightRequests.Load())
+		return fmt.Errorf("failed to shutdown HTTP server: %v", err)
 	}
 
 	log.Debug("API server stopped")
 	return nil
-}
-
-func (s *Server) getConfig() *config.Config {
-	if s == nil {
-		return nil
-	}
-	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
-	return s.cfg
 }

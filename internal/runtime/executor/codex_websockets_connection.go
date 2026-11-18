@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"compress/flate"
 	"context"
 	"errors"
 	"fmt"
@@ -9,18 +10,18 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/sjson"
 	"golang.org/x/net/proxy"
 )
 
@@ -31,85 +32,28 @@ const (
 )
 
 func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *cliproxyauth.Auth, wsURL string, headers http.Header) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
-	dialHeaders, err := applyAgentIdentityWebsocketHeaders(headers, auth, wsURL)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("codex websocket: apply Agent Identity auth: %w", err)
-	}
-	var dialer *websocket.Dialer
-	if e != nil && e.CodexExecutor != nil && e.CodexExecutor.usesStrictEgress(auth) {
-		proxyURL := ""
-		if auth != nil {
-			proxyURL = auth.ProxyURL
-		}
-		dialer, err = newStrictProxyWebsocketDialer(proxyURL)
-		if err != nil {
-			return nil, nil, nil, egress.RuntimeError(err)
-		}
-	} else {
-		dialer = newProxyAwareWebsocketDialer(ctx, e.cfg, auth)
-	}
+	dialer := newProxyAwareWebsocketDialer(ctx, e.cfg, auth)
 	dialer.HandshakeTimeout = codexResponsesWebsocketHandshakeTO
 	dialer.EnableCompression = true
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	conn, resp, err := dialer.DialContext(ctx, wsURL, dialHeaders)
-	if resp != nil && resp.Request == nil {
-		resp.Request = &http.Request{Header: dialHeaders.Clone()}
-	}
+	conn, resp, err := dialer.DialContext(ctx, wsURL, headers)
 	if err != nil {
 		cliproxyexecutor.MarkUpstreamAttempt(ctx)
 	}
 	closer := newWebsocketConnectionCloser(conn)
-	if e != nil && e.CodexExecutor != nil && e.CodexExecutor.usesStrictEgress(auth) && err != nil && resp == nil {
-		err = e.CodexExecutor.wrapStrictEgressTransportErrorForAuth(auth, err, "websocket proxy dial")
-	}
 	if conn != nil {
-		// Avoid gorilla/websocket flate tail validation issues on some upstreams/Go versions.
-		// Negotiating permessage-deflate is fine; we just don't compress outbound messages.
-		conn.EnableWriteCompression(false)
+		enabled := e.cfg == nil || e.cfg.Codex.WebsocketCompressionEnabled()
+		conn.EnableWriteCompression(enabled)
+		if enabled {
+			// DefaultCompression avoids the fast flate tail path; configuration remains an escape hatch.
+			if errSetCompressionLevel := conn.SetCompressionLevel(flate.DefaultCompression); errSetCompressionLevel != nil {
+				log.Errorf("set Codex websocket compression level: %v", errSetCompressionLevel)
+			}
+		}
 	}
 	return conn, closer, resp, err
-}
-
-func newStrictProxyWebsocketDialer(proxyURL string) (*websocket.Dialer, error) {
-	dialer := &websocket.Dialer{
-		Proxy:             nil,
-		HandshakeTimeout:  codexResponsesWebsocketHandshakeTO,
-		EnableCompression: true,
-		NetDialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-	}
-	setting, err := proxyutil.Parse(strings.TrimSpace(proxyURL))
-	if err != nil || setting.Mode != proxyutil.ModeProxy || setting.URL == nil {
-		if err == nil {
-			err = egress.ErrEndpointInvalid
-		}
-		return nil, fmt.Errorf("%w: strict websocket proxy is invalid: %v", egress.ErrEndpointInvalid, err)
-	}
-	switch setting.URL.Scheme {
-	case "socks5", "socks5h":
-		var proxyAuth *proxy.Auth
-		if setting.URL.User != nil {
-			username := setting.URL.User.Username()
-			password, _ := setting.URL.User.Password()
-			proxyAuth = &proxy.Auth{User: username, Password: password}
-		}
-		socksDialer, errSOCKS5 := proxy.SOCKS5("tcp", setting.URL.Host, proxyAuth, proxy.Direct)
-		if errSOCKS5 != nil {
-			return nil, fmt.Errorf("%w: create SOCKS5 dialer: %v", egress.ErrEndpointInvalid, errSOCKS5)
-		}
-		dialer.NetDialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
-			return socksDialer.Dial(network, addr)
-		}
-	case "http":
-		dialer.Proxy = http.ProxyURL(setting.URL)
-	default:
-		return nil, fmt.Errorf("%w: unsupported websocket proxy scheme %s", egress.ErrEndpointInvalid, setting.URL.Scheme)
-	}
-	return dialer, nil
 }
 
 func writeWebsocketPayloadMessage(provider string, sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
@@ -143,22 +87,6 @@ func writeWebsocketPayloadMessage(provider string, sess *codexWebsocketSession, 
 
 func writeCodexWebsocketMessage(sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
 	return writeWebsocketPayloadMessage("codex", sess, conn, payload)
-}
-
-func (e *CodexWebsocketsExecutor) writeCodexWebsocketMessage(sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
-	err := writeCodexWebsocketMessage(sess, conn, payload)
-	if e == nil || e.CodexExecutor == nil {
-		return err
-	}
-	return e.CodexExecutor.wrapStrictEgressTransportError(err, "websocket send")
-}
-
-func (e *CodexWebsocketsExecutor) writeCodexWebsocketMessageForAuth(auth *cliproxyauth.Auth, sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
-	err := writeCodexWebsocketMessage(sess, conn, payload)
-	if e == nil || e.CodexExecutor == nil {
-		return err
-	}
-	return e.CodexExecutor.wrapStrictEgressTransportErrorForAuth(auth, err, "websocket send")
 }
 
 func mapCodexWebsocketWriteError(sess *codexWebsocketSession, conn *websocket.Conn, err error) error {
@@ -200,65 +128,43 @@ func mapCodexWebsocketReadError(err error) error {
 			msg:  `{"error":{"message":"upstream websocket message too big","type":"invalid_request_error","code":"message_too_big"}}`,
 		}}
 	}
-	if isCodexWebsocketDirtyDisconnect(err) {
-		return statusErr{code: http.StatusRequestTimeout, msg: `{"error":{"message":"stream closed before response.completed","type":"server_error","code":"upstream_disconnected"}}`}
-	}
 	return err
 }
 
-func (e *CodexWebsocketsExecutor) mapWebsocketReadError(err error) error {
-	mapped := mapCodexWebsocketReadError(err)
-	if e == nil || e.CodexExecutor == nil || !e.CodexExecutor.strictEgress || err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return mapped
+// codexWebsocketTurnTransportError turns a transport loss (EOF, reset, close 1006) into
+// the turn error that keeps the downstream websocket open. Status, policy and other
+// close codes are returned unchanged and keep ending the downstream socket.
+func codexWebsocketTurnTransportError(err error) error {
+	if err == nil || cliproxyexecutor.IsUpstreamWebsocketTurnError(err) {
+		return err
 	}
-	var closeErr *websocket.CloseError
-	if errors.As(err, &closeErr) && closeErr.Code == websocket.CloseMessageTooBig {
-		return mapped
-	}
-	transportErr := err
-	if errors.Is(err, io.EOF) {
-		transportErr = io.ErrUnexpectedEOF
-	}
-	return e.CodexExecutor.wrapStrictEgressTransportError(transportErr, "websocket read")
-}
-
-func (e *CodexWebsocketsExecutor) mapWebsocketReadErrorForAuth(auth *cliproxyauth.Auth, err error) error {
-	mapped := mapCodexWebsocketReadError(err)
-	if e == nil || e.CodexExecutor == nil || !e.CodexExecutor.usesStrictEgress(auth) || err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return mapped
-	}
-	var closeErr *websocket.CloseError
-	if errors.As(err, &closeErr) && closeErr.Code == websocket.CloseMessageTooBig {
-		return mapped
-	}
-	transportErr := err
-	if errors.Is(err, io.EOF) {
-		transportErr = io.ErrUnexpectedEOF
-	}
-	return e.CodexExecutor.wrapStrictEgressTransportErrorForAuth(auth, transportErr, "websocket read")
-}
-
-func isCodexWebsocketDirtyDisconnect(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return true
+	var status interface{ StatusCode() int }
+	if errors.As(err, &status) && status.StatusCode() != 0 {
+		return err
 	}
 	var closeErr *websocket.CloseError
 	if errors.As(err, &closeErr) {
-		switch closeErr.Code {
-		case websocket.CloseNormalClosure, websocket.CloseMessageTooBig:
-			return false
+		if closeErr.Code != websocket.CloseAbnormalClosure {
+			return err
 		}
-		return true
+	} else if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) &&
+		!errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) &&
+		!errors.Is(err, syscall.ECONNRESET) && !errors.Is(err, syscall.ECONNABORTED) &&
+		!errors.Is(err, syscall.EPIPE) {
+		return err
 	}
-	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "connection reset") ||
-		strings.Contains(text, "broken pipe") ||
-		strings.Contains(text, "connection aborted") ||
-		strings.Contains(text, "websocket: close") ||
-		strings.Contains(text, "forcibly closed")
+	return &cliproxyexecutor.UpstreamWebsocketTurnError{Cause: err}
+}
+
+// codexWebsocketTurnEventID lets a lost turn's error carry the create's event_id.
+func codexWebsocketTurnEventID(err error, payload []byte) error {
+	var turnErr *cliproxyexecutor.UpstreamWebsocketTurnError
+	if !errors.As(err, &turnErr) || turnErr.EventID != "" {
+		return err
+	}
+	withID := *turnErr
+	withID.EventID = strings.Clone(ojson.GetBytesNoCopy(payload, "event_id").String())
+	return &withID
 }
 
 func normalizeCodexWebsocketParallelToolCalls(body []byte, headers http.Header) []byte {
@@ -269,8 +175,14 @@ func normalizeCodexWebsocketParallelToolCalls(body []byte, headers http.Header) 
 	return body
 }
 
+func normalizeCodexWebsocketParallelToolCallsDoc(doc *ojson.Doc, headers http.Header) bool {
+	if !isCodexResponsesLiteRequestDoc(doc, headers) {
+		return false
+	}
+	return helps.SetBoolIfDifferentDoc(doc, "parallel_tool_calls", false)
+}
+
 func buildCodexWebsocketRequestBody(body []byte) []byte {
-	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	return frameCodexWebsocketRequestBody(helps.SanitizeCodexInputItemIDs(body))
 }
 
@@ -279,7 +191,7 @@ func frameCodexWebsocketRequestBody(body []byte) []byte {
 	if len(body) == 0 {
 		return nil
 	}
-	wsReqBody, errSet := sjson.SetBytes(body, "type", "response.create")
+	wsReqBody, errSet := ojson.SetBytes(body, "type", "response.create")
 	if errSet == nil && len(wsReqBody) > 0 {
 		return wsReqBody
 	}

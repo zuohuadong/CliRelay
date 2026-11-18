@@ -2,6 +2,7 @@
 package logging
 
 import internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+import internalloggingTypes "github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 
 const defaultErrorLogsMaxFiles = 10
 
@@ -23,3 +24,6 @@ func NewFileRequestLogger(enabled bool, logsDir string, configDir string) *FileR
 func NewFileRequestLoggerWithOptions(enabled bool, logsDir string, configDir string, errorLogsMaxFiles int) *FileRequestLogger {
 	return internallogging.NewFileRequestLogger(enabled, logsDir, configDir, errorLogsMaxFiles)
 }
+
+// ErrorMessage is the SDK-facing alias for the shared request error metadata.
+type ErrorMessage = internalloggingTypes.ErrorMessage

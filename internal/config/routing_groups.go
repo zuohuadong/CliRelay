@@ -1,27 +1,80 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v8/internal/routing"
 )
 
+// ChannelGroupMatch defines how auth channels are assigned to a routing group.
 type ChannelGroupMatch struct {
 	Prefixes []string `yaml:"prefixes,omitempty" json:"prefixes,omitempty"`
 	Channels []string `yaml:"channels,omitempty" json:"channels,omitempty"`
 	Tags     []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 }
 
+// RoutingChannelGroup defines a named channel group used by routing and API-key permissions.
+//
+// Strategy and ChannelPriorities are the pre-scheduling representation. They are
+// kept in sync with Scheduling by sanitizeScheduling so that an older binary or
+// admin panel reading this config still sees a coherent value; new code must
+// read Scheduling, never these two fields.
+//
+// AllowedModels and ExcludedModels express the two halves of the same gate:
+//
+//	both empty        → every model the group's channels serve, including ones
+//	                    the upstream adds later
+//	AllowedModels set → an allow list. It is frozen unless the group follows
+//	                    upstream (FollowUpstreamModels): then a model live
+//	                    discovery has listed for the tenant is served too,
+//	                    unless it is excluded, so a new id does not wait for
+//	                    someone to add it by hand.
+//	ExcludedModels set→ every model except these, so new upstream models stay
+//	                    usable without touching the config
+//	both set          → the allow list minus the exclusions
+//
+// An exclusion always wins. The two lists match differently on purpose: allow
+// entries are exact ids, while exclusions accept '*' wildcards and ignore a
+// route prefix on either side (sdkrouting.ChannelGroupExcludesModel), because
+// an exclusion that misses serves a model the operator blocked.
+//
+// Which form a group uses is the operator's choice in the panel; the panel
+// never converts an allow list on its own, since that widens what the group
+// serves.
+//
+// FollowUpstreamModels is a pointer because "never set" has its own meaning:
+// the default group follows and every other group stays frozen, which is how
+// groups behaved before the setting existed (sdkrouting.FollowsUpstreamModels).
+// SanitizeRouting drops a value equal to that, so the stored form is unique.
 type RoutingChannelGroup struct {
-	Name              string            `yaml:"name" json:"name"`
-	Description       string            `yaml:"description,omitempty" json:"description,omitempty"`
-	Strategy          string            `yaml:"strategy,omitempty" json:"strategy,omitempty"`
-	Match             ChannelGroupMatch `yaml:"match,omitempty" json:"match,omitempty"`
-	Priority          int               `yaml:"priority,omitempty" json:"priority,omitempty"`
-	ChannelPriorities map[string]int    `yaml:"channel-priorities,omitempty" json:"channel-priorities,omitempty"`
-	AllowedModels     []string          `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
+	Name                 string            `yaml:"name" json:"name"`
+	Description          string            `yaml:"description,omitempty" json:"description,omitempty"`
+	Strategy             string            `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	Scheduling           GroupScheduling   `yaml:"scheduling,omitempty" json:"scheduling,omitempty"`
+	Match                ChannelGroupMatch `yaml:"match,omitempty" json:"match,omitempty"`
+	ExcludeFromDefault   bool              `yaml:"exclude-from-default,omitempty" json:"exclude-from-default,omitempty"`
+	Priority             int               `yaml:"priority,omitempty" json:"priority,omitempty"`
+	ChannelPriorities    map[string]int    `yaml:"channel-priorities,omitempty" json:"channel-priorities,omitempty"`
+	AllowedModels        []string          `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
+	ExcludedModels       []string          `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+	FollowUpstreamModels *bool             `yaml:"follow-upstream-models,omitempty" json:"follow-upstream-models,omitempty"`
+	// FirstTokenTimeoutSeconds and BusyWaitMaxSeconds are the group's stream
+	// guards (routing_stream_guards.go); both are off unless set. BusyWaitMaxSeconds
+	// is a pointer so an explicit 0 is stored apart from "never set": they behave
+	// alike today, but what the operator typed is kept as typed.
+	FirstTokenTimeoutSeconds int  `yaml:"first-token-timeout-seconds,omitempty" json:"first-token-timeout-seconds,omitempty"`
+	BusyWaitMaxSeconds       *int `yaml:"busy-wait-max-seconds,omitempty" json:"busy-wait-max-seconds,omitempty"`
 }
 
+// FollowsUpstreamModels reports whether the group's allow list also admits
+// models discovery lists after it was saved.
+func (g RoutingChannelGroup) FollowsUpstreamModels() bool {
+	return internalrouting.FollowsUpstreamModels(g.Name, g.FollowUpstreamModels)
+}
+
+// RoutingPathRoute maps a URL namespace path to a channel group.
 type RoutingPathRoute struct {
 	Path        string `yaml:"path" json:"path"`
 	Group       string `yaml:"group" json:"group"`
@@ -79,13 +132,21 @@ func normalizeChannelPriorities(values map[string]int) map[string]int {
 
 func NormalizeRoutingStrategy(strategy string) string {
 	switch strings.TrimSpace(strings.ToLower(strategy)) {
+	case "session-sticky", "sessionsticky", "sticky", "ss":
+		return "session-sticky"
 	case "fill-first", "fillfirst", "ff":
 		return "fill-first"
-	case "weighted-round-robin", "weighted_round_robin", "weighted", "wrr":
-		return "weighted-round-robin"
 	default:
 		return "round-robin"
 	}
+}
+
+func NormalizeRoutingTag(value string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	if trimmed == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(trimmed), "-")
 }
 
 func normalizeOptionalRoutingStrategy(strategy string) string {
@@ -95,13 +156,30 @@ func normalizeOptionalRoutingStrategy(strategy string) string {
 	return NormalizeRoutingStrategy(strategy)
 }
 
+// NormalizeRoutingConfig returns input as SanitizeRouting leaves it, which is
+// the form the routing store keeps. input itself is not modified.
+func NormalizeRoutingConfig(input RoutingConfig) RoutingConfig {
+	holder := &Config{Routing: input}
+	holder.SanitizeRouting()
+	return holder.Routing
+}
+
+// SameRoutingConfig reports whether a and b are the same routing
+// configuration once both are normalized. Every slice and map of the routing
+// types is omitempty, so the encoding does not tell an absent list from an
+// empty one, and map keys are encoded in order.
+func SameRoutingConfig(a, b RoutingConfig) bool {
+	left, errLeft := json.Marshal(NormalizeRoutingConfig(a))
+	right, errRight := json.Marshal(NormalizeRoutingConfig(b))
+	return errLeft == nil && errRight == nil && bytes.Equal(left, right)
+}
+
+// SanitizeRouting normalizes routing configuration, deduplicating groups and paths.
 func (cfg *Config) SanitizeRouting() {
 	if cfg == nil {
 		return
 	}
-	// An absent strategy stays absent so an unset routing block keeps its zero
-	// value; runtime consumers already default to round-robin.
-	cfg.Routing.Strategy = normalizeOptionalRoutingStrategy(cfg.Routing.Strategy)
+	cfg.Routing.Strategy = NormalizeRoutingStrategy(cfg.Routing.Strategy)
 
 	seenGroups := make(map[string]struct{}, len(cfg.Routing.ChannelGroups))
 	groups := make([]RoutingChannelGroup, 0, len(cfg.Routing.ChannelGroups))
@@ -110,15 +188,33 @@ func (cfg *Config) SanitizeRouting() {
 		group.Name = internalrouting.NormalizeGroupName(group.Name)
 		group.Description = strings.TrimSpace(group.Description)
 		group.Strategy = normalizeOptionalRoutingStrategy(group.Strategy)
+		if group.Name == "default" {
+			group.ExcludeFromDefault = false
+		}
 		group.Match.Prefixes = normalizeStringList(group.Match.Prefixes, internalrouting.NormalizeGroupName)
 		group.Match.Channels = normalizeStringList(group.Match.Channels, func(value string) string {
 			return strings.TrimSpace(value)
 		})
-		group.Match.Tags = normalizeStringList(group.Match.Tags, normalizeRoutingTag)
+		group.Match.Tags = normalizeStringList(group.Match.Tags, NormalizeRoutingTag)
 		group.ChannelPriorities = normalizeChannelPriorities(group.ChannelPriorities)
+		sanitizeScheduling(&group)
+		sanitizeStreamGuards(&group)
 		group.AllowedModels = normalizeStringList(group.AllowedModels, func(value string) string {
 			return strings.TrimSpace(value)
 		})
+		group.ExcludedModels = normalizeStringList(group.ExcludedModels, func(value string) string {
+			return strings.TrimSpace(value)
+		})
+		// Keep only a setting that departs from what the group does unset, so a
+		// panel that writes every switch explicitly and one that writes none store
+		// the same config (SameRoutingConfig compares the encoding).
+		if group.FollowUpstreamModels != nil {
+			follows := *group.FollowUpstreamModels
+			group.FollowUpstreamModels = nil
+			if follows != group.FollowsUpstreamModels() {
+				group.FollowUpstreamModels = &follows
+			}
+		}
 		if group.Name == "" {
 			continue
 		}
@@ -127,11 +223,6 @@ func (cfg *Config) SanitizeRouting() {
 		}
 		seenGroups[group.Name] = struct{}{}
 		groups = append(groups, group)
-	}
-	// An empty result keeps the collection absent so an unset routing block
-	// still compares equal to its zero value.
-	if len(groups) == 0 {
-		groups = nil
 	}
 	cfg.Routing.ChannelGroups = groups
 
@@ -151,93 +242,17 @@ func (cfg *Config) SanitizeRouting() {
 		seenPaths[route.Path] = struct{}{}
 		pathRoutes = append(pathRoutes, route)
 	}
-	if len(pathRoutes) == 0 {
-		pathRoutes = nil
-	}
 	cfg.Routing.PathRoutes = pathRoutes
-
-	routes := make([]ModelRouteRule, 0, len(cfg.Routing.ModelRoutes))
-	for i := range cfg.Routing.ModelRoutes {
-		route := cfg.Routing.ModelRoutes[i]
-		route.Name = strings.TrimSpace(route.Name)
-		route.Match.RequestedModels = normalizeStringList(route.Match.RequestedModels, func(value string) string {
-			return strings.TrimSpace(value)
-		})
-		if len(route.Match.RequestedModels) == 0 {
-			continue
-		}
-		route.Measure.Source = normalizeModelRouteMeasureSource(route.Measure.Source)
-		route.Measure.OnMissing = normalizeModelRouteOnMissing(route.Measure.OnMissing)
-		branches := make([]ModelRouteBranch, 0, len(route.Routes))
-		for j := range route.Routes {
-			branch := route.Routes[j]
-			if branch.MinInputTokens < 0 {
-				branch.MinInputTokens = 0
-			}
-			if branch.MaxInputTokens < 0 {
-				branch.MaxInputTokens = 0
-			}
-			branch.Action = normalizeModelRouteAction(branch.Action)
-			branch.Target.Provider = strings.ToLower(strings.TrimSpace(branch.Target.Provider))
-			branch.Target.Model = strings.TrimSpace(branch.Target.Model)
-			if branch.Action == "" && branch.Target.Model == "" {
-				continue
-			}
-			if branch.Action == "target" && branch.Target.Model == "" {
-				continue
-			}
-			branches = append(branches, branch)
-		}
-		if len(branches) == 0 {
-			continue
-		}
-		route.Routes = branches
-		routes = append(routes, route)
-	}
-	if len(routes) == 0 {
-		routes = nil
-	}
-	cfg.Routing.ModelRoutes = routes
+	sanitizeVirtualModels(&cfg.Routing)
 }
 
+// SanitizeAPIKeyEntries normalizes API key channel-group restrictions.
 func (cfg *Config) SanitizeAPIKeyEntries() {
-}
-
-func normalizeRoutingTag(value string) string {
-	value = strings.TrimSpace(strings.ToLower(value))
-	if value == "" {
-		return ""
+	if cfg == nil || len(cfg.APIKeyEntries) == 0 {
+		return
 	}
-	return strings.Join(strings.Fields(value), "-")
-}
-
-func normalizeModelRouteMeasureSource(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "request-bytes", "bytes":
-		return "request-bytes"
-	default:
-		return "estimated-input-tokens"
-	}
-}
-
-func normalizeModelRouteOnMissing(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "reject":
-		return "reject"
-	default:
-		return "passthrough"
-	}
-}
-
-func normalizeModelRouteAction(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "target", "route":
-		return "target"
-	case "passthrough", "pass-through", "normal":
-		return "passthrough"
-	case "reject":
-		return "reject"
-	default:
-		return "passthrough"
+	for i := range cfg.APIKeyEntries {
+		entry := &cfg.APIKeyEntries[i]
+		entry.AllowedChannelGroups = normalizeStringList(entry.AllowedChannelGroups, internalrouting.NormalizeGroupName)
 	}
 }

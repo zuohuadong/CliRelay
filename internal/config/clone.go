@@ -14,19 +14,23 @@ func (cfg *Config) CloneForRuntime() *Config {
 		return nil
 	}
 	cloned := cloneRuntimeValue(reflect.ValueOf(cfg))
-	return cloned.Interface().(*Config)
+	out := cloned.Interface().(*Config)
+	// runtimeSettings is intentionally shared across value/runtime clones:
+	// management saves use it as the optimistic-concurrency snapshot for the
+	// configuration row. It is unexported, so restore it explicitly after the
+	// reflective copy skips unexported fields.
+	out.runtimeSettings = cfg.runtimeSettings
+	return out
 }
 
 func cloneRuntimeValue(v reflect.Value) reflect.Value {
 	if !v.IsValid() {
 		return v
 	}
-
 	if v.Type() == yamlNodeType {
 		node := v.Interface().(yaml.Node)
 		return reflect.ValueOf(*deepCopyNode(&node))
 	}
-
 	switch v.Kind() {
 	case reflect.Pointer:
 		if v.IsNil() {
@@ -44,7 +48,11 @@ func cloneRuntimeValue(v reflect.Value) reflect.Value {
 		out := reflect.New(v.Type()).Elem()
 		for i := 0; i < v.NumField(); i++ {
 			dst := out.Field(i)
-			if !dst.CanSet() || !v.Field(i).CanInterface() {
+			if !dst.CanSet() {
+				// Unexported runtime-only fields cannot be set through reflection.
+				// They are intentionally left at their zero value in the clone;
+				// persisted/configuration fields are exported and continue to be
+				// copied recursively.
 				continue
 			}
 			dst.Set(cloneRuntimeValue(v.Field(i)))

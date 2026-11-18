@@ -4,15 +4,18 @@ package kimi
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -222,33 +225,22 @@ type KimiAuth struct {
 
 // NewKimiAuth creates a new KimiAuth service instance for kimi.com.
 func NewKimiAuth(cfg *config.Config) *KimiAuth {
-	return NewKimiAuthWithProxyURL(cfg, "")
+	return NewKimiAuthWithDomain(cfg, KimiDefaultDomain)
 }
 
-// NewKimiAuthWithProxyURL creates a new KimiAuth service instance with an explicit proxy override.
-func NewKimiAuthWithProxyURL(cfg *config.Config, proxyURL string) *KimiAuth {
-	return &KimiAuth{
-		deviceClient: NewDeviceFlowClientWithDeviceIDAndProxyURL(cfg, "", proxyURL),
-		cfg:          cfg,
-		domain:       KimiDefaultDomain,
-	}
+// NewKimiAIAuth creates a new KimiAuth service instance for kimi.ai.
+func NewKimiAIAuth(cfg *config.Config) *KimiAuth {
+	return NewKimiAuthWithDomain(cfg, KimiAIDomain)
 }
 
+// NewKimiAuthWithDomain creates a new KimiAuth service instance for the specified domain.
 func NewKimiAuthWithDomain(cfg *config.Config, domain string) *KimiAuth {
-	return NewKimiAuthWithDomainAndProxyURL(cfg, domain, "")
-}
-
-func NewKimiAuthWithDomainAndProxyURL(cfg *config.Config, domain, proxyURL string) *KimiAuth {
 	normDomain := NormalizeKimiDomain(domain)
 	return &KimiAuth{
-		deviceClient: NewDeviceFlowClientWithDomainDeviceIDAndProxyURL(cfg, normDomain, "", proxyURL),
+		deviceClient: NewDeviceFlowClientWithDomain(cfg, normDomain),
 		cfg:          cfg,
 		domain:       normDomain,
 	}
-}
-
-func NewKimiAIAuth(cfg *config.Config) *KimiAuth {
-	return NewKimiAuthWithDomain(cfg, KimiAIDomain)
 }
 
 // StartDeviceFlow initiates the device flow authentication.
@@ -379,18 +371,39 @@ func getOrCreateDeviceID() string {
 	return uuid.New().String()
 }
 
+// getDeviceModel returns a device model string.
+func getDeviceModel() string {
+	osName := runtime.GOOS
+	arch := runtime.GOARCH
+
+	switch osName {
+	case "darwin":
+		return fmt.Sprintf("macOS %s", arch)
+	case "windows":
+		return fmt.Sprintf("Windows %s", arch)
+	case "linux":
+		return fmt.Sprintf("Linux %s", arch)
+	default:
+		return fmt.Sprintf("%s %s", osName, arch)
+	}
+}
+
+// getHostname returns the machine hostname.
+func getHostname() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+	return hostname
+}
+
 // commonHeaders returns headers required for Kimi API requests.
 func (c *DeviceFlowClient) commonHeaders() map[string]string {
-	headerDefaults := config.KimiHeaderDefaults{}.WithDefaults()
-	if c != nil && c.cfg != nil {
-		headerDefaults = c.cfg.KimiHeaderDefaults.WithDefaults()
-	}
 	return map[string]string{
-		"User-Agent":         headerDefaults.UserAgent,
-		"X-Msh-Platform":     headerDefaults.Platform,
-		"X-Msh-Version":      headerDefaults.Version,
-		"X-Msh-Device-Name":  headerDefaults.DeviceName,
-		"X-Msh-Device-Model": headerDefaults.DeviceModel,
+		"X-Msh-Platform":     "CLIProxyAPI",
+		"X-Msh-Version":      buildinfo.Version,
+		"X-Msh-Device-Name":  getHostname(),
+		"X-Msh-Device-Model": getDeviceModel(),
 		"X-Msh-Device-Id":    c.deviceID,
 	}
 }

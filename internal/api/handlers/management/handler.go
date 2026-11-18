@@ -4,9 +4,6 @@ package management
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,92 +13,94 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/alerting"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/egress"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/contentmoderation"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/loopguard"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/aiaccountstatus"
+	imagegeneration "github.com/router-for-me/CLIProxyAPI/v8/internal/management/imagegeneration"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/warmup"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/observability"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
-	"golang.org/x/sync/singleflight"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/egressbreaker"
 )
-
-type attemptInfo struct {
-	count         int
-	blockedUntil  time.Time
-	lastActivity  time.Time // track last activity for cleanup
-	lastFailureAt time.Time // dedup concurrent failures within a short window
-}
-
-type managementAuthClass string
-
-const (
-	managementAuthClassContextKey = "management.auth.class"
-	managementAuthClassNone       = managementAuthClass("")
-	managementAuthClassAdmin      = managementAuthClass("admin")
-	managementAuthClassShare      = managementAuthClass("share")
-)
-
-// attemptCleanupInterval controls how often stale IP entries are purged
-const attemptCleanupInterval = 1 * time.Hour
-
-// attemptMaxIdleTime controls how long an IP can be idle before cleanup
-const attemptMaxIdleTime = 2 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
-	cfg                           *config.Config
-	configFilePath                string
-	mu                            sync.Mutex
-	reloadMu                      sync.Mutex
-	reloadGeneration              uint64
-	appliedReloadGeneration       uint64
-	attemptsMu                    sync.Mutex
-	failedAttempts                map[string]*attemptInfo // keyed by client IP
-	authManager                   *coreauth.Manager
-	tokenStore                    coreauth.Store
-	localPassword                 string
-	allowRemoteOverride           bool
-	envSecret                     string
-	logDir                        string
-	postAuthHook                  coreauth.PostAuthHook
-	postAuthPersistHook           coreauth.PostAuthHook
-	pluginHost                    *pluginhost.Host
-	configReloadHook              func(context.Context, *config.Config)
-	pluginStoreRegistryURL        string
-	pluginStoreHTTPClient         pluginstore.HTTPDoer
-	pluginReleaseCacheMu          sync.Mutex
-	pluginReleaseCache            map[string]pluginReleaseCacheEntry
-	imageTasksMu                  sync.Mutex
-	imageGenerationTasks          map[string]*imageGenerationTestTask
-	videoTasksMu                  sync.Mutex
-	videoGenerationTasks          map[string]*videoGenerationTestTask
-	startTime                     time.Time
-	egressService                 *egress.Service
-	usageAggregateCacheMu         sync.Mutex
-	usageAggregateCache           map[string]usageAggregateCacheEntry
-	usageAggregateCacheGeneration uint64
-	usageAggregateCacheTTL        time.Duration
-	usageAggregateCacheNow        func() time.Time
-	usageAggregateFlight          singleflight.Group
-	managementAuthCacheMu         sync.Mutex
-	managementAuthCache           map[[sha256.Size]byte]managementAuthCacheEntry
-	managementAuthCacheTTL        time.Duration
-	managementAuthCacheNow        func() time.Time
-	managementAuthCacheHMACKey    [sha256.Size]byte
-	managementAuthCacheKeyReady   bool
-	managementPasswordVerifier    func([]byte, []byte) error
-	managementAuthFlight          singleflight.Group
-	managementAuthGeneration      uint64
-	channelLatencyLoader          func(context.Context, int) ([]usage.ChannelLatency, error)
-	agentIdentityRegistrar        agentIdentityRegistrarFactory
-	authStatusMu                  sync.Mutex
-	pluginStoreRateLimiter        *pluginstore.GitHubRateLimiter
-	pluginReleases                pluginReleaseCache
-	siwcOAuthFactory              func(*config.Config) siwcOAuthService
-	siwcCommitMu                  sync.Mutex
+	cfg                     *config.Config
+	configFilePath          string
+	mu                      sync.Mutex
+	authStatusMu            sync.Mutex
+	reloadMu                sync.Mutex
+	reloadGeneration        uint64
+	appliedReloadGeneration uint64
+	loginThrottle           *loginThrottle
+	auditRepeat             *auditRepeatLimiter
+	authManager             *coreauth.Manager
+	usageStats              *usage.RequestStatistics
+	tokenStore              coreauth.Store
+	localPassword           string
+	allowRemoteOverride     bool
+	envSecret               string
+	logDir                  string
+	postAuthHook            coreauth.PostAuthHook
+	postAuthPersistHook     coreauth.PostAuthHook
+	pluginHost              *pluginhost.Host
+	pluginStoreRegistryURL  string
+	pluginStoreHTTPClient   pluginstore.HTTPDoer
+	pluginStoreRateLimiter  *pluginstore.GitHubRateLimiter
+	pluginReleases          pluginReleaseCache
+	siwcOAuthFactory        func(*config.Config, string) siwcOAuthService
+	v8AuthUploadMu          sync.Mutex
+	siwcCommitMu            sync.Mutex
+	pluginLoginSaveMu       sync.Mutex
+	onConfigMutated         func(*config.Config)
+	configReloadHook        func(context.Context, *config.Config)
+	onModelConfigMutated    func(tenantID string)
+	startTime               time.Time
+	accessManager           *sdkaccess.Manager
+	trendCacheMu            sync.Mutex
+	trendCache              map[string]trendCacheEntry
+	systemStatsCacheMu      sync.Mutex
+	systemStatsCache        systemStatsCacheEntry
+	imageGeneration         *imagegeneration.Service
+	videoGeneration         *imagegeneration.Service
+	modelTest               *imagegeneration.Service
+	identityService         *identity.Service
+	aiAccountStatus         *aiaccountstatus.Service
+	statusScheduler         *aiaccountstatus.Scheduler
+	warmupSvc               *warmup.Service
+	// alertService serves the /alerts routes, alertEngine evaluates the rules in
+	// the background and alertSender delivers for both. All three are built on
+	// first use (see alerts_bootstrap.go).
+	alertService *alerting.Service
+	alertEngine  *alerting.Engine
+	alertSender  *alerting.Dispatcher
+	// poolCache keeps GET /ai-accounts/pool-capacity answers for a few seconds
+	// (see pool_capacity.go).
+	poolCache poolCapacityCache
+	// importKinds overrides the credential-import exchanges in tests; nil uses
+	// the package defaults that build real upstream clients.
+	importKinds map[string]credentialImportKind
+	// metrics overrides the process-wide metrics exporter in tests.
+	metrics *observability.Exporter
+	// egress overrides the process-wide egress breaker in tests.
+	egress *egressbreaker.Breaker
+	// routingSimulator runs GET /routing-simulation; nil until the API server
+	// sets it, and the endpoint answers 503 until then.
+	routingSimulator RoutingSimulator
+	// loopGuard overrides the process-wide loop protection settings in tests.
+	loopGuard *loopguard.Registry
+	// secretMasking overrides the process-wide secret masking settings in tests.
+	secretMasking *contentmoderation.SecretMaskingRegistry
+	authCache     managementAuthCache
 }
 
 type configReloadSnapshot struct {
@@ -109,63 +108,136 @@ type configReloadSnapshot struct {
 	generation uint64
 }
 
-func (h *Handler) shareToken() string {
-	if h == nil || h.cfg == nil {
-		return ""
-	}
-	return strings.TrimSpace(h.cfg.RemoteManagement.ShareToken)
+type trendCacheEntry struct {
+	expiresAt time.Time
+	payload   any
 }
 
 // NewHandler creates a new management handler instance.
 func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Manager) *Handler {
 	envSecret, _ := os.LookupEnv("MANAGEMENT_PASSWORD")
 	envSecret = strings.TrimSpace(envSecret)
+	// IP access control follows database availability, not one startup path: any
+	// caller that assembles the management API itself must get a working registry
+	// rather than 503 on every rule endpoint.
+	ensureIPAccessRuntime(cfg)
+	ensureObservabilityRuntime()
+	// Same for the loop protection and secret masking settings the inference
+	// path reads.
+	settingsstore.AttachLoopGuardSettings()
+	settingsstore.AttachSecretMaskingSettings()
 
 	h := &Handler{
-		cfg:                  cfg,
-		configFilePath:       configFilePath,
-		failedAttempts:       make(map[string]*attemptInfo),
-		authManager:          manager,
-		tokenStore:           sdkAuth.GetTokenStore(),
-		allowRemoteOverride:  envSecret != "",
-		envSecret:            envSecret,
-		startTime:            time.Now(),
-		imageGenerationTasks: make(map[string]*imageGenerationTestTask),
-		videoGenerationTasks: make(map[string]*videoGenerationTestTask),
+		cfg:                 cfg,
+		configFilePath:      configFilePath,
+		loginThrottle:       newLoginThrottle(throttlePoliciesFromConfig(cfg)),
+		auditRepeat:         newAuditRepeatLimiter(auditRepeatWindow, auditRepeatIdleTTL),
+		authManager:         manager,
+		usageStats:          usage.GetRequestStatistics(),
+		tokenStore:          sdkAuth.GetTokenStore(),
+		authCache:           managementAuthCache{entries: make(map[[32]byte]managementAuthCacheEntry), inflight: make(map[[32]byte]*managementAuthLookup)},
+		allowRemoteOverride: envSecret != "",
+		envSecret:           envSecret,
+		startTime:           time.Now(),
+		trendCache:          make(map[string]trendCacheEntry),
 	}
-	h.startAttemptCleanup()
-	h.startManagementAuthCacheCleanup()
+	h.imageGeneration = h.newImageGenerationService()
+	h.videoGeneration = h.newVideoGenerationService()
+	h.modelTest = h.newModelTestService()
 	return h
 }
 
-// startAttemptCleanup launches a background goroutine that periodically
-// removes stale IP entries from failedAttempts to prevent memory leaks.
-func (h *Handler) startAttemptCleanup() {
-	go func() {
-		ticker := time.NewTicker(attemptCleanupInterval)
-		defer ticker.Stop()
-		for range ticker.C {
-			h.purgeStaleAttempts()
-		}
-	}()
+// configSnapshot returns a runtime-safe copy for work performed outside the
+// request lock.
+func (h *Handler) configSnapshot() *config.Config {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+	return h.cfg.CloneForRuntime()
 }
 
-// purgeStaleAttempts removes IP entries that have been idle beyond attemptMaxIdleTime
-// and whose ban (if any) has expired.
-func (h *Handler) purgeStaleAttempts() {
-	now := time.Now()
-	h.attemptsMu.Lock()
-	defer h.attemptsMu.Unlock()
-	for ip, ai := range h.failedAttempts {
-		// Skip if still banned
-		if !ai.blockedUntil.IsZero() && now.Before(ai.blockedUntil) {
-			continue
-		}
-		// Remove if idle too long
-		if now.Sub(ai.lastActivity) > attemptMaxIdleTime {
-			delete(h.failedAttempts, ip)
-		}
+func (h *Handler) pluginHostSnapshot() *pluginhost.Host {
+	if h == nil {
+		return nil
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pluginHost
+}
+
+func (h *Handler) oauthConfigWithProxy(proxyURL string) *config.Config {
+	cfg := h.configSnapshot()
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return cfg
+	}
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	cfg.ProxyURL = proxyURL
+	return cfg
+}
+
+func (h *Handler) warmupService() *warmup.Service {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.warmupSvc == nil {
+		h.warmupSvc = warmup.NewService(h.cfg, h.authManager)
+		if store := sharedWarmupPolicyStore(); store != nil {
+			h.warmupSvc.SetPolicyStore(store)
+		}
+		h.warmupSvc.Start()
+	}
+	return h.warmupSvc
+}
+
+func (h *Handler) newImageGenerationService() *imagegeneration.Service {
+	if h == nil {
+		return nil
+	}
+	return shareTaskSnapshots(imagegeneration.NewService(func(ctx context.Context, tenantID string, payload []byte, alt string) ([]byte, error) {
+		return h.executeImageGenerationTestForTenant(ctx, tenantID, payload, alt)
+	}, imageGenerationSystemAPIKey), jobKindImageGenerationTest)
+}
+
+func (h *Handler) ensureImageGenerationService() *imagegeneration.Service {
+	if h == nil || h.authManager == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.imageGeneration == nil {
+		h.imageGeneration = h.newImageGenerationService()
+	}
+	return h.imageGeneration
+}
+
+func (h *Handler) ensureVideoGenerationService() *imagegeneration.Service {
+	if h == nil || h.authManager == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.videoGeneration == nil {
+		h.videoGeneration = h.newVideoGenerationService()
+	}
+	return h.videoGeneration
+}
+
+// Close stops background cleanup workers owned by the management handler.
+func (h *Handler) Close() {
+	if h == nil {
+		return
+	}
+	h.loginThrottle.close()
+	h.stopAccountStatusScheduler()
+	h.stopWarmupScheduler()
+	h.stopAlertEngine()
 }
 
 // NewHandler creates a new management handler instance.
@@ -174,18 +246,25 @@ func NewHandlerWithoutConfigFilePath(cfg *config.Config, manager *coreauth.Manag
 }
 
 // SetConfig updates the in-memory config reference when the server hot-reloads.
-// A config parsed from an older version of the config file is ignored: a later
-// save already changed the file, and the reload for that save publishes it.
 func (h *Handler) SetConfig(cfg *config.Config) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
 	h.cfg = cfg
-	h.managementAuthGeneration++
+	// Recreate lazily so provider probes use the new proxy/TLS/runtime config.
+	h.aiAccountStatus = nil
 	h.mu.Unlock()
-	h.invalidateManagementAuthCache()
-	h.invalidateUsageAggregateCache()
+	ensureIPAccessRuntime(cfg)
+	// Throttle thresholds are part of the reloadable config, so a limit raised in
+	// config.yaml has to take effect without a restart — otherwise the documented
+	// escape hatch for an over-tight limit is "restart the server". Panel-set
+	// overrides are re-applied on top, or a config reload would silently revert
+	// them while the panel kept displaying them as active.
+	h.loginThrottle.setPolicies(overlayThrottleOverride(throttlePoliciesFromConfig(cfg), storedThrottleOverride()))
+	// Interval and on/off are reloadable for the same reason: turning the probe
+	// down must not require a restart.
+	h.StartAccountStatusScheduler()
 }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
@@ -194,90 +273,82 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 		return
 	}
 	h.mu.Lock()
-	if h.authManager != manager {
-		h.authManager = manager
-	}
+	h.authManager = manager
+	// Recreate lazily so tenant auth selection never uses the replaced manager.
+	h.aiAccountStatus = nil
 	h.mu.Unlock()
-	h.invalidateUsageAggregateCache()
+	h.ensureImageGenerationService()
 }
 
-// SetPluginHost updates the plugin host used by plugin-backed management endpoints.
+// SetPluginHost updates the plugin host used by management endpoints.
 func (h *Handler) SetPluginHost(host *pluginhost.Host) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
-	if h.pluginHost != host {
-		h.pluginHost = host
-	}
+	h.pluginHost = host
 	h.mu.Unlock()
 }
 
-func (h *Handler) SetEgressService(service *egress.Service) {
+func (h *Handler) SetConfigMutatedHook(fn func(*config.Config)) { h.onConfigMutated = fn }
+
+func (h *Handler) SetConfigReloadHook(fn func(context.Context, *config.Config)) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
-	h.egressService = service
+	h.configReloadHook = fn
 	h.mu.Unlock()
 }
 
-// SetConfigReloadHook updates the callback used after management saves config changes.
-func (h *Handler) SetConfigReloadHook(hook func(context.Context, *config.Config)) {
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	h.configReloadHook = hook
-	h.mu.Unlock()
-}
-
-// reloadSnapshotConfigLocked clones the runtime config and assigns a reload generation.
-// Callers must hold h.mu.
 func (h *Handler) reloadSnapshotConfigLocked() configReloadSnapshot {
 	if h == nil || h.cfg == nil {
 		return configReloadSnapshot{}
 	}
 	h.reloadGeneration++
-	return configReloadSnapshot{
-		cfg:        h.cfg.CloneForRuntime(),
-		generation: h.reloadGeneration,
-	}
+	return configReloadSnapshot{cfg: h.cfg.CloneForRuntime(), generation: h.reloadGeneration}
 }
 
-// saveConfigAndSnapshotLocked saves h.cfg and returns a full runtime config snapshot.
-// Callers must hold h.mu.
 func (h *Handler) saveConfigAndSnapshotLocked(c *gin.Context) (configReloadSnapshot, bool) {
-	if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); errSave != nil {
+	if h == nil || h.cfg == nil {
+		return configReloadSnapshot{}, false
+	}
+	if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); errSave != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", errSave)})
 		return configReloadSnapshot{}, false
 	}
 	return h.reloadSnapshotConfigLocked(), true
 }
 
-// reloadConfigAfterManagementSave reloads from an independent config snapshot.
-// Callers must pass a full Config clone captured immediately after a successful save.
+// persistLocked saves a plugin configuration mutation while h.mu is held.
+func (h *Handler) persistLocked(c *gin.Context) {
+	snapshot, ok := h.saveConfigAndSnapshotLocked(c)
+	if !ok {
+		return
+	}
+	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
 func (h *Handler) reloadConfigAfterManagementSave(ctx context.Context, snapshot configReloadSnapshot) {
 	if h == nil || snapshot.cfg == nil || snapshot.generation == 0 {
 		return
 	}
 	h.reloadMu.Lock()
 	defer h.reloadMu.Unlock()
-
 	h.mu.Lock()
 	if snapshot.generation < h.appliedReloadGeneration {
 		h.mu.Unlock()
 		return
 	}
 	hook := h.configReloadHook
-	host := h.pluginHost
+	mutated := h.onConfigMutated
 	h.mu.Unlock()
 	if hook != nil {
 		hook(ctx, snapshot.cfg)
-	} else if host != nil {
-		host.ApplyConfig(ctx, snapshot.cfg)
+	} else if mutated != nil {
+		mutated(snapshot.cfg)
 	}
-
 	h.mu.Lock()
 	if snapshot.generation > h.appliedReloadGeneration {
 		h.appliedReloadGeneration = snapshot.generation
@@ -285,37 +356,24 @@ func (h *Handler) reloadConfigAfterManagementSave(ctx context.Context, snapshot 
 	h.mu.Unlock()
 }
 
-// reloadConfigAfterManagementSaveAsync reloads from an independent config snapshot.
-// Callers must pass a full Config clone captured immediately after a successful save.
 func (h *Handler) reloadConfigAfterManagementSaveAsync(ctx context.Context, snapshot configReloadSnapshot) {
 	if h == nil || snapshot.cfg == nil || snapshot.generation == 0 {
 		return
 	}
-	reloadCtx := context.Background()
-	if ctx != nil {
-		reloadCtx = context.WithoutCancel(ctx)
-	}
-	go func() {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				log.WithField("panic", recovered).Error("management: async config reload panicked")
-			}
-		}()
-		h.reloadConfigAfterManagementSave(reloadCtx, snapshot)
-	}()
+	go h.reloadConfigAfterManagementSave(ctx, snapshot)
 }
 
+func (h *Handler) SetModelConfigMutatedHook(fn func(tenantID string)) { h.onModelConfigMutated = fn }
+
+// SetAccessManager wires the request authentication access manager so management writes
+// (such as API key channel/model restrictions) can be applied immediately at runtime.
+func (h *Handler) SetAccessManager(manager *sdkaccess.Manager) { h.accessManager = manager }
+
+// SetUsageStatistics allows replacing the usage statistics reference.
+func (h *Handler) SetUsageStatistics(stats *usage.RequestStatistics) { h.usageStats = stats }
+
 // SetLocalPassword configures the runtime-local password accepted for localhost requests.
-func (h *Handler) SetLocalPassword(password string) {
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	h.localPassword = password
-	h.managementAuthGeneration++
-	h.mu.Unlock()
-	h.invalidateManagementAuthCache()
-}
+func (h *Handler) SetLocalPassword(password string) { h.localPassword = password }
 
 // SetLogDirectory updates the directory where main.log should be looked up.
 func (h *Handler) SetLogDirectory(dir string) {
@@ -335,255 +393,139 @@ func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
 	h.postAuthHook = hook
 }
 
-// SetPostAuthPersistHook registers a hook to be called after auth persistence.
-func (h *Handler) SetPostAuthPersistHook(hook coreauth.PostAuthHook) {
-	h.postAuthPersistHook = hook
-}
-
 // Middleware enforces access control for management endpoints.
-// All requests (local and remote) require a valid management key.
-// Additionally, remote access requires allow-remote-management=true.
+// The implementation lives in middleware_auth.go, where the step order that
+// keeps the ban check ahead of every secret comparison is documented.
 func (h *Handler) Middleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Header("X-CPA-VERSION", buildinfo.Version)
-		c.Header("X-CPA-COMMIT", buildinfo.Commit)
-		c.Header("X-CPA-BUILD-DATE", buildinfo.BuildDate)
-		c.Header("X-CPA-SUPPORT-PLUGIN", pluginhost.SupportPluginHeaderValue())
-
-		clientIP := c.ClientIP()
-		localClient := clientIP == "127.0.0.1" || clientIP == "::1"
-
-		// Accept either Authorization: Bearer <key> or X-Management-Key
-		var provided string
-		if ah := c.GetHeader("Authorization"); ah != "" {
-			parts := strings.SplitN(ah, " ", 2)
-			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-				provided = parts[1]
-			} else {
-				provided = ah
-			}
-		}
-		if provided == "" {
-			provided = c.GetHeader("X-Management-Key")
-		}
-		if provided == "" {
-			provided = strings.TrimSpace(c.Query("token"))
-		}
-
-		if h.handleAPIKeyBillingSelfAccess(c, provided) {
-			return
-		}
-
-		allowed, statusCode, errMsg, credentialClass := h.authenticateManagementKey(clientIP, localClient, provided)
-		if !allowed {
-			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
-			return
-		}
-		c.Set(managementAuthClassContextKey, credentialClass)
-		c.Next()
-	}
+	return h.managementAuthMiddleware
 }
 
-func (h *Handler) handleAPIKeyBillingSelfAccess(c *gin.Context, managementKey string) bool {
-	if c == nil || c.Request == nil {
-		return false
+// resolveSessionToken returns a user-session token for management auth.
+// Prefer Authorization Bearer; for WebSocket handshakes only, also accept ?token=cps_*.
+func resolveSessionToken(c *gin.Context) string {
+	if token := bearerToken(c); strings.HasPrefix(token, "cps_") {
+		return token
 	}
-	if c.Request.Method != http.MethodGet || c.Request.URL.Path != "/v0/management/api-key-billing" {
-		return false
+	if !shouldReadManagementTokenFromQuery(c) {
+		return ""
 	}
-	if strings.TrimSpace(managementKey) != "" {
-		return false
+	if token := strings.TrimSpace(c.Query("token")); strings.HasPrefix(token, "cps_") {
+		return token
 	}
+	return ""
+}
 
-	apiKey := strings.TrimSpace(c.Query("api_key"))
-	if apiKey == "" {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing api_key"})
-		return true
+// authenticateSessionToken validates a cps_* identity session and enforces RBAC + tenant scope.
+// Returns false when the request was already aborted with an error response.
+func (h *Handler) authenticateSessionToken(c *gin.Context, token string) bool {
+	service := h.identity()
+	if service == nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "identity_unavailable", "message": "identity service unavailable"}})
+		return false
 	}
-	entry, found := h.apiKeyBillingEntry(apiKey)
-	if !found {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
-		return true
+	principal, err := service.Authenticate(c.Request.Context(), token, c.GetHeader("X-Effective-Tenant-ID"))
+	if err != nil {
+		identityError(c, err)
+		return false
 	}
-	if entry.Disabled {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "api key disabled"})
-		return true
+	if principal.User.MustChangePassword {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "password_change_required", "message": "password change required"}})
+		return false
 	}
-
-	c.Next()
+	permission := permissionForManagementRequest(c.Request.Method, c.Request.URL.Path)
+	if !principalHasManagementRequestPermission(principal, c.Request.Method, c.Request.URL.Path, permission) {
+		identityError(c, identity.ErrPermissionDenied)
+		h.recordManagementDenial(c, principal, denialPermission)
+		return false
+	}
+	// Some runtime/config stores remain process-global. Business-tenant sessions
+	// may only use fully tenant-scoped routes. Platform super-admins keep access
+	// after tenant switch so ops pages like /logs still work under an effective
+	// business tenant.
+	if deniesTenantResourceScope(principal, c.Request.URL.Path) {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "tenant_resource_scope_unavailable", "message": "tenant business resources are not enabled for this tenant"}})
+		h.recordManagementDenial(c, principal, denialTenantScope)
+		return false
+	}
+	c.Set(managementPrincipalKey, principal)
+	h.nextWithManagementAudit(c)
 	return true
 }
 
-// AuthenticateManagementKey verifies the provided management key for the given client.
-// It mirrors the behaviour of Middleware() so non-HTTP callers can reuse the same logic.
-func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string) {
-	allowed, statusCode, message, _ := h.authenticateManagementKey(clientIP, localClient, provided)
-	return allowed, statusCode, message
-}
-
-func (h *Handler) authenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string, managementAuthClass) {
-	const maxFailures = 5
-	const banDuration = 30 * time.Minute
-	const failureDedupWindow = 1 * time.Second
-
-	if h == nil {
-		return false, http.StatusForbidden, "remote management disabled", managementAuthClassNone
-	}
-
-	authSnapshot := h.managementAuthSnapshot()
-	allowRemote := authSnapshot.allowRemote
-	secretHash := authSnapshot.secretHash
-	envSecret := authSnapshot.envSecret
-
-	if !localClient && !allowRemote {
-		return false, http.StatusForbidden, "remote management disabled", managementAuthClassNone
-	}
-
-	if secretHash == "" && envSecret == "" {
-		return false, http.StatusForbidden, "remote management key not set", managementAuthClassNone
-	}
-
-	if provided == "" {
-		return false, http.StatusUnauthorized, "missing management key", managementAuthClassNone
-	}
-
-	credentialClass := h.managementCredentialClass(authSnapshot, localClient, provided)
-	keyValid := credentialClass != managementAuthClassNone
-	if keyValid && !h.managementAuthGenerationStillCurrent(authSnapshot.generation) {
-		keyValid = false
-		credentialClass = managementAuthClassNone
-	}
-
-	if keyValid {
-		h.attemptsMu.Lock()
-		delete(h.failedAttempts, clientIP)
-		h.attemptsMu.Unlock()
-		return true, 0, "", credentialClass
-	}
-
-	now := time.Now()
-	h.attemptsMu.Lock()
-	ai := h.failedAttempts[clientIP]
-	if ai != nil && !ai.blockedUntil.IsZero() && now.Before(ai.blockedUntil) {
-		remaining := ai.blockedUntil.Sub(now).Round(time.Second)
-		h.attemptsMu.Unlock()
-		return false, http.StatusForbidden, fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining), managementAuthClassNone
-	}
-	if ai != nil && !ai.blockedUntil.IsZero() {
-		ai.blockedUntil = time.Time{}
-		ai.count = 0
-	}
-	if ai != nil && !ai.lastFailureAt.IsZero() && now.Sub(ai.lastFailureAt) < failureDedupWindow {
-		h.attemptsMu.Unlock()
-		return false, http.StatusUnauthorized, "invalid management key", managementAuthClassNone
-	}
-	if ai == nil {
-		ai = &attemptInfo{}
-		h.failedAttempts[clientIP] = ai
-	}
-	ai.count++
-	ai.lastFailureAt = now
-	ai.lastActivity = now
-	if ai.count >= maxFailures {
-		ai.blockedUntil = now.Add(banDuration)
-		ai.count = 0
-	}
-	h.attemptsMu.Unlock()
-
-	return false, http.StatusUnauthorized, "invalid management key", managementAuthClassNone
-}
-
-func (h *Handler) managementCredentialClass(snapshot managementAuthSnapshot, localClient bool, provided string) managementAuthClass {
-	if localClient && constantTimeStringEqual(provided, snapshot.localPassword) {
-		return managementAuthClassAdmin
-	}
-	if constantTimeStringEqual(provided, snapshot.envSecret) || managementSecretHashEqual(provided, snapshot.envSecret) {
-		return managementAuthClassAdmin
-	}
-	if snapshot.secretHash != "" && h.verifyHashedManagementPassword(snapshot.generation, snapshot.secretHash, provided) {
-		return managementAuthClassAdmin
-	}
-	if managementShareTokenEqual(provided, snapshot.shareToken) {
-		return managementAuthClassShare
-	}
-	return managementAuthClassNone
-}
-
-func constantTimeStringEqual(provided, expected string) bool {
-	return expected != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
-}
-
-func managementSecretHashEqual(provided, secret string) bool {
-	if secret == "" {
-		return false
-	}
-	digest := sha256.Sum256([]byte(secret))
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(hex.EncodeToString(digest[:]))) == 1
-}
-
-func managementShareTokenEqual(provided, shareToken string) bool {
-	shareToken = strings.TrimSpace(shareToken)
-	if shareToken == "" {
-		return false
-	}
-	if strings.HasPrefix(shareToken, "sha256:") {
-		digest := sha256.Sum256([]byte(provided))
-		return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(digest[:])), []byte(strings.TrimPrefix(shareToken, "sha256:"))) == 1
-	}
-	return constantTimeStringEqual(provided, shareToken) || managementSecretHashEqual(provided, shareToken)
-}
-
-func managementAuthClassFromContext(c *gin.Context) managementAuthClass {
-	if c == nil {
-		return managementAuthClassNone
-	}
-	credentialClass, _ := c.Get(managementAuthClassContextKey)
-	switch typed := credentialClass.(type) {
-	case managementAuthClass:
-		return typed
-	case string:
-		return managementAuthClass(typed)
-	default:
-		return managementAuthClassNone
-	}
-}
-
-func requireAdminManagementCredential(c *gin.Context) bool {
-	if managementAuthClassFromContext(c) == managementAuthClassAdmin {
-		return true
-	}
-	c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "admin management credential required"})
-	return false
-}
-
-// persist saves the current in-memory config to disk.
+// persist stores the settings the live config changed, each checked against
+// the version this node loaded, and reloads the runtime. Handlers that edit
+// the live config in place use it; new code edits a fresh copy through
+// mutateSystemConfig instead.
 func (h *Handler) persist(c *gin.Context) bool {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.persistLocked(c)
+	cfg := h.cfg
+	mutated := h.onConfigMutated
+	_, err := settingsstore.CommitLiveConfig(c.Request.Context(), cfg, h.configFilePath, requestVersion(c))
+	h.mu.Unlock()
+	if err != nil {
+		writeConfigSaveError(c, "failed to save config", err)
+		return false
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	if mutated != nil {
+		mutated(cfg)
+	}
+	return true
 }
 
-// persistLocked saves the current in-memory config to disk.
-// It expects the caller to hold h.mu.
-func (h *Handler) persistLocked(c *gin.Context) bool {
-	// Preserve comments when writing
-	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); err != nil {
+// persistNodeLocal writes config.yaml for the settings that stay per node
+// (auto-update) and reloads the runtime.
+func (h *Handler) persistNodeLocal(c *gin.Context) bool {
+	h.mu.Lock()
+	cfg := h.cfg
+	mutated := h.onConfigMutated
+	err := settingsstore.SaveNodeLocalConfig(cfg, h.configFilePath)
+	h.mu.Unlock()
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		return false
 	}
-	snapshot := h.reloadSnapshotConfigLocked()
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	var reqCtx context.Context
-	if c != nil && c.Request != nil {
-		reqCtx = c.Request.Context()
+	if mutated != nil {
+		mutated(cfg)
 	}
-	h.reloadConfigAfterManagementSaveAsync(reqCtx, snapshot)
 	return true
 }
 
-// Helper methods for simple types. The setter and the save run under h.mu, so a
-// reload publishing h.cfg cannot replace it between the change and the save.
-func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
+func (h *Handler) saveConfigFile() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return settingsstore.SaveConfig(h.cfg, h.configFilePath)
+}
+
+// persistDerivedSetting applies a derived change (for example renaming a
+// channel wherever it is referenced) to the stored value of key, retrying on
+// concurrent writes, and adopts the result into the live config.
+func (h *Handler) persistDerivedSetting(key string, mutate func(*config.Config) bool) error {
+	if !settingsstore.StoreAvailable() {
+		return nil
+	}
+	h.mu.Lock()
+	var base config.Config
+	if h.cfg != nil {
+		base = *h.cfg
+	}
+	h.mu.Unlock()
+	stored, changed, err := usage.UpdateRuntimeSetting(context.Background(), &base, identity.SystemTenantID, key, mutate)
+	if err != nil || !changed {
+		return err
+	}
+	h.mu.Lock()
+	if h.cfg != nil {
+		settingsstore.AdoptKeys(h.cfg, stored, key)
+	}
+	h.mu.Unlock()
+	return nil
+}
+
+// Helper methods for simple types. They edit a fresh copy of the system
+// configuration; see mutateSystemConfig.
+func (h *Handler) updateBoolField(c *gin.Context, set func(*config.Config, bool)) {
 	var body struct {
 		Value *bool `json:"value"`
 	}
@@ -591,13 +533,10 @@ func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	set(*body.Value)
-	h.persistLocked(c)
+	h.mutateSystemConfig(c, func(cfg *config.Config) error { set(cfg, *body.Value); return nil })
 }
 
-func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
+func (h *Handler) updateIntField(c *gin.Context, set func(*config.Config, int)) {
 	var body struct {
 		Value *int `json:"value"`
 	}
@@ -605,13 +544,10 @@ func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	set(*body.Value)
-	h.persistLocked(c)
+	h.mutateSystemConfig(c, func(cfg *config.Config) error { set(cfg, *body.Value); return nil })
 }
 
-func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
+func (h *Handler) updateStringField(c *gin.Context, set func(*config.Config, string)) {
 	var body struct {
 		Value *string `json:"value"`
 	}
@@ -619,8 +555,5 @@ func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	set(*body.Value)
-	h.persistLocked(c)
+	h.mutateSystemConfig(c, func(cfg *config.Config) error { set(cfg, *body.Value); return nil })
 }

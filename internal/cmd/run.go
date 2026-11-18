@@ -6,15 +6,25 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/safemode"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/contentmoderation"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/enduser"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota/inflight"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -27,21 +37,39 @@ import (
 //   - configPath: The path to the configuration file
 //   - localPassword: Optional password accepted for local management requests
 func StartService(cfg *config.Config, configPath string, localPassword string) {
-	StartServiceWithPluginHost(cfg, configPath, localPassword, nil)
-}
+	loc := config.ApplyTimeZone(cfg.Timezone)
+	prepareCluster(cfg)
+	if err := withRuntimeMigrationLock(cfg, func() error { return initializeRuntimeDataStack(cfg, configPath, loc) }); err != nil {
+		log.Errorf("usage: failed to initialize runtime data stack: %v", err)
+		return
+	}
+	usage.InitRedis(cfg.Redis)
+	defer stopRuntimeDataStack()
+	coordinator, err := startCluster(cfg)
+	if err != nil {
+		log.Errorf("cluster: failed to join the cluster: %v", err)
+		return
+	}
+	defer coordinator.Close()
+	stopClusterAuth, err := startClusterAuthStore(cfg)
+	if err != nil {
+		log.Errorf("cluster: failed to start the shared credential store: %v", err)
+		return
+	}
+	defer stopClusterAuth()
 
-// StartServiceWithPluginHost builds and runs the proxy service with a shared plugin host.
-func StartServiceWithPluginHost(cfg *config.Config, configPath string, localPassword string, host *pluginhost.Host, serverOptions ...api.ServerOption) {
+	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
+	contentmoderation.SetRuntime(moderator)
+	freezes := startAccessFreezes(loc)
+	defer freezes.Close()
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath).
+		WithCoreAuthHook(usage.NewAIAccountBindingHook()).
+		WithRequestModerator(moderator).
+		WithUpstreamRefusalObserver(freezes).
+		WithHooks(runtimeDataStackPostStartHooks(defaultRuntimeDataStackMaintenanceOps())).
 		WithLocalManagementPassword(localPassword)
-	if host != nil {
-		builder = builder.WithPluginHost(host)
-	}
-	if len(serverOptions) > 0 {
-		builder = builder.WithServerOptions(serverOptions...)
-	}
 
 	ctxSignal, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -61,6 +89,7 @@ func StartServiceWithPluginHost(cfg *config.Config, configPath string, localPass
 		log.Errorf("failed to build proxy service: %v", err)
 		return
 	}
+	defer closeClusterOnShutdown(runCtx, coordinator)()
 
 	err = service.Run(runCtx)
 	if err != nil && !errors.Is(err, context.Canceled) {
@@ -68,36 +97,47 @@ func StartServiceWithPluginHost(cfg *config.Config, configPath string, localPass
 	}
 }
 
-// StartExampleAPIKeyWarningServer starts a warning-only server for unsafe template API keys.
-func StartExampleAPIKeyWarningServer(cfg *config.Config, configPath string, keys []string) {
-	ctxSignal, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	log.Errorf("normal API server disabled: example API key values are configured in %s", configPath)
-	log.Errorf("example API key warning page listening on: %s", safemode.WarningServerURL(cfg))
-	if err := safemode.StartExampleAPIKeyWarningServer(ctxSignal, cfg, configPath, keys); err != nil && !errors.Is(err, context.Canceled) {
-		log.Errorf("example API key warning server exited with error: %v", err)
-	}
-}
-
 // StartServiceBackground starts the proxy service in a background goroutine
 // and returns a cancel function for shutdown and a done channel.
 func StartServiceBackground(cfg *config.Config, configPath string, localPassword string) (cancel func(), done <-chan struct{}) {
-	return StartServiceBackgroundWithPluginHost(cfg, configPath, localPassword, nil)
-}
+	loc := config.ApplyTimeZone(cfg.Timezone)
+	prepareCluster(cfg)
+	if err := withRuntimeMigrationLock(cfg, func() error { return initializeRuntimeDataStack(cfg, configPath, loc) }); err != nil {
+		log.Errorf("usage: failed to initialize runtime data stack: %v", err)
+		doneCh := make(chan struct{})
+		close(doneCh)
+		return func() {}, doneCh
+	}
+	usage.InitRedis(cfg.Redis)
+	coordinator, err := startCluster(cfg)
+	if err != nil {
+		log.Errorf("cluster: failed to join the cluster: %v", err)
+		stopRuntimeDataStack()
+		doneCh := make(chan struct{})
+		close(doneCh)
+		return func() {}, doneCh
+	}
+	stopClusterAuth, err := startClusterAuthStore(cfg)
+	if err != nil {
+		log.Errorf("cluster: failed to start the shared credential store: %v", err)
+		coordinator.Close()
+		stopRuntimeDataStack()
+		doneCh := make(chan struct{})
+		close(doneCh)
+		return func() {}, doneCh
+	}
 
-// StartServiceBackgroundWithPluginHost starts the proxy service with a shared plugin host.
-func StartServiceBackgroundWithPluginHost(cfg *config.Config, configPath string, localPassword string, host *pluginhost.Host, serverOptions ...api.ServerOption) (cancel func(), done <-chan struct{}) {
+	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
+	contentmoderation.SetRuntime(moderator)
+	freezes := startAccessFreezes(loc)
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath).
+		WithCoreAuthHook(usage.NewAIAccountBindingHook()).
+		WithRequestModerator(moderator).
+		WithUpstreamRefusalObserver(freezes).
+		WithHooks(runtimeDataStackPostStartHooks(defaultRuntimeDataStackMaintenanceOps())).
 		WithLocalManagementPassword(localPassword)
-	if host != nil {
-		builder = builder.WithPluginHost(host)
-	}
-	if len(serverOptions) > 0 {
-		builder = builder.WithServerOptions(serverOptions...)
-	}
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 	doneCh := make(chan struct{})
@@ -105,18 +145,280 @@ func StartServiceBackgroundWithPluginHost(cfg *config.Config, configPath string,
 	service, err := builder.Build()
 	if err != nil {
 		log.Errorf("failed to build proxy service: %v", err)
+		freezes.Close()
+		stopClusterAuth()
+		coordinator.Close()
+		stopRuntimeDataStack()
 		close(doneCh)
 		return cancelFn, doneCh
 	}
+	stopClusterWatch := closeClusterOnShutdown(ctx, coordinator)
 
 	go func() {
 		defer close(doneCh)
+		defer stopRuntimeDataStack()
+		defer coordinator.Close()
+		defer stopClusterAuth()
+		defer stopClusterWatch()
+		defer freezes.Close()
 		if err := service.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Errorf("proxy service exited with error: %v", err)
 		}
 	}()
 
 	return cancelFn, doneCh
+}
+
+// sessionReaperStop holds the identity session reaper's cancel function. The
+// reaper is started with the runtime data stack, so it has to be torn down with
+// it; a process that re-initialises the stack (tests, cloud-deploy reconfigure)
+// would otherwise leak one goroutine and one ticker per initialisation.
+var (
+	sessionReaperMu   sync.Mutex
+	sessionReaperStop func()
+)
+
+func startSessionReaper(service *identity.Service, interval time.Duration) {
+	sessionReaperMu.Lock()
+	defer sessionReaperMu.Unlock()
+	if sessionReaperStop != nil {
+		sessionReaperStop()
+	}
+	sessionReaperStop = service.StartSessionReaper(context.Background(), interval)
+}
+
+// auditRetentionStop mirrors the session reaper's lifecycle: started with the
+// runtime data stack, so it has to be stopped with it or a re-initialisation
+// leaks a goroutine and a ticker.
+var (
+	auditRetentionMu   sync.Mutex
+	auditRetentionStop func()
+)
+
+func startAuditRetention(service *identity.Service, policy identity.AuditRetentionPolicy) {
+	auditRetentionMu.Lock()
+	defer auditRetentionMu.Unlock()
+	if auditRetentionStop != nil {
+		auditRetentionStop()
+	}
+	auditRetentionStop = service.StartAuditRetention(context.Background(), policy)
+}
+
+// stopRuntimeDataStack tears down everything initializeRuntimeDataStack started.
+func stopRuntimeDataStack() {
+	sessionReaperMu.Lock()
+	stop := sessionReaperStop
+	sessionReaperStop = nil
+	sessionReaperMu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	auditRetentionMu.Lock()
+	stopAudit := auditRetentionStop
+	auditRetentionStop = nil
+	auditRetentionMu.Unlock()
+	if stopAudit != nil {
+		stopAudit()
+	}
+	stopSharedSessionState()
+	// Before the database closes: queued usage records still need it, and
+	// whatever it cannot take goes to the spool for the next start.
+	stopUsageSpool()
+	usage.StopRedis()
+}
+
+type bootstrapAdminPassword struct {
+	value  string
+	source string
+}
+
+type identityBootstrapper interface {
+	Bootstrap(context.Context, string) error
+}
+
+func resolveBootstrapAdminPassword(cfg *config.Config) bootstrapAdminPassword {
+	if value := strings.TrimSpace(os.Getenv("CLIRELAY_ADMIN_PASSWORD")); value != "" {
+		return bootstrapAdminPassword{value: value, source: "CLIRELAY_ADMIN_PASSWORD"}
+	}
+	if value := strings.TrimSpace(os.Getenv("MANAGEMENT_PASSWORD")); value != "" {
+		return bootstrapAdminPassword{value: value, source: "MANAGEMENT_PASSWORD"}
+	}
+	return bootstrapAdminPassword{
+		value:  strings.TrimSpace(cfg.RemoteManagement.SecretKey),
+		source: "remote-management.secret-key",
+	}
+}
+
+func bootstrapIdentity(ctx context.Context, service identityBootstrapper, password bootstrapAdminPassword) error {
+	if err := service.Bootstrap(ctx, password.value); err != nil {
+		return fmt.Errorf("identity bootstrap using admin password from %s: %w", password.source, err)
+	}
+	return nil
+}
+
+func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time.Location) error {
+	if cfg == nil {
+		return errors.New("config is nil")
+	}
+	if err := usage.InitPostgres(cfg.Postgres, cfg.RequestLogStorage, loc); err != nil {
+		return err
+	}
+	bootstrapPassword := resolveBootstrapAdminPassword(cfg)
+	identityService := identity.NewService(usage.RuntimeDB())
+	enduserService := enduser.NewService(usage.RuntimeDB())
+	enduser.SetDefault(enduserService)
+	if err := bootstrapIdentity(context.Background(), identityService, bootstrapPassword); err != nil {
+		return err
+	}
+	identity.SetDefault(identityService)
+	identityService.SetSessionPolicy(identity.SessionPolicyFromConfig(cfg))
+	startSessionReaper(identityService, identity.SessionReaperIntervalFromConfig(cfg))
+	startAuditRetention(identityService, identity.AuditRetentionPolicyFromConfig(cfg))
+	// Import YAML keys first so one-shot end-user backfill can see them.
+	if _, err := usage.MigrateAPIKeysFromConfig(cfg, configPath); err != nil {
+		return fmt.Errorf("migrate api keys from config: %w", err)
+	}
+	usage.WarnEnabledPlaceholderAPIKeys()
+	if created, err := enduserService.BackfillFromAPIKeys(context.Background()); err != nil {
+		log.WithError(err).Error("enduser: backfill from api keys failed")
+		return fmt.Errorf("enduser backfill: %w", err)
+	} else if created > 0 {
+		// Say what the operator has to do next. These accounts are created
+		// without a usable password, so without this line the first symptom is
+		// a migrated user reporting that no password works.
+		log.Infof("enduser: backfilled %d end users from api keys; each account needs a password issued via the management password reset before its owner can sign in", created)
+	}
+	// Before listening, so this instance never serves a portal sign-in with the
+	// published password. Fatal like the backfill: starting anyway would leave
+	// those accounts open with nothing but a log line to show for it.
+	if locked, err := enduserService.LockLegacyBackfillPasswordAccounts(context.Background()); err != nil {
+		log.WithError(err).Error("enduser: locking accounts on the legacy backfill password failed")
+		return fmt.Errorf("enduser legacy backfill password lock: %w", err)
+	} else if len(locked) > 0 {
+		log.WithField("usernames", locked).Warnf("enduser: locked %d portal accounts still holding the legacy backfill password; each needs a credential issued via the end-user password reset before its owner can sign in again", len(locked))
+	}
+	usage.MigrateAPIKeyPermissionProfilesFromYAML(configPath)
+	usage.MigrateRoutingConfigFromConfig(cfg, configPath)
+	usage.ApplyStoredRoutingConfig(cfg)
+	usage.MigrateProxyPoolFromConfig(cfg, configPath)
+	usage.ApplyStoredProxyPool(cfg)
+	settingsstore.MigrateRuntimeSettingsFromConfig(cfg, configPath)
+	settingsstore.ApplyStoredRuntimeSettings(cfg)
+	// After the settings store is live: the protection policy is read from it.
+	initializeIPAccessControl(context.Background(), cfg)
+	// Likewise the metrics endpoint settings.
+	initializeObservability()
+	// And the loop protection and secret masking settings every inference
+	// request resolves.
+	settingsstore.AttachLoopGuardSettings()
+	settingsstore.AttachSecretMaskingSettings()
+	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey, usage.QueryTodayCostByKey)
+	middleware.InitQuotaEndUserUsageFuncs(usage.CountTodayByEndUser, usage.CountTotalByEndUser, usage.QueryTotalCostByEndUser, usage.QueryTodayCostByEndUser)
+	middleware.InitQuotaPeriodUsageFuncs(usage.QueryPeriodSpendingByAPIKeyIDForTenant, usage.QueryPeriodSpendingByEndUserForTenant)
+	middleware.InitQuotaSnapshotFuncs(usage.QueryEndUserQuotaUsageSnapshot, usage.QueryAPIKeyQuotaUsageSnapshot)
+	// Key-limit refusals tell the client when the day, week or month window ends.
+	middleware.InitQuotaPeriodResetFunc(usage.PeriodResetAt)
+	// Admitted requests hold a reservation on their budgets until their usage
+	// records are committed; see internal/quota/inflight.
+	coreusage.SetPublishObserver(func(record coreusage.Record) { inflight.Default().Published(record.RequestID) })
+	usage.SetRequestLogSettledHook(inflight.Default().Settle)
+	middleware.SetQuotaUsageStaleMaxAge(cfg.DBResilience.QuotaStaleMaxAge())
+	// The write path hands over the key's owner it already resolved, so TPM
+	// accounting needs no lookup of its own and keeps working while the
+	// database is unreachable.
+	usage.SetTokenUsageCallback(middleware.RecordTokenUsageForRequest)
+	startUsageSpool(cfg)
+	startSharedSessionState(cfg)
+	return nil
+}
+
+type runtimeDataStackMaintenanceOps struct {
+	runAIAccountSharedSubjectBackfill func() error
+	scheduleUsageRollupCatchup        func()
+	// scheduleRequestLogKeyMasking starts the background pass that replaces the
+	// client secrets older builds stored in request_logs.api_key with masks.
+	scheduleRequestLogKeyMasking func()
+	// scheduleRequestLogSessionBackfill starts the background pass that copies
+	// the session id of older rows from request_log_content onto request_logs.
+	scheduleRequestLogSessionBackfill func()
+	// withRepairLock serialises the one-time repairs across nodes; nil runs
+	// them directly.
+	withRepairLock func(func() error) error
+}
+
+func defaultRuntimeDataStackMaintenanceOps() runtimeDataStackMaintenanceOps {
+	return runtimeDataStackMaintenanceOps{
+		runAIAccountSharedSubjectBackfill: func() error {
+			if _, err := usage.RunAIAccountSharedSubjectBackfillAtInit(); err != nil {
+				return err
+			}
+			if err := usage.RunAIAccountSubjectUsageTokensBackfillAtInit(); err != nil {
+				return err
+			}
+			if err := usage.RunAIAccountSubjectCycleBucketMergeAtInit(); err != nil {
+				return err
+			}
+			if err := usage.RunAIAccountSubjectCycleRealignAtInit(); err != nil {
+				return err
+			}
+			// After realign: that pass folds fragments onto the stored anchor, and
+			// this one may then move that anchor to the period it should have
+			// rolled into.
+			if err := usage.RunAIAccountSubjectCycleRolloverRepairAtInit(); err != nil {
+				return err
+			}
+			// Last: it repairs the anchors the metered-probe pass above cannot see,
+			// those held on a period the upstream refilled rather than spent out.
+			return usage.RunAIAccountSubjectCycleRefillRepairAtInit()
+		},
+		scheduleUsageRollupCatchup:        usage.ScheduleUsageRollupBlueGreenCatchup,
+		scheduleRequestLogKeyMasking:      usage.ScheduleRequestLogAPIKeyMasking,
+		scheduleRequestLogSessionBackfill: usage.ScheduleRequestLogSessionBackfill,
+		withRepairLock:                    withRepairLock,
+	}
+}
+
+func runtimeDataStackPostStartHooks(ops runtimeDataStackMaintenanceOps) cliproxy.Hooks {
+	return cliproxy.Hooks{OnAfterStart: func(*cliproxy.Service) {
+		go runRuntimeDataStackPostStartMaintenance(ops)
+	}}
+}
+
+func runRuntimeDataStackPostStartMaintenance(ops runtimeDataStackMaintenanceOps) {
+	startedAt := time.Now()
+	log.Info("usage: post-listen runtime data maintenance started")
+
+	if ops.runAIAccountSharedSubjectBackfill != nil {
+		stepStartedAt := time.Now()
+		repair := ops.runAIAccountSharedSubjectBackfill
+		if ops.withRepairLock != nil {
+			repair = func() error { return ops.withRepairLock(ops.runAIAccountSharedSubjectBackfill) }
+		}
+		if err := repair(); err != nil {
+			log.WithError(err).Error("usage: post-listen ai account shared subject backfill failed")
+		} else {
+			log.Infof("usage: post-listen ai account shared subject backfill completed in %s", time.Since(stepStartedAt).Round(time.Millisecond))
+		}
+	}
+	// Old blue-green slot may keep writing request_logs until drain. Run the one
+	// absolute rebuild only after the drain window so it includes both slots and
+	// cannot block the HTTP listener or deployment readiness.
+	if ops.scheduleUsageRollupCatchup != nil {
+		ops.scheduleUsageRollupCatchup()
+	}
+	// The same old slot still writes the secret into request_logs.api_key; the
+	// masking pass holds off for longer than its drain window and then runs in
+	// small batches in the background.
+	if ops.scheduleRequestLogKeyMasking != nil {
+		ops.scheduleRequestLogKeyMasking()
+	}
+	// Rows that old slot writes have no session_id either, so the session
+	// backfill waits out the same drain window.
+	if ops.scheduleRequestLogSessionBackfill != nil {
+		ops.scheduleRequestLogSessionBackfill()
+	}
+
+	log.Infof("usage: post-listen runtime data maintenance scheduled in %s", time.Since(startedAt).Round(time.Millisecond))
 }
 
 // WaitForCloudDeploy waits indefinitely for shutdown signals in cloud deploy mode

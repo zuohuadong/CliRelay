@@ -12,6 +12,7 @@ import (
 
 // ModelInfo re-exports the registry model info structure.
 type ModelInfo = registry.ModelInfo
+type ModelThinkingSupport = registry.ThinkingSupport
 
 // ClientModelProjection re-exports the registry model projection structure.
 type ClientModelProjection = registry.ClientModelProjection
@@ -28,13 +29,13 @@ type ModelRegistry interface {
 	SetModelQuotaExceeded(clientID, modelID string)
 	ClearModelQuotaExceeded(clientID, modelID string)
 	ApplyClientModelProjections(clientID string, epoch uint64, generation uint64, projections []ClientModelProjection) bool
+	ApplyClientModelCapabilities(clientID string, expectedEpoch uint64, mutate func(modelID string, info *ModelInfo)) bool
 	ClientSupportsModel(clientID, modelID string) bool
 	GetAvailableModels(handlerType string) []map[string]any
 	GetAvailableModelsByProvider(provider string) []*ModelInfo
 	GetModelsForClient(clientID string) []*ModelInfo
 	GetModelsAndEpochForClient(clientID string) ([]*ModelInfo, uint64)
 	ClientRegistrationEpoch(clientID string) uint64
-	ApplyClientModelCapabilities(clientID string, expectedEpoch uint64, mutate func(modelID string, info *ModelInfo)) bool
 }
 
 // GlobalModelRegistry returns the shared registry instance.

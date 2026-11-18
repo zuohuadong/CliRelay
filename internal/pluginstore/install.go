@@ -21,10 +21,6 @@ type InstallOptions struct {
 	PluginsDir string
 	GOOS       string
 	GOARCH     string
-	// VersionedTarget is kept for callers that require explicit versioned
-	// artifacts; new installs already use versioned names by default.
-	// Existing runtime-selected files are still reused for in-place updates.
-	VersionedTarget bool
 	// PluginLoaded reports whether the plugin's dynamic library is currently
 	// loaded by the running host. Windows installs are rejected only when they
 	// would overwrite an existing target file while it returns true.
@@ -316,21 +312,7 @@ func installTargetPath(options InstallOptions, id string, version string) (strin
 	if !validPluginVersion(version) {
 		return "", fmt.Errorf("invalid plugin version %q", version)
 	}
-	targetName := versionedPluginFileName(id, version, options.GOOS)
-	defaultPath := filepath.Join(options.PluginsDir, options.GOOS, options.GOARCH, targetName)
-	if options.GOOS != runtime.GOOS || options.GOARCH != runtime.GOARCH {
-		return defaultPath, nil
-	}
-	files, errDiscover := discoverCurrentPluginFiles(options.PluginsDir)
-	if errDiscover != nil {
-		return "", fmt.Errorf("discover current plugin files: %w", errDiscover)
-	}
-	for _, file := range files {
-		if file.ID == id && strings.TrimSpace(file.Path) != "" {
-			return file.Path, nil
-		}
-	}
-	return defaultPath, nil
+	return filepath.Join(options.PluginsDir, options.GOOS, options.GOARCH, versionedPluginFileName(id, version, options.GOOS)), nil
 }
 
 func readTargetLibrary(reader *zip.Reader, id string, version string, goos string) ([]byte, os.FileMode, error) {

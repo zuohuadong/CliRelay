@@ -20,11 +20,14 @@ auths
 logs
 conv
 config.yaml
+assets/
 manage.html
 management.html
 panel-meta.json
 dist/
 panel-dist.zip
+cli-proxy-api
+CLIProxyAPI
 
 # Development/editor
 bin

@@ -1,0 +1,628 @@
+package identityfingerprint
+
+import (
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const (
+	FieldUserAgent              = "user-agent"
+	FieldClaudeCLIVersion       = "cli-version"
+	FieldClaudeEntrypoint       = "entrypoint"
+	FieldClaudeAnthropicBeta    = "anthropic-beta"
+	FieldClaudeStainlessPackage = "stainless-package-version"
+	FieldClaudeStainlessRuntime = "stainless-runtime-version"
+	FieldClaudeStainlessTimeout = "stainless-timeout"
+	FieldCodexVersion           = "version"
+	FieldCodexOriginator        = "originator"
+	FieldCodexWebsocketBeta     = "websocket-beta"
+	FieldCodexBetaFeatures      = "x-codex-beta-features"
+	FieldGeminiAPIClient        = "x-goog-api-client"
+	FieldGeminiClientMetadata   = "client-metadata"
+	FieldXAIGrokConversationID  = "x-grok-conv-id"
+	FieldXAIClientIdentifier    = "x-grok-client-identifier"
+	FieldXAIClientVersion       = "x-grok-client-version"
+	FieldXAIClientMode          = "x-grok-client-mode"
+	FieldKimiPlatform           = "x-msh-platform"
+	FieldKimiVersion            = "x-msh-version"
+	FieldKimiDeviceName         = "x-msh-device-name"
+	FieldKimiDeviceModel        = "x-msh-device-model"
+	FieldKimiDeviceID           = "x-msh-device-id"
+	FieldAntigravityVersion     = "antigravity-version"
+	FieldAntigravityProjectID   = "project-id"
+)
+
+var (
+	claudeUARe       = regexp.MustCompile(`(?i)^claude-cli/([0-9]+(?:\.[0-9]+){0,3})\s+\(external,\s*([^)]+)\)`)
+	codexDesktopUARe = regexp.MustCompile(`(?i)\bcodex\s+desktop/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
+	tokenVerRe       = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*codex[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
+	geminiUARe       = regexp.MustCompile(`(?i)^google-api-nodejs-client/([0-9]+(?:\.[0-9]+){0,3})`)
+	xaiTokenVerRe    = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*(?:grok|xai)[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
+	kimiTokenVerRe   = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*kimi[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
+	antigravityUARe  = regexp.MustCompile(`(?i)(?:vscode/[^\s]+\s+)?\(?antigravity/(?:(?:hub|cli)/)?([0-9]+(?:\.[0-9]+){0,3})\)?`)
+)
+
+func ExtractObservation(input LearnInput) (Observation, bool) {
+	observedAt := input.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	headers := http.Header(input.Headers)
+	switch input.Provider {
+	case ProviderClaude:
+		return extractClaudeObservation(input, headers, observedAt)
+	case ProviderCodex:
+		return extractCodexObservation(input, headers, observedAt)
+	case ProviderGemini:
+		return extractGeminiObservation(input, headers, observedAt)
+	case ProviderXAI:
+		return extractXAIObservation(input, headers, observedAt)
+	case ProviderKimi:
+		return extractKimiObservation(input, headers, observedAt)
+	case ProviderAntigravity:
+		return extractAntigravityObservation(input, headers, observedAt)
+	default:
+		return Observation{}, false
+	}
+}
+
+func extractClaudeObservation(input LearnInput, headers http.Header, observedAt time.Time) (Observation, bool) {
+	ua := strings.TrimSpace(headers.Get("User-Agent"))
+	matches := claudeUARe.FindStringSubmatch(ua)
+	if len(matches) == 0 {
+		return Observation{}, false
+	}
+	entrypoint := strings.TrimSpace(headers.Get("X-App"))
+	if entrypoint == "" {
+		entrypoint = strings.TrimSpace(matches[2])
+	}
+	fields := map[string]string{
+		FieldUserAgent:        ua,
+		FieldClaudeCLIVersion: strings.TrimSpace(matches[1]),
+		FieldClaudeEntrypoint: entrypoint,
+	}
+	addHeaderField(fields, headers, "Anthropic-Beta", FieldClaudeAnthropicBeta)
+	addHeaderField(fields, headers, "X-Stainless-Package-Version", FieldClaudeStainlessPackage)
+	addHeaderField(fields, headers, "X-Stainless-Runtime-Version", FieldClaudeStainlessRuntime)
+	addHeaderField(fields, headers, "X-Stainless-Timeout", FieldClaudeStainlessTimeout)
+	return Observation{
+		Provider:        ProviderClaude,
+		AccountKey:      strings.TrimSpace(input.AccountKey),
+		ProfileKey:      ProfileKeyDefault,
+		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
+		ClientProduct:   "claude-cli",
+		ClientVariant:   entrypoint,
+		Version:         strings.TrimSpace(matches[1]),
+		Fields:          fields,
+		ObservedHeaders: observedHeaders(headers, []string{"User-Agent", "X-App", "Anthropic-Beta", "X-Stainless-Package-Version", "X-Stainless-Runtime-Version", "X-Stainless-Timeout"}),
+		ObservedAt:      observedAt.UTC(),
+	}, true
+}
+
+func extractCodexObservation(input LearnInput, headers http.Header, observedAt time.Time) (Observation, bool) {
+	ua := strings.TrimSpace(headers.Get("User-Agent"))
+	originator := strings.TrimSpace(headers.Get("Originator"))
+	product, uaVersion := codexProductVersion(ua)
+	profileKey, profileFamily, profileOK := CodexProfileKey(ua, originator)
+	if !profileOK {
+		return Observation{}, false
+	}
+	if product == "" {
+		product = profileKey
+	}
+	version := strings.TrimSpace(headers.Get("Version"))
+	if version == "" {
+		version = uaVersion
+	}
+	if product == "" {
+		return Observation{}, false
+	}
+	fields := map[string]string{}
+	if ua != "" {
+		fields[FieldUserAgent] = ua
+	}
+	if version != "" {
+		fields[FieldCodexVersion] = version
+	}
+	if originator != "" {
+		fields[FieldCodexOriginator] = originator
+	}
+	if beta := strings.TrimSpace(headers.Get("OpenAI-Beta")); beta != "" && strings.Contains(beta, "responses_websockets=") {
+		fields[FieldCodexWebsocketBeta] = beta
+	}
+	addHeaderField(fields, headers, "X-Codex-Beta-Features", FieldCodexBetaFeatures)
+	if len(fields) == 0 {
+		return Observation{}, false
+	}
+	return Observation{
+		Provider:        ProviderCodex,
+		AccountKey:      strings.TrimSpace(input.AccountKey),
+		ProfileKey:      profileKey,
+		ProfileFamily:   profileFamily,
+		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
+		ClientProduct:   product,
+		ClientVariant:   originator,
+		Version:         version,
+		Fields:          fields,
+		ObservedHeaders: observedHeaders(headers, []string{"User-Agent", "Version", "Originator", "OpenAI-Beta", "X-Codex-Beta-Features"}),
+		ObservedAt:      observedAt.UTC(),
+	}, true
+}
+
+func extractGeminiObservation(input LearnInput, headers http.Header, observedAt time.Time) (Observation, bool) {
+	ua := strings.TrimSpace(headers.Get("User-Agent"))
+	apiClient := strings.TrimSpace(headers.Get("X-Goog-Api-Client"))
+	clientMetadata := strings.TrimSpace(headers.Get("Client-Metadata"))
+	product := ""
+	version := ""
+	if matches := geminiUARe.FindStringSubmatch(ua); len(matches) > 0 {
+		product = "google-api-nodejs-client"
+		version = matches[1]
+	}
+	if product == "" && (strings.Contains(strings.ToLower(apiClient), "gl-node") || strings.Contains(strings.ToLower(clientMetadata), "gemini")) {
+		product = "gemini-cli"
+	}
+	if product == "" {
+		return Observation{}, false
+	}
+	fields := map[string]string{}
+	if ua != "" {
+		fields[FieldUserAgent] = ua
+	}
+	if apiClient != "" {
+		fields[FieldGeminiAPIClient] = apiClient
+	}
+	if clientMetadata != "" {
+		fields[FieldGeminiClientMetadata] = clientMetadata
+	}
+	if len(fields) == 0 {
+		return Observation{}, false
+	}
+	return Observation{
+		Provider:        ProviderGemini,
+		AccountKey:      strings.TrimSpace(input.AccountKey),
+		ProfileKey:      ProfileKeyDefault,
+		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
+		ClientProduct:   product,
+		ClientVariant:   "cli",
+		Version:         version,
+		Fields:          fields,
+		ObservedHeaders: observedHeaders(headers, []string{"User-Agent", "X-Goog-Api-Client", "Client-Metadata"}),
+		ObservedAt:      observedAt.UTC(),
+	}, true
+}
+
+// extractXAIObservation learns the identity a real Grok CLI presents.
+//
+// The User-Agent is what makes an observation: a Grok CLI names itself there
+// (grok-shell/1.0.77, or grok-pager/1.0.77 grok-shell/1.0.77 from its pager),
+// and the other headers belong to the same bundle. A caller that only sets
+// X-Grok-Client-Identifier beside some other User-Agent is not the CLI, and
+// recording it would pin the account to a made-up identity.
+//
+// The CLI does not send every header everywhere: on its own backend it sends
+// identifier, version and mode beside the User-Agent, but pointed at an
+// OpenAI-compatible endpoint (this proxy, 2026-11-09) it sends the User-Agent
+// alone. What it sent is the bundle; MergeObservation keeps it whole.
+func extractXAIObservation(input LearnInput, headers http.Header, observedAt time.Time) (Observation, bool) {
+	ua := strings.TrimSpace(headers.Get("User-Agent"))
+	clientIdentifier := strings.TrimSpace(headers.Get("X-Grok-Client-Identifier"))
+	clientVersion := strings.TrimSpace(headers.Get("X-Grok-Client-Version"))
+	clientMode := strings.TrimSpace(headers.Get("X-Grok-Client-Mode"))
+	product, version := xaiProductVersion(ua)
+	if product == "" {
+		return Observation{}, false
+	}
+	if version == "" {
+		version = clientVersion
+	}
+	fields := map[string]string{FieldUserAgent: ua}
+	if clientIdentifier != "" {
+		fields[FieldXAIClientIdentifier] = clientIdentifier
+	}
+	if clientVersion != "" {
+		fields[FieldXAIClientVersion] = clientVersion
+	}
+	if clientMode != "" {
+		fields[FieldXAIClientMode] = clientMode
+	}
+	return Observation{
+		Provider:        ProviderXAI,
+		AccountKey:      strings.TrimSpace(input.AccountKey),
+		ProfileKey:      ProfileKeyDefault,
+		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
+		ClientProduct:   product,
+		ClientVariant:   "cli",
+		Version:         version,
+		Fields:          fields,
+		ObservedHeaders: observedHeaders(headers, []string{"User-Agent", "X-Grok-Client-Identifier", "X-Grok-Client-Version", "X-Grok-Client-Mode"}),
+		ObservedAt:      observedAt.UTC(),
+	}, true
+}
+
+// extractKimiObservation learns the identity a real kimi-cli presents.
+//
+// The device fields are part of the observation on purpose. Without them every
+// account on a host goes out with that host's name and, when the credential
+// carries no device id of its own, the literal fallback string the proxy uses —
+// so accounts that share nothing else still look like one machine to Moonshot.
+func extractKimiObservation(input LearnInput, headers http.Header, observedAt time.Time) (Observation, bool) {
+	ua := strings.TrimSpace(headers.Get("User-Agent"))
+	platform := strings.TrimSpace(headers.Get("X-Msh-Platform"))
+	version := strings.TrimSpace(headers.Get("X-Msh-Version"))
+	product, uaVersion := kimiProductVersion(ua)
+	if product == "" && platform != "" {
+		product = platform
+	}
+	if version == "" {
+		version = uaVersion
+	}
+	// A caller that presents neither a kimi User-Agent nor the platform header is
+	// not the kimi client, and recording it would pin the account to a made-up
+	// identity.
+	if product == "" {
+		return Observation{}, false
+	}
+	fields := map[string]string{}
+	if ua != "" {
+		fields[FieldUserAgent] = ua
+	}
+	if platform != "" {
+		fields[FieldKimiPlatform] = platform
+	}
+	if version != "" {
+		fields[FieldKimiVersion] = version
+	}
+	addHeaderField(fields, headers, "X-Msh-Device-Name", FieldKimiDeviceName)
+	addHeaderField(fields, headers, "X-Msh-Device-Model", FieldKimiDeviceModel)
+	addHeaderField(fields, headers, "X-Msh-Device-Id", FieldKimiDeviceID)
+	if len(fields) == 0 {
+		return Observation{}, false
+	}
+	return Observation{
+		Provider:        ProviderKimi,
+		AccountKey:      strings.TrimSpace(input.AccountKey),
+		ProfileKey:      ProfileKeyDefault,
+		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
+		ClientProduct:   product,
+		ClientVariant:   "cli",
+		Version:         version,
+		Fields:          fields,
+		ObservedHeaders: observedHeaders(headers, []string{"User-Agent", "X-Msh-Platform", "X-Msh-Version", "X-Msh-Device-Name", "X-Msh-Device-Model", "X-Msh-Device-Id"}),
+		ObservedAt:      observedAt.UTC(),
+	}, true
+}
+
+// IsAntigravityClientUserAgent reports whether a User-Agent carries the
+// Antigravity client token. Antigravity's upstream refuses any caller it cannot
+// recognise with "You do not have a valid license of this product (#3501)", so a
+// User-Agent that fails this check must never be learned as, or resolved into,
+// an account's outbound identity.
+func IsAntigravityClientUserAgent(ua string) bool {
+	return antigravityUARe.MatchString(strings.TrimSpace(ua))
+}
+
+// extractAntigravityObservation learns the identity a real Antigravity client presents.
+//
+// A caller whose User-Agent does not identify the Antigravity client is not the
+// Antigravity client, and recording it would pin the account to a made-up
+// identity that the upstream then rejects. Generic SDK User-Agents reach this
+// path routinely — a Node client sends a bare "node" — so the client token, not
+// merely a non-empty header, is what makes an observation.
+func extractAntigravityObservation(input LearnInput, headers http.Header, observedAt time.Time) (Observation, bool) {
+	ua := strings.TrimSpace(headers.Get("User-Agent"))
+	matches := antigravityUARe.FindStringSubmatch(ua)
+	if len(matches) == 0 {
+		return Observation{}, false
+	}
+	version := strings.TrimSpace(matches[1])
+	fields := map[string]string{FieldUserAgent: ua}
+	if version != "" {
+		fields[FieldAntigravityVersion] = version
+	}
+	return Observation{
+		Provider:        ProviderAntigravity,
+		AccountKey:      strings.TrimSpace(input.AccountKey),
+		ProfileKey:      ProfileKeyDefault,
+		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
+		ClientProduct:   "antigravity",
+		ClientVariant:   "vscode",
+		Version:         version,
+		Fields:          fields,
+		ObservedHeaders: observedHeaders(headers, []string{"User-Agent"}),
+		ObservedAt:      observedAt.UTC(),
+	}, true
+}
+
+func MergeObservation(existing *LearnedRecord, obs Observation) MergeResult {
+	if strings.TrimSpace(obs.AccountKey) == "" {
+		return MergeResult{Reason: "missing_account_key"}
+	}
+	if len(obs.Fields) == 0 {
+		return MergeResult{Record: existing, Reason: "empty_observation"}
+	}
+	now := obs.ObservedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if existing == nil {
+		profileKey := strings.TrimSpace(obs.ProfileKey)
+		if profileKey == "" {
+			profileKey = DefaultProfileKey(obs.Provider)
+		}
+		record := &LearnedRecord{
+			Provider:        obs.Provider,
+			AccountKey:      strings.TrimSpace(obs.AccountKey),
+			ProfileKey:      profileKey,
+			ProfileFamily:   strings.TrimSpace(obs.ProfileFamily),
+			AuthSubjectID:   strings.TrimSpace(obs.AuthSubjectID),
+			ClientProduct:   strings.TrimSpace(obs.ClientProduct),
+			ClientVariant:   strings.TrimSpace(obs.ClientVariant),
+			Version:         strings.TrimSpace(obs.Version),
+			Fields:          cloneStringMap(obs.Fields),
+			ObservedHeaders: cloneStringMap(obs.ObservedHeaders),
+			CreatedAt:       now.UTC(),
+			UpdatedAt:       now.UTC(),
+			LastSeenAt:      now.UTC(),
+		}
+		return MergeResult{Record: record, Changed: true, Reason: "created"}
+	}
+
+	record := cloneRecord(existing)
+	profileKey := strings.TrimSpace(obs.ProfileKey)
+	if profileKey == "" {
+		profileKey = DefaultProfileKey(obs.Provider)
+	}
+	if existingKey := strings.TrimSpace(record.ProfileKey); existingKey != "" && existingKey != profileKey {
+		return MergeResult{Record: existing, Reason: "different_profile"}
+	}
+	record.ProfileKey = profileKey
+	if strings.TrimSpace(obs.ProfileFamily) != "" {
+		record.ProfileFamily = strings.TrimSpace(obs.ProfileFamily)
+	}
+	record.LastSeenAt = now.UTC()
+	if strings.TrimSpace(record.AuthSubjectID) == "" {
+		record.AuthSubjectID = strings.TrimSpace(obs.AuthSubjectID)
+	}
+	if strings.TrimSpace(record.Version) != "" && strings.TrimSpace(obs.Version) != "" &&
+		isNewerVersion(record.Version, obs.Version) {
+		return MergeResult{Record: record, Changed: true, Reason: "older_version_last_seen"}
+	}
+	if strings.TrimSpace(obs.ClientProduct) != "" {
+		record.ClientProduct = strings.TrimSpace(obs.ClientProduct)
+	}
+	if strings.TrimSpace(obs.Version) != "" {
+		record.Version = strings.TrimSpace(obs.Version)
+	}
+	if strings.TrimSpace(obs.ClientVariant) != "" {
+		record.ClientVariant = strings.TrimSpace(obs.ClientVariant)
+	}
+	if record.Fields == nil {
+		record.Fields = map[string]string{}
+	}
+	// A client's identity headers are one bundle. Merged field by field, a
+	// Grok account learned grok-shell/1.0.77's User-Agent beside the
+	// identifier and version an earlier grok-pager 1.0.70 had sent, and went
+	// out as three clients at once (2026-11-09). An observation that carries
+	// the bundle's User-Agent replaces the whole bundle instead.
+	if bundle := identityBundleFields(obs.Provider); len(bundle) > 0 && strings.TrimSpace(obs.Fields[FieldUserAgent]) != "" {
+		for _, field := range bundle {
+			delete(record.Fields, field)
+		}
+	}
+	for key, value := range obs.Fields {
+		if key = strings.TrimSpace(key); key != "" {
+			if value = strings.TrimSpace(value); value != "" {
+				record.Fields[key] = value
+			}
+		}
+	}
+	record.ObservedHeaders = cloneStringMap(obs.ObservedHeaders)
+	record.UpdatedAt = now.UTC()
+	return MergeResult{Record: record, Changed: true, Reason: "merged_profile"}
+}
+
+func MergeObservationChangedExceptLastSeen(existing, merged *LearnedRecord) bool {
+	if existing == nil || merged == nil {
+		return existing != merged
+	}
+	if existing.Provider != merged.Provider ||
+		strings.TrimSpace(existing.AccountKey) != strings.TrimSpace(merged.AccountKey) ||
+		strings.TrimSpace(existing.ProfileKey) != strings.TrimSpace(merged.ProfileKey) ||
+		strings.TrimSpace(existing.ProfileFamily) != strings.TrimSpace(merged.ProfileFamily) ||
+		strings.TrimSpace(existing.AuthSubjectID) != strings.TrimSpace(merged.AuthSubjectID) ||
+		strings.TrimSpace(existing.ClientProduct) != strings.TrimSpace(merged.ClientProduct) ||
+		strings.TrimSpace(existing.ClientVariant) != strings.TrimSpace(merged.ClientVariant) ||
+		strings.TrimSpace(existing.Version) != strings.TrimSpace(merged.Version) ||
+		!sameStringMap(existing.Fields, merged.Fields) ||
+		!sameStringMap(existing.ObservedHeaders, merged.ObservedHeaders) {
+		return true
+	}
+	return false
+}
+
+func sameStringMap(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, leftValue := range left {
+		if right[key] != leftValue {
+			return false
+		}
+	}
+	return true
+}
+
+func codexProductVersion(ua string) (string, string) {
+	ua = strings.TrimSpace(ua)
+	if ua == "" {
+		return "", ""
+	}
+
+	if matches := codexDesktopUARe.FindStringSubmatch(ua); len(matches) > 0 {
+		return "codex", matches[1]
+	}
+
+	if matches := tokenVerRe.FindStringSubmatch(ua); len(matches) > 0 {
+		return strings.ToLower(matches[1]), matches[2]
+	}
+
+	if strings.Contains(strings.ToLower(ua), "codex") {
+		return "codex", ""
+	}
+	return "", ""
+}
+
+func xaiProductVersion(ua string) (string, string) {
+	ua = strings.TrimSpace(ua)
+	if ua == "" {
+		return "", ""
+	}
+	if matches := xaiTokenVerRe.FindStringSubmatch(ua); len(matches) > 0 {
+		return strings.ToLower(matches[1]), matches[2]
+	}
+	lower := strings.ToLower(ua)
+	if strings.Contains(lower, "grok") {
+		return "grok-cli", ""
+	}
+	if strings.Contains(lower, "xai") {
+		return "xai-cli", ""
+	}
+	return "", ""
+}
+
+// xaiProduct is one product/version token of a Grok CLI User-Agent.
+type xaiProduct struct {
+	name    string
+	version string
+}
+
+// xaiUserAgentProducts lists the Grok products a User-Agent names, in order:
+// "grok-pager/1.0.77 grok-shell/1.0.77 (macos; aarch64)" is the pager, then
+// the shell it runs. Tokens without a version are not listed.
+func xaiUserAgentProducts(ua string) []xaiProduct {
+	matches := xaiTokenVerRe.FindAllStringSubmatch(strings.TrimSpace(ua), -1)
+	products := make([]xaiProduct, 0, len(matches))
+	for _, match := range matches {
+		products = append(products, xaiProduct{name: strings.ToLower(match[1]), version: match[2]})
+	}
+	return products
+}
+
+// identityBundleFields are the fields a provider's client sends as one
+// identity, which an observation replaces together rather than one by one.
+// Only xAI declares one: its CLI sends different subsets of these headers to
+// different endpoints, so field-wise merging mixed two clients.
+func identityBundleFields(provider Provider) []string {
+	if provider == ProviderXAI {
+		return []string{FieldUserAgent, FieldXAIClientIdentifier, FieldXAIClientVersion, FieldXAIClientMode}
+	}
+	return nil
+}
+
+func kimiProductVersion(ua string) (string, string) {
+	ua = strings.TrimSpace(ua)
+	if ua == "" {
+		return "", ""
+	}
+	if matches := kimiTokenVerRe.FindStringSubmatch(ua); len(matches) > 0 {
+		return strings.ToLower(matches[1]), matches[2]
+	}
+	if strings.Contains(strings.ToLower(ua), "kimi") {
+		return "kimi-cli", ""
+	}
+	return "", ""
+}
+
+func addHeaderField(fields map[string]string, headers http.Header, headerName, fieldName string) {
+	if value := strings.TrimSpace(headers.Get(headerName)); value != "" {
+		fields[fieldName] = value
+	}
+}
+
+func observedHeaders(headers http.Header, names []string) map[string]string {
+	out := make(map[string]string, len(names))
+	for _, name := range names {
+		if value := strings.TrimSpace(headers.Get(name)); value != "" {
+			out[http.CanonicalHeaderKey(name)] = value
+		}
+	}
+	return out
+}
+
+func isNewerVersion(next, current string) bool {
+	nextParts := parseVersionParts(next)
+	currentParts := parseVersionParts(current)
+	if len(nextParts) == 0 || len(currentParts) == 0 {
+		return false
+	}
+	max := len(nextParts)
+	if len(currentParts) > max {
+		max = len(currentParts)
+	}
+	for i := 0; i < max; i++ {
+		var a, b int
+		if i < len(nextParts) {
+			a = nextParts[i]
+		}
+		if i < len(currentParts) {
+			b = currentParts[i]
+		}
+		if a > b {
+			return true
+		}
+		if a < b {
+			return false
+		}
+	}
+	return false
+}
+
+func parseVersionParts(version string) []int {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return nil
+	}
+	chunks := strings.Split(version, ".")
+	parts := make([]int, 0, len(chunks))
+	for _, chunk := range chunks {
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" {
+			return nil
+		}
+		value, err := strconv.Atoi(chunk)
+		if err != nil {
+			return nil
+		}
+		parts = append(parts, value)
+	}
+	return parts
+}
+
+func cloneRecord(record *LearnedRecord) *LearnedRecord {
+	if record == nil {
+		return nil
+	}
+	out := *record
+	out.Fields = cloneStringMap(record.Fields)
+	out.ObservedHeaders = cloneStringMap(record.ObservedHeaders)
+	return &out
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			out[key] = value
+		}
+	}
+	return out
+}

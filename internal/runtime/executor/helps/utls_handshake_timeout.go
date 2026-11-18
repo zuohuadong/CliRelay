@@ -10,10 +10,10 @@ import (
 )
 
 // tlsHandshakeTimeoutContextKey carries the opt-in TLS establishment bound
-// through request contexts. The uTLS round trippers are cached per proxy URL,
-// so the bound cannot live on the transport itself: it is read per dial
-// instead, which also lets config hot reloads take effect without rebuilding
-// cached transports.
+// through request contexts. The Claude Code round tripper is cached per
+// proxy URL, so the bound cannot live on the transport itself: it is read
+// per dial instead, which also lets config hot reloads take effect
+// without rebuilding cached transports.
 type tlsHandshakeTimeoutContextKey struct{}
 
 // withTLSHandshakeTimeout returns a context carrying the TLS establishment
@@ -49,7 +49,7 @@ type tlsHandshakeTimeoutRoundTripper struct {
 }
 
 func (rt *tlsHandshakeTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if rt.timeout > 0 && req != nil {
+	if rt.timeout > 0 {
 		req = req.WithContext(withTLSHandshakeTimeout(req.Context(), rt.timeout))
 	}
 	return rt.base.RoundTrip(req)
@@ -58,8 +58,8 @@ func (rt *tlsHandshakeTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.R
 // handshakeContext bounds the TLS handshake when a positive timeout is
 // configured on ctx. It starts when the caller invokes it, after dialing
 // and proxy CONNECT have returned. It returns the context to hand to
-// HandshakeContext plus its cancel function. The bound exists only for the
-// duration of the handshake call: crypto/tls (and uTLS) close the raw
+// HandshakeContext plus its cancel function. The bound exists only for
+// the duration of the handshake call: crypto/tls (and uTLS) close the raw
 // connection when the handshake context expires, and once the handshake
 // succeeds the context plays no further role, so inference and
 // long-running streams are never time-limited and no connection deadline

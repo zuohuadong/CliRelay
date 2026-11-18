@@ -14,8 +14,6 @@ func TestNormalizeGeminiContentRole(t *testing.T) {
 		"user":      "user",
 		"assistant": "model",
 		"model":     "model",
-		" Model ":   "model",
-		"MODEL":     "model",
 		// Claude Code sends system entries inside `messages` alongside the
 		// top-level `system` field. Forwarded verbatim, they failed the whole
 		// request; as "user" the text still reaches the model.
@@ -57,14 +55,6 @@ func TestNormalizeGeminiContentRolesRewritesPayload(t *testing.T) {
 	// Only the role is rewritten; the turn's text must survive.
 	if !strings.Contains(out, "stray") {
 		t.Fatal("text of the rewritten turn was dropped")
-	}
-
-	outBytes := NormalizeGeminiContentRolesBytes([]byte(payload), "request.contents")
-	rolesBytes := gjson.GetBytes(outBytes, "request.contents.#.role").Array()
-	for i, role := range rolesBytes {
-		if role.String() != want[i] {
-			t.Fatalf("bytes contents[%d].role = %q, want %q", i, role.String(), want[i])
-		}
 	}
 }
 

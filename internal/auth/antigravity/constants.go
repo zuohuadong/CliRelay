@@ -13,6 +13,7 @@ var Scopes = []string{
 	"https://www.googleapis.com/auth/cloud-platform",
 	"https://www.googleapis.com/auth/userinfo.email",
 	"https://www.googleapis.com/auth/userinfo.profile",
+	"https://www.googleapis.com/auth/aicode",
 	"https://www.googleapis.com/auth/cclog",
 	"https://www.googleapis.com/auth/experimentsandconfigs",
 }
@@ -29,4 +30,13 @@ const (
 	APIEndpoint      = "https://cloudcode-pa.googleapis.com"
 	DailyAPIEndpoint = "https://daily-cloudcode-pa.googleapis.com"
 	APIVersion       = "v1internal"
+	APIUserAgent     = "google-api-nodejs-client/9.15.1"
+	APIClient        = "google-cloud-sdk vscode_cloudshelleditor/0.1"
+	ClientMetadata   = `{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}`
 )
+
+// ClientVersion is the Antigravity Hub version advertised to CloudCode.
+const ClientVersion = "2.26.0"
+
+// ClientUserAgent is the language-server identity used on CloudCode calls.
+const ClientUserAgent = "antigravity/hub/" + ClientVersion + " darwin/arm64"

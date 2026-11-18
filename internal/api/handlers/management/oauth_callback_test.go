@@ -1,148 +1,109 @@
 package management
 
 import (
-	"encoding/json"
+	"bytes"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
-func TestPostOAuthCallbackCreatesMissingAuthDir(t *testing.T) {
+func TestPostOAuthCallbackAcceptsAlreadyProcessedState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 
-	authDir := filepath.Join(t.TempDir(), "missing-auth")
-	state := "test-antigravity-state"
-	RegisterOAuthSession(state, "antigravity")
-	defer CompleteOAuthSession(state)
+	useIsolatedOAuthSessions(t, time.Minute)
 
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
-	router := gin.New()
-	router.POST("/v0/management/oauth-callback", h.PostOAuthCallback)
+	RegisterOAuthSession("session-1", "codex")
+	CompleteOAuthSession("session-1")
+	CompleteOAuthSessionsByProvider("codex")
 
-	body := `{"provider":"antigravity","redirect_url":"http://localhost:59788/oauth-callback?state=test-antigravity-state&code=test-code"}`
-	req := httptest.NewRequest(http.MethodPost, "/v0/management/oauth-callback", strings.NewReader(body))
+	h := &Handler{
+		cfg: &config.Config{
+			AuthDir: t.TempDir(),
+		},
+	}
+
+	body := []byte(`{"provider":"codex","redirect_url":"http://localhost:1455/auth/callback?code=test-code&state=session-1"}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/oauth-callback", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
+	c.Request = req
 
-	router.ServeHTTP(w, req)
+	h.PostOAuthCallback(c)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, w.Code, w.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-
-	callbackPath := filepath.Join(authDir, ".oauth-antigravity-"+state+".oauth")
-	data, errRead := os.ReadFile(callbackPath)
-	if errRead != nil {
-		t.Fatalf("expected callback file to be written: %v", errRead)
-	}
-
-	var payload oauthCallbackFilePayload
-	if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
-		t.Fatalf("failed to decode callback payload: %v", errUnmarshal)
-	}
-	if payload.State != state || payload.Code != "test-code" || payload.Error != "" {
-		t.Fatalf("unexpected callback payload: %+v", payload)
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"already_processed":true`)) {
+		t.Fatalf("expected already_processed response, got %s", rec.Body.String())
 	}
 }
 
-func TestGetOAuthCallbackWritesPluginProviderCallback(t *testing.T) {
-	authDir := filepath.Join(t.TempDir(), "missing-auth")
-	state := "test-geminicli-state"
-	if errRegister := RegisterPluginOAuthSession(state, "gemini-cli", nil); errRegister != nil {
-		t.Fatalf("register plugin oauth session: %v", errRegister)
-	}
-	defer CompleteOAuthSession(state)
+func TestPostOAuthCallbackReturnsSessionStatusWhenFlowIsNoLongerPending(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
-	router := gin.New()
-	router.GET("/v0/management/oauth-callback", h.GetOAuthCallback)
+	useIsolatedOAuthSessions(t, time.Minute)
 
-	req := httptest.NewRequest(http.MethodGet, "/v0/management/oauth-callback?state="+state+"&code=test-code", nil)
-	w := httptest.NewRecorder()
+	RegisterOAuthSession("session-timeout", "codex")
+	SetOAuthSessionError("session-timeout", "Timeout waiting for OAuth callback")
 
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, w.Code, w.Body.String())
+	h := &Handler{
+		cfg: &config.Config{
+			AuthDir: t.TempDir(),
+		},
 	}
 
-	callbackPath := filepath.Join(authDir, ".oauth-gemini-cli-"+state+".oauth")
-	data, errRead := os.ReadFile(callbackPath)
-	if errRead != nil {
-		t.Fatalf("expected callback file to be written: %v", errRead)
-	}
+	body := []byte(`{"provider":"codex","redirect_url":"http://localhost:1455/auth/callback?code=test-code&state=session-timeout"}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/oauth-callback", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
 
-	var payload oauthCallbackFilePayload
-	if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
-		t.Fatalf("failed to decode callback payload: %v", errUnmarshal)
+	h.PostOAuthCallback(c)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusConflict, rec.Body.String())
 	}
-	if payload.State != state || payload.Code != "test-code" || payload.Error != "" {
-		t.Fatalf("unexpected callback payload: %+v", payload)
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`Timeout waiting for OAuth callback`)) {
+		t.Fatalf("expected session status in response, got %s", rec.Body.String())
 	}
 }
 
-func TestGetOAuthCallbackDoesNotAliasPluginProvider(t *testing.T) {
-	authDir := filepath.Join(t.TempDir(), "missing-auth")
-	state := "test-openai-plugin-state"
-	if errRegister := RegisterPluginOAuthSession(state, "openai", nil); errRegister != nil {
-		t.Fatalf("register plugin oauth session: %v", errRegister)
-	}
-	defer CompleteOAuthSession(state)
+func TestPostOAuthCallbackAcceptsDirectCodeAndState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
-	router := gin.New()
-	router.GET("/v0/management/oauth-callback", h.GetOAuthCallback)
+	useIsolatedOAuthSessions(t, time.Minute)
 
-	req := httptest.NewRequest(http.MethodGet, "/v0/management/oauth-callback?state="+state+"&code=test-code", nil)
-	w := httptest.NewRecorder()
+	RegisterOAuthSession("xai-state", "xai")
 
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, w.Code, w.Body.String())
+	h := &Handler{
+		cfg: &config.Config{
+			AuthDir: t.TempDir(),
+		},
 	}
 
-	callbackPath := filepath.Join(authDir, ".oauth-openai-"+state+".oauth")
-	if _, errRead := os.ReadFile(callbackPath); errRead != nil {
-		t.Fatalf("expected plugin callback provider to stay openai: %v", errRead)
+	body := []byte(`{"provider":"xai","code":"manual-code","state":"xai-state"}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/oauth-callback", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.PostOAuthCallback(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if _, errRead := os.ReadFile(filepath.Join(authDir, ".oauth-codex-"+state+".oauth")); errRead == nil {
-		t.Fatal("unexpected codex callback file for openai plugin provider")
+	payload, err := WaitOAuthCallbackFile(h.cfg.AuthDir, "xai", "xai-state", time.Second)
+	if err != nil {
+		t.Fatalf("WaitOAuthCallbackFile() error = %v", err)
 	}
-}
-
-func TestWriteOAuthCallbackFileForPendingSessionCreatesMissingAuthDirForCallbackProviders(t *testing.T) {
-	// xAI uses device-code flow and no longer writes callback files.
-	providers := []string{"anthropic", "codex", "gemini", "antigravity", "kimi", "qwen", "iflow"}
-	for _, provider := range providers {
-		t.Run(provider, func(t *testing.T) {
-			authDir := filepath.Join(t.TempDir(), "missing-auth")
-			state := provider + "-state"
-			RegisterOAuthSession(state, provider)
-			defer CompleteOAuthSession(state)
-
-			path, errWrite := WriteOAuthCallbackFileForPendingSession(authDir, provider, state, "code-"+provider, "")
-			if errWrite != nil {
-				t.Fatalf("expected callback file write to succeed: %v", errWrite)
-			}
-
-			data, errRead := os.ReadFile(path)
-			if errRead != nil {
-				t.Fatalf("expected callback file to be written: %v", errRead)
-			}
-
-			var payload oauthCallbackFilePayload
-			if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
-				t.Fatalf("failed to decode callback payload: %v", errUnmarshal)
-			}
-			if payload.State != state || payload.Code != "code-"+provider || payload.Error != "" {
-				t.Fatalf("unexpected callback payload: %+v", payload)
-			}
-		})
+	if payload["code"] != "manual-code" || payload["state"] != "xai-state" {
+		t.Fatalf("payload = %#v, want manual code and xai-state", payload)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -12,6 +13,20 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestBuildAuthURLIncludesAICodeScope(t *testing.T) {
+	parsedURL, err := url.Parse(NewAntigravityAuth(nil, nil).BuildAuthURL("state", "http://localhost/callback"))
+	if err != nil {
+		t.Fatalf("parse auth URL: %v", err)
+	}
+
+	for _, scope := range strings.Fields(parsedURL.Query().Get("scope")) {
+		if scope == "https://www.googleapis.com/auth/aicode" {
+			return
+		}
+	}
+	t.Fatalf("authorization URL scope does not include %q", "https://www.googleapis.com/auth/aicode")
 }
 
 func TestFetchProjectIDFromLoadCodeAssist(t *testing.T) {
@@ -153,19 +168,5 @@ func jsonResponse(body string) *http.Response {
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
 		Body:       io.NopCloser(strings.NewReader(body)),
-	}
-}
-
-func TestNewAntigravityAuthWithProxyURL(t *testing.T) {
-	auth := NewAntigravityAuthWithProxyURL(nil, "http://127.0.0.1:8080")
-	if auth == nil || auth.httpClient == nil {
-		t.Fatal("expected non-nil auth with httpClient")
-	}
-	transport, ok := auth.httpClient.Transport.(*http.Transport)
-	if !ok || transport == nil {
-		t.Fatalf("expected *http.Transport, got %T", auth.httpClient.Transport)
-	}
-	if transport.Proxy == nil {
-		t.Fatal("expected proxy resolver on transport")
 	}
 }

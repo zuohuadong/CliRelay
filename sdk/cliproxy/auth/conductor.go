@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"sync"
@@ -9,10 +11,38 @@ import (
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/egressbreaker"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"golang.org/x/sync/semaphore"
 )
+
+const (
+	refreshWorkTimeout  = 3 * time.Minute
+	refreshStoreTimeout = 30 * time.Second
+)
+
+type PermanentAuthError struct {
+	Reason string
+	Cause  error
+}
+
+func (e *PermanentAuthError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Cause != nil {
+		return fmt.Sprintf("permanent auth failure: %s: %v", e.Reason, e.Cause)
+	}
+	return fmt.Sprintf("permanent auth failure: %s", e.Reason)
+}
+
+func (e *PermanentAuthError) Unwrap() error { return e.Cause }
+
+func IsPermanentAuthError(err error) bool {
+	var permanent *PermanentAuthError
+	return errors.As(err, &permanent)
+}
 
 // ProviderExecutor defines the contract required by Manager to execute provider calls.
 type ProviderExecutor interface {
@@ -45,11 +75,6 @@ type RequestAuthPreparer interface {
 	PrepareRequestAuth(ctx context.Context, auth *Auth) (*Auth, error)
 }
 
-// AgentIdentityTaskRenewer replaces an invalid task without refreshing OAuth tokens.
-type AgentIdentityTaskRenewer interface {
-	RenewAgentIdentityTask(ctx context.Context, auth *Auth) (*Auth, error)
-}
-
 // ExecutionSessionCloser allows executors to release per-session runtime resources.
 type ExecutionSessionCloser interface {
 	CloseExecutionSession(sessionID string)
@@ -59,6 +84,14 @@ type ExecutionSessionCloser interface {
 // session store with the replacement executor so active sessions stay open.
 type ExecutionSessionSharer interface {
 	SharesExecutionSessionsWith(other ProviderExecutor) bool
+}
+
+// ExecutorUnwrapper exposes the underlying executor for wrappers so reuse and
+// session-lifecycle decisions can consult the service-owned executor even when
+// a wrapper hides its concrete type. Wrappers should return their immediate
+// inner executor; the manager follows the chain.
+type ExecutorUnwrapper interface {
+	Unwrap() ProviderExecutor
 }
 
 // AuthExecutionSessionCloser allows executors to release execution sessions
@@ -79,8 +112,16 @@ type Result struct {
 	RouteModel string
 	// Success marks whether the execution succeeded.
 	Success bool
+	// CompletedResponse reports that the upstream execution produced a completed
+	// generation response (as opposed to an incomplete stream or non-generation call).
+	CompletedResponse bool
 	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
 	RetryAfter *time.Duration
+	// RetryAfterAdvisory marks a retry hint that should not trigger cooldowns.
+	RetryAfterAdvisory bool
+	// Headers carries upstream response headers used for provider-specific
+	// runtime health decisions such as Anthropic rate-limit windows.
+	Headers http.Header
 	// CredentialScope indicates that the failure affects the whole credential across models (e.g. Anthropic 5h/7d unified limits).
 	CredentialScope bool
 	// Error describes the failure when Success is false.
@@ -91,6 +132,12 @@ type Result struct {
 	// observed watermark. Count-tokens requests reuse the credential but are not
 	// generation traffic; their response headers are not a generation snapshot.
 	SkipQuotaObservation bool
+	// AccessToken captures the active access token under which the request was executed.
+	AccessToken string
+	// RefreshToken captures the refresh credential associated with the request,
+	// used to distinguish a same-account OAuth token rotation from a genuine
+	// credential replacement when evaluating result staleness.
+	RefreshToken string
 	// CredentialVersion captures the credential version under which the request was executed.
 	CredentialVersion uint64
 	// RegistrationEpoch captures the registration epoch under which the request was executed.
@@ -116,6 +163,13 @@ type PluginScheduler interface {
 // that opt into receiving candidates across all priority tiers.
 type PluginSchedulerAcrossPriorities interface {
 	SchedulerWantsAcrossPriorities() bool
+}
+
+// PluginSchedulerContinuity is an optional interface implemented by schedulers
+// that evaluate bounded pre-admission and pre-output-429 continuity for Codex requests.
+type PluginSchedulerContinuity interface {
+	HasSchedulerContinuity() bool
+	EvaluateSchedulerContinuity(context.Context, pluginapi.SchedulerContinuityRequest) (pluginapi.SchedulerContinuityResponse, bool, error)
 }
 
 type pluginSchedulerState interface {
@@ -172,10 +226,13 @@ type resultPolicyHolder struct {
 
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
+	inFlightTracker           *inFlightTracker
 	store                     Store
 	cooldownStore             CooldownStateStore
 	pendingCooldownStateStore CooldownStateStore
 	executors                 map[string]ProviderExecutor
+	tenantExecutors           map[string]map[string]ProviderExecutor
+	executorRevisions         map[string]uint64
 	selector                  Selector
 	hook                      Hook
 	resultPolicy              atomic.Pointer[resultPolicyHolder]
@@ -194,16 +251,33 @@ type Manager struct {
 	scheduler          *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
+	// modelRegistry is the optional registry used for per-client model snapshots.
+	modelRegistry ModelRegistry
+	// cooldownPublisher broadcasts cooldowns to peer nodes when configured.
+	cooldownPublisher atomic.Pointer[cooldownPublisherRef]
+	// egress tracks proxy health before request translation and dispatch.
+	egress *egressbreaker.Breaker
+	// concurrencyLimiter enforces per-auth request concurrency and optionally
+	// coordinates slots across cluster nodes.
+	concurrencyLimiter      *AccountConcurrencyLimiter
+	requestModerator        RequestModerator
+	upstreamRefusalObserver UpstreamRefusalObserver
+	sessionSchedulerDeps    *schedulerDeps
+	sharedAuthGrants        atomic.Pointer[sharedAuthGrantIndex]
+	// quotaObservations coalesces live quota windows before handing them to hooks.
+	quotaObservations quotaObservationBook
+	// quotaProbeAfter tracks the next scheduled quota probe per auth.
+	quotaProbeAfter map[string]time.Time
+	// continuityClock overrides time.Now and timer waiting in unit tests.
+	continuityClock continuityClock
 	// homeRuntimeAuths retains legacy session auth lookups for non-execution callers.
 	homeRuntimeAuths map[string]map[string]*Auth
 	// homeRuntimeAuthOwners prevents a stale selection from clearing a replacement auth.
 	homeRuntimeAuthOwners map[string]map[string]*HomeDispatchSelection
 	// homeSessionSelections owns retained Home selections for websocket sessions.
-	homeSessionSelections  map[string]map[homeSessionSelectionKey]*HomeDispatchSelection
-	homeSessionLocks       sync.Map
-	homeSessionAliases     homeSessionAliasCache
-	homeSessionLifecycleMu sync.RWMutex
-	responseAffinity       *responseAffinityCache
+	homeSessionSelections map[string]map[homeSessionSelectionKey]*HomeDispatchSelection
+	homeSessionLocks      sync.Map
+	homeSessionAliases    homeSessionAliasCache
 	// providerOffsets tracks per-model provider rotation state for multi-provider routing.
 	providerOffsets             map[string]int
 	homeDispatchBundle          atomic.Pointer[HomeDispatchBundle]
@@ -213,6 +287,17 @@ type Manager struct {
 	requestRetry        atomic.Int32
 	maxRetryCredentials atomic.Int32
 	maxRetryInterval    atomic.Int64
+	// busyWaiters counts requests waiting for a cooling account.
+	busyWaiters atomic.Int32
+	// maxBusyWaiters caps simultaneous busy-waiting requests.
+	maxBusyWaiters atomic.Int32
+	// busyWaitSpread allows tests and hosts to control wake-up jitter.
+	busyWaitSpread func(time.Duration) time.Duration
+	// accountConcurrencyWait is how long a request may queue for a saturated
+	// account before failing, in nanoseconds. Zero disables queuing.
+	accountConcurrencyWait atomic.Int64
+	// accountConcurrencyQueueDepth caps queued requests per account. Zero means unlimited.
+	accountConcurrencyQueueDepth atomic.Int32
 
 	// oauthModelAlias stores global OAuth model alias mappings (alias -> upstream name) keyed by channel.
 	oauthModelAlias atomic.Value
@@ -225,22 +310,25 @@ type Manager struct {
 
 	// runtimeConfig stores the latest application config for request-time decisions.
 	// It is initialized in NewManager; never Load() before first Store().
-	runtimeConfig      atomic.Value
-	requestCompression *requestCompressionRuntime
+	runtimeConfig atomic.Value
+	// tenantRuntimeConfigs stores immutable per-tenant routing snapshots while
+	// runtimeConfig remains the legacy process-wide config used by refresh and
+	// lifecycle code.
+	tenantRuntimeConfigs atomic.Value
 
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider
 
 	// Auto refresh state
-	refreshCancel    context.CancelFunc
-	refreshLoop      *authAutoRefreshLoop
-	refreshSemaphore chan struct{}
-	quotaProbeAfter  map[string]time.Time
+	refreshCancel      context.CancelFunc
+	refreshLoop        *authAutoRefreshLoop
+	refreshSemaphore   chan struct{}
+	refreshInflight    sync.WaitGroup
+	refreshCoordinator atomic.Value
 	// refreshJobs retains queued and running jobs across loop restarts under m.mu.
 	refreshJobs map[string]*authRefreshJob
 
 	requestPrepareLocks sync.Map
-	mutationLocks       sync.Map
 	// refreshLocks serializes credential refresh per auth ID so concurrent
 	// 401 recoveries and auto-refresh workers do not race the same refresh_token.
 	refreshLocks sync.Map
@@ -264,9 +352,12 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook = NoopHook{}
 	}
 	manager := &Manager{
+		inFlightTracker:       newInFlightTracker(),
 		store:                 store,
 		authLoadGate:          semaphore.NewWeighted(math.MaxInt64),
 		executors:             make(map[string]ProviderExecutor),
+		tenantExecutors:       make(map[string]map[string]ProviderExecutor),
+		executorRevisions:     make(map[string]uint64),
 		selector:              selector,
 		hook:                  hook,
 		auths:                 make(map[string]*Auth),
@@ -274,15 +365,18 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		homeRuntimeAuths:      make(map[string]map[string]*Auth),
 		homeRuntimeAuthOwners: make(map[string]map[string]*HomeDispatchSelection),
 		homeSessionSelections: make(map[string]map[homeSessionSelectionKey]*HomeDispatchSelection),
-		responseAffinity:      newResponseAffinityCache(responseAffinityTTL, responseAffinityMaxEntries),
-		requestCompression:    newRequestCompressionRuntime(),
 		providerOffsets:       make(map[string]int),
 		modelPoolOffsets:      make(map[string]int),
+		concurrencyLimiter:    NewAccountConcurrencyLimiter(),
+		egress:                egressbreaker.Default(),
 		refreshSemaphore:      make(chan struct{}, refreshMaxConcurrency),
 		quotaProbeAfter:       make(map[string]time.Time),
+		sessionSchedulerDeps:  &schedulerDeps{tracker: newSelectionPressureTracker(), limiter: NewAccountConcurrencyLimiter()},
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
+	manager.tenantRuntimeConfigs.Store(runtimeConfigSnapshotSet{})
+	manager.accountConcurrencyWait.Store(DefaultAccountConcurrencyWait.Nanoseconds())
 	manager.apiKeyModelRouting.Store(&apiKeyModelRoutingSnapshot{config: &internalconfig.Config{}})
 	defaultInFlightConfig, errInFlightConfig := HomeInFlightPublisherConfigFromConfig(internalconfig.DefaultCredentialInFlightConfig())
 	if errInFlightConfig == nil {
@@ -290,6 +384,71 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	}
 	manager.scheduler = newAuthScheduler(selector)
 	return manager
+}
+
+func (m *Manager) SetModelRegistry(registry ModelRegistry) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.modelRegistry = registry
+	m.mu.Unlock()
+}
+
+// SetAccountConcurrencyConfig updates how requests queue for accounts that are
+// at their concurrency limit.
+func (m *Manager) SetAccountConcurrencyConfig(waitTimeout time.Duration, maxQueueDepth int) {
+	if m == nil {
+		return
+	}
+	if waitTimeout < 0 {
+		waitTimeout = 0
+	}
+	if maxQueueDepth < 0 {
+		maxQueueDepth = 0
+	}
+	m.accountConcurrencyWait.Store(waitTimeout.Nanoseconds())
+	m.accountConcurrencyQueueDepth.Store(int32(maxQueueDepth))
+}
+
+func (m *Manager) acquireAccountSlot(auth *Auth) (func(), error) {
+	if m == nil || m.concurrencyLimiter == nil || auth == nil {
+		return func() {}, nil
+	}
+	return m.concurrencyLimiter.AcquireSlot(auth)
+}
+
+func (m *Manager) waitAccountSlot(ctx context.Context, auths []*Auth) (func(), string, error) {
+	if m == nil || m.concurrencyLimiter == nil || len(auths) == 0 {
+		return nil, "", ErrAccountConcurrencyExceeded
+	}
+	timeout := time.Duration(m.accountConcurrencyWait.Load())
+	maxQueueDepth := int(m.accountConcurrencyQueueDepth.Load())
+	return m.concurrencyLimiter.AcquireSlotWait(ctx, auths, timeout, maxQueueDepth)
+}
+
+const defaultBusyWaitMaxWaiters = 64
+
+// SetBusyWaitConfig updates the process-wide busy-wait waiter cap. Non-positive
+// values leave the default in effect; oversized values clamp to int32 max.
+func (m *Manager) SetBusyWaitConfig(maxWaiters int) {
+	if m == nil || maxWaiters <= 0 {
+		return
+	}
+	const maxInt32 = int64(^uint32(0) >> 1)
+	value := int64(maxWaiters)
+	if value > maxInt32 {
+		value = maxInt32
+	}
+	m.maxBusyWaiters.Store(int32(value))
+}
+
+// ConcurrencyLimiter returns the manager's account concurrency limiter.
+func (m *Manager) ConcurrencyLimiter() *AccountConcurrencyLimiter {
+	if m == nil {
+		return nil
+	}
+	return m.concurrencyLimiter
 }
 
 // SetResultPolicy sets an execution result policy invoked before in-memory quota mutations and persistence.

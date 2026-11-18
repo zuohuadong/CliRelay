@@ -3,9 +3,13 @@ package logging
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"os"
+	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -13,6 +17,8 @@ import (
 // It spools streaming response chunks to a temporary file to avoid retaining large responses in memory.
 // The final log file is assembled when Close is called.
 type FileStreamingLogWriter struct {
+	logger      *FileRequestLogger
+	logFilePath string
 	// logsDir is the target directory for log files.
 	logsDir string
 
@@ -39,9 +45,6 @@ type FileStreamingLogWriter struct {
 
 	// responseBodyFile is the temp file where chunks are appended by the async writer.
 	responseBodyFile *os.File
-
-	// bodyEnabled controls whether payloads are retained in the final log.
-	bodyEnabled bool
 
 	// chunkChan is a channel for receiving response chunks to spool.
 	chunkChan chan []byte
@@ -76,8 +79,12 @@ type FileStreamingLogWriter struct {
 	// apiWebsocketTimeline stores the upstream websocket event timeline.
 	apiWebsocketTimeline []byte
 
+	// apiResponseErrors stores upstream API response error entries.
+	apiResponseErrors []*interfaces.ErrorMessage
+
 	// apiResponseTimestamp captures when the API response was received.
 	apiResponseTimestamp time.Time
+	droppedChunks        atomic.Int64
 }
 
 // WriteChunkAsync writes a response chunk asynchronously (non-blocking).
@@ -85,7 +92,7 @@ type FileStreamingLogWriter struct {
 // Parameters:
 //   - chunk: The response chunk to write
 func (w *FileStreamingLogWriter) WriteChunkAsync(chunk []byte) {
-	if w == nil || !w.bodyEnabled || w.chunkChan == nil {
+	if w.chunkChan == nil {
 		return
 	}
 
@@ -97,7 +104,14 @@ func (w *FileStreamingLogWriter) WriteChunkAsync(chunk []byte) {
 	select {
 	case w.chunkChan <- chunkCopy:
 	default:
-		// Channel is full, skip this chunk to avoid blocking
+		w.droppedChunks.Add(1)
+	}
+}
+
+// NoteDroppedChunks records chunks dropped by an outer bounded queue.
+func (w *FileStreamingLogWriter) NoteDroppedChunks(n int) {
+	if n > 0 {
+		w.droppedChunks.Add(int64(n))
 	}
 }
 
@@ -135,9 +149,6 @@ func (w *FileStreamingLogWriter) WriteStatus(status int, headers map[string][]st
 // Returns:
 //   - error: Always returns nil (buffering cannot fail)
 func (w *FileStreamingLogWriter) WriteAPIRequest(apiRequest []byte) error {
-	if !w.bodyEnabled {
-		return nil
-	}
 	if len(apiRequest) == 0 {
 		return nil
 	}
@@ -147,9 +158,6 @@ func (w *FileStreamingLogWriter) WriteAPIRequest(apiRequest []byte) error {
 
 // WriteAPIRequestSource buffers a file-backed upstream API request for final writing.
 func (w *FileStreamingLogWriter) WriteAPIRequestSource(apiRequestSource *FileBodySource) error {
-	if !w.bodyEnabled {
-		return nil
-	}
 	if apiRequestSource == nil || !apiRequestSource.HasPayload() {
 		return nil
 	}
@@ -165,9 +173,6 @@ func (w *FileStreamingLogWriter) WriteAPIRequestSource(apiRequestSource *FileBod
 // Returns:
 //   - error: Always returns nil (buffering cannot fail)
 func (w *FileStreamingLogWriter) WriteAPIResponse(apiResponse []byte) error {
-	if !w.bodyEnabled {
-		return nil
-	}
 	if len(apiResponse) == 0 {
 		return nil
 	}
@@ -177,9 +182,6 @@ func (w *FileStreamingLogWriter) WriteAPIResponse(apiResponse []byte) error {
 
 // WriteAPIResponseSource buffers a file-backed upstream API response for final writing.
 func (w *FileStreamingLogWriter) WriteAPIResponseSource(apiResponseSource *FileBodySource) error {
-	if !w.bodyEnabled {
-		return nil
-	}
 	if apiResponseSource == nil || !apiResponseSource.HasPayload() {
 		return nil
 	}
@@ -195,13 +197,19 @@ func (w *FileStreamingLogWriter) WriteAPIResponseSource(apiResponseSource *FileB
 // Returns:
 //   - error: Always returns nil (buffering cannot fail)
 func (w *FileStreamingLogWriter) WriteAPIWebsocketTimeline(apiWebsocketTimeline []byte) error {
-	if !w.bodyEnabled {
-		return nil
-	}
 	if len(apiWebsocketTimeline) == 0 {
 		return nil
 	}
 	w.apiWebsocketTimeline = bytes.Clone(apiWebsocketTimeline)
+	return nil
+}
+
+// WriteAPIResponseErrors buffers upstream API error entries for final writing.
+func (w *FileStreamingLogWriter) WriteAPIResponseErrors(errors []*interfaces.ErrorMessage) error {
+	if len(errors) == 0 {
+		return nil
+	}
+	w.apiResponseErrors = append([]*interfaces.ErrorMessage(nil), errors...)
 	return nil
 }
 
@@ -228,6 +236,13 @@ func (w *FileStreamingLogWriter) Close() error {
 		w.chunkChan = nil
 	}
 
+	if dropped := w.droppedChunks.Load(); dropped > 0 && w.responseBodyPath != "" {
+		if noteFile, errOpen := os.OpenFile(w.responseBodyPath, os.O_APPEND|os.O_WRONLY, 0o644); errOpen == nil {
+			_, _ = noteFile.WriteString(StreamingLogTruncationNote(int(dropped)))
+			_ = noteFile.Close()
+		}
+	}
+
 	select {
 	case errWrite := <-w.errorChan:
 		w.cleanupTempFiles()
@@ -239,8 +254,17 @@ func (w *FileStreamingLogWriter) Close() error {
 		w.cleanupTempFiles()
 		return nil
 	}
+	if w.responseStatus >= http.StatusBadRequest && w.responseStatus != 499 && !strings.HasPrefix(w.logFilename, "error-") {
+		w.logFilename = "error-" + w.logFilename
+	}
 
-	logFile, _, errOpen := createUniqueLogFile(w.logsDir, w.logFilename)
+	var logFile *os.File
+	var errOpen error
+	if w.logFilePath != "" {
+		logFile, errOpen = os.Create(w.logFilePath)
+	} else {
+		logFile, _, errOpen = createUniqueLogFile(w.logsDir, w.logFilename)
+	}
 	if errOpen != nil {
 		w.cleanupTempFiles()
 		return fmt.Errorf("failed to create log file: %w", errOpen)
@@ -256,6 +280,15 @@ func (w *FileStreamingLogWriter) Close() error {
 
 	w.cleanupTempFiles()
 	return writeErr
+}
+
+// Discard stops the streaming writer and removes temporary files without creating a final log file.
+func (w *FileStreamingLogWriter) Discard() error {
+	if w == nil {
+		return nil
+	}
+	w.logFilename = ""
+	return w.Close()
 }
 
 // asyncWriter runs in a goroutine to buffer chunks from the channel.
@@ -295,16 +328,17 @@ func (w *FileStreamingLogWriter) asyncWriter() {
 }
 
 func (w *FileStreamingLogWriter) writeFinalLog(logFile *os.File) error {
-	if errWrite := writeRequestInfoWithBody(logFile, w.url, w.method, w.requestHeaders, nil, w.requestBodyPath, w.timestamp, "http", inferUpstreamTransport(w.apiRequest, w.apiRequestSource, w.apiResponse, w.apiResponseSource, w.apiWebsocketTimeline, nil, nil), w.bodyEnabled); errWrite != nil {
+	apiErrors, diagnostics := splitResponseDiagnostics(w.apiResponseErrors)
+	if errWrite := writeRequestInfoWithBody(logFile, w.url, w.method, w.requestHeaders, nil, w.requestBodyPath, w.timestamp, "http", inferUpstreamTransport(w.apiRequest, w.apiRequestSource, w.apiResponse, w.apiResponseSource, w.apiWebsocketTimeline, nil, nil), true); errWrite != nil {
 		return errWrite
-	}
-	if !w.bodyEnabled {
-		return writeResponseSection(logFile, w.responseStatus, w.statusWritten, w.responseHeaders, nil, nil, true)
 	}
 	if errWrite := writeAPISection(logFile, "=== API WEBSOCKET TIMELINE ===\n", "=== API WEBSOCKET TIMELINE", w.apiWebsocketTimeline, time.Time{}); errWrite != nil {
 		return errWrite
 	}
 	if errWrite := writePreformattedAPISectionWithSource(logFile, "=== API REQUEST ===\n", "=== API REQUEST", w.apiRequest, w.apiRequestSource, time.Time{}); errWrite != nil {
+		return errWrite
+	}
+	if errWrite := writeAPIErrorResponses(logFile, apiErrors); errWrite != nil {
 		return errWrite
 	}
 	if errWrite := writePreformattedAPISectionWithSource(logFile, "=== API RESPONSE ===\n", "=== API RESPONSE", w.apiResponse, w.apiResponseSource, w.apiResponseTimestamp); errWrite != nil {
@@ -321,7 +355,7 @@ func (w *FileStreamingLogWriter) writeFinalLog(logFile *os.File) error {
 		}
 	}()
 
-	return writeResponseSection(logFile, w.responseStatus, w.statusWritten, w.responseHeaders, responseBodyFile, nil, false)
+	return writeResponseSection(logFile, w.responseStatus, w.statusWritten, w.responseHeaders, responseBodyFile, nil, false, diagnostics)
 }
 
 func (w *FileStreamingLogWriter) cleanupTempFiles() {
@@ -340,6 +374,11 @@ func (w *FileStreamingLogWriter) cleanupTempFiles() {
 	}
 }
 
+// StreamingLogTruncationNote documents that the persisted stream body is incomplete.
+func StreamingLogTruncationNote(dropped int) string {
+	return fmt.Sprintf("\n\n[truncated: dropped %d streaming log chunks; persisted response body is incomplete]\n", dropped)
+}
+
 // NoOpStreamingLogWriter is a no-operation implementation for when logging is disabled.
 // It implements the StreamingLogWriter interface but performs no actual logging operations.
 type NoOpStreamingLogWriter struct{}
@@ -349,6 +388,8 @@ type NoOpStreamingLogWriter struct{}
 // Parameters:
 //   - chunk: The response chunk (ignored)
 func (w *NoOpStreamingLogWriter) WriteChunkAsync(_ []byte) {}
+
+func (w *NoOpStreamingLogWriter) NoteDroppedChunks(_ int) {}
 
 // WriteStatus is a no-op implementation that does nothing and always returns nil.
 //
@@ -392,6 +433,10 @@ func (w *NoOpStreamingLogWriter) WriteAPIResponse(_ []byte) error {
 // Returns:
 //   - error: Always returns nil
 func (w *NoOpStreamingLogWriter) WriteAPIWebsocketTimeline(_ []byte) error {
+	return nil
+}
+
+func (w *NoOpStreamingLogWriter) WriteAPIResponseErrors(_ []*interfaces.ErrorMessage) error {
 	return nil
 }
 

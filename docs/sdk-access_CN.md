@@ -1,16 +1,16 @@
 # @sdk/access 开发指引
 
-`github.com/router-for-me/CLIProxyAPI/v6/sdk/access` 包负责代理的入站访问认证。它提供一个轻量的管理器，用于按顺序链接多种凭证校验实现，让服务器在 CLI 运行时内外都能复用相同的访问控制逻辑。
+`github.com/router-for-me/CLIProxyAPI/v8/sdk/access` 包负责代理的入站访问认证。它提供一个轻量的管理器，用于按顺序链接多种凭证校验实现，让服务器在 CLI 运行时内外都能复用相同的访问控制逻辑。
 
 ## 引用方式
 
 ```go
 import (
-    sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+    sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 )
 ```
 
-通过 `go get github.com/router-for-me/CLIProxyAPI/v6/sdk/access` 添加依赖。
+通过 `go get github.com/router-for-me/CLIProxyAPI/v8/sdk/access` 添加依赖。
 
 ## Provider Registry
 
@@ -60,6 +60,7 @@ default:
 - `config-api-key`：校验 `config.yaml` 顶层的 `api-keys`。
   - 凭证来源：`Authorization: Bearer`、`X-Goog-Api-Key`、`X-Api-Key`、`?key=`、`?auth_token=`
   - 元数据：`Result.Metadata["source"]` 会写入匹配到的来源标识
+  - `config.example.yaml` 中的示例值 `your-api-key-1` 至 `your-api-key-3` 即使被配置也永远无法通过校验，结果与未知 key 相同
 
 在 CLI 服务端与 `sdk/cliproxy` 中，该 provider 会根据加载到的配置自动注册。
 
@@ -76,7 +77,7 @@ api-keys:
 ```go
 import (
     _ "github.com/acme/xplatform/sdk/access/providers/partner" // registers partner-token
-    sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+    sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 )
 ```
 
@@ -146,7 +147,7 @@ svc, _ := cliproxy.NewBuilder().
 当配置发生变化时，刷新依赖配置的 provider，然后重置 manager 的 provider 链：
 
 ```go
-// configaccess is github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access
+// configaccess is github.com/router-for-me/CLIProxyAPI/v8/internal/access/config_access
 configaccess.Register(&newCfg.SDKConfig)
 accessManager.SetProviders(sdkaccess.RegisteredProviders())
 ```

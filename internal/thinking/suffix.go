@@ -9,6 +9,69 @@ import (
 	"strings"
 )
 
+// isContextWindowSuffix checks whether the content is a known context-window
+// marker suffix (digits optionally followed by k/m for KB/MB scale).
+// Valid examples: "1M", "128K", "32k", "4096". Invalid: "beta", "preview", "".
+func isContextWindowSuffix(content string) bool {
+	if content == "" {
+		return false
+	}
+	// Must start with at least one digit
+	i := 0
+	for i < len(content) && content[i] >= '0' && content[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return false
+	}
+	// Optionally followed by a k/m scale suffix (case-insensitive)
+	if i < len(content) {
+		switch content[i] {
+		case 'k', 'K', 'm', 'M':
+			i++
+		default:
+			return false
+		}
+	}
+	return i == len(content)
+}
+
+// StripBracketSuffix strips trailing [...] content from a model name
+// when the content matches a known context-window marker pattern.
+//
+// Some clients append context window markers (e.g., "[1M]", "[128K]") to the
+// model name. These markers should be stripped before model identification
+// and are never treated as thinking suffixes. Non-matching bracket content
+// (e.g., "[beta]", "[preview]") is preserved to avoid corrupting valid
+// custom or provider model IDs.
+//
+// Examples:
+//   - "deepseek-v4-flash[1M]" -> "deepseek-v4-flash"
+//   - "model[128K]" -> "model"
+//   - "model[beta]" -> "model[beta]" (unchanged, not a known marker)
+//   - "model" -> "model" (unchanged)
+//   - "model[1M](high)" -> "model(high)" (only trailing bracket stripped)
+func StripBracketSuffix(model string) string {
+	lastOpen := strings.LastIndex(model, "[")
+	if lastOpen == -1 {
+		return model
+	}
+	if !strings.HasSuffix(model, "]") {
+		return model
+	}
+	// Only strip if there's content between brackets
+	if lastOpen+1 >= len(model)-1 {
+		return model
+	}
+	// Only strip known context-window markers to avoid corrupting
+	// valid model IDs that legitimately end with brackets
+	content := model[lastOpen+1 : len(model)-1]
+	if !isContextWindowSuffix(content) {
+		return model
+	}
+	return model[:lastOpen]
+}
+
 // ParseSuffix extracts thinking suffix from a model name.
 //
 // The suffix format is: model-name(value)
@@ -16,11 +79,19 @@ import (
 //   - "claude-sonnet-4-5(16384)" -> ModelName="claude-sonnet-4-5", RawSuffix="16384"
 //   - "gpt-5.2(high)" -> ModelName="gpt-5.2", RawSuffix="high"
 //   - "gemini-2.5-pro" -> ModelName="gemini-2.5-pro", HasSuffix=false
+//   - "deepseek-v4-flash[1M]" -> ModelName="deepseek-v4-flash", HasSuffix=false
+//   - "model[128K](8192)" -> ModelName="model", RawSuffix="8192"
+//   - "model[1M](8192)" -> ModelName="model", RawSuffix="8192" (two-pass strip)
 //
-// This function only extracts the suffix; it does not validate or interpret
-// the suffix content. Use ParseNumericSuffix, ParseLevelSuffix, etc. for
-// content interpretation.
+// Trailing [...] context window markers (digits + optional k/m) are stripped
+// before and after round bracket parsing. Non-marker bracket content is
+// preserved as part of the model name.
 func ParseSuffix(model string) SuffixResult {
+	// Strip trailing [...] bracket suffix (e.g., "[1M]", "[128K]") before
+	// looking for round bracket thinking suffix. These are context window
+	// markers appended by some clients and must not affect model identification.
+	model = StripBracketSuffix(model)
+
 	// Find the last opening parenthesis
 	lastOpen := strings.LastIndex(model, "(")
 	if lastOpen == -1 {
@@ -35,6 +106,10 @@ func ParseSuffix(model string) SuffixResult {
 	// Extract components
 	modelName := model[:lastOpen]
 	rawSuffix := model[lastOpen+1 : len(model)-1]
+
+	// Strip trailing [...] from the extracted model name too, in case
+	// a bracket marker precedes the thinking suffix (e.g., "model[1M](8192)").
+	modelName = StripBracketSuffix(modelName)
 
 	return SuffixResult{
 		ModelName: modelName,
@@ -128,7 +203,8 @@ func ParseSpecialSuffix(rawSuffix string) (mode ThinkingMode, ok bool) {
 //   - "none" -> level="", ok=false (special value, use ParseSpecialSuffix)
 //   - "auto" -> level="", ok=false (special value, use ParseSpecialSuffix)
 //   - "8192" -> level="", ok=false (numeric, use ParseNumericSuffix)
-//   - "ultra" -> level="", ok=false (unknown level)
+//   - "max" -> level=LevelMax, ok=true
+//   - "ultra" -> level="", ok=false (Codex client mode, not a wire effort)
 func ParseLevelSuffix(rawSuffix string) (level ThinkingLevel, ok bool) {
 	if rawSuffix == "" {
 		return "", false

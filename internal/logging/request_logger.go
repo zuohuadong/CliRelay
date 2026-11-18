@@ -15,6 +15,7 @@ const (
 	WebsocketTimelineSourceContextKey    = "WEBSOCKET_TIMELINE_SOURCE"
 	APIRequestSourceContextKey           = "API_REQUEST_SOURCE"
 	DeferredAPIRequestContextKey         = "DEFERRED_API_REQUEST"
+	DeferredAPIResponseContextKey        = "DEFERRED_API_RESPONSE"
 	APIResponseSourceContextKey          = "API_RESPONSE_SOURCE"
 	APIResponseCapturedContextKey        = "API_RESPONSE_CAPTURED"
 	APIWebsocketTimelineSourceContextKey = "API_WEBSOCKET_TIMELINE_SOURCE"
@@ -118,6 +119,9 @@ type StreamingLogWriter interface {
 	//   - error: An error if writing fails, nil otherwise
 	WriteAPIWebsocketTimeline(apiWebsocketTimeline []byte) error
 
+	// WriteAPIResponseErrors writes upstream API error entries to the log.
+	WriteAPIResponseErrors(errors []*interfaces.ErrorMessage) error
+
 	// SetFirstChunkTimestamp sets the TTFB timestamp captured when first chunk was received.
 	//
 	// Parameters:
@@ -136,9 +140,6 @@ type StreamingLogWriter interface {
 type FileRequestLogger struct {
 	// enabled indicates whether request logging is currently enabled.
 	enabled bool
-
-	// bodyEnabled controls whether full request and response payloads are retained.
-	bodyEnabled bool
 
 	// logsDir is the directory where log files are stored.
 	logsDir string
@@ -170,7 +171,6 @@ func NewFileRequestLogger(enabled bool, logsDir string, configDir string, errorL
 	}
 	return &FileRequestLogger{
 		enabled:           enabled,
-		bodyEnabled:       true,
 		logsDir:           logsDir,
 		errorLogsMaxFiles: errorLogsMaxFiles,
 		homeEnabled:       false,
@@ -192,19 +192,6 @@ func (l *FileRequestLogger) IsEnabled() bool {
 //   - enabled: Whether request logging should be enabled
 func (l *FileRequestLogger) SetEnabled(enabled bool) {
 	l.enabled = enabled
-}
-
-// SetBodyEnabled updates the independent full-payload retention setting.
-func (l *FileRequestLogger) SetBodyEnabled(enabled bool) {
-	if l == nil {
-		return
-	}
-	l.bodyEnabled = enabled
-}
-
-// BodyEnabled reports whether full request and response payloads are retained.
-func (l *FileRequestLogger) BodyEnabled() bool {
-	return l != nil && l.bodyEnabled
 }
 
 // SetErrorLogsMaxFiles updates the maximum number of error log files to retain.

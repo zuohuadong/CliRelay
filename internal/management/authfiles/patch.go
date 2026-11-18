@@ -1,0 +1,419 @@
+package authfiles
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexadmission"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/patchfield"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+)
+
+// FieldPatch carries editable auth-file fields from the management API into
+// the authfiles use case layer.
+type FieldPatch struct {
+	Name                       string    `json:"name"`
+	Label                      *string   `json:"label"`
+	CustomTags                 *[]string `json:"custom_tags"`
+	HiddenDefaultTags          *[]string `json:"hidden_default_tags"`
+	DisplayTags                *[]string `json:"display_tags"`
+	Prefix                     *string   `json:"prefix"`
+	ProxyURL                   *string   `json:"proxy_url"`
+	ProxyID                    *string   `json:"proxy_id"`
+	Priority                   *int      `json:"priority"`
+	SubscriptionStartedAt      *string   `json:"subscription_started_at"`
+	SubscriptionPeriod         *string   `json:"subscription_period"`
+	SubscriptionExpiresAt      *string   `json:"subscription_expires_at"`
+	CodexCLIOnly               *bool     `json:"codex_cli_only"`
+	CodexCLIOnlyAllowedClients *[]string `json:"codex_cli_only_allowed_clients"`
+	// CodexImageGenerationBridge injects Responses-native image_generation for Codex OAuth.
+	CodexImageGenerationBridge *bool `json:"codex_image_generation_bridge"`
+	// CodexImageGenerationModel pins which image model the injected tool asks for.
+	// Empty clears the pin and returns the account to the build default.
+	CodexImageGenerationModel *string `json:"codex_image_generation_model"`
+	// UsingAPI selects xAI official API vs Grok Build/CLI for OAuth accounts.
+	UsingAPI *bool `json:"using_api"`
+	// ConcurrencyLimit sets the max active concurrent requests for this account (0 = unlimited).
+	ConcurrencyLimit *int `json:"concurrency_limit"`
+	// CodexConvergenceMode overrides the global identity fingerprint convergence mode for Codex accounts (off, device, session, full, or empty to inherit).
+	CodexConvergenceMode *string `json:"codex_convergence_mode"`
+	// CodexServiceTier controls service_tier: "pass", "priority", "ultrafast", "flex", "drop", or empty/default for standard mode.
+	CodexServiceTier *string `json:"codex_service_tier"`
+	// DisableCooling overrides the global disable-cooling switch for this
+	// account: true or false sets the override, null removes it so the account
+	// follows the global switch again.
+	DisableCooling patchfield.NullableBool `json:"disable_cooling"`
+}
+
+type FieldPatchOptions struct {
+	Now           time.Time
+	ValidateLabel func(label, excludeAuthID string) (string, error)
+}
+
+type FieldPatchResult struct {
+	OldChannelIdentifiers []string
+	NewChannelLabel       string
+}
+
+func ApplyStatusPatch(auth *coreauth.Auth, disabled bool, now time.Time) error {
+	if auth == nil {
+		return fmt.Errorf("auth file not found")
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	auth.Disabled = disabled
+	if disabled {
+		auth.Status = coreauth.StatusDisabled
+		auth.StatusMessage = "disabled via management API"
+	} else {
+		auth.Status = coreauth.StatusActive
+		auth.StatusMessage = ""
+	}
+	// Keep the in-memory metadata projection aligned with the runtime flag.
+	// Stores mirror it again on save, but the manager hands this same metadata
+	// to field patches and list responses in between.
+	coreauth.SyncPersistedDisabled(auth)
+	auth.UpdatedAt = now
+	return nil
+}
+
+// ApplyFieldPatch applies editable auth-file field changes and returns the
+// channel rename side effect that the transport layer must coordinate.
+func ApplyFieldPatch(auth *coreauth.Auth, patch FieldPatch, opts FieldPatchOptions) (FieldPatchResult, error) {
+	var result FieldPatchResult
+	if auth == nil {
+		return result, fmt.Errorf("auth file not found")
+	}
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	changed := false
+	if patch.Label != nil {
+		accountType, _ := auth.AccountInfo()
+		if !strings.EqualFold(accountType, "oauth") {
+			return result, fmt.Errorf("label is only supported for oauth auth files")
+		}
+		if IsRuntimeOnly(auth) {
+			return result, fmt.Errorf("runtime-only auth files cannot rename channel")
+		}
+		validateLabel := opts.ValidateLabel
+		if validateLabel == nil {
+			validateLabel = defaultValidateLabel
+		}
+		label, errValidate := validateLabel(*patch.Label, auth.ID)
+		if errValidate != nil {
+			return result, errValidate
+		}
+		result.OldChannelIdentifiers = auth.ChannelIdentifiers()
+		result.NewChannelLabel = label
+		auth.Label = label
+		metadata := ensureMetadata(auth)
+		metadata["label"] = label
+		changed = true
+	}
+	if patch.Prefix != nil {
+		auth.Prefix = strings.TrimSpace(*patch.Prefix)
+		metadata := ensureMetadata(auth)
+		if auth.Prefix == "" {
+			delete(metadata, "prefix")
+		} else {
+			metadata["prefix"] = auth.Prefix
+		}
+		changed = true
+	}
+	if patch.CustomTags != nil {
+		tags, errNormalize := NormalizeEditableTags(*patch.CustomTags, MaxCustomTags)
+		if errNormalize != nil {
+			return result, errNormalize
+		}
+		metadata := ensureMetadata(auth)
+		if len(tags) == 0 {
+			delete(metadata, "custom_tags")
+		} else {
+			metadata["custom_tags"] = tags
+		}
+		changed = true
+	}
+	if patch.HiddenDefaultTags != nil {
+		tags := NormalizeTagList(*patch.HiddenDefaultTags)
+		metadata := ensureMetadata(auth)
+		if len(tags) == 0 {
+			delete(metadata, "hidden_default_tags")
+		} else {
+			metadata["hidden_default_tags"] = tags
+		}
+		changed = true
+	}
+	if patch.DisplayTags != nil {
+		tags := NormalizeTagList(*patch.DisplayTags)
+		metadata := ensureMetadata(auth)
+		metadata["display_tags"] = tags
+		changed = true
+	}
+	if patch.ProxyURL != nil {
+		auth.ProxyURL = strings.TrimSpace(*patch.ProxyURL)
+		metadata := ensureMetadata(auth)
+		if auth.ProxyURL == "" {
+			delete(metadata, "proxy_url")
+			delete(metadata, "proxy-url")
+			delete(metadata, "proxyUrl")
+		} else {
+			metadata["proxy_url"] = auth.ProxyURL
+		}
+		changed = true
+	}
+	if patch.ProxyID != nil {
+		auth.ProxyID = strings.TrimSpace(*patch.ProxyID)
+		metadata := ensureMetadata(auth)
+		if auth.ProxyID == "" {
+			delete(metadata, "proxy_id")
+		} else {
+			metadata["proxy_id"] = auth.ProxyID
+		}
+		changed = true
+	}
+	if patch.Priority != nil {
+		metadata := ensureMetadata(auth)
+		if *patch.Priority == 0 {
+			delete(metadata, "priority")
+		} else {
+			metadata["priority"] = *patch.Priority
+		}
+		changed = true
+	}
+	if patch.SubscriptionStartedAt != nil {
+		value := strings.TrimSpace(*patch.SubscriptionStartedAt)
+		metadata := ensureMetadata(auth)
+		if value == "" {
+			ClearSubscriptionMetadata(metadata)
+		} else {
+			ts, ok := ParseSubscriptionTimestampValue(value)
+			if !ok || ts.IsZero() {
+				return result, fmt.Errorf("subscription_started_at must be a valid time")
+			}
+			DeleteSubscriptionStartMetadata(metadata)
+			DeleteSubscriptionExpirationMetadata(metadata)
+			metadata["subscription_started_at"] = ts.UTC().Format(time.RFC3339)
+			if patch.SubscriptionPeriod == nil {
+				if period, okPeriod := ExtractSubscriptionPeriod(metadata); okPeriod {
+					metadata["subscription_period"] = period
+					delete(metadata, "subscriptionPeriod")
+				} else {
+					metadata["subscription_period"] = "monthly"
+				}
+			}
+		}
+		changed = true
+	}
+	if patch.SubscriptionPeriod != nil {
+		value := strings.TrimSpace(*patch.SubscriptionPeriod)
+		metadata := ensureMetadata(auth)
+		if value == "" {
+			DeleteSubscriptionPeriodMetadata(metadata)
+		} else {
+			period, ok := NormalizeSubscriptionPeriodValue(value)
+			if !ok {
+				return result, fmt.Errorf("subscription_period must be monthly or yearly")
+			}
+			DeleteSubscriptionPeriodMetadata(metadata)
+			metadata["subscription_period"] = period
+		}
+		changed = true
+	}
+	if patch.SubscriptionExpiresAt != nil {
+		value := strings.TrimSpace(*patch.SubscriptionExpiresAt)
+		metadata := ensureMetadata(auth)
+		if value == "" {
+			ClearSubscriptionMetadata(metadata)
+		} else {
+			ts, ok := ParseSubscriptionTimestampValue(value)
+			if !ok || ts.IsZero() {
+				return result, fmt.Errorf("subscription_expires_at must be a valid time")
+			}
+			DeleteSubscriptionStartMetadata(metadata)
+			DeleteSubscriptionPeriodMetadata(metadata)
+			DeleteSubscriptionExpirationMetadata(metadata)
+			metadata["subscription_expires_at"] = ts.UTC().Format(time.RFC3339)
+		}
+		changed = true
+	}
+	if patch.CodexCLIOnly != nil {
+		if err := ensureCodexOAuthAdmissionEditable(auth); err != nil {
+			return result, err
+		}
+		metadata := ensureMetadata(auth)
+		metadata["codex_cli_only"] = *patch.CodexCLIOnly
+		changed = true
+	}
+	if patch.CodexCLIOnlyAllowedClients != nil {
+		if err := ensureCodexOAuthAdmissionEditable(auth); err != nil {
+			return result, err
+		}
+		allowedClients, errNormalize := codexadmission.NormalizeAllowedClientPresets(*patch.CodexCLIOnlyAllowedClients)
+		if errNormalize != nil {
+			return result, errNormalize
+		}
+		metadata := ensureMetadata(auth)
+		if len(allowedClients) == 0 {
+			delete(metadata, "codex_cli_only_allowed_clients")
+		} else {
+			metadata["codex_cli_only_allowed_clients"] = allowedClients
+		}
+		changed = true
+	}
+	if patch.CodexImageGenerationBridge != nil {
+		if err := ensureCodexImageGenerationBridgeEditable(auth); err != nil {
+			return result, err
+		}
+		metadata := ensureMetadata(auth)
+		metadata[metadataKeyCodexImageGenerationBridge] = *patch.CodexImageGenerationBridge
+		changed = true
+	}
+	if patch.CodexImageGenerationModel != nil {
+		if err := ensureCodexImageGenerationBridgeEditable(auth); err != nil {
+			return result, err
+		}
+		model, errModel := normalizeCodexImageGenerationModel(*patch.CodexImageGenerationModel)
+		if errModel != nil {
+			return result, errModel
+		}
+		metadata := ensureMetadata(auth)
+		if model == "" {
+			delete(metadata, metadataKeyCodexImageGenerationModel)
+		} else {
+			metadata[metadataKeyCodexImageGenerationModel] = model
+		}
+		changed = true
+	}
+	if patch.UsingAPI != nil {
+		if err := ensureXAIEndpointEditable(auth); err != nil {
+			return result, err
+		}
+		metadata := ensureMetadata(auth)
+		metadata["using_api"] = *patch.UsingAPI
+		attrs := ensureAttributes(auth)
+		if *patch.UsingAPI {
+			attrs["using_api"] = "true"
+		} else {
+			attrs["using_api"] = "false"
+		}
+		changed = true
+	}
+	if patch.ConcurrencyLimit != nil {
+		limit := *patch.ConcurrencyLimit
+		if limit < 0 {
+			limit = 0
+		}
+		metadata := ensureMetadata(auth)
+		attrs := ensureAttributes(auth)
+		if limit == 0 {
+			delete(metadata, "concurrency_limit")
+			delete(metadata, "concurrency")
+			delete(metadata, "concurrency-limit")
+			delete(attrs, "concurrency_limit")
+			delete(attrs, "concurrency")
+			delete(attrs, "concurrency-limit")
+		} else {
+			delete(metadata, "concurrency")
+			delete(metadata, "concurrency-limit")
+			metadata["concurrency_limit"] = limit
+			delete(attrs, "concurrency")
+			delete(attrs, "concurrency-limit")
+			attrs["concurrency_limit"] = fmt.Sprintf("%d", limit)
+		}
+		changed = true
+	}
+	if patch.CodexConvergenceMode != nil {
+		mode := strings.TrimSpace(strings.ToLower(*patch.CodexConvergenceMode))
+		if err := ensureCodexConvergenceModeEditable(auth, mode); err != nil {
+			return result, err
+		}
+		metadata := ensureMetadata(auth)
+		attrs := ensureAttributes(auth)
+		if mode == "" {
+			delete(metadata, metadataKeyCodexConvergenceMode)
+			delete(metadata, "convergence_mode")
+			delete(metadata, "codex-convergence-mode")
+			delete(attrs, metadataKeyCodexConvergenceMode)
+			delete(attrs, "convergence_mode")
+			delete(attrs, "codex-convergence-mode")
+		} else {
+			delete(metadata, "convergence_mode")
+			delete(metadata, "codex-convergence-mode")
+			metadata[metadataKeyCodexConvergenceMode] = mode
+			delete(attrs, "convergence_mode")
+			delete(attrs, "codex-convergence-mode")
+			attrs[metadataKeyCodexConvergenceMode] = mode
+		}
+		changed = true
+	}
+	if patch.CodexServiceTier != nil {
+		rawTier := strings.TrimSpace(strings.ToLower(*patch.CodexServiceTier))
+		if err := ensureCodexServiceTierEditable(auth, rawTier); err != nil {
+			return result, err
+		}
+		tier := NormalizeCodexServiceTier(rawTier)
+		metadata := ensureMetadata(auth)
+		attrs := ensureAttributes(auth)
+		if tier == "" || tier == "default" {
+			delete(metadata, metadataKeyCodexServiceTier)
+			delete(metadata, "service_tier")
+			delete(metadata, "codex-service-tier")
+			delete(attrs, metadataKeyCodexServiceTier)
+			delete(attrs, "service_tier")
+			delete(attrs, "codex-service-tier")
+		} else {
+			delete(metadata, "service_tier")
+			delete(metadata, "codex-service-tier")
+			metadata[metadataKeyCodexServiceTier] = tier
+			delete(attrs, "service_tier")
+			delete(attrs, "codex-service-tier")
+			attrs[metadataKeyCodexServiceTier] = tier
+		}
+		changed = true
+	}
+	if patch.DisableCooling.Set {
+		applyDisableCoolingPatch(auth, patch.DisableCooling.Value)
+		changed = true
+	}
+
+	if !changed {
+		return result, fmt.Errorf("no fields to update")
+	}
+	auth.UpdatedAt = now
+	return result, nil
+}
+
+func defaultValidateLabel(label, excludeAuthID string) (string, error) {
+	_ = excludeAuthID
+	trimmed := strings.TrimSpace(label)
+	if trimmed == "" {
+		return "", fmt.Errorf("channel name is required")
+	}
+	return trimmed, nil
+}
+
+// applyDisableCoolingPatch stores the account's disable_cooling override in its
+// metadata, where DisableCoolingOverride reads it, or removes it. The legacy
+// "disable-cooling" key goes too, or it would keep answering after a clear.
+func applyDisableCoolingPatch(auth *coreauth.Auth, value *bool) {
+	metadata := ensureMetadata(auth)
+	delete(metadata, "disable-cooling")
+	if value == nil {
+		delete(metadata, "disable_cooling")
+		delete(auth.Attributes, coreauth.DisableCoolingAttributeKey)
+		return
+	}
+	metadata["disable_cooling"] = *value
+}
+
+func ensureMetadata(auth *coreauth.Auth) map[string]any {
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	return auth.Metadata
+}

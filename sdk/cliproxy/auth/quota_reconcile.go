@@ -2,10 +2,9 @@ package auth
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"time"
-
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 const (
@@ -16,11 +15,14 @@ const (
 )
 
 // QuotaProbeResult describes the latest quota status for a credential.
-// When Models is empty, the result applies to every quota-blocked model state on the auth.
+// When Models is empty, the result applies auth-wide or to every quota-blocked model state.
 type QuotaProbeResult struct {
-	Recovered     bool
-	NextRecoverAt time.Time
-	Models        map[string]QuotaProbeModelResult
+	Recovered       bool
+	WindowExhausted bool
+	Window          string
+	WindowMinutes   int
+	NextRecoverAt   time.Time
+	Models          map[string]QuotaProbeModelResult
 }
 
 // QuotaProbeModelResult describes the latest quota status for a specific model.
@@ -40,6 +42,106 @@ func (m *Manager) ReconcileQuota(ctx context.Context, id string) (bool, error) {
 	return m.probeQuotaRecovery(ctx, id, true)
 }
 
+// UpdateQuotaFromProbe applies an already-fetched upstream quota result without
+// issuing another provider request.
+func (m *Manager) UpdateQuotaFromProbe(ctx context.Context, id string, result *QuotaProbeResult) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	id = strings.TrimSpace(id)
+	if id == "" || result == nil {
+		return false, nil
+	}
+
+	now := time.Now()
+	var (
+		updated         *Auth
+		recoveredModels []string
+	)
+
+	m.mu.Lock()
+	current, ok := m.auths[id]
+	if !ok || current == nil {
+		delete(m.quotaProbeAfter, id)
+		m.mu.Unlock()
+		return false, nil
+	}
+	changed, models := applyQuotaProbeResult(current, result, now)
+	recoveredModels = models
+	if authHasActiveQuotaCooldown(current, now) {
+		m.quotaProbeAfter[id] = nextQuotaProbeTime(current, now)
+	} else {
+		delete(m.quotaProbeAfter, id)
+	}
+	if changed {
+		current.UpdatedAt = now
+		syncPersistedQuotaRuntime(current)
+		updated = current.Clone()
+		m.auths[id] = current
+	}
+	m.mu.Unlock()
+
+	if updated != nil {
+		if errPersist := m.persist(ctx, updated); errPersist != nil {
+			return true, errPersist
+		}
+		m.hook.OnAuthUpdated(ctx, updated.Clone())
+	}
+	m.resumeRecoveredQuotaModels(id, recoveredModels)
+	return updated != nil, nil
+}
+
+// ClearQuotaStatus manually clears local runtime restrictions for an auth entry.
+//
+// The method name and management route are retained for API compatibility, but
+// this is an operator reset rather than quota reconciliation: auth/model errors,
+// cooldowns, refresh backoff, quota gates, and provider-specific scheduling
+// metadata must all be cleared together so the credential can be tried once
+// immediately. A real upstream failure may then establish a new restriction.
+func (m *Manager) ClearQuotaStatus(ctx context.Context, id string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false, nil
+	}
+
+	now := time.Now()
+	var (
+		updated         *Auth
+		recoveredModels []string
+	)
+
+	m.mu.Lock()
+	current, ok := m.auths[id]
+	if !ok || current == nil {
+		delete(m.quotaProbeAfter, id)
+		m.mu.Unlock()
+		return false, nil
+	}
+
+	changed, models := clearManualRuntimeStatusForAuth(current, now)
+	recoveredModels = models
+	delete(m.quotaProbeAfter, id)
+	if changed {
+		current.UpdatedAt = now
+		syncPersistedQuotaRuntime(current)
+		updated = current.Clone()
+		m.auths[id] = current
+	}
+	m.mu.Unlock()
+
+	if updated != nil {
+		if errPersist := m.persist(ctx, updated); errPersist != nil {
+			return true, errPersist
+		}
+		m.hook.OnAuthUpdated(ctx, updated.Clone())
+	}
+	m.resumeRecoveredQuotaModels(id, recoveredModels)
+	return updated != nil, nil
+}
+
 func (m *Manager) checkQuotaRecoveries(ctx context.Context, snapshot []*Auth, now time.Time) {
 	for _, auth := range snapshot {
 		if !m.shouldProbeQuota(auth, now) {
@@ -50,13 +152,13 @@ func (m *Manager) checkQuotaRecoveries(ctx context.Context, snapshot []*Auth, no
 }
 
 func (m *Manager) shouldProbeQuota(auth *Auth, now time.Time) bool {
-	if m == nil || auth == nil || auth.Disabled || strings.TrimSpace(auth.ID) == "" {
+	if auth == nil || auth.Disabled || strings.TrimSpace(auth.ID) == "" {
 		return false
 	}
 	if !authHasActiveQuotaCooldown(auth, now) {
 		return false
 	}
-	exec := m.executorFor(auth.Provider)
+	exec := m.executorForTenant(auth.TenantID, auth.Provider)
 	if exec == nil {
 		return false
 	}
@@ -71,9 +173,6 @@ func (m *Manager) shouldProbeQuota(auth *Auth, now time.Time) bool {
 }
 
 func (m *Manager) probeQuotaRecoveryWithLimit(ctx context.Context, id string, force bool) {
-	if m == nil {
-		return
-	}
 	if m.refreshSemaphore == nil {
 		_, _ = m.probeQuotaRecovery(ctx, id, force)
 		return
@@ -88,9 +187,6 @@ func (m *Manager) probeQuotaRecoveryWithLimit(ctx context.Context, id string, fo
 }
 
 func (m *Manager) probeQuotaRecovery(ctx context.Context, id string, force bool) (bool, error) {
-	if m == nil {
-		return false, nil
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -115,7 +211,7 @@ func (m *Manager) probeQuotaRecovery(ctx context.Context, id string, force bool)
 	}
 	m.quotaProbeAfter[id] = now.Add(quotaProbePendingBackoff)
 	cloned := auth.Clone()
-	exec := m.executors[auth.Provider]
+	exec := m.executorForTenantLocked(auth.TenantID, auth.Provider)
 	m.mu.Unlock()
 
 	prober, ok := exec.(QuotaRecoveryProber)
@@ -143,45 +239,16 @@ func (m *Manager) probeQuotaRecovery(ctx context.Context, id string, force bool)
 		return false, nil
 	}
 
-	now = time.Now()
-	var (
-		updated         *Auth
-		recoveredModels []string
-	)
+	return m.UpdateQuotaFromProbe(ctx, id, result)
+}
 
-	m.mu.Lock()
-	current, ok := m.auths[id]
-	if !ok || current == nil {
-		delete(m.quotaProbeAfter, id)
-		m.mu.Unlock()
-		return false, nil
-	}
-
-	changed, models := applyQuotaProbeResult(current, result, now)
-	recoveredModels = models
-	if authHasActiveQuotaCooldown(current, now) {
-		m.quotaProbeAfter[id] = nextQuotaProbeTime(current, now)
-	} else {
-		delete(m.quotaProbeAfter, id)
-	}
-	if changed {
-		current.UpdatedAt = now
-		updated = current.Clone()
-		m.auths[id] = current
-	}
-	m.mu.Unlock()
-
-	if updated != nil {
-		if errPersist := m.persist(ctx, updated); errPersist != nil {
-			return true, errPersist
-		}
-		m.hook.OnAuthUpdated(ctx, updated.Clone())
-		if m.scheduler != nil {
-			m.scheduler.upsertAuth(updated.Clone())
+func probeWindowFallbackCooldown(windowMinutes int) time.Duration {
+	if windowMinutes > 0 {
+		if window := time.Duration(windowMinutes) * time.Minute; window < quotaWindowMaxCooldown {
+			return window
 		}
 	}
-	m.resumeRecoveredQuotaModels(id, recoveredModels)
-	return updated != nil, nil
+	return quotaWindowMaxCooldown
 }
 
 func applyQuotaProbeResult(auth *Auth, result *QuotaProbeResult, now time.Time) (bool, []string) {
@@ -193,8 +260,35 @@ func applyQuotaProbeResult(auth *Auth, result *QuotaProbeResult, now time.Time) 
 	recoveredModels := make([]string, 0)
 	modelResults := normalizeQuotaProbeModels(result.Models)
 	authWide := QuotaProbeModelResult{Recovered: result.Recovered, NextRecoverAt: result.NextRecoverAt}
+	if result.WindowExhausted && !hasQuotaExceededModel(auth) {
+		// Upstream can report an exhausted window without a reset timestamp.
+		// Derive a deadline from the window length so the gate always expires;
+		// an open-ended gate can never be lifted once probing stops working.
+		recoverAt := result.NextRecoverAt
+		if recoverAt.IsZero() {
+			recoverAt = now.Add(probeWindowFallbackCooldown(result.WindowMinutes))
+		}
+		changed := !auth.Unavailable || auth.Status != StatusError || auth.StatusMessage != "quota exhausted" ||
+			!auth.NextRetryAfter.Equal(recoverAt) || !auth.Quota.Exceeded || !auth.Quota.RecoveryRequired ||
+			auth.Quota.Reason != "quota" || auth.Quota.Window != result.Window ||
+			auth.Quota.WindowMinutes != result.WindowMinutes || !auth.Quota.NextRecoverAt.Equal(recoverAt)
+		auth.Unavailable = true
+		auth.Status = StatusError
+		auth.StatusMessage = "quota exhausted"
+		auth.NextRetryAfter = recoverAt
+		auth.Quota = QuotaState{
+			Exceeded:         true,
+			RecoveryRequired: true,
+			Reason:           "quota",
+			Window:           result.Window,
+			WindowMinutes:    result.WindowMinutes,
+			NextRecoverAt:    recoverAt,
+		}
+		auth.UpdatedAt = now
+		return changed, nil
+	}
 
-	if len(auth.ModelStates) > 0 {
+	if hasQuotaExceededModel(auth) {
 		beforeUnavailable := auth.Unavailable
 		beforeNextRetry := auth.NextRetryAfter
 		beforeQuota := auth.Quota
@@ -222,13 +316,22 @@ func applyQuotaProbeResult(auth *Auth, result *QuotaProbeResult, now time.Time) 
 				recoveredModels = append(recoveredModels, modelID)
 				continue
 			}
+			if result.WindowExhausted {
+				if !state.Quota.RecoveryRequired || state.Quota.Window != result.Window || state.Quota.WindowMinutes != result.WindowMinutes {
+					state.Quota.RecoveryRequired = true
+					state.Quota.Window = result.Window
+					state.Quota.WindowMinutes = result.WindowMinutes
+					state.UpdatedAt = now
+					changed = true
+				}
+			}
 			if updateQuotaModelRecoverAt(state, outcome.NextRecoverAt, now) {
 				changed = true
 			}
 		}
 
 		updateAggregatedAvailability(auth, now)
-		if auth.Unavailable != beforeUnavailable || !auth.NextRetryAfter.Equal(beforeNextRetry) || !cooldownQuotaEqual(auth.Quota, beforeQuota) {
+		if auth.Unavailable != beforeUnavailable || !auth.NextRetryAfter.Equal(beforeNextRetry) || !reflect.DeepEqual(auth.Quota, beforeQuota) {
 			changed = true
 		}
 		if !hasModelError(auth, now) {
@@ -236,7 +339,7 @@ func applyQuotaProbeResult(auth *Auth, result *QuotaProbeResult, now time.Time) 
 			auth.StatusMessage = ""
 			auth.LastError = nil
 		}
-		if auth.Status != beforeStatus || auth.StatusMessage != beforeStatusMessage || !quotaErrorsEqual(auth.LastError, beforeLastError) {
+		if auth.Status != beforeStatus || auth.StatusMessage != beforeStatusMessage || !errorsEqual(auth.LastError, beforeLastError) {
 			changed = true
 		}
 		return changed, recoveredModels
@@ -255,6 +358,45 @@ func applyQuotaProbeResult(auth *Auth, result *QuotaProbeResult, now time.Time) 
 		changed = true
 	}
 	return changed, nil
+}
+
+func hasQuotaExceededModel(auth *Auth) bool {
+	if auth == nil {
+		return false
+	}
+	for _, state := range auth.ModelStates {
+		if state != nil && state.Quota.Exceeded {
+			return true
+		}
+	}
+	return false
+}
+
+func clearManualRuntimeStatusForAuth(auth *Auth, now time.Time) (bool, []string) {
+	if auth == nil {
+		return false, nil
+	}
+
+	var changed bool
+	recoveredModels := make([]string, 0, len(auth.ModelStates))
+	for modelID, state := range auth.ModelStates {
+		if clearManualModelRuntimeState(state, now) {
+			changed = true
+			if state.Status != StatusDisabled {
+				recoveredModels = append(recoveredModels, modelID)
+			}
+		}
+	}
+	if clearManualAuthRuntimeState(auth, now) {
+		changed = true
+	}
+	if clearClaudeOAuthRuntimeRestrictionLocked(auth, now) {
+		changed = true
+	}
+	if clearCodexOAuthRuntimeRestrictionLocked(auth, now) {
+		changed = true
+	}
+	return changed, recoveredModels
 }
 
 func normalizeQuotaProbeModels(in map[string]QuotaProbeModelResult) map[string]QuotaProbeModelResult {
@@ -276,14 +418,14 @@ func authHasActiveQuotaCooldown(auth *Auth, now time.Time) bool {
 	if auth == nil || auth.Disabled {
 		return false
 	}
-	if auth.Unavailable && auth.Quota.Exceeded && auth.NextRetryAfter.After(now) {
+	if activeAuthQuotaCooldown(auth, now) {
 		return true
 	}
 	for _, state := range auth.ModelStates {
 		if state == nil {
 			continue
 		}
-		if state.Unavailable && state.Quota.Exceeded && state.NextRetryAfter.After(now) {
+		if activeModelQuotaCooldown(state, now) {
 			return true
 		}
 	}
@@ -295,26 +437,37 @@ func nextQuotaProbeTime(auth *Auth, now time.Time) time.Time {
 	if auth == nil {
 		return now.Add(quotaProbeMinInterval)
 	}
-	if auth.Unavailable && auth.Quota.Exceeded && auth.NextRetryAfter.After(now) {
-		nextRecover = auth.NextRetryAfter
-		if !auth.Quota.NextRecoverAt.IsZero() && auth.Quota.NextRecoverAt.After(now) && auth.Quota.NextRecoverAt.Before(nextRecover) {
+	if activeAuthQuotaCooldown(auth, now) {
+		if auth.NextRetryAfter.After(now) {
+			nextRecover = auth.NextRetryAfter
+		}
+		if auth.Quota.NextRecoverAt.After(now) && (nextRecover.IsZero() || auth.Quota.NextRecoverAt.Before(nextRecover)) {
 			nextRecover = auth.Quota.NextRecoverAt
 		}
 	}
 	for _, state := range auth.ModelStates {
-		if state == nil || !state.Unavailable || !state.Quota.Exceeded || !state.NextRetryAfter.After(now) {
+		if state == nil || !activeModelQuotaCooldown(state, now) {
 			continue
 		}
-		candidate := state.NextRetryAfter
-		if !state.Quota.NextRecoverAt.IsZero() && state.Quota.NextRecoverAt.After(now) && state.Quota.NextRecoverAt.Before(candidate) {
+		candidate := time.Time{}
+		if state.NextRetryAfter.After(now) {
+			candidate = state.NextRetryAfter
+		}
+		if state.Quota.NextRecoverAt.After(now) && (candidate.IsZero() || state.Quota.NextRecoverAt.Before(candidate)) {
 			candidate = state.Quota.NextRecoverAt
 		}
-		if nextRecover.IsZero() || candidate.Before(nextRecover) {
+		if !candidate.IsZero() && (nextRecover.IsZero() || candidate.Before(nextRecover)) {
 			nextRecover = candidate
 		}
 	}
 
 	if nextRecover.IsZero() {
+		return now.Add(quotaProbeMinInterval)
+	}
+	// A probe-confirmed gate keeps the credential out of rotation until the probe
+	// says otherwise, so keep polling promptly instead of scaling the interval to
+	// the (week-long) window deadline that only acts as a ceiling.
+	if quotaRecoveryGateArmed(auth.Quota) {
 		return now.Add(quotaProbeMinInterval)
 	}
 	remaining := nextRecover.Sub(now)
@@ -335,20 +488,59 @@ func clearQuotaModelState(state *ModelState, now time.Time) bool {
 	if state == nil {
 		return false
 	}
-	changed := state.Unavailable || state.Status != StatusActive || state.StatusMessage != "" || !state.NextRetryAfter.IsZero() || state.LastError != nil || !cooldownQuotaEqual(state.Quota, QuotaState{})
+	changed := state.Unavailable || state.Status != StatusActive || state.StatusMessage != "" || !state.NextRetryAfter.IsZero() || state.LastError != nil || !reflect.DeepEqual(state.Quota, QuotaState{})
 	state.Unavailable = false
 	state.Status = StatusActive
 	state.StatusMessage = ""
 	state.NextRetryAfter = time.Time{}
 	state.LastError = nil
-	applyCooldownFields(&state.Quota, QuotaState{})
+	state.Quota = QuotaState{}
+	state.UpdatedAt = now
+	return changed
+}
+
+func clearManualModelRuntimeState(state *ModelState, now time.Time) bool {
+	if state == nil {
+		return false
+	}
+	preserveDisabled := state.Status == StatusDisabled
+	changed := state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || !reflect.DeepEqual(state.Quota, QuotaState{})
+	if !preserveDisabled && (state.Status != StatusActive || state.StatusMessage != "") {
+		changed = true
+	}
+	if !changed {
+		return false
+	}
+	state.Unavailable = false
+	state.NextRetryAfter = time.Time{}
+	state.LastError = nil
+	state.Quota = QuotaState{}
+	if !preserveDisabled {
+		state.Status = StatusActive
+		state.StatusMessage = ""
+	}
 	state.UpdatedAt = now
 	return changed
 }
 
 func updateQuotaModelRecoverAt(state *ModelState, next time.Time, now time.Time) bool {
-	if state == nil || next.IsZero() {
+	if state == nil {
 		return false
+	}
+	if next.IsZero() {
+		if !quotaRecoveryGateArmed(state.Quota) {
+			return false
+		}
+		// The probe answered "still exhausted" but gave no reset time. That is
+		// fresh evidence, so push the window deadline out instead of letting an
+		// already-elapsed one release the credential on the next pick.
+		deadline := now.Add(probeWindowFallbackCooldown(state.Quota.WindowMinutes))
+		changed := !state.Unavailable || !state.Quota.NextRecoverAt.Equal(deadline)
+		state.Unavailable = true
+		state.NextRetryAfter = deadline
+		state.Quota.NextRecoverAt = deadline
+		state.UpdatedAt = now
+		return changed
 	}
 	changed := !state.NextRetryAfter.Equal(next) || !state.Quota.NextRecoverAt.Equal(next) || !state.Unavailable || !state.Quota.Exceeded || state.Quota.Reason != "quota"
 	state.Unavailable = true
@@ -364,20 +556,59 @@ func clearQuotaAuthState(auth *Auth, now time.Time) bool {
 	if auth == nil {
 		return false
 	}
-	changed := auth.Unavailable || auth.Status != StatusActive || auth.StatusMessage != "" || !auth.NextRetryAfter.IsZero() || auth.LastError != nil || !cooldownQuotaEqual(auth.Quota, QuotaState{})
+	changed := auth.Unavailable || auth.Status != StatusActive || auth.StatusMessage != "" || !auth.NextRetryAfter.IsZero() || auth.LastError != nil || !reflect.DeepEqual(auth.Quota, QuotaState{})
 	auth.Unavailable = false
 	auth.Status = StatusActive
 	auth.StatusMessage = ""
 	auth.NextRetryAfter = time.Time{}
 	auth.LastError = nil
-	applyCooldownFields(&auth.Quota, QuotaState{})
+	auth.Quota = QuotaState{}
+	auth.UpdatedAt = now
+	return changed
+}
+
+func clearManualAuthRuntimeState(auth *Auth, now time.Time) bool {
+	if auth == nil {
+		return false
+	}
+	preserveDisabled := auth.Status == StatusDisabled
+	changed := auth.Unavailable || !auth.NextRetryAfter.IsZero() || !auth.NextRefreshAfter.IsZero() || auth.LastError != nil || !reflect.DeepEqual(auth.Quota, QuotaState{})
+	if !preserveDisabled && (auth.Status != StatusActive || auth.StatusMessage != "") {
+		changed = true
+	}
+	if !changed {
+		return false
+	}
+	auth.Unavailable = false
+	auth.NextRetryAfter = time.Time{}
+	auth.NextRefreshAfter = time.Time{}
+	auth.LastError = nil
+	auth.Quota = QuotaState{}
+	if !preserveDisabled {
+		auth.Status = StatusActive
+		auth.StatusMessage = ""
+	}
 	auth.UpdatedAt = now
 	return changed
 }
 
 func updateQuotaAuthRecoverAt(auth *Auth, next time.Time, now time.Time) bool {
-	if auth == nil || next.IsZero() {
+	if auth == nil {
 		return false
+	}
+	if next.IsZero() {
+		if !quotaRecoveryGateArmed(auth.Quota) {
+			return false
+		}
+		// See updateQuotaModelRecoverAt: a confirmed-still-exhausted probe
+		// without a reset time refreshes the window deadline.
+		deadline := now.Add(probeWindowFallbackCooldown(auth.Quota.WindowMinutes))
+		changed := !auth.Unavailable || !auth.Quota.NextRecoverAt.Equal(deadline)
+		auth.Unavailable = true
+		auth.NextRetryAfter = deadline
+		auth.Quota.NextRecoverAt = deadline
+		auth.UpdatedAt = now
+		return changed
 	}
 	changed := !auth.NextRetryAfter.Equal(next) || !auth.Quota.NextRecoverAt.Equal(next) || !auth.Unavailable || !auth.Quota.Exceeded || auth.Quota.Reason != "quota"
 	auth.Unavailable = true
@@ -387,21 +618,4 @@ func updateQuotaAuthRecoverAt(auth *Auth, next time.Time, now time.Time) bool {
 	auth.Quota.NextRecoverAt = next
 	auth.UpdatedAt = now
 	return changed
-}
-
-func quotaErrorsEqual(a, b *Error) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return a.Code == b.Code && a.Message == b.Message && a.Retryable == b.Retryable && a.HTTPStatus == b.HTTPStatus
-}
-
-func (m *Manager) resumeRecoveredQuotaModels(authID string, models []string) {
-	if len(models) == 0 {
-		return
-	}
-	registryRef := registry.GetGlobalRegistry()
-	for _, model := range models {
-		registryRef.ResumeClientModel(authID, model)
-	}
 }

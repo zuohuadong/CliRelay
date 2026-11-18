@@ -3,12 +3,12 @@ package models
 
 import (
 	"bytes"
-	"encoding/json"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
@@ -141,7 +141,9 @@ func buildCodexClientModelsWithToolCapabilities(models []map[string]any, provide
 			applyCPAWebSearchCapability(entry, id, webSearchCapabilityForModel, clientVersion)
 			sanitizeCodexClientReasoningMetadata(entry, clientVersion)
 			applyCodexClientVisibilityOverride(entry, id)
-			applyCodexClientMultiAgentVersion(entry, optimizeMultiAgentV2)
+			if optimizeMultiAgentV2 {
+				entry["multi_agent_version"] = "v2"
+			}
 			applyCodexClientDevinDisplayName(entry, id, model, providersForModel)
 			applyCodexClientApplyPatchCapability(entry, id, applyPatchCapabilityForModel)
 			result = append(result, entry)
@@ -571,24 +573,11 @@ func nullCodexClientRequiredOptions(entry map[string]any) {
 	entry["tool_mode"] = "direct"
 	entry["use_responses_lite"] = false
 	entry["supports_reasoning_effort_updates"] = false
+	if _, exists := entry["supports_image_detail_original"]; exists {
+		entry["supports_image_detail_original"] = false
+	}
 	entry["upgrade"] = nil
 	entry["availability_nux"] = nil
-}
-
-// applyCodexClientMultiAgentVersion keeps the advertised catalog consistent
-// with the relay's request rewriting. Codex multi-agent v2 sends tools in the
-// reserved "collaboration" namespace, which the upstream Codex backend rejects
-// unless the relay's optimize-multi-agent-v2 path renames it. When that path is
-// disabled, templates that still carry v2 must be downgraded to v1 so clients
-// keep using the flat spawn_agent/wait_agent tools the upstream accepts.
-func applyCodexClientMultiAgentVersion(entry map[string]any, optimizeMultiAgentV2 bool) {
-	if optimizeMultiAgentV2 {
-		entry["multi_agent_version"] = "v2"
-		return
-	}
-	if stringModelValue(entry, "multi_agent_version") == "v2" {
-		entry["multi_agent_version"] = "v1"
-	}
 }
 
 const codexClientFallbackInstructions = "You are Codex, a coding agent. You and the user share one workspace."
@@ -713,7 +702,9 @@ func applyCodexClientModelMetadata(entry map[string]any, id string, model map[st
 	entry["display_name"] = displayName
 	entry["description"] = description
 	entry["prefer_websockets"] = false
-	applyCodexClientMultiAgentVersion(entry, optimizeMultiAgentV2)
+	if optimizeMultiAgentV2 {
+		entry["multi_agent_version"] = "v2"
+	}
 	entry["service_tiers"] = []any{}
 	nullCodexClientRequiredOptions(entry)
 
@@ -756,15 +747,6 @@ func codexClientThinkingSupport(model map[string]any) *registry.ThinkingSupport 
 func applyCodexClientVisibilityOverride(entry map[string]any, id string) {
 	if isCodexClientImageOrVideoModel(id) {
 		entry["visibility"] = "hide"
-		return
-	}
-	// Registry-typed media models are not chat models even when they are not in
-	// the static list above (for example provider-specific video models).
-	if info := registry.LookupModelInfo(strings.TrimSpace(id)); info != nil &&
-		(info.Type == registry.OpenAIImageModelType || info.Type == registry.OpenAIVideoModelType) {
-		entry["visibility"] = "hide"
-		delete(entry, "input_modalities")
-		delete(entry, "supports_image_detail_original")
 	}
 }
 
@@ -776,7 +758,7 @@ func isCodexClientImageOrVideoModel(id string) bool {
 		target = strings.TrimSpace(target[idx+1:])
 	}
 	switch target {
-	case "grok-imagine-image-quality", "gpt-image-1.5", "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5", "grok-imagine-image", "grok-imagine-image-2.0", "grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-video-1.5-preview", "grok-tts", "grok-voice-tts-1.0":
+	case "grok-imagine-image-quality", "gpt-image-1.5", "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst", "gpt-image-2.6", "grok-imagine-image", "grok-imagine-image-2.0", "grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-video-1.5-preview", "grok-tts", "grok-voice-tts-1.0":
 		return true
 	default:
 		return false
@@ -793,7 +775,7 @@ func applyCodexClientInputModalitiesMetadata(entry map[string]any, modalities []
 	}
 	entry["input_modalities"] = codexModalities
 	if hasImageModality(codexModalities) {
-		entry["supports_image_detail_original"] = true
+		entry["supports_image_detail_original"] = false
 	} else {
 		delete(entry, "supports_image_detail_original")
 	}

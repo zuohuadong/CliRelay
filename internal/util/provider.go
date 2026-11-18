@@ -14,7 +14,8 @@ import (
 
 const openAICompatibleProviderPrefix = "openai-compatible-"
 
-// OpenAICompatibleProviderKey returns the internal provider key for an OpenAI-compatible provider.
+// OpenAICompatibleProviderKey returns the canonical internal provider key for
+// an OpenAI-compatible provider name.
 func OpenAICompatibleProviderKey(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "" || name == "openai-compatibility" || strings.HasPrefix(name, openAICompatibleProviderPrefix) {
@@ -35,6 +36,7 @@ func OpenAICompatibleProviderKey(name string) string {
 //   - "gemini" for Google's Gemini family
 //   - "codex" for OpenAI GPT-compatible providers
 //   - "claude" for Anthropic models
+//   - "qwen" for Alibaba's Qwen models
 //   - "openai-compatibility" for external OpenAI-compatible providers
 //
 // Parameters:
@@ -64,11 +66,6 @@ func GetProviderName(modelName string) []string {
 
 	for _, provider := range registry.GetGlobalRegistry().GetModelProviders(modelName) {
 		appendProvider(provider)
-	}
-	if len(providers) == 0 && strings.ToLower(modelName) != modelName {
-		for _, provider := range registry.GetGlobalRegistry().GetModelProviders(strings.ToLower(modelName)) {
-			appendProvider(provider)
-		}
 	}
 
 	if len(providers) > 0 {
@@ -117,9 +114,6 @@ func IsOpenAICompatibilityAlias(modelName string, cfg *config.Config) bool {
 	}
 
 	for _, compat := range cfg.OpenAICompatibility {
-		if compat.Disabled {
-			continue
-		}
 		for _, model := range compat.Models {
 			if model.Alias == modelName {
 				return true
@@ -145,9 +139,6 @@ func GetOpenAICompatibilityConfig(alias string, cfg *config.Config) (*config.Ope
 	}
 
 	for _, compat := range cfg.OpenAICompatibility {
-		if compat.Disabled {
-			continue
-		}
 		for _, model := range compat.Models {
 			if model.Alias == alias {
 				return &compat, &model
@@ -232,7 +223,8 @@ func MaskSensitiveHeaderValue(key, value string) string {
 	case strings.Contains(lowerKey, "api-key"),
 		strings.Contains(lowerKey, "apikey"),
 		strings.Contains(lowerKey, "token"),
-		strings.Contains(lowerKey, "secret"):
+		strings.Contains(lowerKey, "secret"),
+		strings.Contains(lowerKey, "cookie"):
 		return HideAPIKey(value)
 	default:
 		return value
@@ -283,9 +275,7 @@ func shouldMaskQueryParam(key string) bool {
 		return false
 	}
 	key = strings.TrimSuffix(key, "[]")
-	// The management API deletes a client API key by ?value=<key>, so a plain
-	// "value" parameter can carry a full secret into the request log.
-	if key == "key" || key == "value" || strings.Contains(key, "api-key") || strings.Contains(key, "apikey") || strings.Contains(key, "api_key") {
+	if key == "key" || strings.Contains(key, "api-key") || strings.Contains(key, "apikey") || strings.Contains(key, "api_key") {
 		return true
 	}
 	if strings.Contains(key, "token") || strings.Contains(key, "secret") {

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 
@@ -26,35 +25,4 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	return &cfg, nil
 }
 
-// NormalizeConfigLayout applies v8 aliases and returns the normalized YAML.
-func NormalizeConfigLayout(data []byte, migrate bool) ([]byte, bool, error) {
-	if !migrate {
-		return data, false, nil
-	}
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return nil, false, err
-	}
-	if err := NormalizeV8ConfigAliases(&root); err != nil {
-		return nil, false, err
-	}
-	var out bytes.Buffer
-	enc := yaml.NewEncoder(&out)
-	enc.SetIndent(2)
-	if err := enc.Encode(&root); err != nil {
-		_ = enc.Close()
-		return nil, false, err
-	}
-	if err := enc.Close(); err != nil {
-		return nil, false, err
-	}
-	normalized := out.Bytes()
-	return normalized, !bytes.Equal(normalized, data), nil
-}
-
-func NormalizeCollectionNodeStyles(_ *yaml.Node) {}
-
-func ValidateV8Config(data []byte) error {
-	_, err := ParseConfigBytes(data)
-	return err
-}
+// NormalizeConfigLayout and ValidateV8Config are implemented in config_v8.go.

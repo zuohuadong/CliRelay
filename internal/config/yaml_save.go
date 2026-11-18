@@ -148,18 +148,30 @@ func NormalizeCommentIndentation(data []byte) []byte {
 	return bytes.Join(lines, []byte("\n"))
 }
 
-// normalizeCollectionNodeStyles forces YAML collections to use block notation, keeping
-// lists and maps readable. Empty sequences retain flow style ([]) so empty list markers
-// remain compact.
-func normalizeCollectionNodeStyles(node *yaml.Node) {
+// NormalizeCollectionNodeStyles forces YAML collections to use block notation,
+// keeping lists and maps readable. Empty sequences retain flow style ([]) so
+// empty list markers remain compact. It also clears double quotes from string
+// mapping keys so JSON-derived keys render as standard unquoted YAML keys.
+func NormalizeCollectionNodeStyles(node *yaml.Node) {
 	if node == nil {
 		return
 	}
 	switch node.Kind {
+	case yaml.DocumentNode:
+		for i := range node.Content {
+			NormalizeCollectionNodeStyles(node.Content[i])
+		}
 	case yaml.MappingNode:
 		node.Style = 0
-		for i := range node.Content {
-			normalizeCollectionNodeStyles(node.Content[i])
+		for i := 0; i < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if key != nil && key.Kind == yaml.ScalarNode && key.Tag == "!!str" && key.Style == yaml.DoubleQuotedStyle {
+				key.Style = 0
+			}
+			NormalizeCollectionNodeStyles(key)
+			if i+1 < len(node.Content) {
+				NormalizeCollectionNodeStyles(node.Content[i+1])
+			}
 		}
 	case yaml.SequenceNode:
 		if len(node.Content) == 0 {
@@ -168,9 +180,15 @@ func normalizeCollectionNodeStyles(node *yaml.Node) {
 			node.Style = 0
 		}
 		for i := range node.Content {
-			normalizeCollectionNodeStyles(node.Content[i])
+			NormalizeCollectionNodeStyles(node.Content[i])
 		}
 	default:
 		// Scalars keep their existing style to preserve quoting
 	}
+}
+
+// normalizeCollectionNodeStyles preserves the original package-local helper
+// for save paths while exposing the same normalization to management handlers.
+func normalizeCollectionNodeStyles(node *yaml.Node) {
+	NormalizeCollectionNodeStyles(node)
 }

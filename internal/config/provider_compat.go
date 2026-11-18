@@ -11,6 +11,10 @@ type ClaudeConfig struct {
 	ToolSearch         bool `yaml:"tool-search" json:"tool-search"`
 	ServerSideFallback bool `yaml:"server-side-fallback" json:"server-side-fallback"`
 	SessionDatePinDays *int `yaml:"session-date-pin-days" json:"session-date-pin-days"`
+	// OAuthIncludeCreateAPIKey controls whether new Claude OAuth authorization
+	// URLs request the org:create_api_key scope. Nil preserves the native
+	// Claude Code default (enabled).
+	OAuthIncludeCreateAPIKey *bool `yaml:"oauth-include-create-api-key,omitempty" json:"oauth-include-create-api-key,omitempty"`
 }
 
 const DefaultClaudeSessionDatePinDays = 7
@@ -28,6 +32,12 @@ func (c ClaudeConfig) SessionDatePinRetention() time.Duration {
 		days = maxDays
 	}
 	return time.Duration(days) * 24 * time.Hour
+}
+
+// OAuthIncludeCreateAPIKeyEnabled reports whether Claude OAuth authorization
+// requests should include the org:create_api_key scope.
+func (c *ClaudeConfig) OAuthIncludeCreateAPIKeyEnabled() bool {
+	return c == nil || c.OAuthIncludeCreateAPIKey == nil || *c.OAuthIncludeCreateAPIKey
 }
 
 // XAIConfig configures provider-wide xAI request behavior.

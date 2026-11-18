@@ -177,7 +177,15 @@ type OAuthProfile struct {
 // It provides methods for generating authorization URLs, exchanging codes for tokens,
 // and refreshing expired tokens using PKCE for enhanced security.
 type ClaudeAuth struct {
-	httpClient *http.Client
+	httpClient     *http.Client
+	authorizeScope string
+}
+
+func resolveClaudeAuthorizeScope(cfg *config.Config) string {
+	if cfg != nil && !cfg.Claude.OAuthIncludeCreateAPIKeyEnabled() {
+		return ClaudeOAuthScope
+	}
+	return claudeOAuthAuthorizeScope
 }
 
 // NewClaudeAuth creates a new Anthropic authentication service.
@@ -213,7 +221,8 @@ func NewClaudeAuthWithProxyURL(cfg *config.Config, proxyURL string) *ClaudeAuth 
 	// Use custom HTTP client with Firefox TLS fingerprint to bypass
 	// Cloudflare's bot detection on Anthropic domains.
 	return &ClaudeAuth{
-		httpClient: NewAnthropicHttpClient(sdkCfg),
+		httpClient:     NewAnthropicHttpClient(sdkCfg),
+		authorizeScope: resolveClaudeAuthorizeScope(cfg),
 	}
 }
 
@@ -343,13 +352,17 @@ func (o *ClaudeAuth) GenerateAuthURLWithRedirectURI(state string, pkceCodes *PKC
 	if redirectURI == "" {
 		redirectURI = RedirectURI
 	}
+	scope := claudeOAuthAuthorizeScope
+	if o != nil && o.authorizeScope != "" {
+		scope = o.authorizeScope
+	}
 
 	params := url.Values{
 		"code":                  {"true"},
 		"client_id":             {ClientID},
 		"response_type":         {"code"},
 		"redirect_uri":          {redirectURI},
-		"scope":                 {claudeOAuthAuthorizeScope},
+		"scope":                 {scope},
 		"code_challenge":        {pkceCodes.CodeChallenge},
 		"code_challenge_method": {"S256"},
 		"state":                 {state},
@@ -478,20 +491,25 @@ func (o *ClaudeAuth) ExchangeCodeForTokensWithRedirectURI(ctx context.Context, c
 		Expire:           time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}
 
-	// Replay the native login companion lookups and let the profile response win
-	// where it carries identity the token response omitted.
-	if profile := o.inspectOAuthAccount(ctx, tokenResp.AccessToken); profile != nil {
-		if value := strings.TrimSpace(profile.Account.UUID); value != "" {
-			tokenData.AccountUUID = value
-		}
-		if value := strings.TrimSpace(profile.Account.Email); value != "" {
-			tokenData.Email = value
-		}
-		if value := strings.TrimSpace(profile.Organization.UUID); value != "" {
-			tokenData.OrganizationUUID = value
-		}
-		if value := strings.TrimSpace(profile.Organization.Name); value != "" {
-			tokenData.OrganizationName = value
+	// Replay the native browser-login companion lookups and let the profile
+	// response win where it carries identity the token response omitted. The
+	// claude.ai session exchange uses a different redirect URI and already
+	// returns the account identity in its token response; it does not issue
+	// these browser control-plane calls.
+	if redirectURI == RedirectURI {
+		if profile := o.inspectOAuthAccount(ctx, tokenResp.AccessToken); profile != nil {
+			if value := strings.TrimSpace(profile.Account.UUID); value != "" {
+				tokenData.AccountUUID = value
+			}
+			if value := strings.TrimSpace(profile.Account.Email); value != "" {
+				tokenData.Email = value
+			}
+			if value := strings.TrimSpace(profile.Organization.UUID); value != "" {
+				tokenData.OrganizationUUID = value
+			}
+			if value := strings.TrimSpace(profile.Organization.Name); value != "" {
+				tokenData.OrganizationName = value
+			}
 		}
 	}
 

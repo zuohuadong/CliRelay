@@ -95,6 +95,9 @@ func TestPrepareClusterInstallsFollower(t *testing.T) {
 		compatdriver.SetDialKeepAlive(net.KeepAliveConfig{})
 	})
 	cfg := &config.Config{}
+	// Cluster mode requires PostgreSQL: without a DSN the runtime falls back to
+	// the embedded SQLite database and prepareCluster keeps single-node mode.
+	cfg.Postgres.DSN = "postgres://cluster-test/ignored"
 	cfg.Cluster.Enabled = true
 	cfg.Cluster.NodeID = "node-under-test"
 	prepareCluster(cfg)
@@ -145,5 +148,20 @@ func TestPostgresMigrationLockSerialisesStartup(t *testing.T) {
 	}
 	if runs != 3 || maxInside != 1 {
 		t.Fatalf("runs=%d, max concurrent=%d; startups must run one at a time", runs, maxInside)
+	}
+}
+
+func TestPrepareClusterWithoutPostgresStaysSingleNode(t *testing.T) {
+	t.Cleanup(func() { cluster.SetDefault(nil) })
+	cluster.SetDefault(nil)
+	cfg := &config.Config{}
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.NodeID = "sqlite-node"
+	prepareCluster(cfg)
+	if cfg.Cluster.Enabled {
+		t.Fatal("cluster mode must be disabled when the runtime uses sqlite")
+	}
+	if !cluster.Default().IsLeader() {
+		t.Fatal("sqlite startup must keep the single-node coordinator")
 	}
 }

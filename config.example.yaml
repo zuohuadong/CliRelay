@@ -42,6 +42,9 @@ request-body:
 timezone: ""
 
 # PostgreSQL 15+ is the runtime primary database.
+# An empty dsn runs a single node on the embedded SQLite file at
+# <config dir>/data/usage.db (override with CLIRELAY_SQLITE_PATH) instead of
+# failing to start. Cluster mode still requires a DSN.
 postgres:
   dsn: "postgres://cliproxy:cliproxy@127.0.0.1:5432/cliproxy?sslmode=disable"
   max-open-conns: 16

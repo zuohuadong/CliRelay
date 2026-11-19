@@ -79,6 +79,8 @@ type Coordinator struct {
 	version string
 
 	transport transport
+	// db is the runtime database, when the coordinator was started with one.
+	db *sql.DB
 
 	leader        atomic.Bool
 	activeNodes   atomic.Int64
@@ -209,6 +211,16 @@ func adoptPrepared(nodeID string) *Coordinator {
 
 // Enabled reports whether this process runs in cluster mode.
 func (c *Coordinator) Enabled() bool { return c != nil && c.enabled }
+
+// DB returns the runtime database the coordinator runs on, or nil when it has
+// none (single-node, or a test coordinator). Callers that need PostgreSQL for
+// cluster-wide state use it instead of opening a second pool.
+func (c *Coordinator) DB() *sql.DB {
+	if c == nil {
+		return nil
+	}
+	return c.db
+}
 
 // NodeID returns this node's identifier.
 func (c *Coordinator) NodeID() string {

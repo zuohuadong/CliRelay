@@ -182,12 +182,16 @@ func startPostgresWith(ctx context.Context, nodeID string, opts Options, timings
 		ctx = context.Background()
 	}
 	c := adoptPrepared(nodeID)
+	if c != nil {
+		c.db = opts.DB
+	}
 	var slot *backendSlot
 	if c != nil {
 		slot, _ = c.transport.(*backendSlot)
 	}
 	if slot == nil {
 		c = newCoordinator(true, nodeID)
+		c.db = opts.DB
 		c.version = strings.TrimSpace(opts.Version)
 		slot = newBackendSlot(c)
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/contentmoderation"
 	postgresstore "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres"
 	log "github.com/sirupsen/logrus"
+	_ "modernc.org/sqlite"
 )
 
 var (

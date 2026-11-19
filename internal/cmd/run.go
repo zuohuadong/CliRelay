@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/accessfreeze"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -23,6 +25,7 @@ import (
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota/inflight"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
@@ -60,16 +63,24 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 
 	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
 	contentmoderation.SetRuntime(moderator)
-	freezes := startAccessFreezes(loc)
+	// Access freezes need the PostgreSQL-only access_freezes tables; in SQLite
+	// mode the service stays uninstalled and every call site treats it as "no
+	// standing freeze".
+	var freezes *accessfreeze.Service
+	if !runtimeUsesSQLite(cfg) {
+		freezes = startAccessFreezes(loc)
+	}
 	defer freezes.Close()
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath).
 		WithCoreAuthHook(usage.NewAIAccountBindingHook()).
 		WithRequestModerator(moderator).
-		WithUpstreamRefusalObserver(freezes).
 		WithHooks(runtimeDataStackPostStartHooks(defaultRuntimeDataStackMaintenanceOps())).
 		WithLocalManagementPassword(localPassword)
+	if freezes != nil {
+		builder = builder.WithUpstreamRefusalObserver(freezes)
+	}
 
 	ctxSignal, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -129,15 +140,20 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 
 	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
 	contentmoderation.SetRuntime(moderator)
-	freezes := startAccessFreezes(loc)
+	var freezes *accessfreeze.Service
+	if !runtimeUsesSQLite(cfg) {
+		freezes = startAccessFreezes(loc)
+	}
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath).
 		WithCoreAuthHook(usage.NewAIAccountBindingHook()).
 		WithRequestModerator(moderator).
-		WithUpstreamRefusalObserver(freezes).
 		WithHooks(runtimeDataStackPostStartHooks(defaultRuntimeDataStackMaintenanceOps())).
 		WithLocalManagementPassword(localPassword)
+	if freezes != nil {
+		builder = builder.WithUpstreamRefusalObserver(freezes)
+	}
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 	doneCh := make(chan struct{})
@@ -256,46 +272,110 @@ func bootstrapIdentity(ctx context.Context, service identityBootstrapper, passwo
 	return nil
 }
 
+// runtimeUsesSQLite reports whether the runtime database is the embedded
+// SQLite store: cfg.postgres.dsn is the switch, empty means SQLite.
+func runtimeUsesSQLite(cfg *config.Config) bool {
+	return cfg == nil || strings.TrimSpace(cfg.Postgres.DSN) == ""
+}
+
+// resolveRuntimeSQLitePath returns the SQLite database path used when no
+// PostgreSQL DSN is configured. The default mirrors the legacy layout,
+// <config dir>/data/usage.db, so a container keeps its existing data volume.
+func resolveRuntimeSQLitePath(cfg *config.Config, configPath string) string {
+	if path := strings.TrimSpace(os.Getenv(config.EnvSQLitePath)); path != "" {
+		return path
+	}
+	if trimmed := strings.TrimSpace(configPath); trimmed != "" {
+		return filepath.Join(filepath.Dir(trimmed), "data", "usage.db")
+	}
+	authDir := ""
+	if cfg != nil {
+		authDir = cfg.AuthDir
+	}
+	return filepath.Join(util.StateDir(authDir), "usage.db")
+}
+
+// initializeSQLiteRuntimeDatabase opens the SQLite runtime database, creating
+// its parent directory first.
+func initializeSQLiteRuntimeDatabase(cfg *config.Config, configPath string, loc *time.Location) (string, error) {
+	path := resolveRuntimeSQLitePath(cfg, configPath)
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return path, fmt.Errorf("usage: create sqlite directory %s: %w", dir, err)
+		}
+	}
+	if err := usage.InitDB(path, cfg.RequestLogStorage, loc); err != nil {
+		return path, err
+	}
+	return path, nil
+}
+
 func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time.Location) error {
 	if cfg == nil {
 		return errors.New("config is nil")
 	}
-	if err := usage.InitPostgres(cfg.Postgres, cfg.RequestLogStorage, loc); err != nil {
+	sqliteMode := runtimeUsesSQLite(cfg)
+	if sqliteMode {
+		path, err := initializeSQLiteRuntimeDatabase(cfg, configPath, loc)
+		if err != nil {
+			return err
+		}
+		log.Infof("usage: sqlite runtime database at %s", path)
+	} else if err := usage.InitPostgres(cfg.Postgres, cfg.RequestLogStorage, loc); err != nil {
 		return err
 	}
-	bootstrapPassword := resolveBootstrapAdminPassword(cfg)
-	identityService := identity.NewService(usage.RuntimeDB())
-	enduserService := enduser.NewService(usage.RuntimeDB())
-	enduser.SetDefault(enduserService)
-	if err := bootstrapIdentity(context.Background(), identityService, bootstrapPassword); err != nil {
-		return err
+	var enduserService *enduser.Service
+	if sqliteMode {
+		// The tenant, RBAC and portal account tables exist only in the
+		// PostgreSQL migrations, so those services stay uninitialised here.
+		// Their call sites treat a nil service as "feature unavailable", and the
+		// management API keeps authenticating with remote-management.secret-key.
+		log.Warn("identity/enduser/access-freeze: sqlite mode has no tenant or access-freeze schema; multi-tenant, portal account and automatic freeze features are unavailable")
+	} else {
+		bootstrapPassword := resolveBootstrapAdminPassword(cfg)
+		identityService := identity.NewService(usage.RuntimeDB())
+		enduserService = enduser.NewService(usage.RuntimeDB())
+		enduser.SetDefault(enduserService)
+		if err := bootstrapIdentity(context.Background(), identityService, bootstrapPassword); err != nil {
+			return err
+		}
+		identity.SetDefault(identityService)
+		identityService.SetSessionPolicy(identity.SessionPolicyFromConfig(cfg))
+		startSessionReaper(identityService, identity.SessionReaperIntervalFromConfig(cfg))
+		startAuditRetention(identityService, identity.AuditRetentionPolicyFromConfig(cfg))
 	}
-	identity.SetDefault(identityService)
-	identityService.SetSessionPolicy(identity.SessionPolicyFromConfig(cfg))
-	startSessionReaper(identityService, identity.SessionReaperIntervalFromConfig(cfg))
-	startAuditRetention(identityService, identity.AuditRetentionPolicyFromConfig(cfg))
 	// Import YAML keys first so one-shot end-user backfill can see them.
 	if _, err := usage.MigrateAPIKeysFromConfig(cfg, configPath); err != nil {
 		return fmt.Errorf("migrate api keys from config: %w", err)
 	}
 	usage.WarnEnabledPlaceholderAPIKeys()
-	if created, err := enduserService.BackfillFromAPIKeys(context.Background()); err != nil {
-		log.WithError(err).Error("enduser: backfill from api keys failed")
-		return fmt.Errorf("enduser backfill: %w", err)
-	} else if created > 0 {
-		// Say what the operator has to do next. These accounts are created
-		// without a usable password, so without this line the first symptom is
-		// a migrated user reporting that no password works.
-		log.Infof("enduser: backfilled %d end users from api keys; each account needs a password issued via the management password reset before its owner can sign in", created)
+	if !sqliteMode {
+		if created, err := enduserService.BackfillFromAPIKeys(context.Background()); err != nil {
+			log.WithError(err).Error("enduser: backfill from api keys failed")
+			return fmt.Errorf("enduser backfill: %w", err)
+		} else if created > 0 {
+			// Say what the operator has to do next. These accounts are created
+			// without a usable password, so without this line the first symptom is
+			// a migrated user reporting that no password works.
+			log.Infof("enduser: backfilled %d end users from api keys; each account needs a password issued via the management password reset before its owner can sign in", created)
+		}
+		// Before listening, so this instance never serves a portal sign-in with the
+		// published password. Fatal like the backfill: starting anyway would leave
+		// those accounts open with nothing but a log line to show for it.
+		if locked, err := enduserService.LockLegacyBackfillPasswordAccounts(context.Background()); err != nil {
+			log.WithError(err).Error("enduser: locking accounts on the legacy backfill password failed")
+			return fmt.Errorf("enduser legacy backfill password lock: %w", err)
+		} else if len(locked) > 0 {
+			log.WithField("usernames", locked).Warnf("enduser: locked %d portal accounts still holding the legacy backfill password; each needs a credential issued via the end-user password reset before its owner can sign in again", len(locked))
+		}
 	}
-	// Before listening, so this instance never serves a portal sign-in with the
-	// published password. Fatal like the backfill: starting anyway would leave
-	// those accounts open with nothing but a log line to show for it.
-	if locked, err := enduserService.LockLegacyBackfillPasswordAccounts(context.Background()); err != nil {
-		log.WithError(err).Error("enduser: locking accounts on the legacy backfill password failed")
-		return fmt.Errorf("enduser legacy backfill password lock: %w", err)
-	} else if len(locked) > 0 {
-		log.WithField("usernames", locked).Warnf("enduser: locked %d portal accounts still holding the legacy backfill password; each needs a credential issued via the end-user password reset before its owner can sign in again", len(locked))
+	if sqliteMode {
+		// Import YAML keys so the management API and clients keep working against
+		// the SQLite api_keys table.
+		if _, err := usage.MigrateAPIKeysFromConfig(cfg, configPath); err != nil {
+			return fmt.Errorf("migrate api keys from config: %w", err)
+		}
+		usage.WarnEnabledPlaceholderAPIKeys()
 	}
 	usage.MigrateAPIKeyPermissionProfilesFromYAML(configPath)
 	usage.MigrateRoutingConfigFromConfig(cfg, configPath)

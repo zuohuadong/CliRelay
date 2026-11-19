@@ -23,6 +23,8 @@ const (
 	EnvLegacyPort = "PORT"
 	// EnvPostgresDSN overrides postgres.dsn for container and secret-managed deployments.
 	EnvPostgresDSN = "CLIRELAY_POSTGRES_DSN"
+	// EnvSQLitePath overrides the SQLite database path used when postgres.dsn is empty.
+	EnvSQLitePath = "CLIRELAY_SQLITE_PATH"
 	// EnvRedisEnable overrides redis.enable.
 	EnvRedisEnable = "CLIRELAY_REDIS_ENABLE"
 	// EnvRedisAddr overrides redis.addr.

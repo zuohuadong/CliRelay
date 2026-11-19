@@ -256,6 +256,13 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	if err := usage.InitPostgres(cfg.Postgres, cfg.RequestLogStorage, loc); err != nil {
 		return err
 	}
+	// The usage snapshot used to need Redis. It now lives in the runtime
+	// database through internal/pgredis, so a deployment needs no second
+	// server for it; an explicitly configured Redis still wins (InitRedis
+	// installs its store afterwards).
+	if err := usage.InitPostgresSnapshot(usage.RuntimeDB()); err != nil {
+		return fmt.Errorf("usage snapshot store: %w", err)
+	}
 	bootstrapPassword := resolveBootstrapAdminPassword(cfg)
 	identityService := identity.NewService(usage.RuntimeDB())
 	enduserService := enduser.NewService(usage.RuntimeDB())

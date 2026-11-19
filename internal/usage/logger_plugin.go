@@ -81,26 +81,25 @@ func InitRedis(cfg config.RedisConfig) {
 	}
 
 	redisCtx = context.Background()
-	redisClient = redis.NewClient(&redis.Options{
+	client := redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,
 		Password: cfg.Password,
 		DB:       cfg.DB,
 	})
 
-	if err := redisClient.Ping(redisCtx).Err(); err != nil {
+	if err := client.Ping(redisCtx).Err(); err != nil {
 		log.Errorf("failed to connect to Redis for usage persistence: %v", err)
-		redisClient.Close()
-		redisClient = nil
+		_ = client.Close()
 		return
 	}
+	redisClient = client
+	usageSnapshotStore = &redisSnapshotStore{client: client}
 
 	log.Infof("Redis persistence for usage statistics activated on %s (DB: %d)", cfg.Addr, cfg.DB)
 
 	// Attempt to load existing data
-	if err := loadFromRedis(); err != nil {
-		log.Errorf("failed to load usage statistics from Redis: %v", err)
-	} else {
-		log.Infof("Successfully loaded usage statistics from Redis")
+	if err := loadUsageSnapshot(); err != nil {
+		log.Errorf("failed to load usage statistics from %s: %v", usageSnapshotStore.Name(), err)
 	}
 
 	// Migrate existing in-memory data to the database (first run only)
@@ -125,11 +124,13 @@ func StopRedis() {
 		redisCancel()
 		redisSyncWg.Wait()
 	}
-	if redisClient != nil {
-		saveToRedis() // Perform a final save
-		redisClient.Close()
+	if usageSnapshotStore != nil {
+		saveUsageSnapshot() // Perform a final save
+		name := usageSnapshotStore.Name()
+		usageSnapshotStore.Close()
+		usageSnapshotStore = nil
 		redisClient = nil
-		log.Infof("Redis usage persistence flushed and closed")
+		log.Infof("%s usage persistence flushed and closed", name)
 	}
 	redisCancel = nil
 	redisCtx = context.Background()
@@ -144,49 +145,50 @@ func redisSyncLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			saveToRedis()
+			saveUsageSnapshot()
 		case <-redisCtx.Done():
 			return
 		}
 	}
 }
 
-func saveToRedis() {
-	if redisClient == nil || defaultRequestStatistics == nil {
+// saveUsageSnapshot writes the in-memory statistics to the installed store.
+// The snapshot has no expiry: it is the state a restart resumes from.
+func saveUsageSnapshot() {
+	if usageSnapshotStore == nil || defaultRequestStatistics == nil {
 		return
 	}
 	snapshot := defaultRequestStatistics.Snapshot()
 	data, err := json.Marshal(snapshot)
 	if err != nil {
-		log.Errorf("failed to marshal usage snapshot for Redis: %v", err)
+		log.Errorf("failed to marshal usage snapshot for %s: %v", usageSnapshotStore.Name(), err)
 		return
 	}
-	// We don't set an expiration; it should persist indefinitely
-	// saveToRedis 可能发生在定时后台循环或 StopRedis 最终 flush 阶段，
-	// 不依赖任意请求 context，因此使用根 context。
-	if err := redisClient.Set(context.Background(), redisUsageSnapshotKey(), data, 0).Err(); err != nil {
-		log.Errorf("failed to save usage snapshot to Redis: %v", err)
+	// Runs from the background loop or the final flush, never from a request,
+	// so a root context is right.
+	if err := usageSnapshotStore.Save(context.Background(), data); err != nil {
+		log.Errorf("failed to save usage snapshot to %s: %v", usageSnapshotStore.Name(), err)
 	}
 }
 
-func loadFromRedis() error {
-	if redisClient == nil || defaultRequestStatistics == nil {
+// loadUsageSnapshot restores the statistics saved by a previous process.
+func loadUsageSnapshot() error {
+	if usageSnapshotStore == nil || defaultRequestStatistics == nil {
 		return nil
 	}
-	// loadFromRedis 属于服务启动期恢复逻辑，不绑定请求生命周期。
-	data, err := redisClient.Get(context.Background(), redisUsageSnapshotKey()).Bytes()
+	data, found, err := usageSnapshotStore.Load(context.Background())
 	if err != nil {
-		if err == redis.Nil {
-			return nil // Key does not exist, which is fine for the first run
-		}
 		return err
+	}
+	if !found {
+		return nil // first run
 	}
 	var snapshot StatisticsSnapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return err
 	}
 	result := defaultRequestStatistics.MergeSnapshot(snapshot)
-	log.Infof("Loaded %d usage records from Redis (skipped %d duplicates)", result.Added, result.Skipped)
+	log.Infof("Loaded %d usage records from %s (skipped %d duplicates)", result.Added, usageSnapshotStore.Name(), result.Skipped)
 	return nil
 }
 

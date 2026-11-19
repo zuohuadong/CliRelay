@@ -285,8 +285,8 @@ github.com/zclconf/go-cty-yaml v1.1.0 h1:nP+jp0qPHv2IhUVqmQSzjvqAWcObN0KBkUl2rWB
 github.com/zclconf/go-cty-yaml v1.1.0/go.mod h1:9YLUH4g7lOhVWqUbctnVlZ5KLpg7JAprQNgxSZ1Gyxs=
 github.com/zeebo/xxh3 v1.0.2 h1:xZmwmqxHZA8AI603jOQ0tMqmBr9lPeFwGg6d+xy9DC0=
 github.com/zeebo/xxh3 v1.0.2/go.mod h1:5NWz9Sef7zIDm2JHfFlcQvNekmcEl9ekUZQQKCYaDcA=
-github.com/zuohuadong/pgredis-go v0.1.0 h1:uRIwqZ8UR6VsLGoA2sLG9uQmYnpguTXgmQrsK6TwkMI=
-github.com/zuohuadong/pgredis-go v0.1.0/go.mod h1:Yptutn2j47GebBVN7minoxVPWABVvNL0ocAcfQ1vFTk=
+github.com/zuohuadong/pgredis-go v0.2.0 h1:3SEajaMVHmY0Pe4xUJhMIs++lqzbj74lLr6RxYUG8zg=
+github.com/zuohuadong/pgredis-go v0.2.0/go.mod h1:Yptutn2j47GebBVN7minoxVPWABVvNL0ocAcfQ1vFTk=
 go.uber.org/atomic v1.11.0 h1:ZvwS0R+56ePWxUNi+Atn9dWONBPp/AUETXlHW0DxSjE=
 go.uber.org/atomic v1.11.0/go.mod h1:LUxbIzbOniOlMKjJjyPfpl4v+PKK2cNJn91OQbhoJI0=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=

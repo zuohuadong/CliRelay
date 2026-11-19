@@ -112,11 +112,12 @@ func start(cfg config.ClusterConfig, coord func() *cluster.Coordinator) *Runtime
 	store := sharedstate.New(client, sharedstate.Options{NodeID: nodeID})
 	slots := coreauth.AccountSlotCoordinator(accountSlotAdapter{store: store, coord: coord})
 	if client == nil {
-		// No cluster Redis: count slots in the cluster database instead of
-		// splitting the limit across the active nodes.
+		// No cluster Redis: keep the state that PostgreSQL can hold exactly,
+		// instead of degrading it to per-node behaviour.
 		if pool := pgSlotPool(coord); pool != nil {
 			slots = newPGSlotAdapter(pool, coord, nodeID)
-			log.Infof("cluster: account slots are counted in PostgreSQL (no cluster.redis configured)")
+			executor.SetSharedIDMinter(sharedstate.NewPGStore(pool))
+			log.Infof("cluster: account slots and synthetic ids are counted in PostgreSQL (no cluster.redis configured)")
 		}
 	}
 	return newRuntime(coord, client, store, slots)

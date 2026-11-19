@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/routes"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
 	log "github.com/sirupsen/logrus"
 )
@@ -27,6 +28,11 @@ func (s *Server) registerManagementRoutes() {
 
 	mgmt := s.engine.Group("/v0/management")
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
+
+	// Tenant, RBAC, portal and access-freeze surface. The hand-written table
+	// below covers the proxy-facing management API; this call adds the identity
+	// half (see routes.RegisterIdentityAndPortalRoutes).
+	routes.RegisterIdentityAndPortalRoutes(s.engine, mgmt, s.mgmt, s.managementAvailabilityMiddleware())
 	{
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)

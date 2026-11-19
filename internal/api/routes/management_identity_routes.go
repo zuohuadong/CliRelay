@@ -122,3 +122,17 @@ func registerManagementIdentityRoutes(group *gin.RouterGroup, h *managementhandl
 	group.GET("/auth-attempts/summary", h.GetAuthAttemptSummary)
 	group.GET("/auth-attempts/export", h.GetAuthAttemptsExport)
 }
+
+// RegisterIdentityAndPortalRoutes registers the tenant, RBAC, end-user portal
+// and access-freeze surface. The v8 route table in internal/api builds the
+// management API by hand and omitted this half, which left /v0/auth/login,
+// /v0/portal/auth/login and every /v0/management/{tenants,users,roles,menus,
+// end-users,audit-logs,ip-access,...} endpoint at 404. Call it after the
+// management group and its middlewares exist.
+func RegisterIdentityAndPortalRoutes(engine *gin.Engine, management *gin.RouterGroup, h *managementhandlers.Handler, availability gin.HandlerFunc) {
+	if engine == nil || management == nil || h == nil {
+		return
+	}
+	registerIdentityAuthRoutes(engine, h, availability)
+	registerManagementIdentityRoutes(management, h)
+}

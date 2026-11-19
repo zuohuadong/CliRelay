@@ -41,11 +41,16 @@ request-body:
 # Examples: "Asia/Shanghai", "UTC", "America/Los_Angeles"
 timezone: ""
 
-# PostgreSQL 15+ is the runtime primary database.
+# PostgreSQL 15+ is the runtime primary database. Leave dsn empty to run a
+# single node on the embedded SQLite file described by the `sqlite` section
+# below (see docs/postgres-redis-migration.md). Cluster mode requires a DSN.
 postgres:
   dsn: "postgres://cliproxy:cliproxy@127.0.0.1:5432/cliproxy?sslmode=disable"
   max-open-conns: 16
   max-idle-conns: 4
+
+# Embedded runtime database, used only when postgres.dsn is empty.
+# path: ""  # defaults to <config dir>/data/usage.db
 
 # Redis 7+ settings for cache, locks, queues, limits, and rebuildable snapshots.
 redis:

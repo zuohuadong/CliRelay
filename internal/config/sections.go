@@ -7,6 +7,14 @@ type PostgresConfig struct {
 	MaxIdleConns int    `yaml:"max-idle-conns,omitempty" json:"max-idle-conns,omitempty"`
 }
 
+// SQLiteConfig holds the embedded runtime database settings. It is used when
+// postgres.dsn is empty, which keeps a single-node install working without a
+// separate database server. Cluster mode still requires PostgreSQL.
+type SQLiteConfig struct {
+	// Path is the database file. Empty means <config dir>/data/usage.db.
+	Path string `yaml:"path,omitempty" json:"path,omitempty"`
+}
+
 // RedisConfig holds the configuration for connecting to a Redis instance for data persistence.
 type RedisConfig struct {
 	Enable   bool   `yaml:"enable" json:"enable"`

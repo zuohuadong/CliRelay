@@ -38,8 +38,14 @@ type Config struct {
 	// When empty, the process local timezone (time.Local) is used.
 	Timezone string `yaml:"timezone,omitempty" json:"timezone,omitempty"`
 
-	// Postgres config controls the runtime primary database.
+	// Postgres config controls the runtime primary database. When its DSN is
+	// empty the runtime falls back to the embedded SQLite database described
+	// by SQLite instead of failing to start.
 	Postgres PostgresConfig `yaml:"postgres" json:"-"`
+
+	// SQLite config controls the embedded runtime database used when
+	// postgres.dsn is empty. Single-node installs only.
+	SQLite SQLiteConfig `yaml:"sqlite,omitempty" json:"sqlite,omitempty"`
 
 	// Redis config controls the Redis connection for usage persistence.
 	Redis RedisConfig `yaml:"redis" json:"redis"`

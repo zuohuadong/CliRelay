@@ -51,6 +51,14 @@ func prepareCluster(cfg *config.Config) {
 	if !cfg.Cluster.Enabled {
 		return
 	}
+	if cfg.UsesSQLiteRuntime() {
+		// Membership, leader election and the notification bus all run on
+		// PostgreSQL. A single embedded database cannot be shared, so cluster
+		// mode would only fail later with a confusing DSN error.
+		log.Warn("cluster: enabled without postgres.dsn; continuing as a single node on the embedded sqlite database")
+		cfg.Cluster.Enabled = false
+		return
+	}
 	compatdriver.SetDialKeepAlive(cluster.DialKeepAlive())
 	cluster.Prepare(clusterOptions(cfg))
 }

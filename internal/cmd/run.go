@@ -260,8 +260,17 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	if cfg == nil {
 		return errors.New("config is nil")
 	}
-	if err := usage.InitPostgres(cfg.Postgres, cfg.RequestLogStorage, loc); err != nil {
-		return err
+	if cfg.UsesSQLiteRuntime() {
+		// No PostgreSQL DSN: run single node on the embedded database, which
+		// applies the same migration set through internal/storage/sqlitecompat.
+		dbPath := cfg.SQLiteRuntimeDBPath(configPath)
+		if err := usage.InitSQLiteRuntime(dbPath, cfg.RequestLogStorage, loc); err != nil {
+			return err
+		}
+	} else {
+		if err := usage.InitPostgres(cfg.Postgres, cfg.RequestLogStorage, loc); err != nil {
+			return err
+		}
 	}
 	bootstrapPassword := resolveBootstrapAdminPassword(cfg)
 	identityService := identity.NewService(usage.RuntimeDB())

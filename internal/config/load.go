@@ -272,6 +272,9 @@ func (cfg *Config) ApplyEnvOverrides() {
 	if dsn := strings.TrimSpace(os.Getenv(EnvPostgresDSN)); dsn != "" {
 		cfg.Postgres.DSN = dsn
 	}
+	if path := strings.TrimSpace(os.Getenv(EnvSQLitePath)); path != "" {
+		cfg.SQLite.Path = path
+	}
 	if raw := strings.TrimSpace(os.Getenv(EnvRedisEnable)); raw != "" {
 		if enabled, err := strconv.ParseBool(raw); err == nil {
 			cfg.Redis.Enable = enabled

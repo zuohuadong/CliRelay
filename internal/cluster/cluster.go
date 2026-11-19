@@ -64,6 +64,10 @@ type transport interface {
 type Coordinator struct {
 	enabled bool
 	nodeID  string
+	// db is the runtime database the coordinator runs on, or nil when it has
+	// none. Cluster-wide state that has no Redis behind it (account slots) uses
+	// this pool instead of opening a second one.
+	db *sql.DB
 
 	transport transport
 
@@ -190,6 +194,15 @@ func adoptPrepared(nodeID string) *Coordinator {
 
 // Enabled reports whether this process runs in cluster mode.
 func (c *Coordinator) Enabled() bool { return c != nil && c.enabled }
+
+// DB returns the runtime database the coordinator runs on, or nil when it has
+// none (single-node, or a test coordinator).
+func (c *Coordinator) DB() *sql.DB {
+	if c == nil {
+		return nil
+	}
+	return c.db
+}
 
 // NodeID returns this node's identifier.
 func (c *Coordinator) NodeID() string {

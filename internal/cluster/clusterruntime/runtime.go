@@ -31,7 +31,10 @@ type Runtime struct {
 	coord  func() *cluster.Coordinator
 	client *sharedredis.Client // nil when no cluster Redis is configured
 	store  *sharedstate.Store
-	relay  *cooldownRelay
+	// slots decides cluster-wide account concurrency: the Redis-backed shared
+	// state, or the PostgreSQL pool when no cluster Redis is configured.
+	slots coreauth.AccountSlotCoordinator
+	relay *cooldownRelay
 
 	mu       sync.Mutex
 	managers map[*coreauth.Manager]struct{}
@@ -106,14 +109,25 @@ func start(cfg config.ClusterConfig, coord func() *cluster.Coordinator) *Runtime
 		client = built
 		client.Start()
 	}
-	return newRuntime(coord, client, sharedstate.New(client, sharedstate.Options{NodeID: nodeID}))
+	store := sharedstate.New(client, sharedstate.Options{NodeID: nodeID})
+	slots := coreauth.AccountSlotCoordinator(accountSlotAdapter{store: store, coord: coord})
+	if client == nil {
+		// No cluster Redis: count slots in the cluster database instead of
+		// splitting the limit across the active nodes.
+		if pool := pgSlotPool(coord); pool != nil {
+			slots = newPGSlotAdapter(pool, coord, nodeID)
+			log.Infof("cluster: account slots are counted in PostgreSQL (no cluster.redis configured)")
+		}
+	}
+	return newRuntime(coord, client, store, slots)
 }
 
-func newRuntime(coord func() *cluster.Coordinator, client *sharedredis.Client, store *sharedstate.Store) *Runtime {
+func newRuntime(coord func() *cluster.Coordinator, client *sharedredis.Client, store *sharedstate.Store, slots coreauth.AccountSlotCoordinator) *Runtime {
 	rt := &Runtime{
 		coord:    coord,
 		client:   client,
 		store:    store,
+		slots:    slots,
 		relay:    newCooldownRelay(coord),
 		managers: make(map[*coreauth.Manager]struct{}),
 	}
@@ -144,7 +158,7 @@ func (rt *Runtime) Attach(manager *coreauth.Manager) {
 	if done {
 		return
 	}
-	manager.SetAccountSlotCoordinator(accountSlotAdapter{store: rt.store, coord: rt.coord})
+	manager.SetAccountSlotCoordinator(rt.slots)
 	if rt.client != nil {
 		manager.SetSessionAffinityStore(affinityAdapter{store: rt.store})
 	}
@@ -178,6 +192,9 @@ func (rt *Runtime) Close() {
 		manager.SetSessionAffinityStore(nil)
 	}
 	rt.mu.Unlock()
+	if closer, ok := rt.slots.(interface{ Close() }); ok {
+		closer.Close()
+	}
 	rt.store.Close()
 	rt.client.Close()
 }

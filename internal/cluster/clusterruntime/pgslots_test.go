@@ -11,7 +11,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/pgredis"
+	pgredis "github.com/zuohuadong/pgredis-go"
 )
 
 // The slot adapter only has a guarantee worth testing against a real database:

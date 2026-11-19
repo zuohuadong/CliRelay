@@ -9,7 +9,7 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/pgredis"
+	pgredis "github.com/zuohuadong/pgredis-go"
 )
 
 // pgSlotRetention is how long a slot survives without renewal. A process that

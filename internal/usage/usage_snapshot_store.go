@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/pgredis"
+	pgredis "github.com/zuohuadong/pgredis-go"
 )
 
 // The aggregated usage statistics are held in memory and written to a shared

@@ -123,7 +123,8 @@ func start(cfg config.ClusterConfig, coord func() *cluster.Coordinator) *Runtime
 			slots = newPGSlotAdapter(pool, coord, nodeID)
 			executor.SetSharedIDMinter(pg)
 			management.SetClusterThrottleStore(pg)
-			log.Infof("cluster: slots, affinity, synthetic ids and login throttles are shared through PostgreSQL (no cluster.redis configured)")
+			ipaccess.SetClusterAutoBanStore(pg)
+			log.Infof("cluster: slots, affinity, synthetic ids, login throttles and auto-ban counters are shared through PostgreSQL (no cluster.redis configured)")
 		}
 	}
 	return newRuntime(coord, client, store, pg, slots)

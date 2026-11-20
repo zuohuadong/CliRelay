@@ -31,6 +31,9 @@ type Runtime struct {
 	coord  func() *cluster.Coordinator
 	client *sharedredis.Client // nil when no cluster Redis is configured
 	store  *sharedstate.Store
+	// pg holds the state shared through PostgreSQL when there is no cluster
+	// Redis; nil when Redis is configured or the cluster has no database.
+	pg *sharedstate.PGStore
 	// slots decides cluster-wide account concurrency: the Redis-backed shared
 	// state, or the PostgreSQL pool when no cluster Redis is configured.
 	slots coreauth.AccountSlotCoordinator
@@ -102,7 +105,7 @@ func start(cfg config.ClusterConfig, coord func() *cluster.Coordinator) *Runtime
 
 	var client *sharedredis.Client
 	if strings.TrimSpace(cfg.Redis.Addr) == "" {
-		log.Warn("cluster: no cluster.redis configured; per-key and per-account limits are split across the active nodes, and session affinity and synthetic ids stay per node")
+		log.Warn("cluster: no cluster.redis configured; per-key and per-account limits are split across the active nodes, and login throttles and auto-bans stay per node")
 	} else if built, err := sharedredis.New(cfg.Redis, sharedredis.Options{NodeID: nodeID}); err != nil {
 		log.WithError(err).Error("cluster redis: invalid configuration; limits are split across the active nodes and affinity stays per node")
 	} else {

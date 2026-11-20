@@ -418,14 +418,19 @@ In cluster mode all nodes share one database. Every piece of state that used to 
 
 ### 6.5 Global limits, cooldown sharing and session affinity
 
-These need the shared cluster Redis (`cluster.redis`):
+These are cluster-wide caps. They run on the cluster database, and on the shared cluster Redis (`cluster.redis`) when one is also configured, which is the cheaper option for the counter-heavy ones:
 
-- **Rate limits.** API-key and end-user RPM, TPM and concurrency, and upstream-account concurrency, are cluster-wide caps backed by atomic Redis scripts. Concurrency slots are leases, so a crashed process frees them when they expire.
-- **Without Redis.** When the shared Redis is unavailable, nodes count locally and enforce `limit / active nodes`, so a Redis outage never multiplies a limit.
+- **Rate limits.** API-key and end-user RPM, TPM and concurrency, and upstream-account concurrency, are cluster-wide. Concurrency slots are leases, so a crashed process frees them when they expire.
+- **Without either store.** When neither the cluster database nor the shared Redis is usable, nodes count locally and enforce `limit / active nodes`, so an outage never multiplies a limit.
 - **Cooldowns.** A node that cools down an account or model after a 429, an exhausted quota or an upstream failure announces it. Peers only ever extend their own cooldown, so the other node stops hitting that account too.
 - **Session affinity.** A session is bound to the same account on every node, so the upstream prompt cache keeps hitting.
 - **Synthetic session IDs** are minted once per cluster, with unchanged formats.
 - **Security counters.** Login-throttle and IP auto-ban counters are shared.
+
+On the cluster database, the decisions that a Redis script makes in one round trip are made in Go on a snapshot and written back with compare-and-swap, so a node that loses a race re-reads and retries rather than dropping an increment. Two consequences are worth knowing:
+
+- **Slot taking stays one statement.** The scarcity decision, "is there room for one more concurrent request", is a single SQL statement, so two nodes can never both take the last slot.
+- **Contended buckets cost retries.** A login-throttle or auto-ban bucket is one row, so a guessing run against one account is the worst case. The retry loop is bounded and the node-local counters still answer, with the full threshold, if a bucket stays contended.
 
 ### 6.6 Serving through database switchovers
 

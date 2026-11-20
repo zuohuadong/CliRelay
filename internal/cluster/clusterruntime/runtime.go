@@ -114,23 +114,27 @@ func start(cfg config.ClusterConfig, coord func() *cluster.Coordinator) *Runtime
 	}
 	store := sharedstate.New(client, sharedstate.Options{NodeID: nodeID})
 	slots := coreauth.AccountSlotCoordinator(accountSlotAdapter{store: store, coord: coord})
+	var pg *sharedstate.PGStore
 	if client == nil {
 		// No cluster Redis: keep the state that PostgreSQL can hold exactly,
 		// instead of degrading it to per-node behaviour.
 		if pool := pgSlotPool(coord); pool != nil {
+			pg = sharedstate.NewPGStore(pool)
 			slots = newPGSlotAdapter(pool, coord, nodeID)
-			executor.SetSharedIDMinter(sharedstate.NewPGStore(pool))
-			log.Infof("cluster: account slots and synthetic ids are counted in PostgreSQL (no cluster.redis configured)")
+			executor.SetSharedIDMinter(pg)
+			management.SetClusterThrottleStore(pg)
+			log.Infof("cluster: slots, affinity, synthetic ids and login throttles are shared through PostgreSQL (no cluster.redis configured)")
 		}
 	}
-	return newRuntime(coord, client, store, slots)
+	return newRuntime(coord, client, store, pg, slots)
 }
 
-func newRuntime(coord func() *cluster.Coordinator, client *sharedredis.Client, store *sharedstate.Store, slots coreauth.AccountSlotCoordinator) *Runtime {
+func newRuntime(coord func() *cluster.Coordinator, client *sharedredis.Client, store *sharedstate.Store, pg *sharedstate.PGStore, slots coreauth.AccountSlotCoordinator) *Runtime {
 	rt := &Runtime{
 		coord:    coord,
 		client:   client,
 		store:    store,
+		pg:       pg,
 		slots:    slots,
 		relay:    newCooldownRelay(coord),
 		managers: make(map[*coreauth.Manager]struct{}),
@@ -163,8 +167,11 @@ func (rt *Runtime) Attach(manager *coreauth.Manager) {
 		return
 	}
 	manager.SetAccountSlotCoordinator(rt.slots)
-	if rt.client != nil {
+	switch {
+	case rt.client != nil:
 		manager.SetSessionAffinityStore(affinityAdapter{store: rt.store})
+	case rt.pg != nil && rt.pg.Available():
+		manager.SetSessionAffinityStore(pgAffinityAdapter{store: rt.pg})
 	}
 	rt.relay.attach(manager)
 }
@@ -236,6 +243,24 @@ func (a accountSlotAdapter) Acquire(authID string, limit int) (bool, error) {
 }
 
 func (a accountSlotAdapter) Release(authID string) { a.store.ReleaseAccountSlot(authID) }
+
+// pgAffinityAdapter maps sharedstate's binding onto the manager's store
+// interface for the PostgreSQL-backed bindings.
+type pgAffinityAdapter struct{ store *sharedstate.PGStore }
+
+func (a pgAffinityAdapter) Lookup(ctx context.Context, key string, ttl time.Duration) (coreauth.SessionAffinityBinding, error) {
+	b, err := a.store.AffinityLookup(ctx, key, ttl)
+	return coreauth.SessionAffinityBinding{AccountRef: b.Account, Served: b.Served, Found: b.Found}, err
+}
+
+func (a pgAffinityAdapter) Bind(ctx context.Context, key, accountRef string, ttl time.Duration) (coreauth.SessionAffinityBinding, error) {
+	b, err := a.store.AffinityBind(ctx, key, accountRef, ttl)
+	return coreauth.SessionAffinityBinding{AccountRef: b.Account, Served: b.Served, Found: b.Found}, err
+}
+
+func (a pgAffinityAdapter) Release(ctx context.Context, key, accountRef string) error {
+	return a.store.AffinityRelease(ctx, key, accountRef)
+}
 
 type affinityAdapter struct{ store *sharedstate.Store }
 

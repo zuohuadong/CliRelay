@@ -47,7 +47,9 @@ postgres:
   max-open-conns: 16
   max-idle-conns: 4
 
-# Redis 7+ settings for cache, locks, queues, limits, and rebuildable snapshots.
+# Optional Redis 7+. Only an accelerator: the cluster-wide counters and the
+# usage snapshot it can hold are also kept in PostgreSQL, so leaving it off is
+# a supported configuration rather than a degraded one.
 redis:
   enable: false
   addr: "127.0.0.1:6379"

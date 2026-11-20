@@ -34,6 +34,9 @@ type Runtime struct {
 	// pg holds the state shared through PostgreSQL when there is no cluster
 	// Redis; nil when Redis is configured or the cluster has no database.
 	pg *sharedstate.PGStore
+	// quota holds the PostgreSQL-backed per-subject windows; nil when Redis is
+	// configured or the cluster has no database.
+	quota *pgQuotaAdapter
 	// slots decides cluster-wide account concurrency: the Redis-backed shared
 	// state, or the PostgreSQL pool when no cluster Redis is configured.
 	slots coreauth.AccountSlotCoordinator
@@ -95,6 +98,14 @@ func Release(rt *Runtime) {
 	}
 }
 
+// The PostgreSQL store stands in for the Redis one in the features it covers,
+// so these assertions keep the two contracts from drifting apart.
+var (
+	_ management.ClusterThrottleStore = (*sharedstate.PGStore)(nil)
+	_ ipaccess.ClusterAutoBanStore    = (*sharedstate.PGStore)(nil)
+	_ middleware.ClusterQuota         = (*pgQuotaAdapter)(nil)
+)
+
 // start builds the runtime. coord resolves the coordinator on every use.
 func start(cfg config.ClusterConfig, coord func() *cluster.Coordinator) *Runtime {
 	c := coord()
@@ -115,27 +126,30 @@ func start(cfg config.ClusterConfig, coord func() *cluster.Coordinator) *Runtime
 	store := sharedstate.New(client, sharedstate.Options{NodeID: nodeID})
 	slots := coreauth.AccountSlotCoordinator(accountSlotAdapter{store: store, coord: coord})
 	var pg *sharedstate.PGStore
+	var quota *pgQuotaAdapter
 	if client == nil {
 		// No cluster Redis: keep the state that PostgreSQL can hold exactly,
 		// instead of degrading it to per-node behaviour.
 		if pool := pgSlotPool(coord); pool != nil {
 			pg = sharedstate.NewPGStore(pool)
 			slots = newPGSlotAdapter(pool, coord, nodeID)
+			quota = newPGQuotaAdapter(pool, coord, nodeID)
 			executor.SetSharedIDMinter(pg)
 			management.SetClusterThrottleStore(pg)
 			ipaccess.SetClusterAutoBanStore(pg)
-			log.Infof("cluster: slots, affinity, synthetic ids, login throttles and auto-ban counters are shared through PostgreSQL (no cluster.redis configured)")
+			log.Infof("cluster: slots, affinity, quota windows, synthetic ids, login throttles and auto-ban counters are shared through PostgreSQL (no cluster.redis configured)")
 		}
 	}
-	return newRuntime(coord, client, store, pg, slots)
+	return newRuntime(coord, client, store, pg, quota, slots)
 }
 
-func newRuntime(coord func() *cluster.Coordinator, client *sharedredis.Client, store *sharedstate.Store, pg *sharedstate.PGStore, slots coreauth.AccountSlotCoordinator) *Runtime {
+func newRuntime(coord func() *cluster.Coordinator, client *sharedredis.Client, store *sharedstate.Store, pg *sharedstate.PGStore, quota *pgQuotaAdapter, slots coreauth.AccountSlotCoordinator) *Runtime {
 	rt := &Runtime{
 		coord:    coord,
 		client:   client,
 		store:    store,
 		pg:       pg,
+		quota:    quota,
 		slots:    slots,
 		relay:    newCooldownRelay(coord),
 		managers: make(map[*coreauth.Manager]struct{}),
@@ -146,6 +160,11 @@ func newRuntime(coord func() *cluster.Coordinator, client *sharedredis.Client, s
 	// limiter are cluster-aware even without one. The guards and the id
 	// minting only change behaviour when there is a store to share.
 	middleware.SetClusterQuota(quotaAdapter{Store: store, coord: coord})
+	if rt.quota != nil {
+		// No cluster Redis: the per-subject windows live in the cluster
+		// database instead of being split across the nodes.
+		middleware.SetClusterQuota(rt.quota)
+	}
 	if client != nil {
 		management.SetClusterThrottleStore(store)
 		ipaccess.SetClusterAutoBanStore(store)
@@ -198,6 +217,9 @@ func (rt *Runtime) Close() {
 		management.SetClusterThrottleStore(nil)
 		ipaccess.SetClusterAutoBanStore(nil)
 		executor.SetSharedIDMinter(nil)
+	}
+	if rt.quota != nil {
+		rt.quota.Close()
 	}
 	rt.mu.Lock()
 	for manager := range rt.managers {

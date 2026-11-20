@@ -96,7 +96,7 @@ func TestPGSlotAdapterExpiresCrashedHolder(t *testing.T) {
 	oneNode := func() *cluster.Coordinator { return nil }
 
 	crashed := newPGSlotAdapter(store, oneNode, "node-dead")
-	crashed.retention = 50 * time.Millisecond
+	crashed.keeper.retention = 50 * time.Millisecond
 	defer crashed.Close()
 	survivor := newPGSlotAdapter(store, oneNode, "node-live")
 	defer survivor.Close()

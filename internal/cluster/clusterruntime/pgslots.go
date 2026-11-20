@@ -12,22 +12,6 @@ import (
 	pgredis "github.com/zuohuadong/pgredis-go"
 )
 
-// pgSlotRetention is how long a slot survives without renewal. A process that
-// dies holding slots leaks them for at most this long; the renewer below keeps
-// live holders alive well inside it.
-const pgSlotRetention = 5 * time.Minute
-
-// pgSlotRenewInterval renews held slots. It is a third of the retention, so two
-// consecutive renewals may fail before a holder loses its slots, which absorbs
-// a blip without extending the leak past the retention window.
-const pgSlotRenewInterval = pgSlotRetention / 3
-
-// pgReleaseQueue bounds the asynchronous releases. The AccountSlotCoordinator
-// contract calls Release under the limiter's lock, so the delete cannot happen
-// inline; a bounded queue with a drop-and-expire fallback keeps that
-// non-blocking without unbounded goroutines.
-const pgReleaseQueue = 4096
-
 // pgSlotAdapter counts per-account concurrency slots in the cluster database
 // instead of the cluster Redis.
 //
@@ -38,50 +22,26 @@ const pgReleaseQueue = 4096
 // PostgreSQL pool is available, so a deployment that already has Redis keeps
 // using it.
 type pgSlotAdapter struct {
-	store     *pgredis.Store
-	coord     func() *cluster.Coordinator
-	nodeID    string
-	retention time.Duration
+	store  *pgredis.Store
+	coord  func() *cluster.Coordinator
+	nodeID string
+	keeper *slotKeeper
 
 	mu     sync.Mutex
-	held   map[string][]slotRef
-	renew  map[string]slotRef
-	queue  chan slotRelease
-	stop   chan struct{}
+	held   map[string][]string // authID -> members, in acquisition order
 	closed atomic.Bool
-	wg     sync.WaitGroup
-}
-
-// slotRef identifies one held slot: the per-account pool key plus the member
-// that holds it. Releases and renewals need both.
-type slotRef struct {
-	key    string
-	member string
-}
-
-type slotRelease struct {
-	ref slotRef
 }
 
 func newPGSlotAdapter(store *pgredis.Store, coord func() *cluster.Coordinator, nodeID string) *pgSlotAdapter {
-	a := &pgSlotAdapter{
-		store:     store,
-		coord:     coord,
-		nodeID:    nodeID,
-		retention: pgSlotRetention,
-		held:      make(map[string][]slotRef),
-		renew:     make(map[string]slotRef),
-		queue:     make(chan slotRelease, pgReleaseQueue),
-		stop:      make(chan struct{}),
+	return &pgSlotAdapter{
+		store:  store,
+		coord:  coord,
+		nodeID: nodeID,
+		keeper: newSlotKeeper(store),
+		held:   make(map[string][]string),
 	}
-	a.wg.Add(2)
-	go a.runReleases()
-	go a.runRenewals()
-	return a
 }
 
-// Shared reports whether cluster-wide counting can be reached right now. The
-// limiter falls back to NodeShare whenever this is false.
 func (a *pgSlotAdapter) Shared() bool {
 	return a != nil && !a.closed.Load() && a.store != nil
 }
@@ -105,7 +65,7 @@ func (a *pgSlotAdapter) Acquire(authID string, limit int) (bool, error) {
 	ref := slotRef{key: slotKey(authID), member: a.memberName(authID)}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	reservation, err := a.store.TryReserveSlot(ctx, ref.key, ref.member, limit, a.retention)
+	reservation, err := a.store.TryReserveSlot(ctx, ref.key, ref.member, limit, a.keeper.retention)
 	if err != nil {
 		return false, err
 	}
@@ -113,103 +73,41 @@ func (a *pgSlotAdapter) Acquire(authID string, limit int) (bool, error) {
 		return false, nil
 	}
 	a.mu.Lock()
-	a.held[authID] = append(a.held[authID], ref)
-	a.renew[ref.member] = ref
+	a.held[authID] = append(a.held[authID], ref.member)
 	a.mu.Unlock()
+	a.keeper.Track(ref)
 	return true, nil
 }
 
-// Release gives back one slot. It must not block, so the delete is handed to
-// the release worker; a dropped release costs one slot until its retention
-// expires.
+// Release gives back one slot, the one this process acquired last for authID.
 func (a *pgSlotAdapter) Release(authID string) {
 	if a == nil || a.closed.Load() {
 		return
 	}
 	a.mu.Lock()
 	members := a.held[authID]
-	var ref slotRef
+	member := ""
 	if len(members) > 0 {
-		ref = members[len(members)-1]
-		a.held[authID] = members[:len(members)-1]
-		if len(a.held[authID]) == 0 {
+		member = members[len(members)-1]
+		if len(members) == 1 {
 			delete(a.held, authID)
+		} else {
+			a.held[authID] = members[:len(members)-1]
 		}
 	}
-	if ref.member != "" {
-		delete(a.renew, ref.member)
-	}
 	a.mu.Unlock()
-	if ref.member == "" {
+	if member == "" {
 		return
 	}
-	select {
-	case a.queue <- slotRelease{ref: ref}:
-	default:
-		// The queue is full: the slot stays until its score expires, which is
-		// the same failure mode as a lost Redis DEL but bounded in time.
-		log.Warn("cluster: slot release queue is full; releasing through expiry")
-	}
+	a.keeper.Release(slotRef{key: slotKey(authID), member: member})
 }
 
-// Close stops the workers. Remaining slots are left to expire.
+// Close stops the keeper. Remaining slots are left to expire.
 func (a *pgSlotAdapter) Close() {
 	if a == nil || a.closed.Swap(true) {
 		return
 	}
-	close(a.stop)
-	a.wg.Wait()
-}
-
-func (a *pgSlotAdapter) runReleases() {
-	defer a.wg.Done()
-	for {
-		select {
-		case <-a.stop:
-			return
-		case release := <-a.queue:
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			if _, err := a.store.ReleaseSlot(ctx, release.ref.key, release.ref.member); err != nil {
-				log.WithError(err).Debug("cluster: releasing a slot through PostgreSQL failed; it will expire")
-			}
-			cancel()
-		}
-	}
-}
-
-// runRenewals extends every slot this process still holds, so a long request
-// does not lose its slot while it runs.
-func (a *pgSlotAdapter) runRenewals() {
-	defer a.wg.Done()
-	ticker := time.NewTicker(pgSlotRenewInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-a.stop:
-			return
-		case <-ticker.C:
-			a.renewHeld()
-		}
-	}
-}
-
-func (a *pgSlotAdapter) renewHeld() {
-	a.mu.Lock()
-	refs := make([]slotRef, 0, len(a.renew))
-	for _, ref := range a.renew {
-		refs = append(refs, ref)
-	}
-	a.mu.Unlock()
-	if len(refs) == 0 {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	for _, ref := range refs {
-		if _, err := a.store.RenewSlot(ctx, ref.key, ref.member, a.retention); err != nil {
-			log.WithError(err).Debug("cluster: renewing a PostgreSQL slot failed")
-		}
-	}
+	a.keeper.Close()
 }
 
 func (a *pgSlotAdapter) memberName(authID string) string {

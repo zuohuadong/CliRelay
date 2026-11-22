@@ -31,7 +31,7 @@ ADD COLUMN IF NOT EXISTS bodies_stripped INTEGER NOT NULL DEFAULT 0;
 // blocks writes to request_log_content while it scans the table. On upgrade
 // every existing row reads 0 and goes in. Production held 76k rows in a 99 MB
 // heap on 2026-11-10; 76k rows in a 123 MB heap built in 120 to 180 ms on a
-// local PostgreSQL 15. Usage writes are queued, so they wait out the build
+// local PostgreSQL 19. Usage writes are queued, so they wait out the build
 // rather than fail.
 const requestLogContentUnstrippedIndexSQL = `
 CREATE INDEX IF NOT EXISTS idx_log_content_bodies_unstripped

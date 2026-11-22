@@ -19,7 +19,7 @@ import (
 //
 // Deliberately NOT stored here, because they describe the node rather than the
 // service and must be able to differ between nodes: host, port, tls, auth-dir,
-// postgres, redis, cluster, pprof, remote-management, request-body cache paths,
+// postgres, cluster, pprof, remote-management, request-body cache paths,
 // trusted-proxies, timezone and auto-update (it drives the updater sidecar of
 // the node that serves the request). Those stay in each node's config.yaml.
 const (

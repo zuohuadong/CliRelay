@@ -2,14 +2,13 @@ package management
 
 import (
 	"context"
+	"database/sql"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/postgrestest"
 )
 
 // countingThrottleStore counts shared peeks, to show which checks reach Redis.
@@ -23,25 +22,16 @@ func (s *countingThrottleStore) ThrottlePeek(ctx context.Context, bucket string,
 	return s.Store.ThrottlePeek(ctx, bucket, spec, now)
 }
 
-func installClusterThrottle(t *testing.T) (*miniredis.Miniredis, *countingThrottleStore) {
+func installClusterThrottle(t *testing.T) (*sql.DB, *countingThrottleStore) {
 	t.Helper()
-	mr := miniredis.RunT(t)
-	client, err := sharedredis.New(config.ClusterRedisConfig{Addr: mr.Addr()}, sharedredis.Options{
-		NodeID: "self", HealthInterval: 20 * time.Millisecond,
-		MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, StableAfter: time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	client.Start()
-	store := &countingThrottleStore{Store: sharedstate.New(client, sharedstate.Options{NodeID: "self"})}
+	db, _ := postgrestest.RuntimeState(t)
+	store := &countingThrottleStore{Store: sharedstate.New(db, sharedstate.Options{NodeID: "self"})}
 	SetClusterThrottleStore(store)
 	t.Cleanup(func() {
 		SetClusterThrottleStore(nil)
 		store.Close()
-		client.Close()
 	})
-	return mr, store
+	return db, store
 }
 
 func TestClusterLoginThrottleCountsFailuresFromEveryNode(t *testing.T) {
@@ -116,20 +106,17 @@ func TestClusterLoginThrottleSuccessClearsSharedBucket(t *testing.T) {
 // without the shared store each node counts on its own, with the full
 // thresholds rather than a share of them.
 func TestClusterLoginThrottleFallsBackToLocalThresholds(t *testing.T) {
-	mr, store := installClusterThrottle(t)
+	db, _ := installClusterThrottle(t)
 	node := newTestThrottle(nil)
 	key := accountThrottleKey(scopeUserAccount, "erin")
 	now := time.Now()
 
-	mr.Close()
+	_ = db.Close()
 	var d throttleDecision
 	for i := 0; i < defaultAccountFailureLimit-1; i++ {
 		if d = node.recordFailure(key, now); d.Outcome != outcomeAllow {
 			t.Fatalf("failure %d below the full threshold = %+v", i+1, d)
 		}
-	}
-	if store.Available() {
-		t.Fatal("store must have noticed the outage")
 	}
 	if d = node.recordFailure(key, now); d.Outcome == outcomeAllow {
 		t.Fatalf("the full local threshold still arms a block: %+v", d)

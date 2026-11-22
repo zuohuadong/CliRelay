@@ -176,7 +176,7 @@ func TestCollectorLeavesOutWhatItCannotRead(t *testing.T) {
 	if !ok {
 		t.Fatal("a snapshot must be published even with nothing to read")
 	}
-	if snap.Host != nil || snap.Cgroup != nil || snap.DB != nil || snap.Redis != nil || snap.Egress != nil {
+	if snap.Host != nil || snap.Cgroup != nil || snap.DB != nil || snap.Egress != nil {
 		t.Fatalf("unreadable parts must be left out: %+v", snap)
 	}
 	raw, at := c.LatestJSON()
@@ -187,7 +187,7 @@ func TestCollectorLeavesOutWhatItCannotRead(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"host", "cgroup", "db", "redis", "egress"} {
+	for _, key := range []string{"host", "cgroup", "db", "egress"} {
 		if _, present := decoded[key]; present {
 			t.Fatalf("%s should be absent from %s", key, raw)
 		}
@@ -294,25 +294,17 @@ func TestCollectorReportsDependenciesAndEgress(t *testing.T) {
 	since := testStart.Add(-time.Minute)
 	c.SetSources(Sources{
 		PingDB:    func(context.Context) error { return nil },
-		PingRedis: func(context.Context) (string, error) { return "", ErrNotConfigured },
 		Egress: func() *Egress {
 			return &Egress{BreakerEnabled: true, BreakerOpen: 1, Unreachable: 1, OpenSince: &since, Check: &EgressCheck{Total: 4, Unreachable: 1}}
 		},
-		SharedRedis: func() *SharedRedis { return &SharedRedis{Configured: true, Available: false, Since: &since} },
 	})
 	c.sample(context.Background())
 	snap, _ := c.Latest()
 	if snap.DB == nil || snap.DB.RTTMillis == nil || snap.DB.Role != "" {
 		t.Fatalf("db = %+v", snap.DB)
 	}
-	if snap.Redis != nil {
-		t.Fatalf("no Redis is configured, got %+v", snap.Redis)
-	}
 	if snap.Egress == nil || snap.Egress.BreakerOpen != 1 || snap.Egress.Check.Total != 4 {
 		t.Fatalf("egress = %+v", snap.Egress)
-	}
-	if shared := snap.SharedRedis; shared == nil || !shared.Configured || shared.Available || !shared.Since.Equal(since) {
-		t.Fatalf("shared redis = %+v, want configured and fallen back to local counting", shared)
 	}
 }
 

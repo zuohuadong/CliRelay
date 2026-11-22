@@ -108,11 +108,9 @@ fi
 
 postgres_db="$(env_value CLIRELAY_POSTGRES_DB)"
 postgres_user="$(env_value CLIRELAY_POSTGRES_USER)"
-redis_db="$(env_value CLIRELAY_REDIS_DB)"
 
 postgres_db="${postgres_db:-cliproxy}"
 postgres_user="${postgres_user:-cliproxy}"
-redis_db="${redis_db:-0}"
 
 set_default CLI_PROXY_IMAGE "${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}"
 set_default CLIRELAY_PROJECT_DIR "$project_dir"
@@ -130,10 +128,6 @@ set_default CLIRELAY_POSTGRES_USER "$postgres_user"
 set_default CLIRELAY_POSTGRES_PASSWORD "$postgres_password"
 set_default CLIRELAY_POSTGRES_DSN "postgres://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}?sslmode=disable"
 set_default CLIRELAY_POSTGRES_DATA_PATH "${project_dir}/postgres-data"
-set_default CLIRELAY_REDIS_ENABLE "true"
-set_default CLIRELAY_REDIS_ADDR "redis:6379"
-set_default CLIRELAY_REDIS_DB "$redis_db"
-set_default CLIRELAY_REDIS_DATA_PATH "${project_dir}/redis-data"
 
 # Bring the deployment's compose topology up to what this build needs. This used to
 # live in the updater sidecar, which meant a stale updater wrote a topology the

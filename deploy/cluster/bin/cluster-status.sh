@@ -3,7 +3,7 @@
 #
 # Shows: etcd members, the Patroni topology (roles, lag, timeline), settings
 # that make the primary fragile, the local CliRelay slot and its readiness,
-# and — when run on the arbiter — the base backups and the shared Redis.
+# and — when run on the arbiter — the base backups.
 # Every section degrades to a short "n/a" line when the component is not
 # installed on this host.
 set -uo pipefail
@@ -32,7 +32,6 @@ elif have_container clirelay-etcd; then
 else
   echo "  n/a"
 fi
-
 section "Risks"
 if have_container clirelay-patroni; then
   members="$(docker exec clirelay-patroni patronictl -c /etc/patroni/patroni.yml list -f json 2>/dev/null |
@@ -62,7 +61,6 @@ if have_container clirelay-patroni; then
 else
   echo "  n/a"
 fi
-
 section "CliRelay"
 if [ -f /opt/clirelay2/.active-port ]; then
   port="$(cat /opt/clirelay2/.active-port)"
@@ -80,14 +78,6 @@ if [ -d /opt/clirelay-cluster/backups ]; then
     printf '  %s  %s\n' "$(du -h "$f" | cut -f1)" "$(basename "$f")"
   done
   systemctl list-timers clirelay-pg-basebackup.timer --no-pager 2>/dev/null | sed -n 2p | sed 's/^/  next: /'
-else
-  echo "  n/a"
-fi
-
-section "Shared Redis"
-if have_container clirelay-cluster-redis; then
-  docker exec clirelay-cluster-redis sh -c 'redis-cli --tls --cacert /tls/ca.crt --cert /tls/node.crt --key /tls/node.key -p 6380 -a "$(cat /proc/1/cmdline | tr "\0" "\n" | grep -A1 -- --requirepass | tail -1)" --no-auth-warning INFO memory' 2>/dev/null \
-    | grep -E '^used_memory_human|^maxmemory_human' | sed 's/^/  /'
 else
   echo "  n/a"
 fi

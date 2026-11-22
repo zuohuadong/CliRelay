@@ -13,6 +13,9 @@ func init() {
 }
 
 func currentHomeKVClient() (kvstore.KVClient, bool, error) {
+	if postgres, ok := currentPostgresKV(); ok {
+		return postgres, true, nil
+	}
 	client := Current()
 	if client == nil {
 		return nil, false, nil

@@ -71,7 +71,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.RequestBody.ModelMaxMB = DefaultModelRequestBodyMB
 	cfg.RequestBody.DiskThresholdMB = DefaultRequestBodyDiskThresholdMB
 	cfg.UsageStatisticsEnabled = false
-	cfg.RedisUsageQueueRetentionSeconds = 60
+	cfg.UsageQueueRetentionSeconds = 60
 	cfg.SystemStatsCacheSeconds = 60
 	cfg.SystemStatsWebSocketMaxAgeSeconds = int(DefaultSystemStatsWebSocketMaxAge / time.Second)
 	cfg.RequestLogStorage = DefaultRequestLogStorageConfig()
@@ -227,10 +227,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if cfg.SystemStatsCacheSeconds <= 0 {
 		cfg.SystemStatsCacheSeconds = 60
 	}
-	if cfg.RedisUsageQueueRetentionSeconds <= 0 {
-		cfg.RedisUsageQueueRetentionSeconds = 60
-	} else if cfg.RedisUsageQueueRetentionSeconds > 3600 {
-		cfg.RedisUsageQueueRetentionSeconds = 3600
+	if cfg.UsageQueueRetentionSeconds <= 0 {
+		cfg.UsageQueueRetentionSeconds = 60
+	} else if cfg.UsageQueueRetentionSeconds > 3600 {
+		cfg.UsageQueueRetentionSeconds = 3600
 	}
 	cfg.SystemStatsWebSocketMaxAgeSeconds = int(cfg.SystemStatsWebSocketMaxAge() / time.Second)
 	if cfg.Streaming.KeepAliveSeconds == 0 {
@@ -286,22 +286,6 @@ func (cfg *Config) ApplyEnvOverrides() {
 	}
 	if dsn := strings.TrimSpace(os.Getenv(EnvPostgresDSN)); dsn != "" {
 		cfg.Postgres.DSN = dsn
-	}
-	if raw := strings.TrimSpace(os.Getenv(EnvRedisEnable)); raw != "" {
-		if enabled, err := strconv.ParseBool(raw); err == nil {
-			cfg.Redis.Enable = enabled
-		}
-	}
-	if addr := strings.TrimSpace(os.Getenv(EnvRedisAddr)); addr != "" {
-		cfg.Redis.Addr = addr
-	}
-	if password := os.Getenv(EnvRedisPassword); password != "" {
-		cfg.Redis.Password = password
-	}
-	if raw := strings.TrimSpace(os.Getenv(EnvRedisDB)); raw != "" {
-		if db, err := strconv.Atoi(raw); err == nil && db >= 0 {
-			cfg.Redis.DB = db
-		}
 	}
 	cfg.applyClusterEnvOverrides()
 	if host := strings.TrimSpace(os.Getenv(EnvHost)); host != "" {

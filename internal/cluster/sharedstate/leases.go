@@ -3,52 +3,39 @@ package sharedstate
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
-	"fmt"
+	"encoding/json"
+	"sort"
 	"sync"
 	"time"
-
-	"github.com/redis/go-redis/v9"
 )
 
-// Concurrency slots are sorted sets: one member per held slot, scored by the
-// time its lease expires. Taking a slot first drops expired members, so a slot
-// held by a node that died comes back after one lease TTL without anyone
-// having to notice the death.
-//
-// KEYS[1] slot set
-// ARGV[1] now (ms)   ARGV[2] limit   ARGV[3] member   ARGV[4] lease expiry (ms)
-// ARGV[5] set TTL (ms)
-// Returns {taken (0/1), members held after the call}.
-var acquireLeaseScript = redis.NewScript(`
-redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
-local held = redis.call('ZCARD', KEYS[1])
-if held >= tonumber(ARGV[2]) then
-  return {0, held}
-end
-redis.call('ZADD', KEYS[1], ARGV[4], ARGV[3])
-redis.call('PEXPIRE', KEYS[1], ARGV[5])
-return {1, held + 1}
-`)
-
-// acquireLease takes one slot under limit for member.
 func (s *Store) acquireLease(ctx context.Context, key, member string, limit int) (bool, int, error) {
-	now := s.now()
-	res, err := s.client.Eval(ctx, acquireLeaseScript, []string{key},
-		now.UnixMilli(), limit, member, now.Add(s.leaseTTL).UnixMilli(), s.setTTL().Milliseconds())
-	if err != nil {
-		return false, 0, err
-	}
-	vals, err := int64s(res, 2)
-	if err != nil {
-		return false, 0, err
-	}
-	return vals[0] == 1, int(vals[1]), nil
+	var taken bool
+	var held int
+	err := s.transaction(ctx, key, func(ctx context.Context, tx *sql.Tx, now time.Time) error {
+		var err error
+		taken, held, err = s.takeSlot(ctx, tx, key, member, limit, now)
+		return err
+	})
+	return taken && err == nil, held, err
 }
 
-// setTTL keeps a slot set alive while leases in it can still be renewed, and
-// lets it vanish when every node holding one is gone.
-func (s *Store) setTTL() time.Duration { return 2 * s.leaseTTL }
+// takeSlot runs under the scope advisory lock, including when no rows exist.
+func (s *Store) takeSlot(ctx context.Context, tx *sql.Tx, scope, member string, limit int, now time.Time) (bool, int, error) {
+	var held int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM cluster_runtime_leases
+		WHERE scope = $1 AND expires_at > $2`, scope, now).Scan(&held); err != nil {
+		return false, 0, err
+	}
+	if held >= limit {
+		return false, held, nil
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO cluster_runtime_leases (scope, member, expires_at)
+		VALUES ($1, $2, $3)`, scope, member, now.Add(s.leaseTTL))
+	return err == nil, held + 1, err
+}
 
 // newLeaseMember names one held slot. The node prefix is for operators reading
 // the set; uniqueness comes from the random suffix.
@@ -58,16 +45,15 @@ func (s *Store) newLeaseMember() string {
 	return s.nodeID + ":" + hex.EncodeToString(buf[:])
 }
 
-type leaseRef struct{ key, member string }
+type leaseRef struct {
+	Key    string `json:"scope"`
+	Member string `json:"member"`
+}
 
 // leaseKeeper renews the leases this node holds and gives back released ones.
 //
-// Renewals and releases run on one goroutine, in order. That is what makes the
-// unconditional renewal safe: a lease released while a renewal pipeline is in
-// flight has its removal queued behind that pipeline, so it can never be
-// resurrected by a renewal that raced it. The unconditional ZADD in turn lets a
-// lease that expired during a Redis outage be counted again once Redis is back,
-// for as long as the request holding it is still running.
+// Renewals and releases run on one goroutine, in order. Expired leases cannot
+// be revived: another node may already have taken the newly available slot.
 type leaseKeeper struct {
 	store *Store
 
@@ -111,8 +97,8 @@ func (k *leaseKeeper) track(key, member string) {
 	k.mu.Unlock()
 }
 
-// release stops renewing a lease and removes it from Redis without blocking
-// the caller. If Redis cannot be reached the removal is retried until the
+// release stops renewing a lease and removes it without blocking
+// the caller. If PostgreSQL cannot be reached the removal is retried until the
 // lease would have expired on its own.
 func (k *leaseKeeper) release(key, member string) {
 	ref := leaseRef{key, member}
@@ -124,7 +110,7 @@ func (k *leaseKeeper) release(key, member string) {
 	case k.releases <- ref:
 	default:
 		k.mu.Lock()
-		k.pending[ref] = k.store.now().Add(k.store.leaseTTL)
+		k.pending[ref] = k.store.localTime().Add(k.store.leaseTTL)
 		k.mu.Unlock()
 	}
 }
@@ -160,7 +146,7 @@ func (k *leaseKeeper) removeBatch(first leaseRef) {
 		break
 	}
 	if err := k.remove(batch); err != nil {
-		deadline := k.store.now().Add(k.store.leaseTTL)
+		deadline := k.store.localTime().Add(k.store.leaseTTL)
 		k.mu.Lock()
 		for _, ref := range batch {
 			k.pending[ref] = deadline
@@ -170,12 +156,19 @@ func (k *leaseKeeper) removeBatch(first leaseRef) {
 }
 
 func (k *leaseKeeper) remove(batch []leaseRef) error {
-	return k.store.client.PipelineBackground(context.Background(), func(pipe redis.Pipeliner) error {
-		for _, ref := range batch {
-			pipe.ZRem(context.Background(), ref.key, ref.member)
-		}
-		return nil
-	})
+	if !k.store.Available() {
+		return ErrUnavailable
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), backgroundTimeout)
+	defer cancel()
+	data, err := json.Marshal(batch)
+	if err != nil {
+		return err
+	}
+	_, err = k.store.db.ExecContext(ctx, `DELETE FROM cluster_runtime_leases l
+		USING jsonb_to_recordset($1) AS r(scope text, member text)
+		WHERE l.scope = r.scope AND l.member = r.member`, data)
+	return err
 }
 
 func (k *leaseKeeper) renew() {
@@ -188,19 +181,35 @@ func (k *leaseKeeper) renew() {
 	if len(refs) == 0 || !k.store.Available() {
 		return
 	}
-	expiry := k.store.now().Add(k.store.leaseTTL).UnixMilli()
-	setTTL := k.store.setTTL()
-	_ = k.store.client.TxPipelineBackground(context.Background(), func(pipe redis.Pipeliner) error {
-		for _, ref := range refs {
-			pipe.ZAdd(context.Background(), ref.key, redis.Z{Score: float64(expiry), Member: ref.member})
-			pipe.PExpire(context.Background(), ref.key, setTTL)
+	ctx, cancel := context.WithTimeout(context.Background(), backgroundTimeout)
+	defer cancel()
+	sort.Slice(refs, func(i, j int) bool { return refs[i].Key < refs[j].Key })
+	for len(refs) != 0 && ctx.Err() == nil {
+		n := min(128, len(refs))
+		batch := refs[:n]
+		refs = refs[n:]
+		scopes := []string{batch[0].Key}
+		for _, ref := range batch[1:] {
+			if ref.Key != scopes[len(scopes)-1] {
+				scopes = append(scopes, ref.Key)
+			}
 		}
-		return nil
-	})
+		data, err := json.Marshal(batch)
+		if err != nil {
+			return
+		}
+		_ = k.store.transactionScopes(ctx, scopes, func(ctx context.Context, tx *sql.Tx, now time.Time) error {
+			_, err := tx.ExecContext(ctx, `UPDATE cluster_runtime_leases l SET expires_at = $3
+				FROM jsonb_to_recordset($1) AS r(scope text, member text)
+				WHERE l.scope = r.scope AND l.member = r.member AND l.expires_at > $2`,
+				data, now, now.Add(k.store.leaseTTL))
+			return err
+		})
+	}
 }
 
 func (k *leaseKeeper) retryPending() {
-	now := k.store.now()
+	now := k.store.localTime()
 	k.mu.Lock()
 	var batch []leaseRef
 	for ref, deadline := range k.pending {
@@ -266,23 +275,4 @@ func (k *leaseKeeper) heldCount() int {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return len(k.held)
-}
-
-func int64s(res any, want int) ([]int64, error) {
-	list, ok := res.([]any)
-	if !ok || len(list) < want {
-		return nil, fmt.Errorf("sharedstate: unexpected script reply %T %v", res, res)
-	}
-	out := make([]int64, len(list))
-	for i, item := range list {
-		switch v := item.(type) {
-		case int64:
-			out[i] = v
-		case nil:
-			out[i] = 0
-		default:
-			return nil, fmt.Errorf("sharedstate: unexpected script reply element %T %v", item, item)
-		}
-	}
-	return out, nil
 }

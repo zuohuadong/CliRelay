@@ -3,23 +3,14 @@ package sharedstate
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
-	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/postgrestest"
 )
-
-// realRedisEnv points the script tests at a real Redis (for example a local
-// redis:7-alpine container) instead of miniredis, to check that the Lua
-// behaves the same on the real interpreter. Tests use unique keys, so the
-// database is never flushed.
-const realRedisEnv = "CLIRELAY_REDIS_TEST_ADDR"
 
 type fakeClock struct {
 	mu  sync.Mutex
@@ -51,59 +42,36 @@ func (c *fakeClock) Set(t time.Time) {
 }
 
 type testEnv struct {
-	mr    *miniredis.Miniredis // nil against a real Redis
-	addr  string
+	db    *sql.DB
 	clock *fakeClock
 }
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	env := &testEnv{clock: newFakeClock()}
-	if addr := strings.TrimSpace(os.Getenv(realRedisEnv)); addr != "" {
-		env.addr = addr
-		return env
-	}
-	env.mr = miniredis.RunT(t)
-	env.addr = env.mr.Addr()
-	return env
+	db, _ := postgrestest.RuntimeState(t)
+	return &testEnv{db: db, clock: newFakeClock()}
 }
 
-// node builds one node's store on the shared Redis.
+// node builds one node's store on the shared database.
 func (e *testEnv) node(t *testing.T, nodeID string) *Store {
 	t.Helper()
-	client, err := sharedredis.New(config.ClusterRedisConfig{Addr: e.addr}, sharedredis.Options{
-		NodeID:         nodeID,
-		HealthInterval: 50 * time.Millisecond,
-		MinBackoff:     20 * time.Millisecond,
-		MaxBackoff:     100 * time.Millisecond,
-		StableAfter:    time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	client.Start()
-	if !client.Available() {
-		t.Fatalf("test redis at %s unavailable: %+v", e.addr, client.Status())
-	}
-	store := New(client, Options{NodeID: nodeID, Now: e.clock.Now, FlushInterval: time.Hour})
-	t.Cleanup(func() {
-		store.Close()
-		client.Close()
-	})
+	store := New(e.db, Options{NodeID: nodeID, Now: e.clock.Now, FlushInterval: time.Hour})
+	t.Cleanup(store.Close)
 	return store
 }
 
-// requireMiniredis skips assertions that need miniredis-only controls such as
-// fast-forwarding key TTLs.
-func (e *testEnv) requireMiniredis(t *testing.T) {
+func (e *testEnv) assertExpiry(t *testing.T, table string, want int, horizon time.Duration) {
 	t.Helper()
-	if e.mr == nil {
-		t.Skip("needs miniredis to control key expiry")
+	var count, valid int
+	now := e.clock.Now()
+	err := e.db.QueryRow(`SELECT count(*), count(*) FILTER (WHERE expires_at > $1 AND expires_at <= $2)
+		FROM `+table, now, now.Add(horizon)).Scan(&count, &valid)
+	if err != nil || count != want || valid != want {
+		t.Fatalf("%s: count=%d with valid expiry=%d, want %d, err=%v", table, count, valid, want, err)
 	}
 }
 
-// unique returns a per-test identifier so tests never share keys, even on a
-// long-lived real Redis.
+// unique returns a per-test identifier.
 func unique(t *testing.T, label string) string {
 	var buf [6]byte
 	_, _ = rand.Read(buf[:])

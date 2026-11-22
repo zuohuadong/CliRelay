@@ -17,7 +17,7 @@ What the watchdog counts, every `WATCHDOG_INTERVAL` (30 s):
 
 | The slot | Counted as | Action |
 |---|---|---|
-| answers `/readyz` with any HTTP status (204, or 503 `postgres` / `redis` / `draining`, ...) | alive | count cleared; a non-2xx answer is logged with its reason |
+| answers `/readyz` with any HTTP status (204, or 503 `postgres` / `draining`, ...) | alive | count cleared; a non-2xx answer is logged with its reason |
 | sends nothing on `/readyz` within 8 s, but answers `/healthz` within 15 s | slow | count cleared, logged |
 | answers neither: timeout, or the connection closed or reset without a reply | hung | SIGKILL after `WATCHDOG_FAILS` (4) such rounds in a row |
 | refuses the connection, after answering at least once since it started | not listening (a drain after a SIGTERM that did not come from systemd, or a process that closed its listener) | SIGKILL after `WATCHDOG_REFUSED_FAILS` (20) rounds in a row, about 10 min, past the 300 s shutdown grace plus 90 s of shutdown work |

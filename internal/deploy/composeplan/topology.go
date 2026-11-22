@@ -80,7 +80,6 @@ func Migrate(options Options) error {
 	// A deployment that already has the runtime stack and no leftover migration
 	// service only needs its env file reconciled.
 	hasRuntimeStack := HasComposeService(composeText, "postgres") &&
-		HasComposeService(composeText, "redis") &&
 		HasComposeService(composeText, "clirelay-init")
 	if hasRuntimeStack && !HasComposeService(composeText, "clirelay-migrate") {
 		preferredAuth, forceAuth := preferredAuthPathFromCompose(composeText, service)
@@ -97,9 +96,9 @@ func Migrate(options Options) error {
 		return err
 	}
 	if err := writeFile(composeFile, []byte(nextCompose), 0o644); err != nil {
-		return fmt.Errorf("upgrade docker-compose.yml for the PostgreSQL/Redis runtime stack: %w", err)
+		return fmt.Errorf("upgrade docker-compose.yml for the PostgreSQL runtime stack: %w", err)
 	}
-	options.logf("docker-compose.yml upgraded with the PostgreSQL/Redis runtime services")
+	options.logf("docker-compose.yml upgraded with the PostgreSQL runtime services")
 	return nil
 }
 
@@ -146,19 +145,32 @@ func UpgradeRuntimeStack(composeText string, projectDir string, service string) 
 	target["volumes"] = appendVolume(target["volumes"], "${CLIRELAY_PROJECT_DIR:-"+projectDir+"}:/clirelay-deploy")
 
 	targetNetworks := target["networks"]
-	target["depends_on"] = map[string]any{
-		"clirelay-init": map[string]any{"condition": "service_completed_successfully"},
-		"postgres":      map[string]any{"condition": "service_healthy"},
-		"redis":         map[string]any{"condition": "service_healthy"},
+	depends, ok := stringMap(target["depends_on"])
+	if !ok {
+		depends = make(map[string]any)
+		if names, ok := target["depends_on"].([]any); ok {
+			for _, name := range names {
+				depends[stringValue(name)] = map[string]any{"condition": "service_started"}
+			}
+		}
 	}
+	delete(depends, "clirelay-migrate")
+	depends["clirelay-init"] = map[string]any{"condition": "service_completed_successfully"}
+	depends["postgres"] = map[string]any{"condition": "service_healthy"}
+	target["depends_on"] = depends
 	services["clirelay-init"] = initComposeService(projectDir, targetName, appImage)
-	services["postgres"] = postgresComposeService()
-	services["redis"] = redisComposeService()
+	_, existingPostgres := services["postgres"]
+	if !existingPostgres {
+		services["postgres"] = postgresComposeService()
+	}
 	services["clirelay-updater"] = updaterComposeService(projectDir, targetName, appImage)
 	delete(services, "clirelay-migrate")
 
 	if targetNetworks != nil {
-		for _, name := range []string{"clirelay-init", "postgres", "redis", "clirelay-updater"} {
+		for _, name := range []string{"clirelay-init", "postgres", "clirelay-updater"} {
+			if name == "postgres" && existingPostgres {
+				continue
+			}
 			if generated, ok := stringMap(services[name]); ok {
 				generated["networks"] = targetNetworks
 			}
@@ -195,7 +207,7 @@ func composeAppImage(composeText string, service string) string {
 
 func firstApplicationService(services map[string]any) string {
 	for name := range services {
-		if name != "postgres" && name != "redis" && name != "clirelay-init" &&
+		if name != "postgres" && name != "clirelay-init" &&
 			name != "clirelay-migrate" && !strings.Contains(name, "updater") {
 			return name
 		}
@@ -223,7 +235,7 @@ func initComposeService(projectDir string, targetService string, image string) m
 
 func postgresComposeService() map[string]any {
 	return map[string]any{
-		"image":      "postgres:15-alpine",
+		"image":      "postgres:19-alpine",
 		"entrypoint": []any{"sh", "-c", "set -a; . /clirelay-deploy/.env; set +a; export POSTGRES_DB=\"$$CLIRELAY_POSTGRES_DB\" POSTGRES_USER=\"$$CLIRELAY_POSTGRES_USER\" POSTGRES_PASSWORD=\"$$CLIRELAY_POSTGRES_PASSWORD\"; exec docker-entrypoint.sh postgres"},
 		"volumes": []any{
 			"${CLIRELAY_POSTGRES_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/postgres-data}:/var/lib/postgresql/data",
@@ -231,24 +243,6 @@ func postgresComposeService() map[string]any {
 		},
 		"healthcheck": map[string]any{
 			"test":     []any{"CMD-SHELL", ". /clirelay-deploy/.env; pg_isready -U \"$$CLIRELAY_POSTGRES_USER\" -d \"$$CLIRELAY_POSTGRES_DB\""},
-			"interval": "5s",
-			"timeout":  "5s",
-			"retries":  20,
-		},
-		"depends_on": map[string]any{
-			"clirelay-init": map[string]any{"condition": "service_completed_successfully"},
-		},
-		"restart": "unless-stopped",
-	}
-}
-
-func redisComposeService() map[string]any {
-	return map[string]any{
-		"image":   "redis:7-alpine",
-		"command": []any{"redis-server", "--appendonly", "yes"},
-		"volumes": []any{"${CLIRELAY_REDIS_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/redis-data}:/data"},
-		"healthcheck": map[string]any{
-			"test":     []any{"CMD", "redis-cli", "ping"},
 			"interval": "5s",
 			"timeout":  "5s",
 			"retries":  20,
@@ -309,10 +303,6 @@ func hasComposeCommand(value any) bool {
 func runtimeStackEnvKeys() []string {
 	return []string{
 		"CLIRELAY_POSTGRES_DSN",
-		"CLIRELAY_REDIS_ENABLE",
-		"CLIRELAY_REDIS_ADDR",
-		"CLIRELAY_REDIS_PASSWORD",
-		"CLIRELAY_REDIS_DB",
 		"CLIRELAY_TARGET_SERVICE",
 		"CLIRELAY_UPDATER_URL",
 		"CLIRELAY_UPDATER_TOKEN",
@@ -425,10 +415,6 @@ func ensureRuntimeEnvFile(envFile string, projectDir string, service string, ima
 	pass := valueOrDefault(values["CLIRELAY_POSTGRES_PASSWORD"], "cliproxy")
 	setEnvDefault(&lines, values, "CLIRELAY_POSTGRES_DSN", "postgres://"+user+":"+pass+"@postgres:5432/"+db+"?sslmode=disable")
 	setEnvDefaultOrReplaceWorkspace(&lines, values, "CLIRELAY_POSTGRES_DATA_PATH", filepath.Join(projectDir, "postgres-data"))
-	setEnvDefault(&lines, values, "CLIRELAY_REDIS_ENABLE", "true")
-	setEnvDefault(&lines, values, "CLIRELAY_REDIS_ADDR", "redis:6379")
-	setEnvDefault(&lines, values, "CLIRELAY_REDIS_DB", "0")
-	setEnvDefaultOrReplaceWorkspace(&lines, values, "CLIRELAY_REDIS_DATA_PATH", filepath.Join(projectDir, "redis-data"))
 
 	// Align AUTH_PATH with a concrete compose auth volume destination when forced;
 	// otherwise only fill a missing AUTH_PATH so existing .env values stay valid.

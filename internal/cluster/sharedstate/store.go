@@ -1,23 +1,13 @@
 // Package sharedstate keeps the counters, leases and bindings that must be
-// global across the nodes of a cluster in the shared cluster Redis.
-//
-// Every operation is one atomic Lua script (or a background pipeline), so two
-// nodes can never both observe "one slot left" and both take it. Nothing here
-// decides what to do when Redis is unavailable: each method reports the error
-// and the caller falls back to its node-local behaviour, which is the
-// pre-cluster code path.
-//
-// Time is passed from the calling node rather than read with Redis TIME. The
-// windows and leases only need agreement to within a fraction of a second,
-// which NTP-synchronised nodes provide, and it keeps the scripts deterministic
-// under test.
+// global across the nodes of a cluster in PostgreSQL. Callers choose how to
+// fall back when the shared database is unavailable.
 package sharedstate
 
 import (
+	"context"
+	"database/sql"
 	"sync"
 	"time"
-
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
 )
 
 // Default lease timing. A lease is renewed every LeaseTTL/3 while the request
@@ -41,9 +31,9 @@ type Options struct {
 }
 
 // Store is the process handle on shared cluster state. A nil *Store, or one
-// whose client is nil, is permanently unavailable.
+// whose database is nil, is permanently unavailable.
 type Store struct {
-	client *sharedredis.Client
+	db     *sql.DB
 	nodeID string
 	now    func() time.Time
 
@@ -52,12 +42,13 @@ type Store struct {
 	counts   *countBatcher
 	slots    *accountSlotPool
 
-	closeOnce sync.Once
+	closeOnce   sync.Once
+	stopCleanup context.CancelFunc
+	cleanupDone chan struct{}
 }
 
-// New builds a store on client. client may be nil when the cluster has no
-// shared Redis configured; every method then reports unavailability.
-func New(client *sharedredis.Client, opts Options) *Store {
+// New builds a store on the migrated runtime database without owning the pool.
+func New(db *sql.DB, opts Options) *Store {
 	if opts.LeaseTTL <= 0 {
 		opts.LeaseTTL = DefaultLeaseTTL
 	}
@@ -68,13 +59,10 @@ func New(client *sharedredis.Client, opts Options) *Store {
 		opts.Now = time.Now
 	}
 	if opts.NodeID == "" {
-		opts.NodeID = client.NodeID()
-	}
-	if opts.NodeID == "" {
 		opts.NodeID = "local"
 	}
 	s := &Store{
-		client:   client,
+		db:       db,
 		nodeID:   opts.NodeID,
 		now:      opts.Now,
 		leaseTTL: opts.LeaseTTL,
@@ -82,20 +70,25 @@ func New(client *sharedredis.Client, opts Options) *Store {
 	s.keeper = newLeaseKeeper(s)
 	s.counts = newCountBatcher(s, opts.FlushInterval)
 	s.slots = newAccountSlotPool(s)
+	if db != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		s.stopCleanup, s.cleanupDone = cancel, make(chan struct{})
+		go s.cleanupLoop(ctx)
+	}
 	return s
 }
 
-// Available reports whether shared state can be used right now.
+// Available reports whether shared state is configured. Operations report
+// connectivity errors independently.
 func (s *Store) Available() bool {
-	return s != nil && s.client.Available()
+	return s != nil && s.db != nil
 }
 
-// Client returns the underlying Redis client.
-func (s *Store) Client() *sharedredis.Client {
-	if s == nil {
-		return nil
+func (s *Store) localTime() time.Time {
+	if s.now != nil {
+		return s.now()
 	}
-	return s.client
+	return time.Now()
 }
 
 // Flush writes asynchronously counted requests and tokens now.
@@ -114,6 +107,10 @@ func (s *Store) Close() {
 		return
 	}
 	s.closeOnce.Do(func() {
+		if s.stopCleanup != nil {
+			s.stopCleanup()
+			<-s.cleanupDone
+		}
 		s.counts.close()
 		s.keeper.close()
 	})

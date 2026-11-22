@@ -76,7 +76,7 @@ func TestDatabaseProbeFailureKeepsTheLastGoodFigures(t *testing.T) {
 	db := fakeDB(t)
 	probe.SetSources(func() *sql.DB { return db }, nil)
 
-	good := &Database{CollectedAt: testStart.Add(-30 * time.Second), Engine: "postgres", Version: "15.19", SizeBytes: 559693159,
+	good := &Database{CollectedAt: testStart.Add(-30 * time.Second), Engine: "postgres", Version: "19.0", SizeBytes: 559693159,
 		Connections: &DatabaseConnections{Max: 200, Client: 26}}
 	probe.lastOK = good
 
@@ -85,7 +85,7 @@ func TestDatabaseProbeFailureKeepsTheLastGoodFigures(t *testing.T) {
 	if got == nil || got.Error == "" {
 		t.Fatalf("latest = %+v, want an error", got)
 	}
-	if got.Version != "15.19" || got.SizeBytes != 559693159 || got.Connections == nil || got.Connections.Client != 26 {
+	if got.Version != "19.0" || got.SizeBytes != 559693159 || got.Connections == nil || got.Connections.Client != 26 {
 		t.Fatalf("latest = %+v, want the last good figures", got)
 	}
 	if got.LastOKAt == nil || !got.LastOKAt.Equal(good.CollectedAt) || !got.CollectedAt.Equal(testStart) {
@@ -105,7 +105,7 @@ func TestDatabaseProbeReportsOnlyWhileLeading(t *testing.T) {
 	leading.Store(true)
 	db := fakeDB(t)
 	probe.SetSources(func() *sql.DB { return db }, leading.Load)
-	probe.latest.Store(&Database{Engine: "postgres", Version: "15.19"})
+	probe.latest.Store(&Database{Engine: "postgres", Version: "19.0"})
 	probe.history = []databaseCounters{counters(testStart, 1, 1, 1)}
 
 	if probe.Latest() == nil {
@@ -131,9 +131,9 @@ func TestDatabaseProbeReportsOnlyWhileLeading(t *testing.T) {
 
 func TestServerVersionDropsThePackagingSuffix(t *testing.T) {
 	for in, want := range map[string]string{
-		"15.19":                            "15.19",
-		"15.19 (Debian 15.19-1.pgdg120+1)": "15.19",
-		" 16.4 ":                           "16.4",
+		"19.0":                           "19.0",
+		"19.0 (Debian 19.0-1.pgdg120+1)": "19.0",
+		" 16.4 ":                         "16.4",
 	} {
 		if got := serverVersion(in); got != want {
 			t.Errorf("serverVersion(%q) = %q, want %q", in, got, want)
@@ -143,11 +143,11 @@ func TestServerVersionDropsThePackagingSuffix(t *testing.T) {
 
 func TestCollectorCarriesTheDatabaseSample(t *testing.T) {
 	collector, _ := newTestCollector(t, t.TempDir())
-	sample := &Database{Engine: "postgres", Version: "15.19"}
+	sample := &Database{Engine: "postgres", Version: "19.0"}
 	collector.SetSources(Sources{Database: func() *Database { return sample }})
 	collector.sample(context.Background())
 	raw, _ := collector.LatestJSON()
-	if !strings.Contains(string(raw), `"database":{`) || !strings.Contains(string(raw), `"version":"15.19"`) {
+	if !strings.Contains(string(raw), `"database":{`) || !strings.Contains(string(raw), `"version":"19.0"`) {
 		t.Fatalf("snapshot = %s", raw)
 	}
 	collector.SetSources(Sources{Database: func() *Database { return nil }})
@@ -238,7 +238,7 @@ func TestDatabaseProbeStoppedMidRoundPublishesNothing(t *testing.T) {
 	probe := NewDatabaseProbe(DatabaseProbeOptions{})
 	db := fakeDB(t)
 	probe.SetSources(func() *sql.DB { return db }, nil)
-	previous := &Database{Engine: "postgres", Version: "15.19"}
+	previous := &Database{Engine: "postgres", Version: "19.0"}
 	probe.latest.Store(previous)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

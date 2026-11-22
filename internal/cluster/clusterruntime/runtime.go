@@ -1,5 +1,5 @@
 // Package clusterruntime wires the cluster-wide limits into a running node:
-// it starts the shared cluster Redis client and installs the shared counters,
+// it uses the runtime PostgreSQL pool and installs the shared counters,
 // leases, bindings and minting into the quota middleware, the login throttle,
 // the auto-ban engine, the executors and the auth manager, and relays upstream
 // cooldowns between nodes.
@@ -10,28 +10,26 @@ package clusterruntime
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/ipaccess"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
 // Runtime is one node's cluster wiring.
 type Runtime struct {
-	coord  func() *cluster.Coordinator
-	client *sharedredis.Client // nil when no cluster Redis is configured
-	store  *sharedstate.Store
-	relay  *cooldownRelay
+	coord func() *cluster.Coordinator
+	store *sharedstate.Store
+	relay *cooldownRelay
 
 	mu       sync.Mutex
 	managers map[*coreauth.Manager]struct{}
@@ -48,8 +46,7 @@ var (
 // Install wires the cluster into this process for cfg, attaches manager and
 // returns the process's runtime, or nil outside cluster mode. The runtime is
 // shared: a later Install only attaches another manager. Every non-nil result
-// must be handed back to Release. The cluster Redis settings are read once;
-// changing them needs a restart.
+// must be handed back to Release.
 //
 // It must run after cluster.Prepare, which StartService calls first: the
 // cooldown subscription has to be made on the coordinator that cluster.Start
@@ -62,7 +59,7 @@ func Install(cfg *config.Config, manager *coreauth.Manager) *Runtime {
 	installMu.Lock()
 	defer installMu.Unlock()
 	if installed == nil {
-		installed = start(cfg.Cluster, cluster.Default)
+		installed = start(cluster.Default)
 	}
 	installed.refs++
 	installed.Attach(manager)
@@ -70,8 +67,8 @@ func Install(cfg *config.Config, manager *coreauth.Manager) *Runtime {
 }
 
 // Release hands back one Install. The last release gives this node's
-// concurrency slots back to the cluster, flushes pending counters and closes
-// the cluster Redis client; call it once the server has drained. nil is a
+// concurrency slots back to the cluster and flushes pending counters;
+// call it once the server has drained. nil is a
 // no-op.
 func Release(rt *Runtime) {
 	if rt == nil {
@@ -90,60 +87,39 @@ func Release(rt *Runtime) {
 }
 
 // start builds the runtime. coord resolves the coordinator on every use.
-func start(cfg config.ClusterConfig, coord func() *cluster.Coordinator) *Runtime {
+func start(coord func() *cluster.Coordinator) *Runtime {
 	c := coord()
 	if !c.Enabled() {
 		log.Warn("cluster: cluster mode is on but no cluster coordinator is running; cooldowns will not be shared")
 	}
 	nodeID := c.NodeID()
 
-	var client *sharedredis.Client
-	if strings.TrimSpace(cfg.Redis.Addr) == "" {
-		log.Warn("cluster: no cluster.redis configured; per-key and per-account limits are split across the active nodes, and session affinity and synthetic ids stay per node")
-	} else if built, err := sharedredis.New(cfg.Redis, sharedredis.Options{NodeID: nodeID}); err != nil {
-		log.WithError(err).Error("cluster redis: invalid configuration; limits are split across the active nodes and affinity stays per node")
-	} else {
-		client = built
-		client.Start()
+	store := sharedstate.New(usage.RuntimeDB(), sharedstate.Options{NodeID: nodeID})
+	if !store.Available() {
+		log.Warn("cluster: no runtime database; shared limits and affinity are unavailable")
 	}
-	return newRuntime(coord, client, sharedstate.New(client, sharedstate.Options{NodeID: nodeID}))
+	return newRuntime(coord, store)
 }
 
-func newRuntime(coord func() *cluster.Coordinator, client *sharedredis.Client, store *sharedstate.Store) *Runtime {
+func newRuntime(coord func() *cluster.Coordinator, store *sharedstate.Store) *Runtime {
 	rt := &Runtime{
 		coord:    coord,
-		client:   client,
 		store:    store,
 		relay:    newCooldownRelay(coord),
 		managers: make(map[*coreauth.Manager]struct{}),
 	}
 	rt.relay.start(coord())
 
-	// Split limits need no Redis, so the quota middleware and the account
+	// Split limits need no database, so the quota middleware and the account
 	// limiter are cluster-aware even without one. The guards and the id
 	// minting only change behaviour when there is a store to share.
 	middleware.SetClusterQuota(quotaAdapter{Store: store, coord: coord})
-	if client != nil {
+	if store.Available() {
 		management.SetClusterThrottleStore(store)
 		ipaccess.SetClusterAutoBanStore(store)
 		executor.SetSharedIDMinter(store)
 	}
 	return rt
-}
-
-// PingRedis makes one round trip to the cluster Redis, for the node's
-// resource snapshot. configured is false when this node has none. It asks the
-// server even while the client counts it as down, since the point is to time
-// the server, not to use it.
-func (rt *Runtime) PingRedis(ctx context.Context) (configured bool, err error) {
-	if rt == nil || rt.client == nil {
-		return false, nil
-	}
-	rdb := rt.client.Redis()
-	if rdb == nil {
-		return false, nil
-	}
-	return true, rdb.Ping(ctx).Err()
 }
 
 // Attach wires manager: cluster-wide account slots, shared session affinity
@@ -160,18 +136,10 @@ func (rt *Runtime) Attach(manager *coreauth.Manager) {
 		return
 	}
 	manager.SetAccountSlotCoordinator(accountSlotAdapter{store: rt.store, coord: rt.coord})
-	if rt.client != nil {
+	if rt.store.Available() {
 		manager.SetSessionAffinityStore(affinityAdapter{store: rt.store})
 	}
 	rt.relay.attach(manager)
-}
-
-// Status reports the cluster Redis view for status pages.
-func (rt *Runtime) Status() sharedredis.Status {
-	if rt == nil {
-		return sharedredis.Status{}
-	}
-	return rt.client.Status()
 }
 
 // Close undoes Install. The account limiters keep their coordinator: slots
@@ -183,7 +151,7 @@ func (rt *Runtime) Close() {
 	}
 	rt.relay.close()
 	middleware.SetClusterQuota(nil)
-	if rt.client != nil {
+	if rt.store.Available() {
 		management.SetClusterThrottleStore(nil)
 		ipaccess.SetClusterAutoBanStore(nil)
 		executor.SetSharedIDMinter(nil)
@@ -194,7 +162,6 @@ func (rt *Runtime) Close() {
 	}
 	rt.mu.Unlock()
 	rt.store.Close()
-	rt.client.Close()
 }
 
 // splitLimit is ceil(limit/nodes): each node's share of a limit when the

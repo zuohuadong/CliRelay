@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/MoeForge/moego/json"
-	"github.com/redis/go-redis/v9"
+	redis "github.com/router-for-me/CLIProxyAPI/v8/internal/home/respclient"
 	log "github.com/sirupsen/logrus"
 )
 

@@ -54,7 +54,7 @@ type Database struct {
 
 	// Engine is "postgres".
 	Engine string `json:"engine"`
-	// Version is server_version without the packaging suffix, e.g. "15.19".
+	// Version is server_version without the packaging suffix, e.g. "19.0".
 	Version   string     `json:"version,omitempty"`
 	StartedAt *time.Time `json:"started_at,omitempty"`
 	// InRecovery is true on a standby, which cannot take writes.

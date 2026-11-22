@@ -372,7 +372,7 @@ func TestClusterNodeShareRefusalKeepsRetryAfter(t *testing.T) {
 	resetQuotaMiddlewareState(t)
 	cluster := newQuotaCluster(t, 2)
 	router := quotaRouter(map[string]string{"rpm-limit": "4"}, nil)
-	cluster.mr.Close()
+	_ = cluster.db.Close()
 	mustPass(t, postQuota(router))
 	mustPass(t, postQuota(router))
 	rec := postQuota(router) // the node's share of 4 across 2 nodes is 2

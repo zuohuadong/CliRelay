@@ -72,6 +72,7 @@ func laterRuntimeMigrations() []Migration {
 		// Machine snapshots of hosts without a node (the database host). See
 		// clusterHostsSQL.
 		{Version: "202611170002_cluster_hosts", SQL: clusterHostsSQL},
+		{Version: "202611220001_runtime_state", SQL: runtimeStateSQL},
 	}
 }
 

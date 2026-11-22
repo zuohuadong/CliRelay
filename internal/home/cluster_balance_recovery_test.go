@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/json"
-	"github.com/redis/go-redis/v9"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	redis "github.com/router-for-me/CLIProxyAPI/v8/internal/home/respclient"
 )
 
 func TestClusterBalanceTargetPreflightFailureRecovery(t *testing.T) {

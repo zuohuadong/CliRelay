@@ -12,8 +12,8 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	redis "github.com/router-for-me/CLIProxyAPI/v8/internal/home/respclient"
 )
 
 func TestManagedSubscriberOrdinaryTrafficDoesNotRenewHeartbeat(t *testing.T) {

@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:15-alpine
+        image: postgres:19-alpine
         env:
           POSTGRES_USER: cliproxy
           POSTGRES_PASSWORD: cliproxy

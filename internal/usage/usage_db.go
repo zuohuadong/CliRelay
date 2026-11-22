@@ -661,6 +661,9 @@ func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg co
 	}
 	usageDB = db
 	usageReadDB = readDB
+	if driver == "postgres" {
+		postgresstore.SetRuntimeHandle(db)
+	}
 	usageDBPath = dbPath
 	usageDriver = driver
 	ApplyRequestLogStorageConfig(storageCfg)

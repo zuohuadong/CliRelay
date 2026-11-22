@@ -2,6 +2,7 @@ package clusterruntime
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"strings"
@@ -9,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/postgrestest"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
@@ -142,32 +143,21 @@ func TestCooldownRelaySilentOnSingleNode(t *testing.T) {
 	}
 }
 
-func testStore(t *testing.T, mr *miniredis.Miniredis, nodeID string) (*sharedredis.Client, *sharedstate.Store) {
+func testStore(t *testing.T, db *sql.DB, nodeID string) *sharedstate.Store {
 	t.Helper()
-	client, err := sharedredis.New(config.ClusterRedisConfig{Addr: mr.Addr()}, sharedredis.Options{
-		NodeID: nodeID, HealthInterval: 20 * time.Millisecond,
-		MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, StableAfter: time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	client.Start()
-	store := sharedstate.New(client, sharedstate.Options{NodeID: nodeID})
-	t.Cleanup(func() {
-		store.Close()
-		client.Close()
-	})
-	return client, store
+	store := sharedstate.New(db, sharedstate.Options{NodeID: nodeID})
+	t.Cleanup(store.Close)
+	return store
 }
 
 // TestAccountSlotsAreGlobalThroughTheAdapter runs two nodes' account limiters
-// against the real scripts: the SDK interface, the adapter and the leases.
+// against PostgreSQL: the SDK interface, the adapter and the leases.
 func TestAccountSlotsAreGlobalThroughTheAdapter(t *testing.T) {
-	mr := miniredis.RunT(t)
+	db, _ := postgrestest.RuntimeState(t)
 	hub := cluster.NewMemoryHub()
 	coordA, coordB := hub.Join("a"), hub.Join("b")
-	_, storeA := testStore(t, mr, "a")
-	_, storeB := testStore(t, mr, "b")
+	storeA := testStore(t, db, "a")
+	storeB := testStore(t, db, "b")
 	nodeA, nodeB := newManager(t, "acct-1"), newManager(t, "acct-1")
 	nodeA.SetAccountSlotCoordinator(accountSlotAdapter{store: storeA, coord: func() *cluster.Coordinator { return coordA }})
 	nodeB.SetAccountSlotCoordinator(accountSlotAdapter{store: storeB, coord: func() *cluster.Coordinator { return coordB }})
@@ -194,12 +184,8 @@ func TestAccountSlotsAreGlobalThroughTheAdapter(t *testing.T) {
 		return true
 	})
 
-	// Shared Redis gone: each node falls back to its share, ceil(2/2) = 1.
-	mr.Close()
-	eventually(t, "the outage to be noticed", func() bool {
-		_, _, _ = storeA.AcquireAccountSlot(context.Background(), "probe", 1)
-		return !storeA.Available()
-	})
+	// Database gone: each node falls back to its share, ceil(2/2) = 1.
+	_ = db.Close()
 	fresh := &coreauth.Auth{ID: "acct-2", Attributes: map[string]string{"concurrency_limit": "2"}}
 	if _, err := nodeA.ConcurrencyLimiter().AcquireSlot(fresh); err != nil {
 		t.Fatalf("first slot within the node share: %v", err)
@@ -210,9 +196,9 @@ func TestAccountSlotsAreGlobalThroughTheAdapter(t *testing.T) {
 }
 
 func TestSessionAffinityIsSharedThroughTheAdapter(t *testing.T) {
-	mr := miniredis.RunT(t)
-	_, storeA := testStore(t, mr, "a")
-	_, storeB := testStore(t, mr, "b")
+	db, _ := postgrestest.RuntimeState(t)
+	storeA := testStore(t, db, "a")
+	storeB := testStore(t, db, "b")
 	a, b := affinityAdapter{store: storeA}, affinityAdapter{store: storeB}
 
 	ref := coreauth.AffinityAccountRef("codex-someone@example.com.json")
@@ -224,15 +210,12 @@ func TestSessionAffinityIsSharedThroughTheAdapter(t *testing.T) {
 	if err != nil || !seen.Found || seen.AccountRef != ref || seen.Served != 1 {
 		t.Fatalf("lookup from the other node = %+v %v", seen, err)
 	}
-	for _, key := range mr.Keys() {
-		if strings.Contains(key, "sess") || strings.Contains(key, "example.com") {
-			t.Fatalf("session keys must be hashed in key names: %s", key)
-		}
-		if mr.Exists(key) {
-			if value := mr.HGet(key, "a"); strings.Contains(value, "example.com") {
-				t.Fatalf("an auth id (credential file name, often an e-mail) reached Redis: %s", value)
-			}
-		}
+	var key, value string
+	if err := db.QueryRow(`SELECT state_key, payload::text FROM cluster_runtime_kv`).Scan(&key, &value); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(key, "sess") || strings.Contains(key+value, "example.com") {
+		t.Fatal("raw session key or upstream account leaked into shared state")
 	}
 	if err := b.Release(context.Background(), "tenant|codex|openai|default|sess", ref); err != nil {
 		t.Fatal(err)
@@ -251,39 +234,41 @@ func TestInstallIsANoOpOnASingleNode(t *testing.T) {
 }
 
 func TestInstallWiresAndShutdownUnwires(t *testing.T) {
-	mr := miniredis.RunT(t)
+	_, dsn := postgrestest.RuntimeState(t)
+	if err := usage.InitPostgres(config.PostgresConfig{DSN: dsn}, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(usage.CloseDB)
 	hub := cluster.NewMemoryHub()
 	cluster.SetDefault(hub.Join("node-a"))
 	t.Cleanup(func() { cluster.SetDefault(nil) })
 
 	cfg := &config.Config{}
 	cfg.Cluster.Enabled = true
-	cfg.Cluster.Redis.Addr = mr.Addr()
 	manager := newManager(t, "acct-1")
 	rt := Install(cfg, manager)
 	if rt == nil || Install(cfg, newManager(t)) != rt {
 		t.Fatal("install must share one runtime per process")
 	}
-	eventually(t, "cluster redis", func() bool { return rt.Status().Available })
-	if rt.Status().Addr != mr.Addr() {
-		t.Fatalf("status = %+v", rt.Status())
+	if !rt.store.Available() {
+		t.Fatal("runtime did not use the PostgreSQL pool")
 	}
 
 	// The first release leaves the runtime to the other holder.
 	Release(rt)
-	if !rt.Status().Available {
+	if installed != rt {
 		t.Fatal("a runtime still held must stay open")
 	}
 	Release(rt)
-	if rt.Status().Available {
-		t.Fatal("the last release must close the cluster redis client")
+	if installed != nil {
+		t.Fatal("the last release must uninstall the cluster runtime")
 	}
 	if Install(&config.Config{}, manager) != nil {
 		t.Fatal("after release a single-node config installs nothing")
 	}
 }
 
-func TestInstallWithoutRedisStillSplitsLimits(t *testing.T) {
+func TestInstallWithoutDatabaseStillSplitsLimits(t *testing.T) {
 	hub := cluster.NewMemoryHub()
 	coordA := hub.Join("node-a")
 	hub.Join("node-b")
@@ -295,8 +280,8 @@ func TestInstallWithoutRedisStillSplitsLimits(t *testing.T) {
 	manager := newManager(t)
 	rt := Install(cfg, manager)
 	t.Cleanup(func() { Release(rt) })
-	if rt == nil || rt.client != nil {
-		t.Fatal("no cluster.redis means no client")
+	if rt == nil || rt.store.Available() {
+		t.Fatal("no runtime database means no shared state")
 	}
 	limited := &coreauth.Auth{ID: "acct-9", Attributes: map[string]string{"concurrency_limit": "4"}}
 	for i := 0; i < 2; i++ {

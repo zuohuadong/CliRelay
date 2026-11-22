@@ -1,13 +1,17 @@
-# PostgreSQL / Redis Runtime
+# PostgreSQL Runtime
 
 ## Runtime boundary
 
-CliRelay runs exclusively on PostgreSQL 15+, Redis 7+, and Ent ORM.
+CliRelay runs on PostgreSQL 19+ and Ent ORM.
 
-- PostgreSQL is the only persistent runtime data source.
-- Redis stores cache, locks, rate limits, queues, and rebuildable state only.
+- PostgreSQL is the only runtime state source: locks, rate limits, queues,
+  affinity, usage snapshots and cluster coordination all use PostgreSQL
+  transactions, advisory locks and `LISTEN/NOTIFY`.
 - The application entrypoint does not scan for legacy database files and does not run a data importer at startup, health checks, blue-green deploys, or OTA updates.
 - Stack upgrades remove a stale `clirelay-migrate` service and leftover `CLIRELAY_SQLITE_*` application environment entries from old compose files. They do not delete files on disk.
+- The optional remote Home control plane is an external compatibility boundary.
+  Its wire protocol is not a CliRelay runtime datastore and is not used for
+  cluster limits, usage persistence or readiness.
 
 For Docker Compose deployments:
 
@@ -15,7 +19,9 @@ For Docker Compose deployments:
 docker compose up -d
 ```
 
-The stack starts `clirelay-init`, PostgreSQL, Redis, the application, and `clirelay-updater`. OTA state is stored by the updater in `.clirelay-updater-status.json` and streamed to the management API through SSE.
+The stack starts `clirelay-init`, PostgreSQL, the application, and
+`clirelay-updater`. OTA state is stored by the updater in
+`.clirelay-updater-status.json` and streamed to the management API through SSE.
 
 ## Old Compose and updater transition
 
@@ -26,7 +32,7 @@ For a deployment that still uses an old compose file:
 3. Start the runtime dependencies and updater:
 
    ```bash
-   docker compose up -d postgres redis clirelay-updater
+   docker compose up -d postgres clirelay-updater
    ```
 
 4. Start or recreate the application service.
@@ -54,6 +60,5 @@ With integration services available:
 
 ```bash
 CLIRELAY_POSTGRES_TEST_DSN='postgres://cliproxy:cliproxy@127.0.0.1:55432/cliproxy?sslmode=disable' \
-CLIRELAY_REDIS_TEST_ADDR='127.0.0.1:56379' \
 rtk go test ./internal/usage -run TestPostgresRuntimeDataStackIntegration -count=1 -v
 ```

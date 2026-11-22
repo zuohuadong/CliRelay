@@ -2,34 +2,22 @@ package ipaccess
 
 import (
 	"context"
-	"testing"
-	"time"
-
-	"github.com/alicebob/miniredis/v2"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
+	"database/sql"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/postgrestest"
+	"testing"
 )
 
-func installClusterAutoBan(t *testing.T) *miniredis.Miniredis {
+func installClusterAutoBan(t *testing.T) *sql.DB {
 	t.Helper()
-	mr := miniredis.RunT(t)
-	client, err := sharedredis.New(config.ClusterRedisConfig{Addr: mr.Addr()}, sharedredis.Options{
-		NodeID: "self", HealthInterval: 20 * time.Millisecond,
-		MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, StableAfter: time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	client.Start()
-	store := sharedstate.New(client, sharedstate.Options{NodeID: "self"})
+	db, _ := postgrestest.RuntimeState(t)
+	store := sharedstate.New(db, sharedstate.Options{NodeID: "self"})
 	SetClusterAutoBanStore(store)
 	t.Cleanup(func() {
 		SetClusterAutoBanStore(nil)
 		store.Close()
-		client.Close()
 	})
-	return mr
+	return db
 }
 
 func TestClusterAutoBanCountsFailuresFromEveryNode(t *testing.T) {
@@ -57,13 +45,13 @@ func TestClusterAutoBanCountsFailuresFromEveryNode(t *testing.T) {
 }
 
 func TestClusterAutoBanFallsBackToLocalCounting(t *testing.T) {
-	mr := installClusterAutoBan(t)
+	db := installClusterAutoBan(t)
 	policy := DefaultPolicy()
 	policy.AutoBan.FailureThreshold = 3
 	node := testRegistry(t, policy)
 	source := trustedAddress("203.0.113.41")
 
-	mr.Close()
+	_ = db.Close()
 	var out AutoBanOutcome
 	for i := 0; i < 3; i++ {
 		out = node.AutoBan().RecordFailure(context.Background(), source, "test")

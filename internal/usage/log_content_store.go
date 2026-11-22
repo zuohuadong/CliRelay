@@ -273,7 +273,7 @@ func stopRequestLogMaintenance() {
 // requestLogMaintenanceStopWarnAfter is how long a stop waits before saying so.
 // A pass is meant to stop within one statement of the cancel, so a longer wait
 // means some step ignores ctx. Without this line that wait shows in the log only
-// as a gap after "Redis usage persistence flushed and closed", up to the SIGKILL.
+// as a gap after "usage persistence flushed and closed", up to the SIGKILL.
 const requestLogMaintenanceStopWarnAfter = 10 * time.Second
 
 func waitForRequestLogMaintenance(warnAfter time.Duration) {

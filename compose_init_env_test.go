@@ -35,8 +35,6 @@ func TestComposeInitEnvGeneratesMissingEnv(t *testing.T) {
 		"CLIRELAY_ADMIN_PASSWORD",
 		"CLIRELAY_POSTGRES_PASSWORD",
 		"CLIRELAY_POSTGRES_DSN",
-		"CLIRELAY_REDIS_ENABLE",
-		"CLIRELAY_REDIS_ADDR",
 	} {
 		if values[key] == "" {
 			t.Fatalf("%s was not generated in .env: %#v", key, values)

@@ -100,8 +100,8 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		redisqueue.SetUsageStatisticsEnabled(cfg.UsageStatisticsEnabled)
 	}
 
-	if oldCfg == nil || oldCfg.RedisUsageQueueRetentionSeconds != cfg.RedisUsageQueueRetentionSeconds {
-		redisqueue.SetRetentionSeconds(cfg.RedisUsageQueueRetentionSeconds)
+	if oldCfg == nil || oldCfg.UsageQueueRetentionSeconds != cfg.UsageQueueRetentionSeconds {
+		redisqueue.SetRetentionSeconds(cfg.UsageQueueRetentionSeconds)
 	}
 
 	if s.requestLogger != nil && (oldCfg == nil || oldCfg.ErrorLogsMaxFiles != cfg.ErrorLogsMaxFiles) {

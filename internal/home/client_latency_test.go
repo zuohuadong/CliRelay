@@ -11,7 +11,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	redis "github.com/router-for-me/CLIProxyAPI/v8/internal/home/respclient"
 )
 
 func TestSubscriptionTelemetryPreservesHeartbeatDeadline(t *testing.T) {

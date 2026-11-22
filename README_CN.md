@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go">
-  <img src="https://img.shields.io/badge/PostgreSQL-15+-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL">
+  <img src="https://img.shields.io/badge/PostgreSQL-19+-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL">
   <img src="https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/github/stars/kittors/CliRelay?style=for-the-badge&color=f59e0b" alt="Stars">
   <img src="https://img.shields.io/github/v/release/kittors/CliRelay?style=for-the-badge&color=8b5cf6" alt="Release">
@@ -58,7 +58,7 @@ CliRelay 把 AI CLI 订阅、OAuth 凭据、各家 API Key 和 OpenAI 兼容上�
 
 它是为**团队运营**设计的：租户之间账号、Key 和数据互相隔离；用户按角色获得细粒度权限；所有安全敏感的变更都进审计日志；门户账号让终端用户名下挂多把 API Key，自己查看用量，不必找管理员。
 
-运行时数据以 PostgreSQL 15+ 为唯一可信来源；Redis 7+ 负责缓存、锁、限流、队列等可重建的状态。
+运行时数据以 PostgreSQL 19+ 为唯一可信来源，统一承载缓存、锁、限流、队列和用量快照。
 
 ## 核心能力
 
@@ -98,8 +98,7 @@ flowchart LR
     clients --> auth
     exec --> oauth
     exec --> keys
-    relay -. "请求日志、用量汇总" .-> pg[("PostgreSQL")]
-    relay -. "缓存、锁、限流" .-> rd[("Redis")]
+    relay -. "请求日志、用量汇总、锁、限流与队列" .-> pg[("PostgreSQL")]
 ```
 
 1. **鉴权**：客户端 Key 对应到门户账号和权限模板，由它们决定可用的渠道分组、模型和额度。
@@ -126,7 +125,7 @@ flowchart LR
   - 六张指标卡覆盖请求数、成功率、P95 延迟、首 token 时间、token（含缓存命中率）和费用，每张都带环比和迷你趋势。
   - 再往下是趋势图、延迟分布（P50 / P90 / P95 / P99）、按渠道 / 模型 / 门户用户的失败分析、模型 / 渠道 / 用户排行、流量流向图和星期 × 小时热力图。点击任意一行即可筛选整页。
 - **仪表盘**汇总今天、近 7 天或 30 天的请求、成功率、token、费用、失败数和缓存占比，旁边是实时系统监控（CPU、内存、磁盘、数据库与日志存储）。
-  - **服务器节点**一屏看全所有节点：每台一张紧凑卡片，有 CPU（执行与被宿主机拿走的 steal 分开）、内存、最满的磁盘、slot 配额与限流、流量、出口，以及库与 Redis 的往返。steal 高、磁盘快满、依赖变慢、共享 Redis 退化、节点离线，对应的卡片会变色；细节（含每个磁盘的 inode 与预计写满时间）在卡片里展开。
+  - **服务器节点**一屏看全所有节点：每台一张紧凑卡片，有 CPU（执行与被宿主机拿走的 steal 分开）、内存、最满的磁盘、slot 配额与限流、流量、出口，以及 PostgreSQL 的往返。steal 高、磁盘快满、数据库变慢、节点离线，对应的卡片会变色；细节（含每个磁盘的 inode 与预计写满时间）在卡片里展开。
   - 旁边是**数据库**卡片：连接数与上限、库大小、WAL、复制槽与归档连接、长事务与事务中空闲、锁等待、缓存命中率、事务 ID 年龄，由 leader 每 30 秒查一次；以及 `clirelay-hostagent` 上报的数据库主机 CPU 与磁盘（见[多实例部署 4.10 节](docs/multi-instance-deployment_CN.md#410-节点磁盘与数据库监测)）。
 - **请求日志**逐条列出每次调用的渠道、门户用户与 Key、缓存 / 输入 / 输出 token、耗时和费用；可按用户、模型、渠道和状态筛选，开启请求体存储后还能查看完整的请求与响应内容。
 
@@ -230,7 +229,7 @@ flowchart LR
 
 ## 快速开始
 
-推荐用 Docker Compose 安装，它会同时启动 CliRelay、PostgreSQL 15、Redis 7 和更新器 sidecar。
+推荐用 Docker Compose 安装，它会同时启动 CliRelay、PostgreSQL 19 和更新器 sidecar。
 
 ```bash
 git clone https://github.com/kittors/CliRelay.git
@@ -359,7 +358,7 @@ CliRelay/
 | 层 | 技术 |
 | :-- | :-- |
 | 运行时 | Go 1.26、Gin、Docker Compose |
-| 数据 | PostgreSQL 15+（Ent），Redis 7+ 存放可重建状态 |
+| 数据 | PostgreSQL 19+（Ent），统一存放持久化与运行时状态 |
 | 代理核心 | OpenAI Chat Completions 与 Responses、Anthropic Messages、Gemini；SSE 与 WebSocket |
 | 运维 | `/manage` Web 面板、Bubble Tea 终端界面、更新器 sidecar |
 
@@ -371,7 +370,7 @@ CliRelay/
 | [管理 API](https://help.router-for.me/management/api) | 管理接口的 REST 参考 |
 | [Amp CLI](https://help.router-for.me/agent-client/amp-cli.html) | 让 Amp CLI 与 IDE 扩展接入 CliRelay |
 | [生产检查清单](docs/production-checklist_CN.md) | 团队共享网关与 NAS 部署 |
-| [PostgreSQL / Redis 运行时](docs/postgres-redis-migration.md) | 运行时数据栈的搭建与验证 |
+| [PostgreSQL 运行时](docs/postgres-runtime-migration.md) | 运行时数据栈的搭建与验证 |
 | [多实例部署](docs/multi-instance-deployment_CN.md) | 多节点共享 PostgreSQL：故障转移、主库切换、滚动发布 |
 | [SDK 使用](docs/sdk-usage_CN.md) · [进阶](docs/sdk-advanced_CN.md) · [鉴权](docs/sdk-access_CN.md) · [监听](docs/sdk-watcher_CN.md) | 在 Go 应用中嵌入代理 |
 

@@ -165,24 +165,16 @@ func TestAutoBanClaimLapsesWhenNotMarked(t *testing.T) {
 
 func TestSecurityKeysExpire(t *testing.T) {
 	env := newTestEnv(t)
-	env.requireMiniredis(t)
 	node := env.node(t, "a")
 	_, _ = node.ThrottleCharge(bg, unique(t, "b"), testThrottleSpec(), env.clock.Now())
 	_, _ = node.AutoBanCharge(bg, unique(t, "c"), testAutoBanSpec(), env.clock.Now())
-	for _, key := range env.mr.Keys() {
-		if ttl := env.mr.TTL(key); ttl <= 0 {
-			t.Fatalf("key %s has no TTL", key)
-		}
-	}
+	env.assertExpiry(t, "cluster_runtime_kv", 2, 30*24*time.Hour)
 }
 
 // TestEveryKeyHasTTL exercises every write path and checks that nothing is
-// left without an expiry. The production instance evicts with volatile-lru:
-// a key without a TTL could never be evicted, and once memory filled up every
-// write would fail.
+// left without an expiry.
 func TestEveryKeyHasTTL(t *testing.T) {
 	env := newTestEnv(t)
-	env.requireMiniredis(t)
 	node := env.node(t, "a")
 
 	adm, err := node.AdmitRequest(bg, unique(t, "key"), 2)
@@ -206,13 +198,7 @@ func TestEveryKeyHasTTL(t *testing.T) {
 	_, _ = node.AutoBanCharge(bg, src, testAutoBanSpec(), env.clock.Now())
 	_ = node.AutoBanMark(bg, src, env.clock.Now().Add(time.Hour), env.clock.Now(), time.Hour)
 
-	keys := env.mr.Keys()
-	if len(keys) < 10 {
-		t.Fatalf("expected every operation to write, got keys %v", keys)
-	}
-	for _, key := range keys {
-		if ttl := env.mr.TTL(key); ttl <= 0 {
-			t.Fatalf("key %s has no TTL", key)
-		}
-	}
+	env.assertExpiry(t, "cluster_runtime_kv", 5, 30*24*time.Hour)
+	env.assertExpiry(t, "cluster_runtime_rates", 3, 3*time.Minute)
+	env.assertExpiry(t, "cluster_runtime_leases", 2, DefaultLeaseTTL)
 }

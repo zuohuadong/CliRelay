@@ -13,8 +13,8 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	redis "github.com/router-for-me/CLIProxyAPI/v8/internal/home/respclient"
 )
 
 type telemetryPingFailureConn struct {
@@ -72,7 +72,7 @@ func TestClusterLatencyPingFailureBetweenReceives(t *testing.T) {
 		client := New(config.HomeConfig{})
 		client.balance.registered, client.balance.latencySupported = true, true
 		sampler := &clusterRTTSampler{history: &clusterLatencyHistory{}, node: clusterNode{IP: "home", Port: 8327}}
-		// No receive is pending: go-redis reconnects before returning the PING write error.
+		// No receive is pending: RESP client reconnects before returning the PING write error.
 		errLatency := client.runClusterLatency(ctx, pubsub, sampler)
 		if !errors.Is(errLatency, io.ErrClosedPipe) || ctx.Err() != nil {
 			t.Fatalf("sampler error = %v, context = %v; want immediate PING transport failure", errLatency, ctx.Err())
@@ -80,13 +80,13 @@ func TestClusterLatencyPingFailureBetweenReceives(t *testing.T) {
 		synctest.Wait()
 		subscriptions := 0
 		for _, args := range commands.All() {
-			// go-redis treats membership parameters as channels and may reorder them on resubscribe.
+			// RESP client treats membership parameters as channels and may reorder them on resubscribe.
 			if strings.EqualFold(args[0], "SUBSCRIBE") {
 				subscriptions++
 			}
 		}
 		if dials.Load() != 2 || subscriptions != 2 {
-			t.Fatalf("go-redis did not automatically replace the subscription: dials=%d commands=%v", dials.Load(), commands.All())
+			t.Fatalf("RESP client did not automatically replace the subscription: dials=%d commands=%v", dials.Load(), commands.All())
 		}
 		if samples := sampler.history.report(time.Now()); len(samples) != 1 || samples[0].Valid {
 			t.Fatalf("failed PING was not invalidated: %+v", samples)

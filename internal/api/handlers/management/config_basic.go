@@ -132,7 +132,7 @@ func maskBaseURL(rawURL string) string {
 }
 
 // sanitizeConfigForAPI creates a sanitized copy of the config suitable for the management API.
-// It masks provider API keys, Redis passwords, user names, provider URLs/models, and other sensitive fields.
+// It masks provider API keys, database credentials, user names, provider URLs/models, and other sensitive fields.
 func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
 	// Deep copy via JSON round-trip to avoid mutating the live config.
 	data, err := json.Marshal(cfg)
@@ -145,14 +145,6 @@ func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
 	}
 
 	// ── Infrastructure ──────────────────────────────────────────────────────
-
-	// Mask Redis password and address
-	if copy.Redis.Password != "" {
-		copy.Redis.Password = "***"
-	}
-	if copy.Redis.Addr != "" {
-		copy.Redis.Addr = "***"
-	}
 
 	// Mask pprof address
 	copy.Pprof.Addr = "***"

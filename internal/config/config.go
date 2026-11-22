@@ -61,11 +61,10 @@ type Config struct {
 	// Postgres config controls the runtime primary database.
 	Postgres PostgresConfig `yaml:"postgres" json:"-"`
 
-	// Redis config controls the Redis connection for usage persistence.
-	Redis RedisConfig `yaml:"redis" json:"redis"`
-
-	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained.
-	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds,omitempty" json:"redis-usage-queue-retention-seconds,omitempty"`
+	// UsageQueueRetentionSeconds controls how long in-process usage queue items
+	// are retained for the management protocol. Runtime persistence is owned by
+	// PostgreSQL.
+	UsageQueueRetentionSeconds int `yaml:"usage-queue-retention-seconds,omitempty" json:"usage-queue-retention-seconds,omitempty"`
 
 	// Cluster config controls multi-instance deployment. Disabled by default.
 	Cluster ClusterConfig `yaml:"cluster,omitempty" json:"cluster,omitempty"`

@@ -10,7 +10,7 @@ import (
 
 	"github.com/MoeForge/moego/json"
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
+	redis "github.com/router-for-me/CLIProxyAPI/v8/internal/home/respclient"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -179,7 +179,7 @@ func (c *Client) runClusterLatency(ctx context.Context, pubsub *redis.PubSub, sa
 				token := sampler.begin(time.Now())
 				if errPing := pubsub.Ping(ctx, token); errPing != nil {
 					sampler.expire(time.Now(), true)
-					// go-redis may already have resubscribed; only the lifecycle manager may replace membership.
+					// RESP client may already have resubscribed; only the lifecycle manager may replace membership.
 					return fmt.Errorf("Home subscription telemetry PING: %w", errPing)
 				}
 			}

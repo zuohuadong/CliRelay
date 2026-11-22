@@ -11,8 +11,11 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 51 {
-		t.Fatalf("RuntimeMigrations len = %d, want 51", len(migrations))
+	if len(migrations) != 52 {
+		t.Fatalf("RuntimeMigrations len = %d, want 52", len(migrations))
+	}
+	if got := migrations[51]; got.Version != "202611220001_runtime_state" {
+		t.Fatalf("runtime state migration version = %q", got.Version)
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {

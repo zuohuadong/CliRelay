@@ -20,9 +20,8 @@ import (
 
 	"github.com/MoeForge/moego/json"
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
-	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	redis "github.com/router-for-me/CLIProxyAPI/v8/internal/home/respclient"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/kvstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginstore"
 	log "github.com/sirupsen/logrus"
@@ -660,10 +659,6 @@ func cloneRedisOptions(options *redis.Options) *redis.Options {
 	cloned := *options
 	if options.TLSConfig != nil {
 		cloned.TLSConfig = options.TLSConfig.Clone()
-	}
-	if options.MaintNotificationsConfig != nil {
-		maintNotifications := *options.MaintNotificationsConfig
-		cloned.MaintNotificationsConfig = &maintNotifications
 	}
 	return &cloned
 }
@@ -1432,7 +1427,10 @@ func isAmbiguousIssuedRPopAuthError(err error) bool {
 	if err == nil || errors.Is(err, redis.Nil) {
 		return false
 	}
-	var redisErr redis.Error
+	var redisErr interface {
+		error
+		RedisError()
+	}
 	return !errors.As(err, &redisErr)
 }
 
@@ -1693,7 +1691,6 @@ func newPluginSyncCommandClient(ctx context.Context, template *redis.Options) *r
 	if options == nil {
 		return nil
 	}
-	options.MaintNotificationsConfig = &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}
 	baseDialer := options.Dialer
 	if baseDialer == nil {
 		baseDialer = pluginSyncDialer(options)

@@ -47,22 +47,21 @@ func TestAffinityBindLookupRelease(t *testing.T) {
 
 func TestAffinityLookupRefreshesTTL(t *testing.T) {
 	env := newTestEnv(t)
-	env.requireMiniredis(t)
 	node := env.node(t, "a")
 	key := unique(t, "session")
 	if _, err := node.AffinityBind(bg, key, "auth-1", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	env.mr.FastForward(50 * time.Minute)
+	env.clock.Advance(50 * time.Minute)
 	if got, _ := node.AffinityLookup(bg, key, time.Hour); !got.Found {
 		t.Fatal("binding expired early")
 	}
 	// The lookup renewed it: another 50 minutes later it is still there.
-	env.mr.FastForward(50 * time.Minute)
+	env.clock.Advance(50 * time.Minute)
 	if got, _ := node.AffinityLookup(bg, key, time.Hour); !got.Found {
 		t.Fatal("reading a binding must extend its TTL")
 	}
-	env.mr.FastForward(61 * time.Minute)
+	env.clock.Advance(61 * time.Minute)
 	if got, _ := node.AffinityLookup(bg, key, time.Hour); got.Found {
 		t.Fatal("an unused binding must expire after its TTL")
 	}
@@ -89,7 +88,6 @@ func TestMintIDFirstCandidateWins(t *testing.T) {
 
 func TestMintIDFixedAndSlidingTTL(t *testing.T) {
 	env := newTestEnv(t)
-	env.requireMiniredis(t)
 	node := env.node(t, "a")
 	fixed, sliding := unique(t, "fixed"), unique(t, "sliding")
 
@@ -99,7 +97,7 @@ func TestMintIDFixedAndSlidingTTL(t *testing.T) {
 	if _, err := node.MintID(bg, "uid", sliding, "s1", time.Hour, true); err != nil {
 		t.Fatal(err)
 	}
-	env.mr.FastForward(40 * time.Minute)
+	env.clock.Advance(40 * time.Minute)
 	got, err := node.MintID(bg, "codex", fixed, "f2", time.Hour, false)
 	if err != nil || got.ID != "f1" || got.TTL > 21*time.Minute || got.TTL < 19*time.Minute {
 		t.Fatalf("a fixed id reports its remaining lifetime so local caches expire with it: %+v %v", got, err)
@@ -108,7 +106,7 @@ func TestMintIDFixedAndSlidingTTL(t *testing.T) {
 	if err != nil || gotSliding.ID != "s1" || gotSliding.TTL != time.Hour {
 		t.Fatalf("a sliding id is renewed on read: %+v %v", gotSliding, err)
 	}
-	env.mr.FastForward(30 * time.Minute)
+	env.clock.Advance(30 * time.Minute)
 	if again, _ := node.MintID(bg, "codex", fixed, "f3", time.Hour, false); again.ID != "f3" || !again.Minted {
 		t.Fatalf("an expired fixed id must be re-minted: %+v", again)
 	}

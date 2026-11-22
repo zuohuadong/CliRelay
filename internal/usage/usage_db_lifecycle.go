@@ -1,6 +1,7 @@
 package usage
 
 import (
+	postgresstore "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
@@ -24,6 +25,7 @@ func closeUsageDBDrained() {
 	// Stop maintenance before taking a write lease or usageDBMu: a worker may
 	// need either to finish. Never wait for the dispatcher under these locks.
 	stopRequestLogMaintenance()
+	stopRuntimeSnapshots()
 	usageWriteLease.Lock()
 	defer usageWriteLease.Unlock()
 
@@ -43,6 +45,7 @@ func closeUsageDBDrained() {
 	usageLoc = nil
 	usageDriver = ""
 	usageDBMu.Unlock()
+	postgresstore.SetRuntimeHandle(nil)
 	resetAIAccountSubjectCycleCache()
 	log.Info("usage: database closed")
 }

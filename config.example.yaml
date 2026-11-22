@@ -41,18 +41,11 @@ request-body:
 # Examples: "Asia/Shanghai", "UTC", "America/Los_Angeles"
 timezone: ""
 
-# PostgreSQL 15+ is the runtime primary database.
+# PostgreSQL 19+ is the runtime primary database.
 postgres:
   dsn: "postgres://cliproxy:cliproxy@127.0.0.1:5432/cliproxy?sslmode=disable"
   max-open-conns: 16
   max-idle-conns: 4
-
-# Redis 7+ settings for cache, locks, queues, limits, and rebuildable snapshots.
-redis:
-  enable: false
-  addr: "127.0.0.1:6379"
-  password: ""
-  db: 0
 
 # Riding out a short database outage (a restart or a primary failover).
 # All fields are optional; the defaults below apply when the block is absent.

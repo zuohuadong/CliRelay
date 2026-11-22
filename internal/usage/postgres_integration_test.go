@@ -156,10 +156,6 @@ func TestPostgresRuntimeDataStackIntegration(t *testing.T) {
 	assertPostgresIdentityAndQuotaCRUD(t)
 	assertPostgresDeletes(t, apiRow.Key)
 
-	if redisAddr := os.Getenv("CLIRELAY_REDIS_TEST_ADDR"); redisAddr != "" {
-		InitRedis(config.RedisConfig{Enable: true, Addr: redisAddr})
-		StopRedis()
-	}
 }
 
 func TestPostgresRuntimeDataStackConcurrencyConstraintsAndHotPaths(t *testing.T) {

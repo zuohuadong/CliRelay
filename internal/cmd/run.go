@@ -43,8 +43,11 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 		log.Errorf("usage: failed to initialize runtime data stack: %v", err)
 		return
 	}
-	usage.InitRedis(cfg.Redis)
 	defer stopRuntimeDataStack()
+	if err := usage.StartRuntimeSnapshots(); err != nil {
+		log.Errorf("usage: failed to restore runtime checkpoint: %v", err)
+		return
+	}
 	coordinator, err := startCluster(cfg)
 	if err != nil {
 		log.Errorf("cluster: failed to join the cluster: %v", err)
@@ -108,7 +111,13 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 		close(doneCh)
 		return func() {}, doneCh
 	}
-	usage.InitRedis(cfg.Redis)
+	if err := usage.StartRuntimeSnapshots(); err != nil {
+		log.Errorf("usage: failed to restore runtime checkpoint: %v", err)
+		stopRuntimeDataStack()
+		doneCh := make(chan struct{})
+		close(doneCh)
+		return func() {}, doneCh
+	}
 	coordinator, err := startCluster(cfg)
 	if err != nil {
 		log.Errorf("cluster: failed to join the cluster: %v", err)
@@ -224,7 +233,7 @@ func stopRuntimeDataStack() {
 	// Before the database closes: queued usage records still need it, and
 	// whatever it cannot take goes to the spool for the next start.
 	stopUsageSpool()
-	usage.StopRedis()
+	usage.CloseDB()
 }
 
 type bootstrapAdminPassword struct {

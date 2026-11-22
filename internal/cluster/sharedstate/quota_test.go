@@ -203,20 +203,13 @@ func TestCountRequestAndRates(t *testing.T) {
 
 func TestQuotaBucketsExpire(t *testing.T) {
 	env := newTestEnv(t)
-	env.requireMiniredis(t)
 	node := env.node(t, "a")
 	subject := unique(t, "key")
 	if _, err := node.AdmitRequest(bg, subject, 1); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range env.mr.Keys() {
-		if key == "clirelay:health:a" {
-			continue
-		}
-		if ttl := env.mr.TTL(key); ttl <= 0 || ttl > 3*time.Minute {
-			t.Fatalf("key %s has TTL %s; every quota key must expire on its own", key, ttl)
-		}
-	}
+	env.assertExpiry(t, "cluster_runtime_rates", 1, 3*time.Minute)
+	env.assertExpiry(t, "cluster_runtime_leases", 1, DefaultLeaseTTL)
 }
 
 func TestUnavailableStoreReportsErrors(t *testing.T) {

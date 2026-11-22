@@ -2,16 +2,15 @@ package middleware
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/postgrestest"
 )
 
 // testClusterQuota is one node's view of the cluster: the shared store plus a
@@ -26,31 +25,21 @@ func (q testClusterQuota) ActiveNodes() int { return q.nodes }
 func bg() context.Context { return context.Background() }
 
 type quotaCluster struct {
-	mr   *miniredis.Miniredis
+	db   *sql.DB
 	self *sharedstate.Store // this process: installed into the middleware
-	peer *sharedstate.Store // another node sharing the same Redis
+	peer *sharedstate.Store // another node sharing the same database
 }
 
 func newQuotaCluster(t *testing.T, nodes int) *quotaCluster {
 	t.Helper()
-	mr := miniredis.RunT(t)
+	db, _ := postgrestest.RuntimeState(t)
+	now := time.Now().Truncate(time.Minute).Add(30 * time.Second)
 	store := func(nodeID string) *sharedstate.Store {
-		client, err := sharedredis.New(config.ClusterRedisConfig{Addr: mr.Addr()}, sharedredis.Options{
-			NodeID: nodeID, HealthInterval: 20 * time.Millisecond,
-			MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, StableAfter: time.Millisecond,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		client.Start()
-		s := sharedstate.New(client, sharedstate.Options{NodeID: nodeID, FlushInterval: time.Hour})
-		t.Cleanup(func() {
-			s.Close()
-			client.Close()
-		})
+		s := sharedstate.New(db, sharedstate.Options{NodeID: nodeID, FlushInterval: time.Hour, Now: func() time.Time { return now }})
+		t.Cleanup(s.Close)
 		return s
 	}
-	c := &quotaCluster{mr: mr, self: store("self"), peer: store("peer")}
+	c := &quotaCluster{db: db, self: store("self"), peer: store("peer")}
 	SetClusterQuota(testClusterQuota{Store: c.self, nodes: nodes})
 	t.Cleanup(func() { SetClusterQuota(nil) })
 	return c
@@ -131,22 +120,19 @@ func TestClusterConcurrencyLimitIsGlobal(t *testing.T) {
 }
 
 // TestClusterFallsBackToNodeShareAndRecovers covers the degraded mode: with the
-// shared Redis gone each node enforces ceil(limit/nodes) on its own counters,
-// and once Redis is back the configured limit applies cluster-wide again.
+// shared database gone each node enforces ceil(limit/nodes) locally.
 func TestClusterFallsBackToNodeShareAndRecovers(t *testing.T) {
 	resetQuotaMiddlewareState(t)
 	cluster := newQuotaCluster(t, 2)
 	router := quotaRouter(map[string]string{"rpm-limit": "4"}, nil)
 
-	cluster.mr.Close()
-	// The first call after the outage may still try Redis; either way it must
-	// not fail the request.
+	_ = cluster.db.Close()
 	start := time.Now()
 	if rec := postQuota(router); rec.Code != http.StatusNoContent {
 		t.Fatalf("request during the outage = %d", rec.Code)
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("an unavailable Redis delayed the request by %s", elapsed)
+		t.Fatalf("an unavailable database delayed the request by %s", elapsed)
 	}
 	if rec := postQuota(router); rec.Code != http.StatusNoContent {
 		t.Fatalf("second request within this node's share (2) = %d", rec.Code)
@@ -159,17 +145,7 @@ func TestClusterFallsBackToNodeShareAndRecovers(t *testing.T) {
 		t.Fatalf("degraded mode enforces the node share, header limit = %q", got)
 	}
 
-	if err := cluster.mr.Restart(); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	for !cluster.self.Available() {
-		if time.Now().After(deadline) {
-			t.Fatal("shared counters did not come back")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	// The restarted Redis lost its windows; the full limit applies again.
+	newQuotaCluster(t, 2)
 	for i := 0; i < 4; i++ {
 		if rec := postQuota(router); rec.Code != http.StatusNoContent {
 			t.Fatalf("request %d after recovery = %d", i+1, rec.Code)
@@ -180,7 +156,7 @@ func TestClusterFallsBackToNodeShareAndRecovers(t *testing.T) {
 	}
 }
 
-func TestClusterWithoutSharedRedisSplitsConcurrency(t *testing.T) {
+func TestClusterWithoutSharedDatabaseSplitsConcurrency(t *testing.T) {
 	resetQuotaMiddlewareState(t)
 	unconfigured := sharedstate.New(nil, sharedstate.Options{NodeID: "self"})
 	t.Cleanup(unconfigured.Close)

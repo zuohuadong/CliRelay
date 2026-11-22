@@ -3,8 +3,6 @@ package sharedstate
 import (
 	"context"
 	"sync"
-
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
 )
 
 // accountSlotPool holds this node's cluster-wide slots on upstream accounts.
@@ -13,7 +11,7 @@ import (
 // request on the same node, so slots are fungible per account: what matters to
 // the cluster is how many this node holds, not which request holds which one.
 // The pool is therefore a per-account stack of lease members. A handoff never
-// touches Redis; only a slot that is really given up pops a member.
+// touches the database; only a slot that is really given up pops a member.
 type accountSlotPool struct {
 	store *Store
 
@@ -26,7 +24,7 @@ func newAccountSlotPool(s *Store) *accountSlotPool {
 }
 
 func accountSlotKey(authID string) string {
-	return sharedredis.KeyPrefix + "acct:{" + sharedredis.HashPart(authID) + "}:conc"
+	return stateKey("account-slot", authID)
 }
 
 // AcquireAccountSlot takes one cluster-wide slot on an upstream account when
@@ -34,7 +32,7 @@ func accountSlotKey(authID string) string {
 // after the call.
 func (s *Store) AcquireAccountSlot(ctx context.Context, authID string, limit int) (bool, int, error) {
 	if !s.Available() {
-		return false, 0, sharedredis.ErrUnavailable
+		return false, 0, ErrUnavailable
 	}
 	key := accountSlotKey(authID)
 	member := s.newLeaseMember()

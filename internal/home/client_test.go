@@ -25,8 +25,8 @@ import (
 
 	"github.com/MoeForge/moego/json"
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	redis "github.com/router-for-me/CLIProxyAPI/v8/internal/home/respclient"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginstore"
 )
 

@@ -129,16 +129,14 @@ func TestReadyzReturnsNoContentWhenDependenciesOptionalOrUnset(t *testing.T) {
 	}
 }
 
-func TestReadyzFailsWhenRedisEnabledButUnreachable(t *testing.T) {
+func TestReadyzRemainsPostgresOnly(t *testing.T) {
 	server := newTestServer(t)
-	server.cfg.Redis.Enable = true
-	server.cfg.Redis.Addr = "127.0.0.1:1"
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rr := httptest.NewRecorder()
 	server.engine.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusServiceUnavailable {
+	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
 	}
 }

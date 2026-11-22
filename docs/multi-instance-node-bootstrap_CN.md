@@ -101,7 +101,7 @@ sudo -n EXPECTED_SCRIPT_VERSION=2026.09.25.2 /usr/local/sbin/clirelay-gha-deploy
 | `NGINX_CONTAINER` | `nginx` | nginx 跑在容器里时的容器名 |
 | `SLOT_USER` / `SLOT_GROUP` | 空 | slot 的运行用户和组。为空时从基础单元复制 `User=`/`Group=`；**没有基础单元时必须填写**，否则部署失败，不会以 root 运行 |
 | `DRAIN_SECONDS` | `180` | 旧 slot 在切流后继续运行的秒数。工作流会读取节点实际值，按“该值 + 30 秒”安排探测时长 |
-| `SHUTDOWN_GRACE_SECONDS` | `300` | 旧 slot 收到 SIGTERM 后完成在途请求的上限。slot 单元的 `TimeoutStopSec` 是它再加 90 秒（脚本里的 `SHUTDOWN_STOP_HEADROOM_SECONDS`，不能在这里改），留给排空之后的收尾：写入或落盘排队的 usage 记录、保存 Redis 快照、关库。工作流读取节点实际的 `TimeoutStopSec`，探测窗口结束后最多再等它加 60 秒，等旧 slot 停止 |
+| `SHUTDOWN_GRACE_SECONDS` | `300` | 旧 slot 收到 SIGTERM 后完成在途请求的上限。slot 单元的 `TimeoutStopSec` 是它再加 90 秒（脚本里的 `SHUTDOWN_STOP_HEADROOM_SECONDS`，不能在这里改），留给排空之后的收尾：写入或落盘排队的 usage 记录、保存 PostgreSQL 快照、关库。工作流读取节点实际的 `TimeoutStopSec`，探测窗口结束后最多再等它加 60 秒，等旧 slot 停止 |
 | `HEALTH_TIMEOUT_SECONDS` | `90` | 新 slot 就绪等待时间 |
 | `SMOKE_TIMEOUT_SECONDS` | `30` | 切流后 smoke 的等待时间 |
 | `MIN_AVAILABLE_MB` | `512` | 部署前要求的可用内存 |
@@ -119,7 +119,7 @@ GOMEMLIMIT 必须低于 MemoryHigh。节点设置了自己的 `SERVICE_MEMORY_HI
 示例（两台节点各一份）：
 
 ```bash
-# n43：总内存 3.9G，同机还有 PostgreSQL（Patroni）、etcd 和 Redis。root 执行
+# n43：总内存 3.9G，同机还有 PostgreSQL（Patroni）和 etcd。root 执行
 cat > /tmp/deploy.env <<'EOF'
 DOMAIN=relay.07230805.xyz
 NODE_PUBLIC_IP=203.0.113.43

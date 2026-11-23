@@ -73,7 +73,7 @@ func newTestServer(t *testing.T) *Server {
 	return newTestServerWithConfig(t, nil)
 }
 
-func newTestServerWithConfig(t *testing.T, configure func(*proxyconfig.Config)) *Server {
+func newTestServerWithConfig(t *testing.T, configure any, options ...ServerOption) *Server {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
@@ -94,15 +94,27 @@ func newTestServerWithConfig(t *testing.T, configure func(*proxyconfig.Config)) 
 		LoggingToFile:          false,
 		UsageStatisticsEnabled: false,
 	}
-	if configure != nil {
-		configure(cfg)
+	switch value := configure.(type) {
+	case nil:
+	case func(*proxyconfig.Config):
+		value(cfg)
+	case *proxyconfig.Config:
+		if value == nil {
+			break
+		}
+		*cfg = *value
+		if cfg.AuthDir == "" {
+			cfg.AuthDir = authDir
+		}
+	default:
+		t.Fatalf("unsupported test config type %T", configure)
 	}
 
 	authManager := auth.NewManager(nil, nil, nil)
 	accessManager := sdkaccess.NewManager()
 
 	configPath := filepath.Join(tmpDir, "config.yaml")
-	return NewServer(cfg, authManager, accessManager, configPath)
+	return NewServer(cfg, authManager, accessManager, configPath, options...)
 }
 
 func TestHealthzReturnsNoContent(t *testing.T) {

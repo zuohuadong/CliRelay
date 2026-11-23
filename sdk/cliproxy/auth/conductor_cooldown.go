@@ -1576,6 +1576,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 	var authSnapshot *Auth
 	cooldownStateChanged := false
+	var cooldownNotice *CooldownNotice
 	scheduleUnauthorizedRefresh := false
 	now := time.Now()
 	// A 401 condemns the access token, except one a -and-cooldown rule matched: that only cools the credential.
@@ -1621,6 +1622,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 		modelState := existingModelState(auth, modelKey)
+		cooldownBefore := time.Time{}
+		if !result.Success && m.cooldownPublishing() {
+			cooldownBefore, _ = cooldownDeadline(auth, modelKey, now)
+		}
 		auth.recordRecentRequest(now, result.Success)
 		if result.Success {
 			auth.Success++
@@ -2255,6 +2260,26 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 		_ = m.persistLocked(ctx, auth)
 		authSnapshot = auth.Clone()
+		if !result.Success && m.cooldownPublishing() {
+			if cooldownAfter, quota := cooldownDeadline(auth, modelKey, now); cooldownAfter.After(cooldownBefore) {
+				reason := ""
+				if modelKey != "" {
+					if state := auth.ModelStates[modelKey]; state != nil {
+						reason = state.Quota.Reason
+					}
+				} else {
+					reason = auth.Quota.Reason
+				}
+				cooldownNotice = &CooldownNotice{
+					AuthID:     auth.ID,
+					Model:      modelKey,
+					Until:      cooldownAfter,
+					StatusCode: statusCodeFromResult(result.Error),
+					Reason:     reason,
+					Quota:      quota,
+				}
+			}
+		}
 		if trackCooldownState {
 			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
 			cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
@@ -2300,6 +2325,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	}
 
 	m.hook.OnResult(ctx, result)
+	m.publishCooldown(cooldownNotice)
 	m.publishErrorEvent(result, authSnapshot)
 	m.updateSessionAffinity(result)
 }

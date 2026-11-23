@@ -393,6 +393,11 @@ func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
 	h.postAuthHook = hook
 }
 
+// SetPostAuthPersistHook registers a hook to be called after auth persistence.
+func (h *Handler) SetPostAuthPersistHook(hook coreauth.PostAuthHook) {
+	h.postAuthPersistHook = hook
+}
+
 // Middleware enforces access control for management endpoints.
 // The implementation lives in middleware_auth.go, where the step order that
 // keeps the ban check ahead of every secret comparison is documented.

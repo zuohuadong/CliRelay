@@ -15,8 +15,27 @@ import (
 	"testing"
 )
 
-// Translator is the signature every request translator has.
-type Translator func(modelName string, rawJSON []byte, stream bool) []byte
+// Translator accepts both the legacy byte-only request transform and the
+// current error-reporting transform. This keeps reference tests compatible
+// while production translators migrate to the error contract.
+type Translator any
+
+func applyTranslator(t testing.TB, translate Translator, modelName string, rawJSON []byte, stream bool) []byte {
+	t.Helper()
+	switch fn := translate.(type) {
+	case func(string, []byte, bool) []byte:
+		return fn(modelName, rawJSON, stream)
+	case func(string, []byte, bool) ([]byte, error):
+		out, err := fn(modelName, rawJSON, stream)
+		if err != nil {
+			t.Fatalf("translator failed: %v", err)
+		}
+		return out
+	default:
+		t.Fatalf("unsupported translator type %T", translate)
+		return nil
+	}
+}
 
 // Equivalence describes one byte-for-byte comparison run.
 type Equivalence struct {
@@ -55,8 +74,8 @@ func MatchReference(t testing.TB, e Equivalence, got, want Translator) {
 		req := e.Generate(r)
 		model := models[i%len(models)]
 		stream := i%2 == 0
-		g := got(model, bytes.Clone(req), stream)
-		w := want(model, bytes.Clone(req), stream)
+		g := applyTranslator(t, got, model, bytes.Clone(req), stream)
+		w := applyTranslator(t, want, model, bytes.Clone(req), stream)
 		if e.Mask != nil {
 			g, w = e.Mask(g), e.Mask(w)
 		}
@@ -104,8 +123,8 @@ func MatchReferenceOnSessions(t testing.TB, session Session, model string, mask 
 	t.Helper()
 	for _, turns := range []int{0, 1, 7, 40} {
 		req := session(turns)
-		g := got(model, bytes.Clone(req), true)
-		w := want(model, bytes.Clone(req), true)
+		g := applyTranslator(t, got, model, bytes.Clone(req), true)
+		w := applyTranslator(t, want, model, bytes.Clone(req), true)
 		if mask != nil {
 			g, w = mask(g), mask(w)
 		}
@@ -122,7 +141,7 @@ func MatchReferenceOnSessions(t testing.TB, session Session, model string, mask 
 func AssertGrowsLinearly(t testing.TB, session Session, model string, translate Translator) {
 	t.Helper()
 	small, large := session(50), session(200)
-	ratio := float64(AllocatedBytes(func() { translate(model, large, true) })) / float64(AllocatedBytes(func() { translate(model, small, true) }))
+	ratio := float64(AllocatedBytes(func() { applyTranslator(t, translate, model, large, true) })) / float64(AllocatedBytes(func() { applyTranslator(t, translate, model, small, true) }))
 	if ratio > 8 {
 		t.Fatalf("4x the history allocated %.1fx as much; the translator is quadratic again", ratio)
 	}
@@ -136,6 +155,6 @@ func Benchmark(b *testing.B, session Session, model string, translate Translator
 	b.SetBytes(int64(len(req)))
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		translate(model, req, true)
+		applyTranslator(b, translate, model, req, true)
 	}
 }

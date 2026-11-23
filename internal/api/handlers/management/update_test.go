@@ -834,12 +834,6 @@ func branchCommitAt(sha string, at time.Time) branchCommitInfo {
 	return info
 }
 
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return fn(req)
-}
-
 func TestFetchBranchCommitUsesGitHubTokenWhenConfigured(t *testing.T) {
 	t.Setenv("CLIRELAY_GITHUB_TOKEN", "test-token")
 

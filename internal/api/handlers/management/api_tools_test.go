@@ -25,6 +25,8 @@ type memoryAuthStore struct {
 	items map[string]*coreauth.Auth
 }
 
+func (*memoryAuthStore) SetBaseDir(string) {}
+
 func (s *memoryAuthStore) List(ctx context.Context) ([]*coreauth.Auth, error) {
 	_ = ctx
 	s.mu.Lock()

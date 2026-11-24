@@ -138,6 +138,15 @@ func TestXAINamespaceToolNamesRestoresCustomToolEvents(t *testing.T) {
 		t.Fatalf("unrelated arguments changed: %q", got)
 	}
 
+	// xAI names the item on argument events more often than the tool.
+	added := []byte(`{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_9","call_id":"call_9","name":"apply_patch","arguments":""}}`)
+	if _, changed := names.restoreEvent(added); !changed {
+		t.Fatalf("custom item.added was not restored")
+	}
+	if line := names.restoreSSELine([]byte(`data: {"type":"response.function_call_arguments.delta","item_id":"fc_9","delta":"{\"inp"}`)); line != nil {
+		t.Fatalf("custom argument delta keyed only by item id survived as %q", line)
+	}
+
 	delta := []byte(`data: {"type":"response.function_call_arguments.delta","name":"apply_patch","delta":"{\"inp"}`)
 	if line := names.restoreSSELine(delta); line != nil {
 		t.Fatalf("custom argument delta survived as %q", line)

@@ -267,6 +267,8 @@ func (n *xaiNamespaceToolNames) restoreCustomToolEvent(payload []byte) ([]byte, 
 		if !n.isCustomName(item.Get("name").String()) {
 			return payload, false, false
 		}
+		// xAI's argument events name the item, not the tool, so remember it.
+		n.markCustom(item.Get("id").String())
 		itemRaw := []byte(item.Raw)
 		if strings.TrimSpace(item.Get("arguments").String()) == "" {
 			if arguments := n.takeCustomArguments(item.Get("id").String(), item.Get("name").String()); arguments != "" {
@@ -285,12 +287,12 @@ func (n *xaiNamespaceToolNames) restoreCustomToolEvent(payload []byte) ([]byte, 
 		}
 		return out, true, false
 	case "response.function_call_arguments.delta":
-		if n.isCustomName(gjson.GetBytes(payload, "name").String()) {
+		if n.isCustomArgumentEvent(payload) {
 			return nil, true, true
 		}
 		return payload, false, false
 	case "response.function_call_arguments.done":
-		if !n.isCustomName(gjson.GetBytes(payload, "name").String()) {
+		if !n.isCustomArgumentEvent(payload) {
 			return payload, false, false
 		}
 		n.rememberCustomArguments(
@@ -322,6 +324,14 @@ func (n *xaiNamespaceToolNames) restoreCustomToolEvent(payload []byte) ([]byte, 
 		return payload, changed, false
 	}
 	return payload, false, false
+}
+
+// isCustomArgumentEvent reports whether an argument event belongs to a tool
+// sent as a function on behalf of a custom one. xAI names the tool only some of
+// the time, so the item id it always sends is checked too.
+func (n *xaiNamespaceToolNames) isCustomArgumentEvent(payload []byte) bool {
+	return n.isCustomName(gjson.GetBytes(payload, "name").String()) ||
+		n.isCustomName(gjson.GetBytes(payload, "item_id").String())
 }
 
 // xaiFunctionCallAsCustomToolCall rewrites one finished function call.

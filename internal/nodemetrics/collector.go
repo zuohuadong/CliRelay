@@ -41,14 +41,8 @@ type Sources struct {
 	InFlight func() int64
 	// PingDB makes one round trip to the runtime database.
 	PingDB func(ctx context.Context) error
-	// PingRedis makes one round trip to the Redis this node relies on and
-	// names it ("cluster" or "usage"); ErrNotConfigured when there is none.
-	PingRedis func(ctx context.Context) (role string, err error)
 	// Egress reports the egress breaker and connect check.
 	Egress func() *Egress
-	// SharedRedis reports the cluster Redis; nil, or a nil result, on a
-	// single node.
-	SharedRedis func() *SharedRedis
 	// DiskPaths lists the directories whose filesystems the snapshot
 	// reports, besides the root filesystem, which is always reported.
 	DiskPaths func() []DiskPath
@@ -292,19 +286,13 @@ func (c *Collector) sample(ctx context.Context) {
 	if sources.Egress != nil {
 		snap.Egress = sources.Egress()
 	}
-	if sources.SharedRedis != nil {
-		snap.SharedRedis = sources.SharedRedis()
-	}
 	if sources.Database != nil {
 		// Sampled on its own timer by the leader; this only reads the latest.
 		snap.Database = sources.Database()
 	}
 	// The round trips go last: they are the only part that can take a while.
 	if sources.PingDB != nil {
-		snap.DB = roundTrip(ctx, "", func(ctx context.Context) (string, error) { return "", sources.PingDB(ctx) })
-	}
-	if sources.PingRedis != nil {
-		snap.Redis = roundTrip(ctx, "", sources.PingRedis)
+		snap.DB = roundTrip(ctx, sources.PingDB)
 	}
 
 	if ctx.Err() != nil {
@@ -458,19 +446,16 @@ func (c *Collector) sampleTraffic(now time.Time, sources Sources) Traffic {
 }
 
 // roundTrip times ping, reporting failures by kind only.
-func roundTrip(ctx context.Context, role string, ping func(ctx context.Context) (string, error)) *RoundTrip {
+func roundTrip(ctx context.Context, ping func(ctx context.Context) error) *RoundTrip {
 	pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
 	defer cancel()
 	started := time.Now()
-	gotRole, err := ping(pingCtx)
+	err := ping(pingCtx)
 	elapsed := time.Since(started)
 	if errors.Is(err, ErrNotConfigured) {
 		return nil
 	}
-	if gotRole != "" {
-		role = gotRole
-	}
-	result := &RoundTrip{Role: role}
+	result := &RoundTrip{}
 	switch {
 	case err == nil:
 		ms := round3(float64(elapsed) / float64(time.Millisecond))

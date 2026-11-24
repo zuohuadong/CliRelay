@@ -272,22 +272,6 @@ func (cfg *Config) ApplyEnvOverrides() {
 	if dsn := strings.TrimSpace(os.Getenv(EnvPostgresDSN)); dsn != "" {
 		cfg.Postgres.DSN = dsn
 	}
-	if raw := strings.TrimSpace(os.Getenv(EnvRedisEnable)); raw != "" {
-		if enabled, err := strconv.ParseBool(raw); err == nil {
-			cfg.Redis.Enable = enabled
-		}
-	}
-	if addr := strings.TrimSpace(os.Getenv(EnvRedisAddr)); addr != "" {
-		cfg.Redis.Addr = addr
-	}
-	if password := os.Getenv(EnvRedisPassword); password != "" {
-		cfg.Redis.Password = password
-	}
-	if raw := strings.TrimSpace(os.Getenv(EnvRedisDB)); raw != "" {
-		if db, err := strconv.Atoi(raw); err == nil && db >= 0 {
-			cfg.Redis.DB = db
-		}
-	}
 	cfg.applyClusterEnvOverrides()
 	if host := strings.TrimSpace(os.Getenv(EnvHost)); host != "" {
 		cfg.Host = host

@@ -43,11 +43,10 @@ CliRelay 支持两种部署方式：
               仲裁机（hk-relay）：不接业务流量
                ├ etcd 成员（第三票，防止出现两个主库）
                ├ clirelay-dnswatch：每 10 秒探测各节点，自动增删 DNS 记录
-               ├ 集群共享 Redis（全局限流计数、会话粘性、合成 ID）
                └ 每日全量备份 + 连续 WAL 归档（可恢复到 7 天内任意时刻）
 ```
 
-所有跨机器的连接（etcd、PostgreSQL 复制与远程连接、Patroni REST、共享 Redis、nginx 溢出端口）都使用集群私有 CA 签发的证书做**双向 TLS**。所以不需要 VPN，也不需要改防火墙规则。有些 VPS 服务商会丢弃全部入站 UDP，WireGuard 这类方案在这种机器上用不了。
+所有跨机器的连接（etcd、PostgreSQL 复制与远程连接、Patroni REST、nginx 溢出端口）都使用集群私有 CA 签发的证书做**双向 TLS**。所以不需要 VPN，也不需要改防火墙规则。有些 VPS 服务商会丢弃全部入站 UDP，WireGuard 这类方案在这种机器上用不了。
 
 ### 2.1 为什么需要第三台机器
 
@@ -69,7 +68,7 @@ CliRelay 支持两种部署方式：
 | 故障节点恢复 | 自动用 pg_rewind 回滚分叉部分，以同步备库身份重新加入 | 无需人工 |
 | 同步备库卡顿或卡死（宿主机 I/O 卡顿、虚拟机冻结） | 主库的提交会等它：短暂卡顿卡多久就等多久；备库一直不响应时最多等 15–19 秒，之后主库退回异步复制继续写 | API 请求不等提交（用量先入队、落本地 spool），管理后台的写操作会等 |
 | 仲裁机宕机 | 业务照常；etcd 仍有 2/3 票；DNS 不再自动切换 | 无 |
-| 共享 Redis 不可用 | 各节点退回本机计数，上限按"总上限 ÷ 在线节点数"执行 | 限额在短时间内变得较粗略 |
+| 共享存储不可用 | 各节点退回本机计数，上限按"总上限 ÷ 在线节点数"执行 | 限额在短时间内变得较粗略 |
 
 ## 4. 部署多实例
 
@@ -84,7 +83,7 @@ deploy/cluster/tls/gen-cluster-certs.sh <安全目录> \
 
 - **有效期**：CA 10 年，节点证书 5 年。节点证书同时带 serverAuth 和 clientAuth 用途，SAN 包含节点名、127.0.0.1 和公网 IP。
 - **`ca.key` 不要放到任何服务器上**。每台机器只放 `ca.crt`、`node.crt`、`node.key`，统一放在 `/etc/clirelay-cluster/tls/`，属主 root，`node.key` 权限 0600。
-- **各组件自己的副本**：PostgreSQL（容器内 uid 70）和共享 Redis（uid 999）各需要一份属主匹配的副本，分别放在 `/etc/clirelay-cluster/tls-pg/`、`/etc/clirelay-cluster/tls-redis/`。
+- **各组件自己的副本**：PostgreSQL（容器内 uid 70）需要一份属主匹配的副本，放在 `/etc/clirelay-cluster/tls-pg/`。
 - **以后加节点**：再次运行脚本即可。已有的 CA 和证书会保留，只签发新节点的证书。
 
 ### 4.2 etcd（三台各一个成员）
@@ -164,14 +163,9 @@ docker exec clirelay-patroni patronictl -c /etc/patroni/patroni.yml edit-config 
 
 整套流程可以用 `deploy/cluster/lab/lab.sh` 在任意一台 Docker 主机上完整演练（使用一次性 CA，不对外暴露任何端口）。
 
-### 4.4 集群共享 Redis（仲裁机）
+### 4.4 不需要额外的数据服务
 
-`deploy/cluster/redis/docker-compose.yml`：
-
-- 只开 TLS 端口 6380，要求客户端证书，另设密码；
-- 最多使用 256MB，`volatile-lru`，不做持久化。
-
-这里只放可以丢的临时数据，它不可用时各节点自动退回本机限流。
+集群除 PostgreSQL 和 etcd 之外不需要别的服务：全局限流计数、并发名额、会话粘性、合成 ID、登录限流和自动封禁计数都在集群数据库里。数据库不可用时各节点自动退回本机限流。
 
 ### 4.5 CliRelay 节点配置
 
@@ -185,16 +179,8 @@ CLIRELAY_CLUSTER_NODE_ID=n43                     # 各节点唯一
 CLIRELAY_HOST=127.0.0.1
 # 多主机 DSN：本机优先，target_session_attrs=read-write 自动找到当前主库
 CLIRELAY_POSTGRES_DSN=postgres://cliproxy:<密码>@127.0.0.1:55432,198.51.100.20:55432/cliproxy?target_session_attrs=read-write&sslmode=verify-ca&sslrootcert=/etc/clirelay-cluster/tls/ca.crt&sslcert=/etc/clirelay-cluster/tls/node.crt&sslkey=/etc/clirelay-cluster/tls/node.key&connect_timeout=5
-# 集群共享 Redis
-CLIRELAY_CLUSTER_REDIS_ADDR=103.231.58.53:6380
-CLIRELAY_CLUSTER_REDIS_PASSWORD=<密码>
-CLIRELAY_CLUSTER_REDIS_TLS_CA_FILE=/etc/clirelay-cluster/tls/ca.crt
-CLIRELAY_CLUSTER_REDIS_TLS_CERT_FILE=/etc/clirelay-cluster/tls/node.crt
-CLIRELAY_CLUSTER_REDIS_TLS_KEY_FILE=/etc/clirelay-cluster/tls/node.key
-CLIRELAY_CLUSTER_REDIS_TLS_SERVER_NAME=relay
 ```
 
-- 顶层的 `redis` 仍然是节点本地的实例，与 `cluster.redis` 互不影响。
 - `trusted-proxies` 需要包含对端节点的公网 IP。nginx 溢出过来的请求来自对端，带着第一跳写好的 `X-Forwarded-For`。
 
 ### 4.6 nginx：本机优先，满载或故障时溢出到对端
@@ -342,8 +328,8 @@ GitHub Actions 的 `Deploy CliRelay` 按节点逐台部署：
 - **离线节点一开机就会自己加入。** 容器是 `restart: unless-stopped`：机器恢复后，Patroni 自动启动、登记、rewind，成为同步备库；主库自行降级时，它还可能被选成新主库。能连上这台机器时，先关掉自动重启，再停掉容器：
 
   ```bash
-  docker update --restart=no clirelay-patroni clirelay-etcd clirelay-cluster-redis
-  docker stop -t 60 clirelay-patroni clirelay-etcd clirelay-cluster-redis
+  docker update --restart=no clirelay-patroni clirelay-etcd
+  docker stop -t 60 clirelay-patroni clirelay-etcd
   ```
 
   如果它已经自己加入了，先在它上面执行这两条，再在主库这台删掉它的成员键。下一轮（10 秒内）failsafe 名单就只剩主库：
@@ -360,12 +346,12 @@ GitHub Actions 的 `Deploy CliRelay` 按节点逐台部署：
     --set synchronous_mode=false --set ttl=60 --set retry_timeout=20 --force
   ```
 
-- **只剩一个应用节点时，去掉集群共享 Redis 和 nginx 溢出。** 共享 Redis 在另一台机器上时，链路一抖，请求路径上的计数调用就要等满 200ms 超时，才退回本机计数，日志里还会反复出现 `marked unavailable`；只有一个节点时，本机计数本来就是准确的。对端没有应用时，溢出只会让超时的请求再失败一次（见 4.6）。
+- **只剩一个应用节点时，去掉 nginx 溢出。** 对端没有应用时，溢出只会让超时的请求再失败一次（见 4.6）。
 - **恢复成两个成员的顺序：** 先补齐三票 etcd。再去掉配置里已经下线的机器：各节点 `node.env` 的 `ETCD_HOSTS`、`PEER_CIDRS`，以及仲裁机 `backup.env` 的 `BACKUP_HOSTS`、`WAL_ARCHIVE_DSN`。然后关掉 `failsafe_mode`，最后才启动第二个成员。没有部署 CliRelay 的成员，要在 `node.env` 里写 `NOFAILOVER=true`、`NOSYNC=true`，主库就不会落到每条查询都要跨机的那台。
 
 `deploy/cluster/bin/cluster-status.sh` 的 `Risks` 段会指出两种危险组合：failsafe 开着且有多个成员；etcd 不足三票且 failsafe 关着。
 
-2026-09-28 的实际经过（北京时间；etcd 单票、failsafe 开、同步复制开）：hk-relay 因流量耗尽离线三天，恢复开机后自动加入集群。01:46，n43 连不上本机 etcd，failsafe 等 hk-relay 应答超时，n43 自行降级，hk-relay 当了约 9 小时主库，n43 上的 CliRelay 每条查询都要跨机。10:43 n43 抢回主库，10:49、11:06 又因为同样的原因各重启一次。这段时间里，每次提交都要等 hk-relay 确认，应用访问 hk-relay 上的共享 Redis 也不断超时。按上面的步骤摘掉 hk-relay 后恢复正常；核对 WAL 后确认，没有丢失已提交的数据。
+2026-09-28 的实际经过（北京时间；etcd 单票、failsafe 开、同步复制开）：hk-relay 因流量耗尽离线三天，恢复开机后自动加入集群。01:46，n43 连不上本机 etcd，failsafe 等 hk-relay 应答超时，n43 自行降级，hk-relay 当了约 9 小时主库，n43 上的 CliRelay 每条查询都要跨机。10:43 n43 抢回主库，10:49、11:06 又因为同样的原因各重启一次。这段时间里，每次提交都要等 hk-relay 确认，应用访问远端主库的查询也不断超时。按上面的步骤摘掉 hk-relay 后恢复正常；核对 WAL 后确认，没有丢失已提交的数据。
 
 ## 6. 应用层如何保证多实例正确
 
@@ -381,7 +367,7 @@ GitHub Actions 的 `Deploy CliRelay` 按节点逐台部署：
   - 主节点所在机器整台消失时，锁约 30 秒内释放，靠的是会话级 TCP keepalive。不设的话，Linux 默认要约 2 小时。
   - 以下维护任务只在主节点运行：账号状态探测、OpenRouter 价格同步、共享表的日志维护与保留、用量汇总追平、会话与审计清理、IP 规则清理、OAuth 会话与异步任务过期清理、warmup 策略调度。
 - **成员表** `cluster_nodes`：每 5 秒心跳一次。`GET /v0/management/cluster` 可以查看所有节点、主节点和在线数；每个响应都带 `X-CliRelay-Node`，标明请求落在哪台。
-- **节点资源快照**：每次心跳同时把本节点的资源快照（`internal/nodemetrics`，每 5 秒采一次）写进 `snapshot` 列，`GET /v0/management/cluster` 给每个节点带上 `snapshot`、`snapshot_at`；`GET /v0/management/config` 的 `capabilities` 里声明 `node-metrics`，面板只在有这个能力的版本上显示节点视图。快照包括：从 `/proc/stat` 算出的整机 CPU，执行（`busy_cores`）和被宿主机拿走的时间（`steal_cores`）分开；负载、内存；slot 所在 cgroup 的配额、用量与限流（`cpu.stat`、`cpu.max`、`memory.current/high/max`）；在途请求、最近一分钟的请求数与入 / 出字节；出口熔断；库与 Redis 的往返耗时；版本和启动时间。CPU（整机与 cgroup）取最近约 30 秒的平均，单个 5 秒步长抖动太大；`shared_redis`（configured、available、since）表示限流与会话粘性是集群共享，还是已退化为本机计数。整机 CPU 必须从 `/proc/stat` 算：内核没开 `CONFIG_PARAVIRT_TIME_ACCOUNTING` 时，cgroup 和进程的 CPU 都含 steal。单节点不写这张表，但同样在接口里报本机快照；读不到的字段（其他操作系统、cgroup v1 主机）留空。2026-11-17 起快照还有 `disks`（进程写入的各个文件系统），leader 的快照另有 `database`（PostgreSQL 服务本身）；没有节点的主机经 `cluster_hosts` 上报（见 4.10）。
+- **节点资源快照**：每次心跳同时把本节点的资源快照（`internal/nodemetrics`，每 5 秒采一次）写进 `snapshot` 列，`GET /v0/management/cluster` 给每个节点带上 `snapshot`、`snapshot_at`；`GET /v0/management/config` 的 `capabilities` 里声明 `node-metrics`，面板只在有这个能力的版本上显示节点视图。快照包括：从 `/proc/stat` 算出的整机 CPU，执行（`busy_cores`）和被宿主机拿走的时间（`steal_cores`）分开；负载、内存；slot 所在 cgroup 的配额、用量与限流（`cpu.stat`、`cpu.max`、`memory.current/high/max`）；在途请求、最近一分钟的请求数与入 / 出字节；出口熔断；到数据库的往返耗时；版本和启动时间。CPU（整机与 cgroup）取最近约 30 秒的平均，单个 5 秒步长抖动太大；限流与会话粘性在集群数据库可用时是全局共享的。整机 CPU 必须从 `/proc/stat` 算：内核没开 `CONFIG_PARAVIRT_TIME_ACCOUNTING` 时，cgroup 和进程的 CPU 都含 steal。单节点不写这张表，但同样在接口里报本机快照；读不到的字段（其他操作系统、cgroup v1 主机）留空。2026-11-17 起快照还有 `disks`（进程写入的各个文件系统），leader 的快照另有 `database`（PostgreSQL 服务本身）；没有节点的主机经 `cluster_hosts` 上报（见 4.10）。
 - **迁移锁**：数据库迁移、YAML 导入和各类回填都在集群级 advisory lock 下执行，两台同时升级也不会互相踩踏。
 
 ### 6.2 凭据（OAuth 账号）
@@ -400,7 +386,7 @@ GitHub Actions 的 `Deploy CliRelay` 按节点逐台部署：
 - **广播与按需重载**：每次写入在事务内广播，其他节点按类别只重载受影响的部分，约 300ms–1s 内生效。
   - 吊销、删除 API Key 只重建鉴权表，不重建执行器，所以不会打断 Codex 上游 WebSocket 会话。
   - 路由、代理池、价格、模型配置、IP 规则、租户各有自己的重载路径。
-- **原来只存在本机 YAML 的开关迁入数据库**：debug、request-retry、proxy-url 等 14 项，所有节点共用一份。节点本地的设置（端口、TLS、`auth-dir`、`postgres`、`redis`、`cluster`、`trusted-proxies`、`auto-update` 等）仍在各自的 YAML 里。
+- **原来只存在本机 YAML 的开关迁入数据库**：debug、request-retry、proxy-url 等 14 项，所有节点共用一份。节点本地的设置（端口、TLS、`auth-dir`、`postgres`、`cluster`、`trusted-proxies`、`auto-update` 等）仍在各自的 YAML 里。
 - **直接保存 `config.yaml`**：面板 YAML 编辑器提交的内容先检查、先写库，最后才写文件。被拒绝的保存不会改动数据库和 `config.yaml`。
   - 写了的运行时设置在一个事务里写进数据库。写入失败则整次保存被拒绝：版本冲突返回 409 `config_version_conflict`，其他失败返回 500。
   - `routing`、`proxy-pool`、`api-keys`、`api-key-entries`、`api-key-permission-profiles` 一旦数据库里有数据，就不再从文件写入。改动其中任何一段的保存返回 422 `config_yaml_database_owned_sections`，响应里列出这些段和各自的修改页面。和库里相同的 `routing`、`proxy-pool` 可以通过，公开的示例 API Key 也可以通过。数据库里还没有的段照旧导入：`routing`、`proxy-pool` 在保存后的重载时导入，其余在下次启动时导入。
@@ -415,16 +401,16 @@ GitHub Actions 的 `Deploy CliRelay` 按节点逐台部署：
 
 ### 6.5 全局限流、冷却同步与会话粘性
 
-这些是全局上限，数据放在集群数据库里；同时也配置了集群共享 Redis（`cluster.redis`）时优先用 Redis，计数密集的几项用它更省。
+这些是全局上限，数据放在集群数据库里。
 
 - **全局限流**：API Key 和终端用户的 RPM、TPM、并发，以及上游账号并发，都是全局上限。并发名额带租约，进程崩溃后到期自动回收。
-- **两种存储都不可用时**：自动退回本机计数，上限按"总上限 ÷ 在线节点数"执行，不会因为故障而放大限额。
+- **集群数据库不可用时**：自动退回本机计数，上限按"总上限 ÷ 在线节点数"执行，不会因为故障而放大限额。
 - **冷却同步**：某节点遇到 429、额度耗尽或上游故障而冷却某个账号或模型时，会广播给其他节点。接收方只延长、不缩短冷却，所以另一台不会继续打这个账号。
 - **会话粘性**：同一会话在两台节点上绑定到同一个账号，上游的 prompt cache 仍能命中。
 - **合成会话 ID**：由全集群只铸造一次，格式与原来一致。
 - **登录安全计数**：登录限流和 IP 自动封禁的计数在节点之间共享。
 
-在集群数据库上，Redis 脚本一次往返完成的判断，改为"取快照 → 在 Go 里判断 → 比较并交换写回"：竞争失败的节点重读后重试，不会漏计。两个后果值得知道：
+计数判断的做法是"取快照 → 在 Go 里判断 → 比较并交换写回"：竞争失败的节点重读后重试，不会漏计。两个后果值得知道：
 
 - **抢名额仍是单条语句**："还能不能再进一个并发请求"是一次 SQL 判断，两台节点不可能同时拿到最后一个名额。
 - **热点桶要重试**：登录限流和自动封禁的桶是一行数据，针对同一账号的密码猜测是最坏情况。重试次数有上限，桶持续竞争时本机计数仍会兜住（用完整阈值）。

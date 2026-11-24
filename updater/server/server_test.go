@@ -170,7 +170,7 @@ func TestPlanRequestIsExecutedAsWritten(t *testing.T) {
 			"tag": "dev",
 			"pull": ["cli-proxy-api"],
 			"stages": [
-				{"id": "dependencies", "services": ["postgres", "redis"], "wait_healthy": true, "optional": true},
+				{"id": "dependencies", "services": ["postgres", "cache"], "wait_healthy": true, "optional": true},
 				{"id": "application", "services": ["cli-proxy-api"], "wait_healthy": true, "no_deps": true, "weight": 2}
 			]
 		}

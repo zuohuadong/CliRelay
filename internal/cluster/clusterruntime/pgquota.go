@@ -12,7 +12,6 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedredis"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedstate"
 	pgredis "github.com/zuohuadong/pgredis-go"
 )
@@ -20,11 +19,11 @@ import (
 // Per-subject quota counters in the cluster database.
 //
 // Every node sees only part of a key's traffic, so per-node windows admit N
-// times the limit. The Redis version keeps one counter per wall-clock minute for
-// requests and one for tokens, and takes the trailing-minute value as the
-// current bucket plus the previous one weighted by the part of it still inside
-// the last minute. This adapter keeps the same buckets in PostgreSQL counters,
-// so the arithmetic the middleware applies is unchanged.
+// times the limit. This adapter keeps one counter per wall-clock minute for
+// requests and one for tokens in the cluster database, and takes the
+// trailing-minute value as the current bucket plus the previous one weighted by
+// the part of it still inside the last minute, so the arithmetic the middleware
+// applies is unchanged.
 //
 // Counting and slot-taking are no longer one round trip, and that is deliberate:
 // the window counters only feed a decision the caller re-checks against the
@@ -106,7 +105,7 @@ func (a *pgQuotaAdapter) ActiveNodes() int {
 // to take a concurrency slot.
 func (a *pgQuotaAdapter) AdmitRequest(ctx context.Context, subject string, concurrencyLimit int) (sharedstate.Admission, error) {
 	if !a.Available() {
-		return sharedstate.Admission{}, sharedredis.ErrUnavailable
+		return sharedstate.Admission{}, sharedstate.ErrUnavailable
 	}
 	if concurrencyLimit < 0 {
 		concurrencyLimit = 0
@@ -179,7 +178,7 @@ func (a *pgQuotaAdapter) AddTokens(subject string, tokens int64) {
 // Rates reads the trailing-minute windows of subjects, for the dashboard.
 func (a *pgQuotaAdapter) Rates(ctx context.Context, subjects []string) (map[string]sharedstate.Rate, error) {
 	if !a.Available() {
-		return nil, sharedredis.ErrUnavailable
+		return nil, sharedstate.ErrUnavailable
 	}
 	minute, elapsed := pgQuotaMinute(a.now())
 	weight := float64(int64(time.Minute/time.Millisecond)-elapsed) / float64(int64(time.Minute/time.Millisecond))
@@ -291,11 +290,11 @@ func pgQuotaMinute(now time.Time) (minute, elapsed int64) {
 // pgQuotaKey names one bucket. The subject is hashed: an API key or an end-user
 // identity is a secret and must not land in a key an operator can browse.
 func pgQuotaKey(subject, kind string, minute int64) string {
-	return "rl:" + sharedredis.HashPart(subject) + ":" + kind + ":" + strconv.FormatInt(minute, 10)
+	return "rl:" + sharedstate.HashPart(subject) + ":" + kind + ":" + strconv.FormatInt(minute, 10)
 }
 
 // pgQuotaSlotKey is the per-subject concurrency pool. The limit applies to the
 // subject's own pool only, which is why the key cannot be shared.
 func pgQuotaSlotKey(subject string) string {
-	return "quota-slots:" + sharedredis.HashPart(subject)
+	return "quota-slots:" + sharedstate.HashPart(subject)
 }

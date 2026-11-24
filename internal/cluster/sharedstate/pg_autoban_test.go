@@ -41,15 +41,14 @@ func autoBanScenario() []throttleStep {
 	return steps
 }
 
-// TestAutoBanPGPortMatchesRedis replays one source's failures through both
-// implementations and requires the same decision at every step.
-func TestAutoBanPGPortMatchesRedis(t *testing.T) {
-	env := newTestEnv(t)
-	store := env.node(t, "parity")
+// TestAutoBanPGStoreMatchesPolicy replays one source's failures through the
+// PostgreSQL store and the in-memory state machine it ports, and requires the
+// same decision at every step.
+func TestAutoBanPGStoreMatchesPolicy(t *testing.T) {
+	store := pgStoreTestStore(t)
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	env.clock.Set(start)
 	ctx := context.Background()
-	cidr := "203.0.113.0/24/" + unique(t, "autoban")
+	cidr := "203.0.113.0/24-" + time.Now().Format("150405.000000")
 	spec := autoBanTestSpec()
 
 	state := autoBanState{}
@@ -61,12 +60,12 @@ func TestAutoBanPGPortMatchesRedis(t *testing.T) {
 		case "charge":
 			want, err := store.AutoBanCharge(ctx, cidr, spec, now)
 			if err != nil {
-				t.Fatalf("step %d: redis charge: %v", i, err)
+				t.Fatalf("step %d: store charge: %v", i, err)
 			}
 			next, got, _ := autoBanChargeAdvance(state.clone(), spec, now)
 			state = next
 			if got != want {
-				t.Fatalf("step %d (charge):\n postgres %+v\n redis    %+v", i, got, want)
+				t.Fatalf("step %d (charge):\n store   %+v\n policy  %+v", i, got, want)
 			}
 			if want.Claimed {
 				claimed++
@@ -74,7 +73,7 @@ func TestAutoBanPGPortMatchesRedis(t *testing.T) {
 		case "mark":
 			until := now.Add(5 * time.Minute)
 			if err := store.AutoBanMark(ctx, cidr, until, now, spec.Retention); err != nil {
-				t.Fatalf("step %d: redis mark: %v", i, err)
+				t.Fatalf("step %d: store mark: %v", i, err)
 			}
 			next, _ := autoBanMarkAdvance(state.clone(), until, now, spec.Retention)
 			state = next

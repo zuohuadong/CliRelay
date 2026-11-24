@@ -7,15 +7,13 @@ import (
 	"time"
 
 	pgredis "github.com/zuohuadong/pgredis-go"
-
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedredis"
 )
 
 // Login throttle buckets in PostgreSQL.
 //
-// The Redis version decides in one Lua script; here the same decision is taken
-// in Go on a snapshot of the bucket and written back with compare-and-swap, so
-// a failure that loses a race re-reads and retries instead of going uncounted.
+// The decision is taken in Go on a snapshot of the bucket and written back with
+// compare-and-swap, so a failure that loses a race re-reads and retries instead
+// of going uncounted.
 // The state machine itself (sub-buckets, quiet-period reset, refusal while
 // blocked, escalating block ladder) is the Go copy below, and it is what the
 // tests exercise without a database.
@@ -29,8 +27,8 @@ import (
 // throttleRetries bounds the compare-and-swap loop for one charge.
 const throttleRetries = 24
 
-// throttleBucketState is the JSON payload of one bucket. Field names match the
-// Redis hash field names so a dump of either store reads the same way.
+// throttleBucketState is the JSON payload of one bucket. The short field names
+// keep the stored value small.
 type throttleBucketState struct {
 	Short        map[string]int `json:"s,omitempty"`
 	Long         map[string]int `json:"l,omitempty"`
@@ -39,15 +37,15 @@ type throttleBucketState struct {
 	LastActivity int64          `json:"la,omitempty"`
 }
 
-// throttleKey mirrors the Redis key layout, without the Redis-only prefix.
+// pgThrottleKey names the bucket's row.
 func pgThrottleKey(bucket string) string {
-	return "throttle:" + sharedredis.HashPart(bucket)
+	return "throttle:" + HashPart(bucket)
 }
 
 // ThrottleCharge charges one failure against bucket.
 func (s *PGStore) ThrottleCharge(ctx context.Context, bucket string, spec ThrottleSpec, now time.Time) (ThrottleState, error) {
 	if !s.Available() {
-		return ThrottleState{}, sharedredis.ErrUnavailable
+		return ThrottleState{}, ErrUnavailable
 	}
 	key := pgThrottleKey(bucket)
 	for attempt := 0; attempt < throttleRetries; attempt++ {
@@ -79,7 +77,7 @@ func (s *PGStore) ThrottleCharge(ctx context.Context, bucket string, spec Thrott
 // ThrottlePeek reports a bucket's standing without charging it.
 func (s *PGStore) ThrottlePeek(ctx context.Context, bucket string, spec ThrottleSpec, now time.Time) (ThrottleState, error) {
 	if !s.Available() {
-		return ThrottleState{}, sharedredis.ErrUnavailable
+		return ThrottleState{}, ErrUnavailable
 	}
 	var state throttleBucketState
 	if _, err := s.store.Get(ctx, pgThrottleKey(bucket), &state); err != nil {
@@ -92,7 +90,7 @@ func (s *PGStore) ThrottlePeek(ctx context.Context, bucket string, spec Throttle
 // ThrottleClear deletes a bucket, as a successful login does.
 func (s *PGStore) ThrottleClear(ctx context.Context, bucket string) error {
 	if !s.Available() {
-		return sharedredis.ErrUnavailable
+		return ErrUnavailable
 	}
 	_, err := s.store.Delete(ctx, pgThrottleKey(bucket))
 	return err
@@ -118,8 +116,7 @@ func (s throttleBucketState) clone() throttleBucketState {
 }
 
 // throttleAdvance applies one charge or peek and reports the resulting state,
-// the standing, and the TTL that keeps the row until it is next needed. It is a
-// direct port of the Lua decision in throttle.go.
+// the standing, and the TTL that keeps the row until it is next needed.
 func throttleAdvance(state throttleBucketState, charge bool, spec ThrottleSpec, now time.Time) (throttleBucketState, ThrottleState, time.Duration) {
 	nowMs := now.UnixMilli()
 	if charge {
@@ -228,8 +225,8 @@ func throttleCount(counts map[string]int, window ThrottleWindow, nowMs int64) in
 }
 
 // throttleKeep is how long the row must live: a live block always outlives the
-// retention, so the block is not forgotten early. A non-positive retention
-// would make the row immortal in Redis (PEXPIRE 0 deletes), so it is floored.
+// retention, so the block is not forgotten early. A non-positive retention is
+// floored so the row still expires.
 func throttleKeep(retention, block time.Duration) time.Duration {
 	ttl := retention
 	if block > ttl {

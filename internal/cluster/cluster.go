@@ -76,8 +76,8 @@ type Coordinator struct {
 	enabled bool
 	nodeID  string
 	// db is the runtime database the coordinator runs on, or nil when it has
-	// none. Cluster-wide state that has no Redis behind it (account slots) uses
-	// this pool instead of opening a second one.
+	// none. Cluster-wide state (slots, bindings, counters) uses this pool
+	// instead of opening a second one.
 	db *sql.DB
 	// version is the build reported for this node.
 	version string

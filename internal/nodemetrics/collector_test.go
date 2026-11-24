@@ -176,7 +176,7 @@ func TestCollectorLeavesOutWhatItCannotRead(t *testing.T) {
 	if !ok {
 		t.Fatal("a snapshot must be published even with nothing to read")
 	}
-	if snap.Host != nil || snap.Cgroup != nil || snap.DB != nil || snap.Redis != nil || snap.Egress != nil {
+	if snap.Host != nil || snap.Cgroup != nil || snap.DB != nil || snap.Egress != nil {
 		t.Fatalf("unreadable parts must be left out: %+v", snap)
 	}
 	raw, at := c.LatestJSON()
@@ -187,7 +187,7 @@ func TestCollectorLeavesOutWhatItCannotRead(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"host", "cgroup", "db", "redis", "egress"} {
+	for _, key := range []string{"host", "cgroup", "db", "egress"} {
 		if _, present := decoded[key]; present {
 			t.Fatalf("%s should be absent from %s", key, raw)
 		}
@@ -264,22 +264,22 @@ func TestCollectorTrafficWindowCoversTheLastMinute(t *testing.T) {
 
 func TestRoundTripReportsFailuresByKind(t *testing.T) {
 	ctx := context.Background()
-	if got := roundTrip(ctx, "", func(context.Context) (string, error) { return "", ErrNotConfigured }); got != nil {
+	if got := roundTrip(ctx, func(context.Context) error { return ErrNotConfigured }); got != nil {
 		t.Fatalf("a dependency that is not configured is left out, got %+v", got)
 	}
-	ok := roundTrip(ctx, "", func(context.Context) (string, error) { return "cluster", nil })
-	if ok.Role != "cluster" || ok.RTTMillis == nil || ok.Error != "" {
+	ok := roundTrip(ctx, func(context.Context) error { return nil })
+	if ok.RTTMillis == nil || ok.Error != "" {
 		t.Fatalf("success = %+v", ok)
 	}
-	slow := roundTrip(ctx, "", func(ctx context.Context) (string, error) {
+	slow := roundTrip(ctx, func(ctx context.Context) error {
 		<-ctx.Done()
-		return "usage", ctx.Err()
+		return ctx.Err()
 	})
-	if slow.Role != "usage" || slow.Error != "timeout" || slow.RTTMillis != nil {
+	if slow.Error != "timeout" || slow.RTTMillis != nil {
 		t.Fatalf("timeout = %+v", slow)
 	}
-	failed := roundTrip(ctx, "", func(context.Context) (string, error) {
-		return "", errors.New("dial tcp 198.51.100.9:55432: connect: connection refused (user=cliproxy)")
+	failed := roundTrip(ctx, func(context.Context) error {
+		return errors.New("dial tcp 198.51.100.9:55432: connect: connection refused (user=cliproxy)")
 	})
 	if failed.Error != "error" {
 		t.Fatalf("failure = %+v", failed)
@@ -293,26 +293,18 @@ func TestCollectorReportsDependenciesAndEgress(t *testing.T) {
 	c, _ := newTestCollector(t, t.TempDir())
 	since := testStart.Add(-time.Minute)
 	c.SetSources(Sources{
-		PingDB:    func(context.Context) error { return nil },
-		PingRedis: func(context.Context) (string, error) { return "", ErrNotConfigured },
+		PingDB: func(context.Context) error { return nil },
 		Egress: func() *Egress {
 			return &Egress{BreakerEnabled: true, BreakerOpen: 1, Unreachable: 1, OpenSince: &since, Check: &EgressCheck{Total: 4, Unreachable: 1}}
 		},
-		SharedRedis: func() *SharedRedis { return &SharedRedis{Configured: true, Available: false, Since: &since} },
 	})
 	c.sample(context.Background())
 	snap, _ := c.Latest()
-	if snap.DB == nil || snap.DB.RTTMillis == nil || snap.DB.Role != "" {
+	if snap.DB == nil || snap.DB.RTTMillis == nil {
 		t.Fatalf("db = %+v", snap.DB)
-	}
-	if snap.Redis != nil {
-		t.Fatalf("no Redis is configured, got %+v", snap.Redis)
 	}
 	if snap.Egress == nil || snap.Egress.BreakerOpen != 1 || snap.Egress.Check.Total != 4 {
 		t.Fatalf("egress = %+v", snap.Egress)
-	}
-	if shared := snap.SharedRedis; shared == nil || !shared.Configured || shared.Available || !shared.Since.Equal(since) {
-		t.Fatalf("shared redis = %+v, want configured and fallen back to local counting", shared)
 	}
 }
 

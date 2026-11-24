@@ -7,22 +7,20 @@ import (
 	"time"
 
 	pgredis "github.com/zuohuadong/pgredis-go"
-
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedredis"
 )
 
 // Auto-ban counters in PostgreSQL.
 //
-// Like the throttle, the Redis version decides in one Lua script and this port
-// takes the same decision in Go on a snapshot, writing it back with
-// compare-and-swap. The claim is what makes it correct across nodes: crossing
+// Like the throttle, the decision is taken in Go on a snapshot and written back
+// with compare-and-swap. The claim is what makes it correct across nodes: crossing
 // the threshold also takes a short lease on the source, so exactly one node
 // writes the deny rule, and the others see the source as already being handled.
 
 // autoBanRetries bounds the compare-and-swap loop for one charge.
 const autoBanRetries = 24
 
-// autoBanState is the JSON payload of one source, with the Redis field names.
+// autoBanState is the JSON payload of one source; the short field names keep
+// the stored value small.
 type autoBanState struct {
 	Failures     map[string]int `json:"s,omitempty"`
 	Bans         int            `json:"bc,omitempty"`
@@ -31,9 +29,9 @@ type autoBanState struct {
 	LastActivity int64          `json:"la,omitempty"`
 }
 
-// pgAutoBanKey mirrors the Redis key layout, without the Redis-only prefix. It
-// is kept readable, as in Redis: a network prefix is not a secret and an
-// operator clearing one source's history by hand needs to find it.
+// pgAutoBanKey names the source's row. It is kept readable: a network prefix is
+// not a secret and an operator clearing one source's history by hand needs to
+// find it.
 func pgAutoBanKey(cidr string) string {
 	return "autoban:" + cidr
 }
@@ -41,7 +39,7 @@ func pgAutoBanKey(cidr string) string {
 // AutoBanCharge charges one authentication failure against cidr.
 func (s *PGStore) AutoBanCharge(ctx context.Context, cidr string, spec AutoBanSpec, now time.Time) (AutoBanCharge, error) {
 	if !s.Available() {
-		return AutoBanCharge{}, sharedredis.ErrUnavailable
+		return AutoBanCharge{}, ErrUnavailable
 	}
 	key := pgAutoBanKey(cidr)
 	for attempt := 0; attempt < autoBanRetries; attempt++ {
@@ -70,7 +68,7 @@ func (s *PGStore) AutoBanCharge(ctx context.Context, cidr string, spec AutoBanSp
 // AutoBanMark records that cidr is banned until until.
 func (s *PGStore) AutoBanMark(ctx context.Context, cidr string, until, now time.Time, retention time.Duration) error {
 	if !s.Available() {
-		return sharedredis.ErrUnavailable
+		return ErrUnavailable
 	}
 	key := pgAutoBanKey(cidr)
 	for attempt := 0; attempt < autoBanRetries; attempt++ {

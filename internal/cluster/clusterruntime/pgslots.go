@@ -12,15 +12,11 @@ import (
 	pgredis "github.com/zuohuadong/pgredis-go"
 )
 
-// pgSlotAdapter counts per-account concurrency slots in the cluster database
-// instead of the cluster Redis.
+// pgSlotAdapter counts per-account concurrency slots in the cluster database.
 //
-// It implements the same AccountSlotCoordinator contract as the Redis-backed
-// store: the pool is a sorted set of members scored by expiry, and the "slot
-// left" decision is one statement (see pgredis.TryReserveSlot). It is installed
-// only when cluster mode is on, no cluster Redis is configured and the
-// PostgreSQL pool is available, so a deployment that already has Redis keeps
-// using it.
+// The pool is a set of members scored by expiry, and the "slot left" decision
+// is one statement (see pgredis.TryReserveSlot). It is installed whenever
+// cluster mode is on and the runtime database is available.
 type pgSlotAdapter struct {
 	store  *pgredis.Store
 	coord  func() *cluster.Coordinator

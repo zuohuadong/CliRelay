@@ -21,10 +21,11 @@ func TestDeployStopHeadroomCoversTheShutdownAfterTheDrain(t *testing.T) {
 		// The spool replayer finishes the write it is in the middle of before it
 		// stops: one attempt, requestLogWriteAttemptTimeout in internal/usage.
 		spoolReplayWrite = 10 * time.Second
-		// StopRedis waits out a periodic snapshot save that may be under way,
-		// then saves once more. With go-redis defaults a save against a server
-		// that stopped answering is four tries of a 3s read timeout.
-		redisSnapshotSaves = 2 * 4 * 3 * time.Second
+		// StopSnapshotStore waits out a periodic snapshot save that may be
+		// under way, then saves once more. Both write a row to the runtime
+		// database; against a server that stopped answering each is bounded by
+		// the pool's connect and statement timeouts, taken as 10s here.
+		snapshotSaves = 2 * 10 * time.Second
 		// CloseDB waits for the request log maintenance, which has to stop
 		// within one statement of the cancel (kittors/CliRelay#1266); the
 		// statements it runs without a ctx are short.
@@ -32,7 +33,7 @@ func TestDeployStopHeadroomCoversTheShutdownAfterTheDrain(t *testing.T) {
 	)
 	// This package's own bounds: closing the cluster credential store (cluster
 	// mode only) and waiting for the queued usage records.
-	need := clusterAuthCloseTimeout + usageSpoolStopTimeout + spoolReplayWrite + redisSnapshotSaves + maintenanceStatement
+	need := clusterAuthCloseTimeout + usageSpoolStopTimeout + spoolReplayWrite + snapshotSaves + maintenanceStatement
 
 	if headroom := deployScriptSeconds(t, "SHUTDOWN_STOP_HEADROOM_SECONDS"); headroom < need {
 		t.Fatalf("SHUTDOWN_STOP_HEADROOM_SECONDS is %s, but the shutdown after the drain may take %s; systemd would SIGKILL it first", headroom, need)

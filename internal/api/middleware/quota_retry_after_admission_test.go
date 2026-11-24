@@ -343,10 +343,10 @@ func TestEveryRefusalIsClassifiedForRetryAfter(t *testing.T) {
 func TestClusterEstimatedRefusalsHaveNoRetryAfter(t *testing.T) {
 	t.Run("rpm", func(t *testing.T) {
 		resetQuotaMiddlewareState(t)
-		cluster := newQuotaCluster(t, 2)
+		cluster := installFakeClusterQuota(t, 2)
 		router := quotaRouter(map[string]string{"rpm-limit": "4"}, nil)
 		for i := 0; i < 3; i++ {
-			if _, err := cluster.peer.AdmitRequest(bg(), retryAfterSubject, 0); err != nil {
+			if _, err := cluster.AdmitRequest(bg(), retryAfterSubject, 0); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -355,13 +355,12 @@ func TestClusterEstimatedRefusalsHaveNoRetryAfter(t *testing.T) {
 	})
 	t.Run("tpm", func(t *testing.T) {
 		resetQuotaMiddlewareState(t)
-		cluster := newQuotaCluster(t, 2)
+		cluster := installFakeClusterQuota(t, 2)
 		router := quotaRouter(map[string]string{"tpm-limit": "1000"}, nil)
 		mustPass(t, postQuota(router))
 		RecordTokenUsage(retryAfterSubject, 600)
-		cluster.self.Flush()
-		cluster.peer.AddTokens(retryAfterSubject, 500)
-		cluster.peer.Flush()
+		cluster.AddTokens(retryAfterSubject, 500)
+		cluster.Flush()
 		assertRefusedWithoutRetryAfter(t, postQuota(router), "tpm_limit_exceeded")
 	})
 }
@@ -370,9 +369,9 @@ func TestClusterEstimatedRefusalsHaveNoRetryAfter(t *testing.T) {
 // window, and that window can say when it opens again.
 func TestClusterNodeShareRefusalKeepsRetryAfter(t *testing.T) {
 	resetQuotaMiddlewareState(t)
-	cluster := newQuotaCluster(t, 2)
+	cluster := installFakeClusterQuota(t, 2)
 	router := quotaRouter(map[string]string{"rpm-limit": "4"}, nil)
-	cluster.mr.Close()
+	cluster.setAvailable(false)
 	mustPass(t, postQuota(router))
 	mustPass(t, postQuota(router))
 	rec := postQuota(router) // the node's share of 4 across 2 nodes is 2

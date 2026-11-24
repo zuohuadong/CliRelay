@@ -62,10 +62,13 @@ services:
 	if !ok || !containsAnyString(volumes, "${CLIRELAY_PROJECT_DIR:-/opt/clirelay}:/clirelay-deploy") {
 		t.Fatalf("clirelay service missing /clirelay-deploy volume: %#v\n%s", clirelay["volumes"], upgraded)
 	}
-	for _, name := range []string{"clirelay-init", "postgres", "redis", "clirelay-updater"} {
+	for _, name := range []string{"clirelay-init", "postgres", "clirelay-updater"} {
 		if _, ok := services[name]; !ok {
 			t.Fatalf("upgraded compose missing service %s:\n%s", name, upgraded)
 		}
+	}
+	if _, ok := services["redis"]; ok {
+		t.Fatalf("upgraded compose still contains the Redis service:\n%s", upgraded)
 	}
 	if _, ok := services["clirelay-migrate"]; ok {
 		t.Fatalf("upgraded compose still contains SQLite migration service:\n%s", upgraded)
@@ -117,7 +120,7 @@ networks:
 		t.Fatalf("target service missing:\n%s", upgraded)
 	}
 	wantNetworks := target["networks"]
-	for _, name := range []string{"postgres", "redis", "clirelay-updater"} {
+	for _, name := range []string{"postgres", "clirelay-updater"} {
 		service, ok := stringMap(services[name])
 		if !ok {
 			t.Fatalf("service %s missing:\n%s", name, upgraded)
@@ -174,10 +177,13 @@ func TestEnsureRuntimeDataStackConfigUpgradesStackWithoutInitService(t *testing.
 	if err != nil {
 		t.Fatalf("read env: %v", err)
 	}
-	for _, want := range []string{"CLIRELAY_UPDATER_TOKEN=", "CLIRELAY_POSTGRES_DSN=postgres://", "CLIRELAY_REDIS_ENABLE=true"} {
+	for _, want := range []string{"CLIRELAY_UPDATER_TOKEN=", "CLIRELAY_POSTGRES_DSN=postgres://"} {
 		if !strings.Contains(string(envData), want) {
 			t.Fatalf("env missing %q:\n%s", want, envData)
 		}
+	}
+	if strings.Contains(string(envData), "CLIRELAY_REDIS") {
+		t.Fatalf("env must not carry Redis settings anymore:\n%s", envData)
 	}
 }
 
@@ -227,7 +233,6 @@ func TestEnsureRuntimeEnvFileReplacesWorkspaceProjectDir(t *testing.T) {
 	if err := os.WriteFile(envPath, []byte(strings.Join([]string{
 		"CLIRELAY_PROJECT_DIR=/workspace",
 		"CLIRELAY_POSTGRES_DATA_PATH=/workspace/postgres-data",
-		"CLIRELAY_REDIS_DATA_PATH=/workspace/redis-data",
 		"",
 	}, "\n")), 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
@@ -245,7 +250,6 @@ func TestEnsureRuntimeEnvFileReplacesWorkspaceProjectDir(t *testing.T) {
 	for _, want := range []string{
 		"CLIRELAY_PROJECT_DIR=/root/cliproxy\n",
 		"CLIRELAY_POSTGRES_DATA_PATH=/root/cliproxy/postgres-data\n",
-		"CLIRELAY_REDIS_DATA_PATH=/root/cliproxy/redis-data\n",
 		"AUTH_PATH=/CLIProxyAPI/auths\n",
 	} {
 		if !strings.Contains(content, want) {

@@ -192,7 +192,7 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 }
 
 // A drain that uses the whole grace still leaves the process its own shutdown
-// to run: queued usage records written or spooled, the Redis snapshot saved,
+// to run: queued usage records written or spooled, the usage snapshot saved,
 // the database closed. With TimeoutStopSec equal to the grace, systemd
 // SIGKILLed the slot the moment its drain ran out. The unit's stop timeout is
 // the grace in effect on the node plus a fixed headroom, so a node that raises

@@ -2,34 +2,45 @@ package ipaccess
 
 import (
 	"context"
+	"database/sql"
+	"os"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedredis"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedstate"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	pgredis "github.com/zuohuadong/pgredis-go"
 )
 
-func installClusterAutoBan(t *testing.T) *miniredis.Miniredis {
+// installClusterAutoBan needs a real server: the shared counters live in the
+// cluster database.
+func installClusterAutoBan(t *testing.T) *sql.DB {
 	t.Helper()
-	mr := miniredis.RunT(t)
-	client, err := sharedredis.New(config.ClusterRedisConfig{Addr: mr.Addr()}, sharedredis.Options{
-		NodeID: "self", HealthInterval: 20 * time.Millisecond,
-		MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, StableAfter: time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
+	dsn := os.Getenv("PGREDIS_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGREDIS_TEST_DSN is not set")
 	}
-	client.Start()
-	store := sharedstate.New(client, sharedstate.Options{NodeID: "self"})
-	SetClusterAutoBanStore(store)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		t.Skipf("postgres unreachable: %v", err)
+	}
+	store := pgredis.New(db, pgredis.Options{Namespace: "ipaccess-autoban-test", TablePrefix: "clirelay"})
+	if err := store.EnsureSchema(ctx); err != nil {
+		_ = db.Close()
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	SetClusterAutoBanStore(sharedstate.NewPGStore(store))
 	t.Cleanup(func() {
 		SetClusterAutoBanStore(nil)
-		store.Close()
-		client.Close()
+		_ = db.Close()
 	})
-	return mr
+	return db
 }
 
 func TestClusterAutoBanCountsFailuresFromEveryNode(t *testing.T) {
@@ -57,13 +68,13 @@ func TestClusterAutoBanCountsFailuresFromEveryNode(t *testing.T) {
 }
 
 func TestClusterAutoBanFallsBackToLocalCounting(t *testing.T) {
-	mr := installClusterAutoBan(t)
+	db := installClusterAutoBan(t)
 	policy := DefaultPolicy()
 	policy.AutoBan.FailureThreshold = 3
 	node := testRegistry(t, policy)
 	source := trustedAddress("203.0.113.41")
 
-	mr.Close()
+	_ = db.Close()
 	var out AutoBanOutcome
 	for i := 0; i < 3; i++ {
 		out = node.AutoBan().RecordFailure(context.Background(), source, "test")

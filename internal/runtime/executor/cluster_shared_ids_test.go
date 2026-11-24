@@ -2,38 +2,59 @@ package executor
 
 import (
 	"context"
+	"database/sql"
+	"os"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedredis"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedstate"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	pgredis "github.com/zuohuadong/pgredis-go"
 )
 
-func installSharedIDs(t *testing.T) (*miniredis.Miniredis, *sharedstate.Store) {
+// executorSharedIDsNamespace is shared by every store these tests open, so a
+// second connection sees what the first one wrote.
+const executorSharedIDsNamespace = "executor-shared-ids-test"
+
+// openExecutorSharedStore needs a real server: the cluster-wide identifiers
+// live in the cluster database.
+func openExecutorSharedStore(t *testing.T) (*sql.DB, *sharedstate.PGStore) {
 	t.Helper()
-	mr := miniredis.RunT(t)
-	client, err := sharedredis.New(config.ClusterRedisConfig{Addr: mr.Addr()}, sharedredis.Options{
-		NodeID: "self", HealthInterval: 20 * time.Millisecond,
-		MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, StableAfter: time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
+	dsn := os.Getenv("PGREDIS_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGREDIS_TEST_DSN is not set")
 	}
-	client.Start()
-	store := sharedstate.New(client, sharedstate.Options{NodeID: "self"})
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		t.Skipf("postgres unreachable: %v", err)
+	}
+	store := pgredis.New(db, pgredis.Options{Namespace: executorSharedIDsNamespace, TablePrefix: "clirelay"})
+	if err := store.EnsureSchema(ctx); err != nil {
+		_ = db.Close()
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	return db, sharedstate.NewPGStore(store)
+}
+
+func installSharedIDs(t *testing.T) (*sql.DB, *sharedstate.PGStore) {
+	t.Helper()
+	db, store := openExecutorSharedStore(t)
 	SetSharedIDMinter(store)
 	resetSyntheticIDCaches()
 	t.Cleanup(func() {
 		SetSharedIDMinter(nil)
 		resetSyntheticIDCaches()
-		store.Close()
-		client.Close()
+		_ = db.Close()
 	})
-	return mr, store
+	return db, store
 }
 
 // resetSyntheticIDCaches empties this process's caches, which is what a
@@ -97,48 +118,46 @@ func TestCloakedUserIDIsClusterWide(t *testing.T) {
 }
 
 func TestAdoptedCodexIDExpiresWithTheSharedCopy(t *testing.T) {
-	mr, _ := installSharedIDs(t)
+	_, store := installSharedIDs(t)
 	auth := sharedIDTestAuth()
-	first := codexSyntheticSessionID(auth, "gpt-5.5", "seed")
-	mr.FastForward(40 * time.Minute)
+	key := codexPromptCacheMapKey(auth, "gpt-5.5", "seed")
+	ttl := 5 * time.Minute
+	seeded, err := store.MintID(context.Background(), sharedIDNamespaceCodex, key, uuid.NewString(), ttl, false)
+	if err != nil || seeded.ID == "" {
+		t.Fatalf("seed: %+v %v", seeded, err)
+	}
 	resetSyntheticIDCaches()
-	if got := codexSyntheticSessionID(auth, "gpt-5.5", "seed"); got != first {
-		t.Fatalf("adopted id = %q, want %q", got, first)
+	if got := codexSyntheticSessionID(auth, "gpt-5.5", "seed"); got != seeded.ID {
+		t.Fatalf("adopted id = %q, want %q", got, seeded.ID)
 	}
 	codexCacheMu.RLock()
-	entry := codexCacheMap[codexPromptCacheMapKey(auth, "gpt-5.5", "seed")]
+	entry := codexCacheMap[key]
 	codexCacheMu.RUnlock()
-	if left := time.Until(entry.Expire); left > 21*time.Minute || left < 19*time.Minute || !entry.Shared {
-		t.Fatalf("a node adopting an id must expire it with the shared copy (~20m left), got %s shared=%v", left, entry.Shared)
+	if left := time.Until(entry.Expire); left > ttl || left < ttl-30*time.Second || !entry.Shared {
+		t.Fatalf("a node adopting an id must expire it with the shared copy (~%s left), got %s shared=%v", ttl, left, entry.Shared)
 	}
 }
 
 func TestSyntheticIDsFallBackToLocalMintingAndReconcile(t *testing.T) {
-	mr, store := installSharedIDs(t)
+	db, _ := installSharedIDs(t)
 	auth := sharedIDTestAuth()
 	key := codexPromptCacheMapKey(auth, "gpt-5.5", "seed")
 
-	mr.Close()
+	// The cluster database goes away: minting falls back to this process.
+	_ = db.Close()
 	local := codexSyntheticSessionID(auth, "gpt-5.5", "seed")
 	if parsed, err := uuid.Parse(local); err != nil || parsed.Version() != 7 {
 		t.Fatalf("local fallback must keep the format, got %q", local)
 	}
 	if again := codexSyntheticSessionID(auth, "gpt-5.5", "seed"); again != local {
-		t.Fatal("the local cache still keeps the conversation stable while Redis is down")
+		t.Fatal("the local cache still keeps the conversation stable while the database is down")
 	}
 
-	// Meanwhile another node minted its own id for the same conversation.
-	if err := mr.Restart(); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	for !store.Available() {
-		if time.Now().After(deadline) {
-			t.Fatal("store did not recover")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	other, err := store.MintID(bg(), sharedIDNamespaceCodex, key, uuid.NewString(), time.Hour, false)
+	// Meanwhile another node minted the cluster's id for the same
+	// conversation; a new connection and store stand in for recovery.
+	_, recovered := openExecutorSharedStore(t)
+	SetSharedIDMinter(recovered)
+	other, err := recovered.MintID(bg(), sharedIDNamespaceCodex, key, uuid.NewString(), time.Hour, false)
 	if err != nil || other.ID == local {
 		t.Fatalf("setup: %+v %v", other, err)
 	}

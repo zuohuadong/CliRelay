@@ -37,7 +37,7 @@ func samplePlan() *protocol.Plan {
 		Prepare:     &protocol.PrepareStep{Command: []string{"clirelay-init-env"}},
 		Pull:        []string{"cli-proxy-api"},
 		Stages: []protocol.Stage{
-			{ID: "dependencies", Services: []string{"postgres", "redis"}, Optional: true, WaitHealthy: true},
+			{ID: "dependencies", Services: []string{"postgres", "cache"}, Optional: true, WaitHealthy: true},
 			{ID: "application", Services: []string{"cli-proxy-api"}, WaitHealthy: true, Weight: 2},
 		},
 	}
@@ -129,11 +129,11 @@ func TestStageTrackerPercentWithinNeverRegresses(t *testing.T) {
 }
 
 func TestPresentServicesFiltersToWhatTheDeploymentDefines(t *testing.T) {
-	available := map[string]struct{}{"cli-proxy-api": {}, "redis": {}}
+	available := map[string]struct{}{"cli-proxy-api": {}, "cache": {}}
 
-	got := presentServices([]string{"postgres", "redis"}, available)
-	if len(got) != 1 || got[0] != "redis" {
-		t.Errorf("presentServices = %v, want [redis]", got)
+	got := presentServices([]string{"postgres", "cache"}, available)
+	if len(got) != 1 || got[0] != "cache" {
+		t.Errorf("presentServices = %v, want [cache]", got)
 	}
 
 	// A nil availability set means compose could not be queried; attempting every

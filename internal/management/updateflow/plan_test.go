@@ -92,12 +92,11 @@ func TestBuildUpdatePlanPreparesViaAnAllowlistedCommand(t *testing.T) {
 
 func TestBuildUpdatePlanHonoursServiceNameOverrides(t *testing.T) {
 	t.Setenv("CLIRELAY_POSTGRES_SERVICE", "db")
-	t.Setenv("CLIRELAY_REDIS_SERVICE", "cache")
 	t.Setenv("CLIRELAY_UPDATER_SERVICE", "my-updater")
 
 	plan := BuildUpdatePlan(validCheck())
-	if got := plan.Stages[0].Services; got[0] != "db" || got[1] != "cache" {
-		t.Errorf("dependency services = %v, want the overrides", got)
+	if got := plan.Stages[0].Services; len(got) != 1 || got[0] != "db" {
+		t.Errorf("dependency services = %v, want the override", got)
 	}
 	if plan.SelfRefreshService != "my-updater" {
 		t.Errorf("SelfRefreshService = %q, want my-updater", plan.SelfRefreshService)

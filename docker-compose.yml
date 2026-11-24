@@ -57,8 +57,6 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     restart: unless-stopped
 
   clirelay-updater:
@@ -94,21 +92,6 @@ services:
       - ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:/clirelay-deploy
     healthcheck:
       test: ["CMD-SHELL", ". /clirelay-deploy/.env; pg_isready -U \"$$CLIRELAY_POSTGRES_USER\" -d \"$$CLIRELAY_POSTGRES_DB\""]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    depends_on:
-      clirelay-init:
-        condition: service_completed_successfully
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - ${CLIRELAY_REDIS_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/redis-data}:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 20

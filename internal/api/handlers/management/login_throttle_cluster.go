@@ -14,15 +14,16 @@ import (
 // Each node's throttle only sees the guesses that reach it, so spreading a
 // guessing run over N nodes used to buy N times the budget. With a
 // ClusterThrottleStore installed, failures are counted and blocks armed in
-// the shared Redis, with the same windows, ladder and reset rules as the
+// the shared store, with the same windows, ladder and reset rules as the
 // in-memory throttle, and every node enforces them.
 //
 // The in-memory throttle keeps running underneath: failures are recorded
-// there too, a block this node armed is enforced without asking Redis (so a
-// client hammering a closed door costs no round trip), and it is what the
-// node falls back to when the shared store is unavailable. The thresholds are
-// not divided by the node count in that case: the throttle guards against
-// guessing, and per-node limits are the pre-cluster behaviour.
+// there too, a block this node armed is enforced without asking the shared
+// store (so a client hammering a closed door costs no round trip), and it is
+// what the node falls back to when the shared store is unavailable. The
+// thresholds are not divided by the node count in that case: the throttle
+// guards against guessing, and per-node limits are the pre-cluster
+// behaviour.
 
 // ClusterThrottleStore shares login throttle buckets between nodes.
 type ClusterThrottleStore interface {

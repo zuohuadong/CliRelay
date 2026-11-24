@@ -47,15 +47,6 @@ postgres:
   max-open-conns: 16
   max-idle-conns: 4
 
-# Optional Redis 7+. Only an accelerator: the cluster-wide counters and the
-# usage snapshot it can hold are also kept in PostgreSQL, so leaving it off is
-# a supported configuration rather than a degraded one.
-redis:
-  enable: false
-  addr: "127.0.0.1:6379"
-  password: ""
-  db: 0
-
 # Riding out a short database outage (a restart or a primary failover).
 # All fields are optional; the defaults below apply when the block is absent.
 # db-resilience:

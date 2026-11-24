@@ -3,7 +3,7 @@
 #
 # Shows: etcd members, the Patroni topology (roles, lag, timeline), settings
 # that make the primary fragile, the local CliRelay slot and its readiness,
-# and — when run on the arbiter — the base backups and the shared Redis.
+# and — when run on the arbiter — the base backups.
 # Every section degrades to a short "n/a" line when the component is not
 # installed on this host.
 set -uo pipefail
@@ -84,10 +84,3 @@ else
   echo "  n/a"
 fi
 
-section "Shared Redis"
-if have_container clirelay-cluster-redis; then
-  docker exec clirelay-cluster-redis sh -c 'redis-cli --tls --cacert /tls/ca.crt --cert /tls/node.crt --key /tls/node.key -p 6380 -a "$(cat /proc/1/cmdline | tr "\0" "\n" | grep -A1 -- --requirepass | tail -1)" --no-auth-warning INFO memory' 2>/dev/null \
-    | grep -E '^used_memory_human|^maxmemory_human' | sed 's/^/  /'
-else
-  echo "  n/a"
-fi

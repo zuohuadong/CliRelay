@@ -13,9 +13,6 @@ POSTGRES_DB="${CLIRELAY_POSTGRES_DB:-cliproxy}"
 POSTGRES_USER="${CLIRELAY_POSTGRES_USER:-cliproxy}"
 POSTGRES_PORT="${CLIRELAY_POSTGRES_PORT:-55432}"
 POSTGRES_DATA_PATH="${CLIRELAY_POSTGRES_DATA_PATH:-${STACK_DIR}/postgres-data}"
-REDIS_PORT="${CLIRELAY_REDIS_PORT:-56379}"
-REDIS_DATA_PATH="${CLIRELAY_REDIS_DATA_PATH:-${STACK_DIR}/redis-data}"
-REDIS_DB="${CLIRELAY_REDIS_DB:-0}"
 
 fail() {
 	echo "$*" >&2
@@ -53,7 +50,7 @@ compose() {
 }
 
 write_compose_file() {
-	mkdir -p "$STACK_DIR" "$POSTGRES_DATA_PATH" "$REDIS_DATA_PATH"
+	mkdir -p "$STACK_DIR" "$POSTGRES_DATA_PATH"
 	cat > "$COMPOSE_FILE" <<'EOF'
 services:
   postgres:
@@ -73,35 +70,12 @@ services:
       retries: 30
     restart: unless-stopped
 
-  redis:
-    image: ${CLIRELAY_REDIS_IMAGE:-redis:7-alpine}
-    command:
-      - sh
-      - -c
-      - |
-        if [ -n "$${CLIRELAY_REDIS_PASSWORD:-}" ]; then
-          exec redis-server --appendonly yes --requirepass "$${CLIRELAY_REDIS_PASSWORD}"
-        fi
-        exec redis-server --appendonly yes
-    environment:
-      CLIRELAY_REDIS_PASSWORD: ${CLIRELAY_REDIS_PASSWORD:-}
-    ports:
-      - "127.0.0.1:${CLIRELAY_REDIS_PORT:-56379}:6379"
-    volumes:
-      - ${CLIRELAY_REDIS_DATA_PATH:?CLIRELAY_REDIS_DATA_PATH is required}:/data
-    healthcheck:
-      test: ["CMD-SHELL", "if [ -n \"$${CLIRELAY_REDIS_PASSWORD:-}\" ]; then REDISCLI_AUTH=\"$${CLIRELAY_REDIS_PASSWORD}\" redis-cli ping; else redis-cli ping; fi"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-    restart: unless-stopped
 EOF
 }
 
 write_stack_env_file() {
 	postgres_password="${CLIRELAY_POSTGRES_PASSWORD:-$(stack_env_value CLIRELAY_POSTGRES_PASSWORD)}"
 	postgres_password="${postgres_password:-$(random_hex)}"
-	redis_password="${CLIRELAY_REDIS_PASSWORD:-$(stack_env_value CLIRELAY_REDIS_PASSWORD)}"
 	postgres_dsn="postgres://${POSTGRES_USER}:${postgres_password}@127.0.0.1:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable"
 
 	mkdir -p "$(dirname "$STACK_ENV")"
@@ -121,12 +95,6 @@ write_stack_env_file() {
 		printf 'CLIRELAY_POSTGRES_PORT=%s\n' "$POSTGRES_PORT"
 		printf 'CLIRELAY_POSTGRES_DATA_PATH=%s\n' "$POSTGRES_DATA_PATH"
 		printf 'CLIRELAY_POSTGRES_DSN=%s\n' "$postgres_dsn"
-		printf 'CLIRELAY_REDIS_ENABLE=true\n'
-		printf 'CLIRELAY_REDIS_ADDR=127.0.0.1:%s\n' "$REDIS_PORT"
-		printf 'CLIRELAY_REDIS_PASSWORD=%s\n' "$redis_password"
-		printf 'CLIRELAY_REDIS_DB=%s\n' "$REDIS_DB"
-		printf 'CLIRELAY_REDIS_PORT=%s\n' "$REDIS_PORT"
-		printf 'CLIRELAY_REDIS_DATA_PATH=%s\n' "$REDIS_DATA_PATH"
 		printf '%s\n' "# END CLIRELAY RUNTIME DATA STACK"
 	} >> "$tmp"
 	chmod 600 "$tmp"
@@ -168,7 +136,7 @@ reset_stack() {
 	[ "${CLIRELAY_RUNTIME_CONFIRM_RESET:-}" = "YES_DELETE_CLIRELAY_RUNTIME_DATA" ] || \
 		fail "set CLIRELAY_RUNTIME_CONFIRM_RESET=YES_DELETE_CLIRELAY_RUNTIME_DATA to reset"
 	compose down --remove-orphans || true
-	rm -rf "$POSTGRES_DATA_PATH" "$REDIS_DATA_PATH"
+	rm -rf "$POSTGRES_DATA_PATH"
 	echo "reset complete"
 }
 
@@ -178,21 +146,13 @@ case "$ACTION" in
 		write_compose_file
 		compose up -d
 		wait_healthy postgres
-		wait_healthy redis
 		compose exec -T -e PGPASSWORD="$(stack_env_value CLIRELAY_POSTGRES_PASSWORD)" postgres \
 			psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -q -c 'SELECT 1' >/dev/null
-		redis_password="$(stack_env_value CLIRELAY_REDIS_PASSWORD)"
-		if [ -n "$redis_password" ]; then
-			compose exec -T -e REDISCLI_AUTH="$redis_password" redis redis-cli ping >/dev/null
-		else
-			compose exec -T redis redis-cli ping >/dev/null
-		fi
 		echo "runtime data stack is ready"
 		echo "stack env file: $STACK_ENV"
 		echo "app env file: $APP_ENV (not modified; run '$0 activate-env' to switch CliRelay)"
 		echo "compose file: $COMPOSE_FILE"
 		echo "postgres dsn: postgres://${POSTGRES_USER}:***@127.0.0.1:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable"
-		echo "redis addr: 127.0.0.1:${REDIS_PORT}"
 		;;
 	activate-env)
 		activate_app_env

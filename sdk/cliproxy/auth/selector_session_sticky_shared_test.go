@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// fakeAffinityStore mimics the shared Redis bindings: a map every process
+// fakeAffinityStore mimics the shared affinity bindings: a map every process
 // sees, with the lookup/bind/release semantics of the real scripts.
 type fakeAffinityStore struct {
 	mu       sync.Mutex

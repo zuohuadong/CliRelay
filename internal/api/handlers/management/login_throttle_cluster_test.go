@@ -2,46 +2,59 @@ package management
 
 import (
 	"context"
+	"database/sql"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedredis"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedstate"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	pgredis "github.com/zuohuadong/pgredis-go"
 )
 
-// countingThrottleStore counts shared peeks, to show which checks reach Redis.
+// countingThrottleStore counts shared peeks, to show which checks reach the
+// shared store.
 type countingThrottleStore struct {
-	*sharedstate.Store
+	*sharedstate.PGStore
 	peeks atomic.Int64
 }
 
 func (s *countingThrottleStore) ThrottlePeek(ctx context.Context, bucket string, spec sharedstate.ThrottleSpec, now time.Time) (sharedstate.ThrottleState, error) {
 	s.peeks.Add(1)
-	return s.Store.ThrottlePeek(ctx, bucket, spec, now)
+	return s.PGStore.ThrottlePeek(ctx, bucket, spec, now)
 }
 
-func installClusterThrottle(t *testing.T) (*miniredis.Miniredis, *countingThrottleStore) {
+// installClusterThrottle needs a real server: the shared state lives in the
+// cluster database.
+func installClusterThrottle(t *testing.T) (*sql.DB, *countingThrottleStore) {
 	t.Helper()
-	mr := miniredis.RunT(t)
-	client, err := sharedredis.New(config.ClusterRedisConfig{Addr: mr.Addr()}, sharedredis.Options{
-		NodeID: "self", HealthInterval: 20 * time.Millisecond,
-		MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, StableAfter: time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
+	dsn := os.Getenv("PGREDIS_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGREDIS_TEST_DSN is not set")
 	}
-	client.Start()
-	store := &countingThrottleStore{Store: sharedstate.New(client, sharedstate.Options{NodeID: "self"})}
-	SetClusterThrottleStore(store)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		t.Skipf("postgres unreachable: %v", err)
+	}
+	store := pgredis.New(db, pgredis.Options{Namespace: "mgmt-throttle-test", TablePrefix: "clirelay"})
+	if err := store.EnsureSchema(ctx); err != nil {
+		_ = db.Close()
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	wrapped := &countingThrottleStore{PGStore: sharedstate.NewPGStore(store)}
+	SetClusterThrottleStore(wrapped)
 	t.Cleanup(func() {
 		SetClusterThrottleStore(nil)
-		store.Close()
-		client.Close()
+		_ = db.Close()
 	})
-	return mr, store
+	return db, wrapped
 }
 
 func TestClusterLoginThrottleCountsFailuresFromEveryNode(t *testing.T) {
@@ -69,7 +82,7 @@ func TestClusterLoginThrottleCountsFailuresFromEveryNode(t *testing.T) {
 	}
 }
 
-func TestClusterLoginThrottleLocalBlockSkipsRedis(t *testing.T) {
+func TestClusterLoginThrottleLocalBlockSkipsSharedStore(t *testing.T) {
 	_, store := installClusterThrottle(t)
 	node := newTestThrottle(nil)
 	key := accountThrottleKey(scopeUserAccount, "bob")
@@ -82,7 +95,7 @@ func TestClusterLoginThrottleLocalBlockSkipsRedis(t *testing.T) {
 		t.Fatalf("expected a block: %+v", d)
 	}
 	if store.peeks.Load() != before {
-		t.Fatal("a block this node armed itself must be enforced without a Redis round trip")
+		t.Fatal("a block this node armed itself must be enforced without a shared round trip")
 	}
 	if d := node.evaluate(accountThrottleKey(scopeUserAccount, "carol"), now); d.Outcome != outcomeAllow || store.peeks.Load() != before+1 {
 		t.Fatalf("an unblocked bucket consults the cluster: %+v peeks=%d", d, store.peeks.Load())
@@ -116,20 +129,19 @@ func TestClusterLoginThrottleSuccessClearsSharedBucket(t *testing.T) {
 // without the shared store each node counts on its own, with the full
 // thresholds rather than a share of them.
 func TestClusterLoginThrottleFallsBackToLocalThresholds(t *testing.T) {
-	mr, store := installClusterThrottle(t)
+	db, _ := installClusterThrottle(t)
 	node := newTestThrottle(nil)
 	key := accountThrottleKey(scopeUserAccount, "erin")
 	now := time.Now()
 
-	mr.Close()
+	// The database goes away: every shared call fails and the node falls back
+	// to its local throttle.
+	_ = db.Close()
 	var d throttleDecision
 	for i := 0; i < defaultAccountFailureLimit-1; i++ {
 		if d = node.recordFailure(key, now); d.Outcome != outcomeAllow {
 			t.Fatalf("failure %d below the full threshold = %+v", i+1, d)
 		}
-	}
-	if store.Available() {
-		t.Fatal("store must have noticed the outage")
 	}
 	if d = node.recordFailure(key, now); d.Outcome == outcomeAllow {
 		t.Fatalf("the full local threshold still arms a block: %+v", d)

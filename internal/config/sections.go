@@ -7,14 +7,6 @@ type PostgresConfig struct {
 	MaxIdleConns int    `yaml:"max-idle-conns,omitempty" json:"max-idle-conns,omitempty"`
 }
 
-// RedisConfig holds the configuration for connecting to a Redis instance for data persistence.
-type RedisConfig struct {
-	Enable   bool   `yaml:"enable" json:"enable"`
-	Addr     string `yaml:"addr" json:"addr"`
-	Password string `yaml:"password" json:"password"`
-	DB       int    `yaml:"db" json:"db"`
-}
-
 // TLSConfig holds HTTPS server settings.
 type TLSConfig struct {
 	// Enable toggles HTTPS server mode.

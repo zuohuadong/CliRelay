@@ -209,7 +209,7 @@ func TestPlanValidateNormalizesWeightsAndPreservesOrder(t *testing.T) {
 		Tag:         "dev",
 		Pull:        []string{" cli-proxy-api "},
 		Stages: []Stage{
-			{ID: "deps", Services: []string{"postgres", "redis"}, Optional: true},
+			{ID: "deps", Services: []string{"postgres", "cache"}, Optional: true},
 			{ID: "app", Services: []string{"cli-proxy-api"}, Weight: 3, WaitHealthy: true},
 		},
 	}

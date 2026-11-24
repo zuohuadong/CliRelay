@@ -20,9 +20,10 @@ import (
 // The identifier is still generated here, in exactly the format it always had
 // (UUIDv7 where it was v7, v4 where it was v4, the Claude Code user_id shape):
 // the shape of these identifiers is part of the client fingerprint and must
-// not change because of clustering. Redis only decides which candidate wins.
-// The per-process caches stay in front of it, and when Redis cannot be
-// reached identifiers are minted locally exactly as before.
+// not change because of clustering. The shared store only decides which
+// candidate wins. The per-process caches stay in front of it, and when the
+// shared store cannot be reached identifiers are minted locally exactly as
+// before.
 
 // SharedIDMinter mints synthetic identifiers once per cluster.
 type SharedIDMinter interface {
@@ -54,7 +55,8 @@ const (
 
 	// userIDSharedTouchInterval is how often a node that keeps reusing a
 	// cached user_id refreshes the shared copy. The user_id TTL slides on
-	// use, and a node answering from its own cache never reaches Redis, so
+	// use, and a node answering from its own cache never reaches the shared
+	// store, so
 	// without the refresh the shared copy would expire under a conversation
 	// that is still active and the next node to miss would mint a new one.
 	userIDSharedTouchInterval = 5 * time.Minute

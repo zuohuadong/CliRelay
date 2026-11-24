@@ -43,7 +43,6 @@ Single-instance behaviour is exactly what it was before clustering existed. This
                arbiter (hk-relay): serves no user traffic
                 ├ etcd member (the third vote that prevents two primaries)
                 ├ clirelay-dnswatch: probes every node every 10 s, edits DNS
-                ├ shared cluster Redis (global rate limits, affinity, minted IDs)
                 └ daily base backups + continuous WAL archive (restore to any moment in 7 days)
 ```
 
@@ -52,7 +51,6 @@ Every connection between machines uses **mutual TLS** with certificates from a p
 - etcd;
 - PostgreSQL replication and remote clients;
 - the Patroni REST API;
-- the shared Redis;
 - the nginx spill-over port.
 
 No VPN and no firewall rules are needed. That matters because some VPS providers drop all inbound UDP, which rules out WireGuard-style overlays.
@@ -77,7 +75,7 @@ Numbers come from a rehearsal with the production settings: Patroni 4.1.5, Postg
 | Failed node comes back | `pg_rewind` removes its divergent tail and it rejoins as the synchronous replica | No manual step |
 | Synchronous replica stalls or hangs (host I/O stall, frozen VM) | Commits on the primary wait for it: as long as a short stall lasts, at most 15–19 s for a replica that never answers, after which the primary continues asynchronously | API requests do not wait on commits (usage is queued and spooled); management writes wait |
 | Arbiter down | Service continues; etcd still has 2 of 3 votes; DNS stops being updated automatically | None |
-| Shared Redis down | Nodes count locally and enforce `limit / active nodes` | Limits become approximate for a while |
+| Shared store unreachable | Nodes count locally and enforce `limit / active nodes` | Limits become approximate for a while |
 
 ## 4. Deploying a cluster
 
@@ -92,7 +90,7 @@ deploy/cluster/tls/gen-cluster-certs.sh <secure-dir> \
 
 - **Validity and usage.** The CA is valid for 10 years and node certificates for 5 years. Node certificates carry both `serverAuth` and `clientAuth`, and their SANs are the node name, `127.0.0.1` and the public IP.
 - **Keep `ca.key` off the servers.** A machine gets only `ca.crt`, `node.crt` and `node.key`, in `/etc/clirelay-cluster/tls/`, owned by root, with the key at `0600`.
-- **Per-service copies.** PostgreSQL (uid 70 in its container) and the shared Redis (uid 999) each get their own copy with matching ownership: `/etc/clirelay-cluster/tls-pg/` and `/etc/clirelay-cluster/tls-redis/`.
+- **Per-service copy.** PostgreSQL (uid 70 in its container) gets its own copy with matching ownership: `/etc/clirelay-cluster/tls-pg/`.
 - **Adding a node.** Run the script again: it keeps the CA and existing certificates and issues only the new node's.
 
 ### 4.2 etcd (one member per machine)
@@ -172,14 +170,9 @@ This is how production moved. The old primary was never restarted.
 
 `deploy/cluster/lab/lab.sh` rehearses the whole sequence on any Docker host, with a throwaway CA and no published ports.
 
-### 4.4 Shared cluster Redis (arbiter)
+### 4.4 No extra data services
 
-`deploy/cluster/redis/docker-compose.yml`:
-
-- TLS port 6380 only, with client certificates required, plus a password;
-- 256 MB, `volatile-lru`, no persistence.
-
-It holds only disposable data. When it is unreachable, nodes fall back to local limits.
+The cluster needs nothing beyond PostgreSQL and etcd: cluster-wide rate limits and concurrency slots, session affinity, minted identifiers, login throttles and auto-ban counters all live in the cluster database. When it is unreachable, nodes fall back to local limits.
 
 ### 4.5 CliRelay node settings
 
@@ -194,16 +187,7 @@ CLIRELAY_CLUSTER_NODE_ID=n43                     # unique per node
 CLIRELAY_HOST=127.0.0.1
 # multi-host DSN: local host first; target_session_attrs=read-write finds the primary
 CLIRELAY_POSTGRES_DSN=postgres://cliproxy:<password>@127.0.0.1:55432,198.51.100.20:55432/cliproxy?target_session_attrs=read-write&sslmode=verify-ca&sslrootcert=/etc/clirelay-cluster/tls/ca.crt&sslcert=/etc/clirelay-cluster/tls/node.crt&sslkey=/etc/clirelay-cluster/tls/node.key&connect_timeout=5
-# shared cluster Redis
-CLIRELAY_CLUSTER_REDIS_ADDR=103.231.58.53:6380
-CLIRELAY_CLUSTER_REDIS_PASSWORD=<password>
-CLIRELAY_CLUSTER_REDIS_TLS_CA_FILE=/etc/clirelay-cluster/tls/ca.crt
-CLIRELAY_CLUSTER_REDIS_TLS_CERT_FILE=/etc/clirelay-cluster/tls/node.crt
-CLIRELAY_CLUSTER_REDIS_TLS_KEY_FILE=/etc/clirelay-cluster/tls/node.key
-CLIRELAY_CLUSTER_REDIS_TLS_SERVER_NAME=relay
 ```
-
-The top-level `redis` block stays a node-local instance and is independent of `cluster.redis`.
 
 ### 4.6 nginx: local first, spill over to the peer
 
@@ -354,8 +338,8 @@ When the arbiter or the other node stays offline and etcd is left with a single 
 - **An offline node rejoins by itself as soon as it boots.** The containers are `restart: unless-stopped`: once the machine is back, Patroni starts, registers, rewinds and becomes the synchronous replica, and it can be elected primary the next time the primary demotes itself. As soon as you can reach that machine, turn the restart policy off and stop the containers:
 
   ```bash
-  docker update --restart=no clirelay-patroni clirelay-etcd clirelay-cluster-redis
-  docker stop -t 60 clirelay-patroni clirelay-etcd clirelay-cluster-redis
+  docker update --restart=no clirelay-patroni clirelay-etcd
+  docker stop -t 60 clirelay-patroni clirelay-etcd
   ```
 
   If it has already rejoined, run the two commands there, then delete its member key on the primary's host. Within one loop (10 s) the failsafe list holds only the primary:
@@ -372,12 +356,12 @@ When the arbiter or the other node stays offline and etcd is left with a single 
     --set synchronous_mode=false --set ttl=60 --set retry_timeout=20 --force
   ```
 
-- **With one application node left, drop the shared Redis and the nginx spill-over.** When the shared Redis lives on another machine, every hiccup of the link makes the counter calls on the request path wait out their 200 ms timeout before falling back to local counters, and the log keeps repeating `marked unavailable`; with a single node, the local counters are exact anyway. With no application on the peer, spilling over only makes a timed-out request fail a second time (see 4.6).
+- **With one application node left, drop the nginx spill-over.** With no application on the peer, spilling over only makes a timed-out request fail a second time (see 4.6).
 - **Going back to two members, in order:** restore the third etcd vote. Remove the machines that are gone from the configuration: `ETCD_HOSTS` and `PEER_CIDRS` in each node's `node.env`, `BACKUP_HOSTS` and `WAL_ARCHIVE_DSN` in the arbiter's `backup.env`. Turn `failsafe_mode` off. Only then start the second member. A member that runs no CliRelay gets `NOFAILOVER=true` and `NOSYNC=true` in its `node.env`, so the primary never lands where every query crosses the network.
 
 The `Risks` section of `deploy/cluster/bin/cluster-status.sh` flags both dangerous combinations: failsafe on with more than one member, and fewer than three etcd members with failsafe off.
 
-What happened on 2026-09-28 (UTC+8; single etcd vote, failsafe on, synchronous replication on): hk-relay, offline for three days after running out of traffic, booted and rejoined the cluster on its own. At 01:46 n43 lost its local etcd, the failsafe call to hk-relay timed out, and n43 demoted itself. hk-relay was primary for about nine hours, so every query from CliRelay on n43 crossed the network. n43 took the primary back at 10:43, then restarted twice more for the same reason, at 10:49 and 11:06. Meanwhile every commit waited for hk-relay, and the application's calls to the shared Redis on hk-relay kept timing out. Removing hk-relay as described above restored service; the WAL showed that no committed transaction was lost.
+What happened on 2026-09-28 (UTC+8; single etcd vote, failsafe on, synchronous replication on): hk-relay, offline for three days after running out of traffic, booted and rejoined the cluster on its own. At 01:46 n43 lost its local etcd, the failsafe call to hk-relay timed out, and n43 demoted itself. hk-relay was primary for about nine hours, so every query from CliRelay on n43 crossed the network. n43 took the primary back at 10:43, then restarted twice more for the same reason, at 10:49 and 11:06. Meanwhile every commit waited for hk-relay, and the application's queries to the remote primary kept timing out. Removing hk-relay as described above restored service; the WAL showed that no committed transaction was lost.
 
 ## 6. How the application stays correct across nodes
 
@@ -393,7 +377,7 @@ In cluster mode all nodes share one database. Every piece of state that used to 
   - Session-level TCP keepalives release it within about 30 s when the leader's machine vanishes, instead of Linux's roughly 2-hour default.
   - Leader-only work: account status probes, the OpenRouter price sync, shared-table log maintenance and retention, the usage rollup catch-up, session and audit cleanup, IP-rule cleanup, expiry of OAuth sessions and async jobs, and warmup scheduling.
 - **Membership.** `cluster_nodes` receives a heartbeat every 5 s. `GET /v0/management/cluster` lists the nodes, the leader and the active count, and every response carries `X-CliRelay-Node`.
-- **Node snapshots.** Each heartbeat also stores the node's resource snapshot (`internal/nodemetrics`, taken every 5 s) in the `snapshot` column, and `GET /v0/management/cluster` returns it on every node (`snapshot`, `snapshot_at`); `GET /v0/management/config` declares `capabilities.node-metrics` so the panel shows the node view only on builds that have it. It holds host CPU split into running (`busy_cores`) and stolen (`steal_cores`) time from `/proc/stat`, load, memory, the slot's cgroup quota, usage and throttling (`cpu.stat`, `cpu.max`, `memory.current/high/max`), in-flight requests, requests and bytes over the last minute, the egress breaker, the database and Redis round trips, the version and the start time. CPU figures (host and cgroup) are averaged over about the last 30 s, since one 5-second step jumps around; the shared Redis state (`shared_redis`: configured, available, since) shows whether limits are cluster-wide or have fallen back to this node. Host CPU is read from `/proc/stat` because on a kernel without `CONFIG_PARAVIRT_TIME_ACCOUNTING` the cgroup and process CPU include steal. A single node writes nothing to the table but reports its own snapshot the same way. Fields that cannot be read (another OS, a cgroup v1 host) are left out. Since 2026-11-17 the snapshot also has `disks` (the filesystems the process writes to) and, on the leader only, `database` (the PostgreSQL server); hosts without a node report through `cluster_hosts` (see 4.10).
+- **Node snapshots.** Each heartbeat also stores the node's resource snapshot (`internal/nodemetrics`, taken every 5 s) in the `snapshot` column, and `GET /v0/management/cluster` returns it on every node (`snapshot`, `snapshot_at`); `GET /v0/management/config` declares `capabilities.node-metrics` so the panel shows the node view only on builds that have it. It holds host CPU split into running (`busy_cores`) and stolen (`steal_cores`) time from `/proc/stat`, load, memory, the slot's cgroup quota, usage and throttling (`cpu.stat`, `cpu.max`, `memory.current/high/max`), in-flight requests, requests and bytes over the last minute, the egress breaker, the database round trip, the version and the start time. CPU figures (host and cgroup) are averaged over about the last 30 s, since one 5-second step jumps around. Limits are cluster-wide while the cluster database is reachable. Host CPU is read from `/proc/stat` because on a kernel without `CONFIG_PARAVIRT_TIME_ACCOUNTING` the cgroup and process CPU include steal. A single node writes nothing to the table but reports its own snapshot the same way. Fields that cannot be read (another OS, a cgroup v1 host) are left out. Since 2026-11-17 the snapshot also has `disks` (the filesystems the process writes to) and, on the leader only, `database` (the PostgreSQL server); hosts without a node report through `cluster_hosts` (see 4.10).
 - **Migration lock.** Migrations, YAML imports and backfills run under a cluster-wide advisory lock, so two nodes upgrading together never race.
 
 ### 6.2 Credentials (OAuth accounts)
@@ -414,7 +398,7 @@ In cluster mode all nodes share one database. Every piece of state that used to 
 - **Broadcast and reload.** Every write is broadcast inside its transaction. Other nodes reload only the affected domain, within about 300 ms to 1 s.
   - Revoking or deleting an API key rebuilds only the auth map, never the executors, so Codex upstream WebSocket sessions survive.
   - Routing, proxy pool, pricing, model configs, IP rules and tenants each have their own reload path.
-- **Toggles that were YAML-only now live in the database**, shared by all nodes: 14 of them, including `debug`, `request-retry` and `proxy-url`. Node-local settings stay in each node's YAML: port, TLS, `auth-dir`, `postgres`, `redis`, `cluster`, `trusted-proxies`, `auto-update`.
+- **Toggles that were YAML-only now live in the database**, shared by all nodes: 14 of them, including `debug`, `request-retry` and `proxy-url`. Node-local settings stay in each node's YAML: port, TLS, `auth-dir`, `postgres`, `cluster`, `trusted-proxies`, `auto-update`.
 - **Raw `config.yaml` saves.** A save from the panel's YAML editor is checked and stored before the file is written. A rejected save changes neither the database nor `config.yaml`.
   - Runtime settings it spells out are stored in one transaction. If that fails, the whole save is rejected: a conflict returns `409 config_version_conflict`; any other failure returns 500.
   - `routing`, `proxy-pool`, `api-keys`, `api-key-entries` and `api-key-permission-profiles` are not stored from the file once the database holds them. A save that changes one returns `422 config_yaml_database_owned_sections`, naming each section and the page where it is edited. A copy of the stored `routing` or `proxy-pool` passes, and so do the published example API keys. A section the database does not hold yet is still imported, by the reload after the save (`routing`, `proxy-pool`) or by the next start (the others).
@@ -433,16 +417,16 @@ In cluster mode all nodes share one database. Every piece of state that used to 
 
 ### 6.5 Global limits, cooldown sharing and session affinity
 
-These are cluster-wide caps. They run on the cluster database, and on the shared cluster Redis (`cluster.redis`) when one is also configured, which is the cheaper option for the counter-heavy ones:
+These are cluster-wide caps. They run on the cluster database:
 
 - **Rate limits.** API-key and end-user RPM, TPM and concurrency, and upstream-account concurrency, are cluster-wide. Concurrency slots are leases, so a crashed process frees them when they expire.
-- **Without either store.** When neither the cluster database nor the shared Redis is usable, nodes count locally and enforce `limit / active nodes`, so an outage never multiplies a limit.
+- **Without the cluster database.** When it is not usable, nodes count locally and enforce `limit / active nodes`, so an outage never multiplies a limit.
 - **Cooldowns.** A node that cools down an account or model after a 429, an exhausted quota or an upstream failure announces it. Peers only ever extend their own cooldown, so the other node stops hitting that account too.
 - **Session affinity.** A session is bound to the same account on every node, so the upstream prompt cache keeps hitting.
 - **Synthetic session IDs** are minted once per cluster, with unchanged formats.
 - **Security counters.** Login-throttle and IP auto-ban counters are shared.
 
-On the cluster database, the decisions that a Redis script makes in one round trip are made in Go on a snapshot and written back with compare-and-swap, so a node that loses a race re-reads and retries rather than dropping an increment. Two consequences are worth knowing:
+The counter decisions are made in Go on a snapshot and written back with compare-and-swap, so a node that loses a race re-reads and retries rather than dropping an increment. Two consequences are worth knowing:
 
 - **Slot taking stays one statement.** The scarcity decision, "is there room for one more concurrent request", is a single SQL statement, so two nodes can never both take the last slot.
 - **Contended buckets cost retries.** A login-throttle or auto-ban bucket is one row, so a guessing run against one account is the worst case. The retry loop is bounded and the node-local counters still answer, with the full threshold, if a bucket stays contended.

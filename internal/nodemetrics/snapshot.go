@@ -2,7 +2,7 @@
 // runs on are doing: host CPU split into running and stolen time, load,
 // memory, the filesystems it writes to, the process's cgroup quota, usage and
 // throttling, in-flight requests, request and byte counts, the egress
-// breaker, and the round trips to the database and Redis. Cluster nodes
+// breaker, and the round trip to the database. Cluster nodes
 // publish the latest snapshot with their membership heartbeat so the console
 // can show every node; a single node reports its own. The leader also
 // samples the PostgreSQL server itself (DatabaseProbe), and a host without a
@@ -25,8 +25,9 @@ package nodemetrics
 import "time"
 
 // SchemaVersion is the snapshot layout. It changes when a field changes
-// meaning or goes away; new fields alone keep it.
-const SchemaVersion = 1
+// meaning or goes away; new fields alone keep it. 2 removed the Redis round
+// trip and the shared-Redis state, which left with the Redis dependency.
+const SchemaVersion = 2
 
 // Snapshot is one sample of the process and its machine.
 type Snapshot struct {
@@ -51,10 +52,6 @@ type Snapshot struct {
 	Traffic Traffic    `json:"traffic"`
 	Egress  *Egress    `json:"egress,omitempty"`
 	DB      *RoundTrip `json:"db,omitempty"`
-	Redis   *RoundTrip `json:"redis,omitempty"`
-	// SharedRedis is the cluster Redis as this node's limits see it; left
-	// out on a single node.
-	SharedRedis *SharedRedis `json:"shared_redis,omitempty"`
 	// Database is the state of the PostgreSQL server itself (see Database).
 	// Only the leader samples it, so only the leader's snapshot has it.
 	Database *Database `json:"database,omitempty"`
@@ -181,24 +178,8 @@ type EgressCheck struct {
 	Unreachable int `json:"unreachable"`
 }
 
-// SharedRedis is the state of the cluster Redis, which makes rate limits,
-// concurrency slots, session affinity and minted ids cluster-wide.
-type SharedRedis struct {
-	// Configured is false in cluster mode without cluster.redis: limits are
-	// then split across the active nodes and affinity stays per node.
-	Configured bool `json:"configured"`
-	// Available is false while a configured Redis is unreachable: this node
-	// has fallen back to counting on its own.
-	Available bool `json:"available"`
-	// Since is when Available last changed.
-	Since *time.Time `json:"since,omitempty"`
-}
-
 // RoundTrip is the latest round trip to a dependency.
 type RoundTrip struct {
-	// Role says which Redis was measured: "cluster" for the shared cluster
-	// Redis, "usage" for usage persistence. Empty for the database.
-	Role string `json:"role,omitempty"`
 	// RTTMillis is set when the round trip succeeded.
 	RTTMillis *float64 `json:"rtt_ms,omitempty"`
 	// Error is "timeout" or "error" when it failed. The cause stays out of

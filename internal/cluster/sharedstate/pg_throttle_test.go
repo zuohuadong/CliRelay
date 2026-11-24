@@ -49,22 +49,18 @@ func throttleTestSpec() ThrottleSpec {
 	}
 }
 
-// TestThrottlePGPortMatchesRedis runs the same attack against the Redis script
-// and the PostgreSQL port and requires the same standing at every step. The
-// port exists to behave identically, so agreement is the assertion.
-func TestThrottlePGPortMatchesRedis(t *testing.T) {
-	env := newTestEnv(t)
-	store := env.node(t, "parity")
-	env.clock.Set(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+// TestThrottlePGStoreMatchesPolicy runs the same attack against the PostgreSQL
+// store and the in-memory state machine it ports, and requires the same
+// standing at every step.
+func TestThrottlePGStoreMatchesPolicy(t *testing.T) {
+	store := pgStoreTestStore(t)
 	ctx := context.Background()
-	key := unique(t, "throttle")
+	key := "throttle-" + time.Now().Format("150405.000000")
 	spec := throttleTestSpec()
 
 	state := throttleBucketState{}
-	redisKey := throttleKey(key)
-	_ = redisKey
 
-	now := env.clock.Now()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	armed, escalated := 0, 0
 	for i, step := range throttleScenario() {
 		now = now.Add(step.advance)
@@ -81,7 +77,7 @@ func TestThrottlePGPortMatchesRedis(t *testing.T) {
 			continue
 		}
 		if err != nil {
-			t.Fatalf("step %d (%s): redis: %v", i, step.op, err)
+			t.Fatalf("step %d (%s): store: %v", i, step.op, err)
 		}
 		next, got, _ := throttleAdvance(state, step.op == "charge", spec, now)
 		if step.op == "charge" {
@@ -94,7 +90,7 @@ func TestThrottlePGPortMatchesRedis(t *testing.T) {
 			}
 		}
 		if got != want {
-			t.Fatalf("step %d (%s at +%v):\n postgres %+v\n redis    %+v", i, step.op, now.Format("15:04:05.000"), got, want)
+			t.Fatalf("step %d (%s at +%v):\n store   %+v\n policy  %+v", i, step.op, now.Format("15:04:05.000"), got, want)
 		}
 	}
 	// The scenario must actually reach the interesting states, or the parity

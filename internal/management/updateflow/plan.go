@@ -16,7 +16,6 @@ const (
 	applicationStageID = "application"
 
 	defaultPostgresService = "postgres"
-	defaultRedisService    = "redis"
 	defaultUpdaterService  = "clirelay-updater"
 
 	// applicationWaitTimeoutSeconds bounds how long compose waits for the
@@ -67,7 +66,7 @@ func BuildUpdatePlan(check *CheckResponse) *protocol.Plan {
 		Stages: []protocol.Stage{
 			{
 				ID:          dependencyStageID,
-				Services:    []string{envOrDefault("CLIRELAY_POSTGRES_SERVICE", defaultPostgresService), envOrDefault("CLIRELAY_REDIS_SERVICE", defaultRedisService)},
+				Services:    []string{envOrDefault("CLIRELAY_POSTGRES_SERVICE", defaultPostgresService)},
 				WaitHealthy: true,
 				// Skipped on deployments that predate the data stack rather than
 				// failing them.

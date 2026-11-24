@@ -85,10 +85,9 @@ SHUTDOWN_GRACE_SECONDS=300
 # and none of it shares the grace's deadline: in cluster mode it closes the
 # shared credential store (up to 10s); it writes the usage records still
 # queued, or spools them (up to 30s); it waits for the spool replayer's
-# current write (up to 10s); it saves the usage snapshot to Redis, which with
-# go-redis defaults is four 3s tries against a server that stopped answering,
-# possibly twice since the periodic save may be under way; and it stops the
-# request log maintenance, which ends within one statement. Until 2026.11.10.1
+# current write (up to 10s); it saves the usage snapshot to the runtime
+# database, possibly twice since the periodic save may be under way; and it
+# stops the request log maintenance, which ends within one statement. Until 2026.11.10.1
 # TimeoutStopSec equalled the grace, so a drain that ran out was SIGKILLed on
 # the spot and the queued usage records went with it. Not a node setting: the
 # binary's shutdown sizes it, and that is the same on every node.
@@ -113,7 +112,7 @@ GO_MEM_LIMIT_PERCENT=85
 # The SERVICE_* resource limits may also arrive from the workflow. The node's
 # file wins: it is root-managed on the machine the limits are for, while the
 # workflow's values are one repository-wide setting for nodes whose memory
-# differs by half, one of which also hosts PostgreSQL, etcd and Redis.
+# differs by half, one of which also hosts PostgreSQL and etcd.
 DEPLOY_ENV_KEYS='DOMAIN NODE_PUBLIC_IP SMOKE_LOCAL_TLS_ADDR NGINX_CONF NGINX_SEARCH_DIRS NGINX_CONTAINER SLOT_USER SLOT_GROUP DRAIN_SECONDS SHUTDOWN_GRACE_SECONDS HEALTH_TIMEOUT_SECONDS SMOKE_TIMEOUT_SECONDS MIN_AVAILABLE_MB GO_MEM_LIMIT_PERCENT SERVICE_CPU_QUOTA SERVICE_MEMORY_HIGH SERVICE_MEMORY_MAX SERVICE_TASKS_MAX SERVICE_GO_MEM_LIMIT'
 
 # setting_is_valid checks a DEPLOY_ENV_FILE value against the shape its setting
@@ -390,16 +389,6 @@ env_path="$APP_ENV_FILE"
 postgres_dsn="$(read_env_scalar CLIRELAY_POSTGRES_DSN "$env_path")"
 postgres_dsn="${postgres_dsn:-$(read_config_scalar postgres dsn)}"
 [ -n "$postgres_dsn" ] || fail "postgres.dsn or CLIRELAY_POSTGRES_DSN is required before deploying this runtime data stack"
-
-redis_enable="$(read_env_scalar CLIRELAY_REDIS_ENABLE "$env_path")"
-redis_enable="${redis_enable:-$(read_config_scalar redis enable)}"
-case "$(printf '%s' "$redis_enable" | tr '[:upper:]' '[:lower:]')" in
-true | yes | 1)
-	redis_addr="$(read_env_scalar CLIRELAY_REDIS_ADDR "$env_path")"
-	redis_addr="${redis_addr:-$(read_config_scalar redis addr)}"
-	[ -n "$redis_addr" ] || fail "redis.addr or CLIRELAY_REDIS_ADDR is required when redis is enabled"
-	;;
-esac
 
 # resolve_slot_identity picks the account the slot runs as. The slot unit used
 # to copy User=/Group= from the base unit and nothing else, so on a node

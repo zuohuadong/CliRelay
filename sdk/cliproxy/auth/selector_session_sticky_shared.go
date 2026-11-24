@@ -17,7 +17,7 @@ import (
 // and is what selection falls back to when the store cannot be reached.
 //
 // Bindings name accounts by AffinityAccountRef, never by auth ID: the store
-// lives outside this process (in production a Redis on another machine), and
+// lives outside this process (the cluster database), and
 // auth IDs are credential file names that often carry the account's e-mail.
 type SessionAffinityStore interface {
 	// Lookup returns the binding for key, counts this request against it and

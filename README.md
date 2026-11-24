@@ -58,7 +58,7 @@ CliRelay turns AI CLI subscriptions, OAuth credentials, provider API keys and Op
 
 It is built to be **run by a team**. Tenants keep their accounts, keys and data apart; users get roles with fine-grained permissions; every security-sensitive change lands in an audit log; and portal accounts let end users hold several API keys and check their own usage without asking an admin.
 
-PostgreSQL 15+ is the source of truth for runtime data. Redis 7+ holds caches, locks, rate limits, queues and other rebuildable state.
+PostgreSQL 15+ is the runtime's only data store: request logs, usage rollups, cluster-wide limits and slots, session affinity and the usage snapshot all live in it.
 
 ## Highlights
 
@@ -98,8 +98,7 @@ flowchart LR
     clients --> auth
     exec --> oauth
     exec --> keys
-    relay -. "request logs, usage rollups" .-> pg[("PostgreSQL")]
-    relay -. "cache, locks, limits" .-> rd[("Redis")]
+    relay -. "logs, usage, cluster state" .-> pg[("PostgreSQL")]
 ```
 
 1. **Authenticate.** A client key resolves to its portal account and permission profile, which decide the allowed channel groups, models and quotas.
@@ -126,7 +125,7 @@ The control panel ([kittors/codeProxy](https://github.com/kittors/codeProxy)) is
   - Six tiles cover requests, success rate, P95 latency, time to first token, tokens with cache hit rate, and cost — each with a period-over-period change and a sparkline.
   - Below them: a trend view, the latency distribution (P50 / P90 / P95 / P99), failures by channel, model or portal user, model / channel / user rankings, a traffic-flow diagram and a weekday × hour heatmap. Click any row to filter the whole page.
 - **Dashboard** summarises requests, success rate, tokens, cost, failures and cache ratio for today, 7 or 30 days, next to a live system monitor (CPU, memory, disk, database and log storage).
-  - **Server nodes** puts every node on one screen: a compact card each with CPU (running and stolen by the hypervisor), memory, the fullest disk, the slot's quota and throttling, traffic, egress and the database and Redis round trips. Anything off — steal, a filling disk, a slow dependency, a fallen-back shared Redis, an offline node — colours its card; the details, every disk with inodes and time-to-full included, open in place.
+  - **Server nodes** puts every node on one screen: a compact card each with CPU (running and stolen by the hypervisor), memory, the fullest disk, the slot's quota and throttling, traffic, egress and the database round trip. Anything off — steal, a filling disk, a slow dependency, a failed shared store, an offline node — colours its card; the details, every disk with inodes and time-to-full included, open in place.
   - Next to them, a **Database** card: connections against the limit, size, WAL, replication slots and the archive connection, long and idle transactions, lock waits, cache hit ratio and transaction ID age, read by the leader every 30 s, plus the database host's CPU and disks from `clirelay-hostagent` (see [multi-instance deployment §4.10](docs/multi-instance-deployment.md#410-node-disk-and-database-monitoring)).
 - **Request logs** list every call with its channel, portal user and key, cache / input / output tokens, latency and cost. Filter by user, model, channel and status, and open the request and response bodies when body storage is enabled.
 
@@ -230,7 +229,7 @@ The control panel ([kittors/codeProxy](https://github.com/kittors/codeProxy)) is
 
 ## Quick start
 
-Docker Compose is the recommended installation. It starts CliRelay, PostgreSQL 15, Redis 7 and the updater sidecar.
+Docker Compose is the recommended installation. It starts CliRelay, PostgreSQL 15 and the updater sidecar.
 
 ```bash
 git clone https://github.com/kittors/CliRelay.git
@@ -359,7 +358,7 @@ CliRelay/
 | Layer | Technology |
 | :-- | :-- |
 | Runtime | Go 1.26, Gin, Docker Compose |
-| Data | PostgreSQL 15+ via Ent, Redis 7+ for rebuildable state |
+| Data | PostgreSQL 15+ via Ent for all runtime state |
 | Proxy core | OpenAI Chat Completions and Responses, Anthropic Messages, Gemini; SSE and WebSocket |
 | Operations | `/manage` web panel, Bubble Tea terminal UI, updater sidecar |
 
@@ -371,7 +370,7 @@ CliRelay/
 | [Management API](https://help.router-for.me/management/api) | REST reference for the management endpoints |
 | [Amp CLI](https://help.router-for.me/agent-client/amp-cli.html) | Using Amp CLI and IDE extensions with CliRelay |
 | [Production checklist](docs/production-checklist.md) | Shared gateways and NAS installations |
-| [PostgreSQL / Redis runtime](docs/postgres-redis-migration.md) | Runtime data stack setup and validation |
+| [PostgreSQL runtime](docs/postgres-runtime.md) | Runtime data stack setup and validation |
 | [Multi-instance deployment](docs/multi-instance-deployment.md) | Several nodes on one PostgreSQL: failover, switchover, rolling deploys |
 | [SDK usage](docs/sdk-usage.md) · [advanced](docs/sdk-advanced.md) · [access](docs/sdk-access.md) · [watcher](docs/sdk-watcher.md) | Embedding the proxy in Go applications |
 

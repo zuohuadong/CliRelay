@@ -83,11 +83,6 @@ func TestSanitizeConfigForAPI(t *testing.T) {
 				{Key: "sk-gauXXXXb41v00000000", Name: "测试账号"},
 			},
 		},
-		Redis: config.RedisConfig{
-			Enable:   true,
-			Addr:     "127.0.0.1:6379",
-			Password: "secret",
-		},
 		TLS: config.TLSConfig{
 			Enable: false,
 			Cert:   "/etc/ssl/cert.pem",
@@ -286,14 +281,6 @@ func TestSanitizeConfigForAPI(t *testing.T) {
 		}
 	}
 
-	// ── Verify Redis addr is masked ──
-	if sanitized.Redis.Addr == "127.0.0.1:6379" {
-		t.Error("Redis.Addr not masked")
-	}
-	if sanitized.Redis.Password != "***" {
-		t.Error("Redis.Password not masked")
-	}
-
 	// ── Verify pprof addr is masked ──
 	if sanitized.Pprof.Addr == "127.0.0.1:8316" {
 		t.Error("Pprof.Addr not masked")
@@ -321,9 +308,6 @@ func TestSanitizeConfigForAPI(t *testing.T) {
 	}
 
 	// ── Verify original config is NOT modified ──
-	if cfg.Redis.Addr != "127.0.0.1:6379" {
-		t.Error("original config was mutated: Redis.Addr")
-	}
 	if cfg.APIKeyEntries[0].Name != "管理员" {
 		t.Error("original config was mutated: APIKeyEntries[0].Name")
 	}

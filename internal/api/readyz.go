@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -45,18 +44,6 @@ func (s *Server) handleReadyz(c *gin.Context) {
 		}
 	}
 
-	if s.cfg.Redis.Enable {
-		addr := strings.TrimSpace(s.cfg.Redis.Addr)
-		if addr == "" {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not_ready", "reason": "redis_addr_missing"})
-			return
-		}
-		if err := pingRedis(ctx, addr, s.cfg.Redis.Password, s.cfg.Redis.DB); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not_ready", "reason": "redis"})
-			return
-		}
-	}
-
 	c.Status(http.StatusNoContent)
 }
 
@@ -70,17 +57,4 @@ func pingPostgres(ctx context.Context, dsn string) error {
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(time.Second)
 	return db.PingContext(ctx)
-}
-
-func pingRedis(ctx context.Context, addr, password string, db int) error {
-	client := redis.NewClient(&redis.Options{
-		Addr:         addr,
-		Password:     password,
-		DB:           db,
-		DialTimeout:  time.Second,
-		ReadTimeout:  time.Second,
-		WriteTimeout: time.Second,
-	})
-	defer client.Close()
-	return client.Ping(ctx).Err()
 }

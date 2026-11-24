@@ -7,7 +7,7 @@
 # the slot that /opt/clirelay2/.active-port names and SIGKILLs it once it
 # has stopped answering HTTP; Restart=always then starts it again in 3 s.
 #
-# Slow is not hung. /readyz pings PostgreSQL (and Redis) within 2 s and
+# Slow is not hung. /readyz pings PostgreSQL within 2 s and
 # answers 503 when that fails, so a process that is only overloaded, or
 # whose database is, answers 503 too. On 2026-11-16 a slot pinned by a
 # quadratic request translation answered 503 "postgres" to four probes in a

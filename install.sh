@@ -494,10 +494,6 @@ write_config() {
 host: ""
 port: ${CFG_PORT}
 
-redis:
-  enable: true
-  addr: redis:6379
-
 remote-management:
   allow-remote: ${CFG_REMOTE}
   secret-key: "${CFG_SECRET}"
@@ -527,7 +523,7 @@ YAML
 }
 
 write_env() {
-    local updater_token admin_password postgres_db postgres_user postgres_password postgres_dsn postgres_data_path redis_addr redis_password redis_db redis_data_path
+    local updater_token admin_password postgres_db postgres_user postgres_password postgres_dsn postgres_data_path
     updater_token="${CLIRELAY_UPDATER_TOKEN:-$(rand_hex 16)}"
     # Without this the identity bootstrap falls back to remote-management.secret-key,
     # which is empty in the generated config, so a fresh install cannot create its
@@ -539,10 +535,6 @@ write_env() {
     postgres_password="${CLIRELAY_POSTGRES_PASSWORD:-$(rand_hex 16)}"
     postgres_dsn="${CLIRELAY_POSTGRES_DSN:-postgres://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}?sslmode=disable}"
     postgres_data_path="${CLIRELAY_POSTGRES_DATA_PATH:-${INSTALL_DIR}/postgres-data}"
-    redis_addr="${CLIRELAY_REDIS_ADDR:-redis:6379}"
-    redis_password="${CLIRELAY_REDIS_PASSWORD:-}"
-    redis_db="${CLIRELAY_REDIS_DB:-0}"
-    redis_data_path="${CLIRELAY_REDIS_DATA_PATH:-${INSTALL_DIR}/redis-data}"
     cat >"${INSTALL_DIR}/.env" <<EOF
 CLI_PROXY_IMAGE=${CLI_PROXY_IMAGE:-$DOCKER_IMAGE_DEFAULT}
 CLI_PROXY_PLATFORM=${DOCKER_PLATFORM}
@@ -563,11 +555,6 @@ CLIRELAY_POSTGRES_USER=${postgres_user}
 CLIRELAY_POSTGRES_PASSWORD=${postgres_password}
 CLIRELAY_POSTGRES_DSN=${postgres_dsn}
 CLIRELAY_POSTGRES_DATA_PATH=${postgres_data_path}
-CLIRELAY_REDIS_ENABLE=true
-CLIRELAY_REDIS_ADDR=${redis_addr}
-CLIRELAY_REDIS_PASSWORD=${redis_password}
-CLIRELAY_REDIS_DB=${redis_db}
-CLIRELAY_REDIS_DATA_PATH=${redis_data_path}
 CLI_PROXY_CONFIG_PATH=${INSTALL_DIR}/config.yaml
 CLI_PROXY_AUTH_PATH=${INSTALL_DIR}/auths
 AUTH_PATH=/root/.cli-proxy-api
@@ -601,10 +588,6 @@ services:
       CLIRELAY_ADMIN_PASSWORD: ${CLIRELAY_ADMIN_PASSWORD}
       CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE}
       CLIRELAY_POSTGRES_DSN: ${CLIRELAY_POSTGRES_DSN}
-      CLIRELAY_REDIS_ENABLE: ${CLIRELAY_REDIS_ENABLE}
-      CLIRELAY_REDIS_ADDR: ${CLIRELAY_REDIS_ADDR}
-      CLIRELAY_REDIS_PASSWORD: ${CLIRELAY_REDIS_PASSWORD}
-      CLIRELAY_REDIS_DB: ${CLIRELAY_REDIS_DB}
       AUTH_PATH: ${AUTH_PATH}
       LANG: ${CLIRELAY_LANG}
       LANGUAGE: ${CLIRELAY_LANGUAGE}
@@ -618,8 +601,6 @@ services:
       start_period: 20s
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     restart: unless-stopped
 
@@ -651,18 +632,6 @@ services:
       - ${CLIRELAY_POSTGRES_DATA_PATH}:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - ${CLIRELAY_REDIS_DATA_PATH}:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -1008,7 +977,7 @@ main() {
     check_docker
 
     step 3 "$(is_zh && echo "准备配置与部署元数据" || echo "Preparing configuration and deployment metadata")"
-    mkdir -p "${INSTALL_DIR}" "${INSTALL_DIR}/auths" "${INSTALL_DIR}/logs" "${INSTALL_DIR}/data" "${INSTALL_DIR}/postgres-data" "${INSTALL_DIR}/redis-data"
+    mkdir -p "${INSTALL_DIR}" "${INSTALL_DIR}/auths" "${INSTALL_DIR}/logs" "${INSTALL_DIR}/data" "${INSTALL_DIR}/postgres-data"
     if [[ "${OS_NAME}" != "Darwin" ]]; then
         chown -R 10001:10001 "${INSTALL_DIR}/auths" "${INSTALL_DIR}/logs" "${INSTALL_DIR}/data" || warn "Could not chown data directories; the container entrypoint will retry at startup."
     fi

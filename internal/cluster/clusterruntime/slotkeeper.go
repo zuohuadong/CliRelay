@@ -41,12 +41,12 @@ type slotKeeper struct {
 	retention time.Duration
 	interval  time.Duration
 
-	mu    sync.Mutex
-	held  map[slotRef]struct{}
-	queue chan slotRelease
-	stop  chan struct{}
+	mu     sync.Mutex
+	held   map[slotRef]struct{}
+	queue  chan slotRelease
+	stop   chan struct{}
 	closed atomic.Bool
-	wg    sync.WaitGroup
+	wg     sync.WaitGroup
 }
 
 func newSlotKeeper(store *pgredis.Store) *slotKeeper {

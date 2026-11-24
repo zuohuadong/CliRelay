@@ -43,7 +43,6 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 		log.Errorf("usage: failed to initialize runtime data stack: %v", err)
 		return
 	}
-	usage.InitRedis(cfg.Redis)
 	defer stopRuntimeDataStack()
 	coordinator, err := startCluster(cfg)
 	if err != nil {
@@ -108,7 +107,6 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 		close(doneCh)
 		return func() {}, doneCh
 	}
-	usage.InitRedis(cfg.Redis)
 	coordinator, err := startCluster(cfg)
 	if err != nil {
 		log.Errorf("cluster: failed to join the cluster: %v", err)
@@ -224,7 +222,7 @@ func stopRuntimeDataStack() {
 	// Before the database closes: queued usage records still need it, and
 	// whatever it cannot take goes to the spool for the next start.
 	stopUsageSpool()
-	usage.StopRedis()
+	usage.StopSnapshotStore()
 }
 
 type bootstrapAdminPassword struct {
@@ -263,10 +261,8 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	if err := usage.InitPostgres(cfg.Postgres, cfg.RequestLogStorage, loc); err != nil {
 		return err
 	}
-	// The usage snapshot used to need Redis. It now lives in the runtime
-	// database through internal/pgredis, so a deployment needs no second
-	// server for it; an explicitly configured Redis still wins (InitRedis
-	// installs its store afterwards).
+	// The usage snapshot lives in the runtime database through
+	// internal/pgredis, so a deployment needs no second server for it.
 	if err := usage.InitPostgresSnapshot(usage.RuntimeDB()); err != nil {
 		return fmt.Errorf("usage snapshot store: %w", err)
 	}

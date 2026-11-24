@@ -63,18 +63,6 @@ func TestClusterReadyzFailsWithoutDatabase(t *testing.T) {
 	}
 }
 
-func TestClusterReadyzTreatsRedisOutageAsDegraded(t *testing.T) {
-	server := newTestServer(t)
-	server.cfg.Redis.Enable = true
-	server.cfg.Redis.Addr = "127.0.0.1:1"
-	joinTestCluster(t, "node-a")
-	useReadyzDB(t, openPingableDB(t))
-	rr := serveReadyz(server)
-	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"status":"degraded"`) || !strings.Contains(rr.Body.String(), "redis") {
-		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
-	}
-}
-
 func TestClusterReadyzStillFailsWhileDraining(t *testing.T) {
 	server := newTestServer(t)
 	joinTestCluster(t, "node-a")

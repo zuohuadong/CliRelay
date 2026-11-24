@@ -226,7 +226,7 @@ func TestMergeSnapshotRekeysSecretBucketsByKeyID(t *testing.T) {
 		}
 	}
 	stats := NewRequestStatistics()
-	// What an older build exported or mirrored to Redis: buckets named after the
+	// What an older build exported or mirrored to the shared store: buckets named after the
 	// client secrets, next to buckets already named after ids and labels.
 	stats.MergeSnapshot(StatisticsSnapshot{APIs: map[string]APISnapshot{
 		secretA:              bucket(1),

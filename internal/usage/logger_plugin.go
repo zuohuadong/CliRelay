@@ -14,8 +14,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
@@ -23,22 +21,13 @@ import (
 
 var (
 	statisticsEnabled atomic.Bool
-	redisClient       *redis.Client
-	// redisCtx 代表 usage Redis 同步器的服务级后台上下文：
-	// - owner: InitRedis / StopRedis
-	// - 取消条件: StopRedis
-	// - 超时策略: 周期 ticker 驱动；单次 Redis 命令使用客户端默认/调用方超时
-	// - 清理方式: redisCancel + redisSyncWg 等待后台同步循环退出
-	redisCtx    = context.Background()
-	redisCancel context.CancelFunc
-	redisSyncWg sync.WaitGroup
-	// redisPingTarget mirrors redisClient for PingRedis, which runs on the
-	// node metrics goroutine: redisClient itself is only touched by
-	// InitRedis, StopRedis and the sync loop they own.
-	redisPingTarget atomic.Pointer[redis.Client]
+	// snapshotCtx is the service-level background context of the snapshot
+	// loop: it is cancelled by StopSnapshotStore, which then waits for the
+	// goroutine to exit.
+	snapshotCtx    = context.Background()
+	snapshotCancel context.CancelFunc
+	snapshotWg     sync.WaitGroup
 )
-
-const redisUsageKey = "cliproxy:usage_stats_snapshot"
 
 func init() {
 	statisticsEnabled.Store(true)
@@ -78,30 +67,15 @@ func SetStatisticsEnabled(enabled bool) { statisticsEnabled.Store(enabled) }
 // StatisticsEnabled reports the current recording state.
 func StatisticsEnabled() bool { return statisticsEnabled.Load() }
 
-// InitRedis initializes the Redis client for usage persistence and starts the sync loop.
-func InitRedis(cfg config.RedisConfig) {
-	if !cfg.Enable || cfg.Addr == "" {
-		return
+// StartSnapshotLoop loads the snapshot saved by a previous process and starts
+// the loop that writes the in-memory statistics back every 30 seconds. Calling
+// it again replaces the running loop instead of leaving a second one behind.
+func StartSnapshotLoop() {
+	if snapshotCancel != nil {
+		snapshotCancel()
+		snapshotWg.Wait()
+		snapshotCancel = nil
 	}
-
-	redisCtx = context.Background()
-	client := redis.NewClient(&redis.Options{
-		Addr:     cfg.Addr,
-		Password: cfg.Password,
-		DB:       cfg.DB,
-	})
-
-	if err := client.Ping(redisCtx).Err(); err != nil {
-		log.Errorf("failed to connect to Redis for usage persistence: %v", err)
-		_ = client.Close()
-		return
-	}
-	redisClient = client
-	usageSnapshotStore = &redisSnapshotStore{client: client}
-
-	log.Infof("Redis persistence for usage statistics activated on %s (DB: %d)", cfg.Addr, cfg.DB)
-	redisPingTarget.Store(redisClient)
-
 	// Attempt to load existing data
 	if err := loadUsageSnapshot(); err != nil {
 		log.Errorf("failed to load usage statistics from %s: %v", usageSnapshotStore.Name(), err)
@@ -111,51 +85,40 @@ func InitRedis(cfg config.RedisConfig) {
 	if defaultRequestStatistics != nil {
 		snapshot := defaultRequestStatistics.Snapshot()
 		if migrated, err := MigrateFromSnapshot(snapshot); err != nil {
-			log.Errorf("usage: migration from Redis snapshot failed: %v", err)
+			log.Errorf("usage: migration from the usage snapshot failed: %v", err)
 		} else if migrated > 0 {
-			log.Infof("usage: migrated %d records from Redis to the database", migrated)
+			log.Infof("usage: migrated %d records from the usage snapshot to the database", migrated)
 		}
 	}
 
-	// Redis 同步循环独立于单次请求，受服务 shutdown 控制。
-	redisCtx, redisCancel = context.WithCancel(context.Background())
-	redisSyncWg.Add(1)
-	go redisSyncLoop()
+	// The sync loop runs independently of single requests and is bound to the
+	// service lifetime, which StopSnapshotStore ends.
+	snapshotCtx, snapshotCancel = context.WithCancel(context.Background())
+	snapshotWg.Add(1)
+	go snapshotSyncLoop()
 }
 
-// StopRedis flushes the latest snapshot to Redis and closes the client.
-func StopRedis() {
-	if redisCancel != nil {
-		redisCancel()
-		redisSyncWg.Wait()
+// StopSnapshotStore flushes the latest snapshot to the shared store, stops the
+// background loop and closes the store.
+func StopSnapshotStore() {
+	if snapshotCancel != nil {
+		snapshotCancel()
+		snapshotWg.Wait()
 	}
-	redisPingTarget.Store(nil)
 	if usageSnapshotStore != nil {
 		saveUsageSnapshot() // Perform a final save
 		name := usageSnapshotStore.Name()
 		usageSnapshotStore.Close()
 		usageSnapshotStore = nil
-		redisClient = nil
 		log.Infof("%s usage persistence flushed and closed", name)
 	}
-	redisCancel = nil
-	redisCtx = context.Background()
+	snapshotCancel = nil
+	snapshotCtx = context.Background()
 	CloseDB()
 }
 
-// PingRedis makes one round trip to the usage persistence Redis, for the
-// node's resource snapshot. configured is false when usage persistence does
-// not use Redis.
-func PingRedis(ctx context.Context) (configured bool, err error) {
-	client := redisPingTarget.Load()
-	if client == nil {
-		return false, nil
-	}
-	return true, client.Ping(ctx).Err()
-}
-
-func redisSyncLoop() {
-	defer redisSyncWg.Done()
+func snapshotSyncLoop() {
+	defer snapshotWg.Done()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -163,7 +126,7 @@ func redisSyncLoop() {
 		select {
 		case <-ticker.C:
 			saveUsageSnapshot()
-		case <-redisCtx.Done():
+		case <-snapshotCtx.Done():
 			return
 		}
 	}
@@ -349,7 +312,7 @@ func (s *RequestStatistics) ingest(ctx context.Context, record coreusage.Record)
 		statsKey = resolveAPIIdentifier(ctx, record)
 	}
 	// The aggregates are keyed by the key's stable id, never by its secret: the
-	// snapshot is served by /usage, exported and mirrored to Redis. statsKey stays
+	// snapshot is served by /usage, exported and mirrored to the database. statsKey stays
 	// the raw value because the log write resolves the key from it, and masks it
 	// before anything is persisted.
 	bucketKey := statsBucketKey(statsKey, record.APIKeyID)

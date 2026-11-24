@@ -141,10 +141,12 @@ remote-management:
 # Docker Compose deployment path; non-Docker deployments can disable this.
 auto-update:
   enabled: true
-  # main is the default stable update channel; use dev to follow dev images.
+  # main is the only update channel now: every push to main publishes the image
+  # under ghcr.io/zuohuadong/clirelay with an 8-digit YYYYMMDD tag (plus latest,
+  # main and main-<sha>), and the updater follows :latest.
   channel: main
-  repository: https://github.com/kittors/CliRelay
-  docker-image: ghcr.io/kittors/clirelay
+  repository: https://github.com/zuohuadong/CliRelay
+  docker-image: ghcr.io/zuohuadong/clirelay
   updater-url: http://clirelay-updater:8320
 
 # Background re-probe of AI account quota status.

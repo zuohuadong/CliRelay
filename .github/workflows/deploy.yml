@@ -2,7 +2,7 @@ name: Deploy CliRelay
 
 on:
   push:
-    branches: [dev]
+    branches: [main]
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -30,11 +30,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Deploying is the default for a merge into dev. This used to require
-  # CLIRELAY_DEV_AUTO_DEPLOY=true, so an unset or reset repository variable
+  # Deploying is the default for a merge into main. This used to require
+  # CLIRELAY_MAIN_AUTO_DEPLOY=true, so an unset or reset repository variable
   # silently turned every merge into a build-only run. Set the variable to
-  # 'false' to stop deployments deliberately.
-  SHOULD_DEPLOY: ${{ github.event_name == 'workflow_dispatch' || vars.CLIRELAY_DEV_AUTO_DEPLOY != 'false' }}
+  # 'false' to stop deployments deliberately. The renamed variable keeps
+  # reading CLIRELAY_DEV_AUTO_DEPLOY, so a node that opted out of deploys on
+  # the former dev route stays opted out.
+  SHOULD_DEPLOY: ${{ github.event_name == 'workflow_dispatch' || (vars.CLIRELAY_MAIN_AUTO_DEPLOY != 'false' && vars.CLIRELAY_DEV_AUTO_DEPLOY != 'false') }}
   # Must match SCRIPT_VERSION in scripts/deploy-blue-green.sh; the host
   # entrypoint refuses to run on a mismatch, and the preflight job checks it on
   # every node before any node is touched. Guarded by
@@ -62,7 +64,7 @@ jobs:
       - name: Reject vendored panel assets
         run: ./scripts/ensure-no-vendored-panel-assets.sh
 
-      # Branch protection on dev requires green PR checks before merge.
+      # Branch protection on main requires green PR checks before merge.
       # Merge commits themselves do not re-run pr-test-build, so we do not re-query
       # check-runs on github.sha here (that would always fail-closed incorrectly).
       - name: Record deploy mode
@@ -137,7 +139,7 @@ jobs:
       - name: Skip automatic server deploy
         if: env.SHOULD_DEPLOY != 'true'
         run: |
-          echo "Built dev binary, but server deploy is disabled."
+          echo "Built main binary, but server deploy is disabled."
           echo "Deployment is opt-out: repository variable CLIRELAY_DEV_AUTO_DEPLOY is set to 'false'. Unset it to resume automatic deploys."
           echo "DEPLOY_MODE=built-only" >> "$GITHUB_ENV"
 
@@ -377,7 +379,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   docker:
-    name: Verify rollout and publish image
+    name: Verify rollout
     needs: [build, deploy]
     if: needs.build.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
@@ -400,17 +402,6 @@ jobs:
             exit 1
           fi
 
-      - name: Trigger dev Docker image build
-        if: success() && env.SHOULD_DEPLOY == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh workflow run docker-publish.yml \
-            --repo "${GITHUB_REPOSITORY}" \
-            --ref dev
-          echo "Triggered Docker image build after relay deployment completed."
-
       - name: Write job summary
         if: always()
         env:
@@ -419,5 +410,5 @@ jobs:
           {
             echo "## Rollout"
             echo "- version: \`${APP_VERSION}\`"
-            echo "- public probe and image build: \`${JOB_STATUS}\`"
+            echo "- public probe: \`${JOB_STATUS}\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -230,6 +230,13 @@ func TestBuildUpdateCheckGracefullyHandlesGitHubFailures(t *testing.T) {
 	}
 }
 
+// backendRepoForTest is the application's default update repository in the
+// owner/name form the GitHub API helpers expect.
+func backendRepoForTest() string {
+	repo := strings.TrimSuffix(config.DefaultAutoUpdateRepository, ".git")
+	return strings.TrimPrefix(repo, "https://github.com/")
+}
+
 func TestBuildUpdateCheckWaitsForDevDockerPublishRun(t *testing.T) {
 	origFetchBranchCommit := fetchBranchCommitForUpdateCheck
 	origFetchLatestRelease := fetchLatestReleaseInfoForUpdateCheck
@@ -257,7 +264,7 @@ func TestBuildUpdateCheckWaitsForDevDockerPublishRun(t *testing.T) {
 
 	fetchBranchCommitForUpdateCheck = func(ctx context.Context, client *http.Client, repo string, channel string) (branchCommitInfo, error) {
 		switch repo {
-		case "kittors/CliRelay":
+		case backendRepoForTest():
 			return branchCommitAt(latestBackend, sourceTime), nil
 		case "kittors/codeProxy":
 			return branchCommitAt(frontendCommit, sourceTime.Add(-time.Minute)), nil
@@ -336,7 +343,7 @@ func TestBuildUpdateCheckWaitsForFrontendDevDockerRebuild(t *testing.T) {
 
 	fetchBranchCommitForUpdateCheck = func(ctx context.Context, client *http.Client, repo string, channel string) (branchCommitInfo, error) {
 		switch repo {
-		case "kittors/CliRelay":
+		case backendRepoForTest():
 			return branchCommitAt(backendCommit, frontendTime.Add(-time.Hour)), nil
 		case "kittors/codeProxy":
 			return branchCommitAt(latestFrontend, frontendTime), nil
@@ -409,7 +416,7 @@ func TestBuildUpdateCheckAllowsDevUpdateAfterDockerPublishReady(t *testing.T) {
 
 	fetchBranchCommitForUpdateCheck = func(ctx context.Context, client *http.Client, repo string, channel string) (branchCommitInfo, error) {
 		switch repo {
-		case "kittors/CliRelay":
+		case backendRepoForTest():
 			return branchCommitAt(latestBackend, sourceTime), nil
 		case "kittors/codeProxy":
 			return branchCommitAt(frontendCommit, sourceTime), nil
@@ -539,7 +546,7 @@ func TestBuildUpdateCheckUsesRuntimePanelMetadata(t *testing.T) {
 
 	fetchBranchCommitForUpdateCheck = func(ctx context.Context, client *http.Client, repo string, channel string) (branchCommitInfo, error) {
 		switch repo {
-		case "kittors/CliRelay":
+		case backendRepoForTest():
 			return branchCommitInfo{SHA: "1402b1d6970b7ce61eec9430b137e817c448d215"}, nil
 		case "router-for-me/Cli-Proxy-API-Management-Center":
 			return branchCommitInfo{SHA: runtimeUICommit}, nil
@@ -562,7 +569,7 @@ func TestBuildUpdateCheckUsesRuntimePanelMetadata(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AutoUpdate.Enabled = true
 	cfg.AutoUpdate.Channel = "dev"
-	cfg.AutoUpdate.Repository = "https://github.com/kittors/CliRelay"
+	cfg.AutoUpdate.Repository = config.DefaultAutoUpdateRepository
 	cfg.RemoteManagement.PanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
 
 	handler := &Handler{cfg: cfg}
@@ -619,7 +626,7 @@ func TestBuildCurrentUpdateStateDoesNotQueryGitHub(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AutoUpdate.Enabled = true
 	cfg.AutoUpdate.Channel = "dev"
-	cfg.AutoUpdate.DockerImage = "ghcr.io/kittors/clirelay"
+	cfg.AutoUpdate.DockerImage = "ghcr.io/zuohuadong/clirelay"
 	handler := &Handler{cfg: cfg}
 
 	resp := handler.buildCurrentUpdateState(context.Background())

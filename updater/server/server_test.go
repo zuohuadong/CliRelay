@@ -122,7 +122,7 @@ func TestLegacyRequestSynthesizesAPlan(t *testing.T) {
 		},
 	})
 
-	body := `{"service":"cli-proxy-api","image":"ghcr.io/kittors/clirelay","tag":"dev"}`
+	body := `{"service":"cli-proxy-api","image":"ghcr.io/zuohuadong/clirelay","tag":"dev"}`
 	resp, err := http.DefaultClient.Do(authRequest(t, http.MethodPost, httpServer.URL+"/v1/update", body))
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -162,11 +162,11 @@ func TestPlanRequestIsExecutedAsWritten(t *testing.T) {
 
 	body := `{
 		"service": "cli-proxy-api",
-		"image": "ghcr.io/kittors/clirelay",
+		"image": "ghcr.io/zuohuadong/clirelay",
 		"tag": "dev",
 		"plan": {
 			"plan_version": 1,
-			"image": "ghcr.io/kittors/clirelay",
+			"image": "ghcr.io/zuohuadong/clirelay",
 			"tag": "dev",
 			"pull": ["cli-proxy-api"],
 			"stages": [
@@ -201,7 +201,7 @@ func TestUnsupportedPlanVersionIsRejectedUpFront(t *testing.T) {
 		},
 	})
 
-	body := `{"service":"app","plan":{"plan_version":99,"image":"ghcr.io/kittors/clirelay","tag":"dev","stages":[{"id":"a","services":["app"]}]}}`
+	body := `{"service":"app","plan":{"plan_version":99,"image":"ghcr.io/zuohuadong/clirelay","tag":"dev","stages":[{"id":"a","services":["app"]}]}}`
 	resp, err := http.DefaultClient.Do(authRequest(t, http.MethodPost, httpServer.URL+"/v1/update", body))
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -228,7 +228,7 @@ func TestConcurrentUpdateIsRejected(t *testing.T) {
 	})
 	defer close(release)
 
-	body := `{"service":"cli-proxy-api","image":"ghcr.io/kittors/clirelay","tag":"dev"}`
+	body := `{"service":"cli-proxy-api","image":"ghcr.io/zuohuadong/clirelay","tag":"dev"}`
 	first, err := http.DefaultClient.Do(authRequest(t, http.MethodPost, httpServer.URL+"/v1/update", body))
 	if err != nil {
 		t.Fatalf("first update: %v", err)
@@ -348,7 +348,7 @@ func TestCompletedStatusIsPersistedBeforeSelfRefresh(t *testing.T) {
 		},
 	})
 
-	body := `{"service":"cli-proxy-api","image":"ghcr.io/kittors/clirelay","tag":"dev"}`
+	body := `{"service":"cli-proxy-api","image":"ghcr.io/zuohuadong/clirelay","tag":"dev"}`
 	resp, err := http.DefaultClient.Do(authRequest(t, http.MethodPost, httpServer.URL+"/v1/update", body))
 	if err != nil {
 		t.Fatalf("update: %v", err)

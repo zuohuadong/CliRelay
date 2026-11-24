@@ -25,7 +25,7 @@ type legacyUpdateRequest struct {
 func TestNewUpdaterAcceptsLegacyRequest(t *testing.T) {
 	body := `{
 		"service": "cli-proxy-api",
-		"image": "ghcr.io/kittors/clirelay",
+		"image": "ghcr.io/zuohuadong/clirelay",
 		"tag": "dev",
 		"version": "dev-abc1234",
 		"commit": "abc1234",
@@ -39,7 +39,7 @@ func TestNewUpdaterAcceptsLegacyRequest(t *testing.T) {
 	if req.Plan != nil {
 		t.Fatalf("legacy request should not carry a plan, got %+v", req.Plan)
 	}
-	if req.Service != "cli-proxy-api" || req.Image != "ghcr.io/kittors/clirelay" || req.Tag != "dev" {
+	if req.Service != "cli-proxy-api" || req.Image != "ghcr.io/zuohuadong/clirelay" || req.Tag != "dev" {
 		t.Fatalf("legacy flat fields lost: %+v", req)
 	}
 }
@@ -51,12 +51,12 @@ func TestLegacyUpdaterAcceptsPlanRequest(t *testing.T) {
 	req := UpdateRequest{
 		Plan: &Plan{
 			PlanVersion: 1,
-			Image:       "ghcr.io/kittors/clirelay",
+			Image:       "ghcr.io/zuohuadong/clirelay",
 			Tag:         "dev",
 			Stages:      []Stage{{ID: "app", Services: []string{"cli-proxy-api"}}},
 		},
 		Service: "cli-proxy-api",
-		Image:   "ghcr.io/kittors/clirelay",
+		Image:   "ghcr.io/zuohuadong/clirelay",
 		Tag:     "dev",
 		Version: "dev-abc1234",
 	}
@@ -70,7 +70,7 @@ func TestLegacyUpdaterAcceptsPlanRequest(t *testing.T) {
 	if err := json.Unmarshal(encoded, &legacy); err != nil {
 		t.Fatalf("legacy updater failed to decode plan request: %v", err)
 	}
-	if legacy.Service != "cli-proxy-api" || legacy.Image != "ghcr.io/kittors/clirelay" || legacy.Tag != "dev" {
+	if legacy.Service != "cli-proxy-api" || legacy.Image != "ghcr.io/zuohuadong/clirelay" || legacy.Tag != "dev" {
 		t.Fatalf("plan request is not readable by a legacy updater: %+v", legacy)
 	}
 }
@@ -163,7 +163,7 @@ func TestPlanValidateRejectsArbitraryPrepareCommand(t *testing.T) {
 	} {
 		plan := &Plan{
 			PlanVersion: 1,
-			Image:       "ghcr.io/kittors/clirelay",
+			Image:       "ghcr.io/zuohuadong/clirelay",
 			Tag:         "dev",
 			Prepare:     &PrepareStep{Command: command},
 			Stages:      []Stage{{ID: "app", Services: []string{"app"}}},
@@ -177,7 +177,7 @@ func TestPlanValidateRejectsArbitraryPrepareCommand(t *testing.T) {
 func TestPlanValidateRejectsForeignPrepareEnv(t *testing.T) {
 	plan := &Plan{
 		PlanVersion: 1,
-		Image:       "ghcr.io/kittors/clirelay",
+		Image:       "ghcr.io/zuohuadong/clirelay",
 		Tag:         "dev",
 		Prepare: &PrepareStep{
 			Command: []string{"clirelay-init-env"},
@@ -193,7 +193,7 @@ func TestPlanValidateRejectsForeignPrepareEnv(t *testing.T) {
 func TestPlanValidateRejectsInjectableServiceNames(t *testing.T) {
 	plan := &Plan{
 		PlanVersion: 1,
-		Image:       "ghcr.io/kittors/clirelay",
+		Image:       "ghcr.io/zuohuadong/clirelay",
 		Tag:         "dev",
 		Stages:      []Stage{{ID: "app", Services: []string{"app; rm -rf /"}}},
 	}
@@ -205,7 +205,7 @@ func TestPlanValidateRejectsInjectableServiceNames(t *testing.T) {
 func TestPlanValidateNormalizesWeightsAndPreservesOrder(t *testing.T) {
 	plan := &Plan{
 		PlanVersion: 1,
-		Image:       "ghcr.io/kittors/clirelay",
+		Image:       "ghcr.io/zuohuadong/clirelay",
 		Tag:         "dev",
 		Pull:        []string{" cli-proxy-api "},
 		Stages: []Stage{
@@ -237,9 +237,9 @@ func TestPlanValidateNormalizesWeightsAndPreservesOrder(t *testing.T) {
 
 func TestImageRefRejectsUnsafeParts(t *testing.T) {
 	for _, testCase := range []struct{ image, tag string }{
-		{"ghcr.io/kittors/clirelay", "dev`whoami`"},
-		{"ghcr.io/kittors/clirelay", "$(id)"},
-		{"ghcr.io/kittors/clirelay", ""},
+		{"ghcr.io/zuohuadong/clirelay", "dev`whoami`"},
+		{"ghcr.io/zuohuadong/clirelay", "$(id)"},
+		{"ghcr.io/zuohuadong/clirelay", ""},
 		{"", "dev"},
 	} {
 		if got := ImageRef(testCase.image, testCase.tag); got != "" {
@@ -250,10 +250,10 @@ func TestImageRefRejectsUnsafeParts(t *testing.T) {
 
 func TestImageRepositoryStripsTagAndDigest(t *testing.T) {
 	cases := map[string]string{
-		"ghcr.io/kittors/clirelay:dev":      "ghcr.io/kittors/clirelay",
-		"ghcr.io/kittors/clirelay@sha256:a": "ghcr.io/kittors/clirelay",
-		"localhost:5000/app:tag":            "localhost:5000/app",
-		"localhost:5000/app":                "localhost:5000/app",
+		"ghcr.io/zuohuadong/clirelay:dev":      "ghcr.io/zuohuadong/clirelay",
+		"ghcr.io/zuohuadong/clirelay@sha256:a": "ghcr.io/zuohuadong/clirelay",
+		"localhost:5000/app:tag":               "localhost:5000/app",
+		"localhost:5000/app":                   "localhost:5000/app",
 	}
 	keys := make([]string, 0, len(cases))
 	for key := range cases {

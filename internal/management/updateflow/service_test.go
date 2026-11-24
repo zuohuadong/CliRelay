@@ -68,7 +68,7 @@ func TestTriggerUpdateForwardsVersionAndReleaseMetadata(t *testing.T) {
 	t.Setenv("CLIRELAY_TARGET_SERVICE", "clirelay")
 
 	result, err := New(nil, Dependencies{}).TriggerUpdate(context.Background(), &CheckResponse{
-		DockerImage:        "ghcr.io/kittors/clirelay",
+		DockerImage:        "ghcr.io/zuohuadong/clirelay",
 		DockerTag:          "main",
 		CurrentVersion:     "main-old",
 		LatestVersion:      "main-new",

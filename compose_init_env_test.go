@@ -19,7 +19,7 @@ func TestComposeInitEnvGeneratesMissingEnv(t *testing.T) {
 	cmd.Env = append(os.Environ(),
 		"CLIRELAY_ENV_FILE="+envFile,
 		"CLIRELAY_PROJECT_DIR="+dir,
-		"CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:test",
+		"CLI_PROXY_IMAGE=ghcr.io/zuohuadong/clirelay:test",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -40,7 +40,7 @@ func TestComposeInitEnvGeneratesMissingEnv(t *testing.T) {
 			t.Fatalf("%s was not generated in .env: %#v", key, values)
 		}
 	}
-	if values["CLI_PROXY_IMAGE"] != "ghcr.io/kittors/clirelay:test" {
+	if values["CLI_PROXY_IMAGE"] != "ghcr.io/zuohuadong/clirelay:test" {
 		t.Fatalf("CLI_PROXY_IMAGE = %q", values["CLI_PROXY_IMAGE"])
 	}
 	if len(values["CLIRELAY_UPDATER_TOKEN"]) != 32 {
@@ -174,7 +174,7 @@ func TestComposeInitEnvAdminPasswordPassesIdentityValidation(t *testing.T) {
 	cmd.Env = append(os.Environ(),
 		"CLIRELAY_ENV_FILE="+envFile,
 		"CLIRELAY_PROJECT_DIR="+dir,
-		"CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:test",
+		"CLI_PROXY_IMAGE=ghcr.io/zuohuadong/clirelay:test",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("init script failed: %v\n%s", err, out)
@@ -250,7 +250,7 @@ func runComposeInitEnv(t *testing.T, dir, envFile string) {
 	cmd.Env = append(os.Environ(),
 		"CLIRELAY_ENV_FILE="+envFile,
 		"CLIRELAY_PROJECT_DIR="+dir,
-		"CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:test",
+		"CLI_PROXY_IMAGE=ghcr.io/zuohuadong/clirelay:test",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("init script failed: %v\n%s", err, out)
@@ -265,7 +265,7 @@ func TestComposeInitEnvPasswordSurvivesTopologyMigration(t *testing.T) {
 	composeFile := filepath.Join(dir, "docker-compose.yml")
 	if err := os.WriteFile(composeFile, []byte(`services:
   cli-proxy-api:
-    image: ghcr.io/kittors/clirelay:dev
+    image: ghcr.io/zuohuadong/clirelay:dev
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}

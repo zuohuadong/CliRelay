@@ -25,7 +25,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const defaultAppImage = "ghcr.io/kittors/clirelay:latest"
+const defaultAppImage = "ghcr.io/zuohuadong/clirelay:latest"
 
 // DefaultAuthPath is the container-side auth directory current builds read.
 const DefaultAuthPath = "/CLIProxyAPI/auths"

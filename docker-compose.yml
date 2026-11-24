@@ -1,10 +1,10 @@
 services:
   clirelay-init:
-    image: ${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}
+    image: ${CLI_PROXY_IMAGE:-ghcr.io/zuohuadong/clirelay:latest}
     pull_policy: ${CLI_PROXY_PULL_POLICY:-always}
     command: ["clirelay-init-env"]
     environment:
-      CLI_PROXY_IMAGE: ${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}
+      CLI_PROXY_IMAGE: ${CLI_PROXY_IMAGE:-ghcr.io/zuohuadong/clirelay:latest}
       CLIRELAY_PROJECT_DIR: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}
       CLIRELAY_ENV_FILE: /clirelay-deploy/.env
       CLIRELAY_COMPOSE_PROJECT_NAME: ${CLIRELAY_COMPOSE_PROJECT_NAME:-clirelay}
@@ -14,7 +14,7 @@ services:
     restart: "no"
 
   cli-proxy-api:
-    image: ${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}
+    image: ${CLI_PROXY_IMAGE:-ghcr.io/zuohuadong/clirelay:latest}
     pull_policy: ${CLI_PROXY_PULL_POLICY:-always}
     build:
       context: .
@@ -60,7 +60,7 @@ services:
     restart: unless-stopped
 
   clirelay-updater:
-    image: ${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}
+    image: ${CLI_PROXY_IMAGE:-ghcr.io/zuohuadong/clirelay:latest}
     pull_policy: ${CLI_PROXY_PULL_POLICY:-always}
     command: ["./clirelay-updater"]
     entrypoint: ["sh", "-c", "set -a; . /clirelay-deploy/.env; set +a; exec docker-entrypoint.sh ./clirelay-updater"]

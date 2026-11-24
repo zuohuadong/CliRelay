@@ -32,7 +32,7 @@ func (r *recordingReporter) percents() []float64 {
 func samplePlan() *protocol.Plan {
 	plan := &protocol.Plan{
 		PlanVersion: 1,
-		Image:       "ghcr.io/kittors/clirelay",
+		Image:       "ghcr.io/zuohuadong/clirelay",
 		Tag:         "dev",
 		Prepare:     &protocol.PrepareStep{Command: []string{"clirelay-init-env"}},
 		Pull:        []string{"cli-proxy-api"},

@@ -4,8 +4,8 @@ const (
 	DefaultPanelGitHubRepository      = "https://github.com/kittors/codeProxy"
 	DefaultPprofAddr                  = "127.0.0.1:8316"
 	DefaultAutoUpdateChannel          = "main"
-	DefaultAutoUpdateRepository       = "https://github.com/kittors/CliRelay"
-	DefaultAutoUpdateDockerImage      = "ghcr.io/kittors/clirelay"
+	DefaultAutoUpdateRepository       = "https://github.com/zuohuadong/CliRelay"
+	DefaultAutoUpdateDockerImage      = "ghcr.io/zuohuadong/clirelay"
 	DefaultAutoUpdateUpdaterURL       = "http://clirelay-updater:8320"
 	DefaultModelRequestBodyMB         = 128
 	DefaultRequestBodyDiskThresholdMB = 8

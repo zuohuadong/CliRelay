@@ -400,27 +400,38 @@ exit 1
 	}
 }
 
-func TestDeployCompletesBeforeDispatchingDevDockerBuild(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/deploy.yml")
+// Pushing main publishes the image, so the deploy workflow must not dispatch a
+// second build: the two runs share the docker-publish concurrency group and one
+// would cancel the other mid-build.
+func TestMainPushPublishesTheImageAndDeployDoesNot(t *testing.T) {
+	deploy, err := os.ReadFile(".github/workflows/deploy.yml")
 	if err != nil {
 		t.Fatalf("read deploy workflow: %v", err)
 	}
-	content := string(data)
-	deployIndex := strings.Index(content, `name: Blue-green deploy via fixed root entrypoint`)
-	dockerIndex := strings.Index(content, `name: Trigger dev Docker image build`)
-	if deployIndex < 0 || dockerIndex < 0 || dockerIndex <= deployIndex {
-		t.Fatalf("dev Docker build must be dispatched only after blue-green deployment")
-	}
-	if !strings.Contains(content, `if: success() && env.SHOULD_DEPLOY == 'true'`) {
-		t.Fatalf("docker publish must only run after a real deploy attempt")
+	if strings.Contains(string(deploy), "gh workflow run docker-publish.yml") {
+		t.Fatalf("the deploy workflow must not dispatch the image build; pushing main already does")
 	}
 	for _, want := range []string{
 		`actions: write`,
 		`cancel-in-progress: false`,
-		`gh workflow run docker-publish.yml`,
+		`branches: [main]`,
 	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("deploy workflow missing deployment-priority marker %q", want)
+		if !strings.Contains(string(deploy), want) {
+			t.Fatalf("deploy workflow missing marker %q", want)
+		}
+	}
+
+	publish, err := os.ReadFile(".github/workflows/docker-publish.yml")
+	if err != nil {
+		t.Fatalf("read docker publish workflow: %v", err)
+	}
+	for _, want := range []string{
+		"branches: [main]",
+		"type=raw,value={{date 'YYYYMMDD'}}",
+		"IMAGE_NAME: ${{ github.repository_owner }}/clirelay",
+	} {
+		if !strings.Contains(string(publish), want) {
+			t.Fatalf("docker publish workflow missing main-release marker %q", want)
 		}
 	}
 }
@@ -470,7 +481,7 @@ func TestDockerPublishWorkflowUsesGHCRForBranchesAndReleaseTags(t *testing.T) {
 	for _, want := range []string{
 		"tags:\n      - 'v*'",
 		"REGISTRY: ghcr.io",
-		"IMAGE_NAME: kittors/clirelay",
+		"IMAGE_NAME: ${{ github.repository_owner }}/clirelay",
 		`if [[ "${GITHUB_REF_TYPE:-branch}" == "tag" ]]; then`,
 		`FRONTEND_REF="main"`,
 		`VERSION="${REF_NAME}"`,

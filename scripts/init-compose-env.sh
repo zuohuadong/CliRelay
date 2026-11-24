@@ -112,7 +112,7 @@ postgres_user="$(env_value CLIRELAY_POSTGRES_USER)"
 postgres_db="${postgres_db:-cliproxy}"
 postgres_user="${postgres_user:-cliproxy}"
 
-set_default CLI_PROXY_IMAGE "${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}"
+set_default CLI_PROXY_IMAGE "${CLI_PROXY_IMAGE:-ghcr.io/zuohuadong/clirelay:latest}"
 set_default CLIRELAY_PROJECT_DIR "$project_dir"
 set_default CLIRELAY_TARGET_SERVICE "${CLIRELAY_TARGET_SERVICE:-cli-proxy-api}"
 set_default CLIRELAY_COMPOSE_PROJECT_NAME "${CLIRELAY_COMPOSE_PROJECT_NAME:-clirelay}"

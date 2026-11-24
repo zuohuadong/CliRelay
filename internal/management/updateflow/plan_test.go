@@ -8,7 +8,7 @@ import (
 
 func validCheck() *CheckResponse {
 	return &CheckResponse{
-		DockerImage: "ghcr.io/kittors/clirelay",
+		DockerImage: "ghcr.io/zuohuadong/clirelay",
 		DockerTag:   "dev",
 	}
 }
@@ -55,9 +55,9 @@ func TestBuildUpdatePlanOmitsItselfWithoutAUsableImage(t *testing.T) {
 	for _, check := range []*CheckResponse{
 		nil,
 		{},
-		{DockerImage: "ghcr.io/kittors/clirelay"},
+		{DockerImage: "ghcr.io/zuohuadong/clirelay"},
 		{DockerTag: "dev"},
-		{DockerImage: "ghcr.io/kittors/clirelay", DockerTag: "dev`whoami`"},
+		{DockerImage: "ghcr.io/zuohuadong/clirelay", DockerTag: "dev`whoami`"},
 	} {
 		if plan := BuildUpdatePlan(check); plan != nil {
 			t.Errorf("BuildUpdatePlan(%+v) = %+v, want nil so the updater falls back", check, plan)

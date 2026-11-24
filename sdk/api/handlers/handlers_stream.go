@@ -242,9 +242,28 @@ outer:
 					}
 					streamErr = retryErr
 				}
-				// No other account could take the turn. A capacity rejection is
-				// model-scoped and short-lived, so asking the same account again
-				// after a pause is what the client would have done by hand.
+				// A virtual model turns to its next member while nothing has
+				// reached the client; that member gets its own retries. A member
+				// is a different model, which is what a capacity rejection asks
+				// for, so it goes before asking this model again.
+				var memberLeftMsg *StreamErrorMessage
+				if !sentPayload && next != nil {
+					member, msg := next(streamErr)
+					if member != nil {
+						if passthroughHeadersEnabled {
+							replaceHeader(upstreamHeaders, FilterUpstreamHeaders(member.result.Headers))
+						}
+						ctx, retry, chunks = member.ctx, member.retry, member.result.Chunks
+						failover = newStreamFailover(failover.h, member.result)
+						bootstrapRetries = 0
+						continue outer
+					}
+					memberLeftMsg = msg
+				}
+				// No member and no other account could take the turn. A capacity
+				// rejection is model-scoped and short-lived, so asking the same
+				// account again after a pause is what the client would have done
+				// by hand.
 				if capacityErr && !sentPayload && failover != nil && failover.h != nil &&
 					sameAccountRetries < maxSameAccountRetries {
 					sameAccountRetries++
@@ -262,21 +281,9 @@ outer:
 						streamErr = sameErr
 					}
 				}
-				// A virtual model turns to its next member while nothing has
-				// reached the client; that member gets its own retries.
-				if !sentPayload && next != nil {
-					member, msg := next(streamErr)
-					if member == nil {
-						_ = sendStreamErr(ctx, errChan, msg)
-						return
-					}
-					if passthroughHeadersEnabled {
-						replaceHeader(upstreamHeaders, FilterUpstreamHeaders(member.result.Headers))
-					}
-					ctx, retry, chunks = member.ctx, member.retry, member.result.Chunks
-					failover = newStreamFailover(failover.h, member.result)
-					bootstrapRetries = 0
-					continue outer
+				if memberLeftMsg != nil {
+					_ = sendStreamErr(ctx, errChan, memberLeftMsg)
+					return
 				}
 				_ = sendStreamErr(ctx, errChan, streamErrorMessageFromErr(streamErr))
 				return

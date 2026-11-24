@@ -1033,3 +1033,31 @@ func TestExecuteStreamWithAuthManager_RetriesCapacityOnTheSameAccount(t *testing
 		t.Fatalf("expected 2 stream attempts on the same account, got %d", exec.Calls())
 	}
 }
+
+// A virtual model answers a capacity rejection with its next member rather
+// than with another attempt on the model it refused.
+func TestExecuteStreamWithAuthManager_VirtualModelTurnsToNextMemberOnCapacity(t *testing.T) {
+	full := &coreauth.Error{
+		Code:       "model_at_capacity",
+		Message:    `{"error":{"message":"Selected model is at capacity. Please try a different model."}}`,
+		Retryable:  true,
+		HTTPStatus: http.StatusTooManyRequests,
+	}
+	exec := &vmExecutor{outcomes: map[string][]vmOutcome{"alpha": {{streamErr: full}}}}
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
+		Streaming: sdkconfig.StreamingConfig{BootstrapRetries: new(1)},
+		Codex:     sdkconfig.CodexExecutorOptions{CapacitySameAccountRetries: new(3)},
+	}, newVirtualModelManager(t, exec, "alpha", "beta"))
+	ctx, _, _, _ := virtualModelContext(plan("smart", "alpha", "beta"))
+
+	dataChan, _, errChan, startErr := handler.StartStreamWithAuthManager(ctx, "openai", "smart", []byte(`{}`), "")
+	if startErr != nil {
+		t.Fatalf("StartStreamWithAuthManager: %v", startErr.Error)
+	}
+	if out := drainStream(t, dataChan, errChan); out.err != nil || out.payload != "from-beta" {
+		t.Fatalf("outcome = %+v, want beta's answer after alpha was at capacity", out)
+	}
+	if calls := exec.Calls(); strings.Join(calls, ",") != "alpha,beta" {
+		t.Fatalf("calls = %v, want alpha once then beta, not alpha again", calls)
+	}
+}

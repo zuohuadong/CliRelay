@@ -12,8 +12,14 @@ import (
 )
 
 func newCodexStatusErr(statusCode int, body []byte, headers ...http.Header) statusErr {
-	err := statusErr{code: statusCode, msg: string(body)}
-	if retryAfter := parseCodexRetryAfter(statusCode, body, time.Now()); retryAfter != nil {
+	errCode := statusCode
+	if isCodexTransientCapacityError(body) {
+		// A model-capacity rejection is a short-lived, model-scoped overload, not
+		// a broken request. Report it as retryable so the callers retry it.
+		errCode = http.StatusTooManyRequests
+	}
+	err := statusErr{code: errCode, msg: string(body)}
+	if retryAfter := parseCodexRetryAfter(errCode, body, time.Now()); retryAfter != nil {
 		err.retryAfter = retryAfter
 	}
 	var header http.Header

@@ -289,6 +289,12 @@ func codexResponsesFailedStatusErr(payload []byte) statusErr {
 	code := codexResponsesFailedField(payload, "response.error.code", "error.code", "code")
 	errType := codexResponsesFailedField(payload, "response.error.type", "error.type", "type")
 	statusCode := codexResponsesFailedHTTPStatus(code, errType)
+	// A capacity rejection usually carries no code or type, only its message.
+	// It is a transient, model-scoped overload the caller can retry.
+	capacity := isCodexTransientCapacityError(payload)
+	if capacity {
+		statusCode = http.StatusTooManyRequests
+	}
 	if statusCode == http.StatusTooManyRequests && errType == "" {
 		errType = "rate_limit_error"
 	}
@@ -296,7 +302,11 @@ func codexResponsesFailedStatusErr(payload []byte) statusErr {
 		message = "responses request failed"
 	}
 	if errType == "" || errType == "response.failed" || errType == "error" {
-		errType = "upstream_error"
+		if capacity {
+			errType = "rate_limit_error"
+		} else {
+			errType = "upstream_error"
+		}
 	}
 	body, _ := json.Marshal(map[string]any{
 		"error": map[string]any{
@@ -306,6 +316,10 @@ func codexResponsesFailedStatusErr(payload []byte) statusErr {
 		},
 	})
 	err := statusErr{code: statusCode, msg: string(body), upstreamBody: body}
+	if capacity {
+		delay := time.Duration(codexCapacityRetryDelaySeconds) * time.Second
+		err.retryAfter = &delay
+	}
 	if retryAfter := codexImageResponsesRetryAfter(message); retryAfter > 0 {
 		err.retryAfter = &retryAfter
 	}

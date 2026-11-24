@@ -373,6 +373,20 @@ streaming:
   # timeout is shorter than the group's wait counts the wait as a failure.
   # busy-wait-max-waiters: 64
 
+# Codex stream handling. A ChatGPT Codex backend answers "Selected model is at
+# capacity. Please try a different model." briefly when a model is full, both as
+# an HTTP error and smuggled inside an HTTP 200 event stream. Holding the
+# handshake back makes that rejection retryable instead of fatal.
+codex:
+  # Hold response.created / response.in_progress until the stream shows real
+  # output, so a capacity rejection can be retried before anything reaches the
+  # client. Off by default; the cost is that the client sees the handshake only
+  # once the first output arrives.
+  stream-bootstrap-buffering: true
+  # How many times the same account is asked again after a capacity rejection
+  # when no other account can take the turn. Default 2; 0 disables.
+  capacity-same-account-retries: 2
+
 # Gemini API keys
 # gemini-api-key:
 #   - api-key: "AIzaSy...01"

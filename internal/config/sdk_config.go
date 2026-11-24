@@ -46,6 +46,10 @@ type SDKConfig struct {
 	// Streaming configures server-side streaming behavior (keep-alives and safe bootstrap retries).
 	Streaming StreamingConfig `yaml:"streaming" json:"streaming"`
 
+	// Codex tunes the Codex executor's stream handling: bootstrap buffering and
+	// how a transient "model is at capacity" rejection is retried.
+	Codex CodexExecutorOptions `yaml:"codex,omitempty" json:"codex,omitempty"`
+
 	// ResponsesWebsocket tunes the client-facing Responses WebSocket entry.
 	ResponsesWebsocket ResponsesWebsocketConfig `yaml:"responses-websocket,omitempty" json:"responses-websocket,omitempty"`
 

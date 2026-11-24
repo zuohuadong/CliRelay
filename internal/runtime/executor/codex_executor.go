@@ -479,6 +479,46 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				return false
 			}
 		}
+		// The upstream smuggles a capacity rejection into an HTTP 200 stream: the
+		// handshake arrives normally and only a later event carries the rejection.
+		// Holding the handshake back until the stream shows real output keeps the
+		// attempt retryable; once anything meaningful is out, it is committed.
+		holdingBootstrap := e.cfg != nil && e.cfg.CodexStreamBootstrapBuffering()
+		var bootstrap [][]byte
+		bootstrapBytes := 0
+		flushBootstrap := func() bool {
+			if !holdingBootstrap {
+				return true
+			}
+			holdingBootstrap = false
+			for _, payload := range bootstrap {
+				if !send(cliproxyexecutor.StreamChunk{Payload: payload}) {
+					bootstrap = nil
+					return false
+				}
+			}
+			bootstrap = nil
+			return true
+		}
+		dropBootstrap := func() {
+			holdingBootstrap = false
+			bootstrap = nil
+		}
+		emitPayload := func(payload []byte) bool {
+			if !holdingBootstrap {
+				return send(cliproxyexecutor.StreamChunk{Payload: payload})
+			}
+			if len(bootstrap) >= maxCodexBootstrapFrames || bootstrapBytes+len(payload) > maxCodexBootstrapBytes {
+				// More than a handshake: forward it rather than grow without bound.
+				if !flushBootstrap() {
+					return false
+				}
+				return send(cliproxyexecutor.StreamChunk{Payload: payload})
+			}
+			bootstrap = append(bootstrap, append([]byte(nil), payload...))
+			bootstrapBytes += len(payload)
+			return true
+		}
 		finishRead := func(readErr error) {
 			if terminal.seen && !errors.Is(readErr, bufio.ErrTooLong) {
 				terminal.publishSuccess(execCtx.Context, reporter)
@@ -487,6 +527,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if !terminal.seen {
 				logIncomplete("read-error", readErr)
 			}
+			flushBootstrap()
 			if !shouldSuppressUsageFailure(readErr, "") {
 				recorder.RecordResponseError(readErr)
 				terminal.publishFailure(execCtx.Context, reporter)
@@ -504,10 +545,18 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			// The framer preserves original multiline data fields. Inspect their
 			// joined JSON without changing the lines forwarded to the translator.
 			suppressForward := false
+			releaseBootstrap := false
 			for _, payload := range codexResponsesSSEPayloads(eventLines) {
 				eventType := gjson.GetBytes(payload, "type").String()
 				streamDiag.observe(eventType, payload)
 				incremental.observe(eventType, payload)
+				// A handshake and a rejection are not output; everything else is,
+				// a terminal success included.
+				switch eventType {
+				case "response.created", "response.in_progress", "response.failed", "error":
+				default:
+					releaseBootstrap = true
+				}
 				switch eventType {
 				case "response.completed", "response.incomplete":
 					terminal.observe(payload)
@@ -525,6 +574,12 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 			if suppressForward {
 				return terminalErr
+			}
+			if releaseBootstrap && !flushBootstrap() {
+				if terminalErr != nil {
+					return terminalErr
+				}
+				return execCtx.Context.Err()
 			}
 			var responseFrame bytes.Buffer
 			for _, eventLine := range eventLines {
@@ -544,7 +599,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						responseFrame.WriteByte('\n')
 						continue
 					}
-					if !send(cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}) {
+					if !emitPayload([]byte(chunks[i])) {
 						if terminalErr != nil {
 							return terminalErr
 						}
@@ -559,7 +614,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				if len(eventLines) > 0 && len(eventLines[len(eventLines)-1]) > 0 && eventLines[0][0] != ':' {
 					payload = append(payload, '\n')
 				}
-				if !send(cliproxyexecutor.StreamChunk{Payload: payload}) {
+				if !emitPayload(payload) {
 					if terminalErr != nil {
 						return terminalErr
 					}
@@ -572,6 +627,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if errors.Is(emitErr, context.Canceled) || errors.Is(emitErr, context.DeadlineExceeded) {
 				finishRead(emitErr)
 				return
+			}
+			if isCodexCapacityStatusErr(emitErr) {
+				// Nothing reached the client, so the attempt can be retried
+				// instead of failing the turn on a momentary capacity window.
+				dropBootstrap()
+			} else {
+				flushBootstrap()
 			}
 			recorder.RecordResponseError(emitErr)
 			terminal.publishFailure(execCtx.Context, reporter)

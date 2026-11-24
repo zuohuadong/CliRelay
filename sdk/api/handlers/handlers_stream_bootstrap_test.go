@@ -937,3 +937,99 @@ func TestExecuteStreamWithAuthManager_RejectsOpenAIResponsesStreamWithoutComplet
 		t.Fatalf("incomplete responses stream must not set model retry cooldown, got %v", state.NextRetryAfter)
 	}
 }
+
+// capacityThenSuccessStreamExecutor rejects the first attempt with a model
+// capacity error and serves the second, standing in for what ChatGPT does when
+// a model is momentarily full.
+type capacityThenSuccessStreamExecutor struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (e *capacityThenSuccessStreamExecutor) Identifier() string { return "codex" }
+
+func (e *capacityThenSuccessStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "Execute not implemented"}
+}
+
+func (e *capacityThenSuccessStreamExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.mu.Lock()
+	e.calls++
+	call := e.calls
+	e.mu.Unlock()
+
+	ch := make(chan coreexecutor.StreamChunk, 1)
+	if call == 1 {
+		ch <- coreexecutor.StreamChunk{Err: &coreauth.Error{
+			Code:       "model_at_capacity",
+			Message:    `{"error":{"message":"Selected model is at capacity. Please try a different model."}}`,
+			Retryable:  true,
+			HTTPStatus: http.StatusTooManyRequests,
+		}}
+		close(ch)
+		return &coreexecutor.StreamResult{Chunks: ch}, nil
+	}
+	ch <- coreexecutor.StreamChunk{Payload: []byte("ok")}
+	close(ch)
+	return &coreexecutor.StreamResult{Chunks: ch}, nil
+}
+
+func (e *capacityThenSuccessStreamExecutor) Refresh(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *capacityThenSuccessStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
+}
+
+func (e *capacityThenSuccessStreamExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
+	return nil, &coreauth.Error{Code: "not_implemented", Message: "HttpRequest not implemented", HTTPStatus: http.StatusNotImplemented}
+}
+
+func (e *capacityThenSuccessStreamExecutor) Calls() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
+}
+
+// A single account at capacity has nobody to fail over to; the request must be
+// asked again on the same account instead of failing the turn.
+func TestExecuteStreamWithAuthManager_RetriesCapacityOnTheSameAccount(t *testing.T) {
+	exec := &capacityThenSuccessStreamExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(exec)
+
+	auth := &coreauth.Auth{
+		ID:       "auth-capacity",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"email": "capacity@example.com"},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("manager.Register: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
+		Streaming: sdkconfig.StreamingConfig{BootstrapRetries: new(1)},
+		Codex:     sdkconfig.CodexExecutorOptions{CapacitySameAccountRetries: new(1)},
+	}, manager)
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
+
+	var got []byte
+	for chunk := range dataChan {
+		got = append(got, chunk...)
+	}
+	for msg := range errChan {
+		if msg != nil {
+			t.Fatalf("unexpected error: %+v", msg)
+		}
+	}
+	if string(got) != "ok" {
+		t.Fatalf("expected payload ok, got %q", string(got))
+	}
+	if exec.Calls() != 2 {
+		t.Fatalf("expected 2 stream attempts on the same account, got %d", exec.Calls())
+	}
+}

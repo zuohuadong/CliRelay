@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"strings"
+	"time"
 
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/loopdetect"
@@ -209,6 +211,11 @@ func forwardStreamWithBootstrapRetry(
 	defer close(errChan)
 	sentPayload := false
 	bootstrapRetries := 0
+	sameAccountRetries := 0
+	maxSameAccountRetries := 0
+	if failover != nil && failover.h != nil && failover.h.Cfg != nil {
+		maxSameAccountRetries = failover.h.Cfg.CodexCapacitySameAccountRetries()
+	}
 
 outer:
 	for {
@@ -219,6 +226,7 @@ outer:
 			}
 			if chunk.Err != nil {
 				streamErr := chunk.Err
+				capacityErr := codexCapacityStreamErr(streamErr)
 				// Safe bootstrap recovery: if the upstream fails before any payload bytes are sent,
 				// retry on another account (the failover excludes every account that already
 				// failed this request, so the candidate count bounds the retries too).
@@ -233,6 +241,26 @@ outer:
 						continue outer
 					}
 					streamErr = retryErr
+				}
+				// No other account could take the turn. A capacity rejection is
+				// model-scoped and short-lived, so asking the same account again
+				// after a pause is what the client would have done by hand.
+				if capacityErr && !sentPayload && failover != nil && failover.h != nil &&
+					sameAccountRetries < maxSameAccountRetries {
+					sameAccountRetries++
+					if !waitStreamRetry(ctx, codexCapacityRetryDelay) {
+						return
+					}
+					if retryResult, sameErr := failover.h.AuthManager.ExecuteStream(ctx, retry.providers, retry.req, retry.opts); sameErr == nil {
+						failover.adopt(retryResult)
+						if passthroughHeadersEnabled {
+							replaceHeader(upstreamHeaders, FilterUpstreamHeaders(retryResult.Headers))
+						}
+						chunks = retryResult.Chunks
+						continue outer
+					} else {
+						streamErr = sameErr
+					}
 				}
 				// A virtual model turns to its next member while nothing has
 				// reached the client; that member gets its own retries.
@@ -350,4 +378,35 @@ func streamErrorMessageFromErr(streamErr error) *StreamErrorMessage {
 		}
 	}
 	return &StreamErrorMessage{StatusCode: status, Error: streamErr, Addon: addon}
+}
+
+// codexCapacityRetryDelay is how long a capacity retry waits before asking the
+// same account again. Capacity windows are short, so a long pause would only
+// make a late turn later.
+const codexCapacityRetryDelay = time.Second
+
+// codexCapacityStreamErr reports whether err is the Codex "selected model is at
+// capacity" rejection. It is a 429 whose message names the capacity window; the
+// status alone would also match ordinary rate limits, which must keep their
+// existing handling.
+func codexCapacityStreamErr(err error) bool {
+	if err == nil || statusFromError(err) != http.StatusTooManyRequests {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "at capacity") || strings.Contains(message, "model_at_capacity")
+}
+
+// waitStreamRetry waits for d unless the client goes away first.
+func waitStreamRetry(ctx context.Context, d time.Duration) bool {
+	if ctx == nil {
+		time.Sleep(d)
+		return true
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
 }

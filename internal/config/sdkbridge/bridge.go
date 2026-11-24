@@ -12,6 +12,8 @@ type Config = coreconfig.Config
 type APIKeyEntry = coreconfig.APIKeyEntry
 
 type StreamingConfig = coreconfig.StreamingConfig
+
+type CodexExecutorOptions = coreconfig.CodexExecutorOptions
 type RoutingConfig = coreconfig.RoutingConfig
 type RoutingChannelGroup = coreconfig.RoutingChannelGroup
 type RoutingPathRoute = coreconfig.RoutingPathRoute

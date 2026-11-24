@@ -122,8 +122,22 @@ fi
 # The upstream v8 tree currently carries a large pre-existing lint backlog
 # (deprecated compatibility shims and generated transport adapters). Keep the
 # report visible in CI without making those non-blocking findings hide build
-# or targeted-test failures.
-"${golangci_lint_bin}" run --config .golangci.yml --tests=false --issues-exit-code=0 --fast --concurrency=1
+# or targeted-test failures. Bound the report so CI can still reach the final
+# build check when the analyzer exceeds the hosted runner budget.
+lint_args=(run --config .golangci.yml --tests=false --issues-exit-code=0 --fast --concurrency=1)
+if command -v timeout >/dev/null 2>&1; then
+  set +e
+  timeout --signal=TERM 120s "${golangci_lint_bin}" "${lint_args[@]}"
+  lint_status=$?
+  set -e
+  if [ "${lint_status}" -eq 124 ] || [ "${lint_status}" -eq 137 ]; then
+    echo "golangci-lint exceeded the 120s reporting budget; continuing because lint findings are non-blocking."
+  elif [ "${lint_status}" -ne 0 ]; then
+    exit "${lint_status}"
+  fi
+else
+  "${golangci_lint_bin}" "${lint_args[@]}"
+fi
 
 trap 'rm -f test-output' EXIT
 go build -o test-output ./cmd/server

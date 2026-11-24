@@ -393,6 +393,8 @@ func (e *XAIExecutor) prepareResponsesRequest(ctx context.Context, auth *cliprox
 	body = stripXAIUnsupportedWebSearchOptions(body)
 	// After flattening, so custom tools declared inside a namespace are rewritten too.
 	body, toolNames = xaiNormalizeUnsupportedCodexShapes(body, toolNames)
+	// After the rewrites above, so an allowed_tools list naming them is judged too.
+	body = normalizeXAIAllowedToolsChoice(body)
 	// After flattening, so namespace children and lifted Lite tools are checked too.
 	body = normalizeXAIToolParameterRoots(body)
 	sets := map[string][]byte{

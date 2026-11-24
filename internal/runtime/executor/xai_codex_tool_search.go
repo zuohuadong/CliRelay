@@ -160,3 +160,24 @@ func xaiWithoutToolSearchChoice(body []byte, choice gjson.Result) []byte {
 	}
 	return body
 }
+
+// normalizeXAIAllowedToolsChoice removes a tool_choice shape xAI has no
+// variant for. Clients that restrict a turn to a set of tools send
+//
+//	{"type":"allowed_tools","tools":[...]}
+//
+// and xAI answers 422 "tool_choice: data did not match any variant of untagged
+// enum ModelToolChoice" — with or without a mode field. Dropping it leaves the
+// endpoint on its default auto choice, which is the closest thing it has.
+func normalizeXAIAllowedToolsChoice(body []byte) []byte {
+	choice := gjson.GetBytes(body, "tool_choice")
+	if !choice.IsObject() || choice.Get("type").String() != "allowed_tools" {
+		return body
+	}
+	updated, err := sjson.DeleteBytes(body, "tool_choice")
+	if err != nil {
+		return body
+	}
+	log.Debugf("xai: dropped an allowed_tools choice; this endpoint only knows auto, none and a forced tool")
+	return updated
+}

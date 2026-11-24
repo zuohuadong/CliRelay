@@ -164,12 +164,10 @@ func TestXAIPrepareResponsesRequestStripsToolSearch(t *testing.T) {
 	if got := strings.Join(names, ","); got != "exec_command,multi_agent_v1__spawn_agent,list_tools" {
 		t.Fatalf("outbound tools = %s", got)
 	}
-	choice := gjson.GetBytes(body, "tool_choice")
-	if got := choice.Get("tools.#").Int(); got != 1 {
-		t.Fatalf("allowed_tools entries = %d, want 1: %s", got, choice.Raw)
-	}
-	if got := choice.Get("tools.0.name").String(); got != "exec_command" {
-		t.Fatalf("kept allowed tool = %q, want exec_command", got)
+	// xAI has no allowed_tools variant at all, so the choice falls back to its
+	// default auto instead of failing the turn.
+	if choice := gjson.GetBytes(body, "tool_choice"); choice.Exists() {
+		t.Fatalf("allowed_tools choice reached xAI: %s", choice.Raw)
 	}
 }
 
@@ -185,5 +183,29 @@ func TestStripXAIUnsupportedToolSearchDropsHistoryOnlyRequests(t *testing.T) {
 	}
 	if got := gjson.GetBytes(out, "tools.#").Int(); got != 1 {
 		t.Fatalf("tools = %s", gjson.GetBytes(out, "tools").Raw)
+	}
+}
+
+func TestNormalizeXAIAllowedToolsChoiceFallsBackToAuto(t *testing.T) {
+	body := []byte(`{"model":"grok-4.7","tools":[{"type":"function","name":"exec_command"}],"tool_choice":{"type":"allowed_tools","tools":[{"type":"function","name":"exec_command"}]}}`)
+	out := normalizeXAIAllowedToolsChoice(body)
+	if gjson.GetBytes(out, "tool_choice").Exists() {
+		t.Fatalf("allowed_tools choice survived: %s", out)
+	}
+	if got := gjson.GetBytes(out, "tools.#").Int(); got != 1 {
+		t.Fatalf("tools = %s", gjson.GetBytes(out, "tools").Raw)
+	}
+
+	for name, untouched := range map[string]string{
+		"auto":        `{"tool_choice":"auto"}`,
+		"forced":      `{"tool_choice":{"type":"function","name":"exec_command"}}`,
+		"none string": `{"tool_choice":"none"}`,
+		"absent":      `{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := string(normalizeXAIAllowedToolsChoice([]byte(untouched))); got != untouched {
+				t.Fatalf("rewritten: %s", got)
+			}
+		})
 	}
 }

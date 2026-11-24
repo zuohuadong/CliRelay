@@ -69,7 +69,7 @@ func TestConvertGeminiResponseToOpenAIResponsesNonStream_InlineImage(t *testing.
 
 	got := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-3.1-flash-image", request, request, []byte(geminiImageChunk), &param)
 
-	output := gjson.Get(got, "output")
+	output := gjson.GetBytes(got, "output")
 	if !output.IsArray() || len(output.Array()) != 1 {
 		t.Fatalf("expected exactly one output item, got: %s", got)
 	}
@@ -102,7 +102,7 @@ func TestConvertGeminiResponseToOpenAIResponsesNonStream_TextAndImage(t *testing
 
 	got := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-3.1-flash-image", request, request, chunk, &param)
 
-	items := gjson.Get(got, "output").Array()
+	items := gjson.GetBytes(got, "output").Array()
 	if len(items) != 2 {
 		t.Fatalf("expected an image item and a message item, got: %s", got)
 	}

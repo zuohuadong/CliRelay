@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	configaccess "github.com/router-for-me/CLIProxyAPI/v8/internal/access"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/bodyutil"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
@@ -16,6 +17,7 @@ import (
 	ampmodule "github.com/router-for-me/CLIProxyAPI/v8/internal/api/modules/amp"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/clusterruntime"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/githubauth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/loopguard"
@@ -177,11 +179,17 @@ func (s *Server) applyInitialRuntimeConfig(cfg *config.Config, authManager *auth
 		authManager.SetAccountConcurrencyConfig(cfg.AccountConcurrency.WaitTimeout(), cfg.AccountConcurrency.QueueDepth())
 		authManager.SetBusyWaitConfig(cfg.Streaming.BusyWaitMaxWaiters)
 	}
+	if s.accessManager != nil {
+		if _, err := configaccess.ApplyAccessProviders(s.accessManager, nil, cfg); err != nil {
+			log.WithError(err).Warn("failed to apply configured request authentication providers")
+		}
+	}
 	// Cluster-wide limits, slots, affinity and cooldowns; a no-op on a single
 	// node. Before the server listens, after StartService prepared the cluster.
 	s.clusterRuntime = clusterruntime.Install(cfg, authManager)
 	managementasset.SetCurrentConfig(cfg)
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
+	githubauth.SetToken(cfg.GitHubToken)
 	s.applyProxyWarmupConfig(cfg)
 }
 

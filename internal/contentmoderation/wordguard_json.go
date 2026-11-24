@@ -60,15 +60,16 @@ func nextLiteralStep(lit []byte, i, end int) (literalStep, bool) {
 			}
 			next := i + 6
 			half := utf16.IsSurrogate(r)
-			if half && next+6 <= end && lit[next] == '\\' && lit[next+1] == 'u' {
-				// gjson takes the second escape whatever it holds, and so do we, so
-				// that the two agree on a malformed pair.
+			if r >= 0xd800 && r <= 0xdbff &&
+				next+6 <= end && lit[next] == '\\' && lit[next+1] == 'u' {
 				second, ok := parseUnicodeEscape(lit, next+2, end)
 				if !ok {
 					return step, false
 				}
-				r = utf16.DecodeRune(r, second)
-				next += 6
+				if second >= 0xdc00 && second <= 0xdfff {
+					r = utf16.DecodeRune(r, second)
+					next += 6
+				}
 			}
 			// A half that did not pair up into a character beyond the BMP.
 			step.malformed = half && r < 0x10000

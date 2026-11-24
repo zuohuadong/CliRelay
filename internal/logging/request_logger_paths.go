@@ -36,7 +36,7 @@ func (l *FileRequestLogger) generateFilename(url string, requestID ...string) st
 
 	var idPart string
 	if len(requestID) > 0 && requestID[0] != "" {
-		idPart = requestID[0]
+		idPart = ShortRequestID(requestID[0])
 	} else {
 		idPart = fmt.Sprintf("%d", requestLogID.Add(1))
 	}
@@ -46,11 +46,15 @@ func (l *FileRequestLogger) generateFilename(url string, requestID ...string) st
 
 func (l *FileRequestLogger) sanitizeForFilename(path string) string {
 	sanitized := strings.ReplaceAll(path, "/", "-")
+	sanitized = strings.ReplaceAll(sanitized, `\`, "-")
 	sanitized = strings.ReplaceAll(sanitized, ":", "-")
 	reg := regexp.MustCompile(`[<>:"|?*\s]`)
 	sanitized = reg.ReplaceAllString(sanitized, "-")
 	reg = regexp.MustCompile(`-+`)
 	sanitized = reg.ReplaceAllString(sanitized, "-")
+	for strings.Contains(sanitized, "..") {
+		sanitized = strings.ReplaceAll(sanitized, "..", "-")
+	}
 	sanitized = strings.Trim(sanitized, "-")
 	if sanitized == "" {
 		return "root"

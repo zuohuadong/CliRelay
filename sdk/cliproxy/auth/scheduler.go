@@ -44,6 +44,7 @@ type scheduledGenerationMeta struct {
 // authScheduler keeps the incremental provider/model scheduling state used by Manager.
 type authScheduler struct {
 	mu                  sync.Mutex
+	tracker             *selectionPressureTracker
 	strategy            schedulerStrategy
 	weightedSelector    *WeightedRoundRobinSelector
 	providers           map[string]*providerScheduler

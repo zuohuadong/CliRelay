@@ -31,6 +31,14 @@ const (
 	latestReleaseUserAgent = "CLIProxyAPI"
 )
 
+func setLatestReleaseRequestHeaders(req *http.Request) {
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", latestReleaseUserAgent)
+	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+}
+
 func (h *Handler) GetConfig(c *gin.Context) {
 	if h == nil || h.cfg == nil {
 		c.JSON(200, gin.H{})

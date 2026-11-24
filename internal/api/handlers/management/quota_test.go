@@ -63,7 +63,7 @@ func TestPostQuotaClearStatusClearsUnauthorizedAuthByIndex(t *testing.T) {
 	if updated.Status != coreauth.StatusActive {
 		t.Fatalf("auth.Status = %q, want %q", updated.Status, coreauth.StatusActive)
 	}
-	if updated.StatusMessage != "" || updated.Unavailable || !updated.NextRetryAfter.IsZero() || updated.LastError != nil || updated.Quota != (coreauth.QuotaState{}) {
+	if updated.StatusMessage != "" || updated.Unavailable || !updated.NextRetryAfter.IsZero() || updated.LastError != nil || updated.Quota.Exceeded || updated.Quota.Reason != "" || updated.Quota.Window != "" || updated.Quota.WindowMinutes != 0 || updated.Quota.RecoveryRequired || !updated.Quota.NextRecoverAt.IsZero() || updated.Quota.BackoffLevel != 0 || !updated.Quota.ObservedAt.IsZero() || len(updated.Quota.Signals) != 0 {
 		t.Fatalf("401 runtime state was not cleared: %#v", updated)
 	}
 }

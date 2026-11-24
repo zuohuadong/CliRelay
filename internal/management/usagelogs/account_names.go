@@ -27,7 +27,13 @@ func authIndexAliasGroup(auth *coreauth.Auth) []string {
 	if auth == nil {
 		return nil
 	}
-	primary := strings.TrimSpace(auth.EnsureIndex())
+	primary := ""
+	if fileName := strings.TrimSpace(auth.FileName); fileName != "" {
+		primary = authIndexFromSeed("file:" + fileName)
+	}
+	if primary == "" {
+		primary = strings.TrimSpace(auth.EnsureIndex())
+	}
 	if primary == "" {
 		return nil
 	}

@@ -261,7 +261,9 @@ func TestStopReasonsSurviveEveryTranslator(t *testing.T) {
 					var param any
 					var outputs []string
 					for _, chunk := range upstream.stream(reason) {
-						outputs = append(outputs, translator.Response(upstream.format, client.format, ctx, "m", streamRequest, streamRequest, []byte(chunk), &param)...)
+						for _, event := range translator.Response(upstream.format, client.format, ctx, "m", streamRequest, streamRequest, []byte(chunk), &param) {
+							outputs = append(outputs, string(event))
+						}
 					}
 					if got := client.stream(t, outputs); got != want {
 						t.Fatalf("stop reason = %q, want %q; outputs: %q", got, want, outputs)
@@ -270,7 +272,7 @@ func TestStopReasonsSurviveEveryTranslator(t *testing.T) {
 				t.Run(name+"/non-stream", func(t *testing.T) {
 					var param any
 					out := translator.ResponseNonStream(upstream.format, client.format, ctx, "m", request, request, []byte(upstream.nonStream(reason)), &param)
-					if got := client.nonStream(out); got != want {
+					if got := client.nonStream(string(out)); got != want {
 						t.Fatalf("stop reason = %q, want %q; response: %s", got, want, out)
 					}
 				})

@@ -2,12 +2,15 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/loopdetect"
 	log "github.com/sirupsen/logrus"
 )
@@ -73,7 +76,46 @@ func toolLoopReply(ctx context.Context, handlerType, modelName string, rawJSON [
 			Limits: policy.Tool.Normalized(), Loop: loop, Model: modelName, Protocol: protocol, Stream: stream,
 		})
 	}
+	// A tool loop is answered locally, before an executor creates a usage
+	// reporter. Publish the request count and guard outcome directly so it is
+	// visible in request logs just like an upstream execution.
+	record := coreusage.Record{
+		Model:       modelName,
+		GuardKind:   string(loopdetect.KindToolLoop),
+		Failed:      true,
+		RequestedAt: time.Now(),
+		Stream:      stream,
+		Streaming:   stream,
+		Generate:    coreusage.GenerateFlag(true),
+	}
+	snapshot := diagnostics.LoopGuardSnapshot{
+		Kind:              diagnostics.LoopGuardToolLoop,
+		Repeats:           policy.Tool.Normalized().Repeats,
+		Turns:             loop.Turns,
+		ConversationItems: loop.Items,
+		ItemsRead:         loop.Read,
+		Message:           loop.Notice(),
+		Source:            policy.ToolSource,
+	}
+	snapshot.Calls = make([]diagnostics.LoopGuardCall, len(loop.Calls))
+	for i, call := range loop.Calls {
+		snapshot.Calls[i] = diagnostics.LoopGuardCall{Name: call.Name, Arguments: call.Arguments}
+	}
+	if payload, err := json.Marshal(map[string]any{"diagnostic": map[string]any{"loop_guard": snapshot}}); err == nil {
+		record.DetailContent = string(payload)
+	}
+	coreusage.PublishRecord(ctx, record)
 	return reply, true
+}
+
+func loopGuardDiagnostic(ctx context.Context) *diagnostics.RequestDiagnostic {
+	if diagnostic := diagnostics.FromContext(ctx); diagnostic != nil {
+		return diagnostic
+	}
+	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok {
+		return diagnostics.FromGin(ginCtx)
+	}
+	return nil
 }
 
 var toolLoopCheck = loopdetect.DetectToolLoop
@@ -129,7 +171,7 @@ func (g *replyGuard) inspect(chunk []byte) *StreamErrorMessage {
 		return nil
 	}
 	err := &loopdetect.ReplyLoopError{Trip: trip}
-	g.mark.Set(loopdetect.KindReplyLoop, trip.Message())
+	g.mark.SetReply(loopdetect.KindReplyLoop, trip.Message(), g.policy.ReplySource, g.guard.Limits(), trip)
 	if g.policy.Observer != nil {
 		g.policy.Observer.ReplyCut(g.ctx, loopdetect.ReplyCut{Limits: g.guard.Limits(), Trip: trip, Model: g.model})
 	}

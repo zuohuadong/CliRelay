@@ -1552,7 +1552,12 @@ func isStaleExecutionResult(result Result, current *Auth) bool {
 			return false
 		}
 	}
-	staleVersion := result.CredentialVersion < current.CredentialVersion && (result.CredentialVersion > 0 || current.CredentialVersion > 1)
+	// Unversioned failures are treated as stale once a credential has rotated,
+	// because an in-flight old request must not cool the replacement. A plain
+	// successful result has no version watermark, however, and still records
+	// request bookkeeping (including deferred persistence).
+	staleVersion := result.CredentialVersion < current.CredentialVersion &&
+		(result.CredentialVersion > 0 || (!result.Success && current.CredentialVersion > 1))
 	return staleVersion
 }
 
@@ -2258,7 +2263,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
-		_ = m.persistLocked(ctx, auth)
+		// MarkResult runs while holding the manager's global lock. Versioned
+		// stores must not block on remote I/O here; they buffer credential
+		// changes and flush them in the background when the database is down.
+		_ = m.persistLocked(withResultPersist(ctx), auth)
 		authSnapshot = auth.Clone()
 		if !result.Success && m.cooldownPublishing() {
 			if cooldownAfter, quota := cooldownDeadline(auth, modelKey, now); cooldownAfter.After(cooldownBefore) {

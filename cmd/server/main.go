@@ -55,6 +55,7 @@ type cliModeOptions struct {
 	xaiLogin         bool
 	tuiMode          bool
 	standalone       bool
+	localModel       bool
 	isCloudDeploy    bool
 	configFileExists bool
 }
@@ -68,6 +69,11 @@ func init() {
 // It parses command-line flags, loads configuration, and starts the appropriate
 // service based on the provided flags (login, codex-login, or server mode).
 func main() {
+	os.Exit(run())
+}
+
+func run() (exitStatus int) {
+	log.SetOutput(os.Stderr)
 	fmt.Printf("CliRelay Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
 
 	// Command-line flags to control the application's behavior.
@@ -89,6 +95,7 @@ func main() {
 	var password string
 	var tuiMode bool
 	var standalone bool
+	var localModel bool
 
 	// Define command-line flags for different operation modes.
 	flag.BoolVar(&login, "login", false, "Login Google Account")
@@ -109,6 +116,7 @@ func main() {
 	flag.StringVar(&password, "password", "", "")
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
+	flag.BoolVar(&localModel, "local-model", false, "Use embedded model catalogs only")
 
 	flag.CommandLine.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -169,7 +177,7 @@ func main() {
 	wd, err := os.Getwd()
 	if err != nil {
 		log.Errorf("failed to get working directory: %v", err)
-		return
+		return 1
 	}
 
 	// Load environment variables from .env if present.
@@ -264,14 +272,14 @@ func main() {
 		cancel()
 		if err != nil {
 			log.Errorf("failed to initialize postgres token store: %v", err)
-			return
+			return 1
 		}
 		examplePath := filepath.Join(wd, "config.example.yaml")
 		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 		if errBootstrap := pgStoreInst.Bootstrap(ctx, examplePath); errBootstrap != nil {
 			cancel()
 			log.Errorf("failed to bootstrap postgres-backed config: %v", errBootstrap)
-			return
+			return 1
 		}
 		cancel()
 		configFilePath = pgStoreInst.ConfigPath()
@@ -295,7 +303,7 @@ func main() {
 			parsed, errParse := url.Parse(resolvedEndpoint)
 			if errParse != nil {
 				log.Errorf("failed to parse object store endpoint %q: %v", objectStoreEndpoint, errParse)
-				return
+				return 1
 			}
 			switch strings.ToLower(parsed.Scheme) {
 			case "http":
@@ -304,11 +312,11 @@ func main() {
 				useSSL = true
 			default:
 				log.Errorf("unsupported object store scheme %q (only http and https are allowed)", parsed.Scheme)
-				return
+				return 1
 			}
 			if parsed.Host == "" {
 				log.Errorf("object store endpoint %q is missing host information", objectStoreEndpoint)
-				return
+				return 1
 			}
 			resolvedEndpoint = parsed.Host
 			if parsed.Path != "" && parsed.Path != "/" {
@@ -328,14 +336,14 @@ func main() {
 		objectStoreInst, err = store.NewObjectTokenStore(objCfg)
 		if err != nil {
 			log.Errorf("failed to initialize object token store: %v", err)
-			return
+			return 1
 		}
 		examplePath := filepath.Join(wd, "config.example.yaml")
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if errBootstrap := objectStoreInst.Bootstrap(ctx, examplePath); errBootstrap != nil {
 			cancel()
 			log.Errorf("failed to bootstrap object-backed config: %v", errBootstrap)
-			return
+			return 1
 		}
 		cancel()
 		configFilePath = objectStoreInst.ConfigPath()
@@ -357,11 +365,11 @@ func main() {
 		}
 		gitStoreRoot = filepath.Join(gitStoreLocalPath, "gitstore")
 		authDir := filepath.Join(gitStoreRoot, "auths")
-		gitStoreInst = store.NewGitTokenStore(gitStoreRemoteURL, gitStoreUser, gitStorePassword)
+		gitStoreInst = store.NewGitTokenStore(gitStoreRemoteURL, gitStoreUser, gitStorePassword, "")
 		gitStoreInst.SetBaseDir(authDir)
 		if errRepo := gitStoreInst.EnsureRepository(); errRepo != nil {
 			log.Errorf("failed to prepare git token store: %v", errRepo)
-			return
+			return 1
 		}
 		configFilePath = gitStoreInst.ConfigPath()
 		if configFilePath == "" {
@@ -371,20 +379,20 @@ func main() {
 			examplePath := filepath.Join(wd, "config.example.yaml")
 			if _, errExample := os.Stat(examplePath); errExample != nil {
 				log.Errorf("failed to find template config file: %v", errExample)
-				return
+				return 1
 			}
 			if errCopy := misc.CopyConfigTemplate(examplePath, configFilePath); errCopy != nil {
 				log.Errorf("failed to bootstrap git-backed config: %v", errCopy)
-				return
+				return 1
 			}
 			if errCommit := gitStoreInst.PersistConfig(context.Background()); errCommit != nil {
 				log.Errorf("failed to commit initial git-backed config: %v", errCommit)
-				return
+				return 1
 			}
 			log.Infof("git-backed config initialized from template: %s", configFilePath)
 		} else if statErr != nil {
 			log.Errorf("failed to inspect git-backed config: %v", statErr)
-			return
+			return 1
 		}
 		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
 		if err == nil {
@@ -398,14 +406,14 @@ func main() {
 		wd, err = os.Getwd()
 		if err != nil {
 			log.Errorf("failed to get working directory: %v", err)
-			return
+			return 1
 		}
 		configFilePath = filepath.Join(wd, "config.yaml")
 		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
 	}
 	if err != nil {
 		log.Errorf("failed to load config: %v", err)
-		return
+		return 1
 	}
 	if cfg == nil {
 		cfg = &config.Config{}
@@ -436,7 +444,7 @@ func main() {
 
 	if err = logging.ConfigureLogOutput(cfg); err != nil {
 		log.Errorf("failed to configure log output: %v", err)
-		return
+		return 1
 	}
 
 	log.Infof("CliRelay Version: %s, Commit: %s, BuiltAt: %s", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
@@ -446,7 +454,7 @@ func main() {
 
 	if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir); errResolveAuthDir != nil {
 		log.Errorf("failed to resolve auth directory: %v", errResolveAuthDir)
-		return
+		return 1
 	} else {
 		cfg.AuthDir = resolvedAuthDir
 	}
@@ -464,7 +472,7 @@ func main() {
 	// store would fight it over the same auth directory.
 	if cfg.Cluster.Enabled && (usePostgresStore || useObjectStore || useGitStore) {
 		log.Error("cluster mode keeps credentials in the runtime PostgreSQL database and cannot be combined with PGSTORE_*, GITSTORE_* or OBJECTSTORE_*; unset them or disable cluster mode")
-		return
+		return 1
 	}
 
 	// Register the shared token store once so all components use the same persistence backend.
@@ -490,7 +498,7 @@ func main() {
 	// Register built-in access providers before constructing services.
 	configaccess.Register(&cfg.SDKConfig)
 
-	runSelectedMode(cfg, configFilePath, options, cliModeOptions{
+	return runSelectedMode(cfg, configFilePath, options, cliModeOptions{
 		vertexImport:     vertexImport,
 		projectID:        projectID,
 		password:         password,
@@ -506,12 +514,13 @@ func main() {
 		xaiLogin:         xaiLogin,
 		tuiMode:          tuiMode,
 		standalone:       standalone,
+		localModel:       localModel,
 		isCloudDeploy:    isCloudDeploy,
 		configFileExists: configFileExists,
 	})
 }
 
-func runSelectedMode(cfg *config.Config, configFilePath string, options *cmd.LoginOptions, mode cliModeOptions) {
+func runSelectedMode(cfg *config.Config, configFilePath string, options *cmd.LoginOptions, mode cliModeOptions) int {
 	switch {
 	case mode.vertexImport != "":
 		cmd.DoVertexImport(cfg, mode.vertexImport, "")
@@ -536,30 +545,34 @@ func runSelectedMode(cfg *config.Config, configFilePath string, options *cmd.Log
 	case mode.xaiLogin:
 		cmd.DoXAILogin(cfg, options)
 	default:
-		runServiceMode(cfg, configFilePath, mode.password, mode)
+		return runServiceMode(cfg, configFilePath, mode.password, mode)
 	}
+	return 0
 }
 
-func runServiceMode(cfg *config.Config, configFilePath, password string, mode cliModeOptions) {
+func runServiceMode(cfg *config.Config, configFilePath, password string, mode cliModeOptions) int {
 	if mode.isCloudDeploy && !mode.configFileExists {
 		cmd.WaitForCloudDeploy()
-		return
+		return 0
 	}
 	if !mode.tuiMode {
 		managementasset.StartAutoUpdater(context.Background(), configFilePath)
-		cmd.StartService(cfg, configFilePath, password)
-		return
+		if errStart := cmd.StartService(cfg, configFilePath, password); errStart != nil {
+			return 1
+		}
+		return 0
 	}
 	if mode.standalone {
-		runStandaloneTUI(cfg, configFilePath, password)
-		return
+		return runStandaloneTUI(cfg, configFilePath, password)
 	}
 	if errRun := tui.Run(cfg.Port, password, nil, os.Stdout); errRun != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
+		return 1
 	}
+	return 0
 }
 
-func runStandaloneTUI(cfg *config.Config, configFilePath, password string) {
+func runStandaloneTUI(cfg *config.Config, configFilePath, password string) int {
 	managementasset.StartAutoUpdater(context.Background(), configFilePath)
 	hook := tui.NewLogHook(2000)
 	hook.SetFormatter(&logging.LogFormatter{})
@@ -611,16 +624,20 @@ func runStandaloneTUI(cfg *config.Config, configFilePath, password string) {
 		cancel()
 		<-done
 		fmt.Fprintf(os.Stderr, "TUI error: embedded server is not ready\n")
-		return
+		return 1
 	}
 
 	if errRun := tui.Run(cfg.Port, password, hook, origStdout); errRun != nil {
 		restoreIO()
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
+		cancel()
+		<-done
+		return 1
 	} else {
 		restoreIO()
 	}
 
 	cancel()
 	<-done
+	return 0
 }

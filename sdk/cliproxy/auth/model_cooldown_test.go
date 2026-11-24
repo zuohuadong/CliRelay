@@ -60,7 +60,7 @@ func TestClearModelCooldownReleasesOnlyThatModel(t *testing.T) {
 
 	got, _ := m.GetByID("relay")
 	state := got.ModelStates["throttled"]
-	if state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{}) || state.Status != StatusActive || state.StatusMessage != "" {
+	if state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota.IsZero() || state.Status != StatusActive || state.StatusMessage != "" {
 		t.Fatalf("the model was not fully released: %+v", state)
 	}
 	if ownStateBlocks(got, "throttled") {

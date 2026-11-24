@@ -56,8 +56,10 @@ func loopGuardPolicy(effective loopguard.Effective) *loopdetect.Policy {
 		return nil
 	}
 	return &loopdetect.Policy{
-		Reply: effective.Reply,
-		Tool:  effective.Tool,
+		Reply:       effective.Reply,
+		Tool:        effective.Tool,
+		ReplySource: string(effective.ReplySource),
+		ToolSource:  string(effective.ToolSource),
 		Observer: executor.LoopGuardObserver{
 			ReplySource: string(effective.ReplySource),
 			ToolSource:  string(effective.ToolSource),

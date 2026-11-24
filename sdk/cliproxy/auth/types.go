@@ -378,6 +378,13 @@ type QuotaState struct {
 	cooldownEvaluated bool
 }
 
+func (q QuotaState) IsZero() bool {
+	return !q.Exceeded && q.Reason == "" && q.Window == "" && q.WindowMinutes == 0 &&
+		!q.RecoveryRequired && q.NextRecoverAt.IsZero() && q.BackoffLevel == 0 &&
+		q.ObservedAt.IsZero() && len(q.Signals) == 0 && len(q.cooldownSignals) == 0 &&
+		!q.cooldownEvaluated
+}
+
 // Clone returns an independent copy of the quota state.
 func (q QuotaState) Clone() QuotaState {
 	copyQuota := q

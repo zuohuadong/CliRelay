@@ -33,6 +33,7 @@ type ModelRegistry interface {
 	ClientSupportsModel(clientID, modelID string) bool
 	GetAvailableModels(handlerType string) []map[string]any
 	GetAvailableModelsByProvider(provider string) []*ModelInfo
+	GetModelProviders(modelID string) []string
 	GetModelsForClient(clientID string) []*ModelInfo
 	GetModelsAndEpochForClient(clientID string) ([]*ModelInfo, uint64)
 	ClientRegistrationEpoch(clientID string) uint64

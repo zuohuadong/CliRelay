@@ -70,7 +70,8 @@ func (s *Store) Save(ctx context.Context, auth *coreauth.Auth) (string, error) {
 		w.provider = documentProvider(content)
 		return mirror, s.createCredential(ctx, w)
 	}
-	switch s.classify(w) {
+	decision := s.classify(w)
+	switch decision {
 	case decisionRuntime:
 		return mirror, nil
 	case decisionGone:

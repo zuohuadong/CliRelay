@@ -92,6 +92,7 @@ type ClaudeModel struct {
 	DisplayName  string                    `yaml:"display-name,omitempty" json:"display-name,omitempty"`
 	ForceMapping bool                      `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 	IsCompat     bool                      `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
+	MaxContextLength int                   `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
 	Thinking     *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
@@ -99,6 +100,7 @@ func (m ClaudeModel) GetName() string                        { return m.Name }
 func (m ClaudeModel) GetAlias() string                       { return m.Alias }
 func (m ClaudeModel) GetForceMapping() bool                  { return m.ForceMapping }
 func (m ClaudeModel) GetIsCompat() bool                      { return m.IsCompat }
+func (m ClaudeModel) GetMaxContextLength() int               { return m.MaxContextLength }
 func (m ClaudeModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
 // CodexKey represents the configuration for a Codex API key,
@@ -184,6 +186,7 @@ type CodexModel struct {
 	ForceMapping               bool                      `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 	IsCompat                   bool                      `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
 	SupportConfigurationUpdate bool                      `yaml:"support-configuration-update,omitempty" json:"support-configuration-update,omitempty"`
+	MaxContextLength           int                       `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
 	Thinking                   *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
@@ -191,6 +194,7 @@ func (m CodexModel) GetName() string                        { return m.Name }
 func (m CodexModel) GetAlias() string                       { return m.Alias }
 func (m CodexModel) GetForceMapping() bool                  { return m.ForceMapping }
 func (m CodexModel) GetIsCompat() bool                      { return m.IsCompat }
+func (m CodexModel) GetMaxContextLength() int               { return m.MaxContextLength }
 func (m CodexModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
 // GeminiKey represents the configuration for a Gemini API key,
@@ -264,6 +268,7 @@ type GeminiModel struct {
 	DisplayName  string                    `yaml:"display-name,omitempty" json:"display-name,omitempty"`
 	ForceMapping bool                      `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 	IsCompat     bool                      `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
+	MaxContextLength int                   `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
 	Thinking     *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
@@ -271,6 +276,7 @@ func (m GeminiModel) GetName() string                        { return m.Name }
 func (m GeminiModel) GetAlias() string                       { return m.Alias }
 func (m GeminiModel) GetForceMapping() bool                  { return m.ForceMapping }
 func (m GeminiModel) GetIsCompat() bool                      { return m.IsCompat }
+func (m GeminiModel) GetMaxContextLength() int               { return m.MaxContextLength }
 func (m GeminiModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
 // OpenAICompatibility represents the configuration for OpenAI API compatibility
@@ -372,6 +378,7 @@ type OpenAICompatibilityModel struct {
 	UseMaxCompletionTokens any                       `yaml:"use-max-completion-tokens,omitempty" json:"use-max-completion-tokens,omitempty"`
 	InputModalities        []string                  `yaml:"input-modalities,omitempty" json:"input-modalities,omitempty"`
 	OutputModalities       []string                  `yaml:"output-modalities,omitempty" json:"output-modalities,omitempty"`
+	MaxContextLength       int                       `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
 	Thinking               *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
@@ -380,6 +387,7 @@ func (m OpenAICompatibilityModel) GetAlias() string                       { retu
 func (m OpenAICompatibilityModel) GetDisplayName() string                 { return m.DisplayName }
 func (m OpenAICompatibilityModel) GetForceMapping() bool                  { return m.ForceMapping }
 func (m OpenAICompatibilityModel) GetIsCompat() bool                      { return m.IsCompat }
+func (m OpenAICompatibilityModel) GetMaxContextLength() int               { return m.MaxContextLength }
 func (m OpenAICompatibilityModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
 // OpenCodeGoKey represents an OpenCode Go plan API key.

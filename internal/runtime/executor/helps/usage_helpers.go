@@ -3,6 +3,7 @@ package helps
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,17 +21,21 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/loopdetect"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
 
 type UsageReporter struct {
+	requestCtx           context.Context
+	guardKind            string
 	requestID            string
 	traceID              string
 	selectionID          string
@@ -132,6 +137,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		traceID = internallogging.GetRequestID(ctx)
 	}
 	reporter := &UsageReporter{
+		requestCtx:      ctx,
 		requestID:       uuid.NewString(),
 		traceID:         traceID,
 		selectionID:     usage.SelectionIDFromContext(ctx),
@@ -618,11 +624,32 @@ func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.De
 }
 
 func (r *UsageReporter) PublishFailure(ctx context.Context, errs ...error) {
+	r.setGuardKindFromErrors(errs...)
 	r.publishWithOutcome(ctx, usage.Detail{}, true, r.failFromErrors(ctx, errs...))
 }
 
 func (r *UsageReporter) PublishFailureWithDetail(ctx context.Context, detail usage.Detail, errs ...error) {
+	r.setGuardKindFromErrors(errs...)
 	r.publishWithOutcome(ctx, detail, true, r.failFromErrors(ctx, errs...))
+}
+
+func (r *UsageReporter) setGuardKindFromErrors(errs ...error) {
+	if r == nil {
+		return
+	}
+	for _, err := range errs {
+		var loopErr *loopdetect.ReplyLoopError
+		if errors.As(err, &loopErr) {
+			r.guardKind = diagnostics.LoopGuardReplyLoop
+			r.stream = true
+			return
+		}
+		if err != nil && strings.Contains(err.Error(), loopdetect.ReplyLoopCode) {
+			r.guardKind = diagnostics.LoopGuardReplyLoop
+			r.stream = true
+			return
+		}
+	}
 }
 
 func (r *UsageReporter) TrackFailure(ctx context.Context, errPtr *error) {
@@ -681,6 +708,53 @@ func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.R
 
 func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
+	diagnosticCtx := ctx
+	if diagnostics.FromContext(diagnosticCtx) == nil && r != nil && r.requestCtx != nil {
+		diagnosticCtx = r.requestCtx
+	}
+	if snapshot := diagnostics.FromContext(diagnosticCtx); snapshot != nil {
+		if loop := snapshot.Snapshot().LoopGuard; loop != nil {
+			record.GuardKind = loop.Kind
+			if record.DetailContent == "" {
+				if payload, err := json.Marshal(map[string]any{"diagnostic": snapshot.Snapshot()}); err == nil {
+					record.DetailContent = string(payload)
+				}
+			}
+		}
+	} else if ginCtx, ok := diagnosticCtx.Value("gin").(*gin.Context); ok {
+		if diagnostic := diagnostics.FromGin(ginCtx); diagnostic != nil {
+			if loop := diagnostic.Snapshot().LoopGuard; loop != nil {
+				record.GuardKind = loop.Kind
+				if record.DetailContent == "" {
+					if payload, err := json.Marshal(map[string]any{"diagnostic": diagnostic.Snapshot()}); err == nil {
+						record.DetailContent = string(payload)
+					}
+				}
+			}
+		}
+	}
+	if marked, ok := loopdetect.MarkFrom(diagnosticCtx).Cut(); ok {
+		record.GuardKind = string(marked.Kind)
+		if marked.Kind == loopdetect.KindReplyLoop && record.DetailContent == "" {
+			snapshot := diagnostics.LoopGuardSnapshot{
+				Kind:        diagnostics.LoopGuardReplyLoop,
+				Source:      marked.Source,
+				Window:      marked.ReplyLimits.Window,
+				MaxDistinct: marked.ReplyLimits.Distinct,
+				Distinct:    marked.ReplyTrip.Distinct,
+				Units:       append([]string(nil), marked.ReplyTrip.Units...),
+				Reasoning:   marked.ReplyTrip.Reasoning,
+				RunOn:       marked.ReplyTrip.RunOn,
+				UnitsRead:   marked.ReplyTrip.UnitsRead,
+				CutAtChunk:  marked.ReplyTrip.Chunks,
+				CutAtBytes:  marked.ReplyTrip.Bytes,
+				Message:     marked.Detail,
+			}
+			if payload, err := json.Marshal(map[string]any{"diagnostic": map[string]any{"loop_guard": snapshot}}); err == nil {
+				record.DetailContent = string(payload)
+			}
+		}
+	}
 	if r != nil {
 		ctx = usage.WithCapturedIdentity(ctx, r.apiKey, r.accessProvider, r.isNativeKey)
 	}
@@ -779,6 +853,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Latency:              r.latency(),
 		TTFT:                 r.ttftDuration(),
 		Failed:               failed,
+		GuardKind:            r.guardKind,
 		Fail:                 fail,
 		Detail:               detail,
 	}

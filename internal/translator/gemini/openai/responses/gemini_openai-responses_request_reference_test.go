@@ -453,3 +453,10 @@ func convertOpenAIResponsesRequestToGeminiReference(modelName string, inputRawJS
 	result = common.AttachDefaultSafetySettings(result, "safetySettings")
 	return result
 }
+
+func geminiSchemaType(value gjson.Result) string {
+	if value.Type != gjson.String {
+		return value.String()
+	}
+	return strings.ToUpper(value.String())
+}

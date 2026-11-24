@@ -49,7 +49,7 @@ func TestAlphaSearchRealRouterAndExecutor(t *testing.T) {
 			return
 		}
 		if gjson.GetBytes(body, "model").String() != "upstream-search-model" || gjson.GetBytes(body, "commands.search_query.0.q").String() != "test" || gjson.GetBytes(body, "prompt_cache_key").Exists() {
-			t.Errorf("body=%s", body)
+			t.Errorf("body=%q len=%d", body, len(body))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, response)

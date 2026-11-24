@@ -192,7 +192,7 @@ func TestLocalReplyStreamIsReadByTheTranslatorsOfEachAPI(t *testing.T) {
 	ctx := context.Background()
 	// run feeds each chunk as the executors do, a `data:` line, and returns the
 	// translator's output.
-	run := func(chunks [][]byte, bare bool, convert func(ctx context.Context, model string, orig, req, raw []byte, param *any) []string, orig string, done string) string {
+	run := func(chunks [][]byte, bare bool, convert func(ctx context.Context, model string, orig, req, raw []byte, param *any) [][]byte, orig string, done string) string {
 		var param any
 		var out strings.Builder
 		for _, c := range chunks {
@@ -201,13 +201,13 @@ func TestLocalReplyStreamIsReadByTheTranslatorsOfEachAPI(t *testing.T) {
 				line = append([]byte("data: "), c...)
 			}
 			for _, s := range convert(ctx, "claude-sonnet-4", []byte(orig), []byte(orig), line, &param) {
-				out.WriteString(s)
+				out.Write(s)
 				out.WriteString("\n")
 			}
 		}
 		if done != "" {
 			for _, s := range convert(ctx, "claude-sonnet-4", []byte(orig), []byte(orig), []byte(done), &param) {
-				out.WriteString(s)
+				out.Write(s)
 				out.WriteString("\n")
 			}
 		}

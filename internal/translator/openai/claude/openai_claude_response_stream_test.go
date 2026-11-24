@@ -34,7 +34,12 @@ func translateChunks(chunks ...string) [][]string {
 	var param any
 	perChunk := make([][]string, 0, len(chunks))
 	for _, chunk := range chunks {
-		perChunk = append(perChunk, ConvertOpenAIResponseToClaude(context.Background(), "m", []byte(`{"stream":true}`), nil, []byte(chunk), &param))
+		raw := ConvertOpenAIResponseToClaude(context.Background(), "m", []byte(`{"stream":true}`), nil, []byte(chunk), &param)
+		out := make([]string, len(raw))
+		for i := range raw {
+			out[i] = string(raw[i])
+		}
+		perChunk = append(perChunk, out)
 	}
 	return perChunk
 }

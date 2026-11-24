@@ -13,7 +13,8 @@ import (
 func ResolveModelInfo(name, modelType string, support *registry.ThinkingSupport) *registry.ModelInfo {
 	trimmedName := strings.TrimSpace(name)
 	baseName := strings.TrimSpace(thinking.ParseSuffix(trimmedName).ModelName)
-	info := registry.LookupStaticModelInfo(baseName)
+	staticInfo := registry.LookupStaticModelInfo(baseName)
+	info := cloneModelInfo(staticInfo)
 	if info == nil {
 		info = &registry.ModelInfo{}
 	}
@@ -25,11 +26,48 @@ func ResolveModelInfo(name, modelType string, support *registry.ThinkingSupport)
 		// turns thinking off is an upstream API fact, not a level choice.
 		if normalized.DisableType == "" && info.Thinking != nil {
 			normalized.DisableType = info.Thinking.DisableType
+			if normalized.DisableType == "" && info.Thinking.Adaptive != nil &&
+				info.Thinking.Adaptive.Off == registry.ClaudeThinkingOffBetweenTools {
+				normalized.DisableType = info.Thinking.Adaptive.Off
+			}
 		}
 		info.Thinking = normalized
 	}
 	info.UserDefined = false
 	return info
+}
+
+func cloneModelInfo(info *registry.ModelInfo) *registry.ModelInfo {
+	if info == nil {
+		return nil
+	}
+	copyInfo := *info
+	copyInfo.SupportedGenerationMethods = append([]string(nil), info.SupportedGenerationMethods...)
+	copyInfo.SupportedParameters = append([]string(nil), info.SupportedParameters...)
+	copyInfo.SupportedInputModalities = append([]string(nil), info.SupportedInputModalities...)
+	copyInfo.SupportedOutputModalities = append([]string(nil), info.SupportedOutputModalities...)
+	if info.Thinking != nil {
+		thinking := *info.Thinking
+		thinking.Levels = append([]string(nil), info.Thinking.Levels...)
+		if info.Thinking.Adaptive != nil {
+			adaptive := *info.Thinking.Adaptive
+			thinking.Adaptive = &adaptive
+		}
+		copyInfo.Thinking = &thinking
+	}
+	if info.NativeCapabilities != nil {
+		capabilities := *info.NativeCapabilities
+		copyInfo.NativeCapabilities = &capabilities
+	}
+	if info.Config != nil {
+		config := *info.Config
+		config.OverrideHeader = make(map[string]string, len(info.Config.OverrideHeader))
+		for key, value := range info.Config.OverrideHeader {
+			config.OverrideHeader[key] = value
+		}
+		copyInfo.Config = &config
+	}
+	return &copyInfo
 }
 
 // NormalizeThinkingSupport clones and normalizes configured reasoning levels.

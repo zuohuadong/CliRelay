@@ -99,7 +99,10 @@ func (o *ClaudeAuth) AuthorizeWithSessionKey(ctx context.Context, sessionKey str
 	if err != nil {
 		return nil, org, err
 	}
-	bundle, err := o.ExchangeCodeForTokensWithRedirectURI(ctx, code, state, pkceCodes, PlatformRedirectURI)
+	// The session authorize response already carries the account identity. Keep
+	// this flow to its two session endpoints plus token exchange; the native
+	// browser flow's advisory Anthropic profile lookup is not needed here.
+	bundle, err := o.exchangeCodeForTokensWithRedirectURI(ctx, code, state, pkceCodes, PlatformRedirectURI, false)
 	if err != nil {
 		return nil, org, err
 	}

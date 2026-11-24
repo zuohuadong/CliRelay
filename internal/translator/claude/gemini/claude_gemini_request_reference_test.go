@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
@@ -342,7 +343,7 @@ func convertGeminiRequestToClaudeReference(modelName string, inputRawJSON []byte
 
 	// Convert tool parameter types to lowercase for Claude Code compatibility
 	var pathsToLower []string
-	toolsResult := gjson.Get(out, "tools")
+	toolsResult := ojson.Get(out, "tools")
 	util.Walk(toolsResult, "", "type", &pathsToLower)
 	for _, p := range pathsToLower {
 		fullPath := fmt.Sprintf("tools.%s", p)

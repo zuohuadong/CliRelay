@@ -621,7 +621,7 @@ func RegisterExecutorForAuth(coreManager *coreauth.Manager, base *config.Config,
 	case "opencode-go":
 		registerCompat("opencode-go")
 	case "ollama-cloud":
-		registerCompat("ollama-cloud")
+		register(executor.NewOllamaCloudExecutor(cfg))
 	case "qwen":
 		registerCompat("qwen")
 	case "iflow":
@@ -631,7 +631,7 @@ func RegisterExecutorForAuth(coreManager *coreauth.Manager, base *config.Config,
 	case "xai":
 		register(executor.NewXAIExecutor(cfg))
 	case "minimax":
-		registerCompat("minimax")
+		register(executor.NewMiniMaxExecutor(cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
 		if providerKey == "" {

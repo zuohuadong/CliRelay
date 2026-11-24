@@ -49,13 +49,18 @@ func ensureOpenAICompatUserAgent(r *http.Request, clientHeaders ...http.Header) 
 // It performs request/response translation and executes against the provider base URL
 // using per-auth credentials (API key) and per-auth HTTP transport (proxy) from context.
 type OpenAICompatExecutor struct {
-	provider string
-	cfg      *config.Config
+	provider             string
+	cfg                  *config.Config
+	imageEndpointOverride string
 }
 
 // NewOpenAICompatExecutor creates an executor bound to a provider key (e.g., "openrouter").
 func NewOpenAICompatExecutor(provider string, cfg *config.Config) *OpenAICompatExecutor {
 	return &OpenAICompatExecutor{provider: provider, cfg: cfg}
+}
+
+func newOpenAICompatExecutorWithImageEndpoint(provider string, cfg *config.Config, endpoint string) *OpenAICompatExecutor {
+	return &OpenAICompatExecutor{provider: provider, cfg: cfg, imageEndpointOverride: endpoint}
 }
 
 // Identifier implements cliproxyauth.ProviderExecutor.
@@ -102,7 +107,7 @@ func (e *OpenAICompatExecutor) HttpRequest(ctx context.Context, auth *cliproxyau
 
 func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
-	if endpointPath := openAICompatImageEndpointPath(opts); endpointPath != "" {
+	if endpointPath := e.imageEndpointPath(opts); endpointPath != "" {
 		return e.executeImages(ctx, auth, req, opts, endpointPath)
 	}
 	baseURL, apiKey := e.resolveCredentials(auth)
@@ -357,7 +362,7 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 
 func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
-	if endpointPath := openAICompatImageEndpointPath(opts); endpointPath != "" {
+	if endpointPath := e.imageEndpointPath(opts); endpointPath != "" {
 		return e.executeImagesStream(ctx, auth, req, opts, endpointPath)
 	}
 	baseURL, apiKey := e.resolveCredentials(auth)
@@ -967,6 +972,14 @@ func openAICompatImageEndpointPath(opts cliproxyexecutor.Options) string {
 		return openAICompatImagesGenerationsPath
 	}
 	return openAICompatDefaultImageEndpoint
+}
+
+func (e *OpenAICompatExecutor) imageEndpointPath(opts cliproxyexecutor.Options) string {
+	if e != nil && strings.TrimSpace(e.imageEndpointOverride) != "" &&
+		opts.SourceFormat.String() == openAICompatImageHandlerType {
+		return e.imageEndpointOverride
+	}
+	return openAICompatImageEndpointPath(opts)
 }
 
 func prepareOpenAICompatImagesPayload(payload []byte, model string, contentType string, stream bool) ([]byte, string, error) {

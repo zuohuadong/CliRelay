@@ -30,7 +30,10 @@ func TestConvertClaudeRequestToCodex_LargeHistoryAllocBound(t *testing.T) {
 	b.WriteString(`]}`)
 	in := []byte(b.String())
 
-	out := ConvertClaudeRequestToCodex("gpt-5.4", in, true)
+	out, err := ConvertClaudeRequestToCodex("gpt-5.4", in, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := gjson.GetBytes(out, "input.#").Int(); got < 32 {
 		t.Fatalf("input items = %d, want >=32", got)
 	}
@@ -42,7 +45,7 @@ func TestConvertClaudeRequestToCodex_LargeHistoryAllocBound(t *testing.T) {
 		bb.ReportAllocs()
 		bb.SetBytes(int64(len(in)))
 		for i := 0; i < bb.N; i++ {
-			_ = ConvertClaudeRequestToCodex("gpt-5.4", in, true)
+			_, _ = ConvertClaudeRequestToCodex("gpt-5.4", in, true)
 		}
 	})
 	if res.N == 0 {
@@ -87,7 +90,10 @@ func TestConvertClaudeRequestToCodex_DeferLoadingToolsAllocNotLinearInBody(t *te
 	b.WriteString(`]}`)
 	in := []byte(b.String())
 
-	out := ConvertClaudeRequestToCodex("gpt-5.4", in, true)
+	out, err := ConvertClaudeRequestToCodex("gpt-5.4", in, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tools := gjson.GetBytes(out, "tools")
 	if !tools.IsArray() || len(tools.Array()) != 50 {
 		t.Fatalf("tools = %d, want 50", len(tools.Array()))
@@ -103,7 +109,7 @@ func TestConvertClaudeRequestToCodex_DeferLoadingToolsAllocNotLinearInBody(t *te
 		bb.ReportAllocs()
 		bb.SetBytes(int64(len(in)))
 		for i := 0; i < bb.N; i++ {
-			_ = ConvertClaudeRequestToCodex("gpt-5.4", in, true)
+			_, _ = ConvertClaudeRequestToCodex("gpt-5.4", in, true)
 		}
 	})
 	if res.N == 0 {

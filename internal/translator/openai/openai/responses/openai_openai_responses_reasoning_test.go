@@ -40,7 +40,11 @@ func TestResponsesRequestPreservesReadableReasoning(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
 				input := []byte(`{"model":"m","input":[` + tc.input + `]}`)
 				before := string(input)
-				out := gjson.ParseBytes(ConvertOpenAIResponsesRequestToOpenAIChatCompletions("m", input, stream))
+				body, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("m", input, stream)
+				if err != nil {
+					t.Fatal(err)
+				}
+				out := gjson.ParseBytes(body)
 				if string(input) != before {
 					t.Fatal("input mutated")
 				}
@@ -77,7 +81,11 @@ func TestResponsesRequestIgnoresOpaqueAndMalformedReasoning(t *testing.T) {
 		`{"type":"reasoning","summary":[{"type":"other","text":"unrelated"}]}`,
 	} {
 		input := []byte(`{"input":[` + item + `,{"role":"user","content":"hello"}]}`)
-		out := gjson.ParseBytes(ConvertOpenAIResponsesRequestToOpenAIChatCompletions("m", input, false))
+		body, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("m", input, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := gjson.ParseBytes(body)
 		if out.Get("messages.#").Int() != 1 || strings.Contains(out.Raw, "reasoning_content") || strings.Contains(out.Raw, "opaque-secret") {
 			t.Fatalf("unexpected reasoning message: %s", out.Raw)
 		}
@@ -86,7 +94,11 @@ func TestResponsesRequestIgnoresOpaqueAndMalformedReasoning(t *testing.T) {
 
 func TestResponsesRequestCombinesAdjacentReasoning(t *testing.T) {
 	input := []byte(`{"input":[{"type":"reasoning","summary":[{"type":"summary_text","text":"one"}]},{"type":"reasoning","summary":[{"type":"summary_text","text":"two"}]},{"type":"function_call","call_id":"a","name":"first","arguments":"{}"},{"type":"function_call","call_id":"b","name":"second","arguments":"{}"}]}`)
-	out := gjson.ParseBytes(ConvertOpenAIResponsesRequestToOpenAIChatCompletions("m", input, false))
+	body, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("m", input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := gjson.ParseBytes(body)
 	if out.Get("messages.#").Int() != 2 || out.Get("messages.0.reasoning_content").String() != "one\ntwo" || out.Get("messages.1.reasoning_content").Exists() {
 		t.Fatalf("reasoning duplicated or discarded: %s", out.Raw)
 	}
@@ -117,7 +129,7 @@ func TestResponsesStreamUsesDistinctStableOutputIndices(t *testing.T) {
 				}
 				chunk := fmt.Sprintf(`{"id":"test","object":"chat.completion.chunk","choices":[{"index":%d,"delta":%s,"finish_reason":%s}]}`, tc.choice, delta, finish)
 				for _, event := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "m", nil, nil, []byte(chunk), &param) {
-					_, data, ok := strings.Cut(event, "\ndata: ")
+					_, data, ok := strings.Cut(string(event), "\ndata: ")
 					if !ok || !gjson.Valid(data) {
 						t.Fatalf("invalid event: %s", event)
 					}

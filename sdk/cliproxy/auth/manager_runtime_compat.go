@@ -47,6 +47,26 @@ func (m *Manager) SetQuotaLoadSource(source QuotaLoadSource) {
 	m.mu.Unlock()
 }
 
+// distributionSelectorLocked resolves the named distribution selector used by
+// compatibility callers. Reset-aware routing is enabled when quota data is
+// available; other names use the manager's configured selector.
+func (m *Manager) distributionSelectorLocked(name string) Selector {
+	if m == nil {
+		return &RoundRobinSelector{}
+	}
+	m.mu.RLock()
+	base := m.selector
+	deps := m.sessionSchedulerDeps
+	m.mu.RUnlock()
+	if strings.EqualFold(strings.TrimSpace(name), "reset-aware") && deps != nil && deps.quotaWindows() != nil {
+		return &ResetAwareSelector{deps: deps}
+	}
+	if base == nil {
+		return &RoundRobinSelector{}
+	}
+	return base
+}
+
 // ExecutorForTenant returns the provider executor registered for one tenant.
 func (m *Manager) ExecutorForTenant(tenantID, provider string) (ProviderExecutor, bool) {
 	if m == nil {

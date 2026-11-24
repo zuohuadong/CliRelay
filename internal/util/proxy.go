@@ -181,7 +181,11 @@ func SetProxy(cfg *config.SDKConfig, httpClient *http.Client) *http.Client {
 	if httpClient.Transport == nil {
 		httpClient.Transport = NewDefaultTransport(cfg.PreferIPv4)
 	}
-	if transport := BuildProxyTransport(cfg.ProxyURL, cfg.PreferIPv4); transport != nil {
+	if strings.EqualFold(strings.TrimSpace(cfg.ProxyURL), "direct") {
+		if transport, ok := httpClient.Transport.(*http.Transport); ok {
+			transport.Proxy = nil
+		}
+	} else if transport := BuildProxyTransport(cfg.ProxyURL, cfg.PreferIPv4); transport != nil {
 		httpClient.Transport = transport
 	}
 	if t, ok := httpClient.Transport.(*http.Transport); ok {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -34,6 +35,10 @@ const (
 // large and unknown-size bodies are spooled to disk and retained only for error logs.
 func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Every inference request gets a diagnostic carrier, even when full
+		// request logging is disabled. Loop protection and usage accounting use
+		// the same request context to attach their outcome.
+		diagnostics.EnsureGin(c, logging.GetGinRequestID(c))
 		if logger == nil {
 			c.Next()
 			return

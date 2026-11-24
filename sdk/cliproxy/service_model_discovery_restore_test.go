@@ -7,6 +7,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/modeldiscovery"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
 	serviceapp "github.com/router-for-me/CLIProxyAPI/v8/sdkbridge/service"
 )
 
@@ -21,7 +22,7 @@ func TestRestartRoutesManifestModelsFromTheSavedList(t *testing.T) {
 
 	// The previous process saved its list, then exited.
 	modeldiscovery.SetSnapshotPath(serviceapp.ProviderDiscoverySnapshotPath(authDir))
-	modeldiscovery.Store(tenantID, "codex", []*ModelInfo{manifestOnlyInfo()})
+	modeldiscovery.Store(tenantID, "codex", []*sdkmodelcatalog.ModelInfo{manifestOnlyInfo()})
 	modeldiscovery.ResetForTest()
 
 	service := &Service{cfg: &config.Config{AuthDir: authDir}}

@@ -213,6 +213,10 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	} else if m.cooldownDisabledForAuth(auth) {
 		cooldownStateChanged = clearDisabledCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
+	// Versioned stores own the stable auth_index. Resolve it before deriving
+	// an OAuth registration index from the basename, otherwise a credential
+	// re-registered under the same ID can split its request history.
+	m.pinStoreIndex(auth)
 	auth.EnsureIndex()
 	m.mu.Lock()
 	if m.authEpochs == nil {
@@ -932,6 +936,10 @@ func (m *Manager) Load(ctx context.Context) error {
 		if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 			continue
 		}
+		// Versioned stores own the stable auth_index. Pin it before
+		// EnsureIndex derives a value from the mirror path, otherwise a
+		// cluster restart can silently change request-log and quota identity.
+		m.pinStoreIndex(auth)
 		auth.EnsureIndex()
 		_ = m.migrateAuthAliasModelStatesLocked(auth, nil, now, false)
 		seedInitialForceCooldownDeadlines(auth)

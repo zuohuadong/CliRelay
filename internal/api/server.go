@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -41,6 +42,8 @@ type Server struct {
 
 	// server is the underlying HTTP server.
 	server *http.Server
+	muxBaseListener net.Listener
+	muxHTTPListener *muxListener
 
 	// handlers contains the API handlers for processing requests.
 	handlers *handlers.BaseAPIHandler
@@ -126,6 +129,14 @@ type Server struct {
 	// egress checks the proxies upstream traffic leaves through; it backs
 	// /readyz/egress.
 	egress *egresshealth.Prober
+}
+
+// Handler exposes the configured HTTP handler for embedding and tests.
+func (s *Server) Handler() http.Handler {
+	if s == nil {
+		return nil
+	}
+	return s.engine
 }
 
 // Start begins listening for and serving HTTP or HTTPS requests.

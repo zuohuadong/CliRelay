@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/common"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -165,7 +166,7 @@ func fixCLIToolResponseReference(input string) (string, error) {
 					// Create merged function response content
 					functionResponseContent := `{"parts":[],"role":"function"}`
 					for _, response := range groupResponses {
-						partRaw := parseFunctionResponseRaw(response)
+						partRaw := parseFunctionResponseRaw(ojson.Parse(response.Raw), "")
 						if partRaw != "" {
 							functionResponseContent, _ = sjson.SetRaw(functionResponseContent, "parts.-1", partRaw)
 						}
@@ -235,7 +236,7 @@ func fixCLIToolResponseReference(input string) (string, error) {
 
 			functionResponseContent := `{"parts":[],"role":"function"}`
 			for _, response := range groupResponses {
-				partRaw := parseFunctionResponseRaw(response)
+				partRaw := parseFunctionResponseRaw(ojson.Parse(response.Raw), "")
 				if partRaw != "" {
 					functionResponseContent, _ = sjson.SetRaw(functionResponseContent, "parts.-1", partRaw)
 				}

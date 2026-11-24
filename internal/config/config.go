@@ -24,6 +24,8 @@ type Config struct {
 	KVStore KVStoreConfig `yaml:"kv-store,omitempty" json:"kv-store,omitempty"`
 	// Home stores runtime-only control-plane settings supplied by the Home launcher.
 	Home HomeConfig `yaml:"-" json:"-"`
+	// SourceHash is runtime-only metadata populated when a config file is loaded.
+	SourceHash string `yaml:"-" json:"-"`
 	// ProxyPoolPublisher fences shared proxy transport snapshots by runtime owner.
 	ProxyPoolPublisher uint64 `yaml:"-" json:"-"`
 	// ProxyPoolGeneration fences obsolete proxy transport snapshots after reload.
@@ -46,6 +48,8 @@ type Config struct {
 	// request headers and body from downstream clients before timing out.
 	// When unset or <= 0, DefaultMainAPIReadTimeout is used.
 	MainAPIReadTimeoutSeconds int `yaml:"main-api-read-timeout-seconds,omitempty" json:"main-api-read-timeout-seconds,omitempty"`
+	// ShutdownTimeoutSeconds is retained for compatibility with graceful-shutdown tests.
+	ShutdownTimeoutSeconds int `yaml:"shutdown-timeout-seconds,omitempty" json:"shutdown-timeout-seconds,omitempty"`
 
 	// RequestBody controls request-body limits for public model API endpoints.
 	RequestBody RequestBodyConfig `yaml:"request-body,omitempty" json:"request-body,omitempty"`

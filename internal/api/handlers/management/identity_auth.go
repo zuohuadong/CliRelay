@@ -203,6 +203,9 @@ func identityError(c *gin.Context, err error) {
 	status := http.StatusUnauthorized
 	code := "invalid_credentials"
 	switch {
+	case errors.Is(err, identity.ErrInvalidCredentials):
+		// Listed so it keeps the 401 set above instead of reaching the
+		// store-failure default below.
 	case errors.Is(err, identity.ErrAccountDisabled):
 		code = "account_disabled"
 	case errors.Is(err, identity.ErrAccountLocked):
@@ -227,6 +230,11 @@ func identityError(c *gin.Context, err error) {
 		status, code = http.StatusBadRequest, "validation_failed"
 	case errors.Is(err, sql.ErrNoRows):
 		status, code = http.StatusNotFound, "not_found"
+	default:
+		// Every decision about the caller is a sentinel above; anything else is
+		// the store failing to answer, and must not be answered as a 401.
+		abortStoreFailure(c, err)
+		return
 	}
 	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"code": code, "message": err.Error()}})
 }
@@ -598,7 +606,8 @@ func isTenantScopedManagementPath(path string) bool {
 		return true
 	// Alert channels and thresholds belong to the tenant: it is told about its own
 	// accounts, keys and end users and nothing else (see package alerting).
-	case relative == "/alerts", strings.HasPrefix(relative, "/alerts/"):
+	case relative == "/alerts", strings.HasPrefix(relative, "/alerts/"),
+		relative == "/billing", strings.HasPrefix(relative, "/billing/"):
 		return true
 	// Tenant auth-file quota/connectivity probes use /api-call with a
 	// tenant-scoped auth_index (AuthByIndex + ListForTenant). Blocking this

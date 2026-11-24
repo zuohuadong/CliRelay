@@ -40,6 +40,14 @@ func sanitizeCodexResponsesRequest(body []byte, edits ...*codexBodyEdits) []byte
 
 func stripCodexStoredHistoryItemReference(itemRaw string) (string, bool, bool) {
 	item := gjson.Parse(itemRaw)
+	itemType := strings.TrimSpace(item.Get("type").String())
+	// A compaction item is an opaque blob the upstream issued and has to read
+	// back byte for byte; even the id it was issued under is part of the item.
+	// Rewriting it is what makes xAI answer "Could not decode the compaction
+	// blob. Ensure it is unmodified from the compact response."
+	if isCodexCompactionItemType(itemType) {
+		return itemRaw, false, false
+	}
 	hadStoredID := strings.TrimSpace(item.Get("id").String()) != ""
 	changed := false
 	if hadStoredID {
@@ -53,13 +61,19 @@ func stripCodexStoredHistoryItemReference(itemRaw string) (string, bool, bool) {
 	// Once result pixels are removed, an image_generation_call has no inline meaning and
 	// cannot be resolved by ID when store=false. The image is reattached to the latest user
 	// turn when it fits the existing size cap.
-	if strings.TrimSpace(item.Get("type").String()) == "image_generation_call" && strings.TrimSpace(item.Get("result").String()) == "" {
+	if itemType == "image_generation_call" && strings.TrimSpace(item.Get("result").String()) == "" {
 		return "", true, true
 	}
 	if hadStoredID && codexHistoryItemIsReferenceOnly(item) {
 		return "", true, true
 	}
 	return itemRaw, changed, false
+}
+
+// isCodexCompactionItemType reports whether the item carries a compaction blob,
+// which every rewrite must leave alone.
+func isCodexCompactionItemType(itemType string) bool {
+	return strings.HasPrefix(itemType, "compaction")
 }
 
 func codexHistoryItemIsReferenceOnly(item gjson.Result) bool {

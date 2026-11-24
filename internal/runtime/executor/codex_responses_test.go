@@ -57,6 +57,22 @@ func TestSanitizeCodexResponsesRequestStripsStoredHistoryItemIDsWhenStoreFalse(t
 	}
 }
 
+// A compaction item is an opaque blob the upstream issued; anything peeled off
+// it — the id it was issued under included — makes xAI answer "Could not decode
+// the compaction blob. Ensure it is unmodified from the compact response."
+func TestSanitizeCodexResponsesRequestKeepsCompactionItemsVerbatim(t *testing.T) {
+	blob := `{"type":"compaction","id":"cmp_previous","encrypted_content":"gAAAA-compaction-blob","status":"completed"}`
+	input := []byte(`{"model":"grok-4.7","store":false,"input":[{"type":"message","name":"m","id":"msg_previous","role":"user","content":[{"type":"input_text","text":"hi"}]},` + blob + `]}`)
+
+	got := sanitizeCodexResponsesRequest(input)
+	if !bytes.Contains(got, []byte(blob)) {
+		t.Fatalf("compaction item was rewritten; payload=%s", got)
+	}
+	if bytes.Contains(got, []byte(`"msg_previous"`)) {
+		t.Fatalf("ordinary history ids should still be stripped; payload=%s", got)
+	}
+}
+
 func TestSanitizeCodexResponsesRequestKeepsStoredHistoryItemIDsWhenStoreTrue(t *testing.T) {
 	input := []byte(`{"store":true,"input":[{"type":"message","id":"msg_persisted","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`)
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
@@ -938,6 +939,18 @@ func TestExecuteStreamWithAuthManager_RejectsOpenAIResponsesStreamWithoutComplet
 	}
 }
 
+// capacityRefusal is a capacity rejection as the Codex executor reports it: a
+// 429 naming the model, with the short wait the relay is about to retry after.
+type capacityRefusal struct {
+	err        *coreauth.Error
+	retryAfter time.Duration
+}
+
+func (e *capacityRefusal) Error() string              { return e.err.Error() }
+func (e *capacityRefusal) Unwrap() error              { return e.err }
+func (e *capacityRefusal) StatusCode() int            { return e.err.HTTPStatus }
+func (e *capacityRefusal) RetryAfter() *time.Duration { return &e.retryAfter }
+
 // capacityThenSuccessStreamExecutor rejects the first attempt with a model
 // capacity error and serves the second, standing in for what ChatGPT does when
 // a model is momentarily full.
@@ -960,11 +973,14 @@ func (e *capacityThenSuccessStreamExecutor) ExecuteStream(context.Context, *core
 
 	ch := make(chan coreexecutor.StreamChunk, 1)
 	if call == 1 {
-		ch <- coreexecutor.StreamChunk{Err: &coreauth.Error{
-			Code:       "model_at_capacity",
-			Message:    `{"error":{"message":"Selected model is at capacity. Please try a different model."}}`,
-			Retryable:  true,
-			HTTPStatus: http.StatusTooManyRequests,
+		ch <- coreexecutor.StreamChunk{Err: &capacityRefusal{
+			err: &coreauth.Error{
+				Code:       "model_at_capacity",
+				Message:    `{"error":{"message":"Selected model is at capacity. Please try a different model."}}`,
+				Retryable:  true,
+				HTTPStatus: http.StatusTooManyRequests,
+			},
+			retryAfter: time.Second,
 		}}
 		close(ch)
 		return &coreexecutor.StreamResult{Chunks: ch}, nil

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/routing/modelcapacity"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/loopdetect"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
@@ -226,7 +227,12 @@ outer:
 			}
 			if chunk.Err != nil {
 				streamErr := chunk.Err
-				capacityErr := codexCapacityStreamErr(streamErr)
+				capacityErr := modelCapacityStreamErr(streamErr)
+				if capacityErr && retry != nil {
+					// The refusal is model-scoped: remember it so the next turn
+					// that could run another member starts with that one.
+					modelcapacity.Mark(retry.req.Model, time.Now())
+				}
 				// Safe bootstrap recovery: if the upstream fails before any payload bytes are sent,
 				// retry on another account (the failover excludes every account that already
 				// failed this request, so the candidate count bounds the retries too).
@@ -302,6 +308,11 @@ outer:
 				return
 			}
 			sentPayload = true
+			// The model served: whatever a capacity refusal recorded about it is
+			// over, so the next turn must not start with another member for it.
+			if retry != nil {
+				modelcapacity.Forget(retry.req.Model)
+			}
 			// Past the first byte there is no retry, so nothing needs the request
 			// any more (see streamRetryState).
 			retry, next = nil, nil
@@ -392,11 +403,11 @@ func streamErrorMessageFromErr(streamErr error) *StreamErrorMessage {
 // make a late turn later.
 const codexCapacityRetryDelay = time.Second
 
-// codexCapacityStreamErr reports whether err is the Codex "selected model is at
+// modelCapacityStreamErr reports whether err is the "selected model is at
 // capacity" rejection. It is a 429 whose message names the capacity window; the
 // status alone would also match ordinary rate limits, which must keep their
 // existing handling.
-func codexCapacityStreamErr(err error) bool {
+func modelCapacityStreamErr(err error) bool {
 	if err == nil || statusFromError(err) != http.StatusTooManyRequests {
 		return false
 	}

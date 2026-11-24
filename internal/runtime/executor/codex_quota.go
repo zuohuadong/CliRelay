@@ -13,7 +13,8 @@ import (
 
 func newCodexStatusErr(statusCode int, body []byte, headers ...http.Header) statusErr {
 	errCode := statusCode
-	if isCodexTransientCapacityError(body) {
+	capacity := isCodexTransientCapacityError(body)
+	if capacity {
 		// A model-capacity rejection is a short-lived, model-scoped overload, not
 		// a broken request. Report it as retryable so the callers retry it.
 		errCode = http.StatusTooManyRequests
@@ -21,6 +22,12 @@ func newCodexStatusErr(statusCode int, body []byte, headers ...http.Header) stat
 	err := statusErr{code: errCode, msg: string(body)}
 	if retryAfter := parseCodexRetryAfter(errCode, body, time.Now()); retryAfter != nil {
 		err.retryAfter = retryAfter
+	} else if capacity {
+		// How long the scheduler holds this model back on this account is the
+		// same question the same-account retry answers: a capacity window is
+		// seconds. A minute would refuse the retry the relay is about to make.
+		delay := time.Duration(codexCapacityRetryDelaySeconds) * time.Second
+		err.retryAfter = &delay
 	}
 	var header http.Header
 	if len(headers) > 0 {

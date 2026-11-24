@@ -98,6 +98,12 @@ var quotaPhrases = []string{
 var rateLimitPhrases = []string{
 	"rate_limit", "requests per minute", "tokens per minute", "requests per second",
 	"per minute", "throttl", "concurrency limit", "too many concurrent",
+	// A model that is full right now, not an allowance that ran out: ChatGPT's
+	// Codex backend answers 429 "Selected model is at capacity. Please try a
+	// different model." for a busy model, and the same wording means the same
+	// thing everywhere else. Reading it as exhaustion would suspend the model on
+	// the account for a backoff that outlives the spike.
+	"at capacity", "model_at_capacity", "model_is_at_capacity",
 	// Chinese relays: what New API-style gateways say when an upstream channel is
 	// saturated or a client calls too fast.
 	"请求过多", "请求过于频繁", "请求太频繁", "请求频繁", "访问过于频繁", "访问频繁",

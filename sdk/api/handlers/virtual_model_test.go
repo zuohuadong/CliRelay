@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/routing/modelcapacity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -138,6 +139,9 @@ func newVirtualModelManager(t *testing.T, exec coreauth.ProviderExecutor, models
 // virtualModelContext is a request context whose gin context carries a
 // planner for plan, and a route trace.
 func virtualModelContext(plan *VirtualModelPlan) (context.Context, *gin.Context, *httptest.ResponseRecorder, *routetrace.Recorder) {
+	// What one test's capacity rejections remembered must not decide the next
+	// test's member order.
+	modelcapacity.Reset()
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -651,5 +655,64 @@ func TestVirtualModelMovesOn(t *testing.T) {
 		if got := virtualModelMovesOn(tc.ctx, tc.msg); got != tc.want {
 			t.Errorf("%s: moves on = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A model the upstream just called full is full for every account, so a
+// virtual model must start with another member instead of spending a fresh
+// attempt on it. The cooling member stays usable, so a stale memory costs an
+// attempt, never a turn.
+func TestVirtualModelPrefersAMemberThatIsNotAtCapacity(t *testing.T) {
+	exec := &vmExecutor{}
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, newVirtualModelManager(t, exec, "alpha", "beta"))
+
+	ctx, _, _, _ := virtualModelContext(plan("smart", "alpha", "beta"))
+	modelcapacity.Mark("alpha", time.Now())
+	t.Cleanup(modelcapacity.Reset)
+
+	if _, _, errMsg := handler.ExecuteWithAuthManager(ctx, "openai", "smart", []byte(`{}`), ""); errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager: %v", errMsg.Error)
+	}
+	if calls := exec.Calls(); strings.Join(calls, ",") != "beta" {
+		t.Fatalf("calls = %v, want beta alone while alpha is at capacity", calls)
+	}
+
+	// Once the window has passed the listed order is back.
+	modelcapacity.Reset()
+	modelcapacity.Mark("alpha", time.Now().Add(-2*modelcapacity.Window))
+	exec = &vmExecutor{}
+	handler = NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, newVirtualModelManager(t, exec, "alpha", "beta"))
+	ctx, _, _, _ = virtualModelContext(plan("smart", "alpha", "beta"))
+	if _, _, errMsg := handler.ExecuteWithAuthManager(ctx, "openai", "smart", []byte(`{}`), ""); errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager: %v", errMsg.Error)
+	}
+	if calls := exec.Calls(); strings.Join(calls, ",") != "alpha" {
+		t.Fatalf("calls = %v, want alpha first again once its window passed", calls)
+	}
+}
+
+// A capacity rejection the members themselves produced is what the next
+// request must not pay for again.
+func TestVirtualModelRemembersACapacityRejection(t *testing.T) {
+	modelcapacity.Reset()
+	t.Cleanup(modelcapacity.Reset)
+	full := &coreauth.Error{
+		Code:       "model_at_capacity",
+		Message:    `{"error":{"message":"Selected model is at capacity. Please try a different model."}}`,
+		HTTPStatus: http.StatusTooManyRequests,
+	}
+	exec := &vmExecutor{outcomes: map[string][]vmOutcome{"alpha": {{streamErr: full}}}}
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, newVirtualModelManager(t, exec, "alpha", "beta"))
+	ctx, _, _, _ := virtualModelContext(plan("smart", "alpha", "beta"))
+
+	dataChan, _, errChan, startErr := handler.StartStreamWithAuthManager(ctx, "openai", "smart", []byte(`{}`), "")
+	if startErr != nil {
+		t.Fatalf("StartStreamWithAuthManager: %v", startErr.Error)
+	}
+	if out := drainStream(t, dataChan, errChan); out.err != nil || out.payload != "from-beta" {
+		t.Fatalf("outcome = %+v, want beta's stream after alpha was at capacity", out)
+	}
+	if !modelcapacity.Cooling("alpha", time.Now()) {
+		t.Fatal("alpha's capacity rejection must be remembered for the next request")
 	}
 }

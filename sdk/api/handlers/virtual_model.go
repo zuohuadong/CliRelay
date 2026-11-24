@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/routing/modelcapacity"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/routetrace"
 	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
@@ -214,7 +216,32 @@ func (h *BaseAPIHandler) newVirtualModelRun(ctx context.Context, plan *VirtualMo
 		}
 		run.order = append(run.order, i)
 	}
+	run.order = preferServingMembers(run.order, plan, time.Now())
 	return run
+}
+
+// preferServingMembers puts the members a recent capacity refusal still holds
+// back after the others: a model at capacity is full for every account, so
+// starting with it spends an attempt (tens of seconds with Codex) before falling
+// back. The cooling members keep their relative order and stay usable, so a
+// stale memory costs an attempt, never a turn.
+func preferServingMembers(order []int, plan *VirtualModelPlan, now time.Time) []int {
+	if len(order) < 2 {
+		return order
+	}
+	preferred := make([]int, 0, len(order))
+	var cooling []int
+	for _, i := range order {
+		if modelcapacity.Cooling(plan.Members[i].Model, now) {
+			cooling = append(cooling, i)
+			continue
+		}
+		preferred = append(preferred, i)
+	}
+	if len(cooling) == 0 {
+		return order
+	}
+	return append(preferred, cooling...)
 }
 
 func (r *virtualModelRun) memberInfo(index int, reason string) routetrace.MemberInfo {
@@ -262,12 +289,16 @@ func (r *virtualModelRun) nextTry() (virtualModelTry, bool) {
 // whether the request moves on to the next one.
 func (r *virtualModelRun) failed(try virtualModelTry, errMsg *StreamErrorMessage) bool {
 	r.failure, r.failedRoute = errMsg, try.member.Route()
+	if errMsg != nil && modelCapacityStreamErr(errMsg.Error) {
+		modelcapacity.Mark(try.member.Model, time.Now())
+	}
 	return r.next < len(r.order) && virtualModelMovesOn(r.ctx, errMsg)
 }
 
 // served settles the trace for the member that took the request, and returns
 // the headers that tell the client which member it was.
 func (r *virtualModelRun) served(try virtualModelTry) http.Header {
+	modelcapacity.Forget(try.member.Model)
 	r.trace.SettlePending()
 	headers := http.Header{}
 	headers.Set(virtualModelHeader, r.plan.Name)

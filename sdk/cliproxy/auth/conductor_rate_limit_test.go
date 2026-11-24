@@ -15,6 +15,10 @@ func TestTransientRateLimitIsNotQuotaExhaustion(t *testing.T) {
 		`{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}`,
 		"rate limit exceeded",
 		"Too Many Requests",
+		// Codex's model-capacity rejection: the model is full for now, the
+		// account's allowance is untouched.
+		`{"error":{"message":"Selected model is at capacity. Please try a different model."}}`,
+		`{"error":{"code":"model_at_capacity","message":"model is at capacity"}}`,
 	}
 	for _, message := range throttles {
 		if !isTransientRateLimitError(&Error{Message: message}) {

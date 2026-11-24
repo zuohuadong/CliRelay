@@ -37,6 +37,10 @@ func TestClassifyMessage(t *testing.T) {
 		{"throttled", "Request was throttled", KindRateLimit},
 		{"concurrency", "Concurrency limit reached", KindRateLimit},
 		{"rpm", "Exceeded RPM for this key", KindRateLimit},
+		// A full model, not a spent allowance: ChatGPT's Codex backend refuses a
+		// busy model this way and serves it again a moment later.
+		{"model at capacity", "Selected model is at capacity. Please try a different model.", KindRateLimit},
+		{"model_at_capacity", `{"error":{"code":"model_at_capacity","message":"model is at capacity"}}`, KindRateLimit},
 		{"tpm in parentheses", "(TPM) exceeded", KindRateLimit},
 
 		// Chinese relays.

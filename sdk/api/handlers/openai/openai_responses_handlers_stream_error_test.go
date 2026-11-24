@@ -153,10 +153,15 @@ func TestForwardResponsesStreamNamesTheFailedReply(t *testing.T) {
 
 	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs)
 	body := recorder.Body.String()
-	for _, want := range []string{`"id":"resp_abc"`, `"model":"gpt-6.2-sol"`, `"created_at":1795514955`, `"code":"server_is_overloaded"`, "Our servers are currently overloaded"} {
+	// The upstream code is fatal to Codex ("Selected model is at capacity"),
+	// so the terminal event carries the retryable code and the real message.
+	for _, want := range []string{`"id":"resp_abc"`, `"model":"gpt-6.2-sol"`, `"created_at":1795514955`, `"code":"server_error"`, "Our servers are currently overloaded"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("failure event missing %s: %q", want, body)
 		}
+	}
+	if strings.Contains(body, "server_is_overloaded") {
+		t.Fatalf("the fatal capacity code reached the client: %q", body)
 	}
 }
 

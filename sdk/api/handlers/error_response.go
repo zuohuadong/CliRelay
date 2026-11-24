@@ -40,7 +40,9 @@ func ErrorMessageText(msg *StreamErrorMessage) (int, string) {
 			errText = v
 		}
 	}
-	return status, errText
+	// A capacity refusal forwarded with its own code is fatal to Codex; the
+	// message is kept and the code becomes the retryable one.
+	return status, SanitizeCapacityShedErrorText(errText)
 }
 
 func (h *BaseAPIHandler) writeErrorResponse(c *gin.Context, msg *StreamErrorMessage, build func(status int, errText string) (int, []byte)) {

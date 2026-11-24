@@ -233,7 +233,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
 			identity.observe(chunk)
-			writeResponsesSSEChunk(c.Writer, chunk)
+			// A capacity refusal forwarded with its own code makes Codex abort
+			// the session instead of backing off, so the code is rewritten here.
+			writeResponsesSSEChunk(c.Writer, handlers.SanitizeCapacityShedStreamChunk(chunk))
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
 			if errMsg == nil {
@@ -253,10 +255,16 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			// overloaded upstream), so send the failure as a terminal event too.
 			if !identity.terminal {
 				if failed := handlers.BuildOpenAIResponsesStreamFailedChunk(status, errText, identity.id, identity.model, identity.createdAt, 0); len(failed) > 0 {
+					if rewritten, changed := handlers.RewriteCapacityShedCode(failed); changed {
+						failed = rewritten
+					}
 					_, _ = fmt.Fprintf(c.Writer, "event: response.failed\ndata: %s\n\n", string(failed))
 				}
 			}
 			chunk := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
+			if rewritten, changed := handlers.RewriteCapacityShedCode(chunk); changed {
+				chunk = rewritten
+			}
 			_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", string(chunk))
 		},
 	})

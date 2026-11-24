@@ -47,3 +47,22 @@ func TestConvertClaudeRequestToCodex_EmptyToolsOmitsToolChoice(t *testing.T) {
 		t.Fatalf("unexpected translated tools: %s", out)
 	}
 }
+
+// A Claude tool_use may omit input entirely. Codex reads arguments as a JSON
+// document string, so the empty string it used to become is a malformed call.
+func TestConvertClaudeRequestToCodex_DefaultsMissingToolInputToEmptyObject(t *testing.T) {
+	input := []byte(`{"model":"test-model","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"get_time"}]}]}`)
+
+	out := ConvertClaudeRequestToCodex("test-model", input, false)
+	functionCall := gjson.GetBytes(out, `input.#(type=="function_call")`)
+	if !functionCall.Exists() {
+		t.Fatalf("no function_call in output: %s", out)
+	}
+	arguments := functionCall.Get("arguments")
+	if arguments.Type != gjson.String {
+		t.Fatalf("arguments type = %v, want string; item=%s", arguments.Type, functionCall.Raw)
+	}
+	if arguments.String() != "{}" {
+		t.Fatalf("arguments = %q, want %q; item=%s", arguments.String(), "{}", functionCall.Raw)
+	}
+}

@@ -189,7 +189,14 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 							}
 							functionCallMessage, _ = sjson.Set(functionCallMessage, "name", name)
 						}
-						functionCallMessage, _ = sjson.Set(functionCallMessage, "arguments", messageContentResult.Get("input").Raw)
+						// A Claude tool_use without input has no arguments document;
+						// Codex expects a JSON object string, so an omitted or blank
+						// input becomes {} rather than an empty string.
+						arguments := strings.TrimSpace(messageContentResult.Get("input").Raw)
+						if arguments == "" {
+							arguments = "{}"
+						}
+						functionCallMessage, _ = sjson.Set(functionCallMessage, "arguments", arguments)
 						appendInput(functionCallMessage)
 					case "tool_result":
 						flushMessage()

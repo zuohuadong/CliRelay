@@ -155,6 +155,23 @@ func TestXAINamespaceToolNamesRestoresCustomToolEvents(t *testing.T) {
 	if line := names.restoreSSELine(otherDelta); line == nil {
 		t.Fatalf("unrelated argument delta was dropped")
 	}
+
+	// The event: line must go with the data line it introduced, and survive
+	// together when the call belongs to another tool.
+	_, holder := xaiNormalizeUnsupportedCodexShapes([]byte(xaiCodexCustomToolRequest), nil)
+	if line := holder.restoreSSELine([]byte("event: response.function_call_arguments.delta")); line != nil {
+		t.Fatalf("argument event line was forwarded before its data was judged: %q", line)
+	}
+	if line := holder.restoreSSELine([]byte(`data: {"type":"response.function_call_arguments.delta","name":"apply_patch","delta":"x"}`)); line != nil {
+		t.Fatalf("custom argument event survived as %q", line)
+	}
+	if line := holder.restoreSSELine([]byte("event: response.function_call_arguments.delta")); line != nil {
+		t.Fatalf("second argument event line was forwarded: %q", line)
+	}
+	kept := holder.restoreSSELine([]byte(`data: {"type":"response.function_call_arguments.delta","name":"exec_command","delta":"x"}`))
+	if !strings.HasPrefix(string(kept), "event: response.function_call_arguments.delta\ndata: ") {
+		t.Fatalf("unrelated argument event lost its event line: %q", kept)
+	}
 }
 func TestXAINamespaceToolNamesKeepsArgumentsForTheFinishedItem(t *testing.T) {
 	_, names := xaiNormalizeUnsupportedCodexShapes([]byte(xaiCodexCustomToolRequest), nil)

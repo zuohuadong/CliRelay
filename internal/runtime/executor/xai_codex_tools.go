@@ -69,6 +69,9 @@ type xaiNamespaceToolNames struct {
 	// customArgs keeps arguments xAI reported in an arguments.done event in case
 	// the finished item does not repeat them.
 	customArgs map[string]string
+	// pendingEvent holds an "event:" line while the data line it introduces is
+	// still unknown, so both can be dropped together.
+	pendingEvent []byte
 }
 
 func newXAINamespaceToolNames(taken map[string]struct{}) *xaiNamespaceToolNames {
@@ -547,23 +550,56 @@ func xaiSetToolCallName(payload []byte, path string, tool xaiNamespacedTool) ([]
 }
 
 // restoreSSELine applies restoreEvent to one data line of the upstream stream.
-// A line whose event has no replacement (an argument delta for a tool now sent
-// as a custom call) returns nil, and the caller forwards nothing.
+// An event whose payload has no replacement (an argument delta for a tool sent
+// as a custom call) is dropped whole, including the event: line that names it,
+// because a nameless data line is worse than no event at all.
 func (n *xaiNamespaceToolNames) restoreSSELine(line []byte) []byte {
-	if n.empty() || !bytes.HasPrefix(line, dataTag) {
+	if n.empty() {
 		return line
 	}
-	payload, changed := n.restoreEvent(bytes.TrimSpace(line[len(dataTag):]))
-	if !changed {
+	trimmed := bytes.TrimSpace(line)
+	if name, ok := bytes.CutPrefix(trimmed, []byte("event:")); ok {
+		// The argument events cannot be judged by name; hold the line until the
+		// data it introduces says whether the call is custom.
+		if xaiIsArgumentEventName(strings.TrimSpace(string(name))) {
+			n.pendingEvent = append(n.pendingEvent[:0], trimmed...)
+			return nil
+		}
 		return line
 	}
-	if payload == nil {
+	if !bytes.HasPrefix(trimmed, dataTag) {
+		return line
+	}
+	held := n.pendingEvent
+	n.pendingEvent = nil
+	payload, changed := n.restoreEvent(bytes.TrimSpace(trimmed[len(dataTag):]))
+	if changed && payload == nil {
 		return nil
 	}
-	out := make([]byte, 0, len(dataTag)+1+len(payload))
-	out = append(out, dataTag...)
-	out = append(out, ' ')
-	return append(out, payload...)
+	restored := line
+	if changed {
+		out := make([]byte, 0, len(dataTag)+1+len(payload))
+		out = append(out, dataTag...)
+		out = append(out, ' ')
+		restored = append(out, payload...)
+	}
+	if held == nil {
+		return restored
+	}
+	combined := make([]byte, 0, len(held)+1+len(restored))
+	combined = append(combined, held...)
+	combined = append(combined, '\n')
+	return append(combined, restored...)
+}
+
+// xaiIsArgumentEventName reports whether the event carries a function call's
+// arguments, one by one and then in full.
+func xaiIsArgumentEventName(name string) bool {
+	switch name {
+	case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+		return true
+	}
+	return false
 }
 
 // stripXAIUnsupportedWebSearchOptions removes the web_search options in

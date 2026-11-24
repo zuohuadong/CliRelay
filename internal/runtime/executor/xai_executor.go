@@ -128,6 +128,10 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 			continue
 		}
 		payload, _ := toolNames.restoreEvent(bytes.TrimSpace(line[len(dataTag):]))
+		if payload == nil {
+			// A restored-away argument delta has no replacement event.
+			continue
+		}
 		switch gjson.GetBytes(payload, "type").String() {
 		case "response.failed", "error":
 			streamErr = codexResponsesFailedStatusErr(payload)
@@ -251,9 +255,11 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 
 			// The recorder and usage reporter above keep Grok's own line; the
 			// client gets calls back under the namespaces it declared.
-			chunks := sdktranslator.TranslateStream(execCtx.Context, execCtx.Execution.TargetFormat, execCtx.SourceFormat, req.Model, execCtx.OriginalPayload, body, toolNames.restoreSSELine(bytes.Clone(line)), &param)
-			for i := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
+			if restored := toolNames.restoreSSELine(bytes.Clone(line)); restored != nil {
+				chunks := sdktranslator.TranslateStream(execCtx.Context, execCtx.Execution.TargetFormat, execCtx.SourceFormat, req.Model, execCtx.OriginalPayload, body, restored, &param)
+				for i := range chunks {
+					out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
+				}
 			}
 			if terminalErr != nil {
 				recorder.RecordResponseError(terminalErr)
@@ -382,6 +388,8 @@ func (e *XAIExecutor) prepareResponsesRequest(ctx context.Context, auth *cliprox
 	body = sanitizeCodexResponsesRequest(body)
 	body, toolNames := flattenXAINamespaceTools(body)
 	body = stripXAIUnsupportedWebSearchOptions(body)
+	// After flattening, so custom tools declared inside a namespace are rewritten too.
+	body, toolNames = xaiNormalizeUnsupportedCodexShapes(body, toolNames)
 	// After flattening, so namespace children and lifted Lite tools are checked too.
 	body = normalizeXAIToolParameterRoots(body)
 	sets := map[string][]byte{

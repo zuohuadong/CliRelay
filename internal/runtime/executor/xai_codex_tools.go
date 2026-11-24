@@ -62,18 +62,73 @@ type xaiNamespaceToolNames struct {
 	// taken holds every name already used in the outbound tool list: plain
 	// tools keep theirs, so a flattened name must never shadow one of them.
 	taken map[string]struct{}
+	// custom holds the wire names of tools xAI received as functions because it
+	// rejects the custom (freeform) declaration entirely. Their calls have to go
+	// back to the client as custom_tool_call items.
+	custom map[string]struct{}
+	// customArgs keeps arguments xAI reported in an arguments.done event in case
+	// the finished item does not repeat them.
+	customArgs map[string]string
 }
 
 func newXAINamespaceToolNames(taken map[string]struct{}) *xaiNamespaceToolNames {
 	return &xaiNamespaceToolNames{
-		byWire: make(map[string]xaiNamespacedTool),
-		byTool: make(map[xaiNamespacedTool]string),
-		taken:  taken,
+		byWire:     make(map[string]xaiNamespacedTool),
+		byTool:     make(map[xaiNamespacedTool]string),
+		taken:      taken,
+		custom:     make(map[string]struct{}),
+		customArgs: make(map[string]string),
 	}
 }
 
 func (n *xaiNamespaceToolNames) empty() bool {
-	return n == nil || len(n.byWire) == 0
+	return n == nil || (len(n.byWire) == 0 && len(n.custom) == 0)
+}
+
+// markCustom records a tool sent to xAI as a function on behalf of a custom tool.
+func (n *xaiNamespaceToolNames) markCustom(name string) {
+	if n == nil || strings.TrimSpace(name) == "" {
+		return
+	}
+	n.custom[name] = struct{}{}
+}
+
+func (n *xaiNamespaceToolNames) isCustomName(name string) bool {
+	if n == nil || name == "" {
+		return false
+	}
+	_, ok := n.custom[name]
+	return ok
+}
+
+// rememberCustomArguments keeps one custom call's arguments until its item is
+// rewritten. xAI reports them under the item id and repeats the tool name.
+func (n *xaiNamespaceToolNames) rememberCustomArguments(itemID, name, arguments string) {
+	if n == nil || strings.TrimSpace(arguments) == "" {
+		return
+	}
+	if n.customArgs == nil {
+		n.customArgs = make(map[string]string)
+	}
+	if key := firstNonEmpty(itemID, name); key != "" {
+		n.customArgs[key] = arguments
+	}
+}
+
+func (n *xaiNamespaceToolNames) takeCustomArguments(itemID, name string) string {
+	if n == nil || len(n.customArgs) == 0 {
+		return ""
+	}
+	for _, key := range []string{itemID, name} {
+		if key == "" {
+			continue
+		}
+		if arguments, ok := n.customArgs[key]; ok {
+			delete(n.customArgs, key)
+			return arguments
+		}
+	}
+	return ""
 }
 
 // wireName returns the flat name for a namespaced child, assigning one on
@@ -417,6 +472,17 @@ func (n *xaiNamespaceToolNames) restoreEvent(payload []byte) ([]byte, bool) {
 	if n.empty() || len(payload) == 0 {
 		return payload, false
 	}
+	payload, changed, drop := n.restoreCustomToolEvent(payload)
+	if drop {
+		return nil, true
+	}
+	restored, namespaceChanged := n.restoreNamespaceEvent(payload)
+	return restored, changed || namespaceChanged
+}
+
+// restoreNamespaceEvent puts namespace children back under the names Codex
+// declared. It ran on its own before custom tools needed a second rewrite.
+func (n *xaiNamespaceToolNames) restoreNamespaceEvent(payload []byte) ([]byte, bool) {
 	switch gjson.GetBytes(payload, "type").String() {
 	case "response.output_item.added", "response.output_item.done":
 		return n.restoreCallAt(payload, "item")
@@ -481,6 +547,8 @@ func xaiSetToolCallName(payload []byte, path string, tool xaiNamespacedTool) ([]
 }
 
 // restoreSSELine applies restoreEvent to one data line of the upstream stream.
+// A line whose event has no replacement (an argument delta for a tool now sent
+// as a custom call) returns nil, and the caller forwards nothing.
 func (n *xaiNamespaceToolNames) restoreSSELine(line []byte) []byte {
 	if n.empty() || !bytes.HasPrefix(line, dataTag) {
 		return line
@@ -488,6 +556,9 @@ func (n *xaiNamespaceToolNames) restoreSSELine(line []byte) []byte {
 	payload, changed := n.restoreEvent(bytes.TrimSpace(line[len(dataTag):]))
 	if !changed {
 		return line
+	}
+	if payload == nil {
+		return nil
 	}
 	out := make([]byte, 0, len(dataTag)+1+len(payload))
 	out = append(out, dataTag...)

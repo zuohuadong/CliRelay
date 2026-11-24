@@ -17,8 +17,7 @@ import (
 // and is what selection falls back to when the store cannot be reached.
 //
 // Bindings name accounts by AffinityAccountRef, never by auth ID: the store
-// lives outside this process (in production the shared PostgreSQL control
-// plane), and
+// lives outside this process (the cluster database), and
 // auth IDs are credential file names that often carry the account's e-mail.
 type SessionAffinityStore interface {
 	// Lookup returns the binding for key, counts this request against it and
@@ -58,10 +57,10 @@ func (m *Manager) SetSessionAffinityStore(store SessionAffinityStore) {
 		return
 	}
 	m.mu.Lock()
-	if m.sessionSchedulerDeps == nil {
-		m.sessionSchedulerDeps = &schedulerDeps{tracker: newSelectionPressureTracker(), limiter: m.concurrencyLimiter}
+	if m.scheduler == nil {
+		m.scheduler = &schedulerDeps{tracker: newSelectionPressureTracker(), limiter: m.concurrencyLimiter}
 	}
-	deps := m.sessionSchedulerDeps
+	deps := m.scheduler
 	m.mu.Unlock()
 	if store == nil {
 		deps.affinity.Store(nil)
@@ -102,11 +101,11 @@ func (s *SessionStickySelector) honour(ctx context.Context, key, model string, a
 	}
 
 	// The same release rules as the local table: request budget spent, the
-	// account no longer eligible, or the account too loaded.
+	// account no longer eligible, or its quota too far spent.
 	bound := findAuthByRef(available, binding.AccountRef)
 	if bound == nil ||
 		(limits.maxRequests > 0 && binding.Served >= limits.maxRequests) ||
-		(limits.releaseAtLoad > 0 && s.deps.loadRatio(bound, model) >= limits.releaseAtLoad) {
+		(limits.releaseAtLoad > 0 && s.deps.quotaLoadRatio(bound, model) >= limits.releaseAtLoad) {
 		_ = store.Release(ctx, key, binding.AccountRef)
 		s.deleteBinding(key)
 		return nil

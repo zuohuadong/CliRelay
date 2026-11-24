@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedstate"
 )
 
 // ─── Cluster-wide counters ──────────────────────────────────────────────────
@@ -80,7 +80,7 @@ func (p *quotaPolicy) needsSharedAdmission() bool {
 // falls back to when the shared counters go away, and falling back to an empty
 // window would briefly admit a burst. Subjects whose limits need the shared
 // window are counted there by admitShared; the rest are counted
-// asynchronously so they never wait for the shared database.
+// asynchronously so they never wait for the shared store.
 func (p *quotaPolicy) countRequest() {
 	getRPMTracker(p.subject).add()
 	if q := currentClusterQuota(); q != nil && !p.needsSharedAdmission() && q.Available() {

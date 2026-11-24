@@ -6,19 +6,18 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/bodyutil"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
-	internalserviceapp "github.com/router-for-me/CLIProxyAPI/v8/internal/app/service"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/githubauth"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/ipaccess"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
+	internalserviceapp "github.com/router-for-me/CLIProxyAPI/v6/internal/app/service"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/ipaccess"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -46,7 +45,6 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	if s == nil || cfg == nil {
 		return
 	}
-	githubauth.SetToken(cfg.GitHubToken)
 
 	oldCfg := s.oldConfigSnapshot()
 	s.applyRequestLoggerConfig(oldCfg, cfg)

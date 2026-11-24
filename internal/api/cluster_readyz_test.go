@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 )
 
 // joinTestCluster makes this process a node of an in-memory cluster.
@@ -60,16 +60,6 @@ func TestClusterReadyzFailsWithoutDatabase(t *testing.T) {
 		if rr.Code != http.StatusServiceUnavailable || !strings.Contains(rr.Body.String(), `"reason":"postgres"`) {
 			t.Fatalf("%s pool: status = %d, body=%s", name, rr.Code, rr.Body.String())
 		}
-	}
-}
-
-func TestClusterReadyzUsesPostgresAsTheOnlyDependency(t *testing.T) {
-	server := newTestServer(t)
-	joinTestCluster(t, "node-a")
-	useReadyzDB(t, openPingableDB(t))
-	rr := serveReadyz(server)
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
 	}
 }
 

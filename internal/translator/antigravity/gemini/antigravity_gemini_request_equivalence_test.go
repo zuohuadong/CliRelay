@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	responses "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/openai/responses"
+	responses "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/openai/responses"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -165,10 +165,7 @@ func TestConvertGeminiRequestToAntigravity_MatchesReference(t *testing.T) {
 	for i := 0; i < 3000; i++ {
 		req := g.request()
 		for _, model := range []string{"gemini-3-pro-preview", "claude-sonnet-4-6"} {
-			got, err := ConvertGeminiRequestToAntigravity(model, req, true)
-			if err != nil {
-				t.Fatalf("request %d (%s) conversion failed: %v", i, model, err)
-			}
+			got := ConvertGeminiRequestToAntigravity(model, req, true)
 			want := convertGeminiRequestToAntigravityReference(model, req, true)
 			if !bytes.Equal(got, want) {
 				t.Fatalf("request %d (%s) differs from the reference\nrequest: %s\n got: %s\nwant: %s", i, model, req, got, want)
@@ -198,21 +195,14 @@ func codexResponsesRequest(turns int) []byte {
 }
 
 func codexGeminiRequest(turns int) []byte {
-	got, err := responses.ConvertOpenAIResponsesRequestToGemini("gemini-3-pro-preview", codexResponsesRequest(turns), true)
-	if err != nil {
-		panic(err)
-	}
-	return got
+	return responses.ConvertOpenAIResponsesRequestToGemini("gemini-3-pro-preview", codexResponsesRequest(turns), true)
 }
 
 func TestConvertGeminiRequestToAntigravity_MatchesReferenceOnCodexSessions(t *testing.T) {
 	for _, turns := range []int{0, 1, 7, 40} {
 		req := codexGeminiRequest(turns)
 		for _, model := range []string{"gemini-3-pro-preview", "claude-opus-4-6-thinking"} {
-			got, err := ConvertGeminiRequestToAntigravity(model, req, true)
-			if err != nil {
-				t.Fatalf("%d turns (%s) conversion failed: %v", turns, model, err)
-			}
+			got := ConvertGeminiRequestToAntigravity(model, req, true)
 			want := convertGeminiRequestToAntigravityReference(model, req, true)
 			if !bytes.Equal(got, want) {
 				t.Fatalf("%d turns (%s) differs from the reference", turns, model)

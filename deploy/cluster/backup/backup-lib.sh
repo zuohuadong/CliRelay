@@ -19,7 +19,7 @@ set -a
 . "${BACKUP_ENV:-/etc/clirelay-cluster/backup.env}"
 set +a
 BACKUP_DIR="${BACKUP_DIR:-/opt/clirelay-cluster/backups}"
-PG_IMAGE="${PG_IMAGE:-postgres:19.0-alpine}"
+PG_IMAGE="${PG_IMAGE:-postgres:15.19-alpine3.24}"
 KEEP="${KEEP:-7}"
 
 # backup_conn_setup sets PG_DOCKER_NET, PG_DOCKER_TLS and PG_DOCKER_LIMITS

@@ -3,20 +3,21 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/MoeForge/moego/json"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 var antigravityPrimaryModelsCache struct {
@@ -178,15 +179,8 @@ func DiscoverAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg
 			return nil, fmt.Errorf("antigravity models: upstream answered status %d", httpResp.StatusCode)
 		}
 
-		var envelope struct {
-			Models map[string]struct {
-				DisplayName     string `json:"displayName"`
-				MaxTokens       int64  `json:"maxTokens"`
-				MaxOutputTokens int64  `json:"maxOutputTokens"`
-				IsInternal      bool   `json:"isInternal"`
-			} `json:"models"`
-		}
-		if errDecode := json.Unmarshal(bodyBytes, &envelope); errDecode != nil || envelope.Models == nil {
+		result := gjson.GetBytes(bodyBytes, "models")
+		if !result.Exists() {
 			if idx+1 < len(baseURLs) {
 				log.Debugf("antigravity executor: models field missing on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 				continue
@@ -196,18 +190,18 @@ func DiscoverAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg
 
 		now := time.Now().Unix()
 		modelConfig := registry.GetAntigravityModelConfig()
-		models := make([]*sdkmodelcatalog.ModelInfo, 0, len(envelope.Models))
-		for originalName, modelData := range envelope.Models {
+		models := make([]*sdkmodelcatalog.ModelInfo, 0, len(result.Map()))
+		for originalName, modelData := range result.Map() {
 			modelID := strings.TrimSpace(originalName)
 			if modelID == "" {
 				continue
 			}
-			if isInternalAntigravityModel(modelID, modelData.IsInternal) {
+			if isInternalAntigravityModel(modelID, modelData) {
 				continue
 			}
 			modelCfg := modelConfig[modelID]
 
-			displayName := strings.TrimSpace(modelData.DisplayName)
+			displayName := modelData.Get("displayName").String()
 			if displayName == "" {
 				displayName = modelID
 			}
@@ -223,11 +217,11 @@ func DiscoverAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg
 				OwnedBy:     antigravityAuthType,
 				Type:        antigravityAuthType,
 			}
-			if maxTokens := modelData.MaxTokens; maxTokens > 0 {
+			if maxTokens := modelData.Get("maxTokens").Int(); maxTokens > 0 {
 				modelInfo.ContextLength = int(maxTokens)
 				modelInfo.InputTokenLimit = int(maxTokens)
 			}
-			if maxOutputTokens := modelData.MaxOutputTokens; maxOutputTokens > 0 {
+			if maxOutputTokens := modelData.Get("maxOutputTokens").Int(); maxOutputTokens > 0 {
 				modelInfo.MaxCompletionTokens = int(maxOutputTokens)
 				modelInfo.OutputTokenLimit = int(maxOutputTokens)
 			}
@@ -294,8 +288,8 @@ func antigravityModelsRequestPayload(auth *cliproxyauth.Auth) []byte {
 	return payload
 }
 
-func isInternalAntigravityModel(modelID string, internal bool) bool {
-	if internal {
+func isInternalAntigravityModel(modelID string, modelData gjson.Result) bool {
+	if modelData.Get("isInternal").Bool() {
 		return true
 	}
 	return IsInternalAntigravityModelID(modelID)

@@ -5,6 +5,7 @@ package usage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -13,12 +14,20 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 
-var statisticsEnabled atomic.Bool
+var (
+	statisticsEnabled atomic.Bool
+	// snapshotCtx is the service-level background context of the snapshot
+	// loop: it is cancelled by StopSnapshotStore, which then waits for the
+	// goroutine to exit.
+	snapshotCtx    = context.Background()
+	snapshotCancel context.CancelFunc
+	snapshotWg     sync.WaitGroup
+)
 
 func init() {
 	statisticsEnabled.Store(true)
@@ -57,6 +66,111 @@ func SetStatisticsEnabled(enabled bool) { statisticsEnabled.Store(enabled) }
 
 // StatisticsEnabled reports the current recording state.
 func StatisticsEnabled() bool { return statisticsEnabled.Load() }
+
+// StartSnapshotLoop loads the snapshot saved by a previous process and starts
+// the loop that writes the in-memory statistics back every 30 seconds. Calling
+// it again replaces the running loop instead of leaving a second one behind.
+func StartSnapshotLoop() {
+	if snapshotCancel != nil {
+		snapshotCancel()
+		snapshotWg.Wait()
+		snapshotCancel = nil
+	}
+	// Attempt to load existing data
+	if err := loadUsageSnapshot(); err != nil {
+		log.Errorf("failed to load usage statistics from %s: %v", usageSnapshotStore.Name(), err)
+	}
+
+	// Migrate existing in-memory data to the database (first run only)
+	if defaultRequestStatistics != nil {
+		snapshot := defaultRequestStatistics.Snapshot()
+		if migrated, err := MigrateFromSnapshot(snapshot); err != nil {
+			log.Errorf("usage: migration from the usage snapshot failed: %v", err)
+		} else if migrated > 0 {
+			log.Infof("usage: migrated %d records from the usage snapshot to the database", migrated)
+		}
+	}
+
+	// The sync loop runs independently of single requests and is bound to the
+	// service lifetime, which StopSnapshotStore ends.
+	snapshotCtx, snapshotCancel = context.WithCancel(context.Background())
+	snapshotWg.Add(1)
+	go snapshotSyncLoop()
+}
+
+// StopSnapshotStore flushes the latest snapshot to the shared store, stops the
+// background loop and closes the store.
+func StopSnapshotStore() {
+	if snapshotCancel != nil {
+		snapshotCancel()
+		snapshotWg.Wait()
+	}
+	if usageSnapshotStore != nil {
+		saveUsageSnapshot() // Perform a final save
+		name := usageSnapshotStore.Name()
+		usageSnapshotStore.Close()
+		usageSnapshotStore = nil
+		log.Infof("%s usage persistence flushed and closed", name)
+	}
+	snapshotCancel = nil
+	snapshotCtx = context.Background()
+	CloseDB()
+}
+
+func snapshotSyncLoop() {
+	defer snapshotWg.Done()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			saveUsageSnapshot()
+		case <-snapshotCtx.Done():
+			return
+		}
+	}
+}
+
+// saveUsageSnapshot writes the in-memory statistics to the installed store.
+// The snapshot has no expiry: it is the state a restart resumes from.
+func saveUsageSnapshot() {
+	if usageSnapshotStore == nil || defaultRequestStatistics == nil {
+		return
+	}
+	snapshot := defaultRequestStatistics.Snapshot()
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		log.Errorf("failed to marshal usage snapshot for %s: %v", usageSnapshotStore.Name(), err)
+		return
+	}
+	// Runs from the background loop or the final flush, never from a request,
+	// so a root context is right.
+	if err := usageSnapshotStore.Save(context.Background(), data); err != nil {
+		log.Errorf("failed to save usage snapshot to %s: %v", usageSnapshotStore.Name(), err)
+	}
+}
+
+// loadUsageSnapshot restores the statistics saved by a previous process.
+func loadUsageSnapshot() error {
+	if usageSnapshotStore == nil || defaultRequestStatistics == nil {
+		return nil
+	}
+	data, found, err := usageSnapshotStore.Load(context.Background())
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil // first run
+	}
+	var snapshot StatisticsSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return err
+	}
+	result := defaultRequestStatistics.MergeSnapshot(snapshot)
+	log.Infof("Loaded %d usage records from %s (skipped %d duplicates)", result.Added, usageSnapshotStore.Name(), result.Skipped)
+	return nil
+}
 
 // RequestStatistics maintains aggregated request metrics in memory.
 type RequestStatistics struct {
@@ -198,7 +312,7 @@ func (s *RequestStatistics) ingest(ctx context.Context, record coreusage.Record)
 		statsKey = resolveAPIIdentifier(ctx, record)
 	}
 	// The aggregates are keyed by the key's stable id, never by its secret: the
-	// snapshot is served by /usage and exported. statsKey stays
+	// snapshot is served by /usage, exported and mirrored to the database. statsKey stays
 	// the raw value because the log write resolves the key from it, and masks it
 	// before anything is persisted.
 	bucketKey := statsBucketKey(statsKey, record.APIKeyID)
@@ -273,6 +387,9 @@ func (s *RequestStatistics) ingest(ctx context.Context, record coreusage.Record)
 		Failed:                failed,
 		Streaming:             record.Streaming,
 		GuardKind:             record.GuardKind,
+		ClientName:            record.ClientName,
+		ClientVersion:         record.ClientVersion,
+		UserAgent:             record.UserAgent,
 		Timestamp:             timestamp,
 		LatencyMs:             record.LatencyMs,
 		FirstTokenMs:          record.FirstTokenMs,

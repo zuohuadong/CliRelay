@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
+	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
 
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -17,9 +17,9 @@ func collectOpenAIToClaudeStreamViaSDK(t *testing.T, chunks ...string) string {
 	originalRequest := []byte(`{"model":"m","stream":true,"stream_options":{"include_usage":true}}`)
 	translatedRequest := []byte(`{"model":"m","stream":true}`)
 	var param any
-	var out []byte
+	var out []string
 	for _, chunk := range chunks {
-		for _, event := range sdktranslator.TranslateStream(
+		out = append(out, sdktranslator.TranslateStream(
 			context.Background(),
 			sdktranslator.FormatOpenAI,
 			sdktranslator.FormatClaude,
@@ -28,11 +28,9 @@ func collectOpenAIToClaudeStreamViaSDK(t *testing.T, chunks ...string) string {
 			translatedRequest,
 			[]byte(chunk),
 			&param,
-		) {
-			out = append(out, event...)
-		}
+		)...)
 	}
-	return string(out)
+	return strings.Join(out, "")
 }
 
 func assertNoOrphanAnthropicContentEvents(t *testing.T, stream string) {
@@ -236,10 +234,10 @@ func TestOpenAIClaudeEmptyToolNameNonStreamingChain(t *testing.T) {
 		raw,
 		nil,
 	)
-	if strings.Contains(string(out), `"type":"tool_use"`) || strings.Contains(string(out), `"name":""`) {
+	if strings.Contains(out, `"type":"tool_use"`) || strings.Contains(out, `"name":""`) {
 		t.Fatalf("empty OpenAI function.name must not become Claude non-streaming tool_use:\n%s", out)
 	}
-	if got := gjson.GetBytes(out, "stop_reason").String(); got != "end_turn" {
+	if got := gjson.Get(out, "stop_reason").String(); got != "end_turn" {
 		t.Fatalf("Claude non-streaming stop_reason = %q, want end_turn: %s", got, out)
 	}
 }

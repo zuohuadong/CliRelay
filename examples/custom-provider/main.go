@@ -24,14 +24,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	clipexec "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/logging"
-	sdktr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	clipexec "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/logging"
+	sdktr "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
 
 const (
@@ -50,13 +50,13 @@ const (
 // transformation logic between OpenAI format and your provider's format.
 func init() {
 	sdktr.Register(fOpenAI, fMyProv,
-		func(model string, raw []byte, stream bool) ([]byte, error) { return raw, nil },
+		func(model string, raw []byte, stream bool) []byte { return raw },
 		sdktr.ResponseTransform{
-			Stream: func(ctx context.Context, model string, originalReq, translatedReq, raw []byte, param *any) [][]byte {
-				return [][]byte{raw}
+			Stream: func(ctx context.Context, model string, originalReq, translatedReq, raw []byte, param *any) []string {
+				return []string{string(raw)}
 			},
-			NonStream: func(ctx context.Context, model string, originalReq, translatedReq, raw []byte, param *any) []byte {
-				return raw
+			NonStream: func(ctx context.Context, model string, originalReq, translatedReq, raw []byte, param *any) string {
+				return string(raw)
 			},
 		},
 	)

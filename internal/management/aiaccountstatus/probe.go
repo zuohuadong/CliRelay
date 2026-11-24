@@ -10,20 +10,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	managementapitools "github.com/router-for-me/CLIProxyAPI/v8/internal/management/apitools"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	managementapitools "github.com/router-for-me/CLIProxyAPI/v6/internal/management/apitools"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
 )
 
 // ProbeResult is the typed output of a provider-specific upstream status probe.
 type ProbeResult struct {
-	PlanType               string
-	SubscriptionStartedAt  *time.Time
-	SubscriptionExpiresAt  *time.Time
-	SubscriptionSource     string
+	PlanType string
+	// Subscription is set by a probe that read the billing cycle live (source
+	// "probe"). Left empty, the token claims fill it after the probe.
+	Subscription           usage.AIAccountSubscription
 	Quotas                 []usage.QuotaWindowDTO
 	ResetCreditCount       *int64
 	ResetCreditExpirations []string

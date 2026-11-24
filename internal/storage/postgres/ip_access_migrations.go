@@ -72,7 +72,21 @@ func laterRuntimeMigrations() []Migration {
 		// Machine snapshots of hosts without a node (the database host). See
 		// clusterHostsSQL.
 		{Version: "202611170002_cluster_hosts", SQL: clusterHostsSQL},
-		{Version: "202611220001_runtime_state", SQL: runtimeStateSQL},
+		// Who sent each request, for the request log's Agent column. See
+		// requestLogClientSQL.
+		{Version: "202611180001_request_log_client", SQL: requestLogClientSQL},
+		// One-hour cache writes on request_logs, so a price change can recompute
+		// a stored cost exactly. See requestLogCacheWrite1hSQL.
+		{Version: "202611180002_request_log_cache_write_1h", SQL: requestLogCacheWrite1hSQL},
+		// Queue of request-cost recomputations after a price change. See
+		// pricing_resync_migrations.go.
+		{Version: "202611180003_pricing_resync_jobs", SQL: pricingResyncJobsSQL},
+		// Live billing-cycle columns on the shared AI-account status, and the
+		// stale token snapshots dropped. See aiAccountSubscriptionCycleSQL.
+		{Version: "202611200001_ai_account_subscription_cycle", SQL: aiAccountSubscriptionCycleSQL},
+		// Tenant-scoped portal billing settings, plans, key/account bindings,
+		// subscription expiration entitlements, and order ledger. See billing_migrations.go.
+		{Version: "202611220001_portal_billing", SQL: billingTablesSQL},
 	}
 }
 

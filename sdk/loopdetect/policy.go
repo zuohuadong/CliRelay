@@ -26,10 +26,8 @@ func (k Kind) Valid() bool { return k == KindReplyLoop || k == KindToolLoop }
 // from the settings of the tenant and of the API key before the handler runs.
 // A nil check is off; a nil *Policy is both off.
 type Policy struct {
-	Reply       *ReplyLimits
-	Tool        *ToolLimits
-	ReplySource string
-	ToolSource  string
+	Reply *ReplyLimits
+	Tool  *ToolLimits
 	// Observer is told of every interception. It may be nil.
 	Observer Observer
 }
@@ -82,10 +80,7 @@ type Mark struct {
 type MarkedCut struct {
 	Kind Kind
 	// Detail is the same text the client was told.
-	Detail      string
-	Source      string
-	ReplyLimits ReplyLimits
-	ReplyTrip   ReplyTrip
+	Detail string
 }
 
 type markKey struct{}
@@ -111,15 +106,6 @@ func (m *Mark) Set(kind Kind, detail string) {
 		return
 	}
 	m.cut.CompareAndSwap(nil, &MarkedCut{Kind: kind, Detail: detail})
-}
-
-func (m *Mark) SetReply(kind Kind, detail, source string, limits ReplyLimits, trip ReplyTrip) {
-	if m == nil {
-		return
-	}
-	m.cut.CompareAndSwap(nil, &MarkedCut{
-		Kind: kind, Detail: detail, Source: source, ReplyLimits: limits, ReplyTrip: trip,
-	})
 }
 
 // Cut returns what was recorded, if anything.

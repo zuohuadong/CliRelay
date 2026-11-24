@@ -17,10 +17,9 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	baseauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -45,16 +44,12 @@ type ObjectStoreConfig struct {
 // ObjectTokenStore persists configuration and authentication metadata using an S3-compatible object storage backend.
 // Files are mirrored to a local workspace so existing file-based flows continue to operate.
 type ObjectTokenStore struct {
-	client            *minio.Client
-	cfg               ObjectStoreConfig
-	spoolRoot         string
-	configPath        string
-	authDir           string
-	mu                sync.Mutex
-	refreshClaims     sync.Map
-	refreshProbeMu    sync.Mutex
-	refreshProbeReady bool
-	putObjectFn       func(context.Context, string, []byte, string) error
+	client     *minio.Client
+	cfg        ObjectStoreConfig
+	spoolRoot  string
+	configPath string
+	authDir    string
+	mu         sync.Mutex
 }
 
 // NewObjectTokenStore initializes an object storage backed token store.
@@ -175,7 +170,7 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 		return "", fmt.Errorf("object store: missing file path attribute for %s", auth.ID)
 	}
 
-	if auth.Disabled && !cliproxyauth.HasAuthCreationIntent(ctx) {
+	if auth.Disabled {
 		if _, statErr := os.Stat(path); errors.Is(statErr, fs.ErrNotExist) {
 			return "", nil
 		}
@@ -202,20 +197,19 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 		if errMarshal != nil {
 			return "", fmt.Errorf("object store: marshal metadata: %w", errMarshal)
 		}
-		contentsMatch := false
 		if existing, errRead := os.ReadFile(path); errRead == nil {
-			contentsMatch = jsonEqual(existing, raw)
+			if jsonEqual(existing, raw) {
+				return path, nil
+			}
 		} else if errRead != nil && !errors.Is(errRead, fs.ErrNotExist) {
 			return "", fmt.Errorf("object store: read existing metadata: %w", errRead)
 		}
-		if !contentsMatch {
-			tmp := path + ".tmp"
-			if errWrite := os.WriteFile(tmp, raw, 0o600); errWrite != nil {
-				return "", fmt.Errorf("object store: write temp auth file: %w", errWrite)
-			}
-			if errRename := os.Rename(tmp, path); errRename != nil {
-				return "", fmt.Errorf("object store: rename auth file: %w", errRename)
-			}
+		tmp := path + ".tmp"
+		if errWrite := os.WriteFile(tmp, raw, 0o600); errWrite != nil {
+			return "", fmt.Errorf("object store: write temp auth file: %w", errWrite)
+		}
+		if errRename := os.Rename(tmp, path); errRename != nil {
+			return "", fmt.Errorf("object store: rename auth file: %w", errRename)
 		}
 	default:
 		return "", fmt.Errorf("object store: nothing to persist for %s", auth.ID)
@@ -381,9 +375,6 @@ func (s *ObjectTokenStore) syncConfigFromBucket(ctx context.Context, example str
 				}
 			}
 		}
-		if errPrepare := config.PrepareConfigFileForUpload(s.configPath); errPrepare != nil {
-			return fmt.Errorf("object store: prepare local config for seeding: %w", errPrepare)
-		}
 		data, errRead := os.ReadFile(s.configPath)
 		if errRead != nil {
 			return fmt.Errorf("object store: read local config: %w", errRead)
@@ -486,9 +477,6 @@ func (s *ObjectTokenStore) deleteAuthObject(ctx context.Context, path string) er
 }
 
 func (s *ObjectTokenStore) putObject(ctx context.Context, key string, data []byte, contentType string) error {
-	if s.putObjectFn != nil {
-		return s.putObjectFn(ctx, key, data, contentType)
-	}
 	if len(data) == 0 {
 		return s.deleteObject(ctx, key)
 	}

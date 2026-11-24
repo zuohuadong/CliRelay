@@ -264,22 +264,22 @@ func TestCollectorTrafficWindowCoversTheLastMinute(t *testing.T) {
 
 func TestRoundTripReportsFailuresByKind(t *testing.T) {
 	ctx := context.Background()
-	if got := roundTrip(ctx, "", func(context.Context) (string, error) { return "", ErrNotConfigured }); got != nil {
+	if got := roundTrip(ctx, func(context.Context) error { return ErrNotConfigured }); got != nil {
 		t.Fatalf("a dependency that is not configured is left out, got %+v", got)
 	}
-	ok := roundTrip(ctx, "", func(context.Context) (string, error) { return "cluster", nil })
-	if ok.Role != "cluster" || ok.RTTMillis == nil || ok.Error != "" {
+	ok := roundTrip(ctx, func(context.Context) error { return nil })
+	if ok.RTTMillis == nil || ok.Error != "" {
 		t.Fatalf("success = %+v", ok)
 	}
-	slow := roundTrip(ctx, "", func(ctx context.Context) (string, error) {
+	slow := roundTrip(ctx, func(ctx context.Context) error {
 		<-ctx.Done()
-		return "usage", ctx.Err()
+		return ctx.Err()
 	})
-	if slow.Role != "usage" || slow.Error != "timeout" || slow.RTTMillis != nil {
+	if slow.Error != "timeout" || slow.RTTMillis != nil {
 		t.Fatalf("timeout = %+v", slow)
 	}
-	failed := roundTrip(ctx, "", func(context.Context) (string, error) {
-		return "", errors.New("dial tcp 198.51.100.9:55432: connect: connection refused (user=cliproxy)")
+	failed := roundTrip(ctx, func(context.Context) error {
+		return errors.New("dial tcp 198.51.100.9:55432: connect: connection refused (user=cliproxy)")
 	})
 	if failed.Error != "error" {
 		t.Fatalf("failure = %+v", failed)
@@ -300,7 +300,7 @@ func TestCollectorReportsDependenciesAndEgress(t *testing.T) {
 	})
 	c.sample(context.Background())
 	snap, _ := c.Latest()
-	if snap.DB == nil || snap.DB.RTTMillis == nil || snap.DB.Role != "" {
+	if snap.DB == nil || snap.DB.RTTMillis == nil {
 		t.Fatalf("db = %+v", snap.DB)
 	}
 	if snap.Egress == nil || snap.Egress.BreakerOpen != 1 || snap.Egress.Check.Total != 4 {

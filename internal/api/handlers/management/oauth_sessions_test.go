@@ -12,7 +12,8 @@ import (
 // one poll interval and records nothing in this test's store.
 func useIsolatedOAuthSessions(t *testing.T, ttl time.Duration) {
 	t.Helper()
-	replaceOAuthSessionStoreForTest(t, newOAuthSessionStore(ttl))
+	previous := oauthSessions.Swap(newOAuthSessionStore(ttl))
+	t.Cleanup(func() { oauthSessions.Store(previous) })
 }
 
 func TestCompleteOAuthSessionRetainsCompletedState(t *testing.T) {

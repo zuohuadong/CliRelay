@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"reflect"
 	"strings"
 	"time"
 )
@@ -331,7 +330,7 @@ func applyQuotaProbeResult(auth *Auth, result *QuotaProbeResult, now time.Time) 
 		}
 
 		updateAggregatedAvailability(auth, now)
-		if auth.Unavailable != beforeUnavailable || !auth.NextRetryAfter.Equal(beforeNextRetry) || !reflect.DeepEqual(auth.Quota, beforeQuota) {
+		if auth.Unavailable != beforeUnavailable || !auth.NextRetryAfter.Equal(beforeNextRetry) || auth.Quota != beforeQuota {
 			changed = true
 		}
 		if !hasModelError(auth, now) {
@@ -488,7 +487,7 @@ func clearQuotaModelState(state *ModelState, now time.Time) bool {
 	if state == nil {
 		return false
 	}
-	changed := state.Unavailable || state.Status != StatusActive || state.StatusMessage != "" || !state.NextRetryAfter.IsZero() || state.LastError != nil || !reflect.DeepEqual(state.Quota, QuotaState{})
+	changed := state.Unavailable || state.Status != StatusActive || state.StatusMessage != "" || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{})
 	state.Unavailable = false
 	state.Status = StatusActive
 	state.StatusMessage = ""
@@ -504,7 +503,7 @@ func clearManualModelRuntimeState(state *ModelState, now time.Time) bool {
 		return false
 	}
 	preserveDisabled := state.Status == StatusDisabled
-	changed := state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || !reflect.DeepEqual(state.Quota, QuotaState{})
+	changed := state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{})
 	if !preserveDisabled && (state.Status != StatusActive || state.StatusMessage != "") {
 		changed = true
 	}
@@ -556,7 +555,7 @@ func clearQuotaAuthState(auth *Auth, now time.Time) bool {
 	if auth == nil {
 		return false
 	}
-	changed := auth.Unavailable || auth.Status != StatusActive || auth.StatusMessage != "" || !auth.NextRetryAfter.IsZero() || auth.LastError != nil || !reflect.DeepEqual(auth.Quota, QuotaState{})
+	changed := auth.Unavailable || auth.Status != StatusActive || auth.StatusMessage != "" || !auth.NextRetryAfter.IsZero() || auth.LastError != nil || auth.Quota != (QuotaState{})
 	auth.Unavailable = false
 	auth.Status = StatusActive
 	auth.StatusMessage = ""
@@ -572,7 +571,7 @@ func clearManualAuthRuntimeState(auth *Auth, now time.Time) bool {
 		return false
 	}
 	preserveDisabled := auth.Status == StatusDisabled
-	changed := auth.Unavailable || !auth.NextRetryAfter.IsZero() || !auth.NextRefreshAfter.IsZero() || auth.LastError != nil || !reflect.DeepEqual(auth.Quota, QuotaState{})
+	changed := auth.Unavailable || !auth.NextRetryAfter.IsZero() || !auth.NextRefreshAfter.IsZero() || auth.LastError != nil || auth.Quota != (QuotaState{})
 	if !preserveDisabled && (auth.Status != StatusActive || auth.StatusMessage != "") {
 		changed = true
 	}

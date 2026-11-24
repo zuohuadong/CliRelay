@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/contentmoderation"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretscrub"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/secretscrub"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -273,7 +273,7 @@ func stopRequestLogMaintenance() {
 // requestLogMaintenanceStopWarnAfter is how long a stop waits before saying so.
 // A pass is meant to stop within one statement of the cancel, so a longer wait
 // means some step ignores ctx. Without this line that wait shows in the log only
-// as a gap after "usage persistence flushed and closed", up to the SIGKILL.
+// as a gap after "PostgreSQL usage persistence flushed and closed", up to the SIGKILL.
 const requestLogMaintenanceStopWarnAfter = 10 * time.Second
 
 func waitForRequestLogMaintenance(warnAfter time.Duration) {

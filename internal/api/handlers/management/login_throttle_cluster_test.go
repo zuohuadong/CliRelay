@@ -3,35 +3,58 @@ package management
 import (
 	"context"
 	"database/sql"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/postgrestest"
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedstate"
+	pgredis "github.com/zuohuadong/pgredis-go"
 )
 
-// countingThrottleStore counts shared peeks, to show which checks reach Redis.
+// countingThrottleStore counts shared peeks, to show which checks reach the
+// shared store.
 type countingThrottleStore struct {
-	*sharedstate.Store
+	*sharedstate.PGStore
 	peeks atomic.Int64
 }
 
 func (s *countingThrottleStore) ThrottlePeek(ctx context.Context, bucket string, spec sharedstate.ThrottleSpec, now time.Time) (sharedstate.ThrottleState, error) {
 	s.peeks.Add(1)
-	return s.Store.ThrottlePeek(ctx, bucket, spec, now)
+	return s.PGStore.ThrottlePeek(ctx, bucket, spec, now)
 }
 
+// installClusterThrottle needs a real server: the shared state lives in the
+// cluster database.
 func installClusterThrottle(t *testing.T) (*sql.DB, *countingThrottleStore) {
 	t.Helper()
-	db, _ := postgrestest.RuntimeState(t)
-	store := &countingThrottleStore{Store: sharedstate.New(db, sharedstate.Options{NodeID: "self"})}
-	SetClusterThrottleStore(store)
+	dsn := os.Getenv("PGREDIS_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGREDIS_TEST_DSN is not set")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		t.Skipf("postgres unreachable: %v", err)
+	}
+	store := pgredis.New(db, pgredis.Options{Namespace: "mgmt-throttle-test", TablePrefix: "clirelay"})
+	if err := store.EnsureSchema(ctx); err != nil {
+		_ = db.Close()
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	wrapped := &countingThrottleStore{PGStore: sharedstate.NewPGStore(store)}
+	SetClusterThrottleStore(wrapped)
 	t.Cleanup(func() {
 		SetClusterThrottleStore(nil)
-		store.Close()
+		_ = db.Close()
 	})
-	return db, store
+	return db, wrapped
 }
 
 func TestClusterLoginThrottleCountsFailuresFromEveryNode(t *testing.T) {
@@ -59,7 +82,7 @@ func TestClusterLoginThrottleCountsFailuresFromEveryNode(t *testing.T) {
 	}
 }
 
-func TestClusterLoginThrottleLocalBlockSkipsRedis(t *testing.T) {
+func TestClusterLoginThrottleLocalBlockSkipsSharedStore(t *testing.T) {
 	_, store := installClusterThrottle(t)
 	node := newTestThrottle(nil)
 	key := accountThrottleKey(scopeUserAccount, "bob")
@@ -72,7 +95,7 @@ func TestClusterLoginThrottleLocalBlockSkipsRedis(t *testing.T) {
 		t.Fatalf("expected a block: %+v", d)
 	}
 	if store.peeks.Load() != before {
-		t.Fatal("a block this node armed itself must be enforced without a Redis round trip")
+		t.Fatal("a block this node armed itself must be enforced without a shared round trip")
 	}
 	if d := node.evaluate(accountThrottleKey(scopeUserAccount, "carol"), now); d.Outcome != outcomeAllow || store.peeks.Load() != before+1 {
 		t.Fatalf("an unblocked bucket consults the cluster: %+v peeks=%d", d, store.peeks.Load())
@@ -111,6 +134,8 @@ func TestClusterLoginThrottleFallsBackToLocalThresholds(t *testing.T) {
 	key := accountThrottleKey(scopeUserAccount, "erin")
 	now := time.Now()
 
+	// The database goes away: every shared call fails and the node falls back
+	// to its local throttle.
 	_ = db.Close()
 	var d throttleDecision
 	for i := 0; i < defaultAccountFailureLimit-1; i++ {

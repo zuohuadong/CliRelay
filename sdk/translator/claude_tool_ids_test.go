@@ -223,9 +223,9 @@ func TestEncodeClaudeStreamToolIDs(t *testing.T) {
 func TestRegistryDecodesClaudeToolIDsOnlyWhenLeavingClaudeFormat(t *testing.T) {
 	r := NewRegistry()
 	var seen []byte
-	capture := func(_ string, raw []byte, _ bool) ([]byte, error) {
+	capture := func(_ string, raw []byte, _ bool) []byte {
 		seen = raw
-		return raw, nil
+		return raw
 	}
 	r.Register(FormatClaude, FormatOpenAI, capture, ResponseTransform{})
 	r.Register(FormatOpenAI, FormatClaude, capture, ResponseTransform{})

@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	internalclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/credentialimport"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	internalclaude "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/credentialimport"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 // newImportTestHandler wires a handler with an in-memory store and a canned
@@ -58,15 +58,15 @@ func TestImportCredentialSavesAndBindsProxy(t *testing.T) {
 		exchange: func(_ context.Context, _ *config.Config, in credentialImportInput) (*coreauth.Auth, credentialimport.Details, error) {
 			gotInput = in
 			return &coreauth.Auth{
-				ID:       "claude-import.json",
-				Provider: "claude",
-				FileName: "claude-import.json",
-				Label:    "team.member@example.com",
-				Metadata: map[string]any{"type": "claude"},
-			}, credentialimport.Details{
-				Email:        "team.member@example.com",
-				Organization: "Acme Team",
-			}, nil
+					ID:       "claude-import.json",
+					Provider: "claude",
+					FileName: "claude-import.json",
+					Label:    "team.member@example.com",
+					Metadata: map[string]any{"type": "claude"},
+				}, credentialimport.Details{
+					Email:        "team.member@example.com",
+					Organization: "Acme Team",
+				}, nil
 		},
 	}
 	// The proxy is the tenant's own. The system pool has an entry under the

@@ -14,7 +14,7 @@ func TestUpgradeComposeRuntimeStackPreservesListEnvironment(t *testing.T) {
 	upgraded, _, err := UpgradeRuntimeStack(`
 services:
   clirelay:
-    image: ghcr.io/kittors/clirelay:dev
+    image: ghcr.io/zuohuadong/clirelay:dev
     environment:
       - AUTH_PATH=/root/.cli-proxy-api
       - LEGACY_FLAG=1
@@ -67,6 +67,9 @@ services:
 			t.Fatalf("upgraded compose missing service %s:\n%s", name, upgraded)
 		}
 	}
+	if _, ok := services["redis"]; ok {
+		t.Fatalf("upgraded compose still contains the Redis service:\n%s", upgraded)
+	}
 	if _, ok := services["clirelay-migrate"]; ok {
 		t.Fatalf("upgraded compose still contains SQLite migration service:\n%s", upgraded)
 	}
@@ -83,8 +86,8 @@ services:
 }
 
 func TestImageFallbackUnwrapsCliProxyImageDefault(t *testing.T) {
-	got := imageFallback("${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}")
-	if got != "ghcr.io/kittors/clirelay:latest" {
+	got := imageFallback("${CLI_PROXY_IMAGE:-ghcr.io/zuohuadong/clirelay:latest}")
+	if got != "ghcr.io/zuohuadong/clirelay:latest" {
 		t.Fatalf("imageFallback = %q, want literal image", got)
 	}
 }
@@ -93,7 +96,7 @@ func TestUpgradeComposeRuntimeStackKeepsGeneratedServicesOnTargetNetwork(t *test
 	upgraded, _, err := UpgradeRuntimeStack(`
 services:
   cli-proxy-api:
-    image: ghcr.io/kittors/clirelay:dev
+    image: ghcr.io/zuohuadong/clirelay:dev
     networks:
       - clirelay
 networks:
@@ -134,11 +137,13 @@ func TestEnsureRuntimeDataStackConfigUpgradesStackWithoutInitService(t *testing.
 	envPath := filepath.Join(dir, ".env")
 	composeText := `services:
   clirelay:
-    image: ghcr.io/kittors/clirelay:dev
+    image: ghcr.io/zuohuadong/clirelay:dev
     environment:
       CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:?CLIRELAY_UPDATER_TOKEN is required for updater sidecar}
   postgres:
-    image: postgres:19-alpine
+    image: postgres:15-alpine
+  redis:
+    image: redis:7-alpine
 `
 	if err := os.WriteFile(composePath, []byte(composeText), 0o644); err != nil {
 		t.Fatalf("write compose: %v", err)
@@ -177,6 +182,9 @@ func TestEnsureRuntimeDataStackConfigUpgradesStackWithoutInitService(t *testing.
 			t.Fatalf("env missing %q:\n%s", want, envData)
 		}
 	}
+	if strings.Contains(string(envData), "CLIRELAY_REDIS") {
+		t.Fatalf("env must not carry Redis settings anymore:\n%s", envData)
+	}
 }
 
 func TestEnsureRuntimeDataStackConfigRemovesLegacyMigrationService(t *testing.T) {
@@ -185,19 +193,23 @@ func TestEnsureRuntimeDataStackConfigRemovesLegacyMigrationService(t *testing.T)
 	envPath := filepath.Join(dir, ".env")
 	composeText := `services:
   clirelay:
-    image: ghcr.io/kittors/clirelay:dev
+    image: ghcr.io/zuohuadong/clirelay:dev
     depends_on:
       clirelay-migrate:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
   clirelay-init:
-    image: ghcr.io/kittors/clirelay:dev
+    image: ghcr.io/zuohuadong/clirelay:dev
   clirelay-migrate:
-    image: ghcr.io/kittors/clirelay:dev
+    image: ghcr.io/zuohuadong/clirelay:dev
     command: ["migrate-sqlite-to-postgres.sh"]
   postgres:
-    image: postgres:19-alpine
+    image: postgres:15-alpine
+  redis:
+    image: redis:7-alpine
 `
 	if err := os.WriteFile(composePath, []byte(composeText), 0o644); err != nil {
 		t.Fatalf("write compose: %v", err)
@@ -226,7 +238,7 @@ func TestEnsureRuntimeEnvFileReplacesWorkspaceProjectDir(t *testing.T) {
 		t.Fatalf("write env: %v", err)
 	}
 
-	if err := ensureRuntimeEnvFile(envPath, "/root/cliproxy", "cli-proxy-api", "ghcr.io/kittors/clirelay:dev", "", false); err != nil {
+	if err := ensureRuntimeEnvFile(envPath, "/root/cliproxy", "cli-proxy-api", "ghcr.io/zuohuadong/clirelay:dev", "", false); err != nil {
 		t.Fatalf("ensureRuntimeEnvFile failed: %v", err)
 	}
 
@@ -252,7 +264,7 @@ func TestEnsureRuntimeEnvFileAlignsStaleAuthPath(t *testing.T) {
 		t.Fatalf("write env: %v", err)
 	}
 	// Preferred path comes from a concrete volume destination (legacy default).
-	if err := ensureRuntimeEnvFile(envPath, "/root/cliproxy", "cli-proxy-api", "ghcr.io/kittors/clirelay:dev", "/root/.cli-proxy-api", true); err != nil {
+	if err := ensureRuntimeEnvFile(envPath, "/root/cliproxy", "cli-proxy-api", "ghcr.io/zuohuadong/clirelay:dev", "/root/.cli-proxy-api", true); err != nil {
 		t.Fatalf("ensureRuntimeEnvFile failed: %v", err)
 	}
 	data, err := os.ReadFile(envPath)
@@ -269,7 +281,7 @@ func TestEnsureRuntimeEnvFileKeepsExistingAuthPathWhenNotForced(t *testing.T) {
 	if err := os.WriteFile(envPath, []byte("AUTH_PATH=/root/.cli-proxy-api\n"), 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
 	}
-	if err := ensureRuntimeEnvFile(envPath, "/root/cliproxy", "cli-proxy-api", "ghcr.io/kittors/clirelay:dev", "/CLIProxyAPI/auths", false); err != nil {
+	if err := ensureRuntimeEnvFile(envPath, "/root/cliproxy", "cli-proxy-api", "ghcr.io/zuohuadong/clirelay:dev", "/CLIProxyAPI/auths", false); err != nil {
 		t.Fatalf("ensureRuntimeEnvFile failed: %v", err)
 	}
 	data, err := os.ReadFile(envPath)
@@ -285,7 +297,7 @@ func TestUpgradeComposeRuntimeStackAlignsAuthPathWithLegacyVolume(t *testing.T) 
 	upgraded, _, err := UpgradeRuntimeStack(`
 services:
   cli-proxy-api:
-    image: ghcr.io/kittors/clirelay:dev
+    image: ghcr.io/zuohuadong/clirelay:dev
     environment:
       AUTH_PATH: ${AUTH_PATH:-/CLIProxyAPI/auths}
     volumes:

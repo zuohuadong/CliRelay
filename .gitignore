@@ -89,3 +89,7 @@ data/*
 # macOS
 .DS_Store
 ._*
+
+# Local build artifacts and tool state
+/server
+/.omx/

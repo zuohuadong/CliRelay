@@ -43,7 +43,6 @@ Single-instance behaviour is exactly what it was before clustering existed. This
                arbiter (hk-relay): serves no user traffic
                 ├ etcd member (the third vote that prevents two primaries)
                 ├ clirelay-dnswatch: probes every node every 10 s, edits DNS
-                ├ PostgreSQL runtime state (global limits, affinity and minted IDs)
                 └ daily base backups + continuous WAL archive (restore to any moment in 7 days)
 ```
 
@@ -64,7 +63,7 @@ The arbiter is the third vote. Only the side that holds an etcd majority (2 of 3
 
 ## 3. Failure scenarios (measured)
 
-Numbers come from a rehearsal with the production settings: Patroni 4.1.5, PostgreSQL 19, `ttl` 30 s / `loop_wait` 10 s, synchronous replication. Every row assumes the three-vote etcd of section 2; with a single etcd member left, see [5.1](#51-when-etcd-is-down-to-one-member).
+Numbers come from a rehearsal with the production settings: Patroni 4.1.5, PostgreSQL 15.19, `ttl` 30 s / `loop_wait` 10 s, synchronous replication. Every row assumes the three-vote etcd of section 2; with a single etcd member left, see [5.1](#51-when-etcd-is-down-to-one-member).
 
 | Scenario | What happens | User impact |
 |---|---|---|
@@ -76,7 +75,7 @@ Numbers come from a rehearsal with the production settings: Patroni 4.1.5, Postg
 | Failed node comes back | `pg_rewind` removes its divergent tail and it rejoins as the synchronous replica | No manual step |
 | Synchronous replica stalls or hangs (host I/O stall, frozen VM) | Commits on the primary wait for it: as long as a short stall lasts, at most 15–19 s for a replica that never answers, after which the primary continues asynchronously | API requests do not wait on commits (usage is queued and spooled); management writes wait |
 | Arbiter down | Service continues; etcd still has 2 of 3 votes; DNS stops being updated automatically | None |
-| PostgreSQL runtime unavailable | Readiness fails and traffic is drained | No node serves with split-brain limits |
+| Shared store unreachable | Nodes count locally and enforce `limit / active nodes` | Limits become approximate for a while |
 
 ## 4. Deploying a cluster
 
@@ -91,7 +90,7 @@ deploy/cluster/tls/gen-cluster-certs.sh <secure-dir> \
 
 - **Validity and usage.** The CA is valid for 10 years and node certificates for 5 years. Node certificates carry both `serverAuth` and `clientAuth`, and their SANs are the node name, `127.0.0.1` and the public IP.
 - **Keep `ca.key` off the servers.** A machine gets only `ca.crt`, `node.crt` and `node.key`, in `/etc/clirelay-cluster/tls/`, owned by root, with the key at `0600`.
-- **Per-service copies.** PostgreSQL (uid 70 in its container) gets its own copy with matching ownership under `/etc/clirelay-cluster/tls-pg/`.
+- **Per-service copy.** PostgreSQL (uid 70 in its container) gets its own copy with matching ownership: `/etc/clirelay-cluster/tls-pg/`.
 - **Adding a node.** Run the script again: it keeps the CA and existing certificates and issues only the new node's.
 
 ### 4.2 etcd (one member per machine)
@@ -111,7 +110,7 @@ deploy/cluster/bin/etcdctl.sh endpoint health --cluster
 
 ### 4.3 PostgreSQL with Patroni
 
-The image is `deploy/cluster/postgres-ha/Dockerfile`: `postgres:19.0-alpine` plus Patroni 4.1.5.
+The image is `deploy/cluster/postgres-ha/Dockerfile`: `postgres:15.19-alpine3.24` plus Patroni 4.1.5.
 
 > **Stay on the same image family as the single-node PostgreSQL (Alpine/musl).** Physical replication copies index pages byte for byte, and text indexes are ordered by the C library's collation. Mixing glibc and musl silently returns wrong results for indexed text lookups after a failover. Keep the minor version equal or newer, too.
 
@@ -171,7 +170,11 @@ This is how production moved. The old primary was never restarted.
 
 `deploy/cluster/lab/lab.sh` rehearses the whole sequence on any Docker host, with a throwaway CA and no published ports.
 
-### 4.4 CliRelay node settings
+### 4.4 No extra data services
+
+The cluster needs nothing beyond PostgreSQL and etcd: cluster-wide rate limits and concurrency slots, session affinity, minted identifiers, login throttles and auto-ban counters all live in the cluster database. When it is unreachable, nodes fall back to local limits.
+
+### 4.5 CliRelay node settings
 
 Keep `config.yaml` identical on all nodes, apart from node-local values such as `port` and `auth-dir`. Put the cluster settings in `/opt/clirelay2/.env`, which the slot units load:
 
@@ -185,9 +188,6 @@ CLIRELAY_HOST=127.0.0.1
 # multi-host DSN: local host first; target_session_attrs=read-write finds the primary
 CLIRELAY_POSTGRES_DSN=postgres://cliproxy:<password>@127.0.0.1:55432,198.51.100.20:55432/cliproxy?target_session_attrs=read-write&sslmode=verify-ca&sslrootcert=/etc/clirelay-cluster/tls/ca.crt&sslcert=/etc/clirelay-cluster/tls/node.crt&sslkey=/etc/clirelay-cluster/tls/node.key&connect_timeout=5
 ```
-
-The PostgreSQL DSN is the only runtime coordination endpoint; no separate cache
-or queue service is required.
 
 ### 4.6 nginx: local first, spill over to the peer
 
@@ -356,12 +356,12 @@ When the arbiter or the other node stays offline and etcd is left with a single 
     --set synchronous_mode=false --set ttl=60 --set retry_timeout=20 --force
   ```
 
-- **With one application node left, drop the nginx spill-over.** PostgreSQL remains the only runtime state source; readiness drains a node that cannot reach it.
+- **With one application node left, drop the nginx spill-over.** With no application on the peer, spilling over only makes a timed-out request fail a second time (see 4.6).
 - **Going back to two members, in order:** restore the third etcd vote. Remove the machines that are gone from the configuration: `ETCD_HOSTS` and `PEER_CIDRS` in each node's `node.env`, `BACKUP_HOSTS` and `WAL_ARCHIVE_DSN` in the arbiter's `backup.env`. Turn `failsafe_mode` off. Only then start the second member. A member that runs no CliRelay gets `NOFAILOVER=true` and `NOSYNC=true` in its `node.env`, so the primary never lands where every query crosses the network.
 
 The `Risks` section of `deploy/cluster/bin/cluster-status.sh` flags both dangerous combinations: failsafe on with more than one member, and fewer than three etcd members with failsafe off.
 
-What happened on 2026-09-28 (UTC+8; single etcd vote, failsafe on, synchronous replication on): hk-relay, offline for three days after running out of traffic, booted and rejoined the cluster on its own. At 01:46 n43 lost its local etcd, the failsafe call to hk-relay timed out, and n43 demoted itself. hk-relay was primary for about nine hours, so every query from CliRelay on n43 crossed the network. n43 took the primary back at 10:43, then restarted twice more for the same reason, at 10:49 and 11:06. Meanwhile every commit waited for hk-relay, and the application's calls to the shared runtime state on hk-relay kept timing out. Removing hk-relay as described above restored service; the WAL showed that no committed transaction was lost.
+What happened on 2026-09-28 (UTC+8; single etcd vote, failsafe on, synchronous replication on): hk-relay, offline for three days after running out of traffic, booted and rejoined the cluster on its own. At 01:46 n43 lost its local etcd, the failsafe call to hk-relay timed out, and n43 demoted itself. hk-relay was primary for about nine hours, so every query from CliRelay on n43 crossed the network. n43 took the primary back at 10:43, then restarted twice more for the same reason, at 10:49 and 11:06. Meanwhile every commit waited for hk-relay, and the application's queries to the remote primary kept timing out. Removing hk-relay as described above restored service; the WAL showed that no committed transaction was lost.
 
 ## 6. How the application stays correct across nodes
 
@@ -377,7 +377,7 @@ In cluster mode all nodes share one database. Every piece of state that used to 
   - Session-level TCP keepalives release it within about 30 s when the leader's machine vanishes, instead of Linux's roughly 2-hour default.
   - Leader-only work: account status probes, the OpenRouter price sync, shared-table log maintenance and retention, the usage rollup catch-up, session and audit cleanup, IP-rule cleanup, expiry of OAuth sessions and async jobs, and warmup scheduling.
 - **Membership.** `cluster_nodes` receives a heartbeat every 5 s. `GET /v0/management/cluster` lists the nodes, the leader and the active count, and every response carries `X-CliRelay-Node`.
-- **Node snapshots.** Each heartbeat also stores the node's resource snapshot (`internal/nodemetrics`, taken every 5 s) in the `snapshot` column, and `GET /v0/management/cluster` returns it on every node (`snapshot`, `snapshot_at`); `GET /v0/management/config` declares `capabilities.node-metrics` so the panel shows the node view only on builds that have it. It holds host CPU split into running (`busy_cores`) and stolen (`steal_cores`) time from `/proc/stat`, load, memory, the slot's cgroup quota, usage and throttling (`cpu.stat`, `cpu.max`, `memory.current/high/max`), in-flight requests, requests and bytes over the last minute, the egress breaker, the PostgreSQL round trip, the version and the start time. CPU figures (host and cgroup) are averaged over about the last 30 s, since one 5-second step jumps around. Host CPU is read from `/proc/stat` because on a kernel without `CONFIG_PARAVIRT_TIME_ACCOUNTING` the cgroup and process CPU include steal. A single node writes nothing to the table but reports its own snapshot the same way. Fields that cannot be read (another OS, a cgroup v1 host) are left out. Since 2026-11-17 the snapshot also has `disks` (the filesystems the process writes to) and, on the leader only, `database` (the PostgreSQL server); hosts without a node report through `cluster_hosts` (see 4.10).
+- **Node snapshots.** Each heartbeat also stores the node's resource snapshot (`internal/nodemetrics`, taken every 5 s) in the `snapshot` column, and `GET /v0/management/cluster` returns it on every node (`snapshot`, `snapshot_at`); `GET /v0/management/config` declares `capabilities.node-metrics` so the panel shows the node view only on builds that have it. It holds host CPU split into running (`busy_cores`) and stolen (`steal_cores`) time from `/proc/stat`, load, memory, the slot's cgroup quota, usage and throttling (`cpu.stat`, `cpu.max`, `memory.current/high/max`), in-flight requests, requests and bytes over the last minute, the egress breaker, the database round trip, the version and the start time. CPU figures (host and cgroup) are averaged over about the last 30 s, since one 5-second step jumps around. Limits are cluster-wide while the cluster database is reachable. Host CPU is read from `/proc/stat` because on a kernel without `CONFIG_PARAVIRT_TIME_ACCOUNTING` the cgroup and process CPU include steal. A single node writes nothing to the table but reports its own snapshot the same way. Fields that cannot be read (another OS, a cgroup v1 host) are left out. Since 2026-11-17 the snapshot also has `disks` (the filesystems the process writes to) and, on the leader only, `database` (the PostgreSQL server); hosts without a node report through `cluster_hosts` (see 4.10).
 - **Migration lock.** Migrations, YAML imports and backfills run under a cluster-wide advisory lock, so two nodes upgrading together never race.
 
 ### 6.2 Credentials (OAuth accounts)
@@ -417,14 +417,19 @@ In cluster mode all nodes share one database. Every piece of state that used to 
 
 ### 6.5 Global limits, cooldown sharing and session affinity
 
-These use the shared PostgreSQL runtime:
+These are cluster-wide caps. They run on the cluster database:
 
-- **Rate limits.** API-key and end-user RPM, TPM and concurrency, and upstream-account concurrency, are cluster-wide caps backed by PostgreSQL transactions and advisory locks. Concurrency slots are leases, so a crashed process frees them when they expire.
-- **Without PostgreSQL.** Readiness fails and the node drains instead of serving with split-brain limits.
+- **Rate limits.** API-key and end-user RPM, TPM and concurrency, and upstream-account concurrency, are cluster-wide. Concurrency slots are leases, so a crashed process frees them when they expire.
+- **Without the cluster database.** When it is not usable, nodes count locally and enforce `limit / active nodes`, so an outage never multiplies a limit.
 - **Cooldowns.** A node that cools down an account or model after a 429, an exhausted quota or an upstream failure announces it. Peers only ever extend their own cooldown, so the other node stops hitting that account too.
 - **Session affinity.** A session is bound to the same account on every node, so the upstream prompt cache keeps hitting.
 - **Synthetic session IDs** are minted once per cluster, with unchanged formats.
 - **Security counters.** Login-throttle and IP auto-ban counters are shared.
+
+The counter decisions are made in Go on a snapshot and written back with compare-and-swap, so a node that loses a race re-reads and retries rather than dropping an increment. Two consequences are worth knowing:
+
+- **Slot taking stays one statement.** The scarcity decision, "is there room for one more concurrent request", is a single SQL statement, so two nodes can never both take the last slot.
+- **Contended buckets cost retries.** A login-throttle or auto-ban bucket is one row, so a guessing run against one account is the worst case. The retry loop is bounded and the node-local counters still answer, with the full threshold, if a bucket stays contended.
 
 ### 6.6 Serving through database switchovers
 

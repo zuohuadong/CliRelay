@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	internalxai "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/xai"
+	internalxai "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/xai"
 )
 
 func TestRecordFromTokenStorageBuildsPersistableRecord(t *testing.T) {
@@ -28,9 +28,8 @@ func TestRecordFromTokenStorageBuildsPersistableRecord(t *testing.T) {
 	if record == nil {
 		t.Fatal("RecordFromTokenStorage() = nil")
 	}
-	wantFileName := internalxai.CredentialFileName(storage.Email, storage.Subject)
-	if record.ID != wantFileName || record.FileName != wantFileName {
-		t.Fatalf("ID/FileName = %q/%q, want %s", record.ID, record.FileName, wantFileName)
+	if record.ID != "xai-user@example.com.json" || record.FileName != "xai-user@example.com.json" {
+		t.Fatalf("ID/FileName = %q/%q, want xai-user@example.com.json", record.ID, record.FileName)
 	}
 	if record.Provider != "xai" || record.Label != "user@example.com" || record.Storage != storage {
 		t.Fatalf("provider/label/storage = %q/%q/%#v", record.Provider, record.Label, record.Storage)

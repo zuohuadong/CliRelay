@@ -79,6 +79,7 @@ func BuildUpdatePlan(check *CheckResponse) *protocol.Plan {
 				// --no-deps keeps compose from restarting the database underneath a
 				// running application when only the application image changed.
 				NoDeps:         true,
+				RemoveOrphans:  true,
 				WaitHealthy:    true,
 				TimeoutSeconds: applicationWaitTimeoutSeconds,
 				Weight:         3,

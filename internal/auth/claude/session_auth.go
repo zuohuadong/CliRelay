@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 )
 
 // Authorizing with a claude.ai browser session.
@@ -99,10 +99,7 @@ func (o *ClaudeAuth) AuthorizeWithSessionKey(ctx context.Context, sessionKey str
 	if err != nil {
 		return nil, org, err
 	}
-	// The session authorize response already carries the account identity. Keep
-	// this flow to its two session endpoints plus token exchange; the native
-	// browser flow's advisory Anthropic profile lookup is not needed here.
-	bundle, err := o.exchangeCodeForTokensWithRedirectURI(ctx, code, state, pkceCodes, PlatformRedirectURI, false)
+	bundle, err := o.ExchangeCodeForTokensWithRedirectURI(ctx, code, state, pkceCodes, PlatformRedirectURI)
 	if err != nil {
 		return nil, org, err
 	}

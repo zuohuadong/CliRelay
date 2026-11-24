@@ -6,12 +6,12 @@ import (
 	"sort"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexclientver"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexclientver"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -141,6 +141,15 @@ func Warm(ctx context.Context, auth *coreauth.Auth, cfg *config.Config, tenantID
 // tenantRuntimeConfig builds a tenant's configuration. Tests replace it to see
 // which tenant a fetch was configured for without a database.
 var tenantRuntimeConfig = usage.BuildTenantRuntimeConfig
+
+// SetTenantConfigForTest makes CredentialConfig build tenant configurations with
+// build and returns a func restoring the real builder. Other packages' tests use it
+// to see which configuration a credential's fetch ran with, without a database.
+func SetTenantConfigForTest(build func(base *config.Config, tenantID string) config.Config) func() {
+	previous := tenantRuntimeConfig
+	tenantRuntimeConfig = build
+	return func() { tenantRuntimeConfig = previous }
+}
 
 // CredentialConfig returns the configuration a credential's own requests run
 // with: its tenant's, not the system's.

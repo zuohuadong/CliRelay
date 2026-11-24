@@ -42,10 +42,7 @@ func TestClaudeToCodexNoneAndParallel(t *testing.T) {
 					}
 					in += `}`
 					raw := []byte(in)
-					out, err := ConvertClaudeRequestToCodex("gpt-6-astra", raw, stream)
-					if err != nil {
-						t.Fatal(err)
-					}
+					out := ConvertClaudeRequestToCodex("gpt-6-astra", raw, stream)
 					if string(raw) != in {
 						t.Fatal("input mutated")
 					}
@@ -87,10 +84,7 @@ func TestClaudeToCodexDisableParallelForForcedChoices(t *testing.T) {
 	// This first fix preserves the single-call restriction even for choice modes
 	// whose force/named mapping still needs a separate compatibility fix.
 	for _, choice := range []string{`{"type":"any","disable_parallel_tool_use":true}`, `{"type":"tool","name":"a","disable_parallel_tool_use":true}`} {
-		out, err := ConvertClaudeRequestToCodex("m", []byte(`{"tools":[{"name":"a","input_schema":{"type":"object","properties":{}}}],"tool_choice":`+choice+`}`), false)
-		if err != nil {
-			t.Fatal(err)
-		}
+		out := ConvertClaudeRequestToCodex("m", []byte(`{"tools":[{"name":"a","input_schema":{"type":"object","properties":{}}}],"tool_choice":`+choice+`}`), false)
 		if gjson.GetBytes(out, "parallel_tool_calls").Raw != "false" {
 			t.Fatalf("parallel restriction lost: %s", out)
 		}

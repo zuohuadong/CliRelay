@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
 
 type quotaProbeExecutorStub struct {
@@ -293,7 +293,7 @@ func TestManagerClearQuotaStatus_ClearsAuthAndModelRuntimeQuota(t *testing.T) {
 	if updated.Status != StatusActive {
 		t.Fatalf("auth.Status = %q, want %q", updated.Status, StatusActive)
 	}
-	if updated.StatusMessage != "" || updated.Unavailable || !updated.NextRetryAfter.IsZero() || updated.LastError != nil || updated.Quota.IsZero() {
+	if updated.StatusMessage != "" || updated.Unavailable || !updated.NextRetryAfter.IsZero() || updated.LastError != nil || updated.Quota != (QuotaState{}) {
 		t.Fatalf("auth quota runtime state was not cleared: %#v", updated)
 	}
 	state := updated.ModelStates["gpt-5-codex"]
@@ -303,7 +303,7 @@ func TestManagerClearQuotaStatus_ClearsAuthAndModelRuntimeQuota(t *testing.T) {
 	if state.Status != StatusActive {
 		t.Fatalf("state.Status = %q, want %q", state.Status, StatusActive)
 	}
-	if state.StatusMessage != "" || state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota.IsZero() {
+	if state.StatusMessage != "" || state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{}) {
 		t.Fatalf("model quota runtime state was not cleared: %#v", state)
 	}
 }
@@ -339,7 +339,7 @@ func TestManagerClearQuotaStatus_ClearsUnauthorizedWithoutQuotaState(t *testing.
 	if updated.Status != StatusActive || updated.StatusMessage != "" || updated.LastError != nil {
 		t.Fatalf("auth error state was not cleared: %#v", updated)
 	}
-	if updated.Unavailable || !updated.NextRetryAfter.IsZero() || !updated.NextRefreshAfter.IsZero() || updated.Quota.IsZero() {
+	if updated.Unavailable || !updated.NextRetryAfter.IsZero() || !updated.NextRefreshAfter.IsZero() || updated.Quota != (QuotaState{}) {
 		t.Fatalf("auth retry state was not cleared: %#v", updated)
 	}
 	if blocked, reason, next := isAuthBlockedForModel(updated, "grok-4.5", time.Now()); blocked {
@@ -388,7 +388,7 @@ func TestManagerClearQuotaStatus_ClearsModelUnauthorized(t *testing.T) {
 	if state == nil {
 		t.Fatal("model state missing")
 	}
-	if state.Status != StatusActive || state.StatusMessage != "" || state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota.IsZero() {
+	if state.Status != StatusActive || state.StatusMessage != "" || state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{}) {
 		t.Fatalf("model 401 state was not cleared: %#v", state)
 	}
 	if blocked, reason, retryAt := isAuthBlockedForModel(updated, "grok-4.5", time.Now()); blocked {
@@ -509,7 +509,7 @@ func TestManagerClearQuotaStatus_PreservesStatusDisabled(t *testing.T) {
 	if !updated.Disabled || updated.Status != StatusDisabled || updated.StatusMessage != "manually disabled" {
 		t.Fatalf("disabled auth status changed: disabled=%v status=%q message=%q", updated.Disabled, updated.Status, updated.StatusMessage)
 	}
-	if updated.Unavailable || !updated.NextRetryAfter.IsZero() || !updated.NextRefreshAfter.IsZero() || updated.LastError != nil || updated.Quota.IsZero() {
+	if updated.Unavailable || !updated.NextRetryAfter.IsZero() || !updated.NextRefreshAfter.IsZero() || updated.LastError != nil || updated.Quota != (QuotaState{}) {
 		t.Fatalf("disabled auth quota runtime state was not cleared: %#v", updated)
 	}
 	state := updated.ModelStates["gpt-5-codex"]
@@ -519,7 +519,7 @@ func TestManagerClearQuotaStatus_PreservesStatusDisabled(t *testing.T) {
 	if state.Status != StatusDisabled || state.StatusMessage != "model disabled" {
 		t.Fatalf("disabled model status changed: status=%q message=%q", state.Status, state.StatusMessage)
 	}
-	if state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota.IsZero() {
+	if state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{}) {
 		t.Fatalf("disabled model quota runtime state was not cleared: %#v", state)
 	}
 }

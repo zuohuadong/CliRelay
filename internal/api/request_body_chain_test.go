@@ -9,11 +9,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/bodyutil"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-	sdkhandlers "github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	sdkhandlers "github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	"github.com/tidwall/gjson"
 )
 
@@ -24,16 +24,12 @@ func (chainStreamingLogWriter) NoteDroppedChunks(int)                      {}
 func (chainStreamingLogWriter) WriteStatus(int, map[string][]string) error { return nil }
 func (chainStreamingLogWriter) WriteAPIRequest([]byte) error               { return nil }
 func (chainStreamingLogWriter) WriteAPIResponse([]byte) error              { return nil }
-func (chainStreamingLogWriter) WriteAPIWebsocketTimeline([]byte) error     { return nil }
-func (chainStreamingLogWriter) WriteAPIResponseErrors([]*interfaces.ErrorMessage) error {
-	return nil
-}
-func (chainStreamingLogWriter) SetFirstChunkTimestamp(time.Time) {}
-func (chainStreamingLogWriter) Close() error                     { return nil }
+func (chainStreamingLogWriter) SetFirstChunkTimestamp(time.Time)           {}
+func (chainStreamingLogWriter) Close() error                               { return nil }
 
 type chainRequestLogger struct{}
 
-func (chainRequestLogger) LogRequest(string, string, map[string][]string, []byte, int, map[string][]string, []byte, []byte, []byte, []byte, []byte, []*interfaces.ErrorMessage, string, time.Time, time.Time) error {
+func (chainRequestLogger) LogRequest(string, string, map[string][]string, []byte, int, map[string][]string, []byte, []byte, []byte, []*interfaces.ErrorMessage, string, time.Time, time.Time) error {
 	return nil
 }
 

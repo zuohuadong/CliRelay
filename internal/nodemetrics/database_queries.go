@@ -249,7 +249,7 @@ func queryCounters(ctx context.Context, conn *sql.Conn) (*databaseCounters, erro
 }
 
 // serverVersion keeps the version number of server_version: packaged builds
-// append a suffix such as " (Debian 19.0-1.pgdg120+1)".
+// append a suffix such as " (Debian 15.19-1.pgdg120+1)".
 func serverVersion(v string) string {
 	v = strings.TrimSpace(v)
 	if head, _, found := strings.Cut(v, " "); found {

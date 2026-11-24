@@ -15,7 +15,11 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: kittors/clirelay
+  # Published under the repository's own owner: kittors/clirelay in the
+  # upstream repository, zuohuadong/clirelay in the fork. A fork push cannot
+  # write into the upstream namespace (GHCR answers permission_denied), so the
+  # image name must not be hardcoded to one owner.
+  IMAGE_NAME: ${{ github.repository_owner }}/clirelay
 
 jobs:
   build-and-push:
@@ -82,10 +86,11 @@ jobs:
           tags: |
             type=raw,value=latest,enable=${{ github.ref_name == 'main' || github.ref_type == 'tag' }}
             type=raw,value=main,enable=${{ github.ref_name == 'main' }}
-            type=raw,value=dev,enable=${{ github.ref_name == 'dev' }}
             type=ref,event=tag
             type=raw,value=${{ github.ref_name }}-${{ steps.build_meta.outputs.backend_short }}
             type=sha,prefix=
+            # The 8-digit date tag: every publish stays addressable as YYYYMMDD,
+            # which is what the deployments pin to.
             type=raw,value={{date 'YYYYMMDD'}}
 
       - name: Get build date

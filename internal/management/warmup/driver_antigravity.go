@@ -5,11 +5,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
 
 // AntigravityDriver handles quota warmup for Antigravity accounts.
@@ -72,7 +72,7 @@ func (d *AntigravityDriver) ExecuteWarmup(ctx context.Context, auth *coreauth.Au
 	}
 
 	execCtx := warmupContext(ctx, auth)
-	stream, err := d.executor.ExecuteStream(execCtx, auth, execReq, opts)
+	execResp, err := d.executor.Execute(execCtx, auth, execReq, opts)
 	res.Latency = time.Since(start)
 
 	if err != nil {
@@ -87,18 +87,9 @@ func (d *AntigravityDriver) ExecuteWarmup(ctx context.Context, auth *coreauth.Au
 		}
 		return res, nil
 	}
-	if stream != nil {
-		for chunk := range stream.Chunks {
-			if chunk.Err != nil {
-				res.Success = false
-				res.ErrorMessage = chunk.Err.Error()
-				res.StatusCode = 500
-				return res, nil
-			}
-		}
-	}
 
 	res.Success = true
 	res.StatusCode = 200
+	_ = execResp
 	return res, nil
 }

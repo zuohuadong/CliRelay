@@ -278,10 +278,14 @@ func TestDeployWorkflowProbesEachNodeAcrossItsDrain(t *testing.T) {
 	}
 
 	docker := workflowJob(t, wf, "docker")
-	publicIndex, public := workflowStep(t, docker, "Verify public endpoint after rollout")
-	triggerIndex, _ := workflowStep(t, docker, "Trigger dev Docker image build")
-	if publicIndex >= triggerIndex || !strings.Contains(public.Run, "./scripts/gha-node-verify.sh public") {
-		t.Fatalf("an unpinned public probe must pass before the image build is triggered")
+	_, public := workflowStep(t, docker, "Verify public endpoint after rollout")
+	if !strings.Contains(public.Run, "./scripts/gha-node-verify.sh public") {
+		t.Fatalf("the rollout must be verified through the public endpoint")
+	}
+	for _, step := range docker.Steps {
+		if strings.Contains(step.Name, "Docker image build") {
+			t.Fatalf("the deploy workflow must not dispatch a second image build; pushing main publishes it")
+		}
 	}
 
 	data, err := os.ReadFile("scripts/gha-node-verify.sh")

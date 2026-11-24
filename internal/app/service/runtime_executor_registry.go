@@ -5,14 +5,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
-	internalusage "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/wsrelay"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/synthesizer"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/wsrelay"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -565,13 +565,6 @@ func RegisterExecutorForAuth(coreManager *coreauth.Manager, base *config.Config,
 			rememberTenantProxyPool(tenantID, cfg.ProxyPool)
 		}
 	}
-	registerCompat := func(provider string) {
-		provider = strings.ToLower(strings.TrimSpace(provider))
-		if provider == "" {
-			provider = "openai-compatibility"
-		}
-		register(executor.NewOpenAICompatExecutor(provider, cfg))
-	}
 	if strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
 		if !forceReplace {
 			existingExecutor, hasExecutor := coreManager.ExecutorForTenant(tenantID, "codex")
@@ -603,7 +596,7 @@ func RegisterExecutorForAuth(coreManager *coreauth.Manager, base *config.Config,
 	case "vertex":
 		register(executor.NewGeminiVertexExecutor(cfg))
 	case "gemini-cli":
-		registerCompat("gemini-cli")
+		register(executor.NewGeminiCLIExecutor(cfg))
 	case "aistudio":
 		if gateway != nil {
 			relay, _ := gateway.RelayValue().(*wsrelay.Manager)
@@ -617,21 +610,24 @@ func RegisterExecutorForAuth(coreManager *coreauth.Manager, base *config.Config,
 	case "claude":
 		register(executor.NewClaudeExecutor(cfg))
 	case "bedrock":
-		registerCompat("bedrock")
+		register(executor.NewBedrockExecutor(cfg))
 	case "opencode-go":
-		registerCompat("opencode-go")
+		register(executor.NewOpenCodeGoExecutor(cfg))
 	case "ollama-cloud":
 		register(executor.NewOllamaCloudExecutor(cfg))
 	case "qwen":
-		registerCompat("qwen")
+		register(executor.NewQwenExecutor(cfg))
 	case "iflow":
-		registerCompat("iflow")
+		register(executor.NewIFlowExecutor(cfg))
 	case "kimi":
 		register(executor.NewKimiExecutor(cfg))
 	case "xai":
 		register(executor.NewXAIExecutor(cfg))
 	case "minimax":
-		register(executor.NewMiniMaxExecutor(cfg))
+		// Chat is delegated to the compatibility path; the dedicated executor
+		// exists so image models have a credential pool that can actually serve
+		// them.
+		register(executor.NewMiniMaxExecutor(strings.ToLower(strings.TrimSpace(auth.Provider)), cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
 		if providerKey == "" {

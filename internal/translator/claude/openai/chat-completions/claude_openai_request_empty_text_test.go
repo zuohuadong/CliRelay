@@ -37,11 +37,7 @@ func TestConvertOpenAIRequestToClaude_SkipsEmptyTextParts(t *testing.T) {
 		]
 	}`)
 
-	body, err := ConvertOpenAIRequestToClaude("claude-sonnet-5-5", input, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	msgs := gjson.GetBytes(body, "messages").Array()
+	msgs := gjson.GetBytes(ConvertOpenAIRequestToClaude("claude-sonnet-5-5", input, false), "messages").Array()
 	if len(msgs) != 4 {
 		t.Fatalf("got %d messages, want 4", len(msgs))
 	}
@@ -66,11 +62,7 @@ func TestConvertOpenAIRequestToClaude_SkipsEmptySystemTextParts(t *testing.T) {
 		]
 	}`)
 
-	body, err := ConvertOpenAIRequestToClaude("claude-sonnet-5-5", input, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	system := gjson.GetBytes(body, "messages.0")
+	system := gjson.GetBytes(ConvertOpenAIRequestToClaude("claude-sonnet-5-5", input, false), "messages.0")
 	if got := claudeContentTypes(system); got != "text" || system.Get("content.0.text").String() != "Be brief." {
 		t.Fatalf("system message = %s, want only the \"Be brief.\" text block", system.Raw)
 	}

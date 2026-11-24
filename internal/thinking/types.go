@@ -1,13 +1,10 @@
 // Package thinking provides unified thinking configuration processing.
 //
 // This package offers a unified interface for parsing, validating, and applying
-// thinking configurations across various AI providers (Claude, Gemini, OpenAI, Codex, Antigravity, Kimi, xAI).
+// thinking configurations across various AI providers (Claude, Gemini, OpenAI, iFlow).
 package thinking
 
-import (
-	"github.com/MoeForge/moego/ojson"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-)
+import "github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 
 // ThinkingMode represents the type of thinking configuration mode.
 type ThinkingMode int
@@ -57,8 +54,7 @@ const (
 	LevelHigh ThinkingLevel = "high"
 	// LevelXHigh sets extra-high thinking effort
 	LevelXHigh ThinkingLevel = "xhigh"
-	// LevelMax sets maximum thinking effort.
-	// This is currently used by Claude 4.6 adaptive thinking (opus supports "max").
+	// LevelMax sets the maximum upstream-supported thinking effort
 	LevelMax ThinkingLevel = "max"
 )
 
@@ -84,12 +80,18 @@ type ThinkingConfig struct {
 //
 // A thinking suffix is specified in the format model-name(value), where value
 // can be a numeric budget (e.g., "16384") or a level name (e.g., "high").
+//
+// Trailing [...] context window markers (e.g., "[1M]", "[128K]") are stripped
+// from ModelName before thinking suffix parsing. These markers do not set
+// HasSuffix and have no RawSuffix value.
 type SuffixResult struct {
-	// ModelName is the model name with the suffix removed.
-	// If no suffix was found, this equals the original input.
+	// ModelName is the model name with any trailing [...] marker and/or
+	// (thinking-suffix) removed. If no suffix or marker was found, this
+	// equals the original input (with trailing [...] stripped if present).
 	ModelName string
 
-	// HasSuffix indicates whether a valid suffix was found.
+	// HasSuffix indicates whether a valid (thinking-suffix) was found.
+	// Trailing [...] markers do not set HasSuffix.
 	HasSuffix bool
 
 	// RawSuffix is the content inside the parentheses, without the parentheses.
@@ -119,11 +121,4 @@ type ProviderApplier interface {
 	//   - Modified request body JSON
 	//   - ThinkingError if the configuration is invalid or unsupported
 	Apply(body []byte, config ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error)
-}
-
-// ProviderDocApplier extends ProviderApplier to mutate an *ojson.Doc in place
-// without intermediate byte-slice serialization.
-type ProviderDocApplier interface {
-	ProviderApplier
-	ApplyDoc(doc *ojson.Doc, config ThinkingConfig, modelInfo *registry.ModelInfo) error
 }

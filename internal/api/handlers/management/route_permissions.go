@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 )
 
 // ManagementRequestPermission returns the RBAC permission for a management
@@ -208,7 +208,9 @@ func permissionForManagementRequest(method, path string) string {
 			return "api_keys.write"
 		}
 		return "api_keys.read"
-	case strings.HasPrefix(relative, "/model"), strings.Contains(relative, "model-"):
+	// Pricing resync jobs recompute request costs after a model price edit: the
+	// same people who price models read their progress.
+	case strings.HasPrefix(relative, "/model"), strings.Contains(relative, "model-"), relative == "/pricing-resync-jobs":
 		if write {
 			return "models.write"
 		}
@@ -313,6 +315,12 @@ func permissionForManagementRequest(method, path string) string {
 	// thresholds. Sending a test message is a POST, so it takes the write
 	// permission: it makes the server call out to an address the caller chose.
 	case relative == "/alerts" || strings.HasPrefix(relative, "/alerts/"):
+		if write {
+			return "tenant_settings.write"
+		}
+		return "tenant_settings.read"
+	// Portal billing configuration, plans, target bindings and payment orders are tenant-scoped.
+	case relative == "/billing" || strings.HasPrefix(relative, "/billing/"):
 		if write {
 			return "tenant_settings.write"
 		}

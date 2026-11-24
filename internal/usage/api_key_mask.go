@@ -125,7 +125,7 @@ func maskedKeyLabelForFacet(stored string) string {
 
 // statsBucketKey names the in-memory statistics bucket of a request. A key is
 // aggregated under its stable id so counters survive a secret rotation and the
-// snapshot (served by /usage and exported) never carries a
+// snapshot (served by /usage, exported, mirrored to the database) never carries a
 // secret. Requests that carry no key keep their route or provider label.
 func statsBucketKey(apiKey, apiKeyID string) string {
 	apiKey = strings.TrimSpace(apiKey)
@@ -140,7 +140,7 @@ func statsBucketKey(apiKey, apiKeyID string) string {
 
 // snapshotBucketKey maps a bucket name of an imported or restored statistics
 // snapshot onto the scheme of statsBucketKey. Snapshots written before buckets
-// were keyed by id (legacy exports) are named after the client
+// were keyed by id (older exports) are named after the client
 // secret; it is resolved to the key's id here and never kept.
 func snapshotBucketKey(name string) string {
 	name = strings.TrimSpace(name)

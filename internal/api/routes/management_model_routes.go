@@ -2,7 +2,7 @@ package routes
 
 import (
 	"github.com/gin-gonic/gin"
-	managementhandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	managementhandlers "github.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management"
 )
 
 func registerManagementModelRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {
@@ -46,4 +46,6 @@ func registerManagementModelRoutes(group *gin.RouterGroup, h *managementhandlers
 	group.PUT("/codex-oauth-admission", h.PutCodexOAuthAdmission)
 	group.GET("/model-pricing", models.GetModelPricing)
 	group.PUT("/model-pricing", models.PutModelPricing)
+	// Recomputations of logged request costs after a price change.
+	group.GET("/pricing-resync-jobs", models.GetPricingResyncJobs)
 }

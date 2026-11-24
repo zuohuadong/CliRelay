@@ -3,12 +3,11 @@ package claude
 import (
 	"strings"
 
-	"github.com/MoeForge/moego/ojson"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/common"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -79,7 +78,7 @@ func convertClaudeRequestToAntigravityReference(modelName string, inputRawJSON [
 					contentTypeResult := contentResult.Get("type")
 					if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "thinking" {
 						// Use GetThinkingText to handle wrapped thinking objects
-						thinkingText := thinking.GetThinkingText(ojson.Parse(contentResult.Raw))
+						thinkingText := thinking.GetThinkingText(contentResult)
 
 						// Always try cached signature first (more reliable than client-provided)
 						// Client may send stale or invalid signatures from different sessions

@@ -17,8 +17,8 @@ set -euo pipefail
 LAB_DIR="${LAB_DIR:-/opt/clirelay-cluster/lab}"
 NET=clab
 SUBNET=172.30.77.0/24
-PG_IMAGE="${PG_IMAGE:-postgres:19.0-alpine}"
-HA_IMAGE="${HA_IMAGE:-clirelay/postgres-ha:19.0-patroni4.1.5}"
+PG_IMAGE="${PG_IMAGE:-postgres:15.19-alpine3.24}"
+HA_IMAGE="${HA_IMAGE:-clirelay/postgres-ha:15.19-patroni4.1.5}"
 ETCD_IMAGE="${ETCD_IMAGE:-quay.io/coreos/etcd:v3.6.15}"
 # Lab passwords are generated once and reused by later sub-commands
 # (join/psql), otherwise a joining member would carry a different password.

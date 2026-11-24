@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -17,19 +17,6 @@ import (
 //   - cfg: The application configuration containing proxy and auth directory settings
 //   - options: Login options including browser behavior settings
 func DoKimiLogin(cfg *config.Config, options *LoginOptions) {
-	doKimiLoginWithProvider(cfg, options, "kimi", "Kimi")
-}
-
-// DoKimiAILogin triggers the OAuth device flow for Kimi.ai (Moonshot AI) and saves tokens.
-//
-// Parameters:
-//   - cfg: The application configuration containing proxy and auth directory settings
-//   - options: Login options including browser behavior settings
-func DoKimiAILogin(cfg *config.Config, options *LoginOptions) {
-	doKimiLoginWithProvider(cfg, options, "kimi-ai", "Kimi.ai")
-}
-
-func doKimiLoginWithProvider(cfg *config.Config, options *LoginOptions, provider string, displayName string) {
 	if options == nil {
 		options = &LoginOptions{}
 	}
@@ -39,12 +26,11 @@ func doKimiLoginWithProvider(cfg *config.Config, options *LoginOptions, provider
 		NoBrowser: options.NoBrowser,
 		Metadata:  map[string]string{},
 		Prompt:    options.Prompt,
-		ProxyURL:  options.ProxyURL,
 	}
 
-	record, savedPath, err := manager.Login(context.Background(), provider, cfg, authOpts)
+	record, savedPath, err := manager.Login(context.Background(), "kimi", cfg, authOpts)
 	if err != nil {
-		log.Errorf("%s authentication failed: %v", displayName, err)
+		log.Errorf("Kimi authentication failed: %v", err)
 		return
 	}
 
@@ -54,5 +40,5 @@ func doKimiLoginWithProvider(cfg *config.Config, options *LoginOptions, provider
 	if record != nil && record.Label != "" {
 		fmt.Printf("Authenticated as %s\n", record.Label)
 	}
-	fmt.Printf("%s authentication successful!\n", displayName)
+	fmt.Println("Kimi authentication successful!")
 }

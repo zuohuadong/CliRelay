@@ -54,7 +54,7 @@ write_compose_file() {
 	cat > "$COMPOSE_FILE" <<'EOF'
 services:
   postgres:
-    image: ${CLIRELAY_POSTGRES_IMAGE:-postgres:19-alpine}
+    image: ${CLIRELAY_POSTGRES_IMAGE:-postgres:15-alpine}
     environment:
       POSTGRES_DB: ${CLIRELAY_POSTGRES_DB:-cliproxy}
       POSTGRES_USER: ${CLIRELAY_POSTGRES_USER:-cliproxy}

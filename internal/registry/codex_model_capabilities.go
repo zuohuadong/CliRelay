@@ -150,24 +150,9 @@ func getGPT56ModelDefinitions() []*ModelInfo {
 }
 
 func getGPT6ModelDefinitions() []*ModelInfo {
-	modelIDs := []string{"gpt-6-astra", "gpt-6-astra-pro", "gpt-6-sol", "gpt-6.1-sol"}
+	modelIDs := []string{"gpt-6-astra", "gpt-6-astra-pro"}
 	models := make([]*ModelInfo, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
-		if modelID == "gpt-6-sol" || modelID == "gpt-6.1-sol" {
-			models = append(models, &ModelInfo{
-				ID:                  modelID,
-				Object:              "model",
-				OwnedBy:             "openai",
-				Type:                "openai",
-				Version:             modelID,
-				DisplayName:         modelID,
-				ContextLength:       272000,
-				MaxCompletionTokens: 128000,
-				SupportedParameters: []string{"tools"},
-				Thinking:            &ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh", "max"}},
-			})
-			continue
-		}
 		capability, _ := GetCodexModelCapability(modelID)
 		models = append(models, &ModelInfo{
 			ID:                  capability.ModelID,

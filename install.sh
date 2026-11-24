@@ -14,7 +14,7 @@ C_BG_BLUE='\033[44m'; C_BG_GREEN='\033[42m'; C_BG_RED='\033[41m'
 
 SYM_OK="✓"; SYM_FAIL="✗"; SYM_ARROW="→"; SYM_DOT="·"; SYM_STAR="★"
 
-DOCKER_IMAGE_DEFAULT="ghcr.io/kittors/clirelay:latest"
+DOCKER_IMAGE_DEFAULT="ghcr.io/zuohuadong/clirelay:latest"
 CONTAINER_NAME="clirelay"
 DEFAULT_PORT=8317
 TOTAL_STEPS=6
@@ -502,8 +502,8 @@ remote-management:
 auto-update:
   enabled: true
   channel: main
-  repository: https://github.com/kittors/CliRelay
-  docker-image: ghcr.io/kittors/clirelay
+  repository: https://github.com/zuohuadong/CliRelay
+  docker-image: ghcr.io/zuohuadong/clirelay
   updater-url: http://clirelay-updater:8320
 
 auth-dir: "/root/.cli-proxy-api"
@@ -623,7 +623,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:19-alpine
+    image: postgres:15-alpine
     environment:
       POSTGRES_DB: ${CLIRELAY_POSTGRES_DB}
       POSTGRES_USER: ${CLIRELAY_POSTGRES_USER}
@@ -636,7 +636,6 @@ services:
       timeout: 5s
       retries: 20
     restart: unless-stopped
-
 YAML
 }
 
@@ -768,7 +767,7 @@ update_cmd() {
   load_env
   say "正在拉取最新镜像并更新服务..." "Pulling the latest image and updating the service..."
   compose pull
-  compose up -d
+  compose up -d --remove-orphans
   status_cmd
 }
 
@@ -1000,21 +999,18 @@ main() {
     if [[ "${OS_NAME}" != "Darwin" ]] && [[ -f "${INSTALL_DIR}/config.yaml" ]]; then
         chown 10001:10001 "${INSTALL_DIR}/config.yaml" || warn "Could not chown config.yaml; management config writes may require the container entrypoint to repair it."
     fi
-    if [[ "$is_update" != "true" ]]; then
-        write_env
-        write_compose
-    fi
+    write_env
+    write_compose
     install_helper_command
 
     step 4 "$(is_zh && echo "拉取 Docker 镜像" || echo "Pulling Docker image")"
-    if [[ "$is_update" == "true" ]]; then
-        compose_cmd pull
-    else
-        spin_exec "${CLI_PROXY_IMAGE:-$DOCKER_IMAGE_DEFAULT}" docker pull "${CLI_PROXY_IMAGE:-$DOCKER_IMAGE_DEFAULT}"
-    fi
+    spin_exec "${CLI_PROXY_IMAGE:-$DOCKER_IMAGE_DEFAULT}" docker pull "${CLI_PROXY_IMAGE:-$DOCKER_IMAGE_DEFAULT}"
 
     step 5 "$(is_zh && echo "启动或更新服务" || echo "Starting or updating service")"
-    compose_cmd up -d
+    if [[ "$is_update" == "true" ]]; then
+        compose_cmd down --remove-orphans 2>/dev/null || true
+    fi
+    compose_cmd up -d --remove-orphans
     if is_zh; then
         info "等待服务就绪..."
     else

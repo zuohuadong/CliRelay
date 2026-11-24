@@ -1,10 +1,11 @@
 package cliproxy
 
 import (
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v8/sdkbridge/service"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/sdkbridge/service"
 )
 
 func listOAuthProviderModelConfigRowsForTenant(tenantID string) []oauthProviderModelConfigRow {
@@ -29,7 +30,11 @@ func configureServiceAccess(cfg *config.Config, accessManager *sdkaccess.Manager
 	serviceapp.ConfigureServiceAccess(cfg, accessManager)
 }
 
-func buildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int) {
+func newDefaultAuthManager() *sdkAuth.Manager {
+	return serviceapp.NewDefaultAuthManager()
+}
+
+func buildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int, int) {
 	return serviceapp.BuildAPIKeyClients(cfg)
 }
 

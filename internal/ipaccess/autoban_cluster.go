@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedstate"
 )
 
 // Auto-ban counting across a cluster.
@@ -13,7 +13,7 @@ import (
 // Each node's engine only counts the failures that reach it, so a source
 // spreading its attempts over N nodes needed N times the threshold before any
 // node banned it. With a ClusterAutoBanStore installed failures are counted in
-// the shared PostgreSQL store, and a crossing is claimed by exactly one node, which
+// the shared store, and a crossing is claimed by exactly one node, which
 // writes the rule and sends the alert; the others treat the source as already
 // banned meanwhile. The deny rule itself lives in the shared database.
 //

@@ -2,7 +2,7 @@ package routes
 
 import (
 	"github.com/gin-gonic/gin"
-	managementhandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	managementhandlers "github.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management"
 )
 
 func registerPublicManagementRoutes(engine *gin.Engine, h *managementhandlers.Handler, opts ManagementOptions) {
@@ -33,5 +33,6 @@ func registerPublicManagementRoutes(engine *gin.Engine, h *managementhandlers.Ha
 		pub.GET("/usage/chart-data", usageLogs.GetPublicUsageChartData)
 		pub.POST("/usage/chart-data", usageLogs.GetPublicUsageChartData)
 		pub.POST("/usage/summary", h.GetPublicUsageSummary)
+		registerPublicBillingRoutes(pub, h)
 	}
 }

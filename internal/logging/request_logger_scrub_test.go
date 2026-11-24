@@ -83,8 +83,6 @@ func TestErrorLogFileIsScrubbed(t *testing.T) {
 		scrubTestAPIRequest,
 		scrubTestAPIResponse,
 		nil,
-		nil,
-		nil,
 		true,
 		"",
 		timeZero(),

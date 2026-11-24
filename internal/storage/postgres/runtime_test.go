@@ -11,11 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 52 {
-		t.Fatalf("RuntimeMigrations len = %d, want 52", len(migrations))
-	}
-	if got := migrations[51]; got.Version != "202611220001_runtime_state" {
-		t.Fatalf("runtime state migration version = %q", got.Version)
+	if len(migrations) != 56 {
+		t.Fatalf("RuntimeMigrations len = %d, want 56", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -178,6 +175,55 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 		t.Fatalf("cluster hosts migration = %q: %q", got.Version, got.SQL)
 	} else if strings.Contains(got.SQL, "cluster_nodes") || strings.Contains(got.SQL, "ALTER TABLE") || strings.Contains(got.SQL, "DROP") {
 		t.Fatalf("cluster hosts migration must only create its own table: %q", got.SQL)
+	}
+	// Client columns on request_logs: constant defaults, a catalog change on
+	// PostgreSQL 11 and later, and nothing that rewrites or indexes the rows.
+	if got := migrations[51]; got.Version != "202611180001_request_log_client" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS client_name TEXT NOT NULL DEFAULT ''") ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS client_version TEXT NOT NULL DEFAULT ''") ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS user_agent TEXT NOT NULL DEFAULT ''") {
+		t.Fatalf("request log client migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
+		t.Fatalf("request log client migration must only add columns: %q", got.SQL)
+	}
+	// One-hour cache writes: a nullable column, a catalog change that leaves the
+	// existing rows untouched.
+	if got := migrations[52]; got.Version != "202611180002_request_log_cache_write_1h" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS cache_write_1h_tokens BIGINT;") {
+		t.Fatalf("request log one-hour cache migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") || strings.Contains(got.SQL, "DEFAULT") {
+		t.Fatalf("request log one-hour cache migration must only add a nullable column: %q", got.SQL)
+	}
+	if got := migrations[53]; got.Version != "202611180003_pricing_resync_jobs" ||
+		!strings.Contains(got.SQL, "CREATE TABLE IF NOT EXISTS pricing_resync_jobs") ||
+		!strings.Contains(got.SQL, "ON pricing_resync_jobs(status, not_before)") {
+		t.Fatalf("pricing resync jobs migration = %q: %q", got.Version, got.SQL)
+	}
+	// Billing-cycle columns: additive columns on the shared status, and the
+	// one data repair limited to token snapshots already past their end. A
+	// live read (source 'probe') must never be cleared by it.
+	if got := migrations[54]; got.Version != "202611200001_ai_account_subscription_cycle" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS subscription_renews_at TIMESTAMPTZ") ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS subscription_checked_at TIMESTAMPTZ") ||
+		!strings.Contains(got.SQL, "WHERE subscription_source IN ('signed_claims', 'migration')") {
+		t.Fatalf("ai account subscription cycle migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "'probe'") || strings.Contains(got.SQL, "DROP") {
+		t.Fatalf("ai account subscription cycle migration must leave live reads alone: %q", got.SQL)
+	}
+	if got := migrations[55]; got.Version != "202611220001_portal_billing" {
+		t.Fatalf("portal billing migration version = %q", got.Version)
+	} else {
+		for _, table := range []string{
+			"CREATE TABLE IF NOT EXISTS billing_settings",
+			"CREATE TABLE IF NOT EXISTS billing_plans",
+			"CREATE TABLE IF NOT EXISTS billing_bindings",
+			"CREATE TABLE IF NOT EXISTS billing_entitlements",
+			"CREATE TABLE IF NOT EXISTS billing_orders",
+		} {
+			if !strings.Contains(got.SQL, table) {
+				t.Fatalf("portal billing migration missing %q", table)
+			}
+		}
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.

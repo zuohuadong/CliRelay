@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/translator"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -69,9 +69,7 @@ func TestGeminiFinishReasonsReachResponsesClients(t *testing.T) {
 				var param any
 				var outputs []string
 				for _, chunk := range upstream.stream(tc.reason) {
-					for _, event := range translator.Response(upstream.format, "openai-response", ctx, "m", streamRequest, streamRequest, []byte(chunk), &param) {
-						outputs = append(outputs, string(event))
-					}
+					outputs = append(outputs, translator.Response(upstream.format, "openai-response", ctx, "m", streamRequest, streamRequest, []byte(chunk), &param)...)
 				}
 				payloads := sseData(outputs)
 				terminals := 0
@@ -90,7 +88,7 @@ func TestGeminiFinishReasonsReachResponsesClients(t *testing.T) {
 			t.Run(name+"/non-stream", func(t *testing.T) {
 				var param any
 				out := translator.ResponseNonStream(upstream.format, "openai-response", ctx, "m", request, request, []byte(upstream.nonStream(tc.reason)), &param)
-				check(t, gjson.ParseBytes(out), tc.status, tc.incompleteReason)
+				check(t, gjson.Parse(out), tc.status, tc.incompleteReason)
 			})
 		}
 	}

@@ -11,11 +11,11 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v8/internal/app/service"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
-	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
+	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/internal/app/service"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
 )
 
 const configVersionContextKey = "management.config_version"
@@ -316,13 +316,16 @@ type configCapabilities struct {
 	// NodeMetrics: GET /cluster carries each node's resource snapshot
 	// (snapshot, snapshot_at), which the dashboard's node view shows.
 	NodeMetrics bool `json:"node-metrics"`
+	// Billing: the /billing routes (settings, plans, target bindings, orders,
+	// portal self-service checkout and XunhuPay webhooks).
+	Billing bool `json:"billing"`
 }
 
 func newConfigResponse(cfg *config.Config, versions map[string]int64) configResponse {
 	return configResponse{
 		Config:                 cfg,
 		RuntimeSettingVersions: versions,
-		Capabilities:           configCapabilities{PayloadRulesDryRun: true, Alerts: true, PoolCapacity: true, PrivacyMasking: true, NodeMetrics: true},
+		Capabilities:           configCapabilities{PayloadRulesDryRun: true, Alerts: true, PoolCapacity: true, PrivacyMasking: true, NodeMetrics: true, Billing: true},
 	}
 }
 

@@ -14,17 +14,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/contentmoderation"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/enduser"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
-	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota/inflight"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/billing"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -36,28 +37,24 @@ import (
 //   - cfg: The application configuration
 //   - configPath: The path to the configuration file
 //   - localPassword: Optional password accepted for local management requests
-func StartService(cfg *config.Config, configPath string, localPassword string) error {
+func StartService(cfg *config.Config, configPath string, localPassword string) {
 	loc := config.ApplyTimeZone(cfg.Timezone)
 	prepareCluster(cfg)
 	if err := withRuntimeMigrationLock(cfg, func() error { return initializeRuntimeDataStack(cfg, configPath, loc) }); err != nil {
 		log.Errorf("usage: failed to initialize runtime data stack: %v", err)
-		return err
+		return
 	}
 	defer stopRuntimeDataStack()
-	if err := usage.StartRuntimeSnapshots(); err != nil {
-		log.Errorf("usage: failed to restore runtime checkpoint: %v", err)
-		return err
-	}
 	coordinator, err := startCluster(cfg)
 	if err != nil {
 		log.Errorf("cluster: failed to join the cluster: %v", err)
-		return err
+		return
 	}
 	defer coordinator.Close()
 	stopClusterAuth, err := startClusterAuthStore(cfg)
 	if err != nil {
 		log.Errorf("cluster: failed to start the shared credential store: %v", err)
-		return err
+		return
 	}
 	defer stopClusterAuth()
 
@@ -90,16 +87,14 @@ func StartService(cfg *config.Config, configPath string, localPassword string) e
 	service, err := builder.Build()
 	if err != nil {
 		log.Errorf("failed to build proxy service: %v", err)
-		return err
+		return
 	}
 	defer closeClusterOnShutdown(runCtx, coordinator)()
 
 	err = service.Run(runCtx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Errorf("proxy service exited with error: %v", err)
-		return err
 	}
-	return nil
 }
 
 // StartServiceBackground starts the proxy service in a background goroutine
@@ -109,13 +104,6 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 	prepareCluster(cfg)
 	if err := withRuntimeMigrationLock(cfg, func() error { return initializeRuntimeDataStack(cfg, configPath, loc) }); err != nil {
 		log.Errorf("usage: failed to initialize runtime data stack: %v", err)
-		doneCh := make(chan struct{})
-		close(doneCh)
-		return func() {}, doneCh
-	}
-	if err := usage.StartRuntimeSnapshots(); err != nil {
-		log.Errorf("usage: failed to restore runtime checkpoint: %v", err)
-		stopRuntimeDataStack()
 		doneCh := make(chan struct{})
 		close(doneCh)
 		return func() {}, doneCh
@@ -235,7 +223,7 @@ func stopRuntimeDataStack() {
 	// Before the database closes: queued usage records still need it, and
 	// whatever it cannot take goes to the spool for the next start.
 	stopUsageSpool()
-	usage.CloseDB()
+	usage.StopSnapshotStore()
 }
 
 type bootstrapAdminPassword struct {
@@ -274,10 +262,16 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	if err := usage.InitPostgres(cfg.Postgres, cfg.RequestLogStorage, loc); err != nil {
 		return err
 	}
+	// The usage snapshot lives in the runtime database through
+	// internal/pgredis, so a deployment needs no second server for it.
+	if err := usage.InitPostgresSnapshot(usage.RuntimeDB()); err != nil {
+		return fmt.Errorf("usage snapshot store: %w", err)
+	}
 	bootstrapPassword := resolveBootstrapAdminPassword(cfg)
 	identityService := identity.NewService(usage.RuntimeDB())
 	enduserService := enduser.NewService(usage.RuntimeDB())
 	enduser.SetDefault(enduserService)
+	billing.SetDefaultStore(billing.NewStore(usage.RuntimeDB()))
 	if err := bootstrapIdentity(context.Background(), identityService, bootstrapPassword); err != nil {
 		return err
 	}

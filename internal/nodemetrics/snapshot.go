@@ -2,7 +2,7 @@
 // runs on are doing: host CPU split into running and stolen time, load,
 // memory, the filesystems it writes to, the process's cgroup quota, usage and
 // throttling, in-flight requests, request and byte counts, the egress
-// breaker, and the round trip to PostgreSQL. Cluster nodes
+// breaker, and the round trip to the database. Cluster nodes
 // publish the latest snapshot with their membership heartbeat so the console
 // can show every node; a single node reports its own. The leader also
 // samples the PostgreSQL server itself (DatabaseProbe), and a host without a
@@ -25,8 +25,9 @@ package nodemetrics
 import "time"
 
 // SchemaVersion is the snapshot layout. It changes when a field changes
-// meaning or goes away; new fields alone keep it.
-const SchemaVersion = 1
+// meaning or goes away; new fields alone keep it. 2 removed the Redis round
+// trip and the shared-Redis state, which left with the Redis dependency.
+const SchemaVersion = 2
 
 // Snapshot is one sample of the process and its machine.
 type Snapshot struct {
@@ -179,8 +180,6 @@ type EgressCheck struct {
 
 // RoundTrip is the latest round trip to a dependency.
 type RoundTrip struct {
-	// Role is reserved for future PostgreSQL dependency subtypes.
-	Role string `json:"role,omitempty"`
 	// RTTMillis is set when the round trip succeeded.
 	RTTMillis *float64 `json:"rtt_ms,omitempty"`
 	// Error is "timeout" or "error" when it failed. The cause stays out of

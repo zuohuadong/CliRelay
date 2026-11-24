@@ -85,10 +85,9 @@ SHUTDOWN_GRACE_SECONDS=300
 # and none of it shares the grace's deadline: in cluster mode it closes the
 # shared credential store (up to 10s); it writes the usage records still
 # queued, or spools them (up to 30s); it waits for the spool replayer's
-# current write (up to 10s); it saves the usage snapshot to PostgreSQL,
-# whose transaction timeout bounds a server that stopped answering,
-# possibly twice since the periodic save may be under way; and it stops the
-# request log maintenance, which ends within one statement. Until 2026.11.10.1
+# current write (up to 10s); it saves the usage snapshot to the runtime
+# database, possibly twice since the periodic save may be under way; and it
+# stops the request log maintenance, which ends within one statement. Until 2026.11.10.1
 # TimeoutStopSec equalled the grace, so a drain that ran out was SIGKILLed on
 # the spot and the queued usage records went with it. Not a node setting: the
 # binary's shutdown sizes it, and that is the same on every node.

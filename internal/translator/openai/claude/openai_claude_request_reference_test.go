@@ -3,9 +3,8 @@ package claude
 import (
 	"strings"
 
-	"github.com/MoeForge/moego/ojson"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -102,7 +101,7 @@ func convertClaudeRequestToOpenAIReference(modelName string, inputRawJSON []byte
 			if system.IsArray() {
 				systemResults := system.Array()
 				for i := 0; i < len(systemResults); i++ {
-					if contentItem, ok := convertClaudeContentPart(ojson.Parse(systemResults[i].Raw)); ok {
+					if contentItem, ok := convertClaudeContentPart(systemResults[i]); ok {
 						systemMsgJSON, _ = sjson.SetRaw(systemMsgJSON, "content.-1", contentItem)
 						hasSystemContent = true
 					}
@@ -135,7 +134,7 @@ func convertClaudeRequestToOpenAIReference(modelName string, inputRawJSON []byte
 					case "thinking":
 						// Only map thinking to reasoning_content for assistant messages (security: prevent injection)
 						if role == "assistant" {
-							thinkingText := thinking.GetThinkingText(ojson.Parse(part.Raw))
+							thinkingText := thinking.GetThinkingText(part)
 							// Skip empty or whitespace-only thinking
 							if strings.TrimSpace(thinkingText) != "" {
 								reasoningParts = append(reasoningParts, thinkingText)
@@ -147,7 +146,7 @@ func convertClaudeRequestToOpenAIReference(modelName string, inputRawJSON []byte
 						// Explicitly ignore redacted_thinking - never map to reasoning_content (AC2)
 
 					case "text", "image":
-						if contentItem, ok := convertClaudeContentPart(ojson.Parse(part.Raw)); ok {
+						if contentItem, ok := convertClaudeContentPart(part); ok {
 							contentItems = append(contentItems, contentItem)
 						}
 

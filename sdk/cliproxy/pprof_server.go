@@ -3,13 +3,14 @@ package cliproxy
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -18,28 +19,20 @@ type pprofServer struct {
 	server  *http.Server
 	addr    string
 	enabled bool
-	owner   uint64
 }
 
 func newPprofServer() *pprofServer {
 	return &pprofServer{}
 }
 
-func (s *Service) applyPprofConfig(cfg *config.Config) {
-	s.applyPprofConfigContext(context.Background(), cfg)
-}
-
-func (s *Service) applyPprofConfigContext(ctx context.Context, cfg *config.Config) bool {
-	if s == nil || cfg == nil || (ctx != nil && ctx.Err() != nil) {
-		return false
-	}
-	if s.applyPprofConfigContextFn != nil {
-		return s.applyPprofConfigContextFn(ctx, cfg)
+func (s *Service) applyPprofConfig(cfg *sdkconfig.Config) {
+	if s == nil || cfg == nil {
+		return
 	}
 	if s.pprofServer == nil {
 		s.pprofServer = newPprofServer()
 	}
-	return s.pprofServer.ApplyContext(ctx, cfg)
+	s.pprofServer.Apply(cfg)
 }
 
 func (s *Service) shutdownPprof(ctx context.Context) error {
@@ -49,29 +42,18 @@ func (s *Service) shutdownPprof(ctx context.Context) error {
 	return s.pprofServer.Shutdown(ctx)
 }
 
-func (p *pprofServer) Apply(cfg *config.Config) {
-	p.ApplyContext(context.Background(), cfg)
-}
-
-func (p *pprofServer) ApplyContext(ctx context.Context, cfg *config.Config) bool {
+func (p *pprofServer) Apply(cfg *sdkconfig.Config) {
 	if p == nil || cfg == nil {
-		return false
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return
 	}
 	addr := strings.TrimSpace(cfg.Pprof.Addr)
 	if addr == "" {
-		addr = config.DefaultPprofAddr
+		addr = sdkconfig.DefaultPprofAddr
 	}
+	addr = sanitizePprofAddr(addr, cfg.Pprof.AllowRemote)
 	enabled := cfg.Pprof.Enable
 
 	p.mu.Lock()
-	p.owner++
-	owner := p.owner
 	currentServer := p.server
 	currentAddr := p.addr
 	p.addr = addr
@@ -80,38 +62,22 @@ func (p *pprofServer) ApplyContext(ctx context.Context, cfg *config.Config) bool
 		p.server = nil
 		p.mu.Unlock()
 		if currentServer != nil {
-			if errStop := p.stopServerWithContext(ctx, currentServer, currentAddr, "disabled"); errStop != nil {
-				return false
-			}
+			p.stopServer(currentServer, currentAddr, "disabled")
 		}
-		return ctx.Err() == nil
+		return
 	}
 	if currentServer != nil && currentAddr == addr {
 		p.mu.Unlock()
-		return ctx.Err() == nil
+		return
 	}
 	p.server = nil
 	p.mu.Unlock()
 
 	if currentServer != nil {
-		if errStop := p.stopServerWithContext(ctx, currentServer, currentAddr, "restarted"); errStop != nil {
-			return false
-		}
-	}
-	if errContext := ctx.Err(); errContext != nil {
-		return false
+		p.stopServer(currentServer, currentAddr, "restarted")
 	}
 
-	startedServer := p.startServer(addr, owner)
-	if errContext := ctx.Err(); errContext != nil {
-		if startedServer != nil {
-			go func() {
-				_ = p.stopOwnedServerWithContext(context.Background(), startedServer, addr, "canceled", owner)
-			}()
-		}
-		return false
-	}
-	return true
+	p.startServer(addr)
 }
 
 func (p *pprofServer) Shutdown(ctx context.Context) error {
@@ -121,7 +87,6 @@ func (p *pprofServer) Shutdown(ctx context.Context) error {
 	p.mu.Lock()
 	currentServer := p.server
 	currentAddr := p.addr
-	p.owner++
 	p.server = nil
 	p.enabled = false
 	p.mu.Unlock()
@@ -132,7 +97,7 @@ func (p *pprofServer) Shutdown(ctx context.Context) error {
 	return p.stopServerWithContext(ctx, currentServer, currentAddr, "shutdown")
 }
 
-func (p *pprofServer) startServer(addr string, owner uint64) *http.Server {
+func (p *pprofServer) startServer(addr string) {
 	mux := newPprofMux()
 	server := &http.Server{
 		Addr:              addr,
@@ -141,9 +106,9 @@ func (p *pprofServer) startServer(addr string, owner uint64) *http.Server {
 	}
 
 	p.mu.Lock()
-	if !p.enabled || p.addr != addr || p.owner != owner || p.server != nil {
+	if !p.enabled || p.addr != addr || p.server != nil {
 		p.mu.Unlock()
-		return nil
+		return
 	}
 	p.server = server
 	p.mu.Unlock()
@@ -152,41 +117,17 @@ func (p *pprofServer) startServer(addr string, owner uint64) *http.Server {
 	go func() {
 		if errServe := server.ListenAndServe(); errServe != nil && !errors.Is(errServe, http.ErrServerClosed) {
 			log.Errorf("pprof server failed on %s: %v", addr, errServe)
-			p.clearFailedServer(server)
+			p.mu.Lock()
+			if p.server == server {
+				p.server = nil
+			}
+			p.mu.Unlock()
 		}
 	}()
-	return server
-}
-
-// clearFailedServer removes a failed physical server even if a same-address
-// ApplyContext transferred lifecycle ownership while ListenAndServe was starting.
-func (p *pprofServer) clearFailedServer(server *http.Server) {
-	if p == nil || server == nil {
-		return
-	}
-	p.mu.Lock()
-	if p.server == server {
-		p.server = nil
-	}
-	p.mu.Unlock()
 }
 
 func (p *pprofServer) stopServer(server *http.Server, addr string, reason string) {
 	_ = p.stopServerWithContext(context.Background(), server, addr, reason)
-}
-
-func (p *pprofServer) stopOwnedServerWithContext(ctx context.Context, server *http.Server, addr string, reason string, owner uint64) error {
-	if p == nil || server == nil {
-		return nil
-	}
-	p.mu.Lock()
-	if p.server != server || p.owner != owner {
-		p.mu.Unlock()
-		return nil
-	}
-	p.server = nil
-	p.mu.Unlock()
-	return p.stopServerWithContext(ctx, server, addr, reason)
 }
 
 func (p *pprofServer) stopServerWithContext(ctx context.Context, server *http.Server, addr string, reason string) error {
@@ -221,4 +162,35 @@ func newPprofMux() *http.ServeMux {
 	mux.Handle("/debug/pprof/mutex", pprof.Handler("mutex"))
 	mux.Handle("/debug/pprof/threadcreate", pprof.Handler("threadcreate"))
 	return mux
+}
+
+func sanitizePprofAddr(addr string, allowRemote bool) string {
+	trimmed := strings.TrimSpace(addr)
+	if trimmed == "" {
+		return sdkconfig.DefaultPprofAddr
+	}
+	if allowRemote {
+		return trimmed
+	}
+
+	host, port, err := net.SplitHostPort(trimmed)
+	if err != nil {
+		// Handle addresses like ":8316"
+		if strings.HasPrefix(trimmed, ":") {
+			return "127.0.0.1" + trimmed
+		}
+		return sdkconfig.DefaultPprofAddr
+	}
+
+	host = strings.TrimSpace(host)
+	switch host {
+	case "", "127.0.0.1", "::1", "localhost":
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		return net.JoinHostPort(host, port)
+	default:
+		log.Warnf("pprof remote bind %q requested without allow-remote; forcing loopback", trimmed)
+		return net.JoinHostPort("127.0.0.1", port)
+	}
 }

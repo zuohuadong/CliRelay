@@ -3,19 +3,42 @@ package ipaccess
 import (
 	"context"
 	"database/sql"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/postgrestest"
+	"os"
 	"testing"
+	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedstate"
+	pgredis "github.com/zuohuadong/pgredis-go"
 )
 
+// installClusterAutoBan needs a real server: the shared counters live in the
+// cluster database.
 func installClusterAutoBan(t *testing.T) *sql.DB {
 	t.Helper()
-	db, _ := postgrestest.RuntimeState(t)
-	store := sharedstate.New(db, sharedstate.Options{NodeID: "self"})
-	SetClusterAutoBanStore(store)
+	dsn := os.Getenv("PGREDIS_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGREDIS_TEST_DSN is not set")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		t.Skipf("postgres unreachable: %v", err)
+	}
+	store := pgredis.New(db, pgredis.Options{Namespace: "ipaccess-autoban-test", TablePrefix: "clirelay"})
+	if err := store.EnsureSchema(ctx); err != nil {
+		_ = db.Close()
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	SetClusterAutoBanStore(sharedstate.NewPGStore(store))
 	t.Cleanup(func() {
 		SetClusterAutoBanStore(nil)
-		store.Close()
+		_ = db.Close()
 	})
 	return db
 }

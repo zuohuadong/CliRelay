@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
 
 const simulationTestModel = "sim-model"
@@ -175,8 +175,8 @@ func liveSchedulingState(m *Manager) (map[string]int, map[string]map[string]int,
 	}
 	weighted := make(map[string]map[string]int, len(rr.weighted))
 	for key, state := range rr.weighted {
-		current := make(map[string]int, len(state))
-		for id, score := range state {
+		current := make(map[string]int, len(state.current))
+		for id, score := range state.current {
 			current[id] = score
 		}
 		weighted[key] = current

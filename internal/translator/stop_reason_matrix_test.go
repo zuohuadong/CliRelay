@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/translator"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -261,9 +261,7 @@ func TestStopReasonsSurviveEveryTranslator(t *testing.T) {
 					var param any
 					var outputs []string
 					for _, chunk := range upstream.stream(reason) {
-						for _, event := range translator.Response(upstream.format, client.format, ctx, "m", streamRequest, streamRequest, []byte(chunk), &param) {
-							outputs = append(outputs, string(event))
-						}
+						outputs = append(outputs, translator.Response(upstream.format, client.format, ctx, "m", streamRequest, streamRequest, []byte(chunk), &param)...)
 					}
 					if got := client.stream(t, outputs); got != want {
 						t.Fatalf("stop reason = %q, want %q; outputs: %q", got, want, outputs)
@@ -272,7 +270,7 @@ func TestStopReasonsSurviveEveryTranslator(t *testing.T) {
 				t.Run(name+"/non-stream", func(t *testing.T) {
 					var param any
 					out := translator.ResponseNonStream(upstream.format, client.format, ctx, "m", request, request, []byte(upstream.nonStream(reason)), &param)
-					if got := client.nonStream(string(out)); got != want {
+					if got := client.nonStream(out); got != want {
 						t.Fatalf("stop reason = %q, want %q; response: %s", got, want, out)
 					}
 				})

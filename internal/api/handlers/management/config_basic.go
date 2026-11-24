@@ -13,15 +13,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/bodyutil"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/runtimeconfig"
-	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -30,14 +30,6 @@ const (
 	latestReleaseURL       = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
 	latestReleaseUserAgent = "CLIProxyAPI"
 )
-
-func setLatestReleaseRequestHeaders(req *http.Request) {
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", latestReleaseUserAgent)
-	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-}
 
 func (h *Handler) GetConfig(c *gin.Context) {
 	if h == nil || h.cfg == nil {
@@ -140,7 +132,7 @@ func maskBaseURL(rawURL string) string {
 }
 
 // sanitizeConfigForAPI creates a sanitized copy of the config suitable for the management API.
-// It masks provider API keys, database credentials, user names, provider URLs/models, and other sensitive fields.
+// It masks provider API keys, user names, provider URLs/models, and other sensitive fields.
 func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
 	// Deep copy via JSON round-trip to avoid mutating the live config.
 	data, err := json.Marshal(cfg)
@@ -594,14 +586,6 @@ func (h *Handler) GetRequestRetry(c *gin.Context) {
 }
 func (h *Handler) PutRequestRetry(c *gin.Context) {
 	h.updateIntField(c, func(cfg *config.Config, v int) { cfg.RequestRetry = v })
-}
-
-// Max retry credentials
-func (h *Handler) GetMaxRetryCredentials(c *gin.Context) {
-	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingMaxRetryCredentials, gin.H{"max-retry-credentials": h.cfg.MaxRetryCredentials})
-}
-func (h *Handler) PutMaxRetryCredentials(c *gin.Context) {
-	h.updateIntField(c, func(cfg *config.Config, v int) { cfg.MaxRetryCredentials = v })
 }
 
 // Max retry interval

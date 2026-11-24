@@ -1,6 +1,6 @@
 package usagelogs
 
-import "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+import "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 
 type ManagementLogQueryInput struct {
 	Page int
@@ -21,28 +21,34 @@ type ManagementLogQueryInput struct {
 	Channels  []string
 	// GuardKinds selects the requests loop protection ended ("reply_loop",
 	// "tool_loop"); empty selects all.
-	GuardKinds       []string
-	MatchNoAPIKeys   bool
-	MatchNoAPIKeyIDs bool
-	MatchNoModels    bool
-	MatchNoStatuses  bool
-	MatchNoChannels  bool
+	GuardKinds []string
+	// ClientNames selects requests by caller (usage.ClientNameUnknown for the
+	// ones without a client name).
+	ClientNames        []string
+	MatchNoAPIKeys     bool
+	MatchNoAPIKeyIDs   bool
+	MatchNoModels      bool
+	MatchNoStatuses    bool
+	MatchNoChannels    bool
+	MatchNoClientNames bool
 }
 
 type PublicLogQueryInput struct {
-	APIKey           string
-	EndUserID        string
-	APIKeyIDs        []string
-	Models           []string
-	Channels         []string
-	Statuses         []string
-	MatchNoAPIKeyIDs bool
-	MatchNoModels    bool
-	MatchNoChannels  bool
-	MatchNoStatuses  bool
-	Page             int
-	Size             int
-	Days             int
+	APIKey             string
+	EndUserID          string
+	APIKeyIDs          []string
+	Models             []string
+	Channels           []string
+	Statuses           []string
+	ClientNames        []string
+	MatchNoAPIKeyIDs   bool
+	MatchNoModels      bool
+	MatchNoChannels    bool
+	MatchNoStatuses    bool
+	MatchNoClientNames bool
+	Page               int
+	Size               int
+	Days               int
 }
 
 type LogContentResponse struct {

@@ -3,8 +3,8 @@ package responses
 import (
 	"strings"
 
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/common"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -452,11 +452,4 @@ func convertOpenAIResponsesRequestToGeminiReference(modelName string, inputRawJS
 	result = translatorcommon.OutputFormatFromResponses(root).WriteGemini(result, "", modelName)
 	result = common.AttachDefaultSafetySettings(result, "safetySettings")
 	return result
-}
-
-func geminiSchemaType(value gjson.Result) string {
-	if value.Type != gjson.String {
-		return value.String()
-	}
-	return strings.ToUpper(value.String())
 }

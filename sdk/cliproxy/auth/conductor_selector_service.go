@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
 
 type selectionScope struct {
@@ -186,6 +186,15 @@ func optionsForSelectionScope(opts cliproxyexecutor.Options, routeGroup string, 
 	return next
 }
 
+func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
+	return newSelectorService(m).pickProvider(ctx, provider, model, opts, tried)
+}
+
+func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
+	auth, executor, provider, _, err := newSelectorService(m).pickMixed(ctx, providers, model, opts, tried)
+	return auth, executor, provider, err
+}
+
 func (s selectorService) pickProvider(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	scope := newSelectionScope(s.manager.currentRuntimeConfigForTenant(tenantIDFromMetadata(opts.Metadata)), model, opts.Metadata)
 	scope.grants = s.manager.sharedGrantIndex()
@@ -301,10 +310,21 @@ func (s selectorService) pickLocked(
 		}
 		scheduling := scopedScheduling(scope.cfg, selectorRouteGroup, scope.allowedGroups)
 		selector := selectorFor(scope.cfg, selectorRouteGroup, scope.allowedGroups)
+		unsaturated := candidates
 		if s.manager.concurrencyLimiter != nil {
-			candidates = s.manager.concurrencyLimiter.FilterAvailableCandidates(candidates)
+			unsaturated = s.manager.concurrencyLimiter.FilterAvailableCandidates(candidates)
 		}
-		selected, errPick := selector.Pick(ctx, selectorProvider, scope.model, optionsForSelectionScope(opts, selectorRouteGroup, scheduling), candidates)
+		scopedOpts := optionsForSelectionScope(opts, selectorRouteGroup, scheduling)
+		var selected *Auth
+		var errPick error
+		if sticky, ok := selector.(*SessionStickySelector); ok {
+			// Stickiness also sees accounts at their concurrency limit: a binding
+			// stands while its account is saturated, and the request queues there
+			// (selector_session_sticky_saturation.go).
+			selected, errPick = sticky.pick(ctx, selectorProvider, scope.model, scopedOpts, candidates, unsaturated)
+		} else {
+			selected, errPick = selector.Pick(ctx, selectorProvider, scope.model, scopedOpts, unsaturated)
+		}
 		if errPick != nil {
 			return nil, "", errPick
 		}

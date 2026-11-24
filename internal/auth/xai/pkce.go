@@ -7,11 +7,6 @@ import (
 	"fmt"
 )
 
-type PKCECodes struct {
-	CodeVerifier  string `json:"code_verifier"`
-	CodeChallenge string `json:"code_challenge"`
-}
-
 func GeneratePKCECodes() (*PKCECodes, error) {
 	bytes := make([]byte, 96)
 	if _, err := rand.Read(bytes); err != nil {

@@ -41,7 +41,7 @@ request-body:
 # Examples: "Asia/Shanghai", "UTC", "America/Los_Angeles"
 timezone: ""
 
-# PostgreSQL 19+ is the runtime primary database.
+# PostgreSQL 15+ is the runtime primary database.
 postgres:
   dsn: "postgres://cliproxy:cliproxy@127.0.0.1:5432/cliproxy?sslmode=disable"
   max-open-conns: 16
@@ -141,10 +141,12 @@ remote-management:
 # Docker Compose deployment path; non-Docker deployments can disable this.
 auto-update:
   enabled: true
-  # main is the default stable update channel; use dev to follow dev images.
+  # main is the only update channel now: every push to main publishes the image
+  # under ghcr.io/zuohuadong/clirelay with an 8-digit YYYYMMDD tag (plus latest,
+  # main and main-<sha>), and the updater follows :latest.
   channel: main
-  repository: https://github.com/kittors/CliRelay
-  docker-image: ghcr.io/kittors/clirelay
+  repository: https://github.com/zuohuadong/CliRelay
+  docker-image: ghcr.io/zuohuadong/clirelay
   updater-url: http://clirelay-updater:8320
 
 # Background re-probe of AI account quota status.
@@ -403,6 +405,22 @@ streaming:
 # websockets are unaffected, and request logs keep the plain JSON. Set false to
 # send plain JSON, e.g. to read the bytes on the wire through an inspecting proxy.
 # codex-request-zstd: false
+
+# Incremental requests to the Codex upstream (ChatGPT accounts). With store=false
+# every turn re-sends the whole conversation, screenshots included; on one
+# upstream websocket the backend keeps the last response, so a turn can send only
+# what it adds plus previous_response_id. The relay compares each request with
+# the previous turn of its conversation itself, so HTTP Responses and Chat
+# Completions clients benefit without any change. Anything that does not line up
+# goes in full; nothing here can fail a turn the HTTP transport would answer.
+# codex-upstream-incremental:
+#   mode: shadow              # off (default) | shadow: compare and log, send as before | on: send increments
+#   allow-keys:               # "on" only for these downstream keys (others are compared as in shadow); empty = all
+#     - "sha256:<hex sha256 of the key>"
+#   max-first-request-mb: 15  # larger full requests keep going over HTTP
+#   max-chains: 256           # upstream websockets kept open between turns
+#   max-chains-per-auth: 16
+#   idle-timeout-seconds: 300
 
 # Client-facing Responses WebSocket (GET /v1/responses, /backend-api/codex/responses).
 # Over it Codex sends only what a turn adds (previous_response_id plus the new
@@ -684,5 +702,3 @@ streaming:
 #       params: # JSON paths (gjson/sjson syntax) to remove from the payload
 #         - "generationConfig.thinkingConfig.thinkingBudget"
 #         - "generationConfig.responseJsonSchema"
-#         # Codex Responses can nest tool declarations under additional_tools.
-#         - 'input.#(type=="additional_tools")#.tools.#(name=="functions")#.tools.#(name=="apply_patch")#'

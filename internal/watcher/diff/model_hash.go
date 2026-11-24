@@ -3,29 +3,57 @@ package diff
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"sort"
 	"strings"
 
-	"github.com/MoeForge/moego/json"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelconfig"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
 // ComputeOpenAICompatModelsHash returns a stable hash for OpenAI-compat models.
 // Used to detect model list changes during hot reload.
 func ComputeOpenAICompatModelsHash(models []config.OpenAICompatibilityModel) string {
-	return modelconfig.ComputeOpenAICompatModelsHash(models)
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return hashJoined(keys)
 }
 
 // ComputeVertexCompatModelsHash returns a stable hash for Vertex-compatible models.
 func ComputeVertexCompatModelsHash(models []config.VertexCompatModel) string {
-	return modelconfig.ComputeVertexCompatModelsHash(models)
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return hashJoined(keys)
 }
 
 // ComputeClaudeModelsHash returns a stable hash for Claude model aliases.
 func ComputeClaudeModelsHash(models []config.ClaudeModel) string {
-	return modelconfig.ComputeClaudeModelsHash(models)
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return hashJoined(keys)
 }
 
 // ComputeBedrockModelsHash returns a stable hash for AWS Bedrock model aliases.
@@ -45,12 +73,32 @@ func ComputeBedrockModelsHash(models []config.BedrockModel) string {
 
 // ComputeCodexModelsHash returns a stable hash for Codex model aliases.
 func ComputeCodexModelsHash(models []config.CodexModel) string {
-	return modelconfig.ComputeCodexModelsHash(models)
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return hashJoined(keys)
 }
 
 // ComputeGeminiModelsHash returns a stable hash for Gemini model aliases.
 func ComputeGeminiModelsHash(models []config.GeminiModel) string {
-	return modelconfig.ComputeGeminiModelsHash(models)
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return hashJoined(keys)
 }
 
 // ComputeOpenCodeGoModelsHash returns a stable hash for OpenCode Go model aliases.
@@ -131,11 +179,6 @@ func ComputeExcludedModelsHash(excluded []string) string {
 	data, _ := json.Marshal(normalized)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-func thinkingHashSuffix(support *registry.ThinkingSupport) string {
-	data, _ := json.Marshal(support)
-	return "|thinking=" + string(data)
 }
 
 func normalizeModelPairs(collect func(out func(key string))) []string {

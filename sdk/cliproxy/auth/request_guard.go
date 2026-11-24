@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -228,39 +228,4 @@ func (m *Manager) executeStreamGuarded(ctx context.Context, providers []string, 
 		result = filterReplyStream(ctx, newReplyStreamFilter(reply), result)
 	}
 	return result, err
-}
-
-// Execute, ExecuteCount and ExecuteStream run the host request guard once
-// before account selection. The unguarded implementations retain the
-// provider-specific retry and Home routing behavior.
-func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	req, opts, reply, err := m.guardRequest(ctx, req, opts)
-	if err != nil {
-		return cliproxyexecutor.Response{}, err
-	}
-	resp, err := m.executeUnguarded(ctx, providers, req, opts)
-	if err == nil && reply != nil {
-		resp = filterReplyResponse(reply, resp)
-	}
-	return resp, err
-}
-
-func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	req, opts, _, err := m.guardRequest(ctx, req, opts)
-	if err != nil {
-		return cliproxyexecutor.Response{}, err
-	}
-	return m.executeCountUnguarded(ctx, providers, req, opts)
-}
-
-func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	if m != nil {
-		m.mu.RLock()
-		_, hasGuard := m.requestModerator.(RequestGuard)
-		m.mu.RUnlock()
-		if !hasGuard {
-			return m.executeStreamUnguarded(ctx, providers, req, opts)
-		}
-	}
-	return m.executeStreamGuarded(ctx, providers, req, opts)
 }

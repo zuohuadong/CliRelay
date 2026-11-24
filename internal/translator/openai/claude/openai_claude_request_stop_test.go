@@ -33,10 +33,7 @@ func TestConvertClaudeRequestToOpenAIStopSequences(t *testing.T) {
 					input += `,"stop_sequences":` + tc.input
 				}
 				input += "}"
-				out, err := ConvertClaudeRequestToOpenAI("target", []byte(input), stream)
-				if err != nil {
-					t.Fatal(err)
-				}
+				out := ConvertClaudeRequestToOpenAI("target", []byte(input), stream)
 				stop := gjson.GetBytes(out, "stop")
 				if tc.want == nil {
 					if stop.Exists() {

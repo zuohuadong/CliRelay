@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/modeldiscovery"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/modeldiscovery"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
 )
 
 // manifestOnlyModel stands for a model ChatGPT ships after this build. The name is
@@ -20,15 +20,15 @@ import (
 // routable", which must hold for models nobody has heard of yet.
 const manifestOnlyModel = "gpt-manifest-only-test"
 
-func manifestOnlyInfo() *sdkmodelcatalog.ModelInfo {
-	return &sdkmodelcatalog.ModelInfo{
+func manifestOnlyInfo() *ModelInfo {
+	return &ModelInfo{
 		ID:            manifestOnlyModel,
 		Object:        "model",
 		OwnedBy:       "openai",
 		Type:          "codex",
 		DisplayName:   "Manifest Only",
 		ContextLength: 400000,
-		Thinking:      &sdkmodelcatalog.ThinkingSupport{Levels: []string{"low", "medium", "high"}},
+		Thinking:      &ModelThinkingSupport{Levels: []string{"low", "medium", "high"}},
 	}
 }
 
@@ -77,7 +77,7 @@ func waitForCondition(t *testing.T, what string, cond func() bool) {
 func TestCodexOAuthRegistersModelsTheManifestLists(t *testing.T) {
 	resetModelDiscovery(t)
 	const tenantID = "tenant-live-discovery"
-	modeldiscovery.Store(tenantID, "codex", []*sdkmodelcatalog.ModelInfo{manifestOnlyInfo()})
+	modeldiscovery.Store(tenantID, "codex", []*ModelInfo{manifestOnlyInfo()})
 
 	service := &Service{cfg: &config.Config{}}
 	auth := codexOAuthAuth("codex-live-discovery", tenantID)
@@ -113,7 +113,7 @@ func TestManifestModelStaysRoutableAfterTheListGoesStale(t *testing.T) {
 	clock := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	t.Cleanup(modeldiscovery.SetClockForTest(func() time.Time { return clock }))
 	const tenantID = "tenant-live-discovery-stale"
-	modeldiscovery.Store(tenantID, "codex", []*sdkmodelcatalog.ModelInfo{manifestOnlyInfo()})
+	modeldiscovery.Store(tenantID, "codex", []*ModelInfo{manifestOnlyInfo()})
 
 	// A day later the list is due for a refresh that has not succeeded — the
 	// manifest endpoint is down, say. Any credential re-registering now (a token
@@ -133,7 +133,7 @@ func TestManifestModelStaysRoutableAfterTheListGoesStale(t *testing.T) {
 func TestCodexAPIKeyCredentialIgnoresTheManifest(t *testing.T) {
 	resetModelDiscovery(t)
 	const tenantID = "tenant-live-discovery-apikey"
-	modeldiscovery.Store(tenantID, "codex", []*sdkmodelcatalog.ModelInfo{manifestOnlyInfo()})
+	modeldiscovery.Store(tenantID, "codex", []*ModelInfo{manifestOnlyInfo()})
 
 	service := &Service{cfg: &config.Config{}}
 	auth := &coreauth.Auth{
@@ -159,7 +159,7 @@ func TestCodexAPIKeyCredentialIgnoresTheManifest(t *testing.T) {
 
 func TestManifestDoesNotRedefineCatalogModels(t *testing.T) {
 	resetModelDiscovery(t)
-	var catalog *sdkmodelcatalog.ModelInfo
+	var catalog *ModelInfo
 	for _, model := range sdkmodelcatalog.StaticModelDefinitionsByChannel("codex") {
 		if model != nil && model.Thinking != nil && len(model.Thinking.Levels) > 1 {
 			catalog = model
@@ -172,8 +172,8 @@ func TestManifestDoesNotRedefineCatalogModels(t *testing.T) {
 	const tenantID = "tenant-live-discovery-catalog"
 	narrowed := *catalog
 	narrowed.DisplayName = "as the manifest describes it"
-	narrowed.Thinking = &sdkmodelcatalog.ThinkingSupport{Levels: []string{"low"}}
-	modeldiscovery.Store(tenantID, "codex", []*sdkmodelcatalog.ModelInfo{&narrowed, manifestOnlyInfo()})
+	narrowed.Thinking = &ModelThinkingSupport{Levels: []string{"low"}}
+	modeldiscovery.Store(tenantID, "codex", []*ModelInfo{&narrowed, manifestOnlyInfo()})
 
 	service := &Service{cfg: &config.Config{}}
 	auth := codexOAuthAuth("codex-live-discovery-catalog", tenantID)
@@ -197,10 +197,10 @@ func TestManifestArrivalReRegistersAfterStartupPass(t *testing.T) {
 	resetModelDiscovery(t)
 	const tenantID = "tenant-live-discovery-startup"
 	release := make(chan struct{})
-	restore := modeldiscovery.SetFetcherForTest("codex", func(ctx context.Context, _ *coreauth.Auth, _ *config.Config) ([]*sdkmodelcatalog.ModelInfo, error) {
+	restore := modeldiscovery.SetFetcherForTest("codex", func(ctx context.Context, _ *coreauth.Auth, _ *config.Config) ([]*ModelInfo, error) {
 		select {
 		case <-release:
-			return []*sdkmodelcatalog.ModelInfo{manifestOnlyInfo()}, nil
+			return []*ModelInfo{manifestOnlyInfo()}, nil
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -247,9 +247,9 @@ func TestFirstCredentialOfATenantRequestsItsManifest(t *testing.T) {
 	resetModelDiscovery(t)
 	const tenantID = "tenant-live-discovery-new"
 	var calls atomic.Int32
-	restore := modeldiscovery.SetFetcherForTest("codex", func(context.Context, *coreauth.Auth, *config.Config) ([]*sdkmodelcatalog.ModelInfo, error) {
+	restore := modeldiscovery.SetFetcherForTest("codex", func(context.Context, *coreauth.Auth, *config.Config) ([]*ModelInfo, error) {
 		calls.Add(1)
-		return []*sdkmodelcatalog.ModelInfo{manifestOnlyInfo()}, nil
+		return []*ModelInfo{manifestOnlyInfo()}, nil
 	})
 	t.Cleanup(restore)
 
@@ -302,9 +302,9 @@ func TestProviderDiscoveryTargetsOnlyEligibleCredentials(t *testing.T) {
 func TestStoppedDiscoveryStartsNoFetch(t *testing.T) {
 	resetModelDiscovery(t)
 	var calls atomic.Int32
-	restore := modeldiscovery.SetFetcherForTest("codex", func(context.Context, *coreauth.Auth, *config.Config) ([]*sdkmodelcatalog.ModelInfo, error) {
+	restore := modeldiscovery.SetFetcherForTest("codex", func(context.Context, *coreauth.Auth, *config.Config) ([]*ModelInfo, error) {
 		calls.Add(1)
-		return []*sdkmodelcatalog.ModelInfo{manifestOnlyInfo()}, nil
+		return []*ModelInfo{manifestOnlyInfo()}, nil
 	})
 	t.Cleanup(restore)
 

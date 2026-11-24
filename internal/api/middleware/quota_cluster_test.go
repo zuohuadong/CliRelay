@@ -2,47 +2,121 @@ package middleware
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/postgrestest"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedstate"
 )
 
-// testClusterQuota is one node's view of the cluster: the shared store plus a
-// fixed live-node count.
-type testClusterQuota struct {
-	*sharedstate.Store
-	nodes int
+// fakeClusterQuota stands in for the shared counters: one instance is what
+// every node of the test cluster sees. It mirrors the contract the PostgreSQL
+// adapter implements — admit counts, slots, batched counts and dashboard
+// rates — without a database.
+type fakeClusterQuota struct {
+	mu        sync.Mutex
+	available bool
+	nodes     int
+	rpm       map[string]float64
+	tpm       map[string]float64
+	slots     map[string]int
+	pending   map[string]float64
 }
 
-func (q testClusterQuota) ActiveNodes() int { return q.nodes }
+func newFakeClusterQuota(nodes int) *fakeClusterQuota {
+	return &fakeClusterQuota{
+		available: true,
+		nodes:     nodes,
+		rpm:       make(map[string]float64),
+		tpm:       make(map[string]float64),
+		slots:     make(map[string]int),
+		pending:   make(map[string]float64),
+	}
+}
+
+func (q *fakeClusterQuota) setAvailable(available bool) {
+	q.mu.Lock()
+	q.available = available
+	q.mu.Unlock()
+}
+
+func (q *fakeClusterQuota) Available() bool { return q.available }
+func (q *fakeClusterQuota) ActiveNodes() int {
+	return q.nodes
+}
+
+func (q *fakeClusterQuota) AdmitRequest(ctx context.Context, subject string, concurrencyLimit int) (sharedstate.Admission, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if !q.available {
+		return sharedstate.Admission{}, sharedstate.ErrUnavailable
+	}
+	q.rpm[subject]++
+	adm := sharedstate.Admission{RPM: q.rpm[subject], TPM: q.tpm[subject], Release: func() {}}
+	if concurrencyLimit > 0 {
+		if q.slots[subject] < concurrencyLimit {
+			q.slots[subject]++
+			adm.SlotTaken = true
+			adm.Release = func() { q.releaseSlot(subject) }
+		}
+		adm.Held = q.slots[subject]
+	}
+	return adm, nil
+}
+
+func (q *fakeClusterQuota) releaseSlot(subject string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.slots[subject] > 0 {
+		q.slots[subject]--
+	}
+}
+
+func (q *fakeClusterQuota) CountRequest(subject string) {
+	q.mu.Lock()
+	q.pending[subject]++
+	q.mu.Unlock()
+}
+
+func (q *fakeClusterQuota) AddTokens(subject string, tokens int64) {
+	q.mu.Lock()
+	q.tpm[subject] += float64(tokens)
+	q.mu.Unlock()
+}
+
+// Flush writes the batched counts, as the shared store's periodic flush does.
+func (q *fakeClusterQuota) Flush() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for subject, requests := range q.pending {
+		q.rpm[subject] += requests
+	}
+	q.pending = make(map[string]float64)
+}
+
+func (q *fakeClusterQuota) Rates(ctx context.Context, subjects []string) (map[string]sharedstate.Rate, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if !q.available {
+		return nil, sharedstate.ErrUnavailable
+	}
+	out := make(map[string]sharedstate.Rate, len(subjects))
+	for _, subject := range subjects {
+		out[subject] = sharedstate.Rate{RPM: q.rpm[subject], TPM: q.tpm[subject]}
+	}
+	return out, nil
+}
 
 func bg() context.Context { return context.Background() }
 
-type quotaCluster struct {
-	db   *sql.DB
-	self *sharedstate.Store // this process: installed into the middleware
-	peer *sharedstate.Store // another node sharing the same database
-}
-
-func newQuotaCluster(t *testing.T, nodes int) *quotaCluster {
+func installFakeClusterQuota(t *testing.T, nodes int) *fakeClusterQuota {
 	t.Helper()
-	db, _ := postgrestest.RuntimeState(t)
-	now := time.Now().Truncate(time.Minute).Add(30 * time.Second)
-	store := func(nodeID string) *sharedstate.Store {
-		s := sharedstate.New(db, sharedstate.Options{NodeID: nodeID, FlushInterval: time.Hour, Now: func() time.Time { return now }})
-		t.Cleanup(s.Close)
-		return s
-	}
-	c := &quotaCluster{db: db, self: store("self"), peer: store("peer")}
-	SetClusterQuota(testClusterQuota{Store: c.self, nodes: nodes})
+	q := newFakeClusterQuota(nodes)
+	SetClusterQuota(q)
 	t.Cleanup(func() { SetClusterQuota(nil) })
-	return c
+	return q
 }
 
 func quotaRouter(metadata map[string]string, handler gin.HandlerFunc) *gin.Engine {
@@ -69,12 +143,12 @@ func postQuota(router *gin.Engine) *httptest.ResponseRecorder {
 
 func TestClusterRPMLimitIsGlobal(t *testing.T) {
 	resetQuotaMiddlewareState(t)
-	cluster := newQuotaCluster(t, 2)
+	cluster := installFakeClusterQuota(t, 2)
 	router := quotaRouter(map[string]string{"rpm-limit": "4"}, nil)
 
 	// Another node already served three requests of this key this minute.
 	for i := 0; i < 3; i++ {
-		if _, err := cluster.peer.AdmitRequest(bg(), "sk-XXXX-cluster-test", 0); err != nil {
+		if _, err := cluster.AdmitRequest(bg(), "sk-XXXX-cluster-test", 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -92,10 +166,10 @@ func TestClusterRPMLimitIsGlobal(t *testing.T) {
 
 func TestClusterConcurrencyLimitIsGlobal(t *testing.T) {
 	resetQuotaMiddlewareState(t)
-	cluster := newQuotaCluster(t, 2)
+	cluster := installFakeClusterQuota(t, 2)
 	router := quotaRouter(map[string]string{"concurrency-limit": "1"}, nil)
 
-	held, err := cluster.peer.AdmitRequest(bg(), "sk-XXXX-cluster-test", 1)
+	held, err := cluster.AdmitRequest(bg(), "sk-XXXX-cluster-test", 1)
 	if err != nil || !held.SlotTaken {
 		t.Fatalf("peer slot: %+v %v", held, err)
 	}
@@ -104,15 +178,8 @@ func TestClusterConcurrencyLimitIsGlobal(t *testing.T) {
 		t.Fatalf("slot held by another node must refuse this one, got %d %s", rec.Code, rec.Body.String())
 	}
 	held.Release()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if rec = postQuota(router); rec.Code == http.StatusNoContent {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("slot released by the other node never became usable: %d", rec.Code)
-		}
-		time.Sleep(5 * time.Millisecond)
+	if rec = postQuota(router); rec.Code != http.StatusNoContent {
+		t.Fatalf("slot released by the other node must be usable, got %d %s", rec.Code, rec.Body.String())
 	}
 	if n := keyConcurrencyCount("sk-XXXX-cluster-test"); n != 0 {
 		t.Fatalf("local mirror of the slot must be released with the request, got %d", n)
@@ -120,19 +187,16 @@ func TestClusterConcurrencyLimitIsGlobal(t *testing.T) {
 }
 
 // TestClusterFallsBackToNodeShareAndRecovers covers the degraded mode: with the
-// shared database gone each node enforces ceil(limit/nodes) locally.
+// shared counters gone each node enforces ceil(limit/nodes) on its own, and
+// once they are back the configured limit applies cluster-wide again.
 func TestClusterFallsBackToNodeShareAndRecovers(t *testing.T) {
 	resetQuotaMiddlewareState(t)
-	cluster := newQuotaCluster(t, 2)
+	cluster := installFakeClusterQuota(t, 2)
 	router := quotaRouter(map[string]string{"rpm-limit": "4"}, nil)
 
-	_ = cluster.db.Close()
-	start := time.Now()
+	cluster.setAvailable(false)
 	if rec := postQuota(router); rec.Code != http.StatusNoContent {
 		t.Fatalf("request during the outage = %d", rec.Code)
-	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("an unavailable database delayed the request by %s", elapsed)
 	}
 	if rec := postQuota(router); rec.Code != http.StatusNoContent {
 		t.Fatalf("second request within this node's share (2) = %d", rec.Code)
@@ -145,7 +209,8 @@ func TestClusterFallsBackToNodeShareAndRecovers(t *testing.T) {
 		t.Fatalf("degraded mode enforces the node share, header limit = %q", got)
 	}
 
-	newQuotaCluster(t, 2)
+	// The shared counters come back with empty windows; the full limit applies.
+	cluster.setAvailable(true)
 	for i := 0; i < 4; i++ {
 		if rec := postQuota(router); rec.Code != http.StatusNoContent {
 			t.Fatalf("request %d after recovery = %d", i+1, rec.Code)
@@ -156,12 +221,10 @@ func TestClusterFallsBackToNodeShareAndRecovers(t *testing.T) {
 	}
 }
 
-func TestClusterWithoutSharedDatabaseSplitsConcurrency(t *testing.T) {
+func TestClusterWithoutSharedStateSplitsConcurrency(t *testing.T) {
 	resetQuotaMiddlewareState(t)
-	unconfigured := sharedstate.New(nil, sharedstate.Options{NodeID: "self"})
-	t.Cleanup(unconfigured.Close)
-	SetClusterQuota(testClusterQuota{Store: unconfigured, nodes: 3})
-	t.Cleanup(func() { SetClusterQuota(nil) })
+	cluster := installFakeClusterQuota(t, 3)
+	cluster.setAvailable(false)
 
 	release := make(chan struct{})
 	entered := make(chan struct{}, 4)
@@ -189,24 +252,22 @@ func TestClusterWithoutSharedDatabaseSplitsConcurrency(t *testing.T) {
 
 func TestClusterTokensAndDashboardAreShared(t *testing.T) {
 	resetQuotaMiddlewareState(t)
-	cluster := newQuotaCluster(t, 2)
+	cluster := installFakeClusterQuota(t, 2)
 	router := quotaRouter(map[string]string{"tpm-limit": "1000"}, nil)
 
 	if rec := postQuota(router); rec.Code != http.StatusNoContent {
 		t.Fatalf("first request = %d", rec.Code)
 	}
 	RecordTokenUsage("sk-XXXX-cluster-test", 600)
-	cluster.self.Flush()
 	// Tokens used on the other node count too.
-	cluster.peer.AddTokens("sk-XXXX-cluster-test", 500)
-	cluster.peer.Flush()
+	cluster.AddTokens("sk-XXXX-cluster-test", 500)
 	rec := postQuota(router)
 	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("X-CliRelay-Quota-Code") != "tpm_limit_exceeded" {
 		t.Fatalf("1100 tokens across the cluster must exceed 1000, got %d %s", rec.Code, rec.Body.String())
 	}
 
 	for i := 0; i < 5; i++ {
-		if _, err := cluster.peer.AdmitRequest(bg(), "sk-XXXX-cluster-test", 0); err != nil {
+		if _, err := cluster.AdmitRequest(bg(), "sk-XXXX-cluster-test", 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -214,6 +275,7 @@ func TestClusterTokensAndDashboardAreShared(t *testing.T) {
 	if len(snaps) != 1 {
 		t.Fatalf("snapshots = %+v", snaps)
 	}
+	// Two admitted requests plus five from the other node.
 	if snaps[0].RPM != 7 || snaps[0].TPM != 1100 || total != 7 {
 		t.Fatalf("dashboard must show cluster-wide usage, got %+v total %d", snaps[0], total)
 	}
@@ -221,7 +283,7 @@ func TestClusterTokensAndDashboardAreShared(t *testing.T) {
 
 func TestClusterUnlimitedKeysAreCountedWithoutWaiting(t *testing.T) {
 	resetQuotaMiddlewareState(t)
-	cluster := newQuotaCluster(t, 2)
+	cluster := installFakeClusterQuota(t, 2)
 	router := quotaRouter(map[string]string{"daily-limit": "100"}, nil)
 
 	for i := 0; i < 3; i++ {
@@ -229,17 +291,17 @@ func TestClusterUnlimitedKeysAreCountedWithoutWaiting(t *testing.T) {
 			t.Fatalf("request %d = %d", i, rec.Code)
 		}
 	}
-	rates, err := cluster.peer.Rates(bg(), []string{"sk-XXXX-cluster-test"})
+	rates, err := cluster.Rates(bg(), []string{"sk-XXXX-cluster-test"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rates["sk-XXXX-cluster-test"].RPM != 0 {
 		t.Fatalf("unlimited keys are batched, not written per request: %+v", rates)
 	}
-	cluster.self.Flush()
-	rates, _ = cluster.peer.Rates(bg(), []string{"sk-XXXX-cluster-test"})
+	cluster.Flush()
+	rates, _ = cluster.Rates(bg(), []string{"sk-XXXX-cluster-test"})
 	if rates["sk-XXXX-cluster-test"].RPM != 3 {
-		t.Fatalf("after the flush every node sees them: %+v", rates)
+		t.Fatalf("after the flush the count is shared: %+v", rates)
 	}
 }
 

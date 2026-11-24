@@ -6,7 +6,7 @@
 # replica of a musl primary (or the reverse) silently returns wrong results
 # for indexed text lookups after a failover. Pin the exact minor version too,
 # because a standby must not run an older minor than its primary.
-ARG POSTGRES_IMAGE=postgres:19.0-alpine
+ARG POSTGRES_IMAGE=postgres:15.19-alpine3.24
 FROM ${POSTGRES_IMAGE}
 
 ARG PATRONI_VERSION=4.1.5

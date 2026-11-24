@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 )
 
 // These are configuration drift guard tests: they assert generated install
@@ -119,7 +119,7 @@ func TestInstallComposeIncludesRuntimeDataStack(t *testing.T) {
 		"CLIRELAY_POSTGRES_DSN=${postgres_dsn}",
 		"CLIRELAY_POSTGRES_DATA_PATH=${postgres_data_path}",
 		"CLIRELAY_POSTGRES_DSN: ${CLIRELAY_POSTGRES_DSN}",
-		"postgres:\n    image: postgres:19-alpine",
+		"postgres:\n    image: postgres:15-alpine",
 		"depends_on:\n      postgres:\n        condition: service_healthy",
 	} {
 		if !strings.Contains(content, want) {

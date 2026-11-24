@@ -5,16 +5,18 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/accessfreeze"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/accesspolicy"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/accessfreeze"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/accesspolicy"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/billing"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
 // Register ensures the config-access provider is available to the access manager.
@@ -67,6 +69,7 @@ func buildKeyConfigAndPolicyMaps(cfg *sdkconfig.SDKConfig) (map[string]keyConfig
 		}
 	}
 	accounts, _ := usage.ListEndUserQuotasByIDs(endUserIDs)
+	accountExpiries, keyExpiries := billing.ListAllExpiries()
 	for _, stored := range storedRows {
 		profiles := profilesByTenant[strings.TrimSpace(stored.TenantID)]
 		entry := usage.EffectiveAPIKeyRowWithProfiles(stored, profiles)
@@ -93,7 +96,18 @@ func buildKeyConfigAndPolicyMaps(cfg *sdkconfig.SDKConfig) (map[string]keyConfig
 		if _, exists := result[trimmed]; exists {
 			continue
 		}
-		result[trimmed] = keyConfigFromRowWithAccount(entry, account)
+		kc := keyConfigFromRowWithAccount(entry, account)
+		if kc.endUserID != "" {
+			if exp, ok := accountExpiries[kc.endUserID]; ok {
+				kc.accountExpiresAt = exp
+			}
+		}
+		if kc.apiKeyID != "" {
+			if exp, ok := keyExpiries[kc.apiKeyID]; ok {
+				kc.keyExpiresAt = exp
+			}
+		}
+		result[trimmed] = kc
 		policies[trimmed] = accessPolicyFor(entry, account)
 	}
 
@@ -173,6 +187,8 @@ type keyConfig struct {
 	rpmLimit                    int
 	tpmLimit                    int
 	systemPrompt                string
+	accountExpiresAt            time.Time
+	keyExpiresAt                time.Time
 }
 
 func keyConfigFromRow(row usage.APIKeyRow) keyConfig {
@@ -335,6 +351,12 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 			addPeriodLimitMetadata(metadata, "key-period-spending-limit-", kc.keyPeriodSpendingLimits)
 			if kc.systemPrompt != "" {
 				metadata["system-prompt"] = kc.systemPrompt
+			}
+			if !kc.accountExpiresAt.IsZero() {
+				metadata["account-expires-at"] = kc.accountExpiresAt.UTC().Format(time.RFC3339)
+			}
+			if !kc.keyExpiresAt.IsZero() {
+				metadata["key-expires-at"] = kc.keyExpiresAt.UTC().Format(time.RFC3339)
 			}
 			return &sdkaccess.Result{
 				Provider:   p.Identifier(),

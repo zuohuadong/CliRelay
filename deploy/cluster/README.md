@@ -9,9 +9,8 @@ the failure scenarios and the runbook are in
 |---|---|
 | `tls/gen-cluster-certs.sh` | Private cluster CA and per-node certificates (mutual TLS for every cross-node link) |
 | `etcd/` | One etcd member per machine; the arbiter holds the third vote |
-| `postgres-ha/` | PostgreSQL 19 (Alpine) + Patroni image, `render-patroni.sh`, compose file |
+| `postgres-ha/` | PostgreSQL 15 (Alpine) + Patroni image, `render-patroni.sh`, compose file |
 | `stunnel/` | Mutual-TLS tunnel used only while migrating a live single-node database |
-| `postgres-ha/` | Shared PostgreSQL runtime state, with Patroni failover |
 | `nginx/` | Local-first vhost with spill-over to the peer node |
 | `dnswatch/` | systemd unit and example config for `cmd/clirelay-dnswatch` |
 | `hostagent/` | systemd unit for `cmd/clirelay-hostagent`, which reports the database host's CPU, memory and disks to the console |

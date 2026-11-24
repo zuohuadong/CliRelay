@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MoeForge/moego/ojson"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -80,21 +79,21 @@ var geminiFinishCases = []geminiFinishCase{
 }
 
 // checkGeminiFinish checks status and incomplete_details on a Responses object.
-func checkGeminiFinish(t *testing.T, resp ojson.Result, tc geminiFinishCase) {
+func checkGeminiFinish(t *testing.T, resp gjson.Result, tc geminiFinishCase) {
 	t.Helper()
 	if got := resp.Get("status").String(); got != tc.status {
 		t.Fatalf("status = %q, want %q: %s", got, tc.status, resp.Raw)
 	}
 	details := resp.Get("incomplete_details")
 	if tc.status != "incomplete" {
-		if details.Exists() && details.Type != ojson.Null {
+		if details.Exists() && details.Type != gjson.Null {
 			t.Fatalf("incomplete_details = %s on a %s response", details.Raw, tc.status)
 		}
 		return
 	}
 	if tc.incompleteReason == "" {
 		// null, not {}: the Vercel AI SDK rejects an object without a reason.
-		if !details.Exists() || details.Type != ojson.Null {
+		if !details.Exists() || details.Type != gjson.Null {
 			t.Fatalf("incomplete_details = %s, want null: %s", details.Raw, resp.Raw)
 		}
 		return
@@ -107,10 +106,10 @@ func checkGeminiFinish(t *testing.T, resp ojson.Result, tc geminiFinishCase) {
 // checkGeminiFinishOutput checks that the output produced before the turn ended
 // is still delivered. Order is not compared: the non-stream converter lists
 // function calls before the reasoning and the message.
-func checkGeminiFinishOutput(t *testing.T, resp ojson.Result, tc geminiFinishCase) {
+func checkGeminiFinishOutput(t *testing.T, resp gjson.Result, tc geminiFinishCase) {
 	t.Helper()
 	var types []string
-	resp.Get("output").ForEach(func(_, item ojson.Result) bool {
+	resp.Get("output").ForEach(func(_, item gjson.Result) bool {
 		types = append(types, item.Get("type").String())
 		return true
 	})
@@ -130,7 +129,7 @@ func TestGeminiResponsesStreamEndsAsTheFinishReasonSays(t *testing.T) {
 	for _, tc := range geminiFinishCases {
 		t.Run(tc.name, func(t *testing.T) {
 			var param any
-			var out [][]byte
+			var out []string
 			chunks := append(append([]string{}, tc.chunks...), finishTestEnd(tc.reason), "[DONE]")
 			for _, chunk := range chunks {
 				out = append(out, ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini-test", nil, nil, []byte(chunk), &param)...)
@@ -163,8 +162,7 @@ func TestGeminiResponsesNonStreamStatusFollowsTheFinishReason(t *testing.T) {
 	for _, tc := range geminiFinishCases {
 		t.Run(tc.name, func(t *testing.T) {
 			body := finishTestNonStream(tc.chunks, tc.reason)
-			raw := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-test", nil, nil, []byte(body), nil)
-			resp := ojson.ParseBytes(raw)
+			resp := gjson.Parse(ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-test", nil, nil, []byte(body), nil))
 			checkGeminiFinish(t, resp, tc)
 			checkGeminiFinishOutput(t, resp, tc)
 		})

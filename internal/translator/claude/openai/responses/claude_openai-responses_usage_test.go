@@ -85,7 +85,7 @@ func TestConvertClaudeResponseToOpenAIResponsesNonStream_CountsCachedPrompt(t *t
 	req := []byte(`{"model":"claude-sonnet-5-5","input":"hi"}`)
 	for _, tc := range claudeCachedTurns {
 		t.Run(tc.name, func(t *testing.T) {
-			out := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-sonnet-5-5", req, req, []byte(tc.sse), nil))
+			out := gjson.Parse(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-sonnet-5-5", req, req, []byte(tc.sse), nil))
 			assertCachedUsage(t, out.Get("usage"))
 		})
 	}
@@ -112,7 +112,7 @@ func TestConvertClaudeResponseToOpenAIResponses_UncachedUsageUnchanged(t *testin
 	})
 	t.Run("non-stream", func(t *testing.T) {
 		req := []byte(`{"model":"claude-opus-4-6","input":"hi"}`)
-		out := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-opus-4-6", req, req, []byte(strings.Join(lines, "\n")), nil))
+		out := gjson.Parse(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-opus-4-6", req, req, []byte(strings.Join(lines, "\n")), nil))
 		assertUncached(t, out.Get("usage"))
 	})
 }

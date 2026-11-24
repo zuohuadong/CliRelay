@@ -7,4 +7,4 @@
 // it belongs in the protocol as data, not as a Go import.
 module clirelay.local/updater
 
-go 1.27.4
+go 1.26.0

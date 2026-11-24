@@ -25,7 +25,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const defaultAppImage = "ghcr.io/kittors/clirelay:latest"
+const defaultAppImage = "ghcr.io/zuohuadong/clirelay:latest"
 
 // DefaultAuthPath is the container-side auth directory current builds read.
 const DefaultAuthPath = "/CLIProxyAPI/auths"
@@ -145,32 +145,20 @@ func UpgradeRuntimeStack(composeText string, projectDir string, service string) 
 	target["volumes"] = appendVolume(target["volumes"], "${CLIRELAY_PROJECT_DIR:-"+projectDir+"}:/clirelay-deploy")
 
 	targetNetworks := target["networks"]
-	depends, ok := stringMap(target["depends_on"])
-	if !ok {
-		depends = make(map[string]any)
-		if names, ok := target["depends_on"].([]any); ok {
-			for _, name := range names {
-				depends[stringValue(name)] = map[string]any{"condition": "service_started"}
-			}
-		}
+	target["depends_on"] = map[string]any{
+		"clirelay-init": map[string]any{"condition": "service_completed_successfully"},
+		"postgres":      map[string]any{"condition": "service_healthy"},
 	}
-	delete(depends, "clirelay-migrate")
-	depends["clirelay-init"] = map[string]any{"condition": "service_completed_successfully"}
-	depends["postgres"] = map[string]any{"condition": "service_healthy"}
-	target["depends_on"] = depends
 	services["clirelay-init"] = initComposeService(projectDir, targetName, appImage)
-	_, existingPostgres := services["postgres"]
-	if !existingPostgres {
-		services["postgres"] = postgresComposeService()
-	}
+	services["postgres"] = postgresComposeService()
 	services["clirelay-updater"] = updaterComposeService(projectDir, targetName, appImage)
+	// A stack upgraded from an older release keeps its Redis service only
+	// until this rewrite, which drops it along with the volume it used.
 	delete(services, "clirelay-migrate")
+	delete(services, "redis")
 
 	if targetNetworks != nil {
 		for _, name := range []string{"clirelay-init", "postgres", "clirelay-updater"} {
-			if name == "postgres" && existingPostgres {
-				continue
-			}
 			if generated, ok := stringMap(services[name]); ok {
 				generated["networks"] = targetNetworks
 			}
@@ -235,7 +223,7 @@ func initComposeService(projectDir string, targetService string, image string) m
 
 func postgresComposeService() map[string]any {
 	return map[string]any{
-		"image":      "postgres:19-alpine",
+		"image":      "postgres:15-alpine",
 		"entrypoint": []any{"sh", "-c", "set -a; . /clirelay-deploy/.env; set +a; export POSTGRES_DB=\"$$CLIRELAY_POSTGRES_DB\" POSTGRES_USER=\"$$CLIRELAY_POSTGRES_USER\" POSTGRES_PASSWORD=\"$$CLIRELAY_POSTGRES_PASSWORD\"; exec docker-entrypoint.sh postgres"},
 		"volumes": []any{
 			"${CLIRELAY_POSTGRES_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/postgres-data}:/var/lib/postgresql/data",

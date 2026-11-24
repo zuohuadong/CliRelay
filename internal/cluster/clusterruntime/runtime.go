@@ -1,8 +1,8 @@
 // Package clusterruntime wires the cluster-wide limits into a running node:
-// it uses the runtime PostgreSQL pool and installs the shared counters,
-// leases, bindings and minting into the quota middleware, the login throttle,
-// the auto-ban engine, the executors and the auth manager, and relays upstream
-// cooldowns between nodes.
+// it opens the shared state on the cluster database and installs the shared
+// counters, slots, bindings and minting into the quota middleware, the login
+// throttle, the auto-ban engine, the executors and the auth manager, and
+// relays upstream cooldowns between nodes.
 //
 // Nothing here runs outside cluster mode: a single node keeps every
 // pre-cluster code path.
@@ -13,22 +13,28 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/ipaccess"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedstate"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/ipaccess"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
 // Runtime is one node's cluster wiring.
 type Runtime struct {
 	coord func() *cluster.Coordinator
-	store *sharedstate.Store
+	// pg holds the state shared through the cluster database; nil when the
+	// cluster has no database.
+	pg *sharedstate.PGStore
+	// quota holds the PostgreSQL-backed per-subject windows; nil when the
+	// cluster has no database.
+	quota *pgQuotaAdapter
+	// slots decides cluster-wide account concurrency.
+	slots coreauth.AccountSlotCoordinator
 	relay *cooldownRelay
 
 	mu       sync.Mutex
@@ -67,9 +73,8 @@ func Install(cfg *config.Config, manager *coreauth.Manager) *Runtime {
 }
 
 // Release hands back one Install. The last release gives this node's
-// concurrency slots back to the cluster and flushes pending counters;
-// call it once the server has drained. nil is a
-// no-op.
+// concurrency slots back to the cluster, flushes pending counters and closes
+// the shared store; call it once the server has drained. nil is a no-op.
 func Release(rt *Runtime) {
 	if rt == nil {
 		return
@@ -86,6 +91,12 @@ func Release(rt *Runtime) {
 	}
 }
 
+var (
+	_ management.ClusterThrottleStore = (*sharedstate.PGStore)(nil)
+	_ ipaccess.ClusterAutoBanStore    = (*sharedstate.PGStore)(nil)
+	_ middleware.ClusterQuota         = (*pgQuotaAdapter)(nil)
+)
+
 // start builds the runtime. coord resolves the coordinator on every use.
 func start(coord func() *cluster.Coordinator) *Runtime {
 	c := coord()
@@ -94,30 +105,41 @@ func start(coord func() *cluster.Coordinator) *Runtime {
 	}
 	nodeID := c.NodeID()
 
-	store := sharedstate.New(usage.RuntimeDB(), sharedstate.Options{NodeID: nodeID})
-	if !store.Available() {
-		log.Warn("cluster: no runtime database; shared limits and affinity are unavailable")
+	var pg *sharedstate.PGStore
+	var quota *pgQuotaAdapter
+	var slots coreauth.AccountSlotCoordinator
+	if pool := pgSlotPool(coord); pool != nil {
+		pg = sharedstate.NewPGStore(pool)
+		slots = newPGSlotAdapter(pool, coord, nodeID)
+		quota = newPGQuotaAdapter(pool, coord, nodeID)
+		executor.SetSharedIDMinter(pg)
+		management.SetClusterThrottleStore(pg)
+		ipaccess.SetClusterAutoBanStore(pg)
+		log.Infof("cluster: slots, affinity, quota windows, synthetic ids, login throttles and auto-ban counters are shared through PostgreSQL")
+	} else {
+		slots = splitSlotAdapter{coord: coord}
+		log.Warn("cluster: no cluster database; per-key and per-account limits are split across the active nodes, and login throttles and auto-bans stay per node")
 	}
-	return newRuntime(coord, store)
+	return newRuntime(coord, pg, quota, slots)
 }
 
-func newRuntime(coord func() *cluster.Coordinator, store *sharedstate.Store) *Runtime {
+func newRuntime(coord func() *cluster.Coordinator, pg *sharedstate.PGStore, quota *pgQuotaAdapter, slots coreauth.AccountSlotCoordinator) *Runtime {
 	rt := &Runtime{
 		coord:    coord,
-		store:    store,
+		pg:       pg,
+		quota:    quota,
+		slots:    slots,
 		relay:    newCooldownRelay(coord),
 		managers: make(map[*coreauth.Manager]struct{}),
 	}
 	rt.relay.start(coord())
 
-	// Split limits need no database, so the quota middleware and the account
-	// limiter are cluster-aware even without one. The guards and the id
-	// minting only change behaviour when there is a store to share.
-	middleware.SetClusterQuota(quotaAdapter{Store: store, coord: coord})
-	if store.Available() {
-		management.SetClusterThrottleStore(store)
-		ipaccess.SetClusterAutoBanStore(store)
-		executor.SetSharedIDMinter(store)
+	// The quota middleware is cluster-aware even without shared state: it then
+	// enforces each node's share of the limits. With a database it reads the
+	// cluster-wide windows instead.
+	middleware.SetClusterQuota(splitQuotaAdapter{coord: coord})
+	if rt.quota != nil {
+		middleware.SetClusterQuota(rt.quota)
 	}
 	return rt
 }
@@ -135,9 +157,11 @@ func (rt *Runtime) Attach(manager *coreauth.Manager) {
 	if done {
 		return
 	}
-	manager.SetAccountSlotCoordinator(accountSlotAdapter{store: rt.store, coord: rt.coord})
-	if rt.store.Available() {
-		manager.SetSessionAffinityStore(affinityAdapter{store: rt.store})
+	if rt.slots != nil {
+		manager.SetAccountSlotCoordinator(rt.slots)
+	}
+	if rt.pg != nil && rt.pg.Available() {
+		manager.SetSessionAffinityStore(pgAffinityAdapter{store: rt.pg})
 	}
 	rt.relay.attach(manager)
 }
@@ -151,17 +175,20 @@ func (rt *Runtime) Close() {
 	}
 	rt.relay.close()
 	middleware.SetClusterQuota(nil)
-	if rt.store.Available() {
-		management.SetClusterThrottleStore(nil)
-		ipaccess.SetClusterAutoBanStore(nil)
-		executor.SetSharedIDMinter(nil)
+	management.SetClusterThrottleStore(nil)
+	ipaccess.SetClusterAutoBanStore(nil)
+	executor.SetSharedIDMinter(nil)
+	if rt.quota != nil {
+		rt.quota.Close()
 	}
 	rt.mu.Lock()
 	for manager := range rt.managers {
 		manager.SetSessionAffinityStore(nil)
 	}
 	rt.mu.Unlock()
-	rt.store.Close()
+	if closer, ok := rt.slots.(interface{ Close() }); ok {
+		closer.Close()
+	}
 }
 
 // splitLimit is ceil(limit/nodes): each node's share of a limit when the
@@ -173,43 +200,57 @@ func splitLimit(limit, nodes int) int {
 	return (limit + nodes - 1) / nodes
 }
 
-type quotaAdapter struct {
-	*sharedstate.Store
+// splitQuotaAdapter is the quota middleware's view when the cluster has no
+// shared counters: nothing is shared, so each node enforces its share.
+type splitQuotaAdapter struct {
 	coord func() *cluster.Coordinator
 }
 
-func (a quotaAdapter) ActiveNodes() int { return a.coord().ActiveNodeCount() }
+func (a splitQuotaAdapter) Available() bool  { return false }
+func (a splitQuotaAdapter) ActiveNodes() int { return a.coord().ActiveNodeCount() }
 
-type accountSlotAdapter struct {
-	store *sharedstate.Store
+func (a splitQuotaAdapter) AdmitRequest(ctx context.Context, subject string, concurrencyLimit int) (sharedstate.Admission, error) {
+	return sharedstate.Admission{}, sharedstate.ErrUnavailable
+}
+
+func (a splitQuotaAdapter) CountRequest(subject string)            {}
+func (a splitQuotaAdapter) AddTokens(subject string, tokens int64) {}
+func (a splitQuotaAdapter) Rates(ctx context.Context, subjects []string) (map[string]sharedstate.Rate, error) {
+	return nil, sharedstate.ErrUnavailable
+}
+
+// splitSlotAdapter enforces this node's share of an account's concurrency
+// limit while there is no shared slot store.
+type splitSlotAdapter struct {
 	coord func() *cluster.Coordinator
 }
 
-func (a accountSlotAdapter) Shared() bool { return a.store.Available() }
+func (a splitSlotAdapter) Shared() bool { return false }
 
-func (a accountSlotAdapter) NodeShare(limit int) int {
+func (a splitSlotAdapter) NodeShare(limit int) int {
 	return splitLimit(limit, a.coord().ActiveNodeCount())
 }
 
-func (a accountSlotAdapter) Acquire(authID string, limit int) (bool, error) {
-	ok, _, err := a.store.AcquireAccountSlot(context.Background(), authID, limit)
-	return ok, err
+func (a splitSlotAdapter) Acquire(authID string, limit int) (bool, error) {
+	return false, sharedstate.ErrUnavailable
 }
 
-func (a accountSlotAdapter) Release(authID string) { a.store.ReleaseAccountSlot(authID) }
+func (a splitSlotAdapter) Release(authID string) {}
 
-type affinityAdapter struct{ store *sharedstate.Store }
+// pgAffinityAdapter maps sharedstate's binding onto the manager's store
+// interface.
+type pgAffinityAdapter struct{ store *sharedstate.PGStore }
 
-func (a affinityAdapter) Lookup(ctx context.Context, key string, ttl time.Duration) (coreauth.SessionAffinityBinding, error) {
+func (a pgAffinityAdapter) Lookup(ctx context.Context, key string, ttl time.Duration) (coreauth.SessionAffinityBinding, error) {
 	b, err := a.store.AffinityLookup(ctx, key, ttl)
 	return coreauth.SessionAffinityBinding{AccountRef: b.Account, Served: b.Served, Found: b.Found}, err
 }
 
-func (a affinityAdapter) Bind(ctx context.Context, key, accountRef string, ttl time.Duration) (coreauth.SessionAffinityBinding, error) {
+func (a pgAffinityAdapter) Bind(ctx context.Context, key, accountRef string, ttl time.Duration) (coreauth.SessionAffinityBinding, error) {
 	b, err := a.store.AffinityBind(ctx, key, accountRef, ttl)
 	return coreauth.SessionAffinityBinding{AccountRef: b.Account, Served: b.Served, Found: b.Found}, err
 }
 
-func (a affinityAdapter) Release(ctx context.Context, key, accountRef string) error {
+func (a pgAffinityAdapter) Release(ctx context.Context, key, accountRef string) error {
 	return a.store.AffinityRelease(ctx, key, accountRef)
 }

@@ -8,11 +8,11 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/enduser"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
-	apikeysettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/apikey"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
 func (h *Handler) endUserService() *enduser.Service {
@@ -81,7 +81,7 @@ func endUserError(c *gin.Context, err error) {
 	case errors.Is(err, enduser.ErrValidation):
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "validation_failed", "message": err.Error()}})
 	default:
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "internal_error", "message": err.Error()}})
+		abortStoreFailure(c, err)
 	}
 }
 
@@ -402,11 +402,13 @@ func (h *Handler) GetEndUserAPIKeys(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
 		return
 	}
-	items, err := svc.ListKeys(c.Request.Context(), effectiveTenantID(c), c.Param("id"))
+	tenantID := effectiveTenantID(c)
+	items, err := svc.ListKeys(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		endUserError(c, err)
 		return
 	}
+	decorateEndUserKeyExpiries(tenantID, items)
 	c.JSON(http.StatusOK, gin.H{"items": items, "capabilities": accessPolicyCapabilities()})
 }
 
@@ -562,7 +564,9 @@ func (h *Handler) GetPortalAPIKeys(c *gin.Context) {
 		endUserError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": activePortalKeys(items), "capabilities": accessPolicyCapabilities()})
+	active := activePortalKeys(items)
+	decorateEndUserKeyExpiries(user.TenantID, active)
+	c.JSON(http.StatusOK, gin.H{"items": active, "capabilities": accessPolicyCapabilities()})
 }
 
 // activePortalKeys 只把启用的 Key 交给门户：暂停由管理员决定，也只能由管理员恢复。

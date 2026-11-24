@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
-	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	baseauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth"
+	sdkauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 // persistedDocument returns the JSON document a save writes for auth, built
@@ -179,13 +179,6 @@ func authFromRow(r row, path string) (*coreauth.Auth, error) {
 	metadata[coreauth.CredentialVersionMetadataKey] = float64(r.Version)
 	provider := sdkauth.InferAuthProvider(metadata)
 	auth := sdkauth.NewFileAuthRecord(r.ID, path, provider, metadata, r.UpdatedAt)
-	// The cluster table owns auth_index. Keep the persisted value on the
-	// in-memory credential so switching between single-node and cluster mode
-	// cannot silently change request-log and quota identity.
-	if index := strings.TrimSpace(r.AuthIndex); index != "" {
-		auth.Index = index
-		auth.EnsureIndex()
-	}
 	if !r.CreatedAt.IsZero() {
 		auth.CreatedAt = r.CreatedAt
 	}

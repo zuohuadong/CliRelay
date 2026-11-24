@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	sqlmodelconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/modelconfig"
+	sqlmodelconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/modelconfig"
 )
 
 // Compatibility bridge contract:
@@ -14,11 +14,14 @@ import (
 // - Allowed callers: legacy adapters still being migrated; new management/runtime code should use modelconfig settings first.
 // - Exit condition: remaining callers move to modelconfig settings or narrower bridges; do not add new imports here.
 type ModelConfigRow = sqlmodelconfig.ModelConfigRow
+type ModelEnabledState = sqlmodelconfig.ModelEnabledState
 type ModelOwnerPresetRow = sqlmodelconfig.ModelOwnerPresetRow
 type AuthGroupOwnerMappingRow = sqlmodelconfig.AuthGroupOwnerMappingRow
 
 func initModelConfigTables(db *sql.DB) {
 	sqlmodelconfig.InitTables(db)
+	// Price changes queue recomputations of the requests already logged.
+	ensurePricingResyncJobsTable(db)
 }
 
 func modelConfigStore() sqlmodelconfig.Store {
@@ -84,6 +87,46 @@ func ListModelConfigsForTenant(tenantID string) []ModelConfigRow {
 	}
 
 	systemRows := modelConfigStoreForTenant(systemTenantID).ListModelConfigs()
+	return mergeInheritedModelRows(systemRows, tenantRows, func(row ModelConfigRow) string { return row.ModelID })
+}
+
+// ListModelEnabledStatesForTenant is ListModelConfigsForTenant narrowed to
+// model_id and enabled, for the disabled-model filter on the request path.
+//
+// It reads the same rows in the same order and merges them with the same
+// function, so the filter's answer matches the full listing while moving a
+// tenth of the bytes (see sqlmodelconfig.ModelEnabledState for why that matters).
+func ListModelEnabledStatesForTenant(tenantID string) []ModelEnabledState {
+	tenantID = normalizeTenantID(tenantID)
+	tenantRows := modelConfigStoreForTenant(tenantID).ListModelEnabledStates()
+	if isSystemTenant(tenantID) {
+		return tenantRows
+	}
+
+	systemRows := modelConfigStoreForTenant(systemTenantID).ListModelEnabledStates()
+	return mergeInheritedModelRows(systemRows, tenantRows, func(row ModelEnabledState) string { return row.ModelID })
+}
+
+// HasDisabledModelConfigsForTenant reports whether the tenant's merged catalog
+// can hold a disabled model.
+//
+// Every merged row is a stored row of the tenant or of the system catalog, so
+// when neither has a row with enabled = 0 the merged listing has none either
+// and the disabled set is empty. An error means "unknown": callers should list.
+func HasDisabledModelConfigsForTenant(tenantID string) (bool, error) {
+	tenantID = normalizeTenantID(tenantID)
+	has, err := modelConfigStoreForTenant(tenantID).HasDisabledModels()
+	if err != nil || has || isSystemTenant(tenantID) {
+		return has, err
+	}
+	return modelConfigStoreForTenant(systemTenantID).HasDisabledModels()
+}
+
+// mergeInheritedModelRows lays a business tenant's rows over the system catalog.
+// Tenant overrides win for the same model_id (case-insensitive); rows with an
+// empty model_id are dropped. Both listings above share it so that what the
+// disabled-model filter refuses can never drift from what the catalog shows.
+func mergeInheritedModelRows[T any](systemRows, tenantRows []T, modelID func(T) string) []T {
 	if len(systemRows) == 0 {
 		return tenantRows
 	}
@@ -91,11 +134,10 @@ func ListModelConfigsForTenant(tenantID string) []ModelConfigRow {
 		return systemRows
 	}
 
-	// Tenant overrides win for the same model_id (case-insensitive).
-	merged := make([]ModelConfigRow, 0, len(systemRows)+len(tenantRows))
+	merged := make([]T, 0, len(systemRows)+len(tenantRows))
 	indexByID := make(map[string]int, len(systemRows)+len(tenantRows))
 	for _, row := range systemRows {
-		key := strings.ToLower(strings.TrimSpace(row.ModelID))
+		key := strings.ToLower(strings.TrimSpace(modelID(row)))
 		if key == "" {
 			continue
 		}
@@ -103,7 +145,7 @@ func ListModelConfigsForTenant(tenantID string) []ModelConfigRow {
 		merged = append(merged, row)
 	}
 	for _, row := range tenantRows {
-		key := strings.ToLower(strings.TrimSpace(row.ModelID))
+		key := strings.ToLower(strings.TrimSpace(modelID(row)))
 		if key == "" {
 			continue
 		}

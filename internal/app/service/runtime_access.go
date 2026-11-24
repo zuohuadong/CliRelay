@@ -5,15 +5,15 @@ import (
 	"strings"
 	"sync"
 
-	configaccess "github.com/router-for-me/CLIProxyAPI/v8/internal/access/config_access"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/schedulingload"
-	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/modelconfig"
-	internalusage "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/schedulingload"
+	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/modelconfig"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
 type OAuthProviderModelConfigRow struct {
@@ -141,12 +141,15 @@ func ConfigureServiceAccess(cfg *config.Config, accessManager *sdkaccess.Manager
 	accessManager.SetProviders(sdkaccess.RegisteredProviders())
 }
 
-func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int) {
+func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int, int) {
 	return watcher.BuildAPIKeyClients(cfg)
 }
 
 func StartOpenRouterModelSync(ctx context.Context) {
 	internalusage.StartOpenRouterModelSyncScheduler(ctx)
+	// Price changes and catalog autofill reach the requests already logged
+	// through the leader-only pricing resync worker (see pricing_resync.go).
+	internalusage.StartPricingResyncWorker(ctx)
 }
 
 func ApplyDBBackedRuntimeSettings(cfg *config.Config, configPath string) {

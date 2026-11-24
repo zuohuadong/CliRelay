@@ -36,10 +36,7 @@ func TestConvertOpenAIResponsesRequestToClaude_ToolChoiceMapping(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := `{"model":"gpt-5","input":` + toolChoiceTestInput +
 				`,"tools":` + toolChoiceTestTools + `,"tool_choice":` + tc.toolChoice + `}`
-			result, err := ConvertOpenAIResponsesRequestToClaude("test-model", []byte(input), false)
-			if err != nil {
-				t.Fatal(err)
-			}
+			result := ConvertOpenAIResponsesRequestToClaude("test-model", []byte(input), false)
 
 			assertToolChoice(t, result, tc.want)
 			if got := gjson.GetBytes(result, "tools.#").Int(); got != 2 {
@@ -61,10 +58,7 @@ func TestConvertOpenAIResponsesRequestToClaude_ToolChoiceNoneWithoutToolsOmitted
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			input := `{"model":"gpt-5","input":` + toolChoiceTestInput + tc.field + `,"tool_choice":"none"}`
-			result, err := ConvertOpenAIResponsesRequestToClaude("test-model", []byte(input), false)
-			if err != nil {
-				t.Fatal(err)
-			}
+			result := ConvertOpenAIResponsesRequestToClaude("test-model", []byte(input), false)
 
 			if gjson.GetBytes(result, "tools").Exists() {
 				t.Fatalf("expected no tools in the translated request: %s", result)

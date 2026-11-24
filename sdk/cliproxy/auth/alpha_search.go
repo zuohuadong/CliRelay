@@ -9,9 +9,7 @@ func SupportsCodexAlphaSearch(a *Auth) bool {
 		return false
 	}
 	if strings.TrimSpace(a.Attributes["api_key"]) != "" {
-		enabled := strings.EqualFold(strings.TrimSpace(a.Attributes[AttributeCodexAlphaSearch]), "true") ||
-			strings.EqualFold(strings.TrimSpace(a.Attributes["alpha_search"]), "true")
-		return enabled && strings.TrimSpace(a.Attributes["base_url"]) != ""
+		return a.Attributes["alpha_search"] == "true" && strings.TrimSpace(a.Attributes["base_url"]) != ""
 	}
 	token, _ := a.Metadata["access_token"].(string)
 	return strings.TrimSpace(token) != ""

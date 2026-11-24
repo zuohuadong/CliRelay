@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 // channelLabelForTenant is how tenantID's log views name auth: a platform
@@ -27,13 +27,7 @@ func authIndexAliasGroup(auth *coreauth.Auth) []string {
 	if auth == nil {
 		return nil
 	}
-	primary := ""
-	if fileName := strings.TrimSpace(auth.FileName); fileName != "" {
-		primary = authIndexFromSeed("file:" + fileName)
-	}
-	if primary == "" {
-		primary = strings.TrimSpace(auth.EnsureIndex())
-	}
+	primary := strings.TrimSpace(auth.EnsureIndex())
 	if primary == "" {
 		return nil
 	}

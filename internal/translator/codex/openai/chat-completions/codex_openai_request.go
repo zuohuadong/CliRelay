@@ -1,5 +1,5 @@
 // Package openai provides utilities to translate OpenAI Chat Completions
-// request JSON into OpenAI Responses API request JSON using gjson/ojson.
+// request JSON into OpenAI Responses API request JSON using gjson/sjson.
 // It supports tools, multimodal text/image inputs, and Structured Outputs.
 // The package handles the conversion of OpenAI API requests into the format
 // expected by the OpenAI Responses API, including proper mapping of messages,
@@ -7,15 +7,13 @@
 package chat_completions
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"bytes"
 	"strconv"
 	"strings"
 
-	"github.com/MoeForge/moego/ojson"
-	applypatch "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/apply-patch"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // ConvertOpenAIRequestToCodex converts an OpenAI Chat Completions request JSON
@@ -30,427 +28,209 @@ import (
 //
 // Returns:
 //   - []byte: The transformed request data in OpenAI Responses API format
-func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
-	return convertOpenAIRequestToCodex(modelName, inputRawJSON, stream)
+func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream bool) []byte {
+	// One string copy of the request backs every lookup below. GetBytes would
+	// copy each result out of the slice instead, and messages is nearly the
+	// whole request.
+	rawJSON := string(inputRawJSON)
+	fields := readChatRequestFields(rawJSON)
 
-}
-
-// convertOpenAIRequestToCodex also reports a file or audio part Responses cannot
-// receive when it leaves a user turn with nothing to send.
-func convertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
-	rawJSON := inputRawJSON
-	var drops translatorcommon.UserTurnDrops
-	root := util.ParseGJSONBytesNoCopy(rawJSON)
-	tools := root.Get("tools")
-	toolResults := tools.Array()
-	// Start with empty JSON object
-	outDoc := ojson.NewDocString(`{"instructions":""}`)
-
-	// Stream must be set to true
-	_ = outDoc.Set("stream", stream)
-
-	for _, path := range []string{"max_completion_tokens", "max_tokens", "max_output_tokens"} {
-		if v := root.Get(path); v.Type == ojson.Number {
-			_ = outDoc.Set("max_output_tokens", v.Int())
-			break
-		}
-	}
-
-	// Map reasoning effort
-	if v := root.Get("reasoning_effort"); v.Exists() {
-		_ = outDoc.Set("reasoning.effort", v.Value())
-	} else {
-		_ = outDoc.Set("reasoning.effort", "medium")
-	}
-	if serviceTier := normalizeCodexServiceTier(root.Get("service_tier")); serviceTier != "" {
-		_ = outDoc.Set("service_tier", serviceTier)
-	}
-	_ = outDoc.Set("parallel_tool_calls", root.Get("parallel_tool_calls").Type != ojson.False)
-	// OpenAI documents reasoning summaries as explicit opt-in output. Leave
-	// reasoning.summary to the source request's canonical summary intent instead
-	// of coupling it to reasoning effort.
-	_ = outDoc.Set("include", []string{"reasoning.encrypted_content"})
-
-	// Model
-	_ = outDoc.Set("model", modelName)
-
-	// Build request-local tool metadata and name shortening map.
+	// Build tool name shortening map from original tools (if any)
 	originalToolNameMap := map[string]string{}
-	customToolNames := map[string]struct{}{}
-	functionToolNames := map[string]struct{}{}
 	{
-		if tools.IsArray() && len(toolResults) > 0 {
-			for _, tool := range toolResults {
-				switch tool.Get("type").String() {
-				case "function":
-					functionToolNames[tool.Get("function.name").String()] = struct{}{}
-				case "custom":
-					customToolNames[customToolDefinition(tool).Get("name").String()] = struct{}{}
+		tools := fields.tools
+		if tools.IsArray() && len(tools.Array()) > 0 {
+			var names []string
+			arr := tools.Array()
+			for i := 0; i < len(arr); i++ {
+				t := arr[i]
+				if t.Get("type").String() == "function" {
+					fn := t.Get("function")
+					if fn.Exists() {
+						if v := fn.Get("name"); v.Exists() {
+							names = append(names, v.String())
+						}
+					}
 				}
 			}
-			// A normalized function envelope cannot disambiguate declarations that share a name.
-			// Preserve function behavior for such ambiguous names.
-			for name := range functionToolNames {
-				delete(customToolNames, name)
+			if len(names) > 0 {
+				originalToolNameMap = buildShortNameMap(names)
 			}
-		}
-		allNames := collectRequestToolNames(rawJSON)
-		if len(allNames) > 0 {
-			originalToolNameMap = buildShortNameMap(allNames)
 		}
 	}
 
-	resolveToolCall := func(toolCall ojson.Result) (callType, name, input string, valid bool) {
-		switch toolCall.Get("type").String() {
-		case "custom":
-			return "custom", toolCall.Get("custom.name").String(), toolCall.Get("custom.input").String(), true
-		case "function":
-			name = toolCall.Get("function.name").String()
-			callType = "function"
-			if _, custom := customToolNames[name]; custom {
-				callType = "custom"
-			}
-			input = toolCall.Get("function.arguments").String()
-			if callType == "custom" && strings.TrimSpace(name) == "apply_patch" {
-				// Only normalized function history carries the JSON envelope. Explicit custom input is raw.
-				if unwrapped, errUnwrap := applypatch.UnwrapInput(input); errUnwrap == nil {
-					input = unwrapped
-				}
-			}
-			return callType, name, input, true
-		default:
-			return "", "", "", false
+	// The input array is written once, straight into this buffer, message
+	// contents included. Every sjson call re-parses and copies the whole string
+	// it edits: appending each content part to its message with sjson copied
+	// everything already in the message once per part, so a screenshot early
+	// in a turn was copied again for every later part. On 2026-11-10 that took
+	// 13–15% of the relay's CPU. The parts themselves are written by hand too
+	// (codex_openai_request_json.go): building one with sjson copied its
+	// screenshot twice more before it reached the buffer.
+	var inputBuf bytes.Buffer
+	inputBuf.Grow(len(rawJSON))
+	inputBuf.WriteByte('[')
+	inputFirst := true
+	appendInput := func(raw string) {
+		if raw == "" {
+			return
 		}
+		appendArrayElement(&inputBuf, &inputFirst, raw)
 	}
 
-	// Extract system instructions from first system message (string or text object)
-	messages := root.Get("messages")
-	type pendingToolCall struct {
-		callID       string
-		sourceCallID string
-		callType     string
-		consumed     bool
-	}
-	var pendingToolCalls []pendingToolCall
-	ambiguousToolCallIDs := map[string]struct{}{}
-
-	// Build input from messages, handling all message types including tool calls
-	inputItems := translatorcommon.NewRawArrayItems(messages.Get("#").Int())
+	messages := fields.messages
 	if messages.IsArray() {
-		arr := messages.Array()
-		for i := 0; i < len(arr); i++ {
-			m := arr[i]
+		// ForEach rather than Array, here and for content below: Array finds
+		// where each element ends a byte at a time, ForEach eight bytes at a
+		// time, and the elements carry the screenshots.
+		messages.ForEach(func(_, m gjson.Result) bool {
 			role := m.Get("role").String()
 
 			switch role {
 			case "tool":
-				// Handle tool response messages as top-level tool call output objects.
 				toolCallID := m.Get("tool_call_id").String()
-				if _, ambiguous := ambiguousToolCallIDs[toolCallID]; toolCallID != "" && ambiguous {
-					continue
-				}
-
-				pendingIndex := -1
-				for index := range pendingToolCalls {
-					pendingCall := &pendingToolCalls[index]
-					if pendingCall.consumed {
-						continue
-					}
-					if toolCallID == "" || pendingCall.sourceCallID == toolCallID || pendingCall.callID == toolCallID {
-						pendingIndex = index
-						break
-					}
-				}
-
-				if pendingIndex < 0 {
-					continue
-				}
-				pendingCall := &pendingToolCalls[pendingIndex]
-				pendingCall.consumed = true
-				toolCallID = pendingCall.callID
-				outputType := "function_call_output"
-				if pendingCall.callType == "custom" {
-					outputType = "custom_tool_call_output"
-				}
-
-				toolOutputDoc := ojson.NewDocString(`{}`)
-				_ = toolOutputDoc.Set("type", outputType)
-				_ = toolOutputDoc.Set("call_id", toolCallID)
-				setToolCallOutputContentDoc(toolOutputDoc, m.Get("content"))
-				inputItems = append(inputItems, toolOutputDoc.Bytes())
+				funcOutput := `{}`
+				funcOutput, _ = sjson.Set(funcOutput, "type", "function_call_output")
+				funcOutput, _ = sjson.Set(funcOutput, "call_id", toolCallID)
+				funcOutput, _ = sjson.SetRaw(funcOutput, "output", common.ToResponsesOutput(common.ParseToolResult(m.Get("content"))))
+				appendInput(funcOutput)
 
 			default:
-				// A new conversational message starts a new tool-call batch.
-				pendingToolCalls = nil
-				ambiguousToolCallIDs = map[string]struct{}{}
-
-				// Handle regular messages
-				msgDoc := ojson.NewDocString(`{}`)
-				_ = msgDoc.Set("type", "message")
+				head := `{}`
+				head, _ = sjson.Set(head, "type", "message")
 				if role == "system" {
-					_ = msgDoc.Set("role", "developer")
+					head, _ = sjson.Set(head, "role", "developer")
 				} else {
-					_ = msgDoc.Set("role", role)
+					head, _ = sjson.Set(head, "role", role)
 				}
+				// The content array follows the head minus its closing brace,
+				// exactly where sjson would have added the key.
+				appendArrayElement(&inputBuf, &inputFirst, head[:len(head)-1])
+				inputBuf.WriteString(`,"content":[`)
+				partsFirst := true
 
-				contentItems := make([][]byte, 0, 4)
-				// Counts the parts this user turn really sends; an empty text part does not.
-				turnSendable := 0
-
-				// Handle regular content
 				c := m.Get("content")
-				if c.Exists() && c.Type == ojson.String && c.String() != "" {
-					turnSendable++
-					// Single string content
-					partType := "input_text"
-					if role == "assistant" {
-						partType = "output_text"
-					}
-					partDoc := ojson.NewDocString(`{}`)
-					_ = partDoc.Set("type", partType)
-					_ = partDoc.Set("text", c.String())
-					contentItems = append(contentItems, partDoc.Bytes())
+				if c.Exists() && c.Type == gjson.String && c.String() != "" {
+					writeTextPart(&inputBuf, &partsFirst, role, c.String())
 				} else if c.Exists() && c.IsArray() {
-					items := c.Array()
-					for j := 0; j < len(items); j++ {
-						it := items[j]
+					c.ForEach(func(_, it gjson.Result) bool {
 						t := it.Get("type").String()
 						switch t {
 						case "text":
-							partType := "input_text"
-							if role == "assistant" {
-								partType = "output_text"
-							}
-							partDoc := ojson.NewDocString(`{}`)
-							_ = partDoc.Set("type", partType)
-							_ = partDoc.Set("text", it.Get("text").String())
-							contentItems = append(contentItems, partDoc.Bytes())
-							if it.Get("text").String() != "" {
-								turnSendable++
-							}
+							writeTextPart(&inputBuf, &partsFirst, role, it.Get("text").String())
 						case "image_url":
-							// Map image inputs to input_image for Responses API
 							if role == "user" {
-								partDoc := ojson.NewDocString(`{}`)
-								_ = partDoc.Set("type", "input_image")
+								startPart(&inputBuf, &partsFirst, "input_image")
 								if u := it.Get("image_url.url"); u.Exists() {
-									_ = partDoc.Set("image_url", u.String())
+									writeStringMember(&inputBuf, "image_url", u.String())
 								}
-								contentItems = append(contentItems, partDoc.Bytes())
-								turnSendable++
+								inputBuf.WriteByte('}')
 							}
 						case "file":
 							if role == "user" {
-								if part, ok := codexInputFilePart(it); ok {
-									contentItems = append(contentItems, part)
-									turnSendable++
-								} else {
-									drops.Drop(t)
-								}
-							}
-						case "input_audio":
-							if role == "user" {
-								audioData := it.Get("input_audio.data").String()
-								audioFormat := it.Get("input_audio.format").String()
-								if audioData != "" {
-									partDoc := ojson.NewDocString(`{"type":"input_audio","input_audio":{"data":""}}`)
-									_ = partDoc.Set("input_audio.data", audioData)
-									if audioFormat != "" {
-										_ = partDoc.Set("input_audio.format", audioFormat)
+								fileData := it.Get("file.file_data").String()
+								filename := it.Get("file.filename").String()
+								if fileData != "" {
+									startPart(&inputBuf, &partsFirst, "input_file")
+									writeStringMember(&inputBuf, "file_data", fileData)
+									if filename != "" {
+										writeStringMember(&inputBuf, "filename", filename)
 									}
-									contentItems = append(contentItems, partDoc.Bytes())
-									turnSendable++
-								} else {
-									drops.Drop(t)
+									inputBuf.WriteByte('}')
 								}
 							}
 						}
-					}
-				}
-				if role == "user" {
-					drops.EndTurn(turnSendable)
+						return true
+					})
 				}
 
-				// Don't emit empty assistant messages when only tool_calls
-				// are present — Responses API needs function_call items
-				// directly, otherwise call_id matching fails (#2132).
-				if role != "assistant" || len(contentItems) > 0 {
-					_ = msgDoc.SetRawBytes("content", translatorcommon.JoinRawArray(contentItems))
-					inputItems = append(inputItems, msgDoc.Bytes())
-				}
+				inputBuf.WriteString(`]}`)
 
-				// Handle tool calls for assistant messages as separate top-level objects
 				if role == "assistant" {
 					toolCalls := m.Get("tool_calls")
 					if toolCalls.Exists() && toolCalls.IsArray() {
 						toolCallsArr := toolCalls.Array()
-						callIDCounts := map[string]int{}
-						usedCallIDs := map[string]struct{}{}
-						for _, tc := range toolCallsArr {
-							_, _, _, valid := resolveToolCall(tc)
-							callID := tc.Get("id").String()
-							if valid && callID != "" {
-								callIDCounts[callID]++
-								usedCallIDs[callID] = struct{}{}
-							}
-						}
-						for callID, count := range callIDCounts {
-							if count > 1 {
-								ambiguousToolCallIDs[callID] = struct{}{}
-							}
-						}
-
 						for j := 0; j < len(toolCallsArr); j++ {
 							tc := toolCallsArr[j]
-							toolCallType, toolCallName, toolCallInput, valid := resolveToolCall(tc)
-							if !valid {
-								continue
-							}
-							sourceCallID := tc.Get("id").String()
-							if _, ambiguous := ambiguousToolCallIDs[sourceCallID]; sourceCallID != "" && ambiguous {
-								continue
-							}
-							callID := sourceCallID
-							if callID == "" {
-								baseCallID := "call_missing_" + strconv.Itoa(i) + "_" + strconv.Itoa(j)
-								callID = baseCallID
-								for suffix := 1; ; suffix++ {
-									if _, used := usedCallIDs[callID]; !used {
-										break
+							if tc.Get("type").String() == "function" {
+								funcCall := `{}`
+								funcCall, _ = sjson.Set(funcCall, "type", "function_call")
+								funcCall, _ = sjson.Set(funcCall, "call_id", tc.Get("id").String())
+								{
+									name := tc.Get("function.name").String()
+									if short, ok := originalToolNameMap[name]; ok {
+										name = short
+									} else {
+										name = shortenNameIfNeeded(name)
 									}
-									callID = baseCallID + "_" + strconv.Itoa(suffix)
+									funcCall, _ = sjson.Set(funcCall, "name", name)
 								}
-								usedCallIDs[callID] = struct{}{}
-							}
-							// Codex rejects call_id values longer than 64 characters.
-							if shortID := shortenCodexCallIDIfNeeded(callID); shortID != callID {
-								for attempt := 1; ; attempt++ {
-									if _, used := usedCallIDs[shortID]; !used {
-										break
-									}
-									shortID = shortenCodexCallIDIfNeeded(callID + "_" + strconv.Itoa(attempt))
-								}
-								usedCallIDs[shortID] = struct{}{}
-								callID = shortID
-							}
-							pendingToolCalls = append(pendingToolCalls, pendingToolCall{
-								callID:       callID,
-								sourceCallID: sourceCallID,
-								callType:     toolCallType,
-							})
-
-							switch toolCallType {
-							case "function":
-								// Create function_call as top-level object
-								funcCallDoc := ojson.NewDocString(`{}`)
-								_ = funcCallDoc.Set("type", "function_call")
-								_ = funcCallDoc.Set("call_id", callID)
-								if short, ok := originalToolNameMap[toolCallName]; ok {
-									toolCallName = short
-								} else {
-									toolCallName = shortenNameIfNeeded(toolCallName)
-								}
-								_ = funcCallDoc.Set("name", toolCallName)
-								_ = funcCallDoc.Set("arguments", toolCallInput)
-								inputItems = append(inputItems, funcCallDoc.Bytes())
-							case "custom":
-								customCallDoc := ojson.NewDocString(`{}`)
-								_ = customCallDoc.Set("type", "custom_tool_call")
-								_ = customCallDoc.Set("call_id", callID)
-								if short, ok := originalToolNameMap[toolCallName]; ok {
-									toolCallName = short
-								} else {
-									toolCallName = shortenNameIfNeeded(toolCallName)
-								}
-								_ = customCallDoc.Set("name", toolCallName)
-								_ = customCallDoc.Set("input", toolCallInput)
-								inputItems = append(inputItems, customCallDoc.Bytes())
+								funcCall, _ = sjson.Set(funcCall, "arguments", tc.Get("function.arguments").String())
+								appendInput(funcCall)
 							}
 						}
 					}
 				}
 			}
-		}
+			return true
+		})
 	}
-	translatorcommon.SetRawArrayItemsDoc(outDoc, "input", inputItems)
+	inputBuf.WriteByte(']')
 
-	// Map response_format and text settings to Responses API text.format
-	rf := root.Get("response_format")
-	text := root.Get("text")
-	if rf.Exists() {
-		// Always create text object when response_format provided
-		_ = outDoc.SetRawBytes("text", []byte(`{}`))
+	// The envelope is built around an empty input array and the history goes in
+	// last, in the placeholder's place: every sjson call below copies the whole
+	// document it edits, which would otherwise include the history.
+	out := `{"instructions":""}`
+	out, _ = sjson.Set(out, "stream", stream)
+	if v := fields.reasoningEffort; v.Exists() {
+		out, _ = sjson.Set(out, "reasoning.effort", v.Value())
+	} else {
+		out, _ = sjson.Set(out, "reasoning.effort", "medium")
+	}
+	out, _ = sjson.Set(out, "parallel_tool_calls", true)
+	out, _ = sjson.Set(out, "reasoning.summary", "auto")
+	out, _ = sjson.Set(out, "include", []string{"reasoning.encrypted_content"})
+	out, _ = sjson.Set(out, "model", modelName)
+	out, _ = sjson.Set(out, "store", false)
+	out, _ = sjson.SetRaw(out, "input", `[]`)
 
-		rft := rf.Get("type").String()
-		switch rft {
-		case "text":
-			_ = outDoc.Set("text.format.type", "text")
-		case "json_schema":
-			js := rf.Get("json_schema")
-			if js.Exists() {
-				_ = outDoc.Set("text.format.type", "json_schema")
-				if v := js.Get("name"); v.Exists() {
-					_ = outDoc.Set("text.format.name", v.Value())
-				}
-				if v := js.Get("strict"); v.Exists() {
-					_ = outDoc.Set("text.format.strict", v.Value())
-				}
-				if v := js.Get("schema"); v.Exists() {
-					_ = outDoc.SetRawBytes("text.format.schema", []byte(v.Raw))
-				}
-			}
-		}
-
-		// Map verbosity if provided
-		if text.Exists() {
-			if v := text.Get("verbosity"); v.Exists() {
-				_ = outDoc.Set("text.verbosity", v.Value())
-			}
-		}
-	} else if text.Exists() {
-		// If only text.verbosity present (no response_format), map verbosity
-		if v := text.Get("verbosity"); v.Exists() {
-			_ = outDoc.SetRawBytes("text", []byte(`{}`))
-			_ = outDoc.Set("text.verbosity", v.Value())
-		}
+	// Map response_format to the Responses API text.format, then the verbosity
+	// a client may have set for a Responses upstream.
+	format := common.OutputFormatFromChatResponseFormat(fields.responseFormat)
+	if spec, ok := format.ResponsesFormat(); ok {
+		out, _ = sjson.SetRaw(out, "text.format", spec)
+	}
+	if v := fields.verbosity; v.Exists() {
+		out, _ = sjson.Set(out, "text.verbosity", v.Value())
 	}
 
-	// Map tools (flatten function fields)
-	if tools.IsArray() && len(toolResults) > 0 {
-		toolItems := make([][]byte, 0, len(toolResults))
-		arr := toolResults
+	// Map tools (flatten function fields) once.
+	tools := fields.tools
+	if tools.IsArray() && len(tools.Array()) > 0 {
+		var toolsBuf bytes.Buffer
+		toolsBuf.WriteByte('[')
+		toolsFirst := true
+		appendTool := func(raw string) {
+			if raw == "" {
+				return
+			}
+			if !toolsFirst {
+				toolsBuf.WriteByte(',')
+			}
+			toolsFirst = false
+			toolsBuf.WriteString(raw)
+		}
+		arr := tools.Array()
 		for i := 0; i < len(arr); i++ {
 			t := arr[i]
 			toolType := t.Get("type").String()
-			if toolType == "custom" {
-				definition := customToolDefinition(t)
-				itemDoc := ojson.NewDocString(definition.Raw)
-				_ = itemDoc.Set("type", "custom")
-				if grammar := definition.Get("format.grammar"); definition.Get("format.type").String() == "grammar" && grammar.IsObject() {
-					_ = itemDoc.SetRaw("format", grammar.Raw)
-					_ = itemDoc.Set("format.type", "grammar")
-				}
-				name := definition.Get("name").String()
-				if short, ok := originalToolNameMap[name]; ok {
-					name = short
-				} else {
-					name = shortenNameIfNeeded(name)
-				}
-				_ = itemDoc.Set("name", name)
-				toolItems = append(toolItems, itemDoc.Bytes())
-				continue
-			}
-
-			// Pass through built-in tools (e.g. {"type":"web_search"}) directly for the Responses API.
-			// Only function and custom tools need structural conversion.
 			if toolType != "" && toolType != "function" && t.IsObject() {
-				toolItems = append(toolItems, []byte(t.Raw))
+				appendTool(t.Raw)
 				continue
 			}
-
 			if toolType == "function" {
-				itemDoc := ojson.NewDocString(`{}`)
-				_ = itemDoc.Set("type", "function")
+				item := `{}`
+				item, _ = sjson.Set(item, "type", "function")
 				fn := t.Get("function")
 				if fn.Exists() {
 					if v := fn.Get("name"); v.Exists() {
@@ -460,45 +240,47 @@ func convertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 						} else {
 							name = shortenNameIfNeeded(name)
 						}
-						_ = itemDoc.Set("name", name)
+						item, _ = sjson.Set(item, "name", name)
 					}
 					if v := fn.Get("description"); v.Exists() {
-						_ = itemDoc.Set("description", v.Value())
+						item, _ = sjson.Set(item, "description", v.Value())
 					}
 					if v := fn.Get("parameters"); v.Exists() {
-						_ = itemDoc.SetRawBytes("parameters", []byte(v.Raw))
+						item, _ = sjson.SetRaw(item, "parameters", v.Raw)
 					}
-					if v := fn.Get("strict"); v.Exists() {
-						_ = itemDoc.Set("strict", v.Value())
+					// Chat Completions treats a function without strict (or
+					// with strict null) as non-strict. The Responses API
+					// treats a missing strict as a request to try strict
+					// mode. On 2026-11-11 the Codex backend fell back to
+					// non-strict only when the request had no Version
+					// header; with the one Codex clients send (the executor
+					// forwards it), gpt-6-astra rejected Codex App's
+					// automation_update (root "properties":{} beside a oneOf
+					// of $ref branches) with "required property 'id' is
+					// unsatisfiable". Write the Chat default out, as the
+					// Claude and Gemini translators to Codex already do.
+					if v := fn.Get("strict"); v.Exists() && v.Type != gjson.Null {
+						item, _ = sjson.Set(item, "strict", v.Value())
 					} else {
-						// Chat Completions defaults strict to false while the Responses API
-						// defaults it to true, so an omitted value must be forwarded explicitly.
-						_ = itemDoc.Set("strict", false)
+						item, _ = sjson.Set(item, "strict", false)
 					}
 				}
-				toolItems = append(toolItems, itemDoc.Bytes())
+				appendTool(item)
 			}
 		}
-		_ = outDoc.SetRawBytes("tools", translatorcommon.JoinRawArray(toolItems))
+		toolsBuf.WriteByte(']')
+		out, _ = sjson.SetRaw(out, "tools", toolsBuf.String())
 	}
 
 	// Map tool_choice when present.
-	// Chat Completions: "tool_choice" can be a string ("auto"/"none") or an object (e.g. {"type":"function","function":{"name":"..."}}).
-	// Responses API: keep built-in tool choices as-is and flatten named choices to {"type":"...","name":"..."}.
-	if tc := root.Get("tool_choice"); tc.Exists() {
+	if tc := fields.toolChoice; tc.Exists() {
 		switch {
-		case tc.Type == ojson.String:
-			_ = outDoc.Set("tool_choice", tc.String())
+		case tc.Type == gjson.String:
+			out, _ = sjson.Set(out, "tool_choice", tc.String())
 		case tc.IsObject():
 			tcType := tc.Get("type").String()
-			if tcType == "function" || tcType == "custom" {
-				name := customToolDefinition(tc).Get("name").String()
-				if tcType == "function" {
-					name = tc.Get("function.name").String()
-					if _, custom := customToolNames[name]; custom {
-						tcType = "custom"
-					}
-				}
+			if tcType == "function" {
+				name := tc.Get("function.name").String()
 				if name != "" {
 					if short, ok := originalToolNameMap[name]; ok {
 						name = short
@@ -506,272 +288,98 @@ func convertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 						name = shortenNameIfNeeded(name)
 					}
 				}
-				choiceDoc := ojson.NewDocString(`{}`)
-				_ = choiceDoc.Set("type", tcType)
+				choice := `{}`
+				choice, _ = sjson.Set(choice, "type", "function")
 				if name != "" {
-					_ = choiceDoc.Set("name", name)
+					choice, _ = sjson.Set(choice, "name", name)
 				}
-				_ = outDoc.SetRawBytes("tool_choice", choiceDoc.Bytes())
+				out, _ = sjson.SetRaw(out, "tool_choice", choice)
 			} else if tcType != "" {
-				// Built-in tool choices (e.g. {"type":"web_search"}) are already Responses-compatible.
-				_ = outDoc.SetRawBytes("tool_choice", []byte(tc.Raw))
+				out, _ = sjson.SetRaw(out, "tool_choice", tc.Raw)
 			}
 		}
 	}
 
-	_ = outDoc.Set("store", false)
-	return outDoc.Bytes(), drops.Err()
+	body := spliceInput(out, inputBuf.Bytes())
+	if format.Kind == common.OutputFormatJSONObject {
+		// JSON mode needs the word "json" somewhere in the conversation. The
+		// check reads the history, so it runs once the history is in.
+		body = common.EnsureResponsesMentionsJSON(body)
+	}
+	return body
 }
 
-func setToolCallOutputContentDoc(doc *ojson.Doc, content ojson.Result) {
-	switch {
-	case content.Type == ojson.String:
-		structuredContent := ojson.Parse(content.String())
-		if hasToolOutputImagePart(structuredContent) {
-			setToolCallOutputContentDoc(doc, structuredContent)
-			return
-		}
-		_ = doc.Set("output", content.String())
-	case content.IsArray():
-		outputItems := make([][]byte, 0, 4)
-		for _, item := range content.Array() {
-			outputItems = append(outputItems, toolOutputContentPart(item))
-		}
-		_ = doc.SetRawBytes("output", translatorcommon.JoinRawArray(outputItems))
-	default:
-		fallbackOutput := content.Raw
-		if fallbackOutput == "" {
-			fallbackOutput = content.String()
-		}
-		_ = doc.Set("output", fallbackOutput)
+// appendArrayElement writes raw as the next element of the JSON array being
+// written to buf; first is true until the array has an element.
+func appendArrayElement(buf *bytes.Buffer, first *bool, raw string) {
+	if !*first {
+		buf.WriteByte(',')
 	}
+	*first = false
+	buf.WriteString(raw)
 }
 
-func toolOutputContentPart(item ojson.Result) []byte {
-	itemType := item.Get("type").String()
-	switch itemType {
-	case "text", "input_text", "output_text":
-		partDoc := ojson.NewDocString(`{}`)
-		_ = partDoc.Set("type", "input_text")
-		_ = partDoc.Set("text", item.Get("text").String())
-		return partDoc.Bytes()
-	case "image_url", "input_image":
-		imageURL := item.Get("image_url.url").String()
-		fileID := item.Get("image_url.file_id").String()
-		if itemType == "input_image" {
-			imageURL = item.Get("image_url").String()
-			fileID = item.Get("file_id").String()
-		}
-		if imageURL == "" && fileID == "" {
-			return toolOutputFallbackPart(item)
-		}
-		partDoc := ojson.NewDocString(`{}`)
-		_ = partDoc.Set("type", "input_image")
-		if imageURL != "" {
-			_ = partDoc.Set("image_url", imageURL)
-		}
-		if fileID != "" {
-			_ = partDoc.Set("file_id", fileID)
-		}
-		detail := item.Get("image_url.detail").String()
-		if itemType == "input_image" {
-			detail = item.Get("detail").String()
-		}
-		if detail != "" {
-			_ = partDoc.Set("detail", detail)
-		}
-		return partDoc.Bytes()
-	case "file":
-		if part, ok := codexInputFilePart(item); ok {
-			return part
-		}
-		return toolOutputFallbackPart(item)
-	default:
-		return toolOutputFallbackPart(item)
+// spliceInput writes input in place of the empty input array the envelope was
+// built with, copying the history once.
+func spliceInput(envelope string, input []byte) []byte {
+	placeholder := gjson.Get(envelope, "input")
+	if placeholder.Raw != "[]" || placeholder.Index <= 0 {
+		// Unreachable while the envelope is built as above; sjson produces the
+		// same bytes, only with more copying.
+		body, _ := sjson.SetRawBytes([]byte(envelope), "input", input)
+		return body
 	}
+	end := placeholder.Index + len(placeholder.Raw)
+	body := make([]byte, 0, len(envelope)-len(placeholder.Raw)+len(input))
+	body = append(body, envelope[:placeholder.Index]...)
+	body = append(body, input...)
+	return append(body, envelope[end:]...)
 }
 
-// codexInputFilePart maps a Chat Completions file part onto a Responses input_file
-// part. It reports false when the part names no file id, bytes or url.
-func codexInputFilePart(item ojson.Result) ([]byte, bool) {
-	fileID := item.Get("file.file_id").String()
-	fileData := item.Get("file.file_data").String()
-	fileURL := item.Get("file.file_url").String()
-	if fileID == "" && fileData == "" && fileURL == "" {
-		return nil, false
-	}
-	partDoc := ojson.NewDocString(`{}`)
-	_ = partDoc.Set("type", "input_file")
-	if fileID != "" {
-		_ = partDoc.Set("file_id", fileID)
-	}
-	if fileData != "" {
-		_ = partDoc.Set("file_data", fileData)
-	}
-	if fileURL != "" {
-		_ = partDoc.Set("file_url", fileURL)
-	}
-	if filename := item.Get("file.filename").String(); filename != "" {
-		_ = partDoc.Set("filename", filename)
-	}
-	return partDoc.Bytes(), true
-}
-
-func hasToolOutputImagePart(content ojson.Result) bool {
-	if !content.IsArray() {
-		return false
-	}
-	for _, item := range content.Array() {
-		switch item.Get("type").String() {
-		case "image_url":
-			if item.Get("image_url.url").String() != "" || item.Get("image_url.file_id").String() != "" {
-				return true
-			}
-		case "input_image":
-			if item.Get("image_url").String() != "" || item.Get("file_id").String() != "" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func toolOutputFallbackPart(item ojson.Result) []byte {
-	text := item.Raw
-	if text == "" {
-		text = item.String()
-	}
-	partDoc := ojson.NewDocString(`{}`)
-	_ = partDoc.Set("type", "input_text")
-	_ = partDoc.Set("text", text)
-	return partDoc.Bytes()
-}
-
-// sanitizeToolName normalizes a tool name by replacing any character outside
-// [a-zA-Z0-9_-] with an underscore so it conforms to Codex upstream requirements.
-func sanitizeToolName(name string) string {
-	if name == "" {
-		return ""
-	}
-	var sb strings.Builder
-	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
-			sb.WriteRune(r)
-		} else {
-			sb.WriteByte('_')
-		}
-	}
-	return sb.String()
-}
-
-// shortenNameIfNeeded normalizes invalid characters and applies the shortening rule for a single name.
+// shortenNameIfNeeded applies the simple shortening rule for a single name.
 // If the name length exceeds 64, it will try to preserve the "mcp__" prefix and last segment.
 // Otherwise it truncates to 64 characters.
 func shortenNameIfNeeded(name string) string {
 	const limit = 64
-	sanitized := sanitizeToolName(name)
-	if len(sanitized) <= limit {
-		return sanitized
+	if len(name) <= limit {
+		return name
 	}
-	if strings.HasPrefix(sanitized, "mcp__") {
-		// Keep prefix and last segment after '__'
-		idx := strings.LastIndex(sanitized, "__")
+	if strings.HasPrefix(name, "mcp__") {
+		idx := strings.LastIndex(name, "__")
 		if idx > 0 {
-			candidate := "mcp__" + sanitized[idx+2:]
+			candidate := "mcp__" + name[idx+2:]
 			if len(candidate) > limit {
 				return candidate[:limit]
 			}
 			return candidate
 		}
 	}
-	return sanitized[:limit]
-}
-
-// customToolDefinition accepts both Chat Completions and Responses declarations.
-func customToolDefinition(tool ojson.Result) ojson.Result {
-	if custom := tool.Get("custom"); custom.IsObject() {
-		return custom
-	}
-	return tool
-}
-
-// collectRequestToolNames extracts unique tool names across tools declarations,
-// tool_choice, and historical assistant tool_calls in a deterministic order.
-func collectRequestToolNames(rawJSON []byte) []string {
-	var names []string
-	seen := map[string]struct{}{}
-	addName := func(name string) {
-		if name == "" {
-			return
-		}
-		if _, ok := seen[name]; !ok {
-			n := strings.Clone(name)
-			names = append(names, n)
-			seen[n] = struct{}{}
-		}
-	}
-
-	// 1. tools declarations
-	tools := ojson.GetBytesNoCopy(rawJSON, "tools")
-	if tools.IsArray() {
-		for _, tool := range tools.Array() {
-			switch tool.Get("type").String() {
-			case "function":
-				addName(tool.Get("function.name").String())
-			case "custom":
-				addName(customToolDefinition(tool).Get("name").String())
-			}
-		}
-	}
-
-	// 2. tool_choice
-	tc := ojson.GetBytesNoCopy(rawJSON, "tool_choice")
-	if tc.IsObject() {
-		switch tc.Get("type").String() {
-		case "function":
-			fnName := tc.Get("function.name").String()
-			if fnName == "" {
-				fnName = tc.Get("name").String()
-			}
-			addName(fnName)
-		case "custom":
-			addName(customToolDefinition(tc).Get("name").String())
-		}
-	}
-
-	// 3. assistant tool_calls in messages
-	messages := ojson.GetBytesNoCopy(rawJSON, "messages")
-	if messages.IsArray() {
-		for _, msg := range messages.Array() {
-			if msg.Get("role").String() == "assistant" {
-				toolCalls := msg.Get("tool_calls")
-				if toolCalls.IsArray() {
-					for _, tc := range toolCalls.Array() {
-						fnName := tc.Get("function.name").String()
-						if fnName != "" {
-							addName(fnName)
-						} else {
-							addName(tc.Get("custom.name").String())
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return names
+	return name[:limit]
 }
 
 // buildShortNameMap generates unique short names (<=64) for the given list of names.
 // It preserves the "mcp__" prefix with the last segment when possible and ensures uniqueness
-// by appending suffixes like "_1", "_2" if needed.
+// by appending suffixes like "~1", "~2" if needed.
 func buildShortNameMap(names []string) map[string]string {
 	const limit = 64
 	used := map[string]struct{}{}
 	m := map[string]string{}
 
 	baseCandidate := func(n string) string {
-		return shortenNameIfNeeded(n)
+		if len(n) <= limit {
+			return n
+		}
+		if strings.HasPrefix(n, "mcp__") {
+			idx := strings.LastIndex(n, "__")
+			if idx > 0 {
+				cand := "mcp__" + n[idx+2:]
+				if len(cand) > limit {
+					cand = cand[:limit]
+				}
+				return cand
+			}
+		}
+		return n[:limit]
 	}
 
 	makeUnique := func(cand string) string {
@@ -803,32 +411,4 @@ func buildShortNameMap(names []string) map[string]string {
 		m[n] = uniq
 	}
 	return m
-}
-
-func normalizeCodexServiceTier(result ojson.Result) string {
-	if !result.Exists() || result.Type != ojson.String {
-		return ""
-	}
-
-	switch strings.ToLower(strings.TrimSpace(result.String())) {
-	case "fast", "priority":
-		return "priority"
-	case "ultrafast":
-		return "ultrafast"
-	default:
-		return ""
-	}
-}
-
-// shortenCodexCallIDIfNeeded keeps client tool call IDs within the Codex
-// call_id limit with a deterministic, low-collision mapping.
-func shortenCodexCallIDIfNeeded(id string) string {
-	const limit = 64
-	if len(id) <= limit {
-		return id
-	}
-
-	sum := sha256.Sum256([]byte(id))
-	suffix := "_" + hex.EncodeToString(sum[:8])
-	return id[:limit-len(suffix)] + suffix
 }

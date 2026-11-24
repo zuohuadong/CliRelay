@@ -34,10 +34,7 @@ func TestConvertOpenAIResponsesRequestToCodex_LargeBodyAllocBound(t *testing.T) 
 		bb.ReportAllocs()
 		bb.SetBytes(int64(len(in)))
 		for i := 0; i < bb.N; i++ {
-			out, err := ConvertOpenAIResponsesRequestToCodex("gpt-5.4", in, true)
-			if err != nil {
-				bb.Fatal(err)
-			}
+			out := ConvertOpenAIResponsesRequestToCodex("gpt-5.4", in, true)
 			if len(out) < len(in)/2 {
 				bb.Fatalf("output too small: %d", len(out))
 			}

@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 )
 
 const publicLookupBodyLimit int64 = 8 << 10
@@ -28,8 +28,12 @@ type publicLookupRequest struct {
 	ModelsEmpty    bool     `json:"models_empty"`
 	ChannelsEmpty  bool     `json:"channels_empty"`
 	StatusesEmpty  bool     `json:"statuses_empty"`
-	Part           string   `json:"part"`
-	Format         string   `json:"format"`
+	// ClientNames selects the caller's requests by client, like the management
+	// view's client_names.
+	ClientNames      []string `json:"client_names"`
+	ClientNamesEmpty bool     `json:"client_names_empty"`
+	Part             string   `json:"part"`
+	Format           string   `json:"format"`
 }
 
 func readPublicLookupRequest(c *gin.Context) (publicLookupRequest, int, string) {
@@ -106,6 +110,8 @@ func readPublicLookupRequest(c *gin.Context) (publicLookupRequest, int, string) 
 		req.Channels = append(req.Channels, req.Channel)
 	}
 	req.Channels = dedupePublicLookupStrings(req.Channels)
+	req.ClientNames = dedupePublicLookupStrings(append(req.ClientNames, queryStringListMulti(c, "client_name", "client_names")...))
+	req.ClientNamesEmpty = req.ClientNamesEmpty || queryBool(c, "client_names_empty")
 	req.APIKeyIDsEmpty = req.APIKeyIDsEmpty || queryBool(c, "api_key_ids_empty")
 	req.ModelsEmpty = req.ModelsEmpty || queryBool(c, "models_empty")
 	req.ChannelsEmpty = req.ChannelsEmpty || queryBool(c, "channels_empty")

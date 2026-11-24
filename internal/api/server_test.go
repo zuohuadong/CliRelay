@@ -13,16 +13,16 @@ import (
 	"time"
 
 	gin "github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/bodyutil"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
-	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v8/internal/routing"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
-	sdkhandlers "github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
+	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+	sdkhandlers "github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
 type deadlineTrackingWriter struct {
@@ -73,7 +73,7 @@ func newTestServer(t *testing.T) *Server {
 	return newTestServerWithConfig(t, nil)
 }
 
-func newTestServerWithConfig(t *testing.T, configure any, options ...ServerOption) *Server {
+func newTestServerWithConfig(t *testing.T, configure func(*proxyconfig.Config)) *Server {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
@@ -94,27 +94,15 @@ func newTestServerWithConfig(t *testing.T, configure any, options ...ServerOptio
 		LoggingToFile:          false,
 		UsageStatisticsEnabled: false,
 	}
-	switch value := configure.(type) {
-	case nil:
-	case func(*proxyconfig.Config):
-		value(cfg)
-	case *proxyconfig.Config:
-		if value == nil {
-			break
-		}
-		*cfg = *value
-		if cfg.AuthDir == "" {
-			cfg.AuthDir = authDir
-		}
-	default:
-		t.Fatalf("unsupported test config type %T", configure)
+	if configure != nil {
+		configure(cfg)
 	}
 
 	authManager := auth.NewManager(nil, nil, nil)
 	accessManager := sdkaccess.NewManager()
 
 	configPath := filepath.Join(tmpDir, "config.yaml")
-	return NewServer(cfg, authManager, accessManager, configPath, options...)
+	return NewServer(cfg, authManager, accessManager, configPath)
 }
 
 func TestHealthzReturnsNoContent(t *testing.T) {
@@ -138,18 +126,6 @@ func TestReadyzReturnsNoContentWhenDependenciesOptionalOrUnset(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
-	}
-}
-
-func TestReadyzRemainsPostgresOnly(t *testing.T) {
-	server := newTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
 	}
 }
 

@@ -4,11 +4,9 @@
 // the canonical config implementation remains in internal/config.
 package configbridge
 
-import coreconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+import coreconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 
 type SDKConfig = coreconfig.SDKConfig
-type ClaudeCodeConfig = coreconfig.ClaudeCodeConfig
-type DisableImageGenerationMode = coreconfig.DisableImageGenerationMode
 
 type Config = coreconfig.Config
 type APIKeyEntry = coreconfig.APIKeyEntry
@@ -26,9 +24,6 @@ type PayloadConfig = coreconfig.PayloadConfig
 type PayloadRule = coreconfig.PayloadRule
 type PayloadFilterRule = coreconfig.PayloadFilterRule
 type PayloadModelRule = coreconfig.PayloadModelRule
-type PayloadReplaceRule = coreconfig.PayloadReplaceRule
-type PayloadReplaceTarget = coreconfig.PayloadReplaceTarget
-type PayloadReplacement = coreconfig.PayloadReplacement
 
 type GeminiKey = coreconfig.GeminiKey
 type CodexKey = coreconfig.CodexKey
@@ -48,8 +43,6 @@ type VertexCompatModel = coreconfig.VertexCompatModel
 type OpenAICompatibility = coreconfig.OpenAICompatibility
 type OpenAICompatibilityAPIKey = coreconfig.OpenAICompatibilityAPIKey
 type OpenAICompatibilityModel = coreconfig.OpenAICompatibilityModel
-type ProxyConnectionPoolConfig = coreconfig.ProxyConnectionPoolConfig
-type OAuthModelSetting = coreconfig.OAuthModelSetting
 
 type TLS = coreconfig.TLSConfig
 

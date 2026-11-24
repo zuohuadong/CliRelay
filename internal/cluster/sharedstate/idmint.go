@@ -1,43 +1,20 @@
 package sharedstate
 
-import (
-	"context"
-	"database/sql"
-	"errors"
-	"time"
-)
+import "time"
 
+// Synthetic identifiers (upstream session ids, prompt cache keys, cloaked user
+// ids) are random values minted once per conversation and then reused. In a
+// cluster the value has to be minted once for the whole cluster, or two nodes
+// serving one conversation send the upstream two different sessions and each
+// turn misses the other's prompt cache.
+
+// MintedID is the cluster's identifier for one key.
 type MintedID struct {
-	ID     string
-	TTL    time.Duration // Local caches must not outlive the shared ID.
+	ID string
+	// TTL is how long the identifier remains valid. Local caches must not keep
+	// it longer, or they would outlive the shared value and diverge from the
+	// node that mints its successor.
+	TTL time.Duration
+	// Minted reports whether the caller's candidate won.
 	Minted bool
-}
-
-// MintID returns the existing ID or stores the caller's candidate. Sliding
-// IDs renew on read; fixed IDs keep their original expiry.
-func (s *Store) MintID(ctx context.Context, namespace, key, candidate string, ttl time.Duration, sliding bool) (MintedID, error) {
-	if candidate == "" || ttl <= 0 {
-		return MintedID{}, errors.New("sharedstate: candidate and positive TTL required")
-	}
-	scope := stateKey("synthetic-id", namespace, key)
-	var out MintedID
-	err := s.transaction(ctx, scope, func(ctx context.Context, tx *sql.Tx, now time.Time) error {
-		row, err := loadKV[string](ctx, tx, scope, now)
-		if err != nil {
-			return err
-		}
-		out.Minted = !row.Found
-		if out.Minted {
-			row.Value = candidate
-		}
-		if out.Minted || sliding {
-			row.ExpiresAt = now.Add(ttl)
-			if err = saveKV(ctx, tx, scope, row); err != nil {
-				return err
-			}
-		}
-		out.ID, out.TTL = row.Value, min(ttl, row.ExpiresAt.Sub(now))
-		return nil
-	})
-	return out, err
 }

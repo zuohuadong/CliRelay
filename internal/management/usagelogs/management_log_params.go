@@ -3,7 +3,7 @@ package usagelogs
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
 // managementLogParams 把管理端日志查询的输入翻译成存储层查询参数：账号代表 Key 展开成
@@ -33,6 +33,8 @@ func (s *Service) managementLogParams(input ManagementLogQueryInput, maps nameMa
 		Models:                input.Models,
 		Statuses:              input.Statuses,
 		GuardKinds:            input.GuardKinds,
+		ClientNames:           input.ClientNames,
+		MatchNoClientNames:    input.MatchNoClientNames,
 		MatchNoAPIKeys:        input.MatchNoAPIKeys,
 		MatchNoAPIKeyIDs:      input.MatchNoAPIKeyIDs,
 		MatchNoModels:         input.MatchNoModels,

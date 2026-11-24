@@ -292,7 +292,7 @@ func (c *Collector) sample(ctx context.Context) {
 	}
 	// The round trips go last: they are the only part that can take a while.
 	if sources.PingDB != nil {
-		snap.DB = roundTrip(ctx, "", func(ctx context.Context) (string, error) { return "", sources.PingDB(ctx) })
+		snap.DB = roundTrip(ctx, sources.PingDB)
 	}
 
 	if ctx.Err() != nil {
@@ -446,19 +446,16 @@ func (c *Collector) sampleTraffic(now time.Time, sources Sources) Traffic {
 }
 
 // roundTrip times ping, reporting failures by kind only.
-func roundTrip(ctx context.Context, role string, ping func(ctx context.Context) (string, error)) *RoundTrip {
+func roundTrip(ctx context.Context, ping func(ctx context.Context) error) *RoundTrip {
 	pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
 	defer cancel()
 	started := time.Now()
-	gotRole, err := ping(pingCtx)
+	err := ping(pingCtx)
 	elapsed := time.Since(started)
 	if errors.Is(err, ErrNotConfigured) {
 		return nil
 	}
-	if gotRole != "" {
-		role = gotRole
-	}
-	result := &RoundTrip{Role: role}
+	result := &RoundTrip{}
 	switch {
 	case err == nil:
 		ms := round3(float64(elapsed) / float64(time.Millisecond))

@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	log "github.com/sirupsen/logrus"
 )
 
 const (
 	RuntimeSettingGeminiKeys           = "gemini-api-key"
-	RuntimeSettingInteractionsKeys     = "interactions-api-key"
 	RuntimeSettingCodexKeys            = "codex-api-key"
 	RuntimeSettingClaudeKeys           = "claude-api-key"
 	RuntimeSettingBedrockKeys          = "bedrock-api-key"
@@ -59,28 +58,6 @@ func providerAndRuntimeSpecs() []Spec {
 				holder := &config.Config{GeminiKey: value}
 				holder.SanitizeGeminiKeys()
 				cfg.GeminiKey = holder.GeminiKey
-				return true
-			},
-		},
-		{
-			Key: RuntimeSettingInteractionsKeys,
-			Meaningful: func(cfg *config.Config) bool {
-				return len(cfg.InteractionsKey) > 0
-			},
-			Value: func(cfg *config.Config) any {
-				holder := &config.Config{InteractionsKey: append([]config.GeminiKey(nil), cfg.InteractionsKey...)}
-				holder.SanitizeInteractionsKeys()
-				return holder.InteractionsKey
-			},
-			Apply: func(cfg *config.Config, raw json.RawMessage) bool {
-				var value []config.GeminiKey
-				if err := json.Unmarshal(raw, &value); err != nil {
-					log.Warnf("runtimeconfig: decode %s: %v", RuntimeSettingInteractionsKeys, err)
-					return false
-				}
-				holder := &config.Config{InteractionsKey: value}
-				holder.SanitizeInteractionsKeys()
-				cfg.InteractionsKey = holder.InteractionsKey
 				return true
 			},
 		},

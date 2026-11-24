@@ -191,6 +191,7 @@ func startPostgresWith(ctx context.Context, nodeID string, opts Options, timings
 		c.version = strings.TrimSpace(opts.Version)
 		slot = newBackendSlot(c)
 	}
+	c.db = opts.DB
 	p := &pgNode{
 		c:         c,
 		nodeID:    nodeID,

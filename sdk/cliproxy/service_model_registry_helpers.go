@@ -4,8 +4,45 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
 )
+
+func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
+	if len(models) == 0 || len(excluded) == 0 {
+		return models
+	}
+
+	patterns := make([]string, 0, len(excluded))
+	for _, item := range excluded {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			patterns = append(patterns, strings.ToLower(trimmed))
+		}
+	}
+	if len(patterns) == 0 {
+		return models
+	}
+
+	filtered := make([]*ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		modelID := strings.ToLower(strings.TrimSpace(model.ID))
+		blocked := false
+		for _, pattern := range patterns {
+			if matchWildcard(pattern, modelID) {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
+}
 
 func providerModelAccessExcludedModels(excluded []string) []string {
 	for _, model := range excluded {
@@ -16,14 +53,62 @@ func providerModelAccessExcludedModels(excluded []string) []string {
 	return nil
 }
 
-type legacyModelEntry interface {
+func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix bool) []*ModelInfo {
+	trimmedPrefix := strings.TrimSpace(prefix)
+	if trimmedPrefix == "" || len(models) == 0 {
+		return models
+	}
+
+	out := make([]*ModelInfo, 0, len(models)*2)
+	seen := make(map[string]struct{}, len(models)*2)
+
+	addModel := func(model *ModelInfo) {
+		if model == nil {
+			return
+		}
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			return
+		}
+		if _, exists := seen[id]; exists {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, model)
+	}
+
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		baseID := strings.TrimSpace(model.ID)
+		if baseID == "" {
+			continue
+		}
+		if !forceModelPrefix || trimmedPrefix == baseID {
+			addModel(model)
+		}
+		clone := *model
+		clone.ID = trimmedPrefix + "/" + baseID
+		addModel(&clone)
+	}
+	return out
+}
+
+// matchWildcard matches '*' against any substring. Callers lower-case both
+// sides; channel-group exclusions use the same rule, so it lives in one place.
+func matchWildcard(pattern, value string) bool {
+	return sdkrouting.MatchWildcard(pattern, value)
+}
+
+type modelEntry interface {
 	GetName() string
 	GetAlias() string
 }
 
 type staticThinkingResolver func(name string) *ModelThinkingSupport
 
-func buildLegacyConfigModels[T legacyModelEntry](
+func buildConfigModels[T modelEntry](
 	models []T,
 	ownedBy string,
 	modelType string,
@@ -74,7 +159,7 @@ func buildLegacyConfigModels[T legacyModelEntry](
 	return out
 }
 
-func filterConfigModels[T legacyModelEntry](models []T, keep func(string) bool) []T {
+func filterConfigModels[T modelEntry](models []T, keep func(string) bool) []T {
 	if len(models) == 0 {
 		return nil
 	}
@@ -89,6 +174,30 @@ func filterConfigModels[T legacyModelEntry](models []T, keep func(string) bool) 
 
 func isClinePassConfigModelID(model string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "cline-pass/")
+}
+
+func buildVertexCompatConfigModels(
+	entry *config.VertexCompatKey,
+	resolveThinking staticThinkingResolver,
+) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "google", "vertex", resolveThinking)
+}
+
+func buildGeminiConfigModels(entry *config.GeminiKey, resolveThinking staticThinkingResolver) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "google", "gemini", resolveThinking)
+}
+
+func buildClaudeConfigModels(entry *config.ClaudeKey, resolveThinking staticThinkingResolver) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "anthropic", "claude", resolveThinking)
 }
 
 type oauthProviderModelConfigRow struct {
@@ -212,7 +321,14 @@ func buildBedrockConfigModels(entry *config.BedrockKey, resolveThinking staticTh
 	if entry == nil {
 		return nil
 	}
-	return buildLegacyConfigModels(entry.Models, "aws", "bedrock", resolveThinking)
+	return buildConfigModels(entry.Models, "aws", "bedrock", resolveThinking)
+}
+
+func buildCodexConfigModels(entry *config.CodexKey, resolveThinking staticThinkingResolver) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "openai", "openai", resolveThinking)
 }
 
 func buildOpenCodeGoConfigModels(entry *config.OpenCodeGoKey) []*ModelInfo {
@@ -222,7 +338,7 @@ func buildOpenCodeGoConfigModels(entry *config.OpenCodeGoKey) []*ModelInfo {
 	models := filterConfigModels(entry.Models, func(name string) bool {
 		return !isClinePassConfigModelID(name)
 	})
-	return buildLegacyConfigModels(models, "opencode", "opencode-go", nil)
+	return buildConfigModels(models, "opencode", "opencode-go", nil)
 }
 
 func buildClineConfigModels(entry *config.ClineKey) []*ModelInfo {
@@ -230,7 +346,7 @@ func buildClineConfigModels(entry *config.ClineKey) []*ModelInfo {
 		return nil
 	}
 	models := filterConfigModels(entry.Models, isClinePassConfigModelID)
-	return buildLegacyConfigModels(models, "cline", "cline", nil)
+	return buildConfigModels(models, "cline", "cline", nil)
 }
 
 func buildCommandCodeConfigModels(entry *config.CommandCodeKey) []*ModelInfo {
@@ -240,7 +356,7 @@ func buildCommandCodeConfigModels(entry *config.CommandCodeKey) []*ModelInfo {
 	models := filterConfigModels(entry.Models, func(name string) bool {
 		return !isClinePassConfigModelID(name)
 	})
-	return buildLegacyConfigModels(models, "command-code", "commandcode", nil)
+	return buildConfigModels(models, "command-code", "commandcode", nil)
 }
 
 func buildOllamaCloudConfigModels(entry *config.OllamaCloudKey) []*ModelInfo {
@@ -250,5 +366,135 @@ func buildOllamaCloudConfigModels(entry *config.OllamaCloudKey) []*ModelInfo {
 	models := filterConfigModels(entry.Models, func(name string) bool {
 		return !isClinePassConfigModelID(name)
 	})
-	return buildLegacyConfigModels(models, "ollama", "ollama-cloud", nil)
+	return buildConfigModels(models, "ollama", "ollama-cloud", nil)
+}
+
+func rewriteModelInfoName(name, oldID, newID string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return name
+	}
+	oldID = strings.TrimSpace(oldID)
+	newID = strings.TrimSpace(newID)
+	if oldID == "" || newID == "" {
+		return name
+	}
+	if strings.EqualFold(oldID, newID) {
+		return name
+	}
+	if strings.EqualFold(trimmed, oldID) {
+		return newID
+	}
+	if strings.HasSuffix(trimmed, "/"+oldID) {
+		prefix := strings.TrimSuffix(trimmed, oldID)
+		return prefix + newID
+	}
+	if trimmed == "models/"+oldID {
+		return "models/" + newID
+	}
+	return name
+}
+
+func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models []*ModelInfo) []*ModelInfo {
+	if cfg == nil || len(models) == 0 {
+		return models
+	}
+	channel := coreauth.OAuthModelAliasChannel(provider, authKind)
+	if channel == "" || len(cfg.OAuthModelAlias) == 0 {
+		return models
+	}
+	aliases := cfg.OAuthModelAlias[channel]
+	if len(aliases) == 0 {
+		return models
+	}
+
+	type aliasEntry struct {
+		alias string
+		fork  bool
+	}
+
+	forward := make(map[string][]aliasEntry, len(aliases))
+	for i := range aliases {
+		name := strings.TrimSpace(aliases[i].Name)
+		alias := strings.TrimSpace(aliases[i].Alias)
+		if name == "" || alias == "" {
+			continue
+		}
+		if strings.EqualFold(name, alias) {
+			continue
+		}
+		key := strings.ToLower(name)
+		forward[key] = append(forward[key], aliasEntry{alias: alias, fork: aliases[i].Fork})
+	}
+	if len(forward) == 0 {
+		return models
+	}
+
+	out := make([]*ModelInfo, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		key := strings.ToLower(id)
+		entries := forward[key]
+		if len(entries) == 0 {
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, model)
+			continue
+		}
+
+		keepOriginal := false
+		for _, entry := range entries {
+			if entry.fork {
+				keepOriginal = true
+				break
+			}
+		}
+		if keepOriginal {
+			if _, exists := seen[key]; !exists {
+				seen[key] = struct{}{}
+				out = append(out, model)
+			}
+		}
+
+		addedAlias := false
+		for _, entry := range entries {
+			mappedID := strings.TrimSpace(entry.alias)
+			if mappedID == "" {
+				continue
+			}
+			if strings.EqualFold(mappedID, id) {
+				continue
+			}
+			aliasKey := strings.ToLower(mappedID)
+			if _, exists := seen[aliasKey]; exists {
+				continue
+			}
+			seen[aliasKey] = struct{}{}
+			clone := *model
+			clone.ID = mappedID
+			if clone.Name != "" {
+				clone.Name = rewriteModelInfoName(clone.Name, id, mappedID)
+			}
+			out = append(out, &clone)
+			addedAlias = true
+		}
+
+		if !keepOriginal && !addedAlias {
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, model)
+		}
+	}
+	return out
 }

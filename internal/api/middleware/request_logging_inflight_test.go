@@ -7,32 +7,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 )
-
-type stubStreamingLogWriter struct{}
-
-func (stubStreamingLogWriter) WriteChunkAsync([]byte)                                  {}
-func (stubStreamingLogWriter) NoteDroppedChunks(int)                                   {}
-func (stubStreamingLogWriter) WriteStatus(int, map[string][]string) error              { return nil }
-func (stubStreamingLogWriter) WriteAPIRequest([]byte) error                            { return nil }
-func (stubStreamingLogWriter) WriteAPIResponse([]byte) error                           { return nil }
-func (stubStreamingLogWriter) WriteAPIWebsocketTimeline([]byte) error                  { return nil }
-func (stubStreamingLogWriter) WriteAPIResponseErrors([]*interfaces.ErrorMessage) error { return nil }
-func (stubStreamingLogWriter) SetFirstChunkTimestamp(time.Time)                        {}
-func (stubStreamingLogWriter) Close() error                                            { return nil }
-
-type stubRequestLogger struct{}
-
-func (stubRequestLogger) LogRequest(string, string, map[string][]string, []byte, int, map[string][]string, []byte, []byte, []byte, []byte, []byte, []*interfaces.ErrorMessage, string, time.Time, time.Time) error {
-	return nil
-}
-func (stubRequestLogger) LogStreamingRequest(string, string, map[string][]string, []byte, string) (logging.StreamingLogWriter, error) {
-	return stubStreamingLogWriter{}, nil
-}
-func (stubRequestLogger) IsEnabled() bool { return true }
 
 // The middleware lists a gateway request in flight while it is served and
 // takes it off however it ends, a panicking handler included.

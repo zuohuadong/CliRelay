@@ -9,7 +9,7 @@ import (
 	"path"
 	"strings"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -70,8 +70,7 @@ func (s *Store) Save(ctx context.Context, auth *coreauth.Auth) (string, error) {
 		w.provider = documentProvider(content)
 		return mirror, s.createCredential(ctx, w)
 	}
-	decision := s.classify(w)
-	switch decision {
+	switch s.classify(w) {
 	case decisionRuntime:
 		return mirror, nil
 	case decisionGone:

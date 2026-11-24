@@ -16,7 +16,7 @@
 #                PGPASSWORD=<replicator password>
 #   single node: PG_CONTAINER=clirelay-pg   PG_SUPERUSER=cliproxy
 #   both:        BACKUP_DIR=/opt/clirelay-cluster/backups   KEEP=7
-#                PG_IMAGE=postgres:19.0-alpine   MAX_RATE=30M
+#                PG_IMAGE=postgres:15.19-alpine3.24   MAX_RATE=30M
 #                COMPRESS=server-zstd (cluster default) or none
 #                CHECKPOINT=fast (cluster default) or spread (single-node default)
 #

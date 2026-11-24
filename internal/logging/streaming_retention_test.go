@@ -35,7 +35,7 @@ func TestStreamingCloseEnforcesRequestFileCap(t *testing.T) {
 
 	// The non-streaming control proves the same logger's retention helper can
 	// remove these files; only the stream completion lifecycle misses it.
-	if err := logger.LogRequest("/v1/responses", http.MethodPost, nil, nil, http.StatusOK, nil, []byte(`{}`), nil, nil, nil, nil, nil, "nonstream-control", time.Now(), time.Now()); err != nil {
+	if err := logger.LogRequest("/v1/responses", http.MethodPost, nil, nil, http.StatusOK, nil, []byte(`{}`), nil, nil, nil, "nonstream-control", time.Now(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	files, err = filepath.Glob(filepath.Join(logsDir, "*.log"))

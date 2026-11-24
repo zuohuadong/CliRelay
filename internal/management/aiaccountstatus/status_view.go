@@ -3,11 +3,12 @@ package aiaccountstatus
 import (
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 func statusViewFromSharedRecord(row usage.AIAccountSubjectStatusRecord, auth *coreauth.Auth, summary usage.AuthSubjectUsageSummary, subject usage.AIAccountSubjectRecord, bindingCount int) AccountStatusView {
+	subscription := row.Subscription.Presentable(time.Now())
 	view := AccountStatusView{
 		AuthSubjectID: row.AuthSubjectID, Provider: row.Provider, StatusScope: usage.AIAccountStatusScopeShared,
 		SubjectScope: subject.SubjectScope, ShareEligible: subject.ShareEligible, SubjectSeedKind: subject.SeedKind,
@@ -15,10 +16,9 @@ func statusViewFromSharedRecord(row usage.AIAccountSubjectStatusRecord, auth *co
 		PlanType: row.PlanType, RestrictionSummary: row.RestrictionSummary, ErrorSummary: row.ErrorSummary,
 		ErrorCode: row.ErrorCode, Quotas: quotaWindowViews(row.Quotas), ResetCreditCount: row.ResetCreditCount,
 		ResetCreditExpirations: row.ResetCreditExpirations, Usage: summary,
-		SubscriptionStartedAt: row.SubscriptionStartedAt, SubscriptionExpiresAt: row.SubscriptionExpiresAt,
-		SubscriptionSource: row.SubscriptionSource, UpstreamCheckedAt: row.UpstreamCheckedAt,
+		AIAccountSubscription: subscription, UpstreamCheckedAt: row.UpstreamCheckedAt,
 		QuotaObservedAt: row.QuotaObservedAt,
-		ExpiresAt:       row.SubscriptionExpiresAt, Version: row.Version, UpdatedAt: timePointer(row.UpdatedAt),
+		ExpiresAt:       subscription.ExpiresAt, Version: row.Version, UpdatedAt: timePointer(row.UpdatedAt),
 	}
 	if auth != nil {
 		view.AuthIndex = auth.Index

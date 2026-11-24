@@ -6,10 +6,9 @@ import (
 	"math/big"
 	"strings"
 
-	"github.com/MoeForge/moego/ojson"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -266,7 +265,7 @@ func convertGeminiRequestToCodexReference(modelName string, inputRawJSON []byte,
 	out, _ = sjson.Set(out, "include", []string{"reasoning.encrypted_content"})
 
 	var pathsToLower []string
-	toolsResult := ojson.Parse(out).Get("tools")
+	toolsResult := gjson.Get(out, "tools")
 	util.Walk(toolsResult, "", "type", &pathsToLower)
 	for _, p := range pathsToLower {
 		fullPath := fmt.Sprintf("tools.%s", p)

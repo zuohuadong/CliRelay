@@ -32,6 +32,7 @@ elif have_container clirelay-etcd; then
 else
   echo "  n/a"
 fi
+
 section "Risks"
 if have_container clirelay-patroni; then
   members="$(docker exec clirelay-patroni patronictl -c /etc/patroni/patroni.yml list -f json 2>/dev/null |
@@ -61,6 +62,7 @@ if have_container clirelay-patroni; then
 else
   echo "  n/a"
 fi
+
 section "CliRelay"
 if [ -f /opt/clirelay2/.active-port ]; then
   port="$(cat /opt/clirelay2/.active-port)"
@@ -81,3 +83,4 @@ if [ -d /opt/clirelay-cluster/backups ]; then
 else
   echo "  n/a"
 fi
+

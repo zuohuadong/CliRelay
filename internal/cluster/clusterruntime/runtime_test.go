@@ -2,20 +2,14 @@ package clusterruntime
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/postgrestest"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 func eventually(t *testing.T, what string, cond func() bool) {
@@ -143,88 +137,6 @@ func TestCooldownRelaySilentOnSingleNode(t *testing.T) {
 	}
 }
 
-func testStore(t *testing.T, db *sql.DB, nodeID string) *sharedstate.Store {
-	t.Helper()
-	store := sharedstate.New(db, sharedstate.Options{NodeID: nodeID})
-	t.Cleanup(store.Close)
-	return store
-}
-
-// TestAccountSlotsAreGlobalThroughTheAdapter runs two nodes' account limiters
-// against PostgreSQL: the SDK interface, the adapter and the leases.
-func TestAccountSlotsAreGlobalThroughTheAdapter(t *testing.T) {
-	db, _ := postgrestest.RuntimeState(t)
-	hub := cluster.NewMemoryHub()
-	coordA, coordB := hub.Join("a"), hub.Join("b")
-	storeA := testStore(t, db, "a")
-	storeB := testStore(t, db, "b")
-	nodeA, nodeB := newManager(t, "acct-1"), newManager(t, "acct-1")
-	nodeA.SetAccountSlotCoordinator(accountSlotAdapter{store: storeA, coord: func() *cluster.Coordinator { return coordA }})
-	nodeB.SetAccountSlotCoordinator(accountSlotAdapter{store: storeB, coord: func() *cluster.Coordinator { return coordB }})
-
-	limited := &coreauth.Auth{ID: "acct-1", Attributes: map[string]string{"concurrency_limit": "2"}}
-	releaseA, err := nodeA.ConcurrencyLimiter().AcquireSlot(limited)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := nodeB.ConcurrencyLimiter().AcquireSlot(limited); err != nil {
-		t.Fatal(err)
-	}
-	_, err = nodeA.ConcurrencyLimiter().AcquireSlot(limited)
-	if !errors.Is(err, coreauth.ErrAccountConcurrencyExceeded) {
-		t.Fatalf("third slot across two nodes must be refused, got %v", err)
-	}
-	releaseA()
-	eventually(t, "the released slot", func() bool {
-		release, err := nodeB.ConcurrencyLimiter().AcquireSlot(limited)
-		if err != nil {
-			return false
-		}
-		release()
-		return true
-	})
-
-	// Database gone: each node falls back to its share, ceil(2/2) = 1.
-	_ = db.Close()
-	fresh := &coreauth.Auth{ID: "acct-2", Attributes: map[string]string{"concurrency_limit": "2"}}
-	if _, err := nodeA.ConcurrencyLimiter().AcquireSlot(fresh); err != nil {
-		t.Fatalf("first slot within the node share: %v", err)
-	}
-	if _, err := nodeA.ConcurrencyLimiter().AcquireSlot(fresh); err == nil {
-		t.Fatal("the node share of 2 over 2 nodes is 1")
-	}
-}
-
-func TestSessionAffinityIsSharedThroughTheAdapter(t *testing.T) {
-	db, _ := postgrestest.RuntimeState(t)
-	storeA := testStore(t, db, "a")
-	storeB := testStore(t, db, "b")
-	a, b := affinityAdapter{store: storeA}, affinityAdapter{store: storeB}
-
-	ref := coreauth.AffinityAccountRef("codex-someone@example.com.json")
-	bound, err := a.Bind(context.Background(), "tenant|codex|openai|default|sess", ref, time.Hour)
-	if err != nil || bound.AccountRef != ref {
-		t.Fatalf("bind = %+v %v", bound, err)
-	}
-	seen, err := b.Lookup(context.Background(), "tenant|codex|openai|default|sess", time.Hour)
-	if err != nil || !seen.Found || seen.AccountRef != ref || seen.Served != 1 {
-		t.Fatalf("lookup from the other node = %+v %v", seen, err)
-	}
-	var key, value string
-	if err := db.QueryRow(`SELECT state_key, payload::text FROM cluster_runtime_kv`).Scan(&key, &value); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(key, "sess") || strings.Contains(key+value, "example.com") {
-		t.Fatal("raw session key or upstream account leaked into shared state")
-	}
-	if err := b.Release(context.Background(), "tenant|codex|openai|default|sess", ref); err != nil {
-		t.Fatal(err)
-	}
-	if gone, _ := a.Lookup(context.Background(), "tenant|codex|openai|default|sess", time.Hour); gone.Found {
-		t.Fatal("released binding still found")
-	}
-}
-
 func TestInstallIsANoOpOnASingleNode(t *testing.T) {
 	cfg := &config.Config{}
 	if rt := Install(cfg, newManager(t)); rt != nil {
@@ -234,11 +146,6 @@ func TestInstallIsANoOpOnASingleNode(t *testing.T) {
 }
 
 func TestInstallWiresAndShutdownUnwires(t *testing.T) {
-	_, dsn := postgrestest.RuntimeState(t)
-	if err := usage.InitPostgres(config.PostgresConfig{DSN: dsn}, config.RequestLogStorageConfig{}, time.UTC); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(usage.CloseDB)
 	hub := cluster.NewMemoryHub()
 	cluster.SetDefault(hub.Join("node-a"))
 	t.Cleanup(func() { cluster.SetDefault(nil) })
@@ -250,19 +157,14 @@ func TestInstallWiresAndShutdownUnwires(t *testing.T) {
 	if rt == nil || Install(cfg, newManager(t)) != rt {
 		t.Fatal("install must share one runtime per process")
 	}
-	if !rt.store.Available() {
-		t.Fatal("runtime did not use the PostgreSQL pool")
+	// Without a cluster database there is nothing to share through it.
+	if rt.pg != nil || rt.quota != nil {
+		t.Fatalf("no database means no shared store: %+v", rt)
 	}
 
 	// The first release leaves the runtime to the other holder.
 	Release(rt)
-	if installed != rt {
-		t.Fatal("a runtime still held must stay open")
-	}
 	Release(rt)
-	if installed != nil {
-		t.Fatal("the last release must uninstall the cluster runtime")
-	}
 	if Install(&config.Config{}, manager) != nil {
 		t.Fatal("after release a single-node config installs nothing")
 	}
@@ -280,8 +182,8 @@ func TestInstallWithoutDatabaseStillSplitsLimits(t *testing.T) {
 	manager := newManager(t)
 	rt := Install(cfg, manager)
 	t.Cleanup(func() { Release(rt) })
-	if rt == nil || rt.store.Available() {
-		t.Fatal("no runtime database means no shared state")
+	if rt == nil || rt.pg != nil {
+		t.Fatal("no cluster database means no shared store")
 	}
 	limited := &coreauth.Auth{ID: "acct-9", Attributes: map[string]string{"concurrency_limit": "4"}}
 	for i := 0; i < 2; i++ {

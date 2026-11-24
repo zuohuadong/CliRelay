@@ -2,24 +2,31 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/loopdetect"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/loopdetect"
 	log "github.com/sirupsen/logrus"
 )
 
-// LoopGuardGate resolves the loop protection settings for a request.
+// LoopGuardGate resolves the loop protection of the request it was published
+// for: which checks run and with what thresholds, from the settings of the
+// tenant and of the API key. It is a function, not a value, so a long-lived
+// request (a Responses WebSocket serves turns for hours) applies a setting
+// changed while it is open from its next turn on. It returns nil when nothing is
+// on.
 type LoopGuardGate func() *loopdetect.Policy
 
+// LoopGuardGateContextKey is the gin context key the loop-guard middleware
+// stores a LoopGuardGate under.
 const LoopGuardGateContextKey = "cliproxy.loopGuardGate"
 
+// LoopGuardGateFromGin returns the gate published for this request, or nil when
+// the middleware did not run (a route without an API key, such as the Gemini
+// CLI bridge, is never protected).
 func LoopGuardGateFromGin(c *gin.Context) LoopGuardGate {
 	if c == nil {
 		return nil
@@ -32,6 +39,7 @@ func LoopGuardGateFromGin(c *gin.Context) LoopGuardGate {
 	return gate
 }
 
+// loopGuardPolicy returns the policy in force for the request ctx belongs to.
 func loopGuardPolicy(ctx context.Context) *loopdetect.Policy {
 	gate := LoopGuardGateFromGin(ginContextFrom(ctx))
 	if gate == nil {
@@ -40,14 +48,27 @@ func loopGuardPolicy(ctx context.Context) *loopdetect.Policy {
 	return gate()
 }
 
+// LoopGuardHeader tells a client, and whoever reads its logs, that the gateway
+// answered the request itself because of a loop.
 const LoopGuardHeader = "X-CliRelay-Loop-Guard"
 
 func loopGuardHeaders(kind loopdetect.Kind) http.Header {
+	// Set stores the canonical key, so headers.Get finds it; a literal keyed
+	// by LoopGuardHeader would not.
 	headers := make(http.Header, 1)
 	headers.Set(LoopGuardHeader, string(kind))
 	return headers
 }
 
+// toolLoopReply answers a request whose conversation ends in a tool-call loop:
+// the same call answered with the same result turn after turn. It returns the
+// reply the gateway writes in the API the client speaks, and true, when the
+// request is not to be sent upstream. It reads the newest items of the
+// conversation only.
+//
+// An alt with a path in it names another endpoint of the API (a Responses
+// compaction, an image edit) whose reply is not a conversation turn; Gemini's
+// own alt values (json, sse) carry no path.
 func toolLoopReply(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, stream bool) (loopdetect.LocalReply, bool) {
 	if strings.Contains(alt, "/") || len(rawJSON) == 0 {
 		return loopdetect.LocalReply{}, false
@@ -76,50 +97,15 @@ func toolLoopReply(ctx context.Context, handlerType, modelName string, rawJSON [
 			Limits: policy.Tool.Normalized(), Loop: loop, Model: modelName, Protocol: protocol, Stream: stream,
 		})
 	}
-	// A tool loop is answered locally, before an executor creates a usage
-	// reporter. Publish the request count and guard outcome directly so it is
-	// visible in request logs just like an upstream execution.
-	record := coreusage.Record{
-		Model:       modelName,
-		GuardKind:   string(loopdetect.KindToolLoop),
-		Failed:      true,
-		RequestedAt: time.Now(),
-		Stream:      stream,
-		Streaming:   stream,
-		Generate:    coreusage.GenerateFlag(true),
-	}
-	snapshot := diagnostics.LoopGuardSnapshot{
-		Kind:              diagnostics.LoopGuardToolLoop,
-		Repeats:           policy.Tool.Normalized().Repeats,
-		Turns:             loop.Turns,
-		ConversationItems: loop.Items,
-		ItemsRead:         loop.Read,
-		Message:           loop.Notice(),
-		Source:            policy.ToolSource,
-	}
-	snapshot.Calls = make([]diagnostics.LoopGuardCall, len(loop.Calls))
-	for i, call := range loop.Calls {
-		snapshot.Calls[i] = diagnostics.LoopGuardCall{Name: call.Name, Arguments: call.Arguments}
-	}
-	if payload, err := json.Marshal(map[string]any{"diagnostic": map[string]any{"loop_guard": snapshot}}); err == nil {
-		record.DetailContent = string(payload)
-	}
-	coreusage.PublishRecord(ctx, record)
 	return reply, true
 }
 
-func loopGuardDiagnostic(ctx context.Context) *diagnostics.RequestDiagnostic {
-	if diagnostic := diagnostics.FromContext(ctx); diagnostic != nil {
-		return diagnostic
-	}
-	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok {
-		return diagnostics.FromGin(ginCtx)
-	}
-	return nil
-}
-
+// toolLoopCheck is the tool-loop check. It is a variable only so a test can make
+// it fail (see export_test.go); nothing else replaces it.
 var toolLoopCheck = loopdetect.DetectToolLoop
 
+// detectToolLoop runs the check, which reads client-supplied JSON: a defect in
+// it must cost the request its protection, never the request.
 func detectToolLoop(protocol loopdetect.Protocol, body []byte, limits loopdetect.ToolLimits) (loop loopdetect.ToolLoop, found bool) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -130,6 +116,8 @@ func detectToolLoop(protocol loopdetect.Protocol, body []byte, limits loopdetect
 	return toolLoopCheck(protocol, body, limits)
 }
 
+// localStream hands out the chunks of a reply the gateway wrote itself as an
+// upstream's stream would be: all of them waiting, then closed.
 func localStream(chunks [][]byte) (<-chan []byte, <-chan *StreamErrorMessage) {
 	data := make(chan []byte, len(chunks))
 	for _, chunk := range chunks {
@@ -141,15 +129,26 @@ func localStream(chunks [][]byte) (<-chan []byte, <-chan *StreamErrorMessage) {
 	return data, errs
 }
 
+// replyGuard watches the chunks a stream is about to send the client for a reply
+// that has become a loop. One serves one upstream stream and only its forwarding
+// goroutine calls it. A nil *replyGuard is a stream that is not watched.
+//
+// It sits at the end of the forwarding goroutine, past the point where a
+// stream that failed before its first byte moves to another account, so only
+// what the client is actually sent is counted.
 type replyGuard struct {
 	ctx    context.Context
 	policy *loopdetect.Policy
 	guard  *loopdetect.ReplyGuard
 	mark   *loopdetect.Mark
 	model  string
-	off    bool
+	// off: the check failed on this stream and is not run again.
+	off bool
 }
 
+// newReplyGuard returns the guard for a stream about to start, and ctx carrying
+// the Mark the executor's usage reporter reads. It returns ctx and nil when
+// replies are not checked.
 func newReplyGuard(ctx context.Context, model string) (context.Context, *replyGuard) {
 	policy := loopGuardPolicy(ctx)
 	if !policy.ReplyOn() {
@@ -162,6 +161,9 @@ func newReplyGuard(ctx context.Context, model string) (context.Context, *replyGu
 	}
 }
 
+// inspect reads the next chunk of the stream. When the reply has become a loop
+// it returns the error the stream ends with, after recording the cut where the
+// executor's usage reporter and the request log will find it.
 func (g *replyGuard) inspect(chunk []byte) *StreamErrorMessage {
 	if g == nil || g.off {
 		return nil
@@ -171,7 +173,10 @@ func (g *replyGuard) inspect(chunk []byte) *StreamErrorMessage {
 		return nil
 	}
 	err := &loopdetect.ReplyLoopError{Trip: trip}
-	g.mark.SetReply(loopdetect.KindReplyLoop, trip.Message(), g.policy.ReplySource, g.guard.Limits(), trip)
+	// Before the stream's end reaches the entry handler, which cancels the
+	// upstream request: the executor reports its usage when that cancellation
+	// reaches it, and reads the mark then.
+	g.mark.Set(loopdetect.KindReplyLoop, trip.Message())
 	if g.policy.Observer != nil {
 		g.policy.Observer.ReplyCut(g.ctx, loopdetect.ReplyCut{Limits: g.guard.Limits(), Trip: trip, Model: g.model})
 	}

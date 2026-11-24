@@ -123,7 +123,7 @@ fi
 # (deprecated compatibility shims and generated transport adapters). Keep the
 # report visible in CI without making those non-blocking findings hide build
 # or targeted-test failures.
-"${golangci_lint_bin}" run --config .golangci.yml --tests=false --issues-exit-code=0
+"${golangci_lint_bin}" run --config .golangci.yml --tests=false --issues-exit-code=0 --fast --concurrency=1
 
 trap 'rm -f test-output' EXIT
 go build -o test-output ./cmd/server

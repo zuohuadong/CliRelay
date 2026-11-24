@@ -1,6 +1,6 @@
 module github.com/router-for-me/CLIProxyAPI/v8/examples/plugin/claude-web-search-router/go
 
-go 1.26.10
+go 1.27.4
 
 require (
 	github.com/MoeForge/moego v0.1.0-alpha.3

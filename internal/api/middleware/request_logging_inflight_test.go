@@ -14,15 +14,15 @@ import (
 
 type stubStreamingLogWriter struct{}
 
-func (stubStreamingLogWriter) WriteChunkAsync([]byte) {}
-func (stubStreamingLogWriter) NoteDroppedChunks(int) {}
-func (stubStreamingLogWriter) WriteStatus(int, map[string][]string) error { return nil }
-func (stubStreamingLogWriter) WriteAPIRequest([]byte) error { return nil }
-func (stubStreamingLogWriter) WriteAPIResponse([]byte) error { return nil }
-func (stubStreamingLogWriter) WriteAPIWebsocketTimeline([]byte) error { return nil }
+func (stubStreamingLogWriter) WriteChunkAsync([]byte)                                  {}
+func (stubStreamingLogWriter) NoteDroppedChunks(int)                                   {}
+func (stubStreamingLogWriter) WriteStatus(int, map[string][]string) error              { return nil }
+func (stubStreamingLogWriter) WriteAPIRequest([]byte) error                            { return nil }
+func (stubStreamingLogWriter) WriteAPIResponse([]byte) error                           { return nil }
+func (stubStreamingLogWriter) WriteAPIWebsocketTimeline([]byte) error                  { return nil }
 func (stubStreamingLogWriter) WriteAPIResponseErrors([]*interfaces.ErrorMessage) error { return nil }
-func (stubStreamingLogWriter) SetFirstChunkTimestamp(time.Time) {}
-func (stubStreamingLogWriter) Close() error { return nil }
+func (stubStreamingLogWriter) SetFirstChunkTimestamp(time.Time)                        {}
+func (stubStreamingLogWriter) Close() error                                            { return nil }
 
 type stubRequestLogger struct{}
 

@@ -49,8 +49,8 @@ func ensureOpenAICompatUserAgent(r *http.Request, clientHeaders ...http.Header) 
 // It performs request/response translation and executes against the provider base URL
 // using per-auth credentials (API key) and per-auth HTTP transport (proxy) from context.
 type OpenAICompatExecutor struct {
-	provider             string
-	cfg                  *config.Config
+	provider              string
+	cfg                   *config.Config
 	imageEndpointOverride string
 }
 

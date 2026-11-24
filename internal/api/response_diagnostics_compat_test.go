@@ -68,7 +68,7 @@ func (*codexSearchHomeDispatcher) HeartbeatOK() bool { return true }
 func (d *codexSearchHomeDispatcher) RPopAuth(_ context.Context, model, _ string, _ http.Header, _ int) ([]byte, error) {
 	d.calls.Add(1)
 	return json.Marshal(map[string]any{
-		"model": model,
+		"model":      model,
 		"auth_index": "home-codex-search",
 		"auth": map[string]any{
 			"id": "home-codex-search", "provider": "codex", "status": "active",

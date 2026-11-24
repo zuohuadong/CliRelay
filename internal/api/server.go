@@ -41,7 +41,7 @@ type Server struct {
 	engine *gin.Engine
 
 	// server is the underlying HTTP server.
-	server *http.Server
+	server          *http.Server
 	muxBaseListener net.Listener
 	muxHTTPListener *muxListener
 

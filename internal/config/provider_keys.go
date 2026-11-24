@@ -88,12 +88,12 @@ type ClaudeModel struct {
 	Name string `yaml:"name" json:"name"`
 
 	// Alias is the client-facing model name that maps to Name.
-	Alias        string                    `yaml:"alias" json:"alias"`
-	DisplayName  string                    `yaml:"display-name,omitempty" json:"display-name,omitempty"`
-	ForceMapping bool                      `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
-	IsCompat     bool                      `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
-	MaxContextLength int                   `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
-	Thinking     *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+	Alias            string                    `yaml:"alias" json:"alias"`
+	DisplayName      string                    `yaml:"display-name,omitempty" json:"display-name,omitempty"`
+	ForceMapping     bool                      `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+	IsCompat         bool                      `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
+	MaxContextLength int                       `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
+	Thinking         *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
 func (m ClaudeModel) GetName() string                        { return m.Name }
@@ -264,12 +264,12 @@ type GeminiModel struct {
 	Name string `yaml:"name" json:"name"`
 
 	// Alias is the client-facing model name that maps to Name.
-	Alias        string                    `yaml:"alias" json:"alias"`
-	DisplayName  string                    `yaml:"display-name,omitempty" json:"display-name,omitempty"`
-	ForceMapping bool                      `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
-	IsCompat     bool                      `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
-	MaxContextLength int                   `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
-	Thinking     *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+	Alias            string                    `yaml:"alias" json:"alias"`
+	DisplayName      string                    `yaml:"display-name,omitempty" json:"display-name,omitempty"`
+	ForceMapping     bool                      `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+	IsCompat         bool                      `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
+	MaxContextLength int                       `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
+	Thinking         *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
 func (m GeminiModel) GetName() string                        { return m.Name }

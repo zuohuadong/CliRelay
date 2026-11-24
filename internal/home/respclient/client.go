@@ -36,19 +36,19 @@ func (e serverError) Error() string { return string(e) }
 func (serverError) RedisError()     {}
 
 type Options struct {
-	Addr                     string
-	Password                 string
-	DialTimeout              time.Duration
-	ReadTimeout              time.Duration
-	WriteTimeout             time.Duration
-	MaxRetries               int
-	DialerRetries            int
-	PoolSize                 int
-	ContextTimeoutEnabled    bool
-	TLSConfig                *tls.Config
-	Dialer                   func(context.Context, string, string) (net.Conn, error)
-	Protocol                 int
-	DisableIdentity          bool
+	Addr                  string
+	Password              string
+	DialTimeout           time.Duration
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
+	MaxRetries            int
+	DialerRetries         int
+	PoolSize              int
+	ContextTimeoutEnabled bool
+	TLSConfig             *tls.Config
+	Dialer                func(context.Context, string, string) (net.Conn, error)
+	Protocol              int
+	DisableIdentity       bool
 }
 
 func NewDialer(options *Options) func(context.Context, string, string) (net.Conn, error) {

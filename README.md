@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go">
+  <img src="https://img.shields.io/badge/Go-1.27+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go">
   <img src="https://img.shields.io/badge/PostgreSQL-19+-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL">
   <img src="https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/github/stars/kittors/CliRelay?style=for-the-badge&color=f59e0b" alt="Stars">
@@ -358,7 +358,7 @@ CliRelay/
 
 | Layer | Technology |
 | :-- | :-- |
-| Runtime | Go 1.26, Gin, Docker Compose |
+| Runtime | Go 1.27, Gin, Docker Compose |
 | Data | PostgreSQL 19+ via Ent for all runtime and durable state |
 | Proxy core | OpenAI Chat Completions and Responses, Anthropic Messages, Gemini; SSE and WebSocket |
 | Operations | `/manage` web panel, Bubble Tea terminal UI, updater sidecar |

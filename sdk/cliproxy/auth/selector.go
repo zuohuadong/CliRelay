@@ -39,7 +39,7 @@ type RoundRobinSelector struct {
 	deps       *schedulerDeps
 	// Legacy snapshots retained for compatibility with older in-package
 	// simulation tests. Runtime rotation uses lastPicked.
-	cursors map[string]int
+	cursors  map[string]int
 	weighted map[string]map[string]int
 }
 

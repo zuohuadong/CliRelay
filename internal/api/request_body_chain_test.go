@@ -28,8 +28,8 @@ func (chainStreamingLogWriter) WriteAPIWebsocketTimeline([]byte) error     { ret
 func (chainStreamingLogWriter) WriteAPIResponseErrors([]*interfaces.ErrorMessage) error {
 	return nil
 }
-func (chainStreamingLogWriter) SetFirstChunkTimestamp(time.Time)           {}
-func (chainStreamingLogWriter) Close() error                               { return nil }
+func (chainStreamingLogWriter) SetFirstChunkTimestamp(time.Time) {}
+func (chainStreamingLogWriter) Close() error                     { return nil }
 
 type chainRequestLogger struct{}
 

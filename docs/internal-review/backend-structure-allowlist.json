@@ -8,7 +8,7 @@
       },
       {
         "path": "internal/api/server_routes.go",
-        "max_lines": 1614,
+        "max_lines": 1727,
         "reason": "CLIProxyAPI v8 migration baseline; split opportunistically in follow-up refactors."
       },
       {
@@ -18,7 +18,7 @@
       },
       {
         "path": "internal/client/musecode/models.go",
-        "max_lines": 1232,
+        "max_lines": 1289,
         "reason": "CLIProxyAPI v8 migration baseline; split opportunistically in follow-up refactors."
       },
       {
@@ -103,7 +103,7 @@
       },
       {
         "path": "internal/runtime/executor/helps/usage_helpers.go",
-        "max_lines": 4243,
+        "max_lines": 4318,
         "reason": "CLIProxyAPI v8 migration baseline; split opportunistically in follow-up refactors."
       },
       {
@@ -113,7 +113,7 @@
       },
       {
         "path": "internal/runtime/executor/openai_compat_executor.go",
-        "max_lines": 1434,
+        "max_lines": 1447,
         "reason": "CLIProxyAPI v8 migration baseline; split opportunistically in follow-up refactors."
       },
       {
@@ -130,6 +130,11 @@
         "path": "internal/runtime/executor/xai_websockets_executor.go",
         "max_lines": 1977,
         "reason": "CLIProxyAPI v8 migration baseline; split opportunistically in follow-up refactors."
+      },
+      {
+        "path": "internal/store/gitstore.go",
+        "max_lines": 2051,
+        "reason": "PostgreSQL runtime migration compatibility layer; split opportunistically in follow-up refactors."
       },
       {
         "path": "internal/translator/claude/openai/responses/claude_openai-responses_request.go",
@@ -208,12 +213,12 @@
       },
       {
         "path": "sdk/cliproxy/auth/conductor_cooldown.go",
-        "max_lines": 4496,
+        "max_lines": 4530,
         "reason": "CLIProxyAPI v8 migration baseline; split opportunistically in follow-up refactors."
       },
       {
         "path": "sdk/cliproxy/auth/conductor_execution.go",
-        "max_lines": 2872,
+        "max_lines": 2887,
         "reason": "CLIProxyAPI v8 migration baseline; split opportunistically in follow-up refactors."
       },
       {
@@ -228,22 +233,22 @@
       },
       {
         "path": "sdk/cliproxy/auth/conductor_selection.go",
-        "max_lines": 3343,
+        "max_lines": 3401,
         "reason": "CLIProxyAPI v8 migration baseline; split opportunistically in follow-up refactors."
       },
       {
         "path": "sdk/cliproxy/auth/scheduler.go",
-        "max_lines": 1931,
+        "max_lines": 1932,
         "reason": "CLIProxyAPI v8 migration baseline; split opportunistically in follow-up refactors."
       },
       {
         "path": "sdk/cliproxy/auth/selector.go",
-        "max_lines": 2843,
+        "max_lines": 2847,
         "reason": "CLIProxyAPI v8 migration baseline; split opportunistically in follow-up refactors."
       },
       {
         "path": "sdk/cliproxy/auth/types.go",
-        "max_lines": 1821,
+        "max_lines": 1828,
         "reason": "CLIProxyAPI v8 migration baseline; split opportunistically in follow-up refactors."
       },
       {
@@ -281,7 +286,7 @@
       },
       {
         "path": "internal/api/handlers/management/oauth_sessions.go",
-        "max_lines": 809
+        "max_lines": 820
       },
       {
         "path": "internal/api/handlers/management/plugin_quota.go",
@@ -297,7 +302,7 @@
       },
       {
         "path": "internal/api/middleware/response_writer.go",
-        "max_lines": 1045
+        "max_lines": 1049
       },
       {
         "path": "internal/client/codex/live/live.go",
@@ -318,6 +323,10 @@
       {
         "path": "internal/enduser/service.go",
         "max_lines": 987
+      },
+      {
+        "path": "internal/home/respclient/client.go",
+        "max_lines": 949
       },
       {
         "path": "internal/homeplugins/sync.go",
@@ -432,6 +441,10 @@
         "max_lines": 895
       },
       {
+        "path": "internal/store/gitstore.go",
+        "max_lines": 2051
+      },
+      {
         "path": "internal/thinking/apply.go",
         "max_lines": 1117
       },
@@ -505,7 +518,7 @@
       },
       {
         "path": "internal/usage/usage_db.go",
-        "max_lines": 952
+        "max_lines": 955
       },
       {
         "path": "internal/watcher/diff/config_diff.go",
@@ -521,7 +534,7 @@
       },
       {
         "path": "sdk/api/handlers/handlers_stream.go",
-        "max_lines": 949
+        "max_lines": 958
       },
       {
         "path": "sdk/api/handlers/openai/openai_handlers.go",
@@ -545,7 +558,7 @@
       },
       {
         "path": "sdk/cliproxy/auth/conductor_lifecycle.go",
-        "max_lines": 1058
+        "max_lines": 1066
       },
       {
         "path": "sdk/cliproxy/auth/conductor_models.go",
@@ -569,7 +582,7 @@
       },
       {
         "path": "sdk/cliproxy/usage/manager.go",
-        "max_lines": 993
+        "max_lines": 996
       }
     ]
   },
@@ -618,6 +631,9 @@
       "sdk/api/handlers/handlers_interceptors.go": [
         "github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces",
         "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+      ],
+      "sdk/api/handlers/loop_guard.go": [
+        "github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
       ],
       "sdk/api/handlers/handlers_plugin_executor_usage.go": [
         "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"

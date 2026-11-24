@@ -94,7 +94,7 @@ if "router-for-me/CLIProxyAPI" in text:
     sys.exit(1)
 GUARD
 
-required_golangci_lint_version="v1.64.5"
+required_golangci_lint_version="v1.64.8"
 golangci_lint_bin="${GOLANGCI_LINT_BIN:-}"
 if [ -z "${golangci_lint_bin}" ]; then
   if command -v golangci-lint >/dev/null 2>&1; then
@@ -114,7 +114,7 @@ if [ ! -x "${golangci_lint_bin}" ]; then
 fi
 
 golangci_lint_version="$("${golangci_lint_bin}" version)"
-if ! grep -Eq 'version v?1\.64\.5([[:space:]]|$)' <<<"${golangci_lint_version}"; then
+if ! grep -Eq 'version v?1\.64\.8([[:space:]]|$)' <<<"${golangci_lint_version}"; then
   echo "golangci-lint ${required_golangci_lint_version} is required; found: ${golangci_lint_version}" >&2
   exit 1
 fi

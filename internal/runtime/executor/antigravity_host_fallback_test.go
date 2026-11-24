@@ -102,6 +102,19 @@ func TestAntigravityBaseURLFallbackOrderExcludesProduction(t *testing.T) {
 // The location gate has to share the retry branch with the capacity check: the
 // gate is a per-attempt draw, so a second host *and* a second attempt are both
 // worth taking before the rejection is handed to the client.
+// statusErrCallIndex finds where the rejection is built, whichever spelling the
+// call sites use: the bare statusErr literal or the helper that also attaches
+// the upstream's retry hint.
+func statusErrCallIndex(source string) int {
+	best := -1
+	for _, marker := range []string{"antigravityStatusErr(httpResp.StatusCode", "statusErr{code: httpResp.StatusCode"} {
+		if at := strings.Index(source, marker); at >= 0 && (best < 0 || at < best) {
+			best = at
+		}
+	}
+	return best
+}
+
 func TestAntigravityContentPathsRetryOnLocationGate(t *testing.T) {
 	for _, path := range []string{"antigravity_executor.go", "antigravity_nonstream.go", "antigravity_count_tokens.go"} {
 		source, err := os.ReadFile(path)
@@ -114,7 +127,7 @@ func TestAntigravityContentPathsRetryOnLocationGate(t *testing.T) {
 			t.Errorf("%s does not retry on the location gate", path)
 			continue
 		}
-		statusErr := strings.Index(body[hostCheck:], "statusErr{code: httpResp.StatusCode")
+		statusErr := statusErrCallIndex(body[hostCheck:])
 		if statusErr < 0 {
 			t.Errorf("%s: the gate check is not followed by the status error it must pre-empt", path)
 			continue

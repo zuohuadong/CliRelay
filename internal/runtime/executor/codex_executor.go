@@ -454,6 +454,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		scanner.Buffer(nil, maxCodexSSELineBytes)
 		var param any
 		terminal := codexResponsesTerminal{}
+		streamDiag := codexStreamDiagnostics{}
+		logIncomplete := func(reason string, readErr error) {
+			log.Warnf("codex executor: upstream stream closed without a terminal event: reason=%s model=%s auth=%s err=%v %s", reason, execCtx.BaseModel, auth.ID, readErr, streamDiag.summary())
+		}
 		imageStream := newCodexImageStreamNormalizer()
 		send := func(chunk cliproxyexecutor.StreamChunk) bool {
 			if execCtx.Context.Err() != nil {
@@ -470,6 +474,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if terminal.seen && !errors.Is(readErr, bufio.ErrTooLong) {
 				terminal.publishSuccess(execCtx.Context, reporter)
 				return
+			}
+			if !terminal.seen {
+				logIncomplete("read-error", readErr)
 			}
 			if !shouldSuppressUsageFailure(readErr, "") {
 				recorder.RecordResponseError(readErr)
@@ -489,6 +496,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			// joined JSON without changing the lines forwarded to the translator.
 			for _, payload := range codexResponsesSSEPayloads(eventLines) {
 				eventType := gjson.GetBytes(payload, "type").String()
+				streamDiag.observe(eventType, payload)
 				incremental.observe(eventType, payload)
 				switch eventType {
 				case "response.completed", "response.incomplete":
@@ -585,6 +593,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			terminal.publishSuccess(execCtx.Context, reporter)
 			return
 		}
+		logIncomplete("clean-eof", nil)
 		streamErr := newCodexResponsesIncompleteError()
 		recorder.RecordResponseError(streamErr)
 		terminal.publishFailure(execCtx.Context, reporter)

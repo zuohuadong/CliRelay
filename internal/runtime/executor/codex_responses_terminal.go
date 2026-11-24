@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"fmt"
 
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
@@ -122,4 +123,35 @@ func codexResponsesSSEPayloads(lines [][]byte) [][]byte {
 	}
 	flush()
 	return payloads
+}
+
+// codexStreamDiagnostics remembers the shape of an upstream event stream so a
+// turn that closes without a terminal event can be reported with the events
+// that were actually received. It only stores event names, byte sizes and the
+// number of frames, never payload content.
+type codexStreamDiagnostics struct {
+	counts map[string]int
+	last   []string
+	frames int
+}
+
+const codexStreamDiagnosticsLastEvents = 12
+
+func (d *codexStreamDiagnostics) observe(eventType string, payload []byte) {
+	if d.counts == nil {
+		d.counts = make(map[string]int, 8)
+	}
+	if eventType == "" {
+		eventType = "<untyped>"
+	}
+	d.counts[eventType]++
+	d.frames++
+	d.last = append(d.last, fmt.Sprintf("%s(%dB)", eventType, len(payload)))
+	if len(d.last) > codexStreamDiagnosticsLastEvents {
+		d.last = d.last[len(d.last)-codexStreamDiagnosticsLastEvents:]
+	}
+}
+
+func (d *codexStreamDiagnostics) summary() string {
+	return fmt.Sprintf("frames=%d counts=%v last=%v", d.frames, d.counts, d.last)
 }

@@ -155,6 +155,56 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	// the following assistant items are appended to it instead of starting a new
 	// message. Any other item closes it.
 	thinkingTurnOpen := false
+	// reasoningOrigin is where the trailing thinking block of the open assistant
+	// turn came from. Anthropic rejects adjacent thinking blocks from different
+	// responses, and a replayed duplicate of a block index it already has, so the
+	// two are repaired while the turn is assembled (see claudeReasoningBlockOrigin).
+	reasoningOrigin := claudeReasoningBlockOrigin{}
+	openTurnContent := func() []gjson.Result {
+		if len(messages) == 0 {
+			return nil
+		}
+		content := gjson.Get(messages[len(messages)-1], "content")
+		if !content.IsArray() {
+			return nil
+		}
+		return content.Array()
+	}
+	trailingThinkingCount := func(parts []gjson.Result) int {
+		trailing := 0
+		for i := len(parts) - 1; i >= 0; i-- {
+			if !isClaudeThinkingBlockType(parts[i].Get("type").String()) {
+				break
+			}
+			trailing++
+		}
+		return trailing
+	}
+	// dropTrailingThinking removes the thinking run at the end of the open turn.
+	// The block about to be appended replaces it: Anthropic refuses two adjacent
+	// thinking blocks that did not come from the same response.
+	dropTrailingThinking := func() {
+		parts := openTurnContent()
+		trailing := trailingThinkingCount(parts)
+		if trailing == 0 {
+			return
+		}
+		last := len(messages) - 1
+		kept := "[]"
+		for _, part := range parts[:len(parts)-trailing] {
+			kept, _ = sjson.SetRaw(kept, "-1", part.Raw)
+		}
+		messages[last], _ = sjson.SetRaw(messages[last], "content", kept)
+	}
+	// replaceTrailingThinking swaps the last block for a replayed duplicate of it.
+	replaceTrailingThinking := func(block string) {
+		parts := openTurnContent()
+		if len(parts) == 0 {
+			return
+		}
+		last := len(messages) - 1
+		messages[last], _ = sjson.SetRaw(messages[last], fmt.Sprintf("content.%d", len(parts)-1), block)
+	}
 	appendToOpenThinkingTurn := func(parts ...string) {
 		// The open turn is the last message: the reasoning item that opened it
 		// appended it. Editing it alone is what sjson did when it recursed
@@ -163,6 +213,28 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		for _, part := range parts {
 			messages[last], _ = sjson.SetRaw(messages[last], "content.-1", part)
 		}
+	}
+	// appendReplayedThinking adds a replayed thinking block to the open turn,
+	// keeping the trailing run Anthropic accepts: blocks of one response in
+	// ascending block order, with a repeated block index replacing its block.
+	appendReplayedThinking := func(block string, blockType string, origin claudeReasoningBlockOrigin, hasOrigin bool) {
+		sameResponse := hasOrigin && origin.valid && reasoningOrigin.valid && origin.responseID == reasoningOrigin.responseID
+		if blockType == "thinking" {
+			if sameResponse && origin.blockIndex == reasoningOrigin.blockIndex {
+				replaceTrailingThinking(block)
+				reasoningOrigin = origin
+				return
+			}
+			if !(sameResponse && origin.blockIndex > reasoningOrigin.blockIndex) {
+				dropTrailingThinking()
+			}
+		}
+		appendToOpenThinkingTurn(block)
+		if blockType == "thinking" && hasOrigin {
+			reasoningOrigin = origin
+			return
+		}
+		reasoningOrigin = claudeReasoningBlockOrigin{}
 	}
 
 	// input array processing
@@ -356,14 +428,21 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 					// thinking block, so the item is dropped, as it always was.
 					break
 				}
+				responseID, blockIndex, hasOrigin := parseClaudeReasoningItemID(item.Get("id").String())
+				origin := claudeReasoningBlockOrigin{responseID: responseID, blockIndex: blockIndex, valid: hasOrigin}
 				if thinkingTurnOpen {
-					appendToOpenThinkingTurn(block)
+					appendReplayedThinking(block, gjson.Get(block, "type").String(), origin, hasOrigin)
 					break
 				}
 				asst := `{"role":"assistant","content":[]}`
 				asst, _ = sjson.SetRaw(asst, "content.-1", block)
 				messages = append(messages, asst)
 				thinkingTurnOpen = true
+				if gjson.Get(block, "type").String() == "thinking" && hasOrigin {
+					reasoningOrigin = origin
+				} else {
+					reasoningOrigin = claudeReasoningBlockOrigin{}
+				}
 
 			case "function_call_output":
 				// Map to user tool_result

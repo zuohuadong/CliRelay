@@ -134,12 +134,73 @@ func convertOpenAIResponsesRequestToClaudeReference(modelName string, inputRawJS
 	// the following assistant items are appended to it instead of starting a new
 	// message. Any other item closes it.
 	thinkingTurnOpen := false
+	// reasoningOrigin is where the trailing thinking block of the open assistant
+	// turn came from; see claudeReasoningBlockOrigin.
+	reasoningOrigin := claudeReasoningBlockOrigin{}
+	lastMessagePath := func() string {
+		return fmt.Sprintf("messages.%d", gjson.Get(out, "messages.#").Int()-1)
+	}
+	openTurnParts := func() []gjson.Result {
+		content := gjson.Get(out, lastMessagePath()+".content")
+		if !content.IsArray() {
+			return nil
+		}
+		return content.Array()
+	}
+	trailingThinking := func(parts []gjson.Result) int {
+		count := 0
+		for i := len(parts) - 1; i >= 0; i-- {
+			if !isClaudeThinkingBlockType(parts[i].Get("type").String()) {
+				break
+			}
+			count++
+		}
+		return count
+	}
+	dropTrailingThinking := func() {
+		parts := openTurnParts()
+		remove := trailingThinking(parts)
+		if remove == 0 {
+			return
+		}
+		kept := "[]"
+		for _, part := range parts[:len(parts)-remove] {
+			kept, _ = sjson.SetRaw(kept, "-1", part.Raw)
+		}
+		out, _ = sjson.SetRaw(out, lastMessagePath()+".content", kept)
+	}
+	replaceTrailingThinking := func(block string) {
+		parts := openTurnParts()
+		if len(parts) == 0 {
+			return
+		}
+		out, _ = sjson.SetRaw(out, fmt.Sprintf("%s.content.%d", lastMessagePath(), len(parts)-1), block)
+	}
 	appendToOpenThinkingTurn := func(parts ...string) {
 		// sjson reads "-1" as append, so the last message is addressed by index.
-		path := fmt.Sprintf("messages.%d.content.-1", gjson.Get(out, "messages.#").Int()-1)
+		path := lastMessagePath() + ".content.-1"
 		for _, part := range parts {
 			out, _ = sjson.SetRaw(out, path, part)
 		}
+	}
+	appendReplayedThinking := func(block string, blockType string, origin claudeReasoningBlockOrigin, hasOrigin bool) {
+		sameResponse := hasOrigin && origin.valid && reasoningOrigin.valid && origin.responseID == reasoningOrigin.responseID
+		if blockType == "thinking" {
+			if sameResponse && origin.blockIndex == reasoningOrigin.blockIndex {
+				replaceTrailingThinking(block)
+				reasoningOrigin = origin
+				return
+			}
+			if !(sameResponse && origin.blockIndex > reasoningOrigin.blockIndex) {
+				dropTrailingThinking()
+			}
+		}
+		appendToOpenThinkingTurn(block)
+		if blockType == "thinking" && hasOrigin {
+			reasoningOrigin = origin
+			return
+		}
+		reasoningOrigin = claudeReasoningBlockOrigin{}
 	}
 
 	// input array processing
@@ -333,14 +394,22 @@ func convertOpenAIResponsesRequestToClaudeReference(modelName string, inputRawJS
 					// thinking block, so the item is dropped, as it always was.
 					break
 				}
+				responseID, blockIndex, hasOrigin := parseClaudeReasoningItemID(item.Get("id").String())
+				origin := claudeReasoningBlockOrigin{responseID: responseID, blockIndex: blockIndex, valid: hasOrigin}
+				blockType := gjson.Get(block, "type").String()
 				if thinkingTurnOpen {
-					appendToOpenThinkingTurn(block)
+					appendReplayedThinking(block, blockType, origin, hasOrigin)
 					break
 				}
 				asst := `{"role":"assistant","content":[]}`
 				asst, _ = sjson.SetRaw(asst, "content.-1", block)
 				out, _ = sjson.SetRaw(out, "messages.-1", asst)
 				thinkingTurnOpen = true
+				if blockType == "thinking" && hasOrigin {
+					reasoningOrigin = origin
+				} else {
+					reasoningOrigin = claudeReasoningBlockOrigin{}
+				}
 
 			case "function_call_output":
 				// Map to user tool_result

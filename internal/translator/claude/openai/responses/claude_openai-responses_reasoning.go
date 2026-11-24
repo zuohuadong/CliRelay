@@ -11,6 +11,7 @@ package responses
 import (
 	"encoding/base64"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -197,4 +198,48 @@ func stripTrailingClaudeThinking(out string) string {
 	}
 	out, _ = sjson.SetRaw(out, path+".content", kept)
 	return out
+}
+
+// claudeReasoningBlockOrigin names the Claude response and content block a
+// replayed thinking block came from, parsed out of its Responses item id.
+type claudeReasoningBlockOrigin struct {
+	responseID string
+	blockIndex int
+	valid      bool
+}
+
+// parseClaudeReasoningItemID reads the Claude response id and content block
+// index out of a reasoning item id. The Claude -> Responses translator names
+// them "rs_<response id>_<index>"; any other shape has no origin, and the block
+// then cannot be matched against the one before it.
+func parseClaudeReasoningItemID(itemID string) (string, int, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(itemID), "rs_")
+	if !ok {
+		return "", 0, false
+	}
+	sep := strings.LastIndexByte(rest, '_')
+	if sep <= 0 || sep == len(rest)-1 {
+		return "", 0, false
+	}
+	responseID := strings.TrimSpace(rest[:sep])
+	if responseID == "" {
+		return "", 0, false
+	}
+	index := rest[sep+1:]
+	for i := 0; i < len(index); i++ {
+		if index[i] < '0' || index[i] > '9' {
+			return "", 0, false
+		}
+	}
+	blockIndex, err := strconv.Atoi(index)
+	if err != nil {
+		return "", 0, false
+	}
+	return responseID, blockIndex, true
+}
+
+// isClaudeThinkingBlockType reports the content block types that carry a
+// thinking signature.
+func isClaudeThinkingBlockType(blockType string) bool {
+	return blockType == "thinking" || blockType == "redacted_thinking"
 }

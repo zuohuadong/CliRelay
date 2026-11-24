@@ -386,6 +386,9 @@ func (e *XAIExecutor) prepareResponsesRequest(ctx context.Context, auth *cliprox
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	body = ensureTranslatedCodexModel(body, execCtx.BaseModel)
 	body = sanitizeCodexResponsesRequest(body)
+	// Before flattening, so tool_search declarations are dropped wherever Codex
+	// put them: top level, a namespace, or a Lite additional_tools item.
+	body = stripXAIUnsupportedToolSearch(body)
 	body, toolNames := flattenXAINamespaceTools(body)
 	body = stripXAIUnsupportedWebSearchOptions(body)
 	// After flattening, so custom tools declared inside a namespace are rewritten too.

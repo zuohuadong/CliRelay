@@ -176,13 +176,14 @@ func xaiCustomToolChoiceAsFunction(body []byte, names *xaiNamespaceToolNames) []
 }
 
 // xaiCustomToolCallAsFunctionCall replays a custom call from history as the
-// function call the declaration now describes.
+// function call the declaration now describes. Responses function_call
+// arguments are a JSON-encoded string, not the object itself.
 func xaiCustomToolCallAsFunctionCall(item gjson.Result) ([]byte, bool) {
-	args, err := sjson.SetRawBytes([]byte(`{}`), "input", xaiCustomInputArgumentJSON(item.Get("input")))
-	if err != nil {
-		return nil, false
-	}
-	out, err := sjson.SetRawBytes([]byte(item.Raw), "arguments", args)
+	arguments := make([]byte, 0, 32)
+	arguments = append(arguments, `{"input":`...)
+	arguments = append(arguments, xaiCustomInputArgumentJSON(item.Get("input"))...)
+	arguments = append(arguments, '}')
+	out, err := sjson.SetBytes([]byte(item.Raw), "arguments", string(arguments))
 	if err != nil {
 		return nil, false
 	}

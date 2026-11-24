@@ -62,8 +62,11 @@ func TestXAINormalizeUnsupportedCodexShapesConvertsCustomTools(t *testing.T) {
 	if got := input.Get("1.type").String(); got != "function_call" {
 		t.Fatalf("input[1].type = %q, want function_call", got)
 	}
-	if got := input.Get("1.arguments.input").String(); got != "*** Begin Patch\n*** End Patch" {
-		t.Fatalf("input[1].arguments.input = %q", got)
+	if got := input.Get("1.arguments").Type; got != gjson.String {
+		t.Fatalf("input[1].arguments has type %v, want a JSON string", got)
+	}
+	if got := gjson.Get(input.Get("1.arguments").String(), "input").String(); got != "*** Begin Patch\n*** End Patch" {
+		t.Fatalf("input[1].arguments input = %q (arguments %q)", got, input.Get("1.arguments").String())
 	}
 	if got := input.Get("2.type").String(); got != "function_call_output" {
 		t.Fatalf("input[2].type = %q, want function_call_output", got)

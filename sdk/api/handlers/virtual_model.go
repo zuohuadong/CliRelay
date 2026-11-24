@@ -15,6 +15,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/routetrace"
 	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
+	log "github.com/sirupsen/logrus"
 )
 
 // A virtual model is a model name a tenant serves from one of several real
@@ -292,7 +293,15 @@ func (r *virtualModelRun) failed(try virtualModelTry, errMsg *StreamErrorMessage
 	if errMsg != nil && modelCapacityStreamErr(errMsg.Error) {
 		modelcapacity.Mark(try.member.Model, time.Now())
 	}
-	return r.next < len(r.order) && virtualModelMovesOn(r.ctx, errMsg)
+	movesOn := r.next < len(r.order) && virtualModelMovesOn(r.ctx, errMsg)
+	if errMsg != nil {
+		// Which member failed and whether the turn moved past it is the first
+		// thing to look for when a client reports a failure no route trace
+		// recorded.
+		log.Debugf("virtual model %s: member %s failed (%d: %v), moves on: %v",
+			r.plan.Name, try.member.Route(), errMsg.StatusCode, errMsg.Error, movesOn)
+	}
+	return movesOn
 }
 
 // served settles the trace for the member that took the request, and returns

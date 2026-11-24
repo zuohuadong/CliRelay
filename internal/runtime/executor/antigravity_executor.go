@@ -273,12 +273,7 @@ attemptLoop:
 						continue attemptLoop
 					}
 				}
-				sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
-				if httpResp.StatusCode == http.StatusTooManyRequests {
-					if retryAfter, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && retryAfter != nil {
-						sErr.retryAfter = retryAfter
-					}
-				}
+				sErr := antigravityStatusErr(httpResp.StatusCode, httpResp.Header, bodyBytes)
 				err = sErr
 				return nil, err
 			}
@@ -375,12 +370,7 @@ attemptLoop:
 
 		switch {
 		case lastStatus != 0:
-			sErr := statusErr{code: lastStatus, msg: string(lastBody)}
-			if lastStatus == http.StatusTooManyRequests {
-				if retryAfter, parseErr := parseRetryDelay(lastBody); parseErr == nil && retryAfter != nil {
-					sErr.retryAfter = retryAfter
-				}
-			}
+			sErr := antigravityStatusErr(lastStatus, nil, lastBody)
 			err = sErr
 		case lastErr != nil:
 			err = lastErr

@@ -139,7 +139,7 @@ func (r antigravityReopener) open() (*http.Response, error) {
 			body := readUpstreamErrorBody(r.executor.Identifier(), httpResp.Body)
 			_ = httpResp.Body.Close()
 			r.recorder.AppendResponseChunk(body)
-			lastErr = statusErr{code: httpResp.StatusCode, msg: string(body)}
+			lastErr = antigravityStatusErr(httpResp.StatusCode, httpResp.Header, body)
 			continue
 		}
 		return httpResp, nil

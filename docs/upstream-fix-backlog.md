@@ -49,18 +49,18 @@ turn leaves a failed attempt row behind. It is still the right ranking signal.
 
 ## Backlog, in the order worth doing
 
-| Upstream | What it fixes | Fits us? | Effort | Decision |
-| --- | --- | --- | --- | --- |
-| `ae3d80f70` | antigravity: honour retry hints on capacity errors | antigravity is in our pool | 0.5d, self-contained | **Take** |
-| `84b838e1c` | honor HTTP `Retry-After` fallback on 429 | our generic path reads hints but not every provider publishes one | 0.5d | **Take** |
-| `c71aa824e` | Claude: keep adjacent same-response thinking blocks | multi-turn Claude via Responses loses reasoning | 1d | **Take** |
-| `f5ef0c0f8` | auth: preserve stream bootstrap attempt identity | stream retry accounting (double usage rows) | 1d | Evaluate |
-| `538f96110` | auth: cancel abandoned stream attempts before draining | leaks upstream sockets under failover | 1d | Evaluate |
-| `892fc4864` | harden SSE JSON reassembly + mid-stream error bookkeeping | long events fragmented across lines | 1–2d | Evaluate |
-| `aeed97157` | gemini: suppress pending filter frames on stream errors | only with filter-enabled Gemini | 0.5d | Defer |
-| `85225381d` | antigravity: isolate signature cache by credential | cross-credential signature mixing | 1d | Defer |
-| `679166b87` | xai: evict idle websocket ID states | we use HTTP for xAI chat | — | N/A |
-| `d2b7dbbdb` | codex: default missing Claude tool input arguments | one more 400 class | 0.5d | Defer |
+| Upstream | What it fixes | This line | Outcome |
+| --- | --- | --- | --- |
+| `ae3d80f70` | antigravity: honour retry hints on capacity errors | 503 capacity answers now carry the wait | **Done** `16c11f94f` |
+| `84b838e1c` | honor HTTP `Retry-After` fallback on 429/503 | `parseRetryDelayWithHeaders`, body first then header | **Done** `16c11f94f` |
+| `c71aa824e` | Claude: keep adjacent same-response thinking blocks | ids give the origin, trailing run collapses otherwise | **Done** `698a58311` |
+| `d2b7dbbdb` | codex: default missing Claude tool input arguments | omitted `input` becomes `{}` | **Done** `18c73ed32` |
+| `85225381d` | antigravity: isolate signature cache by credential | **Blocked**: scoping needs the credential on both sides, but request translators here are `func(model, body, stream)` with no context. Needs a translator-registry change first. |
+| `892fc4864` | harden SSE JSON reassembly + mid-stream error bookkeeping | **N/A**: patches v8's `helps/sse_json_assembler.go` and `antigravity_executor_stream.go`; this line has no such modules. Revisit only with evidence of truncated frames. |
+| `aeed97157` | gemini: suppress pending filter frames on stream errors | **N/A**: v8 buffers policy text in `gemini_executor.go`; this line has no pending-frame buffer. |
+| `f5ef0c0f8` | auth: preserve stream bootstrap attempt identity | **N/A**: `conductor_stream.go` and `streamBootstrapError` do not exist here. |
+| `538f96110` | auth: cancel abandoned stream attempts before draining | **N/A**: same v8-only file; this line settles attempts through `wrapStreamResult`. |
+| `679166b87` | xai: evict idle websocket ID states | **N/A**: xAI chat here is HTTP only. |
 
 ## Deliberately not ported
 

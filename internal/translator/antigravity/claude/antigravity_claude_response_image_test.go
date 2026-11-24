@@ -35,7 +35,11 @@ func TestConvertAntigravityResponseToClaude_InlineImage(t *testing.T) {
 	out := ConvertAntigravityResponseToClaude(ctx, "gemini-3.1-flash-image", request, request, []byte(imageResponseChunk), &param)
 	out = append(out, ConvertAntigravityResponseToClaude(ctx, "gemini-3.1-flash-image", request, request, []byte("[DONE]"), &param)...)
 
-	stream := strings.Join(out, "")
+	var streamBuilder strings.Builder
+	for _, chunk := range out {
+		_, _ = streamBuilder.Write(chunk)
+	}
+	stream := streamBuilder.String()
 	if !strings.Contains(stream, "event: content_block_start") {
 		t.Fatalf("expected an image content block, got: %s", stream)
 	}
@@ -45,7 +49,7 @@ func TestConvertAntigravityResponseToClaude_InlineImage(t *testing.T) {
 
 	var imageBlock gjson.Result
 	for _, chunk := range out {
-		for _, line := range strings.Split(chunk, "\n") {
+		for _, line := range strings.Split(string(chunk), "\n") {
 			line = strings.TrimSpace(line)
 			if !strings.HasPrefix(line, "data: ") {
 				continue
@@ -76,7 +80,7 @@ func TestConvertAntigravityResponseToClaudeNonStream_InlineImage(t *testing.T) {
 
 	got := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "gemini-3.1-flash-image", request, request, []byte(imageResponseChunk), &param)
 
-	content := gjson.Get(got, "content")
+	content := gjson.GetBytes(got, "content")
 	if !content.IsArray() || len(content.Array()) != 1 {
 		t.Fatalf("expected exactly one content block, got: %s", got)
 	}
@@ -90,7 +94,7 @@ func TestConvertAntigravityResponseToClaudeNonStream_InlineImage(t *testing.T) {
 	if got := block.Get("source.data").String(); got != "QUJD" {
 		t.Fatalf("expected the image bytes to survive, got %q", got)
 	}
-	if stop := gjson.Get(got, "stop_reason").String(); stop != "end_turn" {
+	if stop := gjson.GetBytes(got, "stop_reason").String(); stop != "end_turn" {
 		t.Fatalf("expected stop_reason end_turn, got %q", stop)
 	}
 }
@@ -113,7 +117,7 @@ func TestConvertAntigravityResponseToClaudeNonStream_TextAndImage(t *testing.T) 
 
 	got := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "gemini-3.1-flash-image", request, request, chunk, &param)
 
-	blocks := gjson.Get(got, "content").Array()
+	blocks := gjson.GetBytes(got, "content").Array()
 	if len(blocks) != 2 {
 		t.Fatalf("expected a text block and an image block, got: %s", got)
 	}

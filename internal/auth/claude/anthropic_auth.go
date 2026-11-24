@@ -397,6 +397,10 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 // ExchangeCodeForTokensWithRedirectURI exchanges an authorization code using a
 // caller-provided redirect URI. This is used by the claude.ai session flow.
 func (o *ClaudeAuth) ExchangeCodeForTokensWithRedirectURI(ctx context.Context, code, state string, pkceCodes *PKCECodes, redirectURI string) (*ClaudeAuthBundle, error) {
+	return o.exchangeCodeForTokensWithRedirectURI(ctx, code, state, pkceCodes, redirectURI, true)
+}
+
+func (o *ClaudeAuth) exchangeCodeForTokensWithRedirectURI(ctx context.Context, code, state string, pkceCodes *PKCECodes, redirectURI string, inspectAccount bool) (*ClaudeAuthBundle, error) {
 	if pkceCodes == nil {
 		return nil, fmt.Errorf("PKCE codes are required for token exchange")
 	}
@@ -480,18 +484,20 @@ func (o *ClaudeAuth) ExchangeCodeForTokensWithRedirectURI(ctx context.Context, c
 
 	// Replay the native login companion lookups and let the profile response win
 	// where it carries identity the token response omitted.
-	if profile := o.inspectOAuthAccount(ctx, tokenResp.AccessToken); profile != nil {
-		if value := strings.TrimSpace(profile.Account.UUID); value != "" {
-			tokenData.AccountUUID = value
-		}
-		if value := strings.TrimSpace(profile.Account.Email); value != "" {
-			tokenData.Email = value
-		}
-		if value := strings.TrimSpace(profile.Organization.UUID); value != "" {
-			tokenData.OrganizationUUID = value
-		}
-		if value := strings.TrimSpace(profile.Organization.Name); value != "" {
-			tokenData.OrganizationName = value
+	if inspectAccount {
+		if profile := o.inspectOAuthAccount(ctx, tokenResp.AccessToken); profile != nil {
+			if value := strings.TrimSpace(profile.Account.UUID); value != "" {
+				tokenData.AccountUUID = value
+			}
+			if value := strings.TrimSpace(profile.Account.Email); value != "" {
+				tokenData.Email = value
+			}
+			if value := strings.TrimSpace(profile.Organization.UUID); value != "" {
+				tokenData.OrganizationUUID = value
+			}
+			if value := strings.TrimSpace(profile.Organization.Name); value != "" {
+				tokenData.OrganizationName = value
+			}
 		}
 	}
 

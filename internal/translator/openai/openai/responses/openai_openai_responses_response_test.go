@@ -17,7 +17,7 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesPreservesParallelT
 	var out strings.Builder
 	for _, chunk := range chunks {
 		for _, event := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "m", nil, nil, chunk, &param) {
-			out.WriteString(event)
+			out.Write(event)
 			out.WriteByte('\n')
 		}
 	}
@@ -50,7 +50,7 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesUnwrapsProviderDat
 		`"output_tokens":4`,
 		`"total_tokens":7`,
 	} {
-		if !strings.Contains(out, want) {
+		if !strings.Contains(string(out), want) {
 			t.Fatalf("missing %s in converted response:\n%s", want, out)
 		}
 	}

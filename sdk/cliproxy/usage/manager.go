@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -700,6 +701,7 @@ type Manager struct {
 	dispatching      bool
 	overflow         OverflowHandler
 	observer         PublishObserver
+	started          atomic.Bool
 
 	pluginsMu sync.RWMutex
 	plugins   []Plugin
@@ -719,6 +721,7 @@ func (m *Manager) Start(ctx context.Context) {
 		return
 	}
 	m.once.Do(func() {
+		m.started.Store(true)
 		if ctx == nil {
 			ctx = context.Background()
 		}

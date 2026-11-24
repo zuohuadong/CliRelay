@@ -36,8 +36,8 @@ jobs:
               return;
             }
 
-            if (headRef === desiredBase) {
-              core.info(`PR #${prNumber} is ${desiredBase} -> main; skipping retarget.`);
+            if (headRef === desiredBase || headRef.startsWith("codex/release-")) {
+              core.info(`PR #${prNumber} is an explicit release path; keeping base main.`);
               return;
             }
 

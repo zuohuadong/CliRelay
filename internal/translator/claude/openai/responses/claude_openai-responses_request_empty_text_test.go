@@ -24,7 +24,10 @@ func responsesRequest(items ...string) []byte {
 // (#1166).
 func TestConvertOpenAIResponsesRequestToClaude_ImageWithEmptyTextDropsTextBlock(t *testing.T) {
 	in := responsesRequest(`{"type":"message","role":"user","content":[{"type":"input_text","text":""},` + emptyTextTestImage + `]}`)
-	out := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", in, false)
+	out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", in, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	content := gjson.GetBytes(out, "messages.0.content")
 	if !content.IsArray() || len(content.Array()) != 1 || content.Get("0.type").String() != "image" {
 		t.Fatalf("content = %s, want only the image block", content.Raw)
@@ -37,7 +40,10 @@ func TestConvertOpenAIResponsesRequestToClaude_ImageWithEmptyTextDropsTextBlock(
 // Anthropic accepts a whitespace-only text block, so it is passed through.
 func TestConvertOpenAIResponsesRequestToClaude_ImageWithWhitespaceTextKept(t *testing.T) {
 	in := responsesRequest(`{"type":"message","role":"user","content":[{"type":"input_text","text":"  "},` + emptyTextTestImage + `]}`)
-	out := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", in, false)
+	out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", in, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	content := gjson.GetBytes(out, "messages.0.content")
 	if len(content.Array()) != 2 || content.Get("0.text").String() != "  " {
 		t.Fatalf("content = %s, want the whitespace text block kept before the image", content.Raw)
@@ -47,7 +53,10 @@ func TestConvertOpenAIResponsesRequestToClaude_ImageWithWhitespaceTextKept(t *te
 // Text that carries content is kept next to the image, as before.
 func TestConvertOpenAIResponsesRequestToClaude_ImageWithTextKeepsBoth(t *testing.T) {
 	in := responsesRequest(`{"type":"message","role":"user","content":[{"type":"input_text","text":"what is this?"},` + emptyTextTestImage + `]}`)
-	out := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", in, false)
+	out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", in, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	content := gjson.GetBytes(out, "messages.0.content")
 	if len(content.Array()) != 2 || content.Get("0.text").String() != "what is this?" || content.Get("1.type").String() != "image" {
 		t.Fatalf("content = %s, want the text block then the image block", content.Raw)
@@ -57,7 +66,10 @@ func TestConvertOpenAIResponsesRequestToClaude_ImageWithTextKeepsBoth(t *testing
 // A plain text message keeps the legacy string content.
 func TestConvertOpenAIResponsesRequestToClaude_PlainTextUnchanged(t *testing.T) {
 	in := responsesRequest(`{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}`)
-	out := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", in, false)
+	out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", in, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := gjson.GetBytes(out, "messages.0.content"); got.Type != gjson.String || got.String() != "hi" {
 		t.Fatalf("content = %s, want the string \"hi\"", got.Raw)
 	}
@@ -73,7 +85,11 @@ func TestConvertOpenAIResponsesRequestToClaude_OnlyEmptyTextKeepsMessage(t *test
 		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":""}]}`,
 		`{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}`,
 	)
-	msgs := gjson.GetBytes(ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", in, false), "messages").Array()
+	body, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", in, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := gjson.GetBytes(body, "messages").Array()
 	if len(msgs) != 3 {
 		t.Fatalf("got %d messages, want 3 (user, assistant, user)", len(msgs))
 	}
@@ -101,7 +117,11 @@ func TestConvertOpenAIResponsesRequestToClaude_EmptyAssistantTextInThinkingTurn(
 		`{"type":"function_call","call_id":"toolu_01","name":"shell","arguments":"{\"command\":\"ls\"}"}`,
 		`{"type":"function_call_output","call_id":"toolu_01","output":"a.txt"}`,
 	)
-	msgs := gjson.GetBytes(ConvertOpenAIResponsesRequestToClaude("claude-opus-5-5", in, true), "messages")
+	body, err := ConvertOpenAIResponsesRequestToClaude("claude-opus-5-5", in, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := gjson.GetBytes(body, "messages")
 	if n := len(msgs.Array()); n != 3 {
 		t.Fatalf("got %d messages, want 3 (user, assistant, user): %s", n, msgs.Raw)
 	}

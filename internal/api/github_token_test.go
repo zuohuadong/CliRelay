@@ -11,7 +11,7 @@ import (
 func TestServerGitHubTokenReload(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "environment-token")
 	t.Cleanup(func() { githubauth.SetToken("") })
-	cfg := &config.Config{GitHubToken: "initial-token"}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{GitHubToken: "initial-token"}}
 	server := newTestServerWithConfig(t, cfg)
 	if util.ResolveGitHubToken() != "initial-token" {
 		t.Fatal("startup did not configure global token")

@@ -64,6 +64,8 @@ func TestLogRequestWithOptionsCleansUpOldErrorLogs(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
+			nil,
 			true,
 			"",
 			timeZero(),

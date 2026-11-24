@@ -58,15 +58,15 @@ func TestImportCredentialSavesAndBindsProxy(t *testing.T) {
 		exchange: func(_ context.Context, _ *config.Config, in credentialImportInput) (*coreauth.Auth, credentialimport.Details, error) {
 			gotInput = in
 			return &coreauth.Auth{
-					ID:       "claude-import.json",
-					Provider: "claude",
-					FileName: "claude-import.json",
-					Label:    "team.member@example.com",
-					Metadata: map[string]any{"type": "claude"},
-				}, credentialimport.Details{
-					Email:        "team.member@example.com",
-					Organization: "Acme Team",
-				}, nil
+				ID:       "claude-import.json",
+				Provider: "claude",
+				FileName: "claude-import.json",
+				Label:    "team.member@example.com",
+				Metadata: map[string]any{"type": "claude"},
+			}, credentialimport.Details{
+				Email:        "team.member@example.com",
+				Organization: "Acme Team",
+			}, nil
 		},
 	}
 	// The proxy is the tenant's own. The system pool has an entry under the

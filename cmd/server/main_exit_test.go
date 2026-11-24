@@ -61,15 +61,28 @@ func newServerExitCommand(t *testing.T, dir string, args ...string) (*exec.Cmd, 
 func writeTestServerConfig(t *testing.T, dir string, port int) string {
 	t.Helper()
 	configPath := filepath.Join(dir, "config.yaml")
+	postgresDSN := strings.TrimSpace(os.Getenv("CLIRELAY_POSTGRES_TEST_DSN"))
+	postgresConfig := ""
+	if postgresDSN != "" {
+		postgresConfig = fmt.Sprintf("postgres:\n  dsn: %q\n", postgresDSN)
+	}
 	content := fmt.Sprintf(
-		"config-version: 8\nserver:\n  host: 127.0.0.1\n  port: %d\nmanagement:\n  secret-key: \"$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy\"\n  disable-control-panel: true\noauth:\n  auth-dir: %q\naccess:\n  api-keys: [test-server-exit-key]\n",
+		"config-version: 8\nserver:\n  host: 127.0.0.1\n  port: %d\nmanagement:\n  secret-key: \"$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy\"\n  disable-control-panel: true\noauth:\n  auth-dir: %q\naccess:\n  api-keys: [test-server-exit-key]\n%s",
 		port,
 		filepath.Join(dir, "auths"),
+		postgresConfig,
 	)
 	if errWrite := os.WriteFile(configPath, []byte(content), 0o600); errWrite != nil {
 		t.Fatal(errWrite)
 	}
 	return configPath
+}
+
+func requireServerPostgres(t *testing.T) {
+	t.Helper()
+	if strings.TrimSpace(os.Getenv("CLIRELAY_POSTGRES_TEST_DSN")) == "" {
+		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
+	}
 }
 
 func TestMissingConfigExitsWithFailure(t *testing.T) {
@@ -155,6 +168,7 @@ func TestTUIStandaloneEmbeddedServerNotReadyExitsWithFailure(t *testing.T) {
 }
 
 func TestTUIStandaloneFailureExitsWithFailure(t *testing.T) {
+	requireServerPostgres(t)
 	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
 	if errListen != nil {
 		t.Fatal(errListen)
@@ -178,6 +192,7 @@ func TestTUIStandaloneFailureExitsWithFailure(t *testing.T) {
 }
 
 func TestServerOccupiedPortExitsWithFailure(t *testing.T) {
+	requireServerPostgres(t)
 	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
 	if errListen != nil {
 		t.Fatal(errListen)
@@ -200,6 +215,7 @@ func TestServerOccupiedPortExitsWithFailure(t *testing.T) {
 }
 
 func TestServerInterruptExitsSuccessfully(t *testing.T) {
+	requireServerPostgres(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("os.Interrupt cannot be sent to a process on Windows")
 	}

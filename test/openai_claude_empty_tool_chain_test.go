@@ -17,9 +17,9 @@ func collectOpenAIToClaudeStreamViaSDK(t *testing.T, chunks ...string) string {
 	originalRequest := []byte(`{"model":"m","stream":true,"stream_options":{"include_usage":true}}`)
 	translatedRequest := []byte(`{"model":"m","stream":true}`)
 	var param any
-	var out []string
+	var out []byte
 	for _, chunk := range chunks {
-		out = append(out, sdktranslator.TranslateStream(
+		for _, event := range sdktranslator.TranslateStream(
 			context.Background(),
 			sdktranslator.FormatOpenAI,
 			sdktranslator.FormatClaude,
@@ -28,9 +28,11 @@ func collectOpenAIToClaudeStreamViaSDK(t *testing.T, chunks ...string) string {
 			translatedRequest,
 			[]byte(chunk),
 			&param,
-		)...)
+		) {
+			out = append(out, event...)
+		}
 	}
-	return strings.Join(out, "")
+	return string(out)
 }
 
 func assertNoOrphanAnthropicContentEvents(t *testing.T, stream string) {
@@ -234,10 +236,10 @@ func TestOpenAIClaudeEmptyToolNameNonStreamingChain(t *testing.T) {
 		raw,
 		nil,
 	)
-	if strings.Contains(out, `"type":"tool_use"`) || strings.Contains(out, `"name":""`) {
+	if strings.Contains(string(out), `"type":"tool_use"`) || strings.Contains(string(out), `"name":""`) {
 		t.Fatalf("empty OpenAI function.name must not become Claude non-streaming tool_use:\n%s", out)
 	}
-	if got := gjson.Get(out, "stop_reason").String(); got != "end_turn" {
+	if got := gjson.GetBytes(out, "stop_reason").String(); got != "end_turn" {
 		t.Fatalf("Claude non-streaming stop_reason = %q, want end_turn: %s", got, out)
 	}
 }

@@ -31,7 +31,10 @@ func allocatedBytes(t *testing.T, body []byte) uint64 {
 	t.Helper()
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	out := ConvertOpenAIRequestToClaude("claude-opus-5-5", body, true)
+	out, err := ConvertOpenAIRequestToClaude("claude-opus-5-5", body, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runtime.ReadMemStats(&after)
 	if got, want := gjson.GetBytes(out, "messages.#").Int(), gjson.GetBytes(body, "messages.#").Int(); got != want {
 		t.Fatalf("converted %d messages, want %d", got, want)
@@ -65,7 +68,11 @@ func TestConvertOpenAIRequestToClaude_SystemMessagesShareFirstSlot(t *testing.T)
 		{"role":"system","content":"third"}
 	]}`)
 
-	msgs := gjson.GetBytes(ConvertOpenAIRequestToClaude("claude-opus-5-5", input, false), "messages").Array()
+	body, err := ConvertOpenAIRequestToClaude("claude-opus-5-5", input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := gjson.GetBytes(body, "messages").Array()
 	if len(msgs) != 4 {
 		t.Fatalf("got %d messages, want 4", len(msgs))
 	}
@@ -95,7 +102,7 @@ func BenchmarkConvertOpenAIRequestToClaude_LongToolHistory(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(int64(len(body)))
 			for i := 0; i < b.N; i++ {
-				_ = ConvertOpenAIRequestToClaude("claude-opus-5-5", body, true)
+				_, _ = ConvertOpenAIRequestToClaude("claude-opus-5-5", body, true)
 			}
 		})
 	}

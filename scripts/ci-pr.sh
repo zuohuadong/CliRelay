@@ -94,7 +94,7 @@ if "router-for-me/CLIProxyAPI" in text:
     sys.exit(1)
 GUARD
 
-required_golangci_lint_version="v1.64.5"
+required_golangci_lint_version="v1.64.8"
 golangci_lint_bin="${GOLANGCI_LINT_BIN:-}"
 if [ -z "${golangci_lint_bin}" ]; then
   if command -v golangci-lint >/dev/null 2>&1; then
@@ -114,7 +114,7 @@ if [ ! -x "${golangci_lint_bin}" ]; then
 fi
 
 golangci_lint_version="$("${golangci_lint_bin}" version)"
-if ! grep -Eq 'version v?1\.64\.5([[:space:]]|$)' <<<"${golangci_lint_version}"; then
+if ! grep -Eq 'version v?1\.64\.8([[:space:]]|$)' <<<"${golangci_lint_version}"; then
   echo "golangci-lint ${required_golangci_lint_version} is required; found: ${golangci_lint_version}" >&2
   exit 1
 fi
@@ -122,8 +122,22 @@ fi
 # The upstream v8 tree currently carries a large pre-existing lint backlog
 # (deprecated compatibility shims and generated transport adapters). Keep the
 # report visible in CI without making those non-blocking findings hide build
-# or targeted-test failures.
-"${golangci_lint_bin}" run --config .golangci.yml --tests=false --issues-exit-code=0
+# or targeted-test failures. Bound the report so CI can still reach the final
+# build check when the analyzer exceeds the hosted runner budget.
+lint_args=(run --config .golangci.yml --tests=false --issues-exit-code=0 --fast --concurrency=1)
+if command -v timeout >/dev/null 2>&1; then
+  set +e
+  timeout --signal=TERM 120s "${golangci_lint_bin}" "${lint_args[@]}"
+  lint_status=$?
+  set -e
+  if [ "${lint_status}" -eq 124 ] || [ "${lint_status}" -eq 137 ]; then
+    echo "golangci-lint exceeded the 120s reporting budget; continuing because lint findings are non-blocking."
+  elif [ "${lint_status}" -ne 0 ]; then
+    exit "${lint_status}"
+  fi
+else
+  "${golangci_lint_bin}" "${lint_args[@]}"
+fi
 
 trap 'rm -f test-output' EXIT
 go build -o test-output ./cmd/server

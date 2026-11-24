@@ -178,7 +178,7 @@ func TestConvertOpenAIResponsesRequestToGemini_MatchesReference(t *testing.T) {
 	broken := 0
 	for i := 0; i < total; i++ {
 		req := g.request()
-		got := ConvertOpenAIResponsesRequestToGemini("gemini-3-pro-preview", req, true)
+		got, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3-pro-preview", req, true)
 		want := convertOpenAIResponsesRequestToGeminiReference("gemini-3-pro-preview", req, true)
 		if bytes.Equal(got, want) {
 			continue
@@ -205,7 +205,8 @@ func TestConvertOpenAIResponsesRequestToGemini_MatchesReference(t *testing.T) {
 // now stay in the array.
 func TestConvertOpenAIResponsesRequestToGemini_BrokenArgumentsKeepLaterContentsInPlace(t *testing.T) {
 	req := []byte(`{"instructions":"sys","input":[{"type":"function_call","name":"read","call_id":"c1","arguments":"{oops"},{"type":"function_call_output","call_id":"c1","output":"done"}]}`)
-	got := string(ConvertOpenAIResponsesRequestToGemini("gemini-3-pro-preview", req, true))
+	raw, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3-pro-preview", req, true)
+	got := string(raw)
 	response := strings.Index(got, `"role":"function"`)
 	system := strings.Index(got, `"system_instruction"`)
 	if response < 0 || system < 0 || response > system {
@@ -236,7 +237,7 @@ func codexSessionRequest(turns int) []byte {
 func TestConvertOpenAIResponsesRequestToGemini_MatchesReferenceOnCodexSessions(t *testing.T) {
 	for _, turns := range []int{0, 1, 7, 40} {
 		req := codexSessionRequest(turns)
-		got := ConvertOpenAIResponsesRequestToGemini("gemini-3-pro-preview", req, true)
+		got, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3-pro-preview", req, true)
 		want := convertOpenAIResponsesRequestToGeminiReference("gemini-3-pro-preview", req, true)
 		if !bytes.Equal(got, want) {
 			t.Fatalf("%d turns differs from the reference", turns)

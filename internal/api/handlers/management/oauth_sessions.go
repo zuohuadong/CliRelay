@@ -481,6 +481,17 @@ func cloneOAuthSessionMetadata(in map[string]any) map[string]any {
 
 var oauthSessions = newOAuthSessionStore(oauthSessionTTL)
 
+// replaceOAuthSessionStoreForTest swaps the process-local store and restores it after the test.
+func replaceOAuthSessionStoreForTest(t interface {
+	Helper()
+	Cleanup(func())
+}, replacement *oauthSessionStore) {
+	t.Helper()
+	previous := oauthSessions
+	oauthSessions = replacement
+	t.Cleanup(func() { oauthSessions = previous })
+}
+
 func RegisterOAuthSession(state, provider string) {
 	oauthSessions.Register(state, provider)
 	if shared := sharedOAuthSessionStore(); shared != nil {

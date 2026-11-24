@@ -36,28 +36,28 @@ import (
 //   - cfg: The application configuration
 //   - configPath: The path to the configuration file
 //   - localPassword: Optional password accepted for local management requests
-func StartService(cfg *config.Config, configPath string, localPassword string) {
+func StartService(cfg *config.Config, configPath string, localPassword string) error {
 	loc := config.ApplyTimeZone(cfg.Timezone)
 	prepareCluster(cfg)
 	if err := withRuntimeMigrationLock(cfg, func() error { return initializeRuntimeDataStack(cfg, configPath, loc) }); err != nil {
 		log.Errorf("usage: failed to initialize runtime data stack: %v", err)
-		return
+		return err
 	}
 	defer stopRuntimeDataStack()
 	if err := usage.StartRuntimeSnapshots(); err != nil {
 		log.Errorf("usage: failed to restore runtime checkpoint: %v", err)
-		return
+		return err
 	}
 	coordinator, err := startCluster(cfg)
 	if err != nil {
 		log.Errorf("cluster: failed to join the cluster: %v", err)
-		return
+		return err
 	}
 	defer coordinator.Close()
 	stopClusterAuth, err := startClusterAuthStore(cfg)
 	if err != nil {
 		log.Errorf("cluster: failed to start the shared credential store: %v", err)
-		return
+		return err
 	}
 	defer stopClusterAuth()
 
@@ -90,14 +90,16 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 	service, err := builder.Build()
 	if err != nil {
 		log.Errorf("failed to build proxy service: %v", err)
-		return
+		return err
 	}
 	defer closeClusterOnShutdown(runCtx, coordinator)()
 
 	err = service.Run(runCtx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Errorf("proxy service exited with error: %v", err)
+		return err
 	}
+	return nil
 }
 
 // StartServiceBackground starts the proxy service in a background goroutine

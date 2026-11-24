@@ -768,7 +768,7 @@ func buildModelEntry(input ModelInput, availableIDs map[string]struct{}) ModelEn
 
 func resolveSingleRoute(modelID string, route ModelRoute) resolvedRoute {
 	metaID := strings.TrimSpace(route.MetadataModelID)
-	staticInfo := resolveStaticModelInfo(modelID, metaID)
+	staticInfo := resolveStaticModelInfoForRoute(modelID, metaID, route.Provider)
 
 	created := route.Created
 	if created <= 0 && staticInfo != nil {
@@ -863,6 +863,12 @@ func resolveSingleRoute(modelID string, route ModelRoute) resolvedRoute {
 	var reasoningLevels []string
 	if !isHidden {
 		reasoningLevels = resolveReasoningLevels(thinkingSupport)
+		// Claude Opus 4.6 exposes adaptive effort as low/medium/high/max.
+		// Its numeric budget range would otherwise manufacture a redundant
+		// xhigh tier when converting the static metadata for Muse Code.
+		if route.Thinking == nil && strings.EqualFold(strings.TrimSpace(metaID), "claude-opus-4-6") {
+			reasoningLevels = replaceReasoningLevel(reasoningLevels, "xhigh", "max")
+		}
 	}
 
 	return resolvedRoute{
@@ -893,6 +899,57 @@ func resolveStaticModelInfo(id, metadataModelID string) *registry.ModelInfo {
 		}
 	}
 	return registry.LookupStaticModelInfo(id)
+}
+
+func resolveStaticModelInfoForRoute(id, metadataModelID, provider string) *registry.ModelInfo {
+	if info := resolveStaticModelInfo(id, metadataModelID); info != nil {
+		// Provider-specific catalogs are authoritative when the shared static
+		// catalog contains the same public ID with different limits.
+		if strings.EqualFold(strings.TrimSpace(provider), "codex") {
+			if candidate := lookupModelInCatalog(metadataModelID, registry.GetCodexFreeModels()); candidate == nil {
+				candidate = lookupModelInCatalog(id, registry.GetCodexFreeModels())
+				if candidate != nil {
+					return candidate
+				}
+			} else {
+				return candidate
+			}
+		}
+		return info
+	}
+	if strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		return lookupModelInCatalog(metadataModelID, registry.GetCodexFreeModels())
+	}
+	return nil
+}
+
+func lookupModelInCatalog(id string, models []*registry.ModelInfo) *registry.ModelInfo {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	for _, model := range models {
+		if model != nil && strings.EqualFold(strings.TrimSpace(model.ID), id) {
+			return model
+		}
+	}
+	return nil
+}
+
+func replaceReasoningLevel(levels []string, from, to string) []string {
+	out := make([]string, 0, len(levels))
+	seen := make(map[string]struct{}, len(levels))
+	for _, level := range levels {
+		if strings.EqualFold(level, from) {
+			level = to
+		}
+		if _, exists := seen[level]; exists {
+			continue
+		}
+		seen[level] = struct{}{}
+		out = append(out, level)
+	}
+	return out
 }
 
 func inferOwnedBy(id, metadataModelID, modelType, provider string) string {

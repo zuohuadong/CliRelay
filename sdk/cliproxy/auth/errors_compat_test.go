@@ -8,7 +8,7 @@ import (
 )
 
 func TestErrorLegacyUnkeyedLiteralCompatibility(t *testing.T) {
-	err := cliproxyauth.Error{"code", "message", false, http.StatusRequestTimeout, nil}
+	err := cliproxyauth.Error{"code", "message", false, http.StatusRequestTimeout, "", 0, nil}
 
 	if err.Code != "code" || err.Message != "message" || err.Retryable || err.HTTPStatus != http.StatusRequestTimeout {
 		t.Fatalf("unexpected error fields: %#v", err)

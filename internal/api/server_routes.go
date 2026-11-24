@@ -13,6 +13,7 @@ import (
 
 	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/bodyutil"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
 	claudemodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/claude/models"
@@ -44,6 +45,9 @@ const codexAlphaSearchSourceFormat = "codex-alpha-search"
 // setupRoutes configures the API routes for the server.
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
+	s.engine.GET("/readyz", s.handleReadyz)
+	s.engine.GET("/readyz/egress", s.handleReadyzEgress)
+
 	healthzHandler := func(c *gin.Context) {
 		if c.Request.Method == http.MethodHead {
 			c.Status(http.StatusOK)
@@ -67,7 +71,7 @@ func (s *Server) setupRoutes() {
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
-	v1.Use(AuthMiddleware(s.accessManager))
+	s.useInferenceMiddleware(v1, s.v1RequestStages(func(c *gin.Context) { c.Next() }))
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.GET("/models/*model", func(c *gin.Context) {
@@ -127,13 +131,39 @@ func (s *Server) setupRoutes() {
 
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
-	codexDirect.Use(AuthMiddleware(s.accessManager))
+	s.useInferenceMiddleware(codexDirect, s.v1RequestStages(func(c *gin.Context) { c.Next() }))
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
 		codexDirect.POST("/responses/compact", openaiResponsesHandlers.Compact)
 		codexDirect.POST("/alpha/search", s.codexAlphaSearch)
 	}
+
+	// Additional Codex-compatible base URL aliases used by deployed clients.
+	codexAlias := s.engine.Group("/codex/v1")
+	s.useInferenceMiddleware(codexAlias, s.v1RequestStages(func(c *gin.Context) { c.Next() }))
+	codexAlias.POST("/alpha/search", s.codexAlphaSearch)
+
+	registerGroupedV1 := func(group *gin.RouterGroup) {
+		group.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
+		group.POST("/chat/completions", openaiHandlers.ChatCompletions)
+		group.POST("/completions", openaiHandlers.Completions)
+		group.POST("/messages", claudeCodeHandlers.ClaudeMessages)
+		group.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
+		group.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
+		group.POST("/responses", openaiResponsesHandlers.Responses)
+		group.POST("/responses/compact", openaiResponsesHandlers.Compact)
+		group.POST("/alpha/search", s.codexAlphaSearch)
+	}
+	groupedV1 := s.engine.Group("/:group/v1")
+	s.useInferenceMiddleware(groupedV1, s.v1RequestStages(groupRoutingMiddleware(s.resolveRoute)))
+	registerGroupedV1(groupedV1)
+
+	groupedV1Beta := s.engine.Group("/:group/v1beta")
+	s.useInferenceMiddleware(groupedV1Beta, s.requestStages(groupRoutingMiddleware(s.resolveRoute)))
+	groupedV1Beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
+	groupedV1Beta.POST("/models/*action", geminiHandlers.GeminiHandler)
+	groupedV1Beta.GET("/models/*action", s.geminiGetHandler(geminiHandlers))
 
 	// Muse Code CLI direct endpoints (beside /v1)
 	museCode := s.engine.Group("/muse-code")
@@ -147,7 +177,7 @@ func (s *Server) setupRoutes() {
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
-	v1beta.Use(AuthMiddleware(s.accessManager))
+	s.useInferenceMiddleware(v1beta, s.requestStages(func(c *gin.Context) { c.Next() }))
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
 		v1beta.POST("/interactions", geminiHandlers.Interactions)
@@ -165,6 +195,41 @@ func (s *Server) setupRoutes() {
 				"GET /v1/models",
 			},
 		})
+	})
+
+	s.engine.NoRoute(func(c *gin.Context) {
+		if _, rewritten := c.Get(rewrittenPathRouteGroupKey); rewritten {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		rawGroupPath, apiPath, ok := splitGroupedAPIPath(c.Request.URL.Path)
+		if !ok {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		route, ok := s.resolveRoute(requestTenantID(c), rawGroupPath)
+		if !ok || route == nil {
+			abortChannelGroupRouteNotFound(c)
+			return
+		}
+		attachPathRouteContext(c, route)
+		c.Set(rewrittenPathRouteGroupKey, true)
+		if _, errBody := bodyutil.ReadRequestBody(c, bodyutil.ModelRequestBodyLimit()); errBody != nil {
+			status := http.StatusBadRequest
+			if bodyutil.IsTooLarge(errBody) {
+				status = http.StatusRequestEntityTooLarge
+			}
+			c.AbortWithStatusJSON(status, gin.H{"error": errBody.Error()})
+			return
+		}
+		c.Request.URL.Path = apiPath
+		if c.Request.URL.RawQuery != "" {
+			c.Request.RequestURI = apiPath + "?" + c.Request.URL.RawQuery
+		} else {
+			c.Request.RequestURI = apiPath
+		}
+		s.engine.HandleContext(c)
+		c.Abort()
 	})
 
 	// OAuth callback endpoints (reuse main server port)
@@ -372,6 +437,42 @@ func homeSelectionAttemptContext(ctx context.Context, selection *auth.HomeDispat
 	return selection.AttemptContext(ctx)
 }
 
+func validateCodexAlphaSearchRequest(body []byte) error {
+	var payload map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(body, &payload); errUnmarshal != nil || payload == nil {
+		return errors.New("Codex Alpha Search request must be a JSON object")
+	}
+
+	modelRaw, ok := payload["model"]
+	if !ok {
+		return errors.New("Codex Alpha Search request model is required")
+	}
+	var model string
+	if errUnmarshal := json.Unmarshal(modelRaw, &model); errUnmarshal != nil || strings.TrimSpace(model) == "" {
+		return errors.New("Codex Alpha Search request model must be a non-empty string")
+	}
+
+	commandsRaw, ok := payload["commands"]
+	if !ok {
+		return errors.New("Codex Alpha Search request commands are required")
+	}
+	var commands map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(commandsRaw, &commands); errUnmarshal != nil || commands == nil {
+		return errors.New("Codex Alpha Search request commands must be an object")
+	}
+
+	if streamRaw, ok := payload["stream"]; ok {
+		var stream bool
+		if errUnmarshal := json.Unmarshal(streamRaw, &stream); errUnmarshal != nil {
+			return errors.New("Codex Alpha Search request stream must be a boolean")
+		}
+		if stream {
+			return errors.New("Codex Alpha Search does not support streaming")
+		}
+	}
+	return nil
+}
+
 // codexAlphaSearch forwards the standalone search endpoint used by current
 // Codex clients. Unlike /responses, this payload is already in Codex search
 // format and must not pass through a protocol translator.
@@ -384,6 +485,10 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 16<<20))
 	if err != nil {
 		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadRequest), gin.H{"error": "Failed to read search request"})
+		return
+	}
+	if errRequest := validateCodexAlphaSearchRequest(body); errRequest != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errRequest.Error()})
 		return
 	}
 
@@ -418,6 +523,14 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		selected, err = s.handlers.AuthManager.SelectAuthWithCredentialPolicy(ctx, "codex", selectionModel, auth.CredentialPolicyCodexAlphaSearchV1, selectionOpts)
 	}
 	if err != nil {
+		var authErr *auth.Error
+		if errors.As(err, &authErr) && authErr != nil && authErr.Code == "auth_not_found" {
+			err = &auth.Error{
+				Code:       "alpha_search_auth_unavailable",
+				Message:    "no eligible Codex Alpha Search credential for this model and scope; use Codex OAuth or an API key with alpha-search enabled and a base-url",
+				HTTPStatus: http.StatusServiceUnavailable,
+			}
+		}
 		status := clienterror.HTTPStatusFromErrorOr(err, http.StatusServiceUnavailable)
 		for _, value := range auth.SafeResponseHeaders(err).Values("Retry-After") {
 			c.Writer.Header().Add("Retry-After", value)

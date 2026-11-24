@@ -29,7 +29,8 @@ func credentialPolicyAllows(policy string, auth *Auth) bool {
 		case AuthKindOAuth:
 			return true
 		case AuthKindAPIKey:
-			return strings.EqualFold(authAttribute(auth, AttributeCodexAlphaSearch), "true")
+			return strings.EqualFold(authAttribute(auth, AttributeCodexAlphaSearch), "true") ||
+				strings.EqualFold(authAttribute(auth, "alpha_search"), "true")
 		default:
 			return false
 		}

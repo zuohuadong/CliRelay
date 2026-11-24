@@ -234,12 +234,15 @@ type Manager struct {
 	tenantExecutors           map[string]map[string]ProviderExecutor
 	executorRevisions         map[string]uint64
 	selector                  Selector
-	hook                      Hook
-	resultPolicy              atomic.Pointer[resultPolicyHolder]
-	mu                        sync.RWMutex
-	selectorMu                sync.Mutex
-	configCooldownMu          sync.Mutex
-	syncSchedulerMu           sync.Mutex
+	// Compatibility handles retained for embedders and older in-package tests.
+	roundRobinSelector    *RoundRobinSelector
+	sessionStickySelector *SessionStickySelector
+	hook                  Hook
+	resultPolicy          atomic.Pointer[resultPolicyHolder]
+	mu                    sync.RWMutex
+	selectorMu            sync.Mutex
+	configCooldownMu      sync.Mutex
+	syncSchedulerMu       sync.Mutex
 	// executionSeq stamps upstream dispatches with a monotonic sequence used
 	// to reject cooldown clears from executions dispatched before the cooldown.
 	executionSeq       atomic.Uint64
@@ -382,7 +385,15 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	if errInFlightConfig == nil {
 		manager.ApplyHomeInFlightPublisherConfig(defaultInFlightConfig)
 	}
+	manager.adoptStoreRefreshCoordinator(store)
 	manager.scheduler = newAuthScheduler(selector)
+	manager.scheduler.tracker = manager.sessionSchedulerDeps.tracker
+	switch selected := selector.(type) {
+	case *RoundRobinSelector:
+		manager.roundRobinSelector = selected
+	case *SessionStickySelector:
+		manager.sessionStickySelector = selected
+	}
 	return manager
 }
 

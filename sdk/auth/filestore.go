@@ -360,6 +360,10 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 		LastRefreshedAt:  time.Time{},
 		NextRefreshAfter: time.Time{},
 	}
+	// FileTokenStore assigns indexes from the auth-dir-relative ID. Keep that
+	// value explicit so Manager.Load cannot derive a different path-based index.
+	auth.Index = cliproxyauth.FileAuthIndex(id)
+	auth.EnsureIndex()
 	if email, ok := metadata["email"].(string); ok && email != "" {
 		auth.Attributes["email"] = email
 	}

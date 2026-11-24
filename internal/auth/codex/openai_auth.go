@@ -66,8 +66,17 @@ func NewCodexAuthWithProxyURL(cfg *config.Config, proxyURL string) *CodexAuth {
 	if cfg != nil && strings.TrimSpace(cfg.AuthDir) != "" {
 		journal = &FileRefreshJournal{Dir: cfg.AuthDir}
 	}
+	// Start from the process default transport when no explicit proxy is
+	// configured. Besides preserving the standard library's transport hooks,
+	// this keeps callers that replace http.DefaultTransport observable (for
+	// example, the local SIWC exchange tests) without changing proxy behavior.
+	defaultTransport := http.DefaultTransport
+	if transport, ok := defaultTransport.(*http.Transport); ok {
+		defaultTransport = transport.Clone()
+	}
+	httpClient := &http.Client{Transport: defaultTransport}
 	return &CodexAuth{
-		httpClient:        util.SetProxy(&sdkCfg, &http.Client{}),
+		httpClient:        util.SetProxy(&sdkCfg, httpClient),
 		siwcAgentNameHint: agentNameHint,
 		refreshJournal:    journal,
 	}

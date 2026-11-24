@@ -179,6 +179,13 @@ func authFromRow(r row, path string) (*coreauth.Auth, error) {
 	metadata[coreauth.CredentialVersionMetadataKey] = float64(r.Version)
 	provider := sdkauth.InferAuthProvider(metadata)
 	auth := sdkauth.NewFileAuthRecord(r.ID, path, provider, metadata, r.UpdatedAt)
+	// The cluster table owns auth_index. Keep the persisted value on the
+	// in-memory credential so switching between single-node and cluster mode
+	// cannot silently change request-log and quota identity.
+	if index := strings.TrimSpace(r.AuthIndex); index != "" {
+		auth.Index = index
+		auth.EnsureIndex()
+	}
 	if !r.CreatedAt.IsZero() {
 		auth.CreatedAt = r.CreatedAt
 	}

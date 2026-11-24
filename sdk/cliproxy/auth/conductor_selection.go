@@ -741,6 +741,14 @@ func (m *Manager) SetSelector(selector Selector) {
 		return
 	}
 	m.selector = selector
+	m.roundRobinSelector = nil
+	m.sessionStickySelector = nil
+	switch selected := selector.(type) {
+	case *RoundRobinSelector:
+		m.roundRobinSelector = selected
+	case *SessionStickySelector:
+		m.sessionStickySelector = selected
+	}
 	m.mu.Unlock()
 
 	if oldSelector != nil {
@@ -832,8 +840,9 @@ func (m *Manager) LookupSessionAffinity(provider, model, sessionID string) (*Aut
 // SetStore swaps the underlying persistence store.
 func (m *Manager) SetStore(store Store) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.store = store
+	m.mu.Unlock()
+	m.adoptStoreRefreshCoordinator(store)
 }
 
 // SetCooldownStateStore swaps the independent runtime cooldown state store.
@@ -1422,6 +1431,12 @@ func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, au
 	}
 	routeKey := canonicalModelKey(routeModel)
 	if routeKey == "" {
+		return true
+	}
+	// Credentials without a model catalog are intentionally unrestricted.
+	// This is the compatibility behavior used by AuthServesModel and keeps
+	// custom/provider executors selectable before discovery populates a list.
+	if len(registryRef.GetModelsForClient(auth.ID)) == 0 {
 		return true
 	}
 	if registryRef.ClientSupportsModel(auth.ID, routeKey) {
@@ -2220,6 +2235,27 @@ func (m *Manager) useSchedulerFastPath() bool {
 	return isBuiltInSelector(m.Selector())
 }
 
+func (m *Manager) hasTenantScopedExecutorWithoutGlobal(provider string) bool {
+	if m == nil {
+		return false
+	}
+	provider = canonicalSchedulingProvider(provider)
+	if provider == "" {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.executorLocked(provider); ok {
+		return false
+	}
+	for _, byProvider := range m.tenantExecutors {
+		if _, ok := byProvider[provider]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func shouldRetrySchedulerPick(err error) bool {
 	if err == nil {
 		return false
@@ -2324,10 +2360,6 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	selector := m.selector
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
 	executor, okExecutor := m.executorLocked(provider)
-	if !okExecutor {
-		m.mu.RUnlock()
-		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
-	}
 	candidates := make([]*Auth, 0, len(m.auths))
 	modelKey := strings.TrimSpace(model)
 	// Always use base model name (without thinking suffix) for auth matching.
@@ -2352,6 +2384,11 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	for _, candidate := range m.auths {
 		if candidate == nil || canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey || candidate.Disabled {
+			continue
+		}
+		// Tenant-scoped executors can serve credentials even when no global
+		// executor is registered. Keep candidates whose owner has one.
+		if !okExecutor && m.executorForTenantLocked(candidate.TenantID, provider) == nil {
 			continue
 		}
 		if !trackPinnedAccounting && pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -2470,6 +2507,16 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
 	authCopy := selected.Clone()
+	m.mu.RLock()
+	if tenantExecutor := m.executorForTenantLocked(authCopy.TenantID, provider); tenantExecutor != nil {
+		executor = tenantExecutor
+		okExecutor = true
+	}
+	if !okExecutor {
+		m.mu.RUnlock()
+		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
+	}
+	m.mu.RUnlock()
 	if !selected.indexAssigned {
 		m.mu.Lock()
 		if current := m.auths[authCopy.ID]; current != nil && !current.indexAssigned {
@@ -2670,7 +2717,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 
-	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
+	if m.hasPluginScheduler() || !m.useSchedulerFastPath() || m.hasTenantScopedExecutorWithoutGlobal(provider) {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
@@ -2773,7 +2820,7 @@ func (m *Manager) HasAlternativeTargetForModel(ctx context.Context, providers []
 		if _, ok := providerSet[providerKey]; !ok {
 			continue
 		}
-		if _, ok := m.executorLocked(providerKey); !ok {
+		if _, ok := m.executorLocked(providerKey); !ok && m.executorForTenantLocked(candidate.TenantID, providerKey) == nil {
 			continue
 		}
 		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
@@ -2855,7 +2902,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if _, ok := providerSet[providerKey]; !ok {
 			continue
 		}
-		if _, ok := m.executorLocked(providerKey); !ok {
+		if _, ok := m.executorLocked(providerKey); !ok && m.executorForTenantLocked(candidate.TenantID, providerKey) == nil {
 			continue
 		}
 		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
@@ -2986,7 +3033,13 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
 	providerKey := executorKeyFromAuth(selected)
-	executor, okExecutor := m.Executor(providerKey)
+	m.mu.RLock()
+	executor, okExecutor := m.executorLocked(providerKey)
+	if !okExecutor {
+		executor = m.executorForTenantLocked(selected.TenantID, providerKey)
+		okExecutor = executor != nil
+	}
+	m.mu.RUnlock()
 	if !okExecutor {
 		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
@@ -3013,6 +3066,11 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 
 	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
+	}
+	for _, provider := range providers {
+		if m.hasTenantScopedExecutorWithoutGlobal(provider) {
+			return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
+		}
 	}
 
 	eligibleProviders := make([]string, 0, len(providers))

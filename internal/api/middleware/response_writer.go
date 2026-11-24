@@ -83,14 +83,18 @@ func (w *ResponseWriterWrapper) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return conn, rw, errHijack
 }
 
-func NewResponseWriterWrapper(w gin.ResponseWriter, logger logging.RequestLogger, requestInfo *RequestInfo) *ResponseWriterWrapper {
-	return &ResponseWriterWrapper{
+func NewResponseWriterWrapper(w gin.ResponseWriter, logger logging.RequestLogger, requestInfo *RequestInfo, contexts ...*gin.Context) *ResponseWriterWrapper {
+	wrapper := &ResponseWriterWrapper{
 		ResponseWriter: w,
 		body:           &bytes.Buffer{},
 		logger:         logger,
 		requestInfo:    requestInfo,
 		headers:        make(map[string][]string),
 	}
+	if len(contexts) > 0 {
+		wrapper.ginContext = contexts[0]
+	}
+	return wrapper
 }
 
 // Write wraps the underlying ResponseWriter's Write method to capture response data.

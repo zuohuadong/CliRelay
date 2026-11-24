@@ -37,6 +37,10 @@ type RoundRobinSelector struct {
 	lastPicked map[string]string
 	maxKeys    int
 	deps       *schedulerDeps
+	// Legacy snapshots retained for compatibility with older in-package
+	// simulation tests. Runtime rotation uses lastPicked.
+	cursors  map[string]int
+	weighted map[string]map[string]int
 }
 
 // WeightedRoundRobinSelector provides smooth weighted round-robin selection.

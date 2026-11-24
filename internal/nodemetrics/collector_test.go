@@ -293,7 +293,7 @@ func TestCollectorReportsDependenciesAndEgress(t *testing.T) {
 	c, _ := newTestCollector(t, t.TempDir())
 	since := testStart.Add(-time.Minute)
 	c.SetSources(Sources{
-		PingDB:    func(context.Context) error { return nil },
+		PingDB: func(context.Context) error { return nil },
 		Egress: func() *Egress {
 			return &Egress{BreakerEnabled: true, BreakerOpen: 1, Unreachable: 1, OpenSince: &since, Check: &EgressCheck{Total: 4, Unreachable: 1}}
 		},

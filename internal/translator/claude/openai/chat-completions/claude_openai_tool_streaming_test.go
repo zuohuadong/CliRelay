@@ -11,7 +11,12 @@ import (
 
 func claudeChatEvent(t *testing.T, state *any, event string) []string {
 	t.Helper()
-	return ConvertClaudeResponseToOpenAI(context.Background(), "claude-test", nil, nil, []byte("data: "+event), state)
+	raw := ConvertClaudeResponseToOpenAI(context.Background(), "claude-test", nil, nil, []byte("data: "+event), state)
+	out := make([]string, 0, len(raw))
+	for _, chunk := range raw {
+		out = append(out, string(chunk))
+	}
+	return out
 }
 
 func claudeToolUseStart(index int, id, name string) string {

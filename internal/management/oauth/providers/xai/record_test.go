@@ -28,8 +28,9 @@ func TestRecordFromTokenStorageBuildsPersistableRecord(t *testing.T) {
 	if record == nil {
 		t.Fatal("RecordFromTokenStorage() = nil")
 	}
-	if record.ID != "xai-user@example.com.json" || record.FileName != "xai-user@example.com.json" {
-		t.Fatalf("ID/FileName = %q/%q, want xai-user@example.com.json", record.ID, record.FileName)
+	wantFileName := internalxai.CredentialFileName(storage.Email, storage.Subject)
+	if record.ID != wantFileName || record.FileName != wantFileName {
+		t.Fatalf("ID/FileName = %q/%q, want %s", record.ID, record.FileName, wantFileName)
 	}
 	if record.Provider != "xai" || record.Label != "user@example.com" || record.Storage != storage {
 		t.Fatalf("provider/label/storage = %q/%q/%#v", record.Provider, record.Label, record.Storage)

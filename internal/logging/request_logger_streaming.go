@@ -250,7 +250,7 @@ func (w *FileStreamingLogWriter) Close() error {
 	default:
 	}
 
-	if w.logFilename == "" {
+	if w.logFilename == "" && w.logFilePath == "" {
 		w.cleanupTempFiles()
 		return nil
 	}
@@ -279,6 +279,11 @@ func (w *FileStreamingLogWriter) Close() error {
 	}
 
 	w.cleanupTempFiles()
+	if w.logger != nil {
+		if errCleanup := w.logger.cleanupOldRequestLogs(false); errCleanup != nil {
+			log.WithError(errCleanup).Warn("failed to clean up old request logs")
+		}
+	}
 	return writeErr
 }
 

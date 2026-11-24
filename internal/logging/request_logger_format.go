@@ -14,6 +14,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretscrub"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
 )
@@ -39,16 +40,44 @@ func (l *FileRequestLogger) writeNonStreamingLog(
 	decompressErr error,
 	requestTimestamp time.Time,
 	apiResponseTimestamp time.Time,
+	diagnosticMetadata ...any,
 ) error {
 	apiResponseErrors, diagnostics := splitResponseDiagnostics(apiResponseErrors)
 	if requestTimestamp.IsZero() {
 		requestTimestamp = time.Now()
 	}
+	var metadata []byte
+	var effectiveURL string
+	for _, value := range diagnosticMetadata {
+		switch typed := value.(type) {
+		case []byte:
+			metadata = typed
+		case string:
+			effectiveURL = typed
+		}
+	}
 	isWebsocketTranscript := hasSectionPayload(websocketTimeline) || hasFileBodySourcePayload(websocketTimelineSource)
+	includeBody := !isWebsocketTranscript || len(apiRequest) > 0 || hasFileBodySourcePayload(apiRequestSource) || len(apiResponse) > 0 || hasFileBodySourcePayload(apiResponseSource)
 	downstreamTransport := inferDownstreamTransport(requestHeaders, websocketTimeline, websocketTimelineSource)
 	upstreamTransport := inferUpstreamTransport(apiRequest, apiRequestSource, apiResponse, apiResponseSource, apiWebsocketTimeline, apiWebsocketTimelineSource, apiResponseErrors)
-	if errWrite := writeRequestInfoWithBody(w, url, method, requestHeaders, requestBody, requestBodyPath, requestTimestamp, downstreamTransport, upstreamTransport, !isWebsocketTranscript); errWrite != nil {
+	if errWrite := writeRequestInfoWithBody(w, url, method, requestHeaders, requestBody, requestBodyPath, requestTimestamp, downstreamTransport, upstreamTransport, includeBody); errWrite != nil {
 		return errWrite
+	}
+	if len(metadata) > 0 {
+		if effectiveURL = strings.TrimSpace(effectiveURL); effectiveURL != "" {
+			if _, errWrite := fmt.Fprintf(w, "Effective URL: %s\n\n", effectiveURL); errWrite != nil {
+				return errWrite
+			}
+		}
+		if _, errWrite := io.WriteString(w, "=== DIAGNOSTIC METADATA ===\n"); errWrite != nil {
+			return errWrite
+		}
+		if _, errWrite := w.Write(secretscrub.ScrubBytes(metadata)); errWrite != nil {
+			return errWrite
+		}
+		if errWrite := writeSectionSpacing(w, countTrailingNewlinesBytes(metadata)); errWrite != nil {
+			return errWrite
+		}
 	}
 	if errWrite := writeAPISectionWithSource(w, "=== WEBSOCKET TIMELINE ===\n", "=== WEBSOCKET TIMELINE", websocketTimeline, websocketTimelineSource, time.Time{}); errWrite != nil {
 		return errWrite
@@ -62,10 +91,15 @@ func (l *FileRequestLogger) writeNonStreamingLog(
 	if errWrite := writeAPIErrorResponses(w, apiResponseErrors); errWrite != nil {
 		return errWrite
 	}
+	if isWebsocketTranscript && includeBody && len(apiResponse) == 0 && !hasFileBodySourcePayload(apiResponseSource) && len(response) > 0 {
+		if _, errWrite := io.WriteString(w, "=== API RESPONSE ===\n\n"); errWrite != nil {
+			return errWrite
+		}
+	}
 	if errWrite := writePreformattedAPISectionWithSource(w, "=== API RESPONSE ===\n", "=== API RESPONSE", apiResponse, apiResponseSource, apiResponseTimestamp); errWrite != nil {
 		return errWrite
 	}
-	if isWebsocketTranscript {
+	if isWebsocketTranscript && !includeBody {
 		// Keep websocket exchanges in their timelines; include only local diagnostics here.
 		if len(diagnostics) == 0 {
 			return nil
@@ -120,7 +154,7 @@ func writeRequestInfoWithBody(
 	}
 	for key, values := range headers {
 		for _, value := range values {
-			masked := util.MaskSensitiveHeaderValue(key, value)
+			masked := secretscrub.Scrub(util.MaskSensitiveHeaderValue(key, value))
 			if _, errWrite := io.WriteString(w, fmt.Sprintf("%s: %s\n", key, masked)); errWrite != nil {
 				return errWrite
 			}
@@ -144,19 +178,23 @@ func writeRequestInfoWithBody(
 		if errOpen != nil {
 			return errOpen
 		}
+		bodyData, errRead := io.ReadAll(bodyFile)
+		if errClose := bodyFile.Close(); errClose != nil {
+			log.WithError(errClose).Warn("failed to close request body temp file")
+		}
+		if errRead != nil {
+			return errRead
+		}
+		scrubbedBody := secretscrub.ScrubBytes(bodyData)
 		tracker := &trailingNewlineTrackingWriter{writer: w}
-		written, errCopy := io.Copy(tracker, bodyFile)
-		if errCopy != nil {
-			_ = bodyFile.Close()
-			return errCopy
+		written, errWrite := tracker.Write(scrubbedBody)
+		if errWrite != nil {
+			return errWrite
 		}
 		if written > 0 {
 			bodyTrailingNewlines = tracker.trailingNewlines
 		}
-		if errClose := bodyFile.Close(); errClose != nil {
-			log.WithError(errClose).Warn("failed to close request body temp file")
-		}
-	} else if _, errWrite := w.Write(body); errWrite != nil {
+	} else if _, errWrite := w.Write(secretscrub.ScrubBytes(body)); errWrite != nil {
 		return errWrite
 	} else if len(body) > 0 {
 		bodyTrailingNewlines = countTrailingNewlinesBytes(body)
@@ -269,6 +307,7 @@ func writeAPISection(w io.Writer, sectionHeader string, sectionPrefix string, pa
 	if len(payload) == 0 {
 		return nil
 	}
+	payload = secretscrub.ScrubBytes(payload)
 
 	if bytes.HasPrefix(payload, []byte(sectionPrefix)) {
 		if _, errWrite := w.Write(payload); errWrite != nil {
@@ -311,8 +350,12 @@ func writeAPISectionWithSource(w io.Writer, sectionHeader string, sectionPrefix 
 			return errWrite
 		}
 	}
+	var sourceBuf bytes.Buffer
+	if _, errWrite := source.WriteTo(&sourceBuf); errWrite != nil {
+		return errWrite
+	}
 	tracker := &trailingNewlineTrackingWriter{writer: w}
-	if _, errWrite := source.WriteTo(tracker); errWrite != nil {
+	if _, errWrite := tracker.Write(secretscrub.ScrubBytes(sourceBuf.Bytes())); errWrite != nil {
 		return errWrite
 	}
 	if errWrite := writeSectionSpacing(w, tracker.trailingNewlines); errWrite != nil {
@@ -330,8 +373,12 @@ func writePreformattedAPISectionWithSource(w io.Writer, sectionHeader string, se
 			return errWrite
 		}
 	}
+	var sourceBuf bytes.Buffer
+	if _, errWrite := source.WriteTo(&sourceBuf); errWrite != nil {
+		return errWrite
+	}
 	tracker := &trailingNewlineTrackingWriter{writer: w}
-	if _, errWrite := source.WriteTo(tracker); errWrite != nil {
+	if _, errWrite := tracker.Write(secretscrub.ScrubBytes(sourceBuf.Bytes())); errWrite != nil {
 		return errWrite
 	}
 	if errWrite := writeSectionSpacing(w, tracker.trailingNewlines); errWrite != nil {
@@ -371,7 +418,7 @@ func writeAPIErrorResponses(w io.Writer, apiResponseErrors []*interfaces.ErrorMe
 		}
 		trailingNewlines := 1
 		if apiResponseErrors[i].Error != nil {
-			errText := apiResponseErrors[i].Error.Error()
+			errText := secretscrub.Scrub(apiResponseErrors[i].Error.Error())
 			if _, errWrite := io.WriteString(w, errText); errWrite != nil {
 				return errWrite
 			}
@@ -414,7 +461,7 @@ func writeResponseSection(w io.Writer, statusCode int, statusWritten bool, respo
 		}
 		for key, values := range responseHeaders {
 			for _, value := range values {
-				if _, errWrite := io.WriteString(w, fmt.Sprintf("%s: %s\n", key, value)); errWrite != nil {
+				if _, errWrite := io.WriteString(w, fmt.Sprintf("%s: %s\n", key, secretscrub.Scrub(util.MaskSensitiveHeaderValue(key, value)))); errWrite != nil {
 					return errWrite
 				}
 			}
@@ -423,8 +470,12 @@ func writeResponseSection(w io.Writer, statusCode int, statusWritten bool, respo
 			return errWrite
 		}
 		if responseReader != nil {
-			if _, errCopy := io.Copy(w, responseReader); errCopy != nil {
-				return errCopy
+			responseBody, errRead := io.ReadAll(responseReader)
+			if errRead != nil {
+				return errRead
+			}
+			if _, errWrite := w.Write(secretscrub.ScrubBytes(responseBody)); errWrite != nil {
+				return errWrite
 			}
 		}
 	}
@@ -725,7 +776,7 @@ func (l *FileRequestLogger) formatRequestInfo(url, method string, headers map[st
 	content.WriteString("=== HEADERS ===\n")
 	for key, values := range headers {
 		for _, value := range values {
-			masked := util.MaskSensitiveHeaderValue(key, value)
+			masked := secretscrub.Scrub(util.MaskSensitiveHeaderValue(key, value))
 			content.WriteString(fmt.Sprintf("%s: %s\n", key, masked))
 		}
 	}
@@ -736,7 +787,7 @@ func (l *FileRequestLogger) formatRequestInfo(url, method string, headers map[st
 	}
 
 	content.WriteString("=== REQUEST BODY ===\n")
-	content.Write(body)
+	content.Write(secretscrub.ScrubBytes(body))
 	content.WriteString("\n\n")
 
 	return content.String()

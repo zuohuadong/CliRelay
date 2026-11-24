@@ -165,7 +165,10 @@ func TestConvertGeminiRequestToAntigravity_MatchesReference(t *testing.T) {
 	for i := 0; i < 3000; i++ {
 		req := g.request()
 		for _, model := range []string{"gemini-3-pro-preview", "claude-sonnet-4-6"} {
-			got := ConvertGeminiRequestToAntigravity(model, req, true)
+			got, err := ConvertGeminiRequestToAntigravity(model, req, true)
+			if err != nil {
+				t.Fatalf("request %d (%s) conversion failed: %v", i, model, err)
+			}
 			want := convertGeminiRequestToAntigravityReference(model, req, true)
 			if !bytes.Equal(got, want) {
 				t.Fatalf("request %d (%s) differs from the reference\nrequest: %s\n got: %s\nwant: %s", i, model, req, got, want)
@@ -195,14 +198,21 @@ func codexResponsesRequest(turns int) []byte {
 }
 
 func codexGeminiRequest(turns int) []byte {
-	return responses.ConvertOpenAIResponsesRequestToGemini("gemini-3-pro-preview", codexResponsesRequest(turns), true)
+	got, err := responses.ConvertOpenAIResponsesRequestToGemini("gemini-3-pro-preview", codexResponsesRequest(turns), true)
+	if err != nil {
+		panic(err)
+	}
+	return got
 }
 
 func TestConvertGeminiRequestToAntigravity_MatchesReferenceOnCodexSessions(t *testing.T) {
 	for _, turns := range []int{0, 1, 7, 40} {
 		req := codexGeminiRequest(turns)
 		for _, model := range []string{"gemini-3-pro-preview", "claude-opus-4-6-thinking"} {
-			got := ConvertGeminiRequestToAntigravity(model, req, true)
+			got, err := ConvertGeminiRequestToAntigravity(model, req, true)
+			if err != nil {
+				t.Fatalf("%d turns (%s) conversion failed: %v", turns, model, err)
+			}
 			want := convertGeminiRequestToAntigravityReference(model, req, true)
 			if !bytes.Equal(got, want) {
 				t.Fatalf("%d turns (%s) differs from the reference", turns, model)

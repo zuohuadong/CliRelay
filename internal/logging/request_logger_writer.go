@@ -3,6 +3,7 @@ package logging
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/regexp"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	log "github.com/sirupsen/logrus"
 )
@@ -49,6 +51,39 @@ func (l *FileRequestLogger) LogRequestWithOptions(url, method string, requestHea
 	return l.logRequestWithSources(url, method, requestHeaders, body, statusCode, responseHeaders, response, websocketTimeline, nil, apiRequest, nil, apiResponse, nil, apiWebsocketTimeline, nil, apiResponseErrors, force, requestID, requestTimestamp, apiResponseTimestamp)
 }
 
+// LogRequestWithOptionsAndDiagnostics is retained for callers that already
+// have a diagnostic snapshot. The snapshot is represented as a local log
+// diagnostic entry while the regular request fields follow the same path.
+func (l *FileRequestLogger) LogRequestWithOptionsAndDiagnostics(url, method string, requestHeaders map[string][]string, body []byte, statusCode int, responseHeaders map[string][]string, response, websocketTimeline, apiRequest, apiResponse []byte, force bool, requestID string, requestTimestamp, apiResponseTimestamp time.Time, diagnostic any) error {
+	if snapshot, ok := diagnosticSnapshotValue(diagnostic); ok {
+		if original := strings.TrimSpace(snapshot.OriginalURL); original != "" {
+			url = original
+		}
+		payload, errMarshal := json.MarshalIndent(snapshot, "", "  ")
+		if errMarshal != nil {
+			return errMarshal
+		}
+		return l.logRequestWithSourcesAndMetadata(url, method, requestHeaders, body, statusCode, responseHeaders, response, websocketTimeline, nil, apiRequest, nil, apiResponse, nil, nil, nil, nil, true, requestID, requestTimestamp, apiResponseTimestamp, payload, snapshot.EffectiveURL)
+	}
+	var entries []*interfaces.ErrorMessage
+	if diagnostic != nil {
+		entries = append(entries, &interfaces.ErrorMessage{Error: responseDiagnostic(fmt.Sprintf("%v", diagnostic))})
+	}
+	return l.LogRequestWithOptions(url, method, requestHeaders, body, statusCode, responseHeaders, response, websocketTimeline, apiRequest, apiResponse, nil, entries, force, requestID, requestTimestamp, apiResponseTimestamp)
+}
+
+func diagnosticSnapshotValue(value any) (diagnostics.Snapshot, bool) {
+	switch snapshot := value.(type) {
+	case diagnostics.Snapshot:
+		return snapshot, !snapshot.IsZero()
+	case *diagnostics.Snapshot:
+		if snapshot != nil {
+			return *snapshot, !snapshot.IsZero()
+		}
+	}
+	return diagnostics.Snapshot{}, false
+}
+
 func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[string][]string, body []byte, statusCode int, responseHeaders map[string][]string, response, websocketTimeline, apiRequest, apiResponse, apiWebsocketTimeline []byte, apiResponseErrors []*interfaces.ErrorMessage, force bool, requestID string, requestTimestamp, apiResponseTimestamp time.Time) error {
 	return l.logRequestWithSources(url, method, requestHeaders, body, statusCode, responseHeaders, response, websocketTimeline, nil, apiRequest, nil, apiResponse, nil, apiWebsocketTimeline, nil, apiResponseErrors, force, requestID, requestTimestamp, apiResponseTimestamp)
 }
@@ -64,6 +99,10 @@ func (l *FileRequestLogger) LogRequestWithOptionsAndAllSources(url, method strin
 }
 
 func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHeaders map[string][]string, body []byte, statusCode int, responseHeaders map[string][]string, response, websocketTimeline []byte, websocketTimelineSource *FileBodySource, apiRequest []byte, apiRequestSource *FileBodySource, apiResponse []byte, apiResponseSource *FileBodySource, apiWebsocketTimeline []byte, apiWebsocketTimelineSource *FileBodySource, apiResponseErrors []*interfaces.ErrorMessage, force bool, requestID string, requestTimestamp, apiResponseTimestamp time.Time) error {
+	return l.logRequestWithSourcesAndMetadata(url, method, requestHeaders, body, statusCode, responseHeaders, response, websocketTimeline, websocketTimelineSource, apiRequest, apiRequestSource, apiResponse, apiResponseSource, apiWebsocketTimeline, apiWebsocketTimelineSource, apiResponseErrors, force, requestID, requestTimestamp, apiResponseTimestamp, nil, "")
+}
+
+func (l *FileRequestLogger) logRequestWithSourcesAndMetadata(url, method string, requestHeaders map[string][]string, body []byte, statusCode int, responseHeaders map[string][]string, response, websocketTimeline []byte, websocketTimelineSource *FileBodySource, apiRequest []byte, apiRequestSource *FileBodySource, apiResponse []byte, apiResponseSource *FileBodySource, apiWebsocketTimeline []byte, apiWebsocketTimelineSource *FileBodySource, apiResponseErrors []*interfaces.ErrorMessage, force bool, requestID string, requestTimestamp, apiResponseTimestamp time.Time, diagnosticMetadata []byte, effectiveURL string) error {
 	defer cleanupFileBodySources(websocketTimelineSource, apiRequestSource, apiResponseSource, apiWebsocketTimelineSource)
 
 	if !l.enabled && !force {
@@ -99,6 +138,8 @@ func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHea
 			decompressErr,
 			requestTimestamp,
 			apiResponseTimestamp,
+			diagnosticMetadata,
+			effectiveURL,
 		)
 		if writeErr != nil {
 			return fmt.Errorf("failed to build request log content: %w", writeErr)
@@ -162,6 +203,8 @@ func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHea
 		decompressErr,
 		requestTimestamp,
 		apiResponseTimestamp,
+		diagnosticMetadata,
+		effectiveURL,
 	)
 	if errClose := logFile.Close(); errClose != nil {
 		log.WithError(errClose).Warn("failed to close request log file")
@@ -176,6 +219,10 @@ func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHea
 	if force && !l.enabled {
 		if errCleanup := l.cleanupOldErrorLogs(); errCleanup != nil {
 			log.WithError(errCleanup).Warn("failed to clean up old error logs")
+		}
+	} else if l.enabled {
+		if errCleanup := l.cleanupOldRequestLogs(false); errCleanup != nil {
+			log.WithError(errCleanup).Warn("failed to clean up old request logs")
 		}
 	}
 
@@ -236,6 +283,7 @@ func (l *FileRequestLogger) LogStreamingRequest(url, method string, headers map[
 
 	// Create streaming writer
 	writer := &FileStreamingLogWriter{
+		logger:           l,
 		logsDir:          l.logsDir,
 		logFilename:      filename,
 		url:              url,

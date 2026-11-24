@@ -29,7 +29,10 @@ func TestConvertOpenAIRequestToCodexWritesChatStrictDefault(t *testing.T) {
 			fn += `}`
 			in := `{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":` + fn + `}]}`
 
-			out := ConvertOpenAIRequestToCodex("gpt-6-astra", []byte(in), true)
+			out, err := ConvertOpenAIRequestToCodex("gpt-6-astra", []byte(in), true)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			if got := gjson.GetBytes(out, "tools.0.strict").Raw; got != tc.want {
 				t.Fatalf("tools.0.strict = %q, want %s; body: %s", got, tc.want, out)
@@ -49,7 +52,10 @@ const automationUpdateParameters = `{"type":"object","properties":{},"oneOf":[{"
 func TestConvertOpenAIRequestToCodexKeepsUnionSchemaNonStrict(t *testing.T) {
 	in := `{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"mcp__codex_app__automation_update","description":"Manage automations.","parameters":` + automationUpdateParameters + `}}]}`
 
-	out := ConvertOpenAIRequestToCodex("gpt-6-astra", []byte(in), true)
+	out, err := ConvertOpenAIRequestToCodex("gpt-6-astra", []byte(in), true)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tool := gjson.GetBytes(out, "tools.0")
 	if got := tool.Get("strict").Raw; got != "false" {

@@ -10,6 +10,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
 	internalserviceapp "github.com/router-for-me/CLIProxyAPI/v8/internal/app/service"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/githubauth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/ipaccess"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
@@ -45,6 +46,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	if s == nil || cfg == nil {
 		return
 	}
+	githubauth.SetToken(cfg.GitHubToken)
 
 	oldCfg := s.oldConfigSnapshot()
 	s.applyRequestLoggerConfig(oldCfg, cfg)

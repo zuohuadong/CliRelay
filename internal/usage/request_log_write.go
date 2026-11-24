@@ -156,6 +156,10 @@ func normalizeRequestLogEntry(entry RequestLogEntry) RequestLogEntry {
 	entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 	entry.ThinkingLevel = strings.TrimSpace(entry.ThinkingLevel)
 	entry.GuardKind = normalizeGuardKind(entry.GuardKind)
+	if entry.GuardKind == "reply_loop" {
+		entry.Streaming = true
+		entry.Failed = true
+	}
 	return scrubRequestLogContent(entry)
 }
 

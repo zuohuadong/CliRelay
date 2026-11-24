@@ -72,7 +72,7 @@ func (d *AntigravityDriver) ExecuteWarmup(ctx context.Context, auth *coreauth.Au
 	}
 
 	execCtx := warmupContext(ctx, auth)
-	execResp, err := d.executor.Execute(execCtx, auth, execReq, opts)
+	stream, err := d.executor.ExecuteStream(execCtx, auth, execReq, opts)
 	res.Latency = time.Since(start)
 
 	if err != nil {
@@ -87,9 +87,18 @@ func (d *AntigravityDriver) ExecuteWarmup(ctx context.Context, auth *coreauth.Au
 		}
 		return res, nil
 	}
+	if stream != nil {
+		for chunk := range stream.Chunks {
+			if chunk.Err != nil {
+				res.Success = false
+				res.ErrorMessage = chunk.Err.Error()
+				res.StatusCode = 500
+				return res, nil
+			}
+		}
+	}
 
 	res.Success = true
 	res.StatusCode = 200
-	_ = execResp
 	return res, nil
 }

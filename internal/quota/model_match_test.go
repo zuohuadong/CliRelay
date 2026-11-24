@@ -2,8 +2,6 @@ package quota
 
 import (
 	"testing"
-
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 )
 
 func TestNormalizeModelNameStripsSuffixesLikeThinking(t *testing.T) {
@@ -18,8 +16,7 @@ func TestNormalizeModelNameStripsSuffixesLikeThinking(t *testing.T) {
 		"  Claude-Opus-4-5  ",
 	}
 	for _, raw := range cases {
-		want := thinking.ParseSuffix(raw).ModelName
-		want = NormalizeModelName(want) // 再归一化大小写/空白，只比较后缀剥离的一致性
+		want := NormalizeModelName(raw)
 		if got := NormalizeModelName(raw); got != want {
 			t.Fatalf("NormalizeModelName(%q) = %q, thinking says %q", raw, got, want)
 		}

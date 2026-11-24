@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
@@ -327,18 +328,18 @@ func convertOpenAIResponsesRequestToClaudeReference(modelName string, inputRawJS
 				out, _ = sjson.SetRaw(out, "messages.-1", asst)
 
 			case "reasoning":
-				block := convertResponsesReasoningToClaudeThinking(item)
-				if block == "" {
+				block := convertResponsesReasoningToClaudeThinking(ojson.Parse(item.Raw))
+				if len(block) == 0 {
 					// No Claude signature to replay. Anthropic rejects an unsigned
 					// thinking block, so the item is dropped, as it always was.
 					break
 				}
 				if thinkingTurnOpen {
-					appendToOpenThinkingTurn(block)
+					appendToOpenThinkingTurn(string(block))
 					break
 				}
 				asst := `{"role":"assistant","content":[]}`
-				asst, _ = sjson.SetRaw(asst, "content.-1", block)
+				asst, _ = sjson.SetRaw(asst, "content.-1", string(block))
 				out, _ = sjson.SetRaw(out, "messages.-1", asst)
 				thinkingTurnOpen = true
 

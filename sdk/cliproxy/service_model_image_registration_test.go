@@ -6,6 +6,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
 	serviceapp "github.com/router-for-me/CLIProxyAPI/v8/sdkbridge/service"
 )
 
@@ -66,7 +67,7 @@ func TestImageModelsAreNotCrossRegisteredBetweenProviders(t *testing.T) {
 }
 
 func TestWithRegisteredImageModelsDoesNotDuplicate(t *testing.T) {
-	existing := []*ModelInfo{{ID: "gpt-image-2", DisplayName: "Live Definition"}}
+	existing := []*sdkmodelcatalog.ModelInfo{{ID: "gpt-image-2", DisplayName: "Live Definition"}}
 
 	merged := serviceapp.WithRegisteredImageModels("codex", existing)
 	count := 0
@@ -84,7 +85,7 @@ func TestWithRegisteredImageModelsDoesNotDuplicate(t *testing.T) {
 }
 
 func TestProvidersWithoutImageModelsAreUnchanged(t *testing.T) {
-	existing := []*ModelInfo{{ID: "claude-opus-4-6"}}
+	existing := []*sdkmodelcatalog.ModelInfo{{ID: "claude-opus-4-6"}}
 	if merged := serviceapp.WithRegisteredImageModels("claude", existing); len(merged) != 1 {
 		t.Errorf("merged = %d models, want the input unchanged", len(merged))
 	}

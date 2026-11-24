@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go">
+  <img src="https://img.shields.io/badge/Go-1.27+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go">
   <img src="https://img.shields.io/badge/PostgreSQL-19+-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL">
   <img src="https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/github/stars/kittors/CliRelay?style=for-the-badge&color=f59e0b" alt="Stars">
@@ -357,7 +357,7 @@ CliRelay/
 
 | 层 | 技术 |
 | :-- | :-- |
-| 运行时 | Go 1.26、Gin、Docker Compose |
+| 运行时 | Go 1.27、Gin、Docker Compose |
 | 数据 | PostgreSQL 19+（Ent），统一存放持久化与运行时状态 |
 | 代理核心 | OpenAI Chat Completions 与 Responses、Anthropic Messages、Gemini；SSE 与 WebSocket |
 | 运维 | `/manage` Web 面板、Bubble Tea 终端界面、更新器 sidecar |

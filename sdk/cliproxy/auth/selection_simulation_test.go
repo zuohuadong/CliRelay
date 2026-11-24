@@ -175,8 +175,8 @@ func liveSchedulingState(m *Manager) (map[string]int, map[string]map[string]int,
 	}
 	weighted := make(map[string]map[string]int, len(rr.weighted))
 	for key, state := range rr.weighted {
-		current := make(map[string]int, len(state.current))
-		for id, score := range state.current {
+		current := make(map[string]int, len(state))
+		for id, score := range state {
 			current[id] = score
 		}
 		weighted[key] = current

@@ -217,6 +217,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	var terminalLine []byte
 	var eventCounts = make(map[string]int, 16)
 	var lastEventTypes []string
+	sawOutputDelta := false
 	for _, line := range codexResponsesSSEPayloads(lines) {
 		line, _ = normalizeCodexResponseDone(line)
 		eventType := gjson.GetBytes(line, "type").String()
@@ -224,6 +225,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		lastEventTypes = append(lastEventTypes, eventType)
 		if len(lastEventTypes) > 12 {
 			lastEventTypes = lastEventTypes[len(lastEventTypes)-12:]
+		}
+		if hasCodexMeaningfulOutputDelta(line) {
+			sawOutputDelta = true
 		}
 		switch eventType {
 		case "response.failed", "error":
@@ -245,6 +249,14 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			continue
 		}
 		terminalLine = bytes.Clone(line)
+	}
+	if streamErr == nil && isCodexTerminalEmptyIncomplete(terminalLine, len(pendingOutputItems), sawOutputDelta) {
+		// The upstream ended the turn with nothing in it (see
+		// isCodexTerminalEmptyIncomplete): that is a broken turn, not an answer.
+		logWithRequestID(execCtx.Context).Warnf(
+			"codex executor: upstream ended the turn with an empty response.incomplete: model=%s auth=%s",
+			execCtx.BaseModel, auth.ID)
+		streamErr = newCodexEmptyIncompleteStreamError()
 	}
 	if streamErr != nil {
 		terminal := codexResponsesTerminal{}
@@ -519,6 +531,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			bootstrapBytes += len(payload)
 			return true
 		}
+		// What the turn produced so far decides whether a response.incomplete
+		// that ends it is a silent abort or a real (if capped) answer.
+		outputItems, sawOutputDelta := 0, false
 		finishRead := func(readErr error) {
 			if terminal.seen && !errors.Is(readErr, bufio.ErrTooLong) {
 				terminal.publishSuccess(execCtx.Context, reporter)
@@ -550,6 +565,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				eventType := gjson.GetBytes(payload, "type").String()
 				streamDiag.observe(eventType, payload)
 				incremental.observe(eventType, payload)
+				if hasCodexMeaningfulOutputDelta(payload) {
+					sawOutputDelta = true
+				}
 				// A handshake and a rejection are not output; everything else is,
 				// a terminal success included.
 				switch eventType {
@@ -558,7 +576,20 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					releaseBootstrap = true
 				}
 				switch eventType {
+				case "response.output_item.done":
+					outputItems++
 				case "response.completed", "response.incomplete":
+					if !terminal.seen && isCodexTerminalEmptyIncomplete(payload, outputItems, sawOutputDelta) {
+						// The upstream ended the turn with nothing in it. Reporting
+						// that as a completed turn hands the client an empty answer
+						// it cannot tell from a real one.
+						logWithRequestID(execCtx.Context).Warnf(
+							"codex executor: upstream ended the turn with an empty response.incomplete: model=%s auth=%s",
+							execCtx.BaseModel, auth.ID)
+						terminalErr = newCodexEmptyIncompleteStreamError()
+						suppressForward = true
+						continue
+					}
 					terminal.observe(payload)
 				case "response.failed":
 					terminalErr = codexResponsesFailedStatusErr(payload)

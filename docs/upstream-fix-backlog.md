@@ -96,3 +96,23 @@ go run ./cmd/clirelay-replay -in body.json -base https://cliapi.example -api-key
 It prints every event, the upstream error text, whether the stream ended on a
 terminal event, and the stored upstream log for comparison. Exit status is
 non-zero when an attempt ended without a terminal event, so it can gate a fix.
+## "Selected model is at capacity. Please try a different model."
+
+That sentence is not the upstream's message — it is Codex's own wording for one
+error code. Codex classifies a Responses failure against a closed set of codes
+and treats `server_is_overloaded` and `slow_down` as **fatal**: it prints that
+line and ends the session instead of backing off. Codes outside the set, such as
+`server_error`, go through the client's built-in retry with delay.
+
+ChatGPT reports its own overload as `response.failed` with
+`response.error.code = server_is_overloaded`, and the relay used to forward that
+verbatim, so every capacity refusal killed the turn even after the retries were
+spent. `rate_limit_exceeded` is different: the client parses it for its own
+delay, so it must not be rewritten.
+
+Fix (`16833ef0f`): keep the message, rewrite the code to `server_error` whenever a
+capacity refusal has to reach the client — streamed events, the terminal failure
+the handler synthesizes, non-streaming error bodies, and the websocket transport.
+Both references agree: sub2api documents the same rule for its gateway
+(`sanitizeOpenAICapacityShedErrorCodeForClient`), and the v8 line classifies the
+same two codes as its capacity-shed signal.

@@ -630,6 +630,11 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				// 	websocketPayloadPreview(payloads[i]),
 				// )
 				wrote = true
+				// Capacity refusals carry a code Codex treats as fatal; rewrite it
+				// so the session retries instead of ending (see capacity_shed_code.go).
+				if rewritten, changed := handlers.RewriteCapacityShedCode(payloads[i]); changed {
+					payloads[i] = rewritten
+				}
 				if errWrite := conn.WriteMessage(websocket.TextMessage, payloads[i]); errWrite != nil {
 					log.Warnf(
 						"responses websocket: downstream_out write failed id=%s event=%s error=%v",

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -39,6 +40,8 @@ type responsesStreamCompletionTracker struct {
 	buffer      []byte
 	completed   bool
 	terminalErr error
+	seenTypes   map[string]int
+	lastTypes   []string
 }
 
 func newResponsesStreamCompletionTracker(sourceFormat sdktranslator.Format) *responsesStreamCompletionTracker {
@@ -64,6 +67,7 @@ func (t *responsesStreamCompletionTracker) Observe(chunk []byte) {
 			return
 		}
 		t.buffer = rest
+		t.rememberTypes(block)
 		completed, err := responsesSSEBlockTerminalState(block)
 		if completed || err != nil {
 			t.completed = completed
@@ -89,7 +93,33 @@ func (t *responsesStreamCompletionTracker) ErrIfIncomplete() error {
 			return err
 		}
 	}
+	log.Warnf("responses stream: upstream closed without a terminal event: counts=%v last=%v", t.seenTypes, t.lastTypes)
 	return newResponsesStreamIncompleteError()
+}
+
+// rememberTypes keeps a PII-free trace of the event names a Responses stream
+// carried so a turn that closes without a terminal event can be diagnosed.
+func (t *responsesStreamCompletionTracker) rememberTypes(block []byte) {
+	for _, event := range parseResponsesSSEEvents(block) {
+		eventType := event.eventType
+		if eventType == "" {
+			var payload responsesStreamTerminalPayload
+			if err := json.Unmarshal([]byte(event.data), &payload); err == nil {
+				eventType = strings.TrimSpace(payload.Type)
+			}
+		}
+		if eventType == "" {
+			eventType = "<untyped>"
+		}
+		if t.seenTypes == nil {
+			t.seenTypes = make(map[string]int, 8)
+		}
+		t.seenTypes[eventType]++
+		t.lastTypes = append(t.lastTypes, eventType)
+		if len(t.lastTypes) > 12 {
+			t.lastTypes = t.lastTypes[len(t.lastTypes)-12:]
+		}
+	}
 }
 
 func newResponsesStreamIncompleteError() *Error {

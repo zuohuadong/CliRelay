@@ -215,9 +215,17 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	pendingSeen := make(map[string]struct{})
 	var streamErr error
 	var terminalLine []byte
+	var eventCounts = make(map[string]int, 16)
+	var lastEventTypes []string
 	for _, line := range codexResponsesSSEPayloads(lines) {
 		line, _ = normalizeCodexResponseDone(line)
-		switch gjson.GetBytes(line, "type").String() {
+		eventType := gjson.GetBytes(line, "type").String()
+		eventCounts[eventType]++
+		lastEventTypes = append(lastEventTypes, eventType)
+		if len(lastEventTypes) > 12 {
+			lastEventTypes = lastEventTypes[len(lastEventTypes)-12:]
+		}
+		switch eventType {
 		case "response.failed", "error":
 			streamErr = codexResponsesFailedStatusErr(line)
 			continue
@@ -269,6 +277,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, nil
 	}
 	err = statusErr{code: 408, msg: "stream error: stream disconnected before completion: stream closed before response.completed"}
+	log.Warnf("codex executor: non-stream upstream response closed without a terminal event: model=%s auth=%s counts=%v last=%v", execCtx.BaseModel, auth.ID, eventCounts, lastEventTypes)
 	return resp, err
 }
 

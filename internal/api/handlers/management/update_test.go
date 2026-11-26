@@ -203,7 +203,7 @@ func TestBuildUpdateCheckGracefullyHandlesGitHubFailures(t *testing.T) {
 	cfg.AutoUpdate.Enabled = true
 	cfg.AutoUpdate.Channel = "dev"
 	cfg.AutoUpdate.Repository = "https://github.com/kittors/CliRelay"
-	cfg.RemoteManagement.PanelGitHubRepository = "https://github.com/kittors/codeProxy"
+	cfg.RemoteManagement.PanelGitHubRepository = config.DefaultPanelGitHubRepository
 
 	handler := &Handler{cfg: cfg}
 	resp, err := handler.buildUpdateCheck(context.Background())
@@ -237,6 +237,12 @@ func backendRepoForTest() string {
 	return strings.TrimPrefix(repo, "https://github.com/")
 }
 
+// panelRepoForTest is the configured default panel repository in the same form.
+func panelRepoForTest() string {
+	repo := strings.TrimSuffix(config.DefaultPanelGitHubRepository, ".git")
+	return strings.TrimPrefix(strings.TrimSuffix(repo, "/"), "https://github.com/")
+}
+
 func TestBuildUpdateCheckWaitsForDevDockerPublishRun(t *testing.T) {
 	origFetchBranchCommit := fetchBranchCommitForUpdateCheck
 	origFetchLatestRelease := fetchLatestReleaseInfoForUpdateCheck
@@ -266,7 +272,7 @@ func TestBuildUpdateCheckWaitsForDevDockerPublishRun(t *testing.T) {
 		switch repo {
 		case backendRepoForTest():
 			return branchCommitAt(latestBackend, sourceTime), nil
-		case "kittors/codeProxy":
+		case panelRepoForTest():
 			return branchCommitAt(frontendCommit, sourceTime.Add(-time.Minute)), nil
 		default:
 			t.Fatalf("unexpected repo %q", repo)
@@ -345,7 +351,7 @@ func TestBuildUpdateCheckWaitsForFrontendDevDockerRebuild(t *testing.T) {
 		switch repo {
 		case backendRepoForTest():
 			return branchCommitAt(backendCommit, frontendTime.Add(-time.Hour)), nil
-		case "kittors/codeProxy":
+		case panelRepoForTest():
 			return branchCommitAt(latestFrontend, frontendTime), nil
 		default:
 			t.Fatalf("unexpected repo %q", repo)
@@ -418,7 +424,7 @@ func TestBuildUpdateCheckAllowsDevUpdateAfterDockerPublishReady(t *testing.T) {
 		switch repo {
 		case backendRepoForTest():
 			return branchCommitAt(latestBackend, sourceTime), nil
-		case "kittors/codeProxy":
+		case panelRepoForTest():
 			return branchCommitAt(frontendCommit, sourceTime), nil
 		default:
 			t.Fatalf("unexpected repo %q", repo)
@@ -508,8 +514,8 @@ func TestBuildUpdateCheckUsesConfiguredPanelRepository(t *testing.T) {
 	if !slices.Contains(repos, "router-for-me/Cli-Proxy-API-Management-Center") {
 		t.Fatalf("repos = %v, want configured panel repo", repos)
 	}
-	if slices.Contains(repos, "kittors/codeProxy") {
-		t.Fatalf("repos = %v, did not expect default panel repo when config overrides it", repos)
+	if slices.Contains(repos, panelRepoForTest()) {
+		t.Fatalf("repos = %v, did not expect the default panel repo when config overrides it", repos)
 	}
 }
 

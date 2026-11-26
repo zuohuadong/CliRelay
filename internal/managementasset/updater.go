@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	defaultManagementReleaseURL  = "https://api.github.com/repos/kittors/codeProxy/releases/latest"
+	defaultManagementReleaseURL  = "https://api.github.com/repos/zuohuadong/codeProxy/releases/latest"
 	defaultManagementFallbackURL = "https://cpamc.router-for.me/"
 	managementAssetName          = "management.html"
 	panelDistZipName             = "panel-dist.zip"

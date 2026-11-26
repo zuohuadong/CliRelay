@@ -104,7 +104,11 @@ remote-management:
   disable-control-panel: false
 
   # GitHub repository for the management control panel. Accepts a repository URL or releases API URL.
-  panel-github-repository: "https://github.com/kittors/codeProxy"
+  # The panel is installed from that repository's latest release asset (panel-dist.zip), so the
+  # repository has to publish one. Upstream (kittors/codeProxy) releases its panel slower than it
+  # ships pages on dev, and this backend may already serve a page such a release cannot render;
+  # the default therefore points at this fork's mirror, which publishes a build of upstream dev.
+  panel-github-repository: "https://github.com/zuohuadong/codeProxy"
 
   # Login throttling and session token lifetimes. Every key is optional and
   # zero-means-default, so leaving this block commented out keeps the shipped

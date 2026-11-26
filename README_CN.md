@@ -302,7 +302,7 @@ curl http://localhost:8317/v1/chat/completions \
 | 配置项 | 作用 |
 | :-- | :-- |
 | `port`、`host` | API 与面板监听的位置（默认 `8317`，所有网卡）。 |
-| `remote-management` | 管理接口是否接受非本机调用、是否提供 `/manage`，以及面板从哪个仓库更新（`panel-github-repository`，默认 `kittors/codeProxy`）。 |
+| `remote-management` | 管理接口是否接受非本机调用、是否提供 `/manage`，以及面板从哪个仓库更新（`panel-github-repository`，默认 `zuohuadong/codeProxy`：它把上游 `dev` 的面板打成 release 发布，保证面板与本后端的页面一致）。 |
 | `routing.strategy` | 分组内默认的调度策略：`round-robin`、`fill-first` 或 `session-sticky`。 |
 | `request-retry`、`max-retry-interval`、`quota-exceeded` | 失败请求重试几次，以及账号额度用完时怎么处理。 |
 | `proxy-url`、代理池 | 全局与按账号的出站代理。 |

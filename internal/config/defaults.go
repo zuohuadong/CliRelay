@@ -1,7 +1,12 @@
 package config
 
 const (
-	DefaultPanelGitHubRepository      = "https://github.com/kittors/codeProxy"
+	// The panel asset comes from a GitHub *release*, and upstream cuts those
+	// slower than it ships panel pages on dev: the release could lack a page the
+	// backend already serves (billing, for one), leaving a dead sidebar entry.
+	// This fork mirrors a build of upstream dev as its own latest release, so the
+	// panel a relay downloads always matches the backend it runs against.
+	DefaultPanelGitHubRepository      = "https://github.com/zuohuadong/codeProxy"
 	DefaultPprofAddr                  = "127.0.0.1:8316"
 	DefaultAutoUpdateChannel          = "main"
 	DefaultAutoUpdateRepository       = "https://github.com/zuohuadong/CliRelay"

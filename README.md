@@ -302,7 +302,7 @@ Everything below can be changed in the panel's **Config** page or in `config.yam
 | Setting | What it controls |
 | :-- | :-- |
 | `port`, `host` | Where the API and panel listen (default `8317`, all interfaces). |
-| `remote-management` | Whether the management API accepts non-local callers, whether `/manage` is served, and which repository the panel updates from (`panel-github-repository`, default `kittors/codeProxy`). |
+| `remote-management` | Whether the management API accepts non-local callers, whether `/manage` is served, and which repository the panel updates from (`panel-github-repository`, default `zuohuadong/codeProxy`, a mirror that publishes upstream's `dev` panel as a release so the panel matches this backend). |
 | `routing.strategy` | Default scheduling inside a group: `round-robin`, `fill-first` or `session-sticky`. |
 | `request-retry`, `max-retry-interval`, `quota-exceeded` | How many times a failed request is retried and what happens when an account's quota runs out. |
 | `proxy-url`, proxy pool | Global and per-account outbound proxies. |

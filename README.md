@@ -290,6 +290,14 @@ curl http://localhost:8317/v1/chat/completions \
   -d '{"model": "gpt-5.5", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
+**MCP clients** (image generation)
+
+`POST /mcp/image` is an MCP server over Streamable HTTP; add it as an HTTP MCP
+server with the client key as the bearer token. It publishes `generate_image`
+(`prompt`, `model`, `size`, `quality`, `n`) and runs it through the same image
+models, quotas and request log as `/v1/images/generations`, returning the image
+as MCP image content.
+
 > [!TIP]
 > *CC Switch Config* in the panel builds a one-click import link for Claude Code and Codex, with the model mapping and channel group already filled in.
 

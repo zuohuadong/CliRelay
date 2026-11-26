@@ -137,7 +137,53 @@ func IsRequestFault(err error) bool {
 // invalid_request_error signal: failing it over would only send the same
 // content to more of the pool's accounts.
 func isRequestFault(err error) bool {
-	return isRequestInvalidError(err) || isContentPolicyViolation(err) || isUpstreamContentRefusal(err)
+	return isRequestInvalidError(err) || isContentPolicyViolation(err) || isUpstreamContentRefusal(err) ||
+		isModelAccessDeniedError(err)
+}
+
+// isModelAccessDeniedError reports whether the upstream refused the *model*, not
+// the account: the credential is fine, it simply may not run this model (a
+// coding-plan key on the wrong endpoint answers exactly this). Sending it to
+// more credentials of the same provider draws the same refusal in milliseconds,
+// and waiting for one to cool down cannot change a permission, so it fails the
+// turn at once with the upstream's own explanation.
+//
+// Only a denial is read this way, not a missing model: a 404 for a model that
+// does not exist keeps its long park, which is what stops the relay from asking
+// for it again all day. And a 403 has to name the model's permission, because a
+// provider's WAF or a region block answers 403 too, and those do deserve the
+// usual failover and cooldown.
+func isModelAccessDeniedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch statusCodeFromError(err) {
+	case http.StatusForbidden, http.StatusNotFound:
+	default:
+		return false
+	}
+	signals := []string{strings.TrimSpace(err.Error())}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil {
+		signals = append(signals, authErr.Code, authErr.Message)
+	}
+	for _, signal := range signals {
+		lower := strings.ToLower(strings.TrimSpace(signal))
+		if lower == "" {
+			continue
+		}
+		switch {
+		case strings.Contains(lower, "model_access_denied"),
+			strings.Contains(lower, "no permission to access model"),
+			strings.Contains(lower, "does not have access to model"),
+			strings.Contains(lower, "permission to use model"),
+			strings.Contains(lower, "model is not available to this"),
+			// A relay that models the same thing in its own words.
+			strings.Contains(lower, "该模型") && strings.Contains(lower, "无权限"):
+			return true
+		}
+	}
+	return false
 }
 
 // FailureCause classifies a failed execution as the route trace does an

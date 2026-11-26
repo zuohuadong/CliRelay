@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 )
 
 type statusQuotaErrorStub struct {
@@ -301,5 +302,58 @@ func TestMarkResult_RequestInvalidErrorDoesNotCooldownAuth(t *testing.T) {
 	}
 	if state := got.ModelStates["grok-4.5"]; state != nil {
 		t.Fatalf("ModelStates[grok-4.5] = %+v, want nil/unset for request-invalid error", state)
+	}
+}
+
+// A coding-plan key pointed at a provider's standard endpoint answers 403
+// model_access_denied in milliseconds for every model. Sending that to more
+// credentials and waiting for one to cool down turns a configuration mistake
+// into a minute of silence on a streaming client, so it fails the turn at once
+// with the upstream's own explanation.
+func TestModelAccessDenialIsARequestFault(t *testing.T) {
+	denials := []*Error{
+		{HTTPStatus: http.StatusForbidden, Message: `{"error":{"code":"model_access_denied","message":"No permission to access model: glm-5.4","type":"model_access_denied"}}`},
+		{HTTPStatus: http.StatusForbidden, Code: "model_access_denied", Message: "denied"},
+		{HTTPStatus: http.StatusForbidden, Message: "该模型无权限访问"},
+	}
+	for _, err := range denials {
+		if !IsRequestFault(err) {
+			t.Fatalf("%+v must not be failed over or waited out", err)
+		}
+	}
+
+	// Everything else that answers 403 keeps the usual handling: a WAF or a
+	// region block is not a statement about the model, and another account or a
+	// later attempt can get past it.
+	others := []*Error{
+		{HTTPStatus: http.StatusForbidden, Message: "Forbidden: region not allowed"},
+		{HTTPStatus: http.StatusForbidden, Message: "blocked by web application firewall"},
+		{HTTPStatus: http.StatusTooManyRequests, Message: `{"error":{"code":"model_access_denied"}}`},
+		// A model that does not exist keeps its long park: that is what stops the
+		// relay from asking for it again all day.
+		{HTTPStatus: http.StatusNotFound, Message: `{"error":{"code":"model_not_found","message":"model gpt-9 does not exist"}}`},
+	}
+	for _, err := range others {
+		if IsRequestFault(err) {
+			t.Fatalf("%+v must keep the usual failover handling", err)
+		}
+	}
+}
+
+// The refusal must not park the model on the account either, or the next request
+// reports "temporarily unavailable" instead of what the upstream said.
+func TestModelAccessDenialDoesNotCoolTheModel(t *testing.T) {
+	err := &Error{HTTPStatus: http.StatusForbidden, Message: `{"error":{"code":"model_access_denied","message":"No permission to access model: glm-5.4"}}`}
+	auth := &Auth{}
+	effects := &resultStateEffects{}
+	now := time.Now().UTC()
+
+	newCooldownService(nil).applyFailureLocked(auth, Result{Model: "glm-5.4", Error: err}, now, effects)
+
+	if state := auth.ModelStates["glm-5.4"]; state != nil && !state.NextRetryAfter.IsZero() {
+		t.Fatalf("model parked until %v, want no cooldown for a permission denial", state.NextRetryAfter)
+	}
+	if effects.shouldSuspendModel {
+		t.Fatal("a permission denial about one model must not suspend it")
 	}
 }

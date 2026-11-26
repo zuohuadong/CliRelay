@@ -152,6 +152,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		translated = normalizeOpenAIChatToolCallMessages(translated)
 	}
 	translated = normalizeGLMReasoningEffort(translated, execCtx.BaseModel)
+	translated = stripCodexClientMetadata(translated)
 	translated = applyProviderPromptCaching(translated, req.Payload, auth, e.provider, execCtx.BaseModel, to, opts)
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
@@ -285,6 +286,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	translated = opencodeGoFixToolCallArguments(translated)
 	translated = normalizeOpenAIChatToolCallMessages(translated)
 	translated = normalizeGLMReasoningEffort(translated, execCtx.BaseModel)
+	translated = stripCodexClientMetadata(translated)
 	translated = applyProviderPromptCaching(translated, req.Payload, auth, e.provider, execCtx.BaseModel, to, opts)
 	if shouldRequestNVIDIAStreamUsage(baseURL, translated) {
 		translated, err = sjson.SetBytes(translated, "stream_options.include_usage", true)

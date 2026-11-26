@@ -338,3 +338,46 @@ func TestBusyWaitOnlyWhenEveryUsableAccountIsCooling(t *testing.T) {
 		}
 	})
 }
+
+// A model-permission denial is answered in milliseconds and says the same thing
+// to every credential of that provider. Waiting for one to cool down and asking
+// again turns a configuration mistake into a minute of silence on a streaming
+// client, so the request fails at once, with the upstream's own explanation.
+func TestBusyWaitDoesNotWaitOutAModelPermissionDenial(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		denied := &Error{
+			HTTPStatus: http.StatusForbidden,
+			Message:    `{"error":{"code":"model_access_denied","message":"No permission to access model: glm-5.4"}}`,
+		}
+		exec := &scriptedExecutor{script: []error{denied, denied}}
+		mgr := newBusyWaitManager(t, exec, "bw-denied")
+		start := time.Now()
+		err := execute(mgr, context.Background())
+		if waited := time.Since(start); waited != 0 {
+			t.Fatalf("waited %s, want the denial reported at once", waited)
+		}
+		if !IsRequestFault(err) {
+			t.Fatalf("err = %v, want the denial itself", err)
+		}
+		if len(exec.calls) != 1 {
+			t.Fatalf("upstream attempts = %d, want the single attempt that was refused", len(exec.calls))
+		}
+
+		// The model is not parked either, so the next request asks again and
+		// reports the reason instead of "temporarily unavailable".
+		auth, ok := mgr.GetByID("bw-denied")
+		if !ok {
+			t.Fatal("auth disappeared")
+		}
+		if state := auth.ModelStates["test-model"]; state != nil && !state.NextRetryAfter.IsZero() {
+			t.Fatalf("model parked until %v, want no cooldown for a permission denial", state.NextRetryAfter)
+		}
+		start = time.Now()
+		if err := execute(mgr, context.Background()); err == nil || !IsRequestFault(err) {
+			t.Fatalf("second request err = %v, want the denial again", err)
+		}
+		if waited := time.Since(start); waited != 0 {
+			t.Fatalf("second request waited %s, want none", waited)
+		}
+	})
+}

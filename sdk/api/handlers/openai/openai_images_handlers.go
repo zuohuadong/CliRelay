@@ -55,6 +55,33 @@ func (h *OpenAIImagesAPIHandler) Edits(c *gin.Context) {
 }
 
 func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, alt string) {
+	cliCtx := context.WithValue(c.Request.Context(), util.ContextKeyGin, c)
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	defer stopKeepAlive()
+
+	payload, responseHeaders, execErr := h.RunImages(c, rawJSON, alt)
+	if execErr != nil {
+		writeOpenAIImagesError(c, execErr.Status, execErr.Kind, execErr.Message)
+		return
+	}
+	handlers.WriteUpstreamHeaders(c.Writer.Header(), responseHeaders)
+	c.Data(http.StatusOK, "application/json; charset=utf-8", payload)
+}
+
+// ImageExecError is a failed images request, as the HTTP endpoint reports it and
+// as a caller that asked for the images directly (the MCP image endpoint) turns
+// it into its own error shape.
+type ImageExecError struct {
+	Status  int
+	Kind    string
+	Message string
+}
+
+// RunImages runs one images request through the pipeline and returns the
+// OpenAI response body instead of writing it: /v1/images/* writes it to the
+// client, while the MCP image endpoint reads the images back out of it. The
+// caller owns the connection's keep-alives and headers.
+func (h *OpenAIImagesAPIHandler) RunImages(c *gin.Context, rawJSON []byte, alt string) ([]byte, http.Header, *ImageExecError) {
 	modelName := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
 	if modelName == "" {
 		modelName = openAIImageModelID
@@ -64,24 +91,20 @@ func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, a
 	}
 	provider := openAIImageGenerationProvider(modelName)
 	if provider == "" {
-		writeOpenAIImagesError(c, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("model %q is not a supported image generation model", modelName))
-		return
+		return nil, nil, &ImageExecError{Status: http.StatusBadRequest, Kind: "invalid_request_error",
+			Message: fmt.Sprintf("model %q is not a supported image generation model", modelName)}
 	}
 	imageCount, countErr := openAIImageRequestCount(rawJSON)
 	if countErr != nil {
-		writeOpenAIImagesError(c, http.StatusBadRequest, "invalid_request_error", countErr.Error())
-		return
+		return nil, nil, &ImageExecError{Status: http.StatusBadRequest, Kind: "invalid_request_error", Message: countErr.Error()}
 	}
 
 	cliCtx := context.WithValue(c.Request.Context(), util.ContextKeyGin, c)
 	meta := requestImageExecutionMetadata(c)
 	if h.AuthManager == nil {
-		writeOpenAIImagesError(c, http.StatusInternalServerError, "server_error", "authentication manager not initialized")
-		return
+		return nil, nil, &ImageExecError{Status: http.StatusInternalServerError, Kind: "server_error",
+			Message: "authentication manager not initialized"}
 	}
-
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
-	defer stopKeepAlive()
 
 	payloads := make([][]byte, 0, imageCount)
 	var responseHeaders http.Header
@@ -96,8 +119,8 @@ func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, a
 			var setErr error
 			execPayload, setErr = sjson.SetBytes(rawJSON, "n", 1)
 			if setErr != nil {
-				writeOpenAIImagesError(c, http.StatusBadRequest, "invalid_request_error", "invalid image generation request")
-				return
+				return nil, nil, &ImageExecError{Status: http.StatusBadRequest, Kind: "invalid_request_error",
+					Message: "invalid image generation request"}
 			}
 		}
 		execMeta := cloneImageExecutionMetadata(meta)
@@ -120,8 +143,7 @@ func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, a
 			if statusErr, ok := err.(coreexecutor.StatusError); ok && statusErr.StatusCode() > 0 {
 				status = statusErr.StatusCode()
 			}
-			writeOpenAIImagesError(c, status, errorTypeForStatus(status), err.Error())
-			return
+			return nil, nil, &ImageExecError{Status: status, Kind: errorTypeForStatus(status), Message: err.Error()}
 		}
 		if responseHeaders == nil {
 			responseHeaders = resp.Headers
@@ -130,12 +152,9 @@ func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, a
 	}
 	payload, err := mergeOpenAIImageResponses(payloads)
 	if err != nil {
-		writeOpenAIImagesError(c, http.StatusBadGateway, "server_error", err.Error())
-		return
+		return nil, nil, &ImageExecError{Status: http.StatusBadGateway, Kind: "server_error", Message: err.Error()}
 	}
-
-	handlers.WriteUpstreamHeaders(c.Writer.Header(), responseHeaders)
-	c.Data(http.StatusOK, "application/json; charset=utf-8", payload)
+	return payload, responseHeaders, nil
 }
 
 func openAIImageRequestCount(rawJSON []byte) (int, error) {

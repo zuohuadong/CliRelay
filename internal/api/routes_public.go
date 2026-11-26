@@ -66,6 +66,13 @@ func (s *Server) setupRoutes() {
 	s.useInferenceMiddleware(groupedV1, s.v1RequestStages(groupRoutingMiddleware(s.resolveRoute)))
 	registerV1Routes(groupedV1)
 
+	// MCP image generation (see mcp_image.go). MCP clients are configured with
+	// this URL and speak JSON-RPC to it, so it sits outside /v1 but runs the same
+	// request stages: the API key, its quotas and the model gate all apply.
+	mcp := s.engine.Group("/mcp")
+	s.useInferenceMiddleware(mcp, s.requestStages(rewrittenGroupRoutingMiddleware(s.resolveRoute)))
+	mcp.POST("/image", s.mcpImageHandler())
+
 	// Codex CLI direct route aliases (chatgpt_base_url compatible). Upstream
 	// CLIProxyAPI exposes these; clients such as the Codex CLI and the pi
 	// CLIProxyAPI provider address inference as {root}/backend-api/codex/...

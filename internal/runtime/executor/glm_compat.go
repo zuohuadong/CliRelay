@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
@@ -76,4 +77,61 @@ func isGLM53Model(model string) bool {
 		base = base[idx+1:]
 	}
 	return base == "glm-5.3" || strings.HasPrefix(base, "glm-5.3-")
+}
+
+// stripGLMCodingImageParts replaces image content parts with a text note before
+// a GLM coding-plan endpoint sees them. Those endpoints serve text-only
+// GLM-5.x models and answer any image with code 1210
+// "API 调用参数有误，请检查文档。", which reads like an invalid parameter even
+// though the request is otherwise well formed.
+//
+// Codex's view_image tool output is the usual source: it returns an
+// input_image part whose data URL rides along in the conversation history long
+// after the turn that captured it.
+func stripGLMCodingImageParts(payload []byte, baseURL, model string) []byte {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) || !isGLMCodingTextOnly(baseURL, model) {
+		return payload
+	}
+	messages := gjson.GetBytes(payload, "messages")
+	if !messages.IsArray() {
+		return payload
+	}
+	note := `{"type":"text","text":"[image omitted: this GLM coding model does not accept image input]"}`
+	updated := payload
+	for i, message := range messages.Array() {
+		parts := message.Get("content")
+		if !parts.IsArray() {
+			continue
+		}
+		for j, part := range parts.Array() {
+			switch strings.ToLower(strings.TrimSpace(part.Get("type").String())) {
+			case "image", "image_url", "input_image":
+				path := fmt.Sprintf("messages.%d.content.%d", i, j)
+				result, err := sjson.SetRawBytes(updated, path, []byte(note))
+				if err != nil {
+					return payload
+				}
+				updated = result
+			}
+		}
+	}
+	return updated
+}
+
+// isGLMCodingTextOnly reports whether the upstream is a GLM coding-plan
+// endpoint serving text-only GLM-5.x models. Standard BigModel and Z.AI API
+// endpoints are left alone because they can serve vision models.
+func isGLMCodingTextOnly(baseURL, model string) bool {
+	url := strings.ToLower(strings.TrimSpace(baseURL))
+	if !strings.Contains(url, "/api/coding/") {
+		return false
+	}
+	if !strings.Contains(url, "bigmodel.cn") && !strings.Contains(url, "z.ai") {
+		return false
+	}
+	base := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
+	if idx := strings.LastIndex(base, "/"); idx >= 0 {
+		base = base[idx+1:]
+	}
+	return strings.HasPrefix(base, "glm-5")
 }

@@ -155,3 +155,39 @@ func TestNormalizeGLMReasoningEffortKeepsInvalidPayload(t *testing.T) {
 		t.Fatalf("nil payload changed: %s", got)
 	}
 }
+
+func TestStripGLMCodingImagePartsReplacesImages(t *testing.T) {
+	in := []byte(`{
+		"model":"glm-5.4",
+		"messages":[
+			{"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":[{"type":"input_image","image_url":"data:image/png;base64,BBBB"}]}
+		]
+	}`)
+	got := stripGLMCodingImageParts(in, "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.4")
+	if gjson.GetBytes(got, "messages.0.content.1.type").String() != "text" {
+		t.Fatalf("user image was not replaced: %s", got)
+	}
+	if gjson.GetBytes(got, "messages.1.content.0.type").String() != "text" {
+		t.Fatalf("tool image was not replaced: %s", got)
+	}
+	if gjson.GetBytes(got, "messages.0.content.0.text").String() != "look" {
+		t.Fatalf("text part changed: %s", got)
+	}
+}
+
+func TestStripGLMCodingImagePartsLeavesOtherEndpointsAlone(t *testing.T) {
+	in := []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}]}`)
+	for _, baseURL := range []string{
+		"https://open.bigmodel.cn/api/paas/v4",
+		"https://api.z.ai/api/paas/v4",
+		"https://example.com/api/coding/paas/v4",
+	} {
+		if got := stripGLMCodingImageParts(in, baseURL, "glm-5.4"); string(got) != string(in) {
+			t.Fatalf("payload changed for %s: %s", baseURL, got)
+		}
+	}
+	if got := stripGLMCodingImageParts(in, "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.6v"); string(got) != string(in) {
+		t.Fatalf("vision model payload changed: %s", got)
+	}
+}
